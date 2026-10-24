@@ -394,9 +394,8 @@ that sends and applies it; the catch-up on promotion from the end of a copy; and
 - every scenario with both engines passes whichever engine leads at the start. Either engine can win the
   first election, so this is checked by running them normally, and again with
   `ha_test.py --scenario all --secondary-engine-first`, which starts the secondary engine, waits until it
-  leads, and only then starts the primary. Today ten of the 23 fail when the secondary leads first: seven
-  because of the venue ([BUG-0195](bug_list.md#bug_0195), [BUG-0188](bug_list.md#bug_0188)), and three because
-  the scenarios name an engine by its configuration ([BUG-0196](bug_list.md#bug_0196)).
+  leads, and only then starts the primary. Today eight of the 23 fail when the secondary leads first
+  ([BUG-0195](bug_list.md#bug_0195), [BUG-0188](bug_list.md#bug_0188)).
 
 **Also designed in this phase:** voiding a command that crashed an engine, so that a command both engines
 crash on costs that command and not the venue: the engine records each command before applying it, and one

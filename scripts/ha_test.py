@@ -773,11 +773,17 @@ class MachineKillStep(NamedTuple):
     proc_names:    every process on the machine, killed in one pass with no
                    waiting in between.
     takeover:      the test events showing the survivors took over, or None.
+    machine_of:    when given, ENGINE_LEADING_AT_START or ENGINE_FOLLOWING_AT_START, and proc_names is
+                   empty. The machine is then the one that engine runs on: the engine, with the arbiter
+                   and the sequencer configured on the same side as it, primary or secondary. Which
+                   machine that is depends on which engine won the first election, so it is worked out
+                   once phase 2 has seen that.
     """
     proc_names: tuple
     takeover: Expect | None
     ready_timeout: float
     settle_secs: float
+    machine_of: str | None = None
 
 
 class IsolateStep(NamedTuple):
@@ -1238,12 +1244,12 @@ def _me_restart_step() -> RestartStep:
     )
 
 
-def _me_primary_restart_step() -> RestartStep:
-    """Restart the primary of a pair of matching engines, as _me_restart_step does the single one."""
+def _me_leader_restart_step() -> RestartStep:
+    """Restart the matching engine of a pair that led when the steps began, as _me_restart_step does the single one."""
     return RestartStep(
-        proc_name="matching_engine_primary",
-        ready_log_name="matching_engine_primary.log",
-        ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
+        proc_name=ENGINE_LEADING_AT_START,
+        ready_log_name=f"{ENGINE_LEADING_AT_START}.log",
+        ready=expect_engine_reachable(ENGINE_LEADING_AT_START),
         ready_timeout=_ME_READY_TIMEOUT,
         resets_me_counter=True,
         settle_secs=_ME_SETTLE,
@@ -1605,7 +1611,7 @@ _SCENARIOS: list[Scenario] = [
         restart_steps=[_me_restart_step()],
     ),
 
-    # 12 — the primary matching engine restarted while both arbiters are dead.
+    # 12 — the leading matching engine restarted while both arbiters are dead.
     #
     # With the arbiter pool gone, the leading engine keeps leading with its peer's vote. When it
     # is restarted it reads its record of leading, asks again at once, and its peer grants it,
@@ -1617,7 +1623,7 @@ _SCENARIOS: list[Scenario] = [
         recovery_on_primary=True,
         description="ME death with both arbiters dead",
         expected_outcome=(
-            "no arbiter failover; the restarted primary matching engine keeps the lead with its "
+            "no arbiter failover; the restarted matching engine that led keeps the lead with its "
             "peer's vote, and recovery orders flow"
         ),
         steps=[
@@ -1632,7 +1638,7 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=SETTLE_AFTER_KILL,
             ),
         ],
-        restart_steps=[_me_primary_restart_step()],
+        restart_steps=[_me_leader_restart_step()],
     ),
 
     # 13 — as scenario 12, with the witness dead as well.
@@ -1643,7 +1649,7 @@ _SCENARIOS: list[Scenario] = [
         recovery_on_primary=True,
         description="ME death with both arbiters and witness dead",
         expected_outcome=(
-            "no arbiter failover; the restarted primary matching engine keeps the lead with its "
+            "no arbiter failover; the restarted matching engine that led keeps the lead with its "
             "peer's vote, and recovery orders flow"
         ),
         steps=[
@@ -1663,7 +1669,7 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=SETTLE_AFTER_KILL,
             ),
         ],
-        restart_steps=[_me_primary_restart_step()],
+        restart_steps=[_me_leader_restart_step()],
     ),
 
     # 14 — WAL recovery: primary sequencer restarts as follower then re-elected
@@ -2163,15 +2169,15 @@ _SCENARIOS: list[Scenario] = [
             VerifyStep(
                 expect=expect_follows(ENGINE_LEADING_AT_START),
                 timeout=30.0,
-                description="restarted primary is assigned the follower role",
+                description="the restarted engine that led is assigned the follower role",
                 absent=expect_leads(ENGINE_LEADING_AT_START),
             ),
-            # 4. And the secondary must have kept it throughout -- a leadership that moved
-            #    and moved back would satisfy step 3 on its own.
+            # 4. And the engine promoted in its place must have kept the lead throughout -- a
+            #    leadership that moved and moved back would satisfy step 3 on its own.
             VerifyStep(
                 expect=expect_leads(ENGINE_FOLLOWING_AT_START),
                 timeout=5.0,
-                description="promoted secondary still holds leadership",
+                description="the engine promoted in its place still holds leadership",
             ),
         ],
     ),
@@ -2399,18 +2405,17 @@ _SCENARIOS: list[Scenario] = [
     # there would be two leaders with nothing having visibly failed -- no outage, no error, no
     # promotion in any log -- which is the one failure mode that does not announce itself.
     #
-    # A starting secondary adopts Follower silently, with no line saying so, so the assertion
-    # has to be built the other way round: prove it came back and rejoined properly (the
-    # primary's replication connection is re-established to it), then require that it never
-    # promoted. RestartStep deletes its log first, so the absence covers only what happened
+    # The assertion is built the other way round: prove the follower came back and rejoined
+    # properly (the leader's replication connection is re-established to it), then require that
+    # it never promoted. RestartStep deletes its log first, so the absence covers only what happened
     # after it returned.
     Scenario(
         number=29,
         short_name="me_follower_restart_changes_nothing",
         description="Restarting the follower ME leaves leadership untouched",
         expected_outcome=(
-            "matching_engine_secondary returns as a follower, rejoins replication, and never "
-            "adopts LEADER; the primary keeps leading and orders are uninterrupted"
+            "the engine that followed returns as a follower, rejoins replication, and never "
+            "adopts LEADER; the engine that led keeps leading and orders are uninterrupted"
         ),
         me_ha=True,
         # Leadership never moves, so recovery orders come back to the primary.
@@ -2420,15 +2425,15 @@ _SCENARIOS: list[Scenario] = [
         restart_steps=[],
         extra_steps=[
             RestartStep(
-                proc_name="matching_engine_secondary",
-                ready_log_name="matching_engine_secondary.log",
-                ready=expect_replication_connection("matching_engine_secondary"),
+                proc_name=ENGINE_FOLLOWING_AT_START,
+                ready_log_name=f"{ENGINE_FOLLOWING_AT_START}.log",
+                ready=expect_replication_connection(ENGINE_FOLLOWING_AT_START),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
             AssertAbsentStep(
-                absent=expect_leads("matching_engine_secondary"),
+                absent=expect_leads(ENGINE_FOLLOWING_AT_START),
                 after_secs=20.0,
                 description="the restarted follower never promoted itself",
             ),
@@ -3388,8 +3393,12 @@ _SCENARIOS: list[Scenario] = [
     # the second machine exists for: the machine itself stopping, taking
     # everything on it at the same instant, with nothing to restart.
     #
-    # The split assumed here puts the arbitration pair's primary, the sequencer
-    # primary and the matching engine primary on the machine that stops.  The
+    # The split assumed here puts each pair's primary on one machine and its
+    # secondary on the other.  The machine that stops is the one the leading
+    # matching engine runs on: its arbiter, its sequencer and the engine.  The
+    # sequencer that leads may be on either machine, because the first election
+    # of each pair is separate; when it is on the machine that stops, the
+    # sequencer fails over as well.  The
     # witness is deliberately NOT on it: an arbitration pair and its witness on
     # one machine is a single point of failure with three processes in it, which
     # the specification requires a deployment not to be (R-0084).  The gateway
@@ -3400,9 +3409,9 @@ _SCENARIOS: list[Scenario] = [
         short_name="machine_loss",
         description="A machine stops, taking every component on it at once",
         expected_outcome=(
-            "the sequencer and matching engine on the surviving machine take "
-            "over, the member's session is unaffected, and recovery orders are "
-            "answered -- with nothing on the lost machine restarted"
+            "the matching engine on the surviving machine takes over, the "
+            "member's session is unaffected, and recovery orders are answered "
+            "-- with nothing on the lost machine restarted"
         ),
         me_ha=True,
         # In-flight orders would advance the promoted secondary's counter during
@@ -3411,8 +3420,9 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
         extra_steps=[
             MachineKillStep(
-                proc_names=("arbiter_primary", "sequencer_primary", "matching_engine_primary"),
-                takeover=expect_leads("matching_engine_secondary"),
+                proc_names=(),
+                machine_of=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
                 ready_timeout=45.0,
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
@@ -5851,7 +5861,12 @@ def kill_summary_line(outcome: str | None, label: str, elapsed: float) -> str:
 
 def with_engines_resolved(step):
     """step, with ENGINE_LEADING_AT_START or ENGINE_FOLLOWING_AT_START in its process name, and in the Quill log it waits
-    on, replaced by the engine each stands for in this scenario."""
+    on, replaced by the engine each stands for in this scenario; or, for a machine named by the engine it runs, the
+    processes on that machine."""
+    if isinstance(step, MachineKillStep) and step.machine_of is not None:
+        engine = resolved(step.machine_of)
+        side = "primary" if engine == "matching_engine_primary" else "secondary"
+        return step._replace(proc_names=(f"arbiter_{side}", f"sequencer_{side}", engine), machine_of=None)
     if not hasattr(step, "proc_name"):
         return step
     actual = resolved(step.proc_name)
@@ -6172,7 +6187,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if isinstance(s, IsolateStep):
             return f"ISOLATE:{s.proc_name}"
         if isinstance(s, MachineKillStep):
-            return "MACHINE:" + "+".join(s.proc_names)
+            return f"MACHINE:the one {s.machine_of} runs on" if s.machine_of is not None else "MACHINE:" + "+".join(s.proc_names)
         if isinstance(s, InterimOrdersStep):
             return f"({s.count_batches * 1000} interim orders)"
         if isinstance(s, (VerifyStep, OneLeaderStep, AssertAbsentStep)):
@@ -6866,14 +6881,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
             for s in effective_steps
         )
         if has_me_restart:
-            log("  Waiting for sequencer_primary to re-establish ME connection ...")
-            found, elapsed = await_expectation(expect_connection_made("sequencer_primary", "matching_engine"), 10.0, sequencer_events_pre_kill)
-            if not found:
-                die(
-                    "sequencer_primary did not re-establish ME connection "
-                    "within 10s after ME restart"
-                )
-            log(f"  sequencer_primary: ME connection restored ({elapsed:.1f}s)")
+            for restart_step in (s for s in effective_steps if isinstance(s, RestartStep) and s.resets_me_counter):
+                restarted_engine = resolved(restart_step.proc_name)
+                log(f"  Waiting for sequencer_primary to re-establish its connection to {restarted_engine} ...")
+                found, elapsed = await_expectation(expect_connection_made("sequencer_primary", engine_service(restarted_engine)), 10.0,
+                                                   sequencer_events_pre_kill)
+                if not found:
+                    die(f"sequencer_primary did not re-establish its connection to {restarted_engine} within 10s after its restart")
+                log(f"  sequencer_primary: connection to {restarted_engine} restored ({elapsed:.1f}s)")
 
             # Connected is not leading. A restarted engine asks to lead only after it has connected,
             # and if its first request is not granted -- scenario 11 kills the primary arbiter as well,
@@ -6886,8 +6901,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 restarted = expect_leads(restart_step.proc_name)
                 found, elapsed = await_expectation(restarted, 15.0, since_present_processes(restarted))
                 if not found:
-                    die(f"the restarted {restart_step.proc_name} did not take the lead within 15s")
-                log(f"  {restart_step.proc_name}: leading ({elapsed:.1f}s)")
+                    die(f"the restarted {resolved(restart_step.proc_name)} did not take the lead within 15s")
+                log(f"  {resolved(restart_step.proc_name)}: leading ({elapsed:.1f}s)")
         log("")
 
         # ── Phase 5: recovery orders ──────────────────────────────────────────
@@ -6991,7 +7006,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             cancel_count = cancelled_book.cancel_reports_sent if cancelled_book is not None else -1
             resumed_event = engine_event(promoted_engine, "ResumedAsLeader", me_secondary_events_from, 10.0)
             if resumed_event is None:
-                die("ME-HA: the promoted secondary never reported resuming as leader -- "
+                die(f"ME-HA: the promoted {promoted_engine} never reported resuming as leader -- "
                     "cannot confirm what book it resumed with")
             resumed = resumed_event.book_size
 
