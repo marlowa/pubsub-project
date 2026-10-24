@@ -7,6 +7,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the major version is `0`, the public API is not yet considered stable and may
 change in any release.
 
+## [Unreleased]
+
+Development continues after 0.4.0. New features are frozen while the design is restored, phase by
+phase, under `docs/recovery_plan.md`; phases 1 to 6 of that plan are finished. The entries below
+describe the venue as it now is.
+
+### Added
+
+- **The plan for restoring the design**, `docs/recovery_plan.md`, and one list of design
+  principles, `docs/design_principles.md`, that every change is judged against. The plan moves the
+  high availability machinery out of the sequencer and the matching engine and into the library,
+  one reviewed phase at a time, and returns to the bug list only after that.
+- **The build enforces the principles about threads.** `check_standards.py` refuses a lock in
+  venue code unless a named list permits it, with its reason, and refuses a raw `std::thread`. In
+  Debug and sanitizer builds, `ThreadConfinementCheck` refuses a second thread on the WAL writer,
+  the slab allocator, the ring buffer, the incremental rehash map, the gateways' session tables and
+  the reactor's tables. Each check was made to fail on purpose before it was relied on.
+- **Leadership is decided by a majority, with leases.** An instance leads only while a majority of
+  three voters grants it a lease: the two instances that may lead, and a third that never leads.
+  The promises each voter makes are kept across a restart. The lease classes and their messages are in the
+  library, and the arbiter and the witness are a voting service configured with the pairs they vote
+  in. The design is `docs/availability/majority_leases.md`.
+- **TLA+ models, checked with TLC**, of the high availability design, of rule 11 (a follower that
+  lacks orders the matching engine has acted on cannot lead), and of the slab allocator's reclaim,
+  the queue of empty slabs, the pool allocator's free list and the hand-over of a follower to new
+  records. The build reproduces the counterexamples the models found and writes a page stepping
+  through each. The findings are `docs/availability/tla/findings.md`.
+- **The library has a replicated WAL with one writing thread.** The sequencer runs on it. On the
+  follower, the leader's records are written by that one thread only, and the locks and flags that
+  existed for a second writing thread are gone.
+- **The library's WAL can be followed**, on a thread of its own, paced by the connection. The
+  matching engine and the publishers catch up through it, and no catch-up reads the WAL on the
+  thread that sequences orders. A publisher is served only by the leading sequencer, only up to the
+  last record committed, and after a change of leader by the new leader.
+- **The leading sequencer sends the publishers each committed record from a copy kept in memory**,
+  instead of reading it back from the WAL and checking its checksum again for each publisher. Their
+  share of the sequencer thread's time falls from 17.3% to 5.6%, and the order's round trip is
+  unchanged. Two settings size the copy: `[wal] records_kept_for_publishers` and
+  `bytes_kept_for_publishers`. The design is `docs/availability/publishers_sent_from_memory.md`.
+- **Test events.** Each component sends events saying what it did, on a connection a test opens,
+  only when the test started it with a `[test_events]` section. The events are defined in the DSL,
+  and a new generator writes plain Python from it, checked byte for byte with Java against the C++
+  one. No high availability test reads a Quill log to decide whether it passes. The design is
+  `docs/availability/test_events.md`.
+- **Every command sent while the sequencers change leader is answered once.** A gateway keeps each
+  command until a report answers it, and sends it again to a new leader. A new leader forwards the
+  reports its predecessor never did, and a rejoining follower's WAL is repaired to be a copy of its
+  leader's.
+- **Per-session throttles** in both gateways: how many new orders, amends and cancels a session may
+  send each second, provisioned per member. A refused cancel is answered with an
+  OrderCancelReject, not a rejected order.
+- **The binary gateway checks what it passes on**, as the FIX gateway does.
+- **Measurement of the order path, stage by stage**: an order is timed at every point on its way
+  through the venue, the inter-thread hand-off and the socket crossing are measured in both halves,
+  and a Grafana dashboard, kept in the repository as a source file, shows where an order's time goes.
+  `scripts/measurement_machine.py` switches the machine in and out of a state fit to measure on, and
+  `perf_run.py` refuses to run without it. The findings are `docs/operations/latency_findings.md`.
+- **A reactor can poll instead of sleeping**, and finds a send by itself without a system call.
+- **A FIX load client**, so that the two gateways can be compared under the same load.
+- **The design for publishing to an external messaging system** (OAR),
+  `docs/pubsub/oar_external_stream.md`. Not built.
+
+### Changed
+
+- **Histograms are recorded without a lock.** prometheus-cpp takes a mutex for every observation,
+  and the scrape takes the same one; the framework's histograms no longer use it on the order path.
+- **The promise recorder takes no lock and never writes on a thread that handles orders.**
+- **A report the sequencer cannot route, because the member's session is connected to no gateway
+  that has told it so, is counted** in `sequencer_reports_dropped_unbound`, and the first for each
+  session is logged as a Warning.
+
+### Fixed
+
+Fifty-one bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among them:
+
+- **Orders sent while the sequencers changed leader were lost without a reply** (BUG-0103), and an
+  order in the new leader's WAL that the matching engine never received was never applied
+  (BUG-0115).
+- **A sequencer that took the lead numbered new records with numbers its WAL already held**
+  (BUG-0105), and one that stopped leading kept the orders it had sequenced (BUG-0097).
+- **A follower that rejoined after missing about a million records stopped the venue answering
+  orders** (BUG-0155), and a follower wrote replicated records out of order under load and damaged
+  its WAL (BUG-0123, BUG-0147).
+- **Locks were taken on the order path** (BUG-0124, BUG-0125, BUG-0126).
+- **One send that could not complete stopped a process sending on any connection** (BUG-0112), and
+  a burst of sends to a full socket lost the sends that had to wait (BUG-0117).
+- **The reactor could leave the last command of a burst unseen** until another arrived (BUG-0170),
+  and a thread freeing a slab's last chunk could read the slab after it was destroyed (BUG-0157).
+- **A damaged WAL entry silently dropped the rest of its segment** (BUG-0106).
+- **An execution report produced while a session had no connection was dropped** and nothing
+  delivered it later (BUG-0088).
+- **After a sequencer restarted and then took the lead, members were not told of the orders the
+  matching engine accepted** (BUG-0182). When a link to a sequencer comes up, each gateway now
+  announces every session it holds. A report for an order taken before the restart can still be
+  dropped in the moment after a quick restart (BUG-0190).
+- **The ThreadSanitizer build did not compile**, and it checked the mutex variant of the queue
+  rather than the lock-free one the venue runs (BUG-0150, BUG-0160).
+
+### Known limitations
+
+- **79 bugs are open, 20 of them high severity**; `docs/bug_list.md` lists them.
+- **A promoted matching engine cancels every resting order**, because every environment deploys
+  `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
+  nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both
+  engines apply the WAL.
+
 ## [0.4.0] - 2026-09-14
 
 Development is paused after this release. `docs/project_status.md` says what works, what is known
