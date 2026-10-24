@@ -3,6 +3,7 @@
 
 #include <pubsub_itc_fw/WalHandedOverFollowers.hpp>
 
+#include <cstring>
 #include <optional>
 #include <utility>
 
@@ -19,8 +20,78 @@ bool before(const WalPosition& a, const WalPosition& b) {
 
 } // un-named namespace
 
-WalHandedOverFollowers::WalHandedOverFollowers(const Wal& wal, std::string directory, WalRecordConverter converter, WalHandedOverFollowersLinksInterface& links)
-    : wal_(wal), directory_(std::move(directory)), converter_(std::move(converter)), links_(links) {}
+WalHandedOverFollowers::WalHandedOverFollowers(const Wal& wal, std::string directory, WalRecordConverter converter, WalHandedOverFollowersLinksInterface& links,
+                                               WalKeptRecordsCapacity kept)
+    : wal_(wal), directory_(std::move(directory)), converter_(std::move(converter)), links_(links) {
+    // The only allocation the kept records ever make.
+    if (kept.records > 0 && kept.bytes > 0) {
+        kept_records_.emplace(kept.records);
+        kept_bytes_.resize(kept.bytes);
+    }
+}
+
+void WalHandedOverFollowers::written(int64_t seq_no, int16_t pdu_id, const uint8_t* bytes, size_t size) {
+    // Kept only for a shared reading that will send it, and only if it follows the last kept, so that the records
+    // kept are consecutive. A record of no bytes is not kept, so that every kept record occupies some room, which is
+    // what lets the room's ends be told apart below.
+    if (!kept_records_.has_value() || shared_reading_ == nullptr || size == 0 || kept_records_->full()) {
+        return;
+    }
+    if (!kept_records_->empty() && seq_no != kept_last_seq_no_ + 1) {
+        return;
+    }
+    // The bytes go just after the newest record's, or, if they do not fit before the end of the room, at its start,
+    // provided they do not reach the oldest record's bytes. While the newest record's bytes lie after the oldest's,
+    // the room has not yet continued from its start.
+    size_t begin = 0;
+    if (kept_records_->empty()) {
+        if (size > kept_bytes_.size()) {
+            return;
+        }
+        begin = 0;
+    } else {
+        const size_t oldest_begin = kept_records_->front().begin;
+        const bool continued_from_start = kept_bytes_next_ <= oldest_begin;
+        if (continued_from_start) {
+            if (kept_bytes_next_ + size > oldest_begin) {
+                return;
+            }
+            begin = kept_bytes_next_;
+        } else if (kept_bytes_next_ + size <= kept_bytes_.size()) {
+            begin = kept_bytes_next_;
+        } else if (size <= oldest_begin) {
+            begin = 0;
+        } else {
+            return;
+        }
+    }
+    std::memcpy(kept_bytes_.data() + begin, bytes, size);
+    [[maybe_unused]] const bool kept = kept_records_->push_back(KeptRecord{seq_no, pdu_id, begin, size});
+    kept_bytes_next_ = begin + size;
+    kept_last_seq_no_ = seq_no;
+}
+
+void WalHandedOverFollowers::discard_kept_records_through(int64_t seq_no) {
+    if (!kept_records_.has_value()) {
+        return;
+    }
+    while (!kept_records_->empty() && kept_records_->front().seq_no <= seq_no) {
+        kept_records_->pop_front();
+    }
+    if (kept_records_->empty()) {
+        kept_bytes_next_ = 0;
+    }
+}
+
+void WalHandedOverFollowers::discard_all_kept_records() {
+    if (!kept_records_.has_value()) {
+        return;
+    }
+    while (!kept_records_->empty()) {
+        kept_records_->pop_front();
+    }
+    kept_bytes_next_ = 0;
+}
 
 void WalHandedOverFollowers::add(const ConnectionID& follower, int64_t through, WalPosition resume_at) {
     auto entry = std::make_unique<Follower>();
@@ -41,6 +112,7 @@ void WalHandedOverFollowers::remove(const ConnectionID& follower) {
 void WalHandedOverFollowers::remove_all() {
     followers_.clear();
     shared_reading_.reset();
+    discard_all_kept_records();
 }
 
 bool WalHandedOverFollowers::contains(const ConnectionID& follower) const {
@@ -59,6 +131,7 @@ void WalHandedOverFollowers::close_shared_reading_if_unused() {
         }
     }
     shared_reading_.reset();
+    discard_all_kept_records();
 }
 
 bool WalHandedOverFollowers::read_next_record(Reading& reading) {
@@ -139,9 +212,32 @@ WalHandedOverFollowers::Outcome WalHandedOverFollowers::send_to(const Connection
     return outcome;
 }
 
+void WalHandedOverFollowers::send_kept_record(int64_t seq_no) {
+    const KeptRecord& kept = kept_records_->front();
+    for (const auto& [value, entry] : followers_) {
+        if (entry->own_reading == nullptr && entry->last_sent_seq_no < seq_no) {
+            links_.send_record(entry->connection, kept.pdu_id, seq_no, kept_bytes_.data() + kept.begin, kept.size);
+            entry->last_sent_seq_no = seq_no;
+        }
+    }
+}
+
 void WalHandedOverFollowers::send_on_shared_reading(int64_t through_seq_no, std::vector<std::pair<ConnectionID, int64_t>>& damaged) {
     Reading& reading = *shared_reading_;
     while (reading.last_seq_no < through_seq_no) {
+        // The next record is sent from its kept copy if there is one. The cursor is not moved: when a record is next
+        // read from the WAL, the cursor passes over those already sent, as it does any record already dealt with.
+        discard_kept_records_through(reading.last_seq_no);
+        const int64_t next_seq_no = reading.last_seq_no + 1;
+        if (!reading.holding && kept_records_.has_value() && !kept_records_->empty() && kept_records_->front().seq_no == next_seq_no) {
+            send_kept_record(next_seq_no);
+            kept_records_->pop_front();
+            if (kept_records_->empty()) {
+                kept_bytes_next_ = 0;
+            }
+            reading.last_seq_no = next_seq_no;
+            continue;
+        }
         if (!reading.holding && !read_next_record(reading)) {
             break; // nothing more written yet
         }

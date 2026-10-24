@@ -6,12 +6,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/FixedCapacityRingBuffer.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 #include <pubsub_itc_fw/WalCursor.hpp>
 #include <pubsub_itc_fw/WalFollowing.hpp>
@@ -26,6 +28,15 @@ class WalHandedOverFollowersLinksInterface {
 
     /// Send @p follower the @p size bytes at @p bytes as one message of type @p pdu_id, record @p seq_no.
     virtual void send_record(const ConnectionID& follower, int16_t pdu_id, int64_t seq_no, const uint8_t* bytes, size_t size) = 0;
+};
+
+/// How much room WalHandedOverFollowers has to keep records in until they have been sent. Zero records or zero bytes
+/// keeps none, and every record is read back from the WAL.
+struct WalKeptRecordsCapacity {
+    /// The most records kept at once.
+    size_t records{0};
+    /// The most bytes of records kept at once.
+    size_t bytes{0};
 };
 
 /**
@@ -59,6 +70,23 @@ class WalHandedOverFollowersLinksInterface {
  * be opened again at its own position, which lists the WAL's directory, at every commit. Opening it again is
  * still what is done when a read fails, so that a segment created since the cursor was opened is found.
  *
+ * **Records kept in memory, so that most are not read back at all.** Given a capacity, this keeps a copy of
+ * each record the owning thread writes, from the moment it is written (written()) until it has been sent to
+ * every follower in step with the shared reading. The shared reading then sends a record from that copy when
+ * it has one, and reads the WAL only when it has not. A record sent from the copy is not read, so its checksum
+ * is not checked and the converter is not called: the owning thread passes written() the message the followers
+ * are to be sent, which it made moments before when it wrote the record. The checksum is still checked on every
+ * read of the WAL. The design is docs/availability/publishers_sent_from_memory.md.
+ *
+ * The records kept are always consecutive. A record is kept only while some follower is in step with the shared
+ * reading, since otherwise nothing would ever send it and free its room, and only if it follows the last record
+ * kept and there is room for it. So once one record is refused, because the room is full, no later record is
+ * kept until every record kept has been sent. The records refused are read from the WAL, as without a capacity.
+ * A follower still reading on its own cursor is never sent from the copy.
+ *
+ * The room is two rings allocated once, when this is constructed: one of the records' bytes, one after another,
+ * and one of the records kept, each saying where its bytes are. Nothing is allocated when a record is kept.
+ *
  * **Threading.** Everything here runs on the thread that owns the WAL.
  */
 class WalHandedOverFollowers {
@@ -76,8 +104,31 @@ class WalHandedOverFollowers {
      * @param[in] directory The directory of the WAL's segment files.
      * @param[in] converter Turns a record into the message the followers are sent.
      * @param[in] links     How records are sent.
+     * @param[in] kept      How much room to keep written records in until they have been sent; none by default.
      */
-    WalHandedOverFollowers(const Wal& wal, std::string directory, WalRecordConverter converter, WalHandedOverFollowersLinksInterface& links);
+    WalHandedOverFollowers(const Wal& wal, std::string directory, WalRecordConverter converter, WalHandedOverFollowersLinksInterface& links,
+                           WalKeptRecordsCapacity kept = {});
+
+    /**
+     * @brief The owning thread has just written record @p seq_no, which the followers are to be sent as the @p size
+     *        bytes at @p bytes, a message of type @p pdu_id.
+     *
+     * Keeps a copy if a follower is in step with the shared reading, the record follows the last one kept, and
+     * there is room; otherwise does nothing, and the record is read from the WAL when it is sent. The bytes must
+     * be what the converter would make of the record, since a follower is sent them in place of what the
+     * converter makes.
+     *
+     * @param[in] seq_no The record's number.
+     * @param[in] pdu_id The type of message the followers are sent it as.
+     * @param[in] bytes  The message's bytes. Copied; not kept.
+     * @param[in] size   How many bytes.
+     */
+    void written(int64_t seq_no, int16_t pdu_id, const uint8_t* bytes, size_t size);
+
+    /// How many records are kept at present, waiting to be sent.
+    [[nodiscard]] size_t records_kept() const {
+        return kept_records_.has_value() ? kept_records_->size() : 0;
+    }
 
     /**
      * @brief From now on @p follower is sent each record above @p through, read from @p resume_at on.
@@ -157,8 +208,26 @@ class WalHandedOverFollowers {
     /// Sends the followers in step with the shared reading the records up to @p through_seq_no, each read once.
     void send_on_shared_reading(int64_t through_seq_no, std::vector<std::pair<ConnectionID, int64_t>>& damaged);
 
-    /// Closes the shared reading if no follower is in step with it.
+    /// Closes the shared reading if no follower is in step with it, and with it every record kept.
     void close_shared_reading_if_unused();
+
+    /// A record kept until it has been sent: its number, the type of message it is sent as, and where its bytes are
+    /// in kept_bytes_.
+    struct KeptRecord {
+        int64_t seq_no{0};
+        int16_t pdu_id{0};
+        size_t begin{0};
+        size_t size{0};
+    };
+
+    /// Sends the followers in step that lack it record @p seq_no, from the kept copy at the front of kept_records_.
+    void send_kept_record(int64_t seq_no);
+
+    /// Discards every kept record numbered at or below @p seq_no.
+    void discard_kept_records_through(int64_t seq_no);
+
+    /// Discards every kept record.
+    void discard_all_kept_records();
 
     const Wal& wal_;
     std::string directory_;
@@ -169,6 +238,15 @@ class WalHandedOverFollowers {
     std::unique_ptr<Reading> shared_reading_;
     std::vector<uint8_t> encoded_;
     std::vector<ConnectionID> connections_;
+
+    /// The records kept, oldest first; absent when no room was given.
+    std::optional<FixedCapacityRingBuffer<KeptRecord>> kept_records_;
+    /// The kept records' bytes, one after another, continuing from the start when the end is reached.
+    std::vector<uint8_t> kept_bytes_;
+    /// Where the next record's bytes go: just after the newest kept record's bytes.
+    size_t kept_bytes_next_{0};
+    /// The newest kept record's number, while any is kept.
+    int64_t kept_last_seq_no_{0};
 };
 
 } // namespaces

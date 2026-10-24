@@ -25,15 +25,36 @@ namespace {
 constexpr size_t small_segment_size = 4096;
 constexpr int16_t record_type = 7;
 constexpr int16_t sent_type = 9;
+// The type a test gives a record it passes to written(), unlike sent_type, so that a record sent from memory can be
+// told apart from one read from the WAL and converted.
+constexpr int16_t kept_type = 11;
+// The byte every record appended by append_through is filled with.
+constexpr uint8_t wal_fill = 0x5a;
 
 class RecordingLinks : public WalHandedOverFollowersLinksInterface {
   public:
-    void send_record(const ConnectionID& follower, int16_t pdu_id, int64_t seq_no, const uint8_t* /*bytes*/, size_t /*size*/) override {
+    void send_record(const ConnectionID& follower, int16_t pdu_id, int64_t seq_no, const uint8_t* bytes, size_t size) override {
         sent.emplace_back(follower.get_value(), seq_no);
         last_pdu_id = pdu_id;
+        pdu_ids.push_back(pdu_id);
+        contents.emplace_back(bytes, bytes + size);
     }
     std::vector<std::pair<int, int64_t>> sent;
     int16_t last_pdu_id{0};
+    /// For each send, in the same order as sent: the type of message, and its bytes.
+    std::vector<int16_t> pdu_ids;
+    std::vector<std::vector<uint8_t>> contents;
+
+    /// The bytes and type of the message sent to @p connection as record @p seq_no; fails the test if there was none.
+    std::pair<int16_t, std::vector<uint8_t>> message_sent(int connection, int64_t seq_no) const {
+        for (size_t i = 0; i < sent.size(); ++i) {
+            if (sent[i].first == connection && sent[i].second == seq_no) {
+                return {pdu_ids[i], contents[i]};
+            }
+        }
+        ADD_FAILURE() << "record " << seq_no << " was not sent to connection " << connection;
+        return {};
+    }
 
     std::vector<int64_t> sent_to(int connection) const {
         std::vector<int64_t> numbers;
@@ -62,7 +83,7 @@ class WalHandedOverFollowersTest : public ::testing::Test {
     }
 
     void append_through(int64_t last) {
-        const std::vector<uint8_t> payload(200, 0x5a);
+        const std::vector<uint8_t> payload(200, wal_fill);
         while (last_seq_no_ < last) {
             ++last_seq_no_;
             wal_->append(last_seq_no_, record_type, payload.data(), static_cast<int>(payload.size()), last_seq_no_, 1);
@@ -103,6 +124,27 @@ class WalHandedOverFollowersTest : public ::testing::Test {
             out.assign(entry.bytes, entry.bytes + entry.size);
             return ConvertedRecord::send(sent_type);
         };
+    }
+
+    // Appends record @p seq_no to the WAL, as append_through does, and then tells @p followers it was written, giving
+    // it bytes unlike the WAL's: @p size bytes, each equal to the record's number. The record's message can then be
+    // checked to have come from memory and not from the WAL, since the WAL holds other bytes for it.
+    void write_and_keep(WalHandedOverFollowers& followers, int64_t seq_no, size_t size = 200) {
+        append_through(seq_no);
+        const std::vector<uint8_t> bytes(size, static_cast<uint8_t>(seq_no));
+        followers.written(seq_no, kept_type, bytes.data(), bytes.size());
+    }
+
+    // Whether the message sent to @p connection as record @p seq_no was the copy kept in memory.
+    bool sent_from_memory(int connection, int64_t seq_no, size_t size = 200) const {
+        const auto [pdu_id, bytes] = links_.message_sent(connection, seq_no);
+        return pdu_id == kept_type && bytes == std::vector<uint8_t>(size, static_cast<uint8_t>(seq_no));
+    }
+
+    // Whether the message sent to @p connection as record @p seq_no was read from the WAL and converted.
+    bool sent_from_wal(int connection, int64_t seq_no) const {
+        const auto [pdu_id, bytes] = links_.message_sent(connection, seq_no);
+        return pdu_id == sent_type && bytes == std::vector<uint8_t>(200, wal_fill);
     }
 
     std::string directory_;
@@ -332,6 +374,175 @@ TEST_F(WalHandedOverFollowersTest, SendToSendsNothingToAFollowerInStepWithTheSha
     EXPECT_EQ(followers.send_to(first_, 8).records_sent, 0) << "send_to_all serves a follower in step";
     static_cast<void>(followers.send_to_all(8));
     EXPECT_EQ(links_.sent_to(1), (std::vector<int64_t>{3, 4, 5, 6, 7, 8}));
+}
+
+// ---- Records kept in memory (docs/availability/publishers_sent_from_memory.md) ----------------------------------
+
+TEST_F(WalHandedOverFollowersTest, AKeptRecordIsSentFromMemoryAndTheWalIsNotRead) {
+    append_through(10);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_, {16, 64 * 1024});
+    followers.add(first_, 10, wal_->scan_start_for(11));
+    followers.add(second_, 10, wal_->scan_start_for(11));
+    static_cast<void>(followers.send_to_all(10)); // both join the shared reading
+    converted_.clear();
+
+    for (int64_t seq_no = 11; seq_no <= 15; ++seq_no) {
+        write_and_keep(followers, seq_no);
+    }
+    EXPECT_EQ(followers.records_kept(), 5U);
+    EXPECT_TRUE(followers.send_to_all(15).empty());
+
+    EXPECT_TRUE(converted_.empty()) << "a record sent from memory is not read from the WAL, so the converter is not called";
+    for (int64_t seq_no = 11; seq_no <= 15; ++seq_no) {
+        EXPECT_TRUE(sent_from_memory(1, seq_no)) << "record " << seq_no;
+        EXPECT_TRUE(sent_from_memory(2, seq_no)) << "record " << seq_no;
+    }
+    EXPECT_EQ(links_.sent_to(1), (std::vector<int64_t>{11, 12, 13, 14, 15}));
+    EXPECT_EQ(followers.records_kept(), 0U) << "a record sent to every follower in step is no longer kept";
+}
+
+TEST_F(WalHandedOverFollowersTest, AKeptRecordIsSentOnlyOnceTheLimitPassesIt) {
+    append_through(10);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_, {16, 64 * 1024});
+    followers.add(first_, 10, wal_->scan_start_for(11));
+    static_cast<void>(followers.send_to_all(10));
+
+    for (int64_t seq_no = 11; seq_no <= 14; ++seq_no) {
+        write_and_keep(followers, seq_no);
+    }
+    static_cast<void>(followers.send_to_all(12));
+    EXPECT_EQ(links_.sent_to(1), (std::vector<int64_t>{11, 12}));
+    EXPECT_EQ(followers.records_kept(), 2U);
+    static_cast<void>(followers.send_to_all(14));
+    EXPECT_EQ(links_.sent_to(1), (std::vector<int64_t>{11, 12, 13, 14}));
+}
+
+TEST_F(WalHandedOverFollowersTest, WhenTheRoomForRecordsIsFullLaterRecordsAreReadFromTheWalInOrderAndNoneTwice) {
+    append_through(10);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_, {3, 64 * 1024});
+    followers.add(first_, 10, wal_->scan_start_for(11));
+    static_cast<void>(followers.send_to_all(10));
+    converted_.clear();
+
+    for (int64_t seq_no = 11; seq_no <= 16; ++seq_no) {
+        write_and_keep(followers, seq_no);
+    }
+    EXPECT_EQ(followers.records_kept(), 3U) << "room for three records";
+    EXPECT_TRUE(followers.send_to_all(16).empty());
+
+    EXPECT_EQ(links_.sent_to(1), (std::vector<int64_t>{11, 12, 13, 14, 15, 16}));
+    EXPECT_TRUE(sent_from_memory(1, 11) && sent_from_memory(1, 12) && sent_from_memory(1, 13));
+    EXPECT_TRUE(sent_from_wal(1, 14) && sent_from_wal(1, 15) && sent_from_wal(1, 16));
+    EXPECT_EQ(converted_, (std::vector<int64_t>{14, 15, 16})) << "only the records not kept are read from the WAL";
+
+    // With the room empty again, the next records are kept.
+    write_and_keep(followers, 17);
+    static_cast<void>(followers.send_to_all(17));
+    EXPECT_TRUE(sent_from_memory(1, 17));
+}
+
+TEST_F(WalHandedOverFollowersTest, ARecordRefusedForLackOfRoomStopsLaterRecordsBeingKeptUntilTheRoomEmpties) {
+    append_through(10);
+    // Room for two records of 200 bytes, not three.
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_, {16, 450});
+    followers.add(first_, 10, wal_->scan_start_for(11));
+    static_cast<void>(followers.send_to_all(10));
+
+    write_and_keep(followers, 11);
+    write_and_keep(followers, 12);
+    write_and_keep(followers, 13);     // no room
+    write_and_keep(followers, 14, 10); // would fit, but does not follow the last record kept
+    EXPECT_EQ(followers.records_kept(), 2U) << "the records kept must stay consecutive";
+    EXPECT_TRUE(followers.send_to_all(14).empty());
+
+    EXPECT_EQ(links_.sent_to(1), (std::vector<int64_t>{11, 12, 13, 14}));
+    EXPECT_TRUE(sent_from_memory(1, 11) && sent_from_memory(1, 12));
+    EXPECT_TRUE(sent_from_wal(1, 13) && sent_from_wal(1, 14));
+}
+
+TEST_F(WalHandedOverFollowersTest, RecordsKeptAfterTheRoomContinuesFromItsStartAreSentIntact) {
+    append_through(10);
+    // Room for 500 bytes: two records of 200 fit at 0 and 200; the third goes back to the start once the first has
+    // been sent, and a fourth then has no room, because it would reach the second's bytes.
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_, {16, 500});
+    followers.add(first_, 10, wal_->scan_start_for(11));
+    static_cast<void>(followers.send_to_all(10));
+
+    write_and_keep(followers, 11);
+    write_and_keep(followers, 12);
+    static_cast<void>(followers.send_to_all(11));
+    write_and_keep(followers, 13);
+    write_and_keep(followers, 14);
+    EXPECT_EQ(followers.records_kept(), 2U);
+    static_cast<void>(followers.send_to_all(14));
+
+    EXPECT_EQ(links_.sent_to(1), (std::vector<int64_t>{11, 12, 13, 14}));
+    EXPECT_TRUE(sent_from_memory(1, 12)) << "the second record's bytes must not have been overwritten by the third's";
+    EXPECT_TRUE(sent_from_memory(1, 13));
+    EXPECT_TRUE(sent_from_wal(1, 14));
+}
+
+TEST_F(WalHandedOverFollowersTest, AFollowerOnItsOwnCursorIsNeverSentFromMemory) {
+    append_through(10);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_, {16, 64 * 1024});
+    followers.add(first_, 10, wal_->scan_start_for(11));
+    static_cast<void>(followers.send_to_all(10));
+    // The second holds only up to 5, so it reads on its own cursor while it catches up.
+    followers.add(second_, 5, wal_->scan_start_for(6));
+
+    for (int64_t seq_no = 11; seq_no <= 13; ++seq_no) {
+        write_and_keep(followers, seq_no);
+    }
+    static_cast<void>(followers.send_to(second_, 13));
+    EXPECT_EQ(links_.sent_to(2), (std::vector<int64_t>{6, 7, 8, 9, 10, 11, 12, 13}));
+    for (int64_t seq_no = 11; seq_no <= 13; ++seq_no) {
+        EXPECT_TRUE(sent_from_wal(2, seq_no)) << "record " << seq_no;
+    }
+    static_cast<void>(followers.send_to_all(13));
+    for (int64_t seq_no = 11; seq_no <= 13; ++seq_no) {
+        EXPECT_TRUE(sent_from_memory(1, seq_no)) << "record " << seq_no;
+    }
+}
+
+TEST_F(WalHandedOverFollowersTest, NothingIsKeptWhileNoFollowerIsInStepWithTheSharedReading) {
+    append_through(10);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_, {16, 64 * 1024});
+    write_and_keep(followers, 11);
+    EXPECT_EQ(followers.records_kept(), 0U) << "no follower at all";
+
+    followers.add(first_, 11, wal_->scan_start_for(12));
+    write_and_keep(followers, 12);
+    EXPECT_EQ(followers.records_kept(), 0U) << "a follower on its own cursor only";
+}
+
+TEST_F(WalHandedOverFollowersTest, LosingEveryFollowerInStepDiscardsTheKeptRecords) {
+    append_through(10);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_, {16, 64 * 1024});
+    followers.add(first_, 10, wal_->scan_start_for(11));
+    static_cast<void>(followers.send_to_all(10));
+    write_and_keep(followers, 11);
+    write_and_keep(followers, 12);
+    ASSERT_EQ(followers.records_kept(), 2U);
+    followers.remove(first_);
+    EXPECT_EQ(followers.records_kept(), 0U);
+
+    followers.add(first_, 12, wal_->scan_start_for(13));
+    static_cast<void>(followers.send_to_all(12));
+    write_and_keep(followers, 13);
+    ASSERT_EQ(followers.records_kept(), 1U);
+    followers.remove_all();
+    EXPECT_EQ(followers.records_kept(), 0U);
+}
+
+TEST_F(WalHandedOverFollowersTest, WithoutRoomEveryRecordIsReadFromTheWal) {
+    append_through(10);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_);
+    followers.add(first_, 10, wal_->scan_start_for(11));
+    static_cast<void>(followers.send_to_all(10));
+    write_and_keep(followers, 11);
+    EXPECT_EQ(followers.records_kept(), 0U);
+    static_cast<void>(followers.send_to_all(11));
+    EXPECT_TRUE(sent_from_wal(1, 11));
 }
 
 } // namespaces

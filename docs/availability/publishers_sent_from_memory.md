@@ -186,12 +186,22 @@ This is a change to what a publisher is guaranteed, and it is decision 1 in sect
 2. **Build the store in `WalHandedOverFollowers`, with unit tests**, before the sequencer uses it. The tests
    include, each made to fail on purpose before it is trusted:
    - a record sent from the store is the bytes passed in, and is sent without the WAL being read: the test
-     alters the record in the WAL after it is written, and the publisher must still be sent the original
-     bytes;
+     writes one set of bytes to the WAL and passes the store different bytes for the same record, and the
+     publisher must be sent the store's bytes, with the converter never called;
    - when the store is full, later records are read from the WAL, in order, with none missing and none sent
      twice;
    - a publisher still on its own cursor is never sent from the store;
    - emptying the store when leadership is lost leaves nothing to be sent.
+
+   **Done, 24 October 2026.** The store is `WalHandedOverFollowers::written()` and the capacity
+   `WalKeptRecordsCapacity`, given to the constructor; with no capacity, which is the default, nothing is kept
+   and every record is read from the WAL as before. Nine unit tests in `WalHandedOverFollowersTest.cpp` cover the
+   cases above, together with a record kept until the limit passes it, the room continuing from its start
+   without overwriting a record still kept, and nothing kept while no follower is in step. Each was made to fail
+   on purpose by one of five faults put into the code, and each fault was caught: never keeping a record;
+   never sending from the store; placing a record's bytes over the oldest record's after the room continues
+   from its start; keeping a record that does not follow the last one kept; and not emptying the store when
+   the last follower in step goes. All 1,152 of the library's tests that run pass (one is skipped, as before).
 3. **Use it in the sequencer**, behind the new capacity setting. Run `ha_test.py` in full, from fresh WALs,
    with scenario 76 (publishers follow only the record) among them.
 4. **Measure before and after** with `tmp/phase5/fill_perf.sh` for the share of the sequencer's thread, and
