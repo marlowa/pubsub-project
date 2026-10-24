@@ -929,16 +929,14 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     }
 
     send_er_to_sequencer(er, sequence_number, session);
-    // interface: change it and that script miscounts, silently and elsewhere.
-    //
-    // At Info, the line costs 226 bytes per order -- 9.5 GB a day at 40 million orders. A load
-    // run raises this component's applog_level instead, which is per-component configuration
-    // and needs no code change. See perf_run.py --profile.
     // Last, and only now. The report has left, so a death from here loses nothing: the
     // record is already in the region and this says how far the region can be trusted.
     order_book_.publish(sequence_number);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: accepted NOS OrderID={} ExecID={} ClOrdID={} book_size={}", order_id,
+    // At Debug, because it is written for every order: at Info it costs 226 bytes per order, about
+    // 9.5 GB a day at 40 million orders. Nothing reads it. A test learns that an order was accepted
+    // from the OrderOutcome test event below, and a load run from the counter orders_processed_total.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: accepted NOS OrderID={} ExecID={} ClOrdID={} book_size={}", order_id,
                exec_id, view.cl_ord_id, order_book_.size());
     report_order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::Accepted, ReportIsRepeat::no, sequence_number);
 }

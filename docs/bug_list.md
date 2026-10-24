@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 190 |
-| Open | 79 (58 defects, 21 tasks) |
+| Bugs recorded | 191 |
+| Open | 80 (58 defects, 22 tasks) |
 | Closed | 111 |
-| Next id | BUG-0191 |
+| Next id | BUG-0192 |
 
 ## Open bugs by severity
 
-20 high, 48 medium, 11 low.
+20 high, 48 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -92,6 +92,7 @@
 | [BUG-0177](#bug_0177) | low | defect | The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value |
 | [BUG-0179](#bug_0179) | low | defect | The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again |
 | [BUG-0185](#bug_0185) | low | defect | Scenarios 59 and 76 stop the leader the moment inject_order has sent, which can beat the leader to reading the last order |
+| [BUG-0191](#bug_0191) | low | task | The load and profiling scripts decide what the venue did by reading Quill logs, and callgrind_run.py waits for the configured primary sequencer to lead |
 
 ---
 
@@ -3817,6 +3818,36 @@ Also: the Warning and event 211 are given in every scenario for `INJECT-TEST`, t
 be removed.
 
 **Principles.** V8: every report the matching engine produces reaches the member (G3).
+
+### BUG-0191: The load and profiling scripts decide what the venue did by reading Quill logs, and callgrind_run.py waits for the configured primary sequencer to lead {#bug_0191}
+
+| | |
+|---|---|
+| Severity | low |
+| Kind | task -- moving test tooling off Quill log wording, not a defect in the venue |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | A `callgrind_run.py` run waited its full 600 seconds and stopped before sending an order: the secondary sequencer's WAL, left by earlier runs, was ahead, so the secondary led, and the script waits for a line in the primary's Quill log saying the primary leads |
+| Impact | A run fails, or waits for its ceiling, whenever the configured primary does not lead or a message's wording changes, and nothing but the run's own output says why |
+
+**What happens.** `callgrind_run.py` decides that the venue is ready by polling Quill logs for phrases: the
+primary sequencer's and the primary arbiter's "role transition ... -> leader", and each gateway's "operational
+state". The primary is not necessarily the leader. Both `callgrind_run.py` and `perf_run.py` also read the FIX
+gateway's Quill log to count logons ("FIX session established"), the gateway's progress line (`GW-PROGRESS`), reports
+dropped because the client had disconnected, and gap fills. The matching engine's count of accepted orders is read
+from its counter, `orders_processed_total`, in both.
+
+**What is wanted.** The same as for the high availability tests in phase 6 of the
+[recovery plan](recovery_plan.md): the scripts learn what happened from test events, or from counters a component
+publishes, and not from the wording of Quill messages. Readiness is "some sequencer leads", whichever it is. A
+profiled run must not add work for each order to the processes it profiles, so per-order facts come from counters,
+not per-order test events.
+
+Both scripts now clear the WALs, the open-order regions and the lease records before they start the venue
+(`devenv.clear_state_for_a_run`), unless given `--keep-state`, so a run no longer starts on what the run before it
+left.
+
+**Principles.** None of the venue's; this is the test tooling.
 
 ## Closed
 

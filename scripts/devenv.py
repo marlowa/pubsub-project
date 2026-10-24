@@ -731,6 +731,24 @@ def clear_durable_state(env: dict, install_dir: Path, *, fresh_book: bool, fresh
                 print(f"  {path} (absent already)")
 
 
+def clear_state_for_a_run(install_dir: Path) -> None:
+    """Remove everything an earlier run left that the venue reads when it starts: the write-ahead logs,
+    the open-order regions, and the lease promise records and arbiters' statements.
+
+    For a script that starts the venue itself, such as perf_run.py and callgrind_run.py, before it
+    starts anything. A run that starts on what the run before it left is not an experiment: a follower
+    whose WAL is ahead takes the lead, or a leader cannot trade without its follower, and the result
+    depends on which run came before. Refuses, by exiting, while any process of this install is still
+    running, since a running component may have the files open or mapped.
+    """
+    running = subprocess.run(["pgrep", "-f", "--", f"{install_dir}/bin/"], capture_output=True, text=True, check=False)
+    others = [line for line in running.stdout.split() if line.strip() and int(line) != os.getpid()]
+    if others:
+        sys.exit(f"error: processes of {install_dir} are still running (pids {', '.join(others)}); stop them before clearing "
+                 "what earlier runs left")
+    clear_durable_state(load_env(_DEFAULT_ENV_FILE), install_dir, fresh_book=True, fresh_wal=True)
+
+
 def cmd_start(  # pylint: disable=too-many-arguments
     env: dict, ha_enabled: bool, delay: float, debug: bool = False,
     component: str | None = None, with_prometheus: bool = True, supervised: bool = False,

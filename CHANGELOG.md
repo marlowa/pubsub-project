@@ -77,6 +77,12 @@ describe the venue as it now is.
 - **A report the sequencer cannot route, because the member's session is connected to no gateway
   that has told it so, is counted** in `sequencer_reports_dropped_unbound`, and the first for each
   session is logged as a Warning.
+- **The matching engine logs each accepted order at Debug, not Info.** At Info the line cost 226
+  bytes per order. A test learns that an order was accepted from the `OrderOutcome` test event, and
+  `perf_run.py` and `callgrind_run.py` from the engine's counter `orders_processed_total`.
+- **`perf_run.py` and `callgrind_run.py` clear the WALs, the open-order regions and the lease
+  records before they start the venue**, unless given `--keep-state`, so that no run starts on what
+  the run before it left.
 
 ### Fixed
 
@@ -107,7 +113,7 @@ Fifty-one bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among 
 
 ### Known limitations
 
-- **79 bugs are open, 20 of them high severity**; `docs/bug_list.md` lists them.
+- **80 bugs are open, 20 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both

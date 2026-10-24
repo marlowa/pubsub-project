@@ -53,6 +53,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# How many orders the matching engine accepted is read from its own counter, orders_processed_total, as
+# perf_run.py reads it, and not from its Quill log: the line it logs for each accepted order is at Debug.
+from perf_run import component_metrics_port, read_counter  # noqa: E402  -- needs the path set above
+from perf_run import wait_for_order_completion as wait_for_engine_orders  # noqa: E402
+import devenv  # noqa: E402  -- clears what earlier runs left
+
 # ── fix8 authentication ───────────────────────────────────────────────────────
 FIX8_COMP_ID = "CLIENT"
 FIX8_PASSWORD = ""     # empty: f8test sends no Password tag
@@ -380,29 +387,6 @@ def _wait_for_log_pattern(log_path: Path, label: str, target: int,
     return False
 
 
-def wait_for_order_completion(me_log: Path, total_orders: int, timeout: float) -> bool:
-    target_str      = f"ME-ORD-{total_orders}"
-    target_pattern  = re.compile(re.escape(target_str) + r"(?!\d)")
-    any_ord_pattern = re.compile(r"ME-ORD-(\d+)")
-    highest_seen = [0]
-
-    def count_nos(chunk: str) -> int:
-        if target_pattern.search(chunk):
-            highest_seen[0] = total_orders
-            return total_orders - highest_seen[0] + 1
-        matches = any_ord_pattern.findall(chunk)
-        if matches:
-            h = max(int(m) for m in matches)
-            if h > highest_seen[0]:
-                delta = h - highest_seen[0]
-                highest_seen[0] = h
-                return delta
-        return 0
-
-    return _wait_for_log_pattern(me_log, "ME-ORD", total_orders, count_nos, timeout,
-                                 stall_is_warning=False)
-
-
 def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float, clients: int) -> bool:
     # An ER is "accounted for" once the gateway either sends it to the client or
     # drops it because that client already disconnected. Counting only GW-ER-SENT
@@ -634,7 +618,7 @@ def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients
     log("  binary_load_client completed: every order acknowledged")
 
 
-def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> None:
+def run_fix8_session(me_metrics_port: int, gw_log: Path, burst: int, clients: int) -> None:
     total_orders = clients * burst * 1000
     log(f"=== Starting {clients} fix8 client(s), {burst} T burst(s) each "
         f"({total_orders} orders total) ===")
@@ -673,12 +657,12 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int) -> No
         # bail-out) returns as soon as the pipeline drains, so this only bounds a hang.
         timeout = ORDER_TIMEOUT * max(1, burst * clients)
 
-        nos_ok = wait_for_order_completion(me_log, total_orders, timeout)
+        nos_ok = wait_for_engine_orders(me_metrics_port, total_orders, timeout)
         if not nos_ok:
-            log(f"  ME-ORD live count did not reach {total_orders:,} — "
+            log(f"  the matching engine's orders_processed_total did not reach {total_orders:,} — "
                 f"pipeline still draining; proceeding to ER phase (authoritative)")
         else:
-            log(f"  All {total_orders:,} NOS confirmed in matching engine log")
+            log(f"  All {total_orders:,} NOS confirmed by the matching engine's orders_processed_total")
 
         er_ok = wait_for_er_completion(gw_log, total_orders, timeout, clients)
         if not er_ok:
@@ -713,6 +697,9 @@ def main() -> None:
                         help="Multiply HA/session timeouts by N for the run so callgrind's "
                              "~20-50x slowdown does not trip failover or FIX logon timeouts. "
                              "Restored afterwards. Default: 50. Use 1 to leave configs untouched.")
+    parser.add_argument("--keep-state", action="store_true",
+                        help="start on the write-ahead logs, open-order regions and lease records earlier runs left, instead "
+                             "of clearing them first. Only for a run that means to measure a restart on that state")
     args = parser.parse_args()
     if args.burst < 1:
         parser.error("--burst must be >= 1")
@@ -734,7 +721,10 @@ def main() -> None:
     log_dir    = prefix / "log"
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
     callgrind_dir = prefix / "callgrind" / ts
-    me_log     = log_dir / "matching_engine_primary.log"
+    me_metrics_port = component_metrics_port(prefix, "matching_engine", "matching_engine_primary")
+    # Read once the orders have drained and before the venue is shut down: a stopped engine has no
+    # metrics endpoint to read.
+    me_accepted = None
     gw_log     = log_dir / "fix_order_gateway_a.log"
     seq_log    = log_dir / "sequencer_primary.log"
     arb_log    = log_dir / "arbiter_primary.log"
@@ -758,6 +748,11 @@ def main() -> None:
 
     preflight(prefix)
     log_dir.mkdir(parents=True, exist_ok=True)
+    # Every run starts from nothing an earlier run left; see devenv.clear_state_for_a_run.
+    if args.keep_state:
+        log("  --keep-state: starting on the WALs, open-order regions and lease records earlier runs left")
+    else:
+        devenv.clear_state_for_a_run(prefix)
     callgrind_dir.mkdir(parents=True, exist_ok=True)
 
     if args.capture and not gw_config.is_file():
@@ -883,10 +878,11 @@ def main() -> None:
         if args.gateway == "binary":
             run_binary_load_session(bin_dir, callgrind_dir, args.burst, args.clients, args.rate)
         else:
-            run_fix8_session(me_log, gw_log, args.burst, args.clients)
+            run_fix8_session(me_metrics_port, gw_log, args.burst, args.clients)
 
         log(f"Waiting {POST_ORDER_WAIT:.0f}s for pipeline to drain ...")
         time.sleep(POST_ORDER_WAIT)
+        me_accepted = read_counter(me_metrics_port, "orders_processed_total")
 
         full_shutdown()
 
@@ -911,10 +907,6 @@ def main() -> None:
         except FileNotFoundError:
             return 0
 
-    # Count only the ME order-acceptance line ("accepted NOS OrderID=ME-ORD-N").
-    # A bare "ME-ORD" substring also matches the cancel-ER lines ("sent cancel ER
-    # OrderID=ME-ORD-N"), which double-counts one entry per cancelled order.
-    me_final      = count_in_log(me_log,  "accepted NOS")
     # From the cumulative GW-PROGRESS totals: the per-order lines are at Debug and absent
     # from a normal run. See the contract note beside _PROGRESS_MARKER above.
     def latest_progress(path: Path) -> tuple[int, int]:
@@ -943,7 +935,11 @@ def main() -> None:
         return f"SHORT by {-diff:,}"
 
     log("=== Post-shutdown ground-truth counts ===")
-    log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  {count_status(me_final, total_orders)}")
+    if me_accepted is None:
+        log(f"  ME-ORD        : the matching engine's orders_processed_total could not be read on port {me_metrics_port}")
+    else:
+        me_final = int(me_accepted)
+        log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  {count_status(me_final, total_orders)}")
     log(f"  GW-NOS-RECV   : {gw_nos_recv:>10,} / {total_orders:,}  {count_status(gw_nos_recv, total_orders)}")
     log(f"  GW-ER-SENT    : {gw_er_sent:>10,} / {total_orders:,}  {count_status(gw_er_sent, total_orders)}")
     if gw_er_dropped > 0:

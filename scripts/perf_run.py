@@ -44,6 +44,7 @@ from pathlib import Path
 # A sibling script rather than a package, so it is imported by path as the others here are.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import measurement_machine  # noqa: E402  -- needs the path set above
+import devenv  # noqa: E402  -- clears what earlier runs left
 
 # ── fix8 authentication ───────────────────────────────────────────────────────
 # fix8's f8test never sends tag 554 (Password), so it authenticates with an
@@ -499,10 +500,9 @@ def _wait_for_log_pattern(log_path: Path, label: str, target: int,
 def wait_for_order_completion(metrics_port: int, total_orders: int, timeout: float) -> bool:
     """Phase 1: wait for the matching engine to accept every order.
 
-    Reads orders_processed_total from the ME's own metrics endpoint rather than counting
-    "accepted NOS OrderID=ME-ORD-" lines in its log. That line is now Debug -- it cost
-    226 bytes per order -- and a counter is exact where a regex over a multi-gigabyte
-    file is merely usually right.
+    Reads orders_processed_total from the ME's own metrics endpoint. The engine's Quill line
+    for each accepted order is at Debug, because it costs 226 bytes per order, and a counter is
+    exact where a regex over a multi-gigabyte file is merely usually right.
 
     A stall is reported as such rather than silently waiting out the timeout, because a
     pipeline that has stopped and a pipeline that is slow need different responses.
@@ -865,17 +865,9 @@ def start_resource_monitor(named_procs: list, output_dir: Path):
 def set_applog_level(config: Path, level: str) -> str | None:
     """Rewrite a component's applog_level, returning the previous value.
 
-    A load run does not want the matching engine's per-order Info line: it is 226 bytes
-    an order, which is 1.95 GB over an 83-minute profile and would be 9.5 GB a day at a
-    real venue's 40 million orders.
-
-    The level is changed HERE rather than in the source because the line is a test
-    contract. ha_test.py reads it to assert HA properties -- "no ME-ORD gap or reset" is
-    a statement about ME-ORD-N, the ME's own order_id_counter_, which advances during WAL
-    reconciliation where orders_processed_total deliberately does not. The two diverge
-    after a failover, so the counter cannot replace the log there. ha_test's scenarios
-    are a few thousand orders, where the volume does not matter; a load run is millions,
-    where it does. Per-run configuration separates the two without weakening either.
+    A --profile run lowers the matching engine to LOAD_RUN_APPLOG_LEVEL, so that the profile
+    contains none of the engine's Info logging. The engine's line for each accepted order is at
+    Debug, so it is not written at Info either.
 
     Returns None when the file has no applog_level to change, so the caller can tell
     "restored nothing" from "restored to info".
@@ -1127,9 +1119,9 @@ def run_trading_day(bin_dir: Path, output_dir: Path, profile_path: Path, session
 # Every component serves its own /metrics on a port in its deployed config, so this
 # needs no Prometheus -- just an HTTP GET at the component.
 #
-# This replaces counting "accepted NOS OrderID=ME-ORD-" lines in the matching engine
-# log. That line is now Debug, because one line per order is 226 bytes and a real
-# venue's 30-40 million orders a day would make 7-10 GB of it. orders_processed_total
+# The matching engine's Quill line for each accepted order ("accepted NOS OrderID=ME-ORD-")
+# is at Debug, because one line per order is 226 bytes and a real venue's 30-40 million
+# orders a day would make 7-10 GB of it. orders_processed_total
 # is incremented at exactly the same point in the code -- after the book emplace,
 # deliberately excluding the replay path, the follower path and duplicate rejections --
 # so this is the same fact, counted rather than parsed.
@@ -1366,6 +1358,9 @@ def main() -> None:
     parser.add_argument("--allow-untuned-machine", action="store_true",
                         help="run even though this machine's processor settings make latency figures meaningless. "
                              "For a run wanted for something other than latency")
+    parser.add_argument("--keep-state", action="store_true",
+                        help="start on the write-ahead logs, open-order regions and lease records earlier runs left, instead "
+                             "of clearing them first. Only for a run that means to measure a restart on that state")
 
     args = parser.parse_args()
     if args.burst < 1:
@@ -1431,6 +1426,11 @@ def main() -> None:
     gw_config = prefix / "etc" / "fix_order_gateway" / f"fix_order_gateway_{args.gateway_instance}.toml"
 
     preflight(prefix)
+    # Every run starts from nothing an earlier run left; see devenv.clear_state_for_a_run.
+    if args.keep_state:
+        log("  --keep-state: starting on the WALs, open-order regions and lease records earlier runs left")
+    else:
+        devenv.clear_state_for_a_run(prefix)
 
     # A performance figure measured against a venue built before the current edits is a figure
     # about the older code, and the report would not say so. This is the run where that matters
@@ -1594,8 +1594,8 @@ def main() -> None:
         time.sleep(POST_ORDER_WAIT)
 
         # Read the ME's accepted-order counter BEFORE shutting anything down. The counter
-        # lives in the process, so unlike the log it does not survive SIGTERM -- and the
-        # log line it replaces is now Debug. Taken after the drain wait so it counts
+        # lives in the process, so unlike a Quill log it does not survive SIGTERM. Taken after
+        # the drain wait so it counts
         # everything the pipeline had in flight.
         me_accepted_total = read_counter(
             component_metrics_port(prefix, "matching_engine", "matching_engine_primary"),
