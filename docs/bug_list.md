@@ -5,7 +5,7 @@
 | Bugs recorded | 186 |
 | Open | 77 (56 defects, 21 tasks) |
 | Closed | 109 |
-| Next id | BUG-0187 |
+| Next id | BUG-0189 |
 
 ## Open bugs by severity
 
@@ -30,6 +30,8 @@
 | [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
 | [BUG-0176](#bug_0176) | high | defect | A matching engine catching up from far back sends a report for every order it applies, and the flood keeps the leading sequencer's thread so busy that it loses its lease without noticing |
 | [BUG-0182](#bug_0182) | high | defect | After a sequencer restarts and then takes the lead, members are not told of the orders the matching engine accepts |
+| [BUG-0187](#bug_0187) | high | defect | The follower matching engine's copy of the book loses every change made while the link between the two engines is down, and nothing notices |
+| [BUG-0188](#bug_0188) | high | defect | The book is copied only from the engine configured as primary, so once the secondary leads, the primary's copy is never brought up to date |
 | [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
@@ -3823,6 +3825,61 @@ the WAL, until the leader has written its orders before stopping it; its comment
 time before the leader may act on them, and only then stop it.
 
 **Principles.** None; the tests.
+
+### BUG-0187: The follower matching engine's copy of the book loses every change made while the link between the two engines is down, and nothing notices {#bug_0187}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | Reading the code while explaining to Andrew why `open_orders_on_promotion = "keep"` cannot be deployed. Not yet reproduced |
+| Impact | With `"keep"`, a promoted engine can lack an order a member was told is resting, and hold an order a member was told is cancelled, and nobody is told either. With `"cancel"`, which every environment deploys, the second is cancelled anyway, but the member whose order is missing is never told it has gone, because the promoted engine does not know the order existed |
+
+**What happens.** The leading engine sends the follower a `BookUpdate` for each order it adds to or removes from
+its book. When the connection between the two engines is down, `MatchingEngineThread::send_book_update` returns
+without sending, and the update is lost. When the connection comes back, nothing sends the book again or the
+updates that were missed: the engine announces its role and nothing more. The follower records the number of the
+WAL record behind each update it applies (`last_replicated_seq_no_`), and on promotion catches up from the WAL
+only after that number. So once an update after the break has arrived, the follower takes its copy to be
+complete up to that update, and the changes made during the break are never applied.
+
+**Why the follower cannot notice.** The WAL's records are numbered with no gaps, so a follower of the WAL that
+misses a record knows. The numbers on `BookUpdate` messages have gaps in ordinary running, because a command that
+does not change the book, such as a refused order, produces no update. A gap left by lost updates looks the same
+as a run of refused orders.
+
+**An example.** The link drops for two seconds. Meanwhile member A's order, record 5,000, is accepted and member
+B's cancel, record 5,010, is carried out, and neither update reaches the follower. The link returns, and the
+update for record 5,100 arrives. An hour later the leader dies. The promoted engine catches up from record 5,101.
+Its book lacks A's order and still holds B's.
+
+**What is wanted.** Phase 8 of the [recovery plan](recovery_plan.md) removes the copy: both engines apply every
+committed record from the WAL themselves, so a break in either engine's connection is noticed and made up by
+number. A high availability scenario that blocks the link between the engines, places and cancels orders during
+the break, kills the leading engine, and compares the promoted book with what members were told, is part of that
+phase's finish condition. It is expected to fail now with `"keep"`.
+
+**Principles.** V2, V4.
+
+### BUG-0188: The book is copied only from the engine configured as primary, so once the secondary leads, the primary's copy is never brought up to date {#bug_0188}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | Reading the code while explaining phase 8 of the recovery plan to Andrew. Not yet reproduced; whether any scenario fails over twice in this order has not been checked |
+| Impact | After the primary engine is lost and the secondary takes over, a restarted primary follows with the book it had when it went down. If the secondary is then lost, the primary catches up on every record since, reporting each order it applies to its member again ([BUG-0176](#bug_0176) measured what such a catch-up does to the leading sequencer), and then, under `"cancel"`, cancels every order |
+
+**What happens.** `MatchingEngineThread::send_book_update` sends nothing unless `is_primary_` is true, and
+`is_primary_` says which instance the configuration names as primary, not which one leads. So the copy flows
+from the configured primary to the configured secondary and never the other way.
+
+**What is wanted.** As for [BUG-0187](#bug_0187): phase 8 of the [recovery plan](recovery_plan.md) removes the
+copy, and each engine builds its book from the WAL whichever one leads.
+
+**Principles.** V2.
 
 ## Closed
 

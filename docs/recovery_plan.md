@@ -38,8 +38,8 @@
 > what a member receives, or the WAL files, and with every `TEST CONTRACT` message reworded on purpose, except the
 > three operator messages decision 8 keeps, the scenarios still pass
 > ([test_events.md](availability/test_events.md), section 4.17). Andrew reviewed it on 20 October 2026. In the
-> review of phases 7 and 8 the same day, Andrew agreed that phase 7 goes ahead as written; phase 8 is to be
-> discussed before anything about it is designed.
+> review of phases 7 and 8 the same day, Andrew agreed that phase 7 goes ahead as written. He agreed phase 8 on
+> 24 October 2026, once it was written out in full.
 
 ## In one page
 
@@ -313,7 +313,7 @@ proposal, which Andrew supplied.
 
 **Reviewed.** Phases 7 and 8 change how the engine pair works and are a substantial design project, so
 Andrew reviewed whether they still serve the guarantees the venue is to give before either is designed. On
-20 October 2026 he agreed that phase 7 goes ahead as written, and that phase 8 is to be discussed first. The
+20 October 2026 he agreed that phase 7 goes ahead as written, and on 24 October 2026 he agreed phase 8. The
 question of a limit on automatic recovery, recorded in [BUG-0176](bug_list.md#bug_0176), is designed here with
 the measurement of the absence rule.
 
@@ -336,19 +336,57 @@ availability scenarios pass.
 
 ### Phase 8. Run the matching engine pair in lockstep
 
-**To be discussed.** Andrew did not agree this phase as written at the review on 20 October 2026; it is
-discussed with him before anything about it is designed.
+**Agreed** by Andrew on 24 October 2026.
 
-**For:** losing the leading engine costs a short pause and nothing else, without copying the book from
-one engine to the other.
+**For:** losing the leading matching engine costs a short pause and nothing else. The members' resting
+orders are still on the book afterwards.
 
-**Involves:** both engines apply every committed command, and only the leading engine's reports are sent
-on (way B in [ha_library_boundary.md](availability/ha_library_boundary.md)). The copying of the book
-(`BookUpdate`), the reconciliation on promotion and the cancelling of inherited orders on promotion are
-removed.
+**What happens now.** The venue runs two matching engines; one leads and the other follows. The sequencer
+sends every committed order and cancel to both, but the follower throws them away. Instead, the leading
+engine sends the follower a `BookUpdate` message for each order it adds to or removes from its book, and the
+follower's book is a copy built from those messages. When the leading engine is lost, the follower is
+promoted: it catches up from the WAL after the last record its copy reflects, and then, because every
+environment is deployed with `open_orders_on_promotion = "cancel"`, it cancels every order it inherited.
+Every member is sent a cancel report for every resting order.
 
-**Finished when:** the follower engine's book is built from the WAL alone, book copying is removed, and
-the high availability scenarios that promote an engine pass.
+**Why the copy cannot be trusted with `"keep"`.** The copy can lose changes without anyone knowing. While the
+link between the two engines is down, the updates are not sent, and nothing sends them when the link returns
+([BUG-0187](bug_list.md#bug_0187)). The follower cannot see the loss, because the numbers on the updates
+have gaps in ordinary running: a refused order changes nothing and produces no update. So a promoted engine
+can lack an order a member was told is resting, and hold an order a member was told is cancelled. The copy
+also flows only from the engine configured as primary, so after one change of leader it is not kept up to
+date at all ([BUG-0188](bug_list.md#bug_0188)).
+
+**What changes.** There is no copy. Both engines apply every committed order and cancel from the WAL
+themselves, in the order the WAL gives, whichever one leads; only the leading engine's execution reports are
+sent on to the members (way B in [ha_library_boundary.md](availability/ha_library_boundary.md), agreed on
+12 October 2026). The two books agree at every moment for two reasons:
+
+1. **Both engines are given the same input, all of it.** The WAL's records are numbered with no gaps, so an
+   engine that misses one notices and asks for it by number, as any follower of the WAL does.
+2. **Both apply it by the same rules.** That is phase 7: the decisions an engine now takes alone become
+   commands in the WAL, and identifiers come from the position in the WAL, so the same records always give
+   the same book and the same reports. This is why phase 8 follows phase 7.
+
+On promotion, the follower's book is already the leader's, apart from the few records still on their way to
+it, which it applies as any engine catching up does. Keeping the resting orders is then simply correct.
+
+**Removed:** the `BookUpdate` message, the connection between the two engines that carries it, and the code
+that sends and applies it; the catch-up on promotion from the end of a copy; and the
+`open_orders_on_promotion` setting, with the cancelling of inherited orders on promotion.
+
+**Finished when:**
+
+- the follower engine's book is built only by applying the WAL, and no `BookUpdate` code is left;
+- the high availability scenarios that promote an engine pass, and check that the orders resting before the
+  promotion are still resting after it;
+- a scenario that blocks the link between the engines, places and cancels orders during the break, kills
+  the leading engine, and compares the promoted book with what the members were told, passes. It is written
+  before the phase starts, and fails today with `"keep"`.
+
+**Still to settle when the phase is designed:** whether the follower compares its reports, or a summary of
+its book, with the leader's while the venue runs, so that a difference is noticed at once rather than at a
+promotion; and what happens when one is found. Under principle V11 the leader carries on trading either way.
 
 ### Phase 9. One check against sequencing a command twice, and the gateways as clients
 
