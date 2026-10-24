@@ -170,6 +170,10 @@ Options:
     --failover-timeout S  Max seconds per failover step (default: 30)
     --recovery-timeout S  Max seconds for recovery orders (default: 30)
 
+When a scenario fails, its Quill logs and the test clients' output are copied to
+tmp/ha_test_failures/<time>-scenario-<number>-<short name> under the project before the next
+scenario deletes them, and the run's output says where.
+
 Startup order (the same dependency order devenv.py uses), with the dev environment's ports.
 These orient a reader; they are not the authority.  The ports come from the environment file
 and are expanded into installed/etc, and preflight_ports() reads that deployed set rather than
@@ -200,6 +204,7 @@ import os
 import re
 import secrets
 import selectors
+import shutil
 import signal
 import socket
 import struct
@@ -6031,6 +6036,26 @@ def do_restart_step(
 
 # ── per-scenario runner ───────────────────────────────────────────────────────
 
+def keep_logs_of_failed_scenario(scenario: Scenario, args) -> Path | None:
+    """
+    Copy the Quill logs and the test clients' output of a scenario that has just failed to a directory of their own,
+    tmp/ha_test_failures/<time>-scenario-<number>-<short name> under the project, and return it; None if there was
+    nothing to copy.
+
+    The next scenario deletes these files before it starts, so without the copy the evidence of a failure in a run of
+    every scenario is gone by the time the run ends. Called after the scenario's processes have been stopped, so the
+    logs are complete.
+    """
+    project_root = Path(__file__).resolve().parent.parent
+    raw_prefix = args.prefix
+    log_dir = Path(raw_prefix if Path(raw_prefix).is_absolute() else project_root / raw_prefix) / "log"
+    if not log_dir.is_dir():
+        return None
+    destination = project_root / "tmp" / "ha_test_failures" / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-scenario-{scenario.number}-{scenario.short_name}"
+    shutil.copytree(log_dir, destination)
+    return destination
+
+
 def run_scenario(scenario: Scenario, args) -> bool:
     """
     Run one scenario end-to-end.  Returns True on PASS, False on FAIL.
@@ -10336,6 +10361,10 @@ def main() -> None:
     results: list[tuple[int, str, bool]] = []
     for scenario in scenarios_to_run:
         passed = run_scenario(scenario, args)
+        if not passed:
+            kept = keep_logs_of_failed_scenario(scenario, args)
+            if kept is not None:
+                log(f"  the Quill logs and client output of scenario {scenario.number} are kept in {kept}")
         if scenario.expected_failure:
             if passed:
                 log("")
