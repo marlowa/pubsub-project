@@ -3417,7 +3417,11 @@ after, with almost the same number of samples (4,495 and 4,596):
 The checking of checksums halved, as reading once should. The share as a whole fell by about a third, not by
 half, because each record is still converted into a message and sent to each publisher separately. What is left
 is about a sixth of the thread's time: half of it the one check of each record's checksum, half the sending.
-The other two ways listed above would remove most of the checksum's half; neither has been decided on.
+The other two ways listed above would remove most of the checksum's half.
+
+**The third way is chosen**: keep each record's bytes in memory until it is committed, and send the publishers
+those bytes, reading nothing back. The checksum stays on every read of the WAL. The design, waiting for review,
+is [publishers_sent_from_memory.md](availability/publishers_sent_from_memory.md).
 
 The order's round trip did not change. Measured as for step 4 of phase 5, with the secondary matching engine
 leading, the medians of four runs were 121.3, 120.5, 120.3 and 120.6 microseconds with the build of step 4,
