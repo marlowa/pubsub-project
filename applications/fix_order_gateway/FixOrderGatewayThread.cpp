@@ -2122,7 +2122,8 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
     const std::string_view side_str = msg.get(Tag::Side);
     const std::string_view order_qty = msg.get(Tag::OrderQty);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+    // At Debug, because it is written for every cancel, as the gateway's line for each new order is.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} "
                "OrigClOrdID={} Symbol={}",
                session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id, symbol);
@@ -2240,7 +2241,11 @@ void FixOrderGatewayThread::send_fix_to_session(FixSession& session, const FixMe
         if (c == '\x01')
             c = '|';
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} FIX OUT ({} bytes): {}", session.conn_id.get_value(),
+    // At Debug, because it is written for every session-level message sent, heartbeats included, and
+    // heartbeats are logged at Debug. The events these messages carry are logged where the gateway
+    // decides on them: the session being established at Info, a ResendRequest the gateway sends at
+    // Warning, and the Logons, Logouts and ResendRequests a member sends at Info.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "FixOrderGatewayThread: connection {} FIX OUT ({} bytes): {}", session.conn_id.get_value(),
                wire.size(), readable);
     send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
 }

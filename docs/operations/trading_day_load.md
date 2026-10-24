@@ -820,11 +820,12 @@ are fixed.
 
 ### Two honesty notes on this comparison
 
-**Watchdog firings are suppressed on the primary matching engine, and only there.** The
-"callback not finished yet" line is INFO, and `perf_run.py` raises `applog_level` to `warning`
-for the duration of a profile run — but it does that to `me_config` alone, which is the
-**primary**. So a zero firing count on `matching_engine_primary` is suppression rather than
-absence, and the p99 spikes on the chart are the evidence that stalls still occurred.
+**In these runs, watchdog firings are suppressed on the primary matching engine, and only there.**
+The "callback not finished yet" line is INFO, and for these runs `perf_run.py` set the primary
+matching engine's `applog_level` to `warning` for the duration of a profile run. So in them a zero
+firing count on `matching_engine_primary` is suppression rather than absence, and the p99 spikes on
+the chart are the evidence that stalls still occurred. `perf_run.py` leaves every component's level
+as deployed, so in a run made with it now the primary's count is comparable with the others.
 
 **Every other component's watchdog output survives, and those counts are comparable between
 runs.** `matching_engine_secondary`, `sequencer_primary`, `sequencer_secondary` and the gateways

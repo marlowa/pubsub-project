@@ -80,6 +80,9 @@ describe the venue as it now is.
 - **The matching engine logs each accepted order at Debug, not Info.** At Info the line cost 226
   bytes per order. A test learns that an order was accepted from the `OrderOutcome` test event, and
   `perf_run.py` and `callgrind_run.py` from the engine's counter `orders_processed_total`.
+  The lines the matching engine and the FIX gateway write for each cancel are at Debug too, and so
+  is the FIX gateway's copy of each session-level message it sends, which included every
+  heartbeat. `perf_run.py` no longer lowers the matching engine's level for a `--profile` run.
 - **`perf_run.py` and `callgrind_run.py` clear the WALs, the open-order regions and the lease
   records before they start the venue**, unless given `--keep-state`, so that no run starts on what
   the run before it left.

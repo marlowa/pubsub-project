@@ -95,9 +95,6 @@ MAX_ORDER_TIMEOUT = 120.0  # hard cap on order/ER completion wait (2 minutes)
 # How long the ME's accepted-order counter may stand still before it is called a
 # stall. Long enough not to fire on a rehash pause -- one measured over a second.
 ORDER_STALL_SECONDS = 10.0
-# What a --profile run lowers the matching engine to. Warning, not error: a
-# genuine problem during a load run must still reach the log.
-LOAD_RUN_APPLOG_LEVEL = "warning"
 
 # The gateway logs one of these per ER it discards because the target client
 # session already disconnected. Such ERs are "accounted for" but never delivered.
@@ -860,31 +857,6 @@ def start_resource_monitor(named_procs: list, output_dir: Path):
 
     return stop
 
-# ── Log level for load runs ───────────────────────────────────────────────────
-
-def set_applog_level(config: Path, level: str) -> str | None:
-    """Rewrite a component's applog_level, returning the previous value.
-
-    A --profile run lowers the matching engine to LOAD_RUN_APPLOG_LEVEL, so that the profile
-    contains none of the engine's Info logging. The engine's line for each accepted order is at
-    Debug, so it is not written at Info either.
-
-    Returns None when the file has no applog_level to change, so the caller can tell
-    "restored nothing" from "restored to info".
-    """
-    if not config.is_file():
-        return None
-    text = config.read_text()
-    match = re.search(r'^(\s*applog_level\s*=\s*)"([^"]*)"', text, re.M)
-    if match is None:
-        return None
-    previous = match.group(2)
-    if previous == level:
-        return previous
-    config.write_text(text[:match.start()] + f'{match.group(1)}"{level}"' + text[match.end():])
-    return previous
-
-
 # ── Trading-day profile ───────────────────────────────────────────────────────
 #
 # A run shaped like a trading day rather than a flat rate: quiet periods, steady
@@ -1494,18 +1466,8 @@ def main() -> None:
         ensure_fix8_credentials(creds_file, fix8_comp_ids(args.clients), FIX8_PASSWORD, args.logon_mode)
 
     # -- launch applications in dependency order (mirrors dev.toml startup_order)
-    # A profile run raises the matching engine's log level before anything starts: its
-    # per-order Info line dominates the log and is worth 1.95 GB over one profile. Restored
-    # in the shutdown path so a config edited for one run does not silently persist.
     stop_resource_monitor = None
     profile_manifest: list = []
-    me_config = etc_dir / "matching_engine" / "matching_engine_primary.toml"
-    previous_me_level = None
-    if args.profile:
-        previous_me_level = set_applog_level(me_config, LOAD_RUN_APPLOG_LEVEL)
-        if previous_me_level is not None:
-            log(f"  matching engine applog_level {previous_me_level} -> "
-                f"{LOAD_RUN_APPLOG_LEVEL} for this load run (restored afterwards)")
 
     # Each tuple: (name, binary, config, optional_workdir).
     # auth services must start first; gateway connects to them on startup.
@@ -1544,9 +1506,6 @@ def main() -> None:
 
     def full_shutdown() -> None:
         shutdown_processes(app_procs)
-        if previous_me_level is not None:
-            set_applog_level(me_config, previous_me_level)
-            log(f"  matching engine applog_level restored to {previous_me_level}")
         stop_perf_procs(perf_procs)
         if app_procs:
             generate_reports([n for n, _ in app_procs], perf_dir)
@@ -1624,13 +1583,6 @@ def main() -> None:
         if stop_resource_monitor is not None:
             stop_resource_monitor()
 
-        # In `finally` because the failure path above does not call full_shutdown(), and a
-        # run that died must not leave the matching engine's log level altered for the next
-        # one -- a silently quiet component is exactly the kind of thing nobody notices
-        # until a test that needed the log fails for no visible reason.
-        # set_applog_level is idempotent, so running twice on the clean path is harmless.
-        if previous_me_level is not None:
-            set_applog_level(me_config, previous_me_level)
         if args.capture:
             set_fix_capture_enabled(gw_config, False)
             log("FIX capture disabled in fix_order_gateway config")

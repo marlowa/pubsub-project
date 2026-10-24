@@ -1015,7 +1015,8 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     std::array<char, 32> exec_id_buf{};
     const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: OrderCancelRequest seq={} ClOrdID={} OrigClOrdID={} Symbol={} Side={}",
+    // At Debug, because it is written for every cancel, as the line for each accepted order is.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: OrderCancelRequest seq={} ClOrdID={} OrigClOrdID={} Symbol={} Side={}",
                sequence_number, view.cl_ord_id, view.orig_cl_ord_id, view.symbol, static_cast<char>(view.side));
 
     const OrderEntry* found = order_book_.find(orig_key);
@@ -1102,7 +1103,9 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     // Last, and only now, for the same reason as on the accept path.
     order_book_.publish(sequence_number);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+    // At Debug, because it is written for every cancel. A test learns that a cancel was done from the
+    // OrderOutcome test event below.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "MatchingEngineThread: sent cancel ER OrderID={} ExecID={} ClOrdID={} OrigClOrdID={} book_size={}", order_id, exec_id, view.cl_ord_id,
                view.orig_cl_ord_id, order_book_.size());
     report_order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::Cancelled, ReportIsRepeat::no, sequence_number, view.orig_cl_ord_id);
