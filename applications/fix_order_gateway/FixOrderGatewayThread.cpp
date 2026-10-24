@@ -310,7 +310,7 @@ void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionI
         sequencer_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: primary sequencer connection {} ({}) established", id.get_value(),
                    id.service_name());
-        announce_sessions_on_new_link(id);
+        announce_sessions_when_due(id, announce_to_primary_timer_id_);
         if (sequencer_primary_connected_before_) {
             send_unanswered_commands_on(id, "primary");
         }
@@ -318,7 +318,7 @@ void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionI
     } else if (id.service_name() == "sequencer_secondary") {
         sequencer_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: secondary sequencer connection {} established", id.get_value());
-        announce_sessions_on_new_link(id);
+        announce_sessions_when_due(id, announce_to_secondary_timer_id_);
         if (sequencer_secondary_connected_before_) {
             send_unanswered_commands_on(id, "secondary");
         }
@@ -983,6 +983,14 @@ FixSession* FixOrderGatewayThread::find_session_by_replay_request(int64_t reques
 }
 
 void FixOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
+    // The delayed announcements a test asked for, sent if the link is still up.
+    if (timer_id == announce_to_primary_timer_id_ || timer_id == announce_to_secondary_timer_id_) {
+        const pubsub_itc_fw::ConnectionID link = timer_id == announce_to_primary_timer_id_ ? sequencer_primary_conn_id_ : sequencer_secondary_conn_id_;
+        if (link.is_valid()) {
+            announce_sessions_on_new_link(link);
+        }
+        return;
+    }
     if (timer_id == cancel_drain_timer_id_) {
         drain_pending_cancels();
         return;
@@ -2879,6 +2887,7 @@ void FixOrderGatewayThread::GatewayTestEventLinks::send_test_event(const pubsub_
 }
 
 void FixOrderGatewayThread::announce_sessions_on_new_link(pubsub_itc_fw::ConnectionID sequencer_conn_id) {
+    int32_t announced = 0;
     for (auto& [conn_id, session] : sessions_) {
         if (session.client_comp_id.empty()) {
             continue; // never got as far as an identity, so there is nothing to bind
@@ -2902,7 +2911,29 @@ void FixOrderGatewayThread::announce_sessions_on_new_link(pubsub_itc_fw::Connect
                        "FixOrderGatewayThread: sequencer connection {} came up -- announced again that comp_id='{}' is still connected here, connection {}",
                        sequencer_conn_id.get_value(), session.client_comp_id, session.conn_id.get_value());
         }
+        if (!session.client_comp_id.empty()) {
+            ++announced;
+        }
     }
+    // The end of the announcements, sent even when there were none, so that the sequencer knows it has been told of
+    // every session this instance holds.
+    pubsub_itc_fw_app::SessionsAnnounced done{};
+    done.gateway_protocol_id = gateway_ids::fix_order_gateway;
+    done.gateway_instance_id = config_.instance_id;
+    done.sessions_announced = announced;
+    send_pdu(sequencer_conn_id, pubsub_itc_fw_app::SessionsAnnounced::message_pdu_id, 0, done);
+}
+
+void FixOrderGatewayThread::announce_sessions_when_due(pubsub_itc_fw::ConnectionID sequencer_conn_id, pubsub_itc_fw::TimerID& delay_timer_id) {
+    // A test can delay the announcements, to make a sequencer lead before it has been told of the sessions.
+    if (config_.test_events.delay_session_announcements_ms > 0) {
+        delay_timer_id = start_one_off_timer(std::chrono::milliseconds{config_.test_events.delay_session_announcements_ms});
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: sequencer connection {} came up -- announcing the sessions in {} ms, as the test asked",
+                   sequencer_conn_id.get_value(), config_.test_events.delay_session_announcements_ms);
+        return;
+    }
+    announce_sessions_on_new_link(sequencer_conn_id);
 }
 
 int FixOrderGatewayThread::inbound_seq_num_of(const ParsedFixMessage& msg) {

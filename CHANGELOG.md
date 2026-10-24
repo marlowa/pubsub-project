@@ -89,7 +89,7 @@ describe the venue as it now is.
 
 ### Fixed
 
-Fifty-one bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among them:
+Fifty-two bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among them:
 
 - **Orders sent while the sequencers changed leader were lost without a reply** (BUG-0103), and an
   order in the new leader's WAL that the matching engine never received was never applied
@@ -109,14 +109,16 @@ Fifty-one bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among 
   delivered it later (BUG-0088).
 - **After a sequencer restarted and then took the lead, members were not told of the orders the
   matching engine accepted** (BUG-0182). When a link to a sequencer comes up, each gateway now
-  announces every session it holds. A report for an order taken before the restart can still be
-  dropped in the moment after a quick restart (BUG-0190).
+  announces every session it holds.
+- **A sequencer that leads before every gateway has announced its sessions holds the reports for
+  sessions it does not know of**, and sends them when the session is announced (BUG-0190). Each
+  gateway ends its announcements with the new message `SessionsAnnounced`.
 - **The ThreadSanitizer build did not compile**, and it checked the mutex variant of the queue
   rather than the lock-free one the venue runs (BUG-0150, BUG-0160).
 
 ### Known limitations
 
-- **80 bugs are open, 20 of them high severity**; `docs/bug_list.md` lists them.
+- **81 bugs are open, 21 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both

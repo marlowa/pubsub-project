@@ -12,6 +12,7 @@
 #include <array>
 #include <chrono>
 #include <deque>
+#include <vector>
 
 #include <LeasePairNumbers.hpp>
 #include <OrderPathMetrics.hpp>
@@ -23,6 +24,7 @@
 #include <pubsub_itc_fw/FileSystemUtils.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -269,6 +271,10 @@ void SequencerThread::on_initial_event() {
         "Execution reports dropped because the member's session was connected to no gateway. A member that is away has its reports dropped "
         "and sent when it logs on again, so this is not always 0; a report dropped for a member that is connected means the member was "
         "never told");
+    held_reports_dropped_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "sequencer_held_reports_dropped_full",
+        "Execution reports held until the gateways announced their sessions that were dropped because the room for them was full. "
+        "Expected to be 0");
 }
 
 void SequencerThread::on_app_ready_event() {
@@ -285,6 +291,7 @@ void SequencerThread::on_app_ready_event() {
     }
     for (const auto& endpoint : config_.gateway_endpoints) {
         connect_to_service(endpoint.service_name());
+        gateway_announcements_[gateway_key(endpoint.protocol, endpoint.instance)] = GatewayAnnouncement{};
     }
     connect_to_service("matching_engine");
     if (config_.ha_enabled) {
@@ -410,6 +417,16 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
         return;
     }
     forget_command_connection(id);
+    // A gateway whose link was lost may hold sessions this instance has not been told of by the time it comes up again.
+    for (auto& [gateway, announcement] : gateway_announcements_) {
+        if (announcement.announced && announcement.link == id) {
+            announcement.announced = false;
+            announcement.link = pubsub_itc_fw::ConnectionID{};
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: gateway id {} lost the link it announced its sessions on -- its sessions are not known until it announces again",
+                       gateway);
+        }
+    }
     const auto lost_gateway = std::find_if(gateway_conn_ids_.begin(), gateway_conn_ids_.end(), [&id](const auto& entry) { return entry.second == id; });
     if (lost_gateway != gateway_conn_ids_.end()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway id {} connection {} lost: {}", lost_gateway->first,
@@ -545,6 +562,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     // they are neither.
     if (message.pdu_id() == pubsub_itc_fw_app::SessionBound::message_pdu_id) {
         handle_session_bound(conn_id, message);
+        release_pdu_payload(message);
+        return;
+    }
+    if (message.pdu_id() == pubsub_itc_fw_app::SessionsAnnounced::message_pdu_id) {
+        handle_sessions_announced(conn_id, message);
         release_pdu_payload(message);
         return;
     }
@@ -1001,10 +1023,34 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     const bool gate_on_own_record = (er_seq_no == 0) || possible_repeat;
     const int64_t gate_seq_no = gate_on_own_record ? er_wal_seq : er_seq_no;
 
-    // With no follower keeping up, a report is forwarded at once, as it always has been; otherwise once
-    // the record it depends on is committed.
-    if (!replicated_wal_->waits_for_follower()) {
+    // The report as it would wait, for the follower or for its session to be announced.
+    auto as_pending = [&]() {
+        PendingEr pending{};
+        pending.pdu_id = inbound.pdu_id;
+        pending.seq_no = er_seq_no;
+        pending.payload.assign(inbound.payload.data, inbound.payload.data + inbound.payload.size);
+        if (view.has_cl_ord_id) {
+            pending.cl_ord_id.assign(view.cl_ord_id);
+        }
+        pending.identity = routing_identity;
+        pending.has_gateway_ingress_ns = has_routing_ingress_ns;
+        pending.gateway_ingress_ns = routing_ingress_ns;
+        pending.poss_resend = possible_repeat;
+        pending.is_new_order_ack = is_new_order_ack;
+        pending.erase_routing_entry = erase_routing_entry;
+        pending.position = position;
+        pending.log_seq_no = er_wal_seq;
+        return pending;
+    };
+    // Sent now, unless its session is not known: then it is held until the session is announced, or dropped.
+    auto send_now = [&]() {
         if (!has_routing_conn && !routing_identity.empty()) {
+            if (hold_report_if_sessions_unknown(as_pending())) {
+                if (erase_routing_entry) {
+                    seq_no_to_session_.erase(er_seq_no);
+                }
+                return;
+            }
             note_report_dropped_unbound(routing_identity, er_seq_no);
         }
         send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
@@ -1012,38 +1058,17 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
         if (erase_routing_entry) {
             seq_no_to_session_.erase(er_seq_no);
         }
+    };
+
+    // With no follower keeping up, a report is forwarded at once, as it always has been; otherwise once
+    // the record it depends on is committed.
+    if (!replicated_wal_->waits_for_follower() || gate_seq_no <= replicated_wal_->committed_through()) {
+        send_now();
     } else {
-        if (gate_seq_no <= replicated_wal_->committed_through()) {
-            // The record this report depends on is committed.
-            if (!has_routing_conn && !routing_identity.empty()) {
-                note_report_dropped_unbound(routing_identity, er_seq_no);
-            }
-            send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
-            note_report_forwarded(routing_identity);
-            if (erase_routing_entry) {
-                seq_no_to_session_.erase(er_seq_no);
-            }
-        } else {
-            // WalAck not yet received; buffer the inner (unwrapped) ER until it arrives.
-            PendingEr pending{};
-            pending.pdu_id = inbound.pdu_id;
-            pending.seq_no = er_seq_no;
-            pending.payload.assign(inbound.payload.data, inbound.payload.data + inbound.payload.size);
-            if (view.has_cl_ord_id) {
-                pending.cl_ord_id.assign(view.cl_ord_id);
-            }
-            pending.identity = routing_identity;
-            pending.has_gateway_ingress_ns = has_routing_ingress_ns;
-            pending.gateway_ingress_ns = routing_ingress_ns;
-            pending.poss_resend = possible_repeat;
-            pending.is_new_order_ack = is_new_order_ack;
-            pending.erase_routing_entry = erase_routing_entry;
-            pending.position = position;
-            pending.log_seq_no = er_wal_seq;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck seq={} from follower", er_seq_no,
-                       gate_seq_no);
-            pending_er_.emplace(gate_seq_no, std::move(pending));
-        }
+        // WalAck not yet received; buffer the inner (unwrapped) ER until it arrives.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck seq={} from follower", er_seq_no,
+                   gate_seq_no);
+        pending_er_.emplace(gate_seq_no, as_pending());
     }
 
     // Handled, whether forwarded, waiting, or dropped: reports_forwarded_through() accounts for the
@@ -1369,6 +1394,11 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
     // A publisher handed over is sent nothing more from here either; it asks again when told of the new leader.
     if (stops_leading && handed_over_publishers_.has_value()) {
         handed_over_publishers_->remove_all();
+    }
+    // Reports held for sessions not yet announced are the new leader's to send: it forwards what it kept while following.
+    if (stops_leading) {
+        held_reports_.discard_all();
+        reports_held_since_sessions_known_ = false;
     }
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
@@ -2048,6 +2078,14 @@ std::optional<EngineReportPosition> SequencerThread::reports_forwarded_through()
             oldest_waiting = pending.position;
         }
     }
+    // A report held until its session is announced has not been forwarded either. Normally nothing is held, so this
+    // reads nothing.
+    held_reports_.for_each_held([&oldest_waiting](const fix_common::SessionIdentity&, const uint8_t* bytes, size_t size) {
+        const PendingEr held = decode_held_report(bytes, size);
+        if (held.position.has_value() && (!oldest_waiting.has_value() || oldest_waiting->is_after(*held.position))) {
+            oldest_waiting = held.position;
+        }
+    });
     return oldest_waiting.has_value() ? oldest_waiting->just_before() : latest_report_seen_;
 }
 
@@ -2465,6 +2503,7 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
                        existing->second.conn_id);
         }
         session_destinations_[identity] = destination;
+        send_held_reports(identity);
         report(pubsub_itc_fw_app::SessionAnnouncedAgain{identity.comp_id_view(), identity.protocol, destination.instance, destination.conn_id,
                                                         role_ == pubsub_itc_fw_app::Role::leader});
         return;
@@ -2495,6 +2534,23 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
     }
 
     session_destinations_[identity] = destination;
+
+    // Reports held for this session until it was announced. A FIX member that logs on asks, once its numbering is
+    // settled, for every report produced since the last it was delivered (UndeliveredReportsRequest), and those are
+    // sent from the WAL; the held ones are among them, so sending them here as well would give the member each one
+    // twice. The binary gateway asks for no such thing, so a binary member is sent them here.
+    if (identity.protocol == gateway_ids::fix_order_gateway) {
+        const size_t discarded = held_reports_.release(identity, [](const uint8_t*, size_t) {});
+        if (discarded > 0) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: session comp_id='{}' protocol={} logged on -- {} report(s) held for it are left to the reports it asks for once "
+                       "established",
+                       identity.comp_id_view(), identity.protocol, discarded);
+            report(pubsub_itc_fw_app::HeldReportsReleased{identity.comp_id_view(), identity.protocol, 0, static_cast<int64_t>(discarded)});
+        }
+    } else {
+        send_held_reports(identity);
+    }
 
     // Unless the member asked to start again, in which case there is nothing to hand back and
     // keeping it would be worse than useless.
@@ -2799,9 +2855,193 @@ void SequencerThread::note_report_forwarded(const fix_common::SessionIdentity& i
     ++session_sequence_state_[identity].ers_since_report;
 }
 
+namespace {
+
+// The fixed part of a held report, written before its payload and its ClOrdID.
+struct HeldReportHeader {
+    int64_t seq_no{0};
+    int64_t log_seq_no{0};
+    int64_t gateway_ingress_ns{0};
+    int64_t position_number{0};
+    int32_t position_epoch{0};
+    uint32_t payload_size{0};
+    uint32_t cl_ord_id_size{0};
+    int16_t pdu_id{0};
+    uint8_t has_position{0};
+    uint8_t has_gateway_ingress_ns{0};
+    uint8_t is_new_order_ack{0};
+    uint8_t poss_resend{0};
+};
+
+} // un-named namespace
+
+SequencerThread::PendingEr SequencerThread::decode_held_report(const uint8_t* bytes, size_t size) {
+    HeldReportHeader header{};
+    if (size < sizeof(header)) {
+        throw pubsub_itc_fw::PreconditionAssertion("SequencerThread: a held report is shorter than its header", __FILE__, __LINE__);
+    }
+    std::memcpy(&header, bytes, sizeof(header));
+    if (sizeof(header) + header.payload_size + header.cl_ord_id_size != size) {
+        throw pubsub_itc_fw::PreconditionAssertion("SequencerThread: a held report's sizes do not add up", __FILE__, __LINE__);
+    }
+    PendingEr pending{};
+    pending.pdu_id = header.pdu_id;
+    pending.seq_no = header.seq_no;
+    pending.log_seq_no = header.log_seq_no;
+    pending.has_gateway_ingress_ns = header.has_gateway_ingress_ns != 0;
+    pending.gateway_ingress_ns = header.gateway_ingress_ns;
+    pending.is_new_order_ack = header.is_new_order_ack != 0;
+    pending.poss_resend = header.poss_resend != 0;
+    if (header.has_position != 0) {
+        pending.position = EngineReportPosition{header.position_epoch, header.position_number};
+    }
+    const uint8_t* payload = bytes + sizeof(header);
+    pending.payload.assign(payload, payload + header.payload_size);
+    pending.cl_ord_id.assign(reinterpret_cast<const char*>(payload + header.payload_size), header.cl_ord_id_size);
+    // The routing entry was dealt with when the report was held.
+    pending.erase_routing_entry = false;
+    return pending;
+}
+
+int32_t SequencerThread::gateways_not_announced() const {
+    int32_t not_announced = 0;
+    for (const auto& [gateway, announcement] : gateway_announcements_) {
+        if (!announcement.announced) {
+            ++not_announced;
+        }
+    }
+    return not_announced;
+}
+
+bool SequencerThread::hold_report_if_sessions_unknown(const PendingEr& pending) {
+    if (role_ != pubsub_itc_fw_app::Role::leader || config_.test_events.expects_no_session_for(pending.identity.comp_id_view())) {
+        return false;
+    }
+    const int32_t not_announced = gateways_not_announced();
+    if (not_announced == 0) {
+        return false;
+    }
+    HeldReportHeader header{};
+    header.seq_no = pending.seq_no;
+    header.log_seq_no = pending.log_seq_no;
+    header.gateway_ingress_ns = pending.gateway_ingress_ns;
+    header.has_gateway_ingress_ns = pending.has_gateway_ingress_ns ? 1 : 0;
+    header.has_position = pending.position.has_value() ? 1 : 0;
+    header.position_epoch = pending.position.has_value() ? pending.position->epoch : 0;
+    header.position_number = pending.position.has_value() ? pending.position->number : 0;
+    header.payload_size = static_cast<uint32_t>(pending.payload.size());
+    header.cl_ord_id_size = static_cast<uint32_t>(pending.cl_ord_id.size());
+    header.pdu_id = pending.pdu_id;
+    header.is_new_order_ack = pending.is_new_order_ack ? 1 : 0;
+    header.poss_resend = pending.poss_resend ? 1 : 0;
+    held_report_encoding_.resize(sizeof(header) + pending.payload.size() + pending.cl_ord_id.size());
+    std::memcpy(held_report_encoding_.data(), &header, sizeof(header));
+    std::memcpy(held_report_encoding_.data() + sizeof(header), pending.payload.data(), pending.payload.size());
+    std::memcpy(held_report_encoding_.data() + sizeof(header) + pending.payload.size(), pending.cl_ord_id.data(), pending.cl_ord_id.size());
+    held_reports_.hold(pending.identity, held_report_encoding_.data(), held_report_encoding_.size());
+
+    if (!reports_held_since_sessions_known_) {
+        reports_held_since_sessions_known_ = true;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: ER seq_no={} for session comp_id='{}' protocol={} held -- {} gateway instance(s) have not yet announced their "
+                   "sessions, so it may be connected after all. Held reports are sent when their session is announced, and dropped once every "
+                   "gateway instance has announced",
+                   pending.seq_no, pending.identity.comp_id_view(), pending.identity.protocol, not_announced);
+        report(pubsub_itc_fw_app::ReportsHeld{pending.identity.comp_id_view(), pending.identity.protocol, not_announced});
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq_no={} for session comp_id='{}' protocol={} held", pending.seq_no,
+                   pending.identity.comp_id_view(), pending.identity.protocol);
+    }
+    if (held_reports_.dropped_for_room() != held_reports_dropped_reported_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: the room for reports held until their sessions are announced is full, and {} held report(s) have been "
+                   "dropped to make room; their members are not told of them",
+                   held_reports_.dropped_for_room() - held_reports_dropped_reported_);
+        held_reports_dropped_reported_ = held_reports_.dropped_for_room();
+        held_reports_dropped_gauge_.set(static_cast<double>(held_reports_dropped_reported_));
+    }
+    return true;
+}
+
+void SequencerThread::send_held_reports(const fix_common::SessionIdentity& identity) {
+    if (held_reports_.count() == 0) {
+        return;
+    }
+    // Decoded into a list first: forward_pending_er must not be called while the store is being walked.
+    std::vector<PendingEr> to_send;
+    held_reports_.release(identity, [&to_send](const uint8_t* bytes, size_t size) { to_send.push_back(decode_held_report(bytes, size)); });
+    if (to_send.empty()) {
+        return;
+    }
+    for (PendingEr& pending : to_send) {
+        pending.identity = identity;
+        forward_pending_er(pending);
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: session comp_id='{}' protocol={} announced -- sent it {} report(s) held until it was", identity.comp_id_view(),
+               identity.protocol, to_send.size());
+    report(pubsub_itc_fw_app::HeldReportsReleased{identity.comp_id_view(), identity.protocol, static_cast<int64_t>(to_send.size()), 0});
+}
+
+void SequencerThread::drop_held_reports_for_sessions_connected_nowhere() {
+    reports_held_since_sessions_known_ = false;
+    if (held_reports_.count() == 0) {
+        return;
+    }
+    std::vector<std::pair<fix_common::SessionIdentity, int64_t>> dropped;
+    held_reports_.take_all([&dropped](const fix_common::SessionIdentity& identity, const uint8_t* bytes, size_t size) {
+        dropped.emplace_back(identity, decode_held_report(bytes, size).seq_no);
+    });
+    for (const auto& [identity, seq_no] : dropped) {
+        note_report_dropped_unbound(identity, seq_no);
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: every gateway instance has announced its sessions -- {} held report(s) were for sessions connected nowhere, and are "
+               "dropped",
+               dropped.size());
+    report(pubsub_itc_fw_app::HeldReportsReleased{std::string_view{}, 0, 0, static_cast<int64_t>(dropped.size())});
+}
+
+void SequencerThread::handle_sessions_announced(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::SessionsAnnouncedView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode SessionsAnnounced -- dropping");
+        return;
+    }
+    const auto found = gateway_announcements_.find(gateway_key(view.gateway_protocol_id, view.gateway_instance_id));
+    if (found == gateway_announcements_.end()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: SessionsAnnounced from gateway protocol={} instance={}, which is not in this instance's configuration -- ignored",
+                   view.gateway_protocol_id, view.gateway_instance_id);
+        return;
+    }
+    found->second.announced = true;
+    found->second.link = conn_id;
+    const int32_t not_announced = gateways_not_announced();
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: gateway protocol={} instance={} has announced its {} session(s) on connection {}; {} configured gateway instance(s) "
+               "have not",
+               view.gateway_protocol_id, view.gateway_instance_id, view.sessions_announced, conn_id.get_value(), not_announced);
+    if (not_announced == 0) {
+        drop_held_reports_for_sessions_connected_nowhere();
+    }
+}
+
 void SequencerThread::note_report_dropped_unbound(const fix_common::SessionIdentity& identity, int64_t er_seq_no) {
     ++reports_dropped_unbound_;
     reports_dropped_unbound_gauge_.set(static_cast<double>(reports_dropped_unbound_));
+    // A test sends commands under such a comp id straight to this instance, with no gateway holding a session for it.
+    if (config_.test_events.expects_no_session_for(identity.comp_id_view())) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "SequencerThread: ER seq_no={} for comp_id='{}' protocol={} dropped -- the test expects no session for it", er_seq_no,
+                   identity.comp_id_view(), identity.protocol);
+        return;
+    }
     // A member that is away is told of these reports when it logs on again, so a dropped report is not
     // always a fault. A member that is connected, and whose gateway has not told this instance so, is
     // never told of them. The Warning names the session once, on its first report dropped since it was
@@ -3078,6 +3318,12 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
     // pending.payload is alive for this call; the envelope's BytesView borrows it.
     const fix_common::SessionDestination* destination = pending.identity.empty() ? nullptr : session_destination(pending.identity);
     if (destination == nullptr && !pending.identity.empty()) {
+        if (hold_report_if_sessions_unknown(pending)) {
+            if (pending.erase_routing_entry) {
+                seq_no_to_session_.erase(pending.seq_no);
+            }
+            return;
+        }
         note_report_dropped_unbound(pending.identity, pending.seq_no);
     }
 

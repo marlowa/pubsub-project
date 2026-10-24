@@ -488,7 +488,11 @@ members' sessions: a gateway told the sequencer that a session established befor
 whether the sequencer was leading when told (`SessionAnnouncedAgain`); and the first report dropped for a session since
 it was last connected, because it is connected to no gateway that has told the sequencer so
 (`ReportDroppedSessionNotConnected`). Scenarios 14, 27 and 36 wait for the first from each sequencer they restart, and
-log how long before taking the lead it was told ([BUG-0182](../bug_list.md#bug_0182)). The listener decodes the
+log how long before taking the lead it was told ([BUG-0182](../bug_list.md#bug_0182)). Two more, at 212 and 213, concern
+reports held until the sessions are announced: the first report held for a session the sequencer does not know of,
+with how many gateway instances have not announced (`ReportsHeld`); and held reports sent when their session is
+announced, or dropped once every instance has announced (`HeldReportsReleased`). Scenario 77 waits for both
+([BUG-0190](../bug_list.md#bug_0190)). The listener decodes the
 sequencer's messages as it does the matching engine's, and `expect_message` in `ha_test.py` waits for any message by
 name, with the field values it must have.
 

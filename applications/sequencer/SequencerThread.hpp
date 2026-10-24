@@ -43,6 +43,7 @@
 #include "LogTailIndex.hpp"
 #include "LoggedCommandIdentifiers.hpp"
 #include "LoggedCommandIdentifiersBuilder.hpp"
+#include "ReportsHeldForUnknownSessions.hpp"
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
@@ -403,6 +404,41 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // record's sequence number and ordered by it, so that an acknowledgement releases every report
     // it covers from the front. More than one report may wait on one record.
     std::multimap<int64_t, PendingEr> pending_er_;
+
+    // Reports held while this instance leads and some gateway instance has not yet announced its sessions, for
+    // sessions it does not know of; docs/availability/reports_held_until_sessions_are_announced.md. The room is
+    // allocated once. Holding lasts from taking the lead until the gateways have announced, normally under a second.
+    static constexpr size_t held_report_capacity_bytes = 16U * 1024U * 1024U;
+    static constexpr size_t held_report_capacity_reports = 32768;
+    ReportsHeldForUnknownSessions held_reports_{held_report_capacity_bytes, held_report_capacity_reports};
+    // Whether a report has been held since the sessions were last known, so that ReportsHeld is sent once.
+    bool reports_held_since_sessions_known_{false};
+    // How many held reports had been dropped to make room when that was last logged.
+    int64_t held_reports_dropped_reported_{0};
+    pubsub_itc_fw::GaugeHandle held_reports_dropped_gauge_;
+    // A PendingEr written into bytes to be held, kept so that holding reuses its storage.
+    std::vector<uint8_t> held_report_encoding_;
+
+    // For each configured gateway instance, whether it has announced its sessions on its present link to this
+    // instance (SessionsAnnounced), and that link, which is how its loss is recognised.
+    struct GatewayAnnouncement {
+        bool announced{false};
+        pubsub_itc_fw::ConnectionID link{};
+    };
+    std::unordered_map<GatewayKey, GatewayAnnouncement> gateway_announcements_;
+
+    // How many configured gateway instances have not announced their sessions on their present link.
+    [[nodiscard]] int32_t gateways_not_announced() const;
+    // Holds @p pending if this instance leads, some gateway instance has not announced, and its session is not one a
+    // test expects to have none. Returns whether it was held.
+    bool hold_report_if_sessions_unknown(const PendingEr& pending);
+    // Sends every report held for @p identity, oldest first, to where it is now connected.
+    void send_held_reports(const fix_common::SessionIdentity& identity);
+    // Every gateway instance has announced: every report still held is for a session connected nowhere, and is dropped.
+    void drop_held_reports_for_sessions_connected_nowhere();
+    void handle_sessions_announced(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    // A held report read back from the bytes hold_report_if_sessions_unknown wrote.
+    static PendingEr decode_held_report(const uint8_t* bytes, size_t size);
 
     // Warn when the log has grown past this without anything having been reclaimed. Not a
     // limit: nothing is deleted on reaching it. It exists because the venue currently cannot

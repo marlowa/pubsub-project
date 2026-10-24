@@ -40,6 +40,29 @@ struct TestEventsConfiguration {
     /// per-order events stay confined to the scenarios that need them.
     std::vector<std::string> report_orders_of;
 
+    /// The comp ids whose execution reports are expected to reach no member's session, from the optional
+    /// `comp_ids_without_session` key; empty when it is absent. Read by the sequencer: a report for one of these is
+    /// counted when it is dropped, but logged at Debug, with no test event, because a test sends commands under such a
+    /// comp id straight to the sequencer, with no gateway holding a session for it. Only a component started by a test
+    /// has a [test_events] section, so a deployed venue cannot be told to stay quiet about a member.
+    std::vector<std::string> comp_ids_without_session;
+
+    /// How long a gateway waits, after one of its links to a sequencer comes up, before it announces the sessions it
+    /// holds, in milliseconds, from the optional `delay_session_announcements_ms` key; 0, no wait, when it is absent.
+    /// Read by the gateways. It lets a test make a sequencer lead before it has been told of the sessions; see
+    /// docs/availability/reports_held_until_sessions_are_announced.md.
+    int32_t delay_session_announcements_ms{0};
+
+    /// Whether reports for @p comp_id are expected to reach no member's session.
+    [[nodiscard]] bool expects_no_session_for(std::string_view comp_id) const {
+        for (const auto& listed : comp_ids_without_session) {
+            if (listed == comp_id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// Whether the outcome of orders from @p comp_id is to be reported.
     [[nodiscard]] bool reports_orders_of(std::string_view comp_id) const {
         for (const auto& listed : report_orders_of) {
@@ -64,7 +87,8 @@ struct TestEventsConfiguration {
  *
  * The section is optional as a whole, and absent means no test events. Once present, host, port and component are
  * required: a half-filled section is a mistake in the test, and guessing the missing part would hide it.
- * `report_orders_of` is optional, and only an application that reports the outcome of orders reads it.
+ * `report_orders_of` is optional, and only an application that reports the outcome of orders reads it. So are
+ * `comp_ids_without_session`, read by the sequencer, and `delay_session_announcements_ms`, read by the gateways.
  */
 class TestEventsConfigurationLoader {
   public:
@@ -92,6 +116,16 @@ class TestEventsConfigurationLoader {
         }
         if (toml.has_key("test_events.report_orders_of")) {
             toml.get_required_except("test_events.report_orders_of", configuration.report_orders_of);
+        }
+        if (toml.has_key("test_events.comp_ids_without_session")) {
+            toml.get_required_except("test_events.comp_ids_without_session", configuration.comp_ids_without_session);
+        }
+        if (toml.has_key("test_events.delay_session_announcements_ms")) {
+            toml.get_required_except("test_events.delay_session_announcements_ms", configuration.delay_session_announcements_ms);
+            if (configuration.delay_session_announcements_ms < 0) {
+                throw ConfigurationException(
+                    fmt::format("test_events.delay_session_announcements_ms must not be negative, got {}", configuration.delay_session_announcements_ms));
+            }
         }
         return configuration;
     }

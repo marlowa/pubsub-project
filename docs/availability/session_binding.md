@@ -63,9 +63,9 @@ So building the first does not solve the second.
 
 ## The messages
 
-Eight PDUs, defined in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl`. The binary
-gateway sends only `SessionBound` and `SessionUnbound`; the others serve the FIX gateway's numbering
-and resend.
+Nine PDUs, defined in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl`. The binary
+gateway sends only `SessionBound`, `SessionUnbound` and `SessionsAnnounced`; the others serve the FIX
+gateway's numbering and resend.
 
 | Id | Message | Direction | What it says |
 |---|---|---|---|
@@ -77,6 +77,7 @@ and resend.
 | 124 | `SessionReplayRecord` | sequencer → gateway | one report from that replay |
 | 125 | `SessionReplayComplete` | sequencer → gateway | that is all of them |
 | 128 | `UndeliveredReportsRequest` | gateway → sequencer | the session is established again; send me the reports produced for it while it had no connection |
+| 129 | `SessionsAnnounced` | gateway → sequencer | I have now told you of every session I hold, on this link |
 
 ### The ordinary life of a session
 
@@ -172,11 +173,23 @@ link for every session it holds:
 - **A FIX session still waiting for its numbering** is announced as at its logon, without
   `still_connected`, so that the sequencer answers it with `SessionBoundAck`.
 
+After the last of them, and even when it holds no session, the gateway sends `SessionsAnnounced`,
+which says it has now told the sequencer of every session it holds.
+
 It goes down the one link that came up, not to both sequencers, so that a sequencer whose link did
 not break is not sent the announcement a second time.
 
-A report the sequencer still cannot route, because the session is connected to no gateway that has
-told it so, is dropped, as below, and counted in the metric `sequencer_reports_dropped_unbound`. The
+**Until every configured gateway instance has sent `SessionsAnnounced`, a leading sequencer holds a
+report for a session it does not know of**, because the session may be connected after all, and
+sends it when the session is announced. A sequencer that restarts quickly can take the lead before
+every gateway's link to it is up, and without this it would drop those reports. The design, and
+what happens to a held report when its session is bound by a logon instead, is
+[reports_held_until_sessions_are_announced.md](reports_held_until_sessions_are_announced.md)
+([BUG-0190](../bug_list.md#bug_0190)).
+
+Once every gateway instance has announced, a report the sequencer still cannot route, because the
+session is connected to no gateway that has told it so, is dropped, as below, and counted in the
+metric `sequencer_reports_dropped_unbound`. The
 first report dropped for a session since it was last connected is logged as a Warning naming the
 session, and the rest at Debug. A member that is away has its reports dropped in the ordinary way
 and is sent them when it logs on again, so the count is not always 0; a Warning for a member that is

@@ -366,6 +366,27 @@ message SessionBound (id=120, version=1)
 end
 
 # ------------------------------------------------------------
+#  129 -- SessionsAnnounced
+#  Sent by a gateway down a link to a sequencer that has just come
+#  up, straight after the SessionBound it sends for each session it
+#  holds, and sent even when it holds none.
+#
+#  It tells the sequencer that this gateway instance has now told it
+#  of every session it holds. A sequencer keeps where each session is
+#  connected only in memory, so one that has restarted knows of none
+#  until the gateways tell it. Until every configured gateway instance
+#  has sent this, a leading sequencer holds a report for a session it
+#  does not know of rather than dropping it, because the session may
+#  be connected after all. See
+#  docs/availability/reports_held_until_sessions_are_announced.md.
+# ------------------------------------------------------------
+message SessionsAnnounced (id=129, version=1)
+    i16    gateway_protocol_id    # which order-entry protocol: see GatewayIds.hpp
+    i16    gateway_instance_id    # which instance of that protocol
+    i32    sessions_announced     # how many sessions it announced
+end
+
+# ------------------------------------------------------------
 #  SeqNumRange -- an inclusive run of outbound sequence numbers.
 #
 #  Nested only; it is never a PDU in its own right, hence id=0.

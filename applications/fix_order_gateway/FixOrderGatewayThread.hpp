@@ -577,6 +577,12 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // failover and the wrong one for a retry, so a link that already took the announcement
     // must not be sent it twice.
     void announce_sessions_on_new_link(pubsub_itc_fw::ConnectionID sequencer_conn_id);
+    // Announces the sessions down a sequencer link that has just come up: now, or, when a test asks for a delay
+    // ([test_events] delay_session_announcements_ms), when @p delay_timer_id fires.
+    void announce_sessions_when_due(pubsub_itc_fw::ConnectionID sequencer_conn_id, pubsub_itc_fw::TimerID& delay_timer_id);
+    // The timers for announcements a test asked to be delayed, one for each sequencer link.
+    pubsub_itc_fw::TimerID announce_to_primary_timer_id_{};
+    pubsub_itc_fw::TimerID announce_to_secondary_timer_id_{};
 
     // The venue's reply to a binding: what it remembers of this session's sequence numbers,
     // so the member's numbering continues across a reconnect instead of restarting at 1.

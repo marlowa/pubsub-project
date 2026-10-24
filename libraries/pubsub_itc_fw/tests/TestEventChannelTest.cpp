@@ -265,6 +265,31 @@ TEST(TestEventsConfigurationTest, AListThatIsNotOfStringsIsRefused) {
     EXPECT_THROW(loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"m\"\nreport_orders_of = \"INJECT-TEST\"\n"), ConfigurationException);
 }
 
+TEST(TestEventsConfigurationTest, WithoutTheirKeysNoCompIdIsExpectedToHaveNoSessionAndAnnouncementsAreNotDelayed) {
+    const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"sequencer_primary\"\n");
+    EXPECT_TRUE(configuration.comp_ids_without_session.empty());
+    EXPECT_FALSE(configuration.expects_no_session_for("INJECT-TEST"));
+    EXPECT_EQ(configuration.delay_session_announcements_ms, 0);
+}
+
+TEST(TestEventsConfigurationTest, OnlyTheListedCompIdsAreExpectedToHaveNoSession) {
+    const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"sequencer_primary\"\n"
+                                      "comp_ids_without_session = [\"INJECT-TEST\"]\n");
+    EXPECT_TRUE(configuration.expects_no_session_for("INJECT-TEST"));
+    EXPECT_FALSE(configuration.expects_no_session_for("CLIENT"));
+    EXPECT_FALSE(configuration.expects_no_session_for(""));
+}
+
+TEST(TestEventsConfigurationTest, TheDelayBeforeAnnouncingSessionsIsRead) {
+    const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"fix_order_gateway_a\"\n"
+                                      "delay_session_announcements_ms = 5000\n");
+    EXPECT_EQ(configuration.delay_session_announcements_ms, 5000);
+}
+
+TEST(TestEventsConfigurationTest, ANegativeDelayBeforeAnnouncingSessionsIsRefused) {
+    EXPECT_THROW(loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"g\"\ndelay_session_announcements_ms = -1\n"), ConfigurationException);
+}
+
 TEST(TestEventsConfigurationTest, AnEmptyComponentIsRefused) {
     EXPECT_THROW(loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"\"\n"), ConfigurationException);
 }

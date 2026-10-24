@@ -660,6 +660,8 @@ def has_led(component: str, timeout: float) -> bool:
 # The comp ids whose orders the matching engine reports the outcome of in every scenario: inject_order's, whose orders
 # reach no member. A scenario that checks orders no member can judge adds its member's comp id (outcome_comp_ids).
 _REPORT_ORDERS_OF = ("INJECT-TEST",)
+# The comp ids whose reports a sequencer is told to expect to reach no session: inject_order's, which no gateway holds.
+_COMP_IDS_WITHOUT_SESSION = ("INJECT-TEST",)
 
 
 def order_outcomes(engine: str, since: int, cl_ord_id: str, outcome: str | None = None, during_catch_up: bool | None = None) -> int:
@@ -995,6 +997,15 @@ class Scenario(NamedTuple):
     # must be removed. A gap recorded as a passing test is the failure this file exists to
     # avoid, so it is never recorded that way.
     expected_failure: str = ""
+    # How long every gateway waits, after one of its links to a sequencer comes up, before it announces the sessions it
+    # holds ([test_events] delay_session_announcements_ms); 0 for no wait. Lets a scenario make a restarted sequencer
+    # lead before it has been told of the member's session. See
+    # docs/availability/reports_held_until_sessions_are_announced.md.
+    delay_session_announcements_ms: int = 0
+    # When True, the restarted primary sequencer must hold the cancels the promoted matching engine sends for the
+    # member's session, which it has not yet been told of, and send them when the gateway announces it; and the member
+    # must receive a cancel for every order the engine cancelled. See run_scenario's "held reports" block.
+    assert_held_reports_reach_member: bool = False
     # When True, the primary sequencer is started with libblock_sends_to_ports.so preloaded, so
     # that the test can stop everything it sends to its peer from arriving, by creating a flag
     # file. Until the file exists the library passes every send through. Used by the
@@ -4000,6 +4011,65 @@ _SCENARIOS: list[Scenario] = [
         assert_publishers_follow_only_the_record=True,
         steps=[],
     ),
+
+    # 77 -- a restarted sequencer that leads before it is told of the member's session holds the member's reports.
+    #
+    # BUG-0190. A sequencer keeps where each session is connected only in memory, and a restarted one learns it from
+    # the gateways when their links to it come up. One that takes the lead before that would drop every report for the
+    # member's session. Here the gateways are asked to wait 40 seconds before announcing their sessions on a link that
+    # comes up, so the restarted primary leads, and the promoted matching engine cancels the book, inside that wait.
+    # The primary must hold each cancel and send it when the session is announced, and the member must receive a
+    # cancel for every order the engine cancelled. See docs/availability/reports_held_until_sessions_are_announced.md.
+    #
+    # The 40 seconds must cover the restarted primary coming up, the secondary sequencer and the leading engine being
+    # killed, the primary taking the lead and the other engine being promoted and cancelling.
+    Scenario(
+        number=77,
+        short_name="held_reports_reach_member",
+        description="A restarted sequencer that leads before it is told of the member's session holds the member's reports until it is",
+        expected_outcome=(
+            "the restarted primary sequencer leads before the gateway announces the member's session, holds the cancels "
+            "the promoted engine sends, and sends them when the session is announced; the member receives every cancel"
+        ),
+        me_ha=True,
+        delay_session_announcements_ms=40000,
+        assert_held_reports_reach_member=True,
+        # No orders in flight and none after: the cancels for the resting baseline orders are the subject.
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="sequencer_primary",
+                takeover=expect_leads("sequencer_secondary"),
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+            RestartStep(
+                proc_name="sequencer_primary",
+                ready_log_name="sequencer_primary.log",
+                ready=expect_follows("sequencer_primary"),
+                ready_timeout=_SEQ_FOLLOWER_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=0.0,
+            ),
+            KillStep(
+                proc_name="sequencer_secondary",
+                takeover=None,
+                settle_secs=0.0,
+            ),
+            KillStep(
+                proc_name="matching_engine_primary",
+                takeover=expect_leads("matching_engine_secondary"),
+                settle_secs=0.0,
+            ),
+            VerifyStep(
+                expect=expect_leads("sequencer_primary"),
+                timeout=30.0,
+                description="the restarted sequencer_primary leads",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4866,15 +4936,21 @@ _INSTALL_PREFIX = Path()
 # The comp ids the matching engine reports the outcome of orders for, in the scenario being run (_REPORT_ORDERS_OF, and
 # the member's comp id where the scenario needs it). Set by run_scenario before anything is started.
 _REPORT_ORDERS_NOW: tuple = _REPORT_ORDERS_OF
+# How long the gateways of the scenario being run wait before announcing their sessions on a sequencer link that has
+# come up; set from the scenario before anything is started.
+_ANNOUNCEMENT_DELAY_MS_NOW: int = 0
 
 # The components that send test events so far. Others are added as their checks move onto test events.
 _TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter", "fix_order_gateway", "binary_order_gateway")
 
 
-def config_with_test_events(config: Path, listener: TestEventListener, name: str, report_orders_of: tuple = ()) -> Path:
+def config_with_test_events(config: Path, listener: TestEventListener, name: str, report_orders_of: tuple = (),
+                            comp_ids_without_session: tuple = (), delay_session_announcements_ms: int = 0) -> Path:
     """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
     knows the component by, which its threads give when they introduce themselves. report_orders_of lists the comp ids
-    whose orders a matching engine reports the outcome of.
+    whose orders a matching engine reports the outcome of. comp_ids_without_session lists the comp ids whose reports a
+    sequencer is to expect to reach no session. delay_session_announcements_ms is how long a gateway waits before it
+    announces its sessions on a sequencer link that has come up.
 
     Written beside the original, so that the paths in it still resolve, and used instead of it. Named after the
     component, not the original file, because two components can be started from one file."""
@@ -4884,6 +4960,10 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
     text = text.rstrip("\n") + f"\n\n[test_events]\nhost = \"{listener.host}\"\nport = {listener.port}\ncomponent = \"{name}\"\n"
     if report_orders_of:
         text += "report_orders_of = [" + ", ".join(f'"{comp_id}"' for comp_id in report_orders_of) + "]\n"
+    if comp_ids_without_session:
+        text += "comp_ids_without_session = [" + ", ".join(f'"{comp_id}"' for comp_id in comp_ids_without_session) + "]\n"
+    if delay_session_announcements_ms > 0:
+        text += f"delay_session_announcements_ms = {delay_session_announcements_ms}\n"
     copy = config.with_name(f"{name}_test_events.toml")
     copy.write_text(text)
     return copy
@@ -4909,7 +4989,11 @@ def launch_app(name: str, bin_name: str, config: Path,
     if not config.is_file():
         die(f"config not found: {config}")
     if _TEST_EVENTS is not None and bin_name in _TEST_EVENT_COMPONENTS:
-        config = config_with_test_events(config, _TEST_EVENTS, name, _REPORT_ORDERS_NOW if bin_name == "matching_engine" else ())
+        # inject_order's comp id reaches the sequencer with no gateway holding a session for it, so its reports are
+        # expected to reach no session.
+        config = config_with_test_events(config, _TEST_EVENTS, name, _REPORT_ORDERS_NOW if bin_name == "matching_engine" else (),
+                                         _COMP_IDS_WITHOUT_SESSION if bin_name == "sequencer" else (),
+                                         _ANNOUNCEMENT_DELAY_MS_NOW if bin_name in ("fix_order_gateway", "binary_order_gateway") else 0)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -6262,8 +6346,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 log(f"  matching_engine_publisher_{which}: emptied its write-ahead log in {publisher_wal} ({len(removed)} file(s))")
 
         # ── Phase 1: start all processes ──────────────────────────────────────
-        global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX  # pylint: disable=global-statement
+        global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW  # pylint: disable=global-statement
         _INSTALL_PREFIX = prefix
+        _ANNOUNCEMENT_DELAY_MS_NOW = scenario.delay_session_announcements_ms
         # The member's orders are reported by the engine only in the scenarios whose checks no member can make: that an
         # order was applied exactly once, acted on while its reports were held back on purpose, or cancelled (or not)
         # after the member had gone.
@@ -6850,6 +6935,46 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if dropped > 0:
                 die(f"ME-HA: gateway dropped {dropped} ExecutionReport(s) for a missing "
                     "gateway_session_conn_id -- ER routing via the envelope is broken")
+
+        # ── Held reports: a restarted sequencer leads before it is told of the session ──
+        # BUG-0190. The restarted primary takes the lead while the gateways are still waiting, as this scenario asks them
+        # to, before announcing their sessions to it, so it does not know the member's session when the promoted engine
+        # cancels the book. It must hold the cancels and send them once the gateway announces the session, and the
+        # member must be told of every order the engine cancelled. Without holding, the cancels are dropped. See
+        # docs/availability/reports_held_until_sessions_are_announced.md.
+        if scenario.assert_held_reports_reach_member:
+            sequencer_events = "sequencer_test_events"
+            primary_from = _TEST_EVENTS.since_introduction("sequencer_primary")
+            held = component_event("sequencer_primary", sequencer_events, "ReportsHeld", primary_from, args.failover_timeout, comp_id=FIX8_COMP_ID)
+            if held is None:
+                die("held reports: the restarted sequencer_primary held no report for the member's session. Either it was told of the "
+                    "session before the engine cancelled the book, so the scenario did not make the window it exists for, or it "
+                    "dropped the cancels")
+            log(f"  held reports: sequencer_primary held reports for comp_id='{held.comp_id}' while {held.gateways_not_announced} "
+                "gateway instance(s) had not announced")
+            delay_seconds = scenario.delay_session_announcements_ms / 1000.0
+            released = component_event("sequencer_primary", sequencer_events, "HeldReportsReleased", primary_from, delay_seconds + args.failover_timeout,
+                                       comp_id=FIX8_COMP_ID)
+            if released is None or released.sent <= 0:
+                die(f"held reports: sequencer_primary did not send the reports it held for the member's session ({released})")
+            log(f"  held reports: sequencer_primary sent {released.sent} held report(s) when the session was announced")
+            cancelled_book = engine_event("matching_engine_secondary", "BookCancelled", me_secondary_events_from, args.failover_timeout)
+            if cancelled_book is None or cancelled_book.cancel_reports_sent <= 0:
+                die(f"held reports: the promoted matching engine cancelled no order ({cancelled_book}), so there was nothing to hold")
+            # Each cancel the engine sent must reach the member: counted at the member, so a report lost anywhere is missed.
+            expected = cancelled_book.cancel_reports_sent
+            deadline = time.monotonic() + args.recovery_timeout
+            received = client_reports(f8proc).count("4")
+            while received < expected and time.monotonic() < deadline:
+                time.sleep(0.2)
+                received = client_reports(f8proc).count("4")
+            if received != expected:
+                die(f"held reports: the promoted engine cancelled {expected} order(s) and the member received {received} cancel(s)")
+            dropped = count_seen(expect_message("sequencer_primary", "a report dropped for a session connected nowhere", "ReportDroppedSessionNotConnected",
+                                                sequencer_events, fields=lambda m: {"comp_id": FIX8_COMP_ID}), primary_from)
+            if dropped > 0:
+                die(f"held reports: sequencer_primary dropped {dropped} report(s) for the member's session as connected nowhere")
+            log(f"  held reports: the member received all {received} cancel(s) -- OK")
 
         # ── Gateway orphan: no session handover between instances ─────────────
         # Asserts a GAP rather than a guarantee. Instance a is dead and the engine has just

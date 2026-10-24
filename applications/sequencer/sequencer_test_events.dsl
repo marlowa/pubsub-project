@@ -154,3 +154,30 @@ message ReportDroppedSessionNotConnected (id=211, version=1)
     i16    gateway_protocol    # 1 for FIX, 2 for binary
     i64    seq_no              # the report's sequence number
 end
+
+# ------------------------------------------------------------
+#  212 -- ReportsHeld
+#  The leading sequencer held a report for a session it does not know
+#  of, because some gateway instance has not yet announced its
+#  sessions. Sent for the first report held since the sessions were
+#  last known, not for every report.
+# ------------------------------------------------------------
+message ReportsHeld (id=212, version=1)
+    string comp_id                  # the session of the first report held
+    i16    gateway_protocol         # 1 for FIX, 2 for binary
+    i32    gateways_not_announced   # how many configured gateway instances have not announced
+end
+
+# ------------------------------------------------------------
+#  213 -- HeldReportsReleased
+#  Held reports were dealt with: sent, because their session was
+#  announced; or dropped, because every gateway instance has announced
+#  and their sessions are connected nowhere. Sent once for each session
+#  whose reports were sent, and once when the sessions become known.
+# ------------------------------------------------------------
+message HeldReportsReleased (id=213, version=1)
+    string comp_id                  # the session whose reports were sent; empty when the sessions became known
+    i16    gateway_protocol         # 1 for FIX, 2 for binary; 0 when the sessions became known
+    i64    sent                     # how many held reports were sent
+    i64    dropped                  # how many held reports were dropped
+end

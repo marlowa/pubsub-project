@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 194 |
-| Open | 82 (58 defects, 24 tasks) |
-| Closed | 112 |
+| Open | 81 (57 defects, 24 tasks) |
+| Closed | 113 |
 | Next id | BUG-0195 |
 
 ## Open bugs by severity
 
-21 high, 49 medium, 12 low.
+21 high, 48 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -81,7 +81,6 @@
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
-| [BUG-0190](#bug_0190) | medium | defect | A sequencer that takes the lead before a gateway has re-announced its sessions drops reports for those sessions in the meantime |
 | [BUG-0192](#bug_0192) | medium | task | Scenarios that kill the primary matching engine by name go on when the secondary has won the first election, and then fail for a reason unrelated to what they test |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
@@ -3632,38 +3631,6 @@ one-time secret or proof that the requester has access to the installed host.
 The first-run route must require a one-time secret generated for the installation and available only to an
 operator with access to the host. Creating the first administrator must consume that secret and close setup.
 
-### BUG-0190: A sequencer that takes the lead before a gateway has re-announced its sessions drops reports for those sessions in the meantime {#bug_0190}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-24 |
-| Recorded | 2026-10-24 |
-| How | Measuring, for [BUG-0182](#bug_0182), how long before taking the lead a restarted sequencer is told that the member's session is still connected: in scenarios 27 and 36 it was told after, by 0.1 seconds and under 0.05 seconds |
-| Impact | A member is not told of what became of an order the venue took before the restart: a report repeated by a matching engine catching up, or a cancel sent by an engine that cancels its book on promotion. It cannot tell such an order from one the venue lost. The Warning and test event 211 show that it happened |
-
-**What happens.** A sequencer keeps where each session is connected only in memory. One that restarts learns it
-from the gateways, which announce every session they hold when their link to it comes up. A sequencer that
-restarts quickly can take the lead before every gateway's link is up, and a report for a session not yet announced
-is dropped. A report for an order sent on a link that is up is safe, because the gateway sends the announcements
-before any command on that link.
-
-**What is wanted.** Decided with Andrew, 24 October 2026: the sequencer holds, rather than drops, a report for a
-session it does not know of, while some configured gateway instance has not connected to it since it took the
-lead, and sends the report once the session is announced. Nothing waits, and no report is lost when a time limit
-runs out. What happens to a held report for a session that is never announced, because its member really is away,
-is part of the design: it is then the ordinary case of a session with no connection, whose reports are sent when it
-logs on again ([BUG-0088](#bug_0088)).
-
-Also: the Warning and event 211 are given in every scenario for `INJECT-TEST`, the comp id of the test's
-`inject_order`, whose orders reach the sequencer directly and have no session behind them. That false alarm is to
-be removed.
-
-**Design:** [reports_held_until_sessions_are_announced.md](availability/reports_held_until_sessions_are_announced.md),
-agreed 24 October 2026.
-
-**Principles.** V8: every report the matching engine produces reaches the member (G3).
-
 ### BUG-0191: The load and profiling scripts decide what the venue did by reading Quill logs, and callgrind_run.py waits for the configured primary sequencer to lead {#bug_0191}
 
 | | |
@@ -3777,6 +3744,58 @@ a loss of resilience is not a loss of service (V11).
 the member.
 
 ## Closed
+
+### BUG-0190: A sequencer that takes the lead before a gateway has re-announced its sessions drops reports for those sessions in the meantime {#bug_0190}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| Fixed | 2026-10-24 -- a leading sequencer holds a report for a session it does not know of until every gateway instance has announced its sessions |
+| How | Measuring, for [BUG-0182](#bug_0182), how long before taking the lead a restarted sequencer is told that the member's session is still connected: in scenarios 27 and 36 it was told after, by 0.1 seconds and under 0.05 seconds |
+| Impact | A member is not told of what became of an order the venue took before the restart: a report repeated by a matching engine catching up, or a cancel sent by an engine that cancels its book on promotion. It cannot tell such an order from one the venue lost. The Warning and test event 211 show that it happened |
+
+**What happens.** A sequencer keeps where each session is connected only in memory. One that restarts learns it
+from the gateways, which announce every session they hold when their link to it comes up. A sequencer that
+restarts quickly can take the lead before every gateway's link is up, and a report for a session not yet announced
+is dropped. A report for an order sent on a link that is up is safe, because the gateway sends the announcements
+before any command on that link.
+
+**What is wanted.** Decided with Andrew, 24 October 2026: the sequencer holds, rather than drops, a report for a
+session it does not know of, while some configured gateway instance has not connected to it since it took the
+lead, and sends the report once the session is announced. Nothing waits, and no report is lost when a time limit
+runs out. What happens to a held report for a session that is never announced, because its member really is away,
+is part of the design: it is then the ordinary case of a session with no connection, whose reports are sent when it
+logs on again ([BUG-0088](#bug_0088)).
+
+Also: the Warning and event 211 are given in every scenario for `INJECT-TEST`, the comp id of the test's
+`inject_order`, whose orders reach the sequencer directly and have no session behind them. That false alarm is to
+be removed.
+
+**Design:** [reports_held_until_sessions_are_announced.md](availability/reports_held_until_sessions_are_announced.md),
+agreed 24 October 2026, and built.
+
+**Principles.** V8: every report the matching engine produces reaches the member (G3).
+
+**Fixed, 24 October 2026.** Each gateway ends its announcements on a sequencer link that has come up with
+`SessionsAnnounced` (id 129), sent even when it holds no session. The sequencer records, for each configured gateway
+instance, whether it has announced on its present link. While it leads and some instance has not, a report for a
+session it does not know of is held in `ReportsHeldForUnknownSessions`, a store allocated once with no lock, and is
+sent when the session is announced; once every instance has announced, what is still held is dropped as before. A
+held report counts as not forwarded in what the leader tells its follower, so a follower that takes the lead forwards
+its own copy. On a FIX logon the held copies are discarded, because the gateway's `UndeliveredReportsRequest` sends
+those reports from the WAL; on a binary logon they are sent. The false alarm for `INJECT-TEST` is gone: the
+sequencer's `[test_events]` section lists `comp_ids_without_session`, and `ha_test.py` lists `INJECT-TEST` there.
+
+Checked: 13 unit tests of the store; four deliberate faults put into it were each caught, one of them only after a
+test was added for it. Scenario 77 makes the window happen: the gateways delay their announcements by 40 seconds
+(`delay_session_announcements_ms`), the restarted primary sequencer leads, and the promoted engine cancels the book.
+The primary held the 1,000 cancels and sent them when the session was announced, 36 seconds later, and the member
+received all 1,000. With holding switched off, scenario 77 fails: the gateway receives the 1,000 cancels with no
+session to send them to. A full run from cleared state passed 76 of 77; scenario 60 failed once, waiting for the
+engine to accept an order sent while the follower was stopped, and then passed three times of three run on its own.
+Its Quill logs were not kept, so why is not known.
 
 ### BUG-0010: HA fails over into a condition both nodes share {#bug_0010}
 

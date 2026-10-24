@@ -2,7 +2,7 @@
 
 The design for [BUG-0190](../bug_list.md#bug_0190): a sequencer that leads before every gateway has told it which
 sessions are connected holds, rather than drops, a report for a session it does not know of, and sends it once the
-session is announced. **Status: a draft, for review.** Nothing in it is built.
+session is announced. **Status: agreed by Andrew on 24 October 2026** (section 6: question 1 yes, 2A, 3A), and built.
 
 ## 1. The problem
 
@@ -66,12 +66,27 @@ about committing or numbering changes. The report has already been written to th
 
 ### 3.3 Releasing
 
-When a session is bound, by any `SessionBound` (a logon, or an announcement with `still_connected`), every report
-held for it is sent to where it is now connected, oldest first, before anything else is sent for it. Because
-everything here runs on the sequencer's own thread, no report for the session can overtake the held ones.
+When a session is announced with `still_connected`, every report held for it is sent to where it is now connected,
+oldest first, before anything else is sent for it. Because everything here runs on the sequencer's own thread, no
+report for the session can overtake the held ones.
+
+When a session is bound by a logon instead, what happens depends on the protocol:
+
+- **A FIX session.** Once its numbering is settled, the gateway asks for every report produced since the last one
+  the member was delivered (`UndeliveredReportsRequest`), and the sequencer sends those from the WAL
+  ([session_binding.md](session_binding.md), "Reports produced while the session had no connection"). The held
+  reports are among them, so the held copies are discarded; sending them as well would give the member each one
+  twice.
+- **A binary session.** The binary gateway makes no such request, so the held reports are sent, as for an
+  announcement.
 
 When the sessions become known (the last configured instance announces), every report still held is for a session
 that is connected nowhere, and is dropped as in 3.2.
+
+A held report has not been forwarded, so the position the leader gives its follower for the reports it has
+forwarded (`reports_forwarded_through`) stops just before the oldest held report, as it stops before the oldest report
+waiting for the follower. A follower that takes the lead therefore keeps, and forwards, its copy of every report the
+leader was holding.
 
 When this sequencer stops leading, everything held is discarded. The instance that takes the lead forwards what it
 kept while following, as it does today ([KeptReportsForwarded](test_events.md)).
@@ -151,4 +166,4 @@ the sessions are known only when every configured gateway instance has announced
 - **B: no scenario, only the unit tests and the full set.** Cheaper, but nothing would show the whole path working in
   the running venue.
 
-Reply in the form "1 yes, 2A, 3A", or with what you would change.
+**Andrew's answers, 24 October 2026:** 1 yes, 2A, 3A.

@@ -293,6 +293,12 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // only in memory, so one that has restarted knows of none, and drops every report for a session
     // it does not know of. Sent down the one link named only. See docs/bug_list.md, BUG-0182.
     void announce_sessions_on_new_link(const pubsub_itc_fw::ConnectionID& sequencer_conn_id);
+    // Announces the sessions down a sequencer link that has just come up: now, or, when a test asks for a delay
+    // ([test_events] delay_session_announcements_ms), when @p delay_timer_id fires.
+    void announce_sessions_when_due(const pubsub_itc_fw::ConnectionID& sequencer_conn_id, pubsub_itc_fw::TimerID& delay_timer_id);
+    // The timers for announcements a test asked to be delayed, one for each sequencer link.
+    pubsub_itc_fw::TimerID announce_to_primary_timer_id_{};
+    pubsub_itc_fw::TimerID announce_to_secondary_timer_id_{};
 
     /**
      * @brief Records or retires an order in the session's open set from an ER.
