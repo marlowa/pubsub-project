@@ -109,12 +109,15 @@ With high availability on, two instances run: `matching_engine` (the primary, in
 
 - **Leadership is decided by leases.** An instance leads only while a majority of itself, its peer
   and the arbiter pool has granted it a lease; see
-  [Deciding leadership by majority, with leases](../availability/majority_leases.md). An instance that
-  holds no lease discards the orders the sequencer sends it, and marks itself as needing a catch-up
-  before it may act. Nothing is lost by discarding them: they are in the sequencer's log.
+  [Deciding leadership by majority, with leases](../availability/majority_leases.md). A sequencer sends
+  orders only to the instance that leads, or to the primary while no instance has said it leads
+  (`EngineOrderRouting`). An instance holding no lease that is sent an order discards it, and marks
+  itself as needing a catch-up before it may act. Nothing is lost by discarding them: they are in the
+  sequencer's log. An instance that is sent no orders at all does not mark itself, and takes the lead
+  without catching up again ([BUG-0198](../bug_list.md#bug_0198)).
 - **The standby keeps a copy of the book.** The leader sends each order it accepts and each order it
   removes to the standby over the book replication connection (`BookUpdate`, ports 11025 and 11026 in
-  the development environment). The standby discards the orders the sequencer sends it.
+  the development environment). The sequencers send the standby no orders.
 - **Every engine catches up before it acts**, whether it has just been promoted or has just started.
   It sends the sequencers the position it has reached (`WalFollowRequest`), and the leading sequencer
   sends every command after it, then says where it stopped and how many records it sent

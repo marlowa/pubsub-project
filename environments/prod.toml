@@ -507,8 +507,17 @@ epoch_state_file    = "/opt/pubsub/var/matching_engine_epoch.state"
 # The open orders, so an order placed before a restart is still open after one.
 # Alongside the epoch file and outside the versioned tree for the same reason.
 order_book_region_path     = "/opt/pubsub/var/matching_engine_open_orders.region"
-# The most orders that may be open at once; the region cannot grow past it.
-order_book_region_capacity = 1000000
+# The most orders that may be open at once; the region cannot grow past it, and an order
+# arriving when it is full is refused. 100 million: the engine never fills an order, so an
+# order stays open until it is cancelled, and a day of 100 million orders with none
+# cancelled must still be accepted. At 248 bytes a record, the region is 24.8 GB.
+order_book_region_capacity = 100000000
+# How many open orders the map from an order's identity to its record is sized for at start:
+# the same as the region, so the map never grows during the day. 100 million orders take a
+# map of 2^28 slots of 141 bytes, 37.8 GB. A map with many cancelled orders in it is copied
+# to a fresh one of the same size to clear them, and holds both while it does, 75.7 GB; with
+# the region that is 100.5 GB at most, which the 200 GB machine has room for.
+order_book_initial_capacity = 100000000
 # How long the venue may be unable to match before open orders are cancelled and
 # trading halts. A trading decision: how long a resting order stays meaningful here.
 order_book_absence_limit_seconds = 300

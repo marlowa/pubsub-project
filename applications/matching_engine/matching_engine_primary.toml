@@ -112,8 +112,10 @@ objects_per_slab = ${matching_engine_event_queue_pool_objects_per_slab}
 initial_slabs    = ${matching_engine_event_queue_pool_initial_slabs}
 
 [order_book]
-# Pre-reserved capacity of the live-order hash map.
-initial_capacity = 262144
+# How many open orders the map from an order's identity to its record in the region is sized
+# for when the engine starts. Set it to region_capacity, the most orders that may be open at
+# once, and the map never grows during the day.
+initial_capacity = ${matching_engine_order_book_initial_capacity}
 
 # Warn when the book's storage allocation reaches this size. The book is a growing hash
 # map on the OS heap rather than a pool or slab, so handler_for_pool_exhausted never sees

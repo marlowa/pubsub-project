@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 196 |
-| Open | 81 (58 defects, 23 tasks) |
+| Bugs recorded | 198 |
+| Open | 83 (60 defects, 23 tasks) |
 | Closed | 115 |
-| Next id | BUG-0197 |
+| Next id | BUG-0199 |
 
 ## Open bugs by severity
 
-22 high, 47 medium, 12 low.
+24 high, 47 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -34,7 +34,9 @@
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
 | [BUG-0193](#bug_0193) | high | task | Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
-| [BUG-0195](#bug_0195) | high | defect | When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and eight scenarios fail |
+| [BUG-0195](#bug_0195) | high | defect | When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and three scenarios fail |
+| [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so |
+| [BUG-0198](#bug_0198) | high | defect | A matching engine that has caught up and is waiting to learn its role takes the lead without catching up again, and loses every order accepted while it waited |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -2217,6 +2219,66 @@ the expected case, the container handles being wrong about it.
 **Not yet changed.** The number to use should come from the book size the venue is meant to
 support, not from this profile.
 
+#### Sized for production, 24 October 2026
+
+**Decided with Andrew:** the most orders that may be open at once is 100 million, and the map is reserved
+for that number when the engine starts. `environments/prod.toml` sets both `order_book_region_capacity` and
+`order_book_initial_capacity` to 100,000,000; `initial_capacity` was a fixed 262,144 in the engine's own
+configuration and is now an environment setting. The other environments keep their sizes, since the
+development machine has 31 GB. The engine never fills an order, so an order stays open until it is
+cancelled: a day of 100 million orders with none cancelled must still be accepted.
+
+**What an open order costs, in each engine.** The figures above are from a map that held the whole order.
+The map now holds only the order's identity and the number of its record in the open-order region:
+
+| | Bytes | How it was established |
+|---|---|---|
+| A record in the region | 248: the 232-byte order and a 16-byte header | `sizeof`, and the development region of 2,000,000 records is 496 MB |
+| A slot in the map | 141: the 134-byte identity, the 4-byte record number, 2 of padding and 1 for the slot's state | `sizeof`, and the engine's own log: 262,144 reserved is 2^19 slots, logged as 70 MB |
+| Map slots per open order | at least 2: the map is never more than half used, and its size is a power of two | `IncrementalRehashMap::capacity_for` |
+
+The map's resident memory was measured filled: 1,000,000 orders took 288,836 kB, against 295.7 MB
+predicted, and 10,000,000 took 4,619,832 kB, against 4,731 MB. Reserving touches only the state byte of
+each slot; the rest is faulted in as the map fills.
+
+| Most orders open at once | Region | Map, reserved | Total | At most, while the map is copied |
+|---|---|---|---|---|
+| 100 million | 24.8 GB | 37.8 GB (2^28 slots) | 62.7 GB | 100.5 GB |
+
+The last column: erased slots count toward the map's half-full limit, so a day with many cancels copies
+the map to a fresh one of the same size to clear them, and holds both while it does. That fits the 200 GB
+machine with room to spare.
+
+**What it costs to start.** Both creating the region and recovering it pass over every record, whatever is
+open, and recovery also writes the header of every record that holds no order, to rebuild the free list
+(`MappedSlotStore::rebuild_free_list`), so every restart rewrites most of the region. Measured with the
+engine's `OrderBook`, by `order_book_size_bench`
+(`applications/matching_engine/performance/src/OrderBookSizeBench.cpp`):
+
+| | 20 million records, held in memory | 100 million, scaled from it | 100 million, measured on this 31 GB machine |
+|---|---|---|---|
+| Create | 1.65 s | about 8 s | 85 s |
+| Recover, nothing open | 1.54 to 1.63 s | about 8 s | 96 s and 164 s |
+| Recover, 10 million open | 2.47 to 2.49 s | | |
+| Recover, all 100 million open | | about 17 s | |
+
+Putting an open order back into the map costs about 90 nanoseconds. On this machine the 100-million region
+cannot stay in memory, and `vm.dirty_ratio` is 20, so once about 6 GB is written and not yet on disk the
+writer waits for the disk: the creation ran at 292 MB/s. On a 200 GB machine the same limit is about 40 GB,
+more than the region, so the scaled figures are the ones to expect there; they have not been measured on
+such a machine. A restart of 8 to 17 seconds is the window [BUG-0197](#bug_0197) and [BUG-0198](#bug_0198)
+are about, and it rules out a restarted engine keeping the lead within its 3-second lease.
+
+**Still open in this entry:**
+
+- the map's pages are not touched when it is reserved, so the memory is not proven available at the start
+  of the day, as the decision in [BUG-0010](#bug_0010) requires;
+- copying the map to clear erased slots doubles it for a while;
+- a restart costs time in proportion to the region's capacity, not to the orders open, and rewrites most of
+  the region; this is for the design of phase 8 of the [recovery plan](recovery_plan.md), which changes how
+  the follower builds its book;
+- pre-production and test-1 still allow 1,000,000 open orders.
+
 ### BUG-0029: A process death on the same host takes the machine-death path {#bug_0029}
 
 | | |
@@ -3719,7 +3781,7 @@ a loss of resilience is not a loss of service (V11).
 **Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
 the member.
 
-### BUG-0195: When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and eight scenarios fail {#bug_0195}
+### BUG-0195: When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and three scenarios fail {#bug_0195}
 
 | | |
 |---|---|
@@ -3739,14 +3801,25 @@ the scenario could not confirm which book it resumed with. 77 passed in the firs
 not every time. The other three that failed, 13, 29 and 48, failed because of how the scenarios were written
 ([BUG-0196](#bug_0196)). Once that was corrected, 13 and 29 pass with either engine leading at the start, and 48 fails
 with the symptom of 16: the machine the leading secondary runs on was stopped, the primary took the lead 6.4 seconds
-later, and it sent no `ResumedAsLeader` (22:16:42). So eight of the 23 fail with the secondary leading at the start:
-16, 21, 24, 25, 48, 54, 55 and 77.
+later, and it sent no `ResumedAsLeader` (22:16:42).
 
-- **16, 21 and 24: the promoted primary never resumes as leader.** The primary started as follower with an empty book,
-  and the leading secondary sent it no copy of the book, because the copy is sent only from the configured primary
-  ([BUG-0188](#bug_0188), which this reproduces). When the secondary was killed, the primary adopted the leader role,
-  but logged no catch-up from the WAL and sent no `ResumedAsLeader`, and the 1,000 resting orders were neither on its
-  book nor cancelled with a report to the member (scenario 16, 18:24:01).
+**Every one of those runs began its steps before the primary had settled that it follows.** In a normal start,
+`ha_test.py` waits until one engine leads, which takes about a lease period, and by then both engines have settled
+their roles. With the secondary started first, the secondary already led, so that wait ended as soon as the primary
+was running, and the steps began while the primary was still in its first lease period; the temporary copy's
+four-second head start did the same. `--secondary-engine-first` now also waits until the primary says it follows,
+which took 10.5 seconds in scenario 29. Run that way, all 23 again (23:25:50): **20 pass, and 25, 54 and 55 fail.**
+16, 21, 24, 48 and 77 pass. Their earlier failures were not a fault in following the secondary: they were the leader
+killed while the primary had caught up but not yet settled, which loses orders, and is recorded as
+[BUG-0198](#bug_0198).
+
+- **16, 21, 24, 48 and 77: the promoted primary never resumed as leader.** When the secondary was killed, the
+  primary adopted the leader role, logged no catch-up from the WAL, and sent no `ResumedAsLeader`, and the 1,000
+  resting orders were neither on its book nor cancelled with a report to the member (scenario 16, 18:24:01 and
+  21:48:50). This was first put down to [BUG-0188](#bug_0188), the book copy flowing only from the configured primary.
+  The kept Quill logs show otherwise: the primary had caught up at 21:48:44 and was waiting to be told its role when
+  it was granted the lead, and an engine in that state takes the lead without catching up again
+  ([BUG-0198](#bug_0198)). With the primary settled as follower before the steps begin, all five pass.
 - **25, 54 and 55: the two engines start differently, by their configured role.** Diagnosed 24 October 2026 from the
   kept Quill logs, and from a run of 25 with the primary leading first for comparison:
 
@@ -3772,12 +3845,121 @@ from the WAL when the first sequencer connects, and saying what role they have o
 Andrew, 24 October 2026: this is done in phase 8 of the [recovery plan](recovery_plan.md), which rewrites how the
 follower engine builds its book, and not before it, so that code phase 8 replaces is not fixed first. Phase 8's
 finish condition includes it, and includes every scenario with both engines passing whichever engine leads at the
-start. Phase 8 also removes the book copy, which is the cause of 16, 21 and 24.
+start. Phase 8 also removes the book copy.
 
 **How to reproduce.** `scripts/ha_test.py --scenario all --secondary-engine-first` runs the scenarios with both
-engines, starting the secondary engine first and the primary only once the secondary leads.
+engines, starting the secondary engine first, the primary only once the secondary leads, and the steps only once the
+primary follows.
 
 **Principles.** V2: the WAL is the record; V8: every report the matching engine produces reaches the member.
+
+### BUG-0197: While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so {#bug_0197}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | Working out with Andrew what happens if the leading matching engine dies while the other is still starting, which at production size takes 8 to 17 seconds ([BUG-0028](#bug_0028)) |
+| Impact | For as long as no matching engine leads, a member is told nothing about the orders it sends: not that they are refused, not that the market is halted, not when they will be answered |
+
+**What happens now.** While no matching engine is reachable, the sequencer goes on taking orders. It writes
+each to the WAL and holds it without an answer. It refuses new orders only once the outage has lasted 45
+seconds or it holds 250,000 orders (`order_deferral_refusal_age` and `order_deferral_refusal_count`,
+constants in `SequencerThread.hpp`). When an engine leads again, it catches up from the WAL and answers every
+order that was held, each report marked as a possible repeat (scenario 53). Only if no engine could match for
+longer than `order_book_absence_limit_seconds`, 300 seconds in production, does the engine cancel every open
+order, tell each member, and halt.
+
+The gap happens whenever both engines are unavailable at once. The case that prompted this entry: the
+leading engine dies, the other takes the lead, and the dead one is restarted by its launcher; while it reads
+its open-order region, 8 to 17 seconds at production size, the new leader has no standby, and if it dies
+then, there is no engine for ten seconds or more.
+
+**Why it is not acceptable.** Andrew, 24 October 2026: traders dislike uncertainty above all, and a delay
+like this, however robust it looks as engineering, is one the business would not accept. The member cannot
+tell whether an order it sent is live, will be acted on late, or is lost. Principle V6 says the same: a
+member that hears nothing cannot tell whether its order is in the market. An order held for many seconds
+is also applied to a market that has moved, while its member could not cancel it.
+
+**What is wanted.** Agreed with Andrew, 24 October 2026:
+
+1. **Orders are held only for as long as a normal failover takes.** When the leading engine dies and the
+   other takes over, there is a gap of up to the lease period, 3 seconds. Holding orders across that gap is
+   right, because it happens on every failover and its length is known and can be stated to members.
+2. **Past that, if no engine leads, the venue halts and says so at once.** The sequencer writes the halt
+   into the WAL as a technical event, in the same numbering as the orders
+   ([trading_phases.md](venue/trading_phases.md)). Gateways refuse new orders at once, with the market
+   halted as the reason, and a member that asks the gateway for the market's status is told it is halted.
+3. **Every order being held is given a definite answer, a rejection.** The orders are already in the WAL,
+   so the rejection is a command in the WAL too, by the rule that every decision that changes the book
+   enters the WAL as a command; it is the same mechanism as voiding a command that crashed the engine
+   ([BUG-0193](#bug_0193), part 2).
+4. **Trading resumes when an operator lifts the halt**, not when an engine happens to lead again: the
+   operator confirms the engine leads with a sound book, and every member sees the halt lifted.
+
+The halt replaces both the sequencer's 45-second limit and the engine's 300-second absence limit.
+
+**Still to decide.** What a halt does to the orders resting on the book: kept, and live again once the halt
+is lifted, or cancelled with a report to each member. Both are definite answers; which one is a business
+decision, and `trading_phases.md` leaves it open on purpose.
+
+**What it needs.** The technical event, steps 3 to 5 of [trading_phases.md](venue/trading_phases.md): the
+message, the table of what each phase allows, and their implementation. A way to declare and lift a halt
+([BUG-0065](#bug_0065)). And rejecting a command through the WAL, which phases 7 and 8 of the
+[recovery plan](recovery_plan.md) build for BUG-0193. It is designed in phase 8.
+
+**Principles.** V6: every command a gateway accepted is answered; V2: the WAL is the record.
+
+### BUG-0198: A matching engine that has caught up and is waiting to learn its role takes the lead without catching up again, and loses every order accepted while it waited {#bug_0198}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | Finding why scenarios 16, 21, 24, 48 and 77 failed under `ha_test.py --secondary-engine-first` before it waited for the primary to follow, and passed once it did; the Quill logs are in `tmp/ha_test_failures/20261024-214932-scenario-16-primary_me_death` |
+| Impact | Orders the members were told are resting are lost without a report, if the leading engine dies while the other is starting. That is the window after every failover, while the failed engine restarts, which at production size lasts 20 to 30 seconds |
+
+**What happens.** Scenario 16, run at 21:48 with the secondary engine leading:
+
+1. `matching_engine_primary` started at 21:48:43, in the unknown role. When the first sequencer connected it caught up
+   from the WAL, at 21:48:44.02, to sequence number 287,000 with no orders on its book, and logged "caught up ... --
+   current, and waiting to be told what it may do".
+2. The leading secondary accepted the 1,000 baseline orders, and the scenario then killed it.
+3. At 21:48:50.39 the primary was granted a lease by the arbiter and logged "adopting LEADER role". It did not catch
+   up again, sent no `ResumedAsLeader`, and sent the members nothing. The 1,000 orders were not on its book, and no
+   member was told they had gone. The scenario failed waiting 40 seconds for `ResumedAsLeader`.
+
+**Why.** When its lease agent says the engine leads, `MatchingEngineThread::become_leader_when_current()`
+(`MatchingEngineThread.cpp`) catches up first only if the engine is a follower or has never caught up. An engine
+that caught up when the first sequencer connected takes the lead at once, on the reasoning in its comment that it
+"is current". It was current when it caught up, and stops being current as soon as the leader accepts another
+order, because a sequencer sends orders only to the engine that leads (`EngineOrderRouting`: "Orders go down
+exactly one of them"). The handler for an order arriving at an engine with no lease clears `has_reconciled_`, so
+that becoming leader catches up again, but no order arrives there, so it never runs.
+
+**When it happens.** The configured primary starts in the unknown role and stays there, caught up and waiting, until
+it has granted the leader a lease and says it follows: 10.5 seconds in scenario 29. If the leader dies in that time,
+the primary takes the lead with its book as it was when it caught up. That is the case after any failover: the
+failed engine is restarted, reads its open-order region (8 to 17 seconds at 100 million records,
+[BUG-0028](#bug_0028)), catches up, and then waits. The configured secondary starts as a follower at once
+([BUG-0195](#bug_0195)), so it takes the follower's path, which catches up; that is why the scenarios pass when the
+primary leads at the start.
+
+**What is wanted.** An engine that does not lead catches up before it acts as leader, whatever role it was in, so
+being caught up at some earlier moment is never taken for being current. Phase 8 of the
+[recovery plan](recovery_plan.md) makes both engines start the way the configured primary does now, which would put
+both on this path, so phase 8 must not rely on it.
+
+**How to reproduce.** Kill the leading engine while the other is caught up and waiting to learn its role. Before
+`--secondary-engine-first` waited for the primary to follow, it did this to every scenario that kills the leading
+engine; scenario 16 failed this way at 21:48:50. A scenario that does it on purpose, in a normal start, is still to
+be written: kill the leading engine, restart it, and kill the new leader while the restarted one is waiting, then
+check that every resting order is either on the promoted engine's book or cancelled with a report.
+
+**Principles.** V4: a follower that is missing commands never takes over; V8: every report the matching engine
+produces reaches the member.
 
 ## Closed
 

@@ -346,7 +346,7 @@ availability scenarios pass.
 orders are still on the book afterwards.
 
 **What happens now.** The venue runs two matching engines; one leads and the other follows. The sequencer
-sends every committed order and cancel to both, but the follower throws them away. Instead, the leading
+sends every committed order and cancel only to the engine that leads (`EngineOrderRouting`). Instead, the leading
 engine sends the follower a `BookUpdate` message for each order it adds to or removes from its book, and the
 follower's book is a copy built from those messages. When the leading engine is lost, the follower is
 promoted: it catches up from the WAL after the last record its copy reflects, and then, because every
@@ -394,13 +394,23 @@ that sends and applies it; the catch-up on promotion from the end of a copy; and
 - every scenario with both engines passes whichever engine leads at the start. Either engine can win the
   first election, so this is checked by running them normally, and again with
   `ha_test.py --scenario all --secondary-engine-first`, which starts the secondary engine, waits until it
-  leads, and only then starts the primary. Today eight of the 23 fail when the secondary leads first
-  ([BUG-0195](bug_list.md#bug_0195), [BUG-0188](bug_list.md#bug_0188)).
+  leads, then starts the primary, and begins the steps once the primary follows. Today three of the 23 fail when
+  the secondary leads first ([BUG-0195](bug_list.md#bug_0195)).
+- an engine that does not lead catches up from the WAL before it acts as leader, whatever role it was in, and a
+  scenario kills the leader while the other engine is caught up and waiting to learn its role, and checks that no
+  resting order is lost ([BUG-0198](bug_list.md#bug_0198)).
 
 **Also designed in this phase:** voiding a command that crashed an engine, so that a command both engines
 crash on costs that command and not the venue: the engine records each command before applying it, and one
 that finds it died applying a command asks for the command to be voided through the WAL, provided no running
 engine has applied it ([BUG-0193](bug_list.md#bug_0193)).
+
+**Also designed in this phase:** what the venue does when no matching engine leads for longer than a normal
+failover takes. It halts and says so at once, gives every order it was holding a definite rejection through
+the WAL, and resumes when an operator lifts the halt, so that a member is never left not knowing what became
+of an order ([BUG-0197](bug_list.md#bug_0197)). It needs the technical event of
+[trading_phases.md](venue/trading_phases.md) and a way to declare a halt ([BUG-0065](bug_list.md#bug_0065)),
+which this phase's design must place in the plan.
 
 **Still to settle when the phase is designed:** whether the follower compares its reports, or a summary of
 its book, with the leader's while the venue runs, so that a difference is noticed at once rather than at a

@@ -32,6 +32,32 @@ target_compile_options(order_book_bench PRIVATE
 
 message(STATUS "  Added performance harness: order_book_bench")
 
-install(TARGETS order_book_bench
+# What the book costs in memory and in starting time at the size a deployment configures. See
+# docs/bug_list.md, BUG-0028.
+add_executable(order_book_size_bench
+    src/OrderBookSizeBench.cpp
+    ../OrderBook.cpp
+)
+
+add_dependencies(order_book_size_bench fix_orders_generated)
+
+target_link_libraries(order_book_size_bench PRIVATE
+    pubsub_itc_fw
+)
+
+target_include_directories(order_book_size_bench PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../fix_common
+    ${FIX_DSL_INCLUDE_DIR}
+)
+
+target_compile_options(order_book_size_bench PRIVATE
+    -g
+    -fno-omit-frame-pointer
+)
+
+message(STATUS "  Added performance harness: order_book_size_bench")
+
+install(TARGETS order_book_bench order_book_size_bench
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )

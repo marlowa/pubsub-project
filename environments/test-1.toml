@@ -494,6 +494,10 @@ epoch_state_file    = "/opt/pubsub/var/matching_engine_epoch.state"
 order_book_region_path     = "/opt/pubsub/var/matching_engine_open_orders.region"
 # The most orders that may be open at once; the region cannot grow past it.
 order_book_region_capacity = 1000000
+# How many open orders the map from an order's identity to its record is sized for at start.
+# Below the region's capacity here, so the map grows by doubling if more are open, which
+# this environment accepts in return for using less memory. See docs/bug_list.md, BUG-0028.
+order_book_initial_capacity = 262144
 # How long the venue may be unable to match before open orders are cancelled and
 # trading halts. A trading decision: how long a resting order stays meaningful here.
 order_book_absence_limit_seconds = 300
