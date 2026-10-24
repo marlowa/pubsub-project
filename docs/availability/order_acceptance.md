@@ -153,7 +153,7 @@ declared halt, which does not lift by itself ([design notes, section 15](design_
 
 - **A matching engine that is connected but not working.** Everything here depends on the
   connection. An engine that takes orders and does nothing with them looks healthy throughout
-  ([BUG-0010](../bug_list.md#bug_0010)).
+  ([BUG-0194](../bug_list.md#bug_0194)).
 - **A matching engine that keeps failing and returning.** Each return ends the deferral and starts
   its clock again, so a venue whose engine flaps never reaches the age threshold and never stops
   accepting ([BUG-0066](../bug_list.md#bug_0066)).

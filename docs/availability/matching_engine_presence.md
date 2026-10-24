@@ -86,7 +86,7 @@ The concern is right to raise and the answer is no, provided one line is held.
 **The arbiter reports registration. It never reports health, and it never acts.** It can say whether
 an instance is present. It cannot say whether that instance is working, and it must never be asked
 to — an engine that is connected and wedged is
-[BUG-0010](../bug_list.md#bug_0010)'s territory and stays there. Nothing here lets the arbiter
+[BUG-0194](../bug_list.md#bug_0194)'s territory and stays there. Nothing here lets the arbiter
 start, stop, restart or judge a component; the sequencer decides what the answer means and what to
 do about it.
 
@@ -210,7 +210,7 @@ but the gateways send orders only to the primary, so no order reaches it.
   ([BUG-0064](../bug_list.md#bug_0064), fixed). Knowing sooner reduces how many there are; it does
   not change what happens to them.
 - **An engine that is connected and not working.** Everything here keys on registration, and a
-  wedged engine is registered. See [BUG-0010](../bug_list.md#bug_0010).
+  wedged engine is registered. See [BUG-0194](../bug_list.md#bug_0194).
 - **Whether the sequencer should ever stop.** It was proposed that a sequencer with no matching
   engine service should die, so the gateway's existing "Sequencer unavailable" rejection fires.
   Rejected here, on four grounds: it tells the member a false reason, since the sequencer was fine

@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 193 |
-| Open | 81 (57 defects, 24 tasks) |
+| Bugs recorded | 194 |
+| Open | 82 (58 defects, 24 tasks) |
 | Closed | 112 |
-| Next id | BUG-0194 |
+| Next id | BUG-0195 |
 
 ## Open bugs by severity
 
-20 high, 49 medium, 12 low.
+21 high, 49 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -33,6 +33,7 @@
 | [BUG-0188](#bug_0188) | high | defect | The book is copied only from the engine configured as primary, so once the secondary leads, the primary's copy is never brought up to date |
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
 | [BUG-0193](#bug_0193) | high | task | Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs |
+| [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -3747,6 +3748,33 @@ standby gives no protection against it, by design.
    after each, and keep the gateways' strict checks of each field. Phase 7.
 
 **Principles.** V6: every command a gateway accepted is answered; V11: a loss of resilience is not a loss of service.
+
+### BUG-0194: A matching engine that is connected but has stopped working looks healthy to everything that watches it {#bug_0194}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | Closing [BUG-0010](#bug_0010): three passages, in [matching_engine_presence.md](availability/matching_engine_presence.md) and [order_acceptance.md](availability/order_acceptance.md), cited it for this concern, which its entry never covered |
+| Impact | Orders are accepted and sequenced, and no member is told anything, for as long as the engine stays connected. Nothing promotes the other engine, because nothing has failed that anything can see |
+
+**What happens.** Everything that decides whether the venue can process orders keys on the matching engine being
+connected and registered: the sequencer's acceptance of orders ([order_acceptance.md](availability/order_acceptance.md))
+and the arbiter's view of which engines are present
+([matching_engine_presence.md](availability/matching_engine_presence.md)). An engine whose thread is stuck in one
+callback is caught, because the reactor's watchdog stops the process after its limit and the other engine is promoted.
+An engine that is connected, keeps renewing its lease and answering, and has stopped applying orders, or applies them
+and sends no reports, is not caught by anything.
+
+**What is wanted.** A design for noticing it. The question to answer first is what evidence says the engine is
+working: for example, that the engine's position in the WAL keeps up with the records committed to it, or that each
+order it is sent is answered within a bound. Then who notices, who decides, and what is done, keeping to the rules
+that the arbiter never judges health ([matching_engine_presence.md](availability/matching_engine_presence.md)) and that
+a loss of resilience is not a loss of service (V11).
+
+**Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
+the member.
 
 ## Closed
 
