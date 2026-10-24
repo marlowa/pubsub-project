@@ -3758,7 +3758,11 @@ the member.
 **After any failover the secondary leads**, so in a venue that has failed over once, these are the paths it is on.
 
 **What is wanted.** Both engines start alike, whichever is configured as primary: in an unknown role, catching up
-from the WAL when the first sequencer connects, and saying what role they have only once it is settled. Phase 8 of the [recovery plan](recovery_plan.md) removes the
+from the WAL when the first sequencer connects, and saying what role they have only once it is settled. Decided with
+Andrew, 24 October 2026: this is done in phase 8 of the [recovery plan](recovery_plan.md), which rewrites how the
+follower engine builds its book, and not before it, so that code phase 8 replaces is not fixed first. Phase 8's
+finish condition includes it, and includes every scenario with both engines passing whichever engine leads at the
+start. Phase 8 of the [recovery plan](recovery_plan.md) removes the
 book copy, which is the cause of 16, 21 and 24; its scenarios must then pass whichever engine leads at the start, and
 the temporary copy that starts the secondary first is the way to check that.
 
