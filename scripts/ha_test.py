@@ -467,8 +467,10 @@ def resolved(name: str | None) -> str | None:
 
 
 def engine_service(engine: str) -> str:
-    """The name a sequencer gives the matching engine engine's order connection."""
-    return "matching_engine" if engine == "matching_engine_primary" else "matching_engine_secondary"
+    """The name a sequencer gives the matching engine engine's order connection: "matching_engine_secondary" for the
+    secondary of a pair, and "matching_engine" for the primary of a pair and for the single engine, which is named
+    "matching_engine"."""
+    return "matching_engine_secondary" if engine == "matching_engine_secondary" else "matching_engine"
 
 
 class Condition(NamedTuple):
@@ -6600,6 +6602,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if args.secondary_engine_first and leader_name != "matching_engine_secondary":
                 die(f"--secondary-engine-first: matching_engine_secondary was seen to lead before matching_engine_primary started, "
                     f"but once both were running the engine that leads is {leader_name}")
+            # In a normal start the wait above lasts about a lease period, which is also how long a starting engine
+            # waits before it votes, so both engines have settled their roles before the steps begin. With the
+            # secondary started first, the wait ends as soon as the primary is running, while the primary is still in
+            # that first period: it has promised nothing and has not said it follows. A scenario begun then would be
+            # testing a pair whose follower has not finished starting, which no normal start produces.
+            if args.secondary_engine_first:
+                log(f"  Waiting until matching_engine_primary follows (timeout {_ME_LEADER_TIMEOUT:.0f}s) ...")
+                t0 = time.monotonic()
+                if _TEST_EVENTS.wait_for(follows(_TEST_EVENTS.messages, "matching_engine_primary"), timeout=_ME_LEADER_TIMEOUT) is None:
+                    die(f"--secondary-engine-first: matching_engine_primary did not follow within {_ME_LEADER_TIMEOUT:.0f}s")
+                log(f"  matching_engine_primary follows ({time.monotonic() - t0:.1f}s)")
             log("")
         elif not scenario.ha_disabled:
             # The same for a single matching engine with high availability on: it asks to lead
