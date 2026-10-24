@@ -1,7 +1,7 @@
 # Sending the publishers each committed record from memory, not from the WAL {#publishers_sent_from_memory}
 
 This is the design for [BUG-0171](../bug_list.md#bug_0171). Andrew agreed it on 24 October 2026, answering yes to
-all three decisions in section 7. It is being built in the order of section 6.
+all three decisions in section 7. It is built, in the order of section 6, and BUG-0171 is fixed.
 
 ## 1. The problem
 
@@ -218,6 +218,42 @@ This is a change to what a publisher is guaranteed, and it is decision 1 in sect
    the round trip measured as for BUG-0171, on a quiet machine with the load client pinned. Success is the
    share of the thread spent on the publishers falling from about 16 per cent to about the sending half,
    with no change to the round trip.
+
+   **Done, 24 October 2026.** One build throughout; the copy was switched off and on with
+   `records_kept_for_publishers`, set to 0 or 32,768 in the deployed configurations, so the arms differ in nothing
+   else. The machine was in its measuring state and otherwise idle. `perf` on the leading sequencer's thread for 30
+   seconds of a fill of 300,000 orders at 4,000 a second, each share being of that thread's samples:
+
+   | | Copy off | Copy off, repeated | Copy on |
+   |---|---|---|---|
+   | Samples on the sequencer's thread | 2,661 | 3,915 | 2,468 |
+   | Sending committed records to the publishers | 17.9% | 17.3% | 5.6% |
+   | Checking checksums, everywhere on the thread | 18.5% | 17.6% | 9.4% |
+   | Sending to each publisher (`SequencerPublisherLinks::send_record`) | 4.7% | 5.3% | 4.7% |
+   | Keeping each record (`WalHandedOverFollowers::written`) | -- | -- | 0.1% |
+   | Writing the WAL (`ReplicatedWal::write`), for comparison | 12.1% | 10.9% | 12.5% |
+
+   With the copy on, nothing is left of checking checksums under sending to the publishers: what remains of it,
+   9.4 per cent, is the WAL's own checksum as each record is written, which is the same in every arm. What is left
+   of sending to the publishers is the sending itself, about 5 per cent, as section 1 expected. Keeping each
+   record costs 0.1 per cent.
+
+   The first fill with the copy off is not a fair comparison on its own: it began about a minute after the full
+   set of scenarios had finished writing to the same disk, the disk was busy all of the time with writes waiting
+   up to 1.1 seconds, and after `perf` had stopped the leading sequencer lost its lease and the leader changed
+   several times. It was repeated on a quiet disk, where it passed with no change of leader; its shares agree with
+   the first to within a point. The fill with the copy on had the disk at most 41 per cent busy and no change of
+   leader.
+
+   The order's round trip, with the secondary matching engine leading, the load client pinned, five runs of
+   6,000 orders in each arm, the first discarded; medians in microseconds:
+
+   | Copy off | Copy on | Copy off again |
+   |---|---|---|
+   | 108.0, 107.5, 107.4, 107.7 | 97.9, 107.6, 107.7, 107.3 | 98.9, 107.9, 108.0, 107.7 |
+
+   The round trip did not change. A run at about 98 rather than about 108 appeared with the copy on and with it
+   off, as the same build has done before from run to run, so it is the conditions and not the change.
 
 ## 7. Decisions
 

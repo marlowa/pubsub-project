@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 189 |
-| Open | 80 (59 defects, 21 tasks) |
-| Closed | 109 |
+| Open | 79 (58 defects, 21 tasks) |
+| Closed | 110 |
 | Next id | BUG-0190 |
 
 ## Open bugs by severity
 
-21 high, 48 medium, 11 low.
+21 high, 47 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -75,7 +75,6 @@
 | [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
 | [BUG-0167](#bug_0167) | medium | defect | A lease promise record can take longer to write than a lease period, and the leader then loses its lease |
 | [BUG-0169](#bug_0169) | medium | task | The high availability tests depend on the wording of Quill log messages; they should observe outcomes directly, or read a separate stream of named test events |
-| [BUG-0171](#bug_0171) | medium | defect | Sending committed records to the publishers costs about a fifth of the leading sequencer's time on its own thread, mostly in checking each record's checksum once for each publisher |
 | [BUG-0172](#bug_0172) | medium | defect | With high availability off, a matching engine publisher is caught up on the sequencer's own thread, unpaced |
 | [BUG-0173](#bug_0173) | medium | task | No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests |
 | [BUG-0174](#bug_0174) | medium | defect | With high availability on and no matching engine connected, the leading sequencer reads its WAL on its own thread to count the orders that are deferred |
@@ -3381,60 +3380,6 @@ part of the fix. The cost to the gateway's speed is measured
 before and after. Both gateways' orders are tested with the same malformed values, and must be
 treated identically.
 
-### BUG-0171: Sending committed records to the publishers costs about a fifth of the leading sequencer's time on its own thread, mostly in checking each record's checksum once for each publisher {#bug_0171}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-17 |
-| Recorded | 2026-10-17 |
-| How | `perf` on the leading sequencer's thread for 30 seconds of a fill of 300,000 orders at 4,000 a second, with both publishers handed over (`tmp/phase5/fill_perf.sh`) |
-| Impact | Work on the thread that sequences every order, done after each commit's work for the order path. At 4,000 orders a second the thread was still asleep most of the time, so nothing waited for it; at a higher rate it is time the order path no longer has |
-
-**What was measured.** Of the samples on the sequencer's thread, 22.8 per cent were in
-`send_committed_records_to_publishers`, against 10.6 per cent for writing the WAL itself
-(`ReplicatedWal::write`). Most of it is `WalCursor::read_next` checking the checksum of each record as it is
-read back (`Crc32::feed` was 22.6 per cent of all samples, the reading thread's share included), and each
-record is read and checked once for each publisher, so twice.
-
-**Why.** Once a publisher is handed over, the sequencer's thread sends it each record as it is committed,
-reading it back from the WAL with one cursor for each publisher (`WalHandedOverFollowers`,
-[following_the_wal.md](availability/following_the_wal.md), section 4.3), because by then it no longer holds
-the record's bytes.
-
-**What could be done.** Any of three, which are not alternatives in every respect, so the choice is a design
-decision: read each record once for every publisher, which halves the cost; do not check the checksum of a
-record this thread wrote moments before, which removes most of it; or keep each record's bytes in memory until
-it is committed, and send them from there, which reads nothing back but holds every record not yet committed.
-
-**Each record is now read once, 17 October 2026.** `WalHandedOverFollowers` reads each committed record once,
-with one shared reading, and sends it to every publisher in step with it. The same fill with `perf`, before and
-after, with almost the same number of samples (4,495 and 4,596):
-
-| | Before | After |
-|---|---|---|
-| Sending committed records to the publishers, share of the thread's samples | 22.8% | 16.0% |
-| of which checking checksums | 15.2% | 8.1% |
-| Writing the WAL, for comparison | 10.6% | 12.3% |
-
-The checking of checksums halved, as reading once should. The share as a whole fell by about a third, not by
-half, because each record is still converted into a message and sent to each publisher separately. What is left
-is about a sixth of the thread's time: half of it the one check of each record's checksum, half the sending.
-The other two ways listed above would remove most of the checksum's half.
-
-**The third way is chosen**: keep each record's bytes in memory until it is committed, and send the publishers
-those bytes, reading nothing back. The checksum stays on every read of the WAL. The design
-is [publishers_sent_from_memory.md](availability/publishers_sent_from_memory.md), agreed on 24 October 2026.
-
-The order's round trip did not change. Measured as for step 4 of phase 5, with the secondary matching engine
-leading, the medians of four runs were 121.3, 120.5, 120.3 and 120.6 microseconds with the build of step 4,
-108.0, 108.2, 108.0 and 107.7 with each record read once, and 108.8, 108.1, 108.0 and 108.0 with the build of
-step 4 measured again. The first arm differs from the third, with the same build, by as much as from the
-second, so the difference is in the conditions, not the change. That is as expected: the publishers are sent
-their records after the commit's work for the order path is done.
-
-**Principles.** F4.
-
 ### BUG-0172: With high availability off, a matching engine publisher is caught up on the sequencer's own thread, unpaced {#bug_0172}
 
 | | |
@@ -3901,6 +3846,69 @@ The first-run route must require a one-time secret generated for the installatio
 operator with access to the host. Creating the first administrator must consume that secret and close setup.
 
 ## Closed
+
+### BUG-0171: Sending committed records to the publishers costs about a fifth of the leading sequencer's time on its own thread, mostly in checking each record's checksum once for each publisher {#bug_0171}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-17 |
+| Recorded | 2026-10-17 |
+| Fixed | 2026-10-24 -- the publishers are sent each record from a copy kept in memory, and nothing is read back |
+| How | `perf` on the leading sequencer's thread for 30 seconds of a fill of 300,000 orders at 4,000 a second, with both publishers handed over (`tmp/phase5/fill_perf.sh`) |
+| Impact | Work on the thread that sequences every order, done after each commit's work for the order path. At 4,000 orders a second the thread was still asleep most of the time, so nothing waited for it; at a higher rate it is time the order path no longer has |
+
+**What was measured.** Of the samples on the sequencer's thread, 22.8 per cent were in
+`send_committed_records_to_publishers`, against 10.6 per cent for writing the WAL itself
+(`ReplicatedWal::write`). Most of it is `WalCursor::read_next` checking the checksum of each record as it is
+read back (`Crc32::feed` was 22.6 per cent of all samples, the reading thread's share included), and each
+record is read and checked once for each publisher, so twice.
+
+**Why.** Once a publisher is handed over, the sequencer's thread sends it each record as it is committed,
+reading it back from the WAL with one cursor for each publisher (`WalHandedOverFollowers`,
+[following_the_wal.md](availability/following_the_wal.md), section 4.3), because by then it no longer holds
+the record's bytes.
+
+**What could be done.** Any of three, which are not alternatives in every respect, so the choice is a design
+decision: read each record once for every publisher, which halves the cost; do not check the checksum of a
+record this thread wrote moments before, which removes most of it; or keep each record's bytes in memory until
+it is committed, and send them from there, which reads nothing back but holds every record not yet committed.
+
+**Each record is now read once, 17 October 2026.** `WalHandedOverFollowers` reads each committed record once,
+with one shared reading, and sends it to every publisher in step with it. The same fill with `perf`, before and
+after, with almost the same number of samples (4,495 and 4,596):
+
+| | Before | After |
+|---|---|---|
+| Sending committed records to the publishers, share of the thread's samples | 22.8% | 16.0% |
+| of which checking checksums | 15.2% | 8.1% |
+| Writing the WAL, for comparison | 10.6% | 12.3% |
+
+The checking of checksums halved, as reading once should. The share as a whole fell by about a third, not by
+half, because each record is still converted into a message and sent to each publisher separately. What is left
+is about a sixth of the thread's time: half of it the one check of each record's checksum, half the sending.
+The other two ways listed above would remove most of the checksum's half.
+
+**The third way is chosen**: keep each record's bytes in memory until it is committed, and send the publishers
+those bytes, reading nothing back. The checksum stays on every read of the WAL. The design
+is [publishers_sent_from_memory.md](availability/publishers_sent_from_memory.md), agreed on 24 October 2026.
+
+The order's round trip did not change. Measured as for step 4 of phase 5, with the secondary matching engine
+leading, the medians of four runs were 121.3, 120.5, 120.3 and 120.6 microseconds with the build of step 4,
+108.0, 108.2, 108.0 and 107.7 with each record read once, and 108.8, 108.1, 108.0 and 108.0 with the build of
+step 4 measured again. The first arm differs from the third, with the same build, by as much as from the
+second, so the difference is in the conditions, not the change. That is as expected: the publishers are sent
+their records after the commit's work for the order path is done.
+
+**Fixed, 24 October 2026.** The sequencer keeps a copy of each record from when it writes it until it has sent it to
+every publisher, and sends that copy, so nothing is read back from the WAL for the publishers in ordinary running
+([publishers_sent_from_memory.md](availability/publishers_sent_from_memory.md)). Measured with one build and the
+copy switched off and on by its setting, the share of the sequencer's thread spent sending committed records to the
+publishers fell from 17.3 per cent to 5.6 per cent, which is the sending itself, and checking checksums under it
+fell to nothing. The order's round trip did not change: medians of 107.4 to 108.0 microseconds with the copy off
+and 107.3 to 107.7 with it on. Section 6, step 4 of the design has the figures.
+
+**Principles.** F4.
 
 ### BUG-0186: The reactor's heartbeat sometimes fell far behind under load, failing PollingReactorKeepsServingEverySourceWhileOneIsBusy about one run in six {#bug_0186}
 
