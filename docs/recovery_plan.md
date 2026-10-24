@@ -434,13 +434,24 @@ small steps, with the whole test suite passing after each.
 
 ### Phase 11. Check the models and documents against the principles
 
-**For:** the written descriptions agreeing with the repaired code.
+**For:** the written descriptions agreeing with the repaired code, and no state copied between the instances
+of a pair except through the WAL.
 
-**Involves:** checking the TLA+ models against the agreed principles; bringing the high-availability, sequencer
-and matching engine documents up to date with the code, as part of the documentation audit already
-under way; removing descriptions of mechanisms that phases 3 to 9 removed.
+**Involves:**
 
-**Finished when:** the documentation audit marks those documents done.
+- checking the TLA+ models against the agreed principles;
+- bringing the high-availability, sequencer and matching engine documents up to date with the code, as part of
+  the documentation audit already under way, and removing descriptions of mechanisms that phases 3 to 9 removed;
+- checking every connection between the two instances of a pair (the two sequencers, the two matching engines,
+  the two gateways, and any other pair) for state that one instance sends the other outside the WAL. Such a copy
+  does not have the WAL's numbering with no gaps, so it can lose changes without either instance knowing, as the
+  matching engine's `BookUpdate` copy does ([BUG-0187](bug_list.md#bug_0187)). For each one found: say what
+  state it carries, whether a lost or repeated message can leave the receiver wrong without its knowing, and
+  either move that state into the WAL or show that a loss is always noticed and made up. Each finding that is a
+  defect is recorded in the bug list.
+
+**Finished when:** the documentation audit marks those documents done, and every connection between the
+instances of a pair has been checked, with its result written down.
 
 ### Phase 12. Return to the bug list
 
