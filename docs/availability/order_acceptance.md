@@ -177,7 +177,7 @@ taken with no matching engine in existence and the member told nothing about any
 ## See also
 
 - [BUG-0009](../bug_list.md#bug_0009) — the venue accepting orders indefinitely with no matching engine, closed by this design
-- [BUG-0010](../bug_list.md#bug_0010) — failing over into a condition both instances share
+- [BUG-0028](../bug_list.md#bug_0028) — the order book growing until the machine runs out of memory, a condition both engines share
 - [WAL and High Availability](wal_and_ha.md) — why a deferred order is durable in the first place
 - [Gateway throttles](../venue/gateway_throttles.md) — the other reason a gateway refuses a command
 

@@ -2,18 +2,17 @@
 
 | | |
 |---|---|
-| Bugs recorded | 191 |
-| Open | 80 (58 defects, 22 tasks) |
-| Closed | 111 |
-| Next id | BUG-0192 |
+| Bugs recorded | 193 |
+| Open | 81 (57 defects, 24 tasks) |
+| Closed | 112 |
+| Next id | BUG-0194 |
 
 ## Open bugs by severity
 
-20 high, 48 medium, 12 low.
+20 high, 49 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
-| [BUG-0010](#bug_0010) | high | defect | HA fails over into a condition both nodes share |
 | [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
 | [BUG-0029](#bug_0029) | high | defect | A process death on the same host takes the machine-death path |
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
@@ -33,6 +32,7 @@
 | [BUG-0187](#bug_0187) | high | defect | The follower matching engine's copy of the book loses every change made while the link between the two engines is down, and nothing notices |
 | [BUG-0188](#bug_0188) | high | defect | The book is copied only from the engine configured as primary, so once the secondary leads, the primary's copy is never brought up to date |
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
+| [BUG-0193](#bug_0193) | high | task | Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -81,6 +81,7 @@
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
 | [BUG-0190](#bug_0190) | medium | defect | A sequencer that takes the lead before a gateway has re-announced its sessions drops reports for those sessions in the meantime |
+| [BUG-0192](#bug_0192) | medium | task | Scenarios that kill the primary matching engine by name go on when the secondary has won the first election, and then fail for a reason unrelated to what they test |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -2137,166 +2138,6 @@ Partly overtaken by the 0.3.0 work, which replaced the blanket `SequenceReset-Ga
 resends carrying `PossDupFlag`. The original concern — never exercised under load — still stands,
 and the trading-day profile is a natural place to exercise it once it drives the FIX gateway.
 
-### BUG-0010: HA fails over into a condition both nodes share {#bug_0010}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-08 |
-| Recorded | 2026-08-08 (49d9dd1) |
-| How | The first clean trading-day load run — the primary was OOM-killed and the promoted secondary died 2 minutes later. Recurred 2026-08-21 |
-| Impact | Failover postponed an outage by about 4 minutes instead of preventing it |
-
-The HA mechanism itself performed correctly and quickly:
-
-```
-16:49:30  primary OOM-killed (9.9 GB, book 8,388,608)
-16:49:31  secondary: replication connection lost -- replica book now stale
-16:49:46  promotion timeout fired, arbitration requested, elected leader
-16:49:49  reconciled 58,444 records in 2.8s -- book 8,445,780
-16:51:41  reactor watchdog: callback stuck [109105 ms] -- orderly shutdown
-```
-
-Detection, arbitration, promotion and reconciliation all worked. **The secondary then died
-of the same thing**, because it came up holding a book of 8,445,780 orders on a machine
-that had just killed a process for holding 9.9 GB.
-
-**HA protects against independent failures. It cannot protect against a systemic condition
-both nodes share** — memory exhaustion, a poison message, a bug reached by the same input,
-a shared dependency. Failing over into it converts an outage into a slightly later outage
-and burns the standby doing it.
-
-**2026-08-21: the same failure, and this time the standby survived it.** The primary was
-OOM-killed again, at a larger book still, and the promoted secondary kept trading:
-
-```
-19:08:41  primary OOM-killed (anon-rss 10.3 GB, 2^25-bucket table)
-19:08:42  secondary arms the 15s promotion timeout
-19:08:57  timeout fires, arbitration requested -- decision received 3 ms later
-19:09:04  duplicate ArbitrationDecision correctly ignored
-19:11     back to 1926 orders/s, and stayed there for the remaining three phases
-```
-
-The difference is not that HA improved. It is that killing the primary **freed 10 GB**, so the
-condition the two nodes shared stopped being true the moment one of them died. Memory available
-went from zero to 12.9 GB. That is luck rather than design -- had the survivor needed to grow its
-own table again it would have gone the same way -- but it is worth recording that the mechanism
-recovers cleanly when the shared condition lifts, and that arbitration itself took 3 ms under
-genuine exhaustion with a ~10 GB book to take over.
-
-It also sharpens the point above. The systemic condition here is the growth policy, and the entry
-on it is *Growing the order book by doubling needs more memory than the machine has*. Reserving
-the table instead of growing into it removes the condition rather than surviving it.
-
-Worth designing for explicitly. Open questions rather than a plan:
-
-- Should a promoted node **check its own headroom** before accepting promotion, and decline
-  if it is in the same state the primary died in?
-- Should the arbiter know *why* the primary went, so it can distinguish "the process died"
-  from "the process died of something I am also suffering"?
-- Is there a signal a node can publish that means "I am not a safe failover target"?
-- What is the right behaviour when there is no safe target — refuse orders rather than
-  accept ones that cannot be processed? See BUG-0009, on accepting orders with no
-  matching engine.
-
-Note this run's book growth was itself an artefact: the matching engine does no matching and the load
-client cannot yet cancel, so nothing removed orders. The **failover behaviour** is the
-finding here, not the growth.
-
-#### Revised 2026-08-09: the outcome is not always this bad, and the reason is worth keeping
-
-Run 8 reached the same state — machine exhausted, MemAvailable 0.42 GB, primary matching
-engine OOM-killed at 12.9 GB while rehashing — and **failover succeeded**. The venue
-completed the trading day:
-
-```
-11:17:52  primary OOM-killed (anon-rss 12.9 GB, mid-rehash at 2^23)
-11:18:07  ArbitrationDecision (group=matching_engine leader=2 follower=1 epoch=1)
-11:19:23  secondary adopts LEADER (91s after the kill)
-          phases 5, 6 and 7 all PASS -- every order acknowledged
-11:48:51  clean shutdown, every component
-```
-
-The secondary went on to reach 14.88 GB — **larger than the primary ever was** — and
-survived, because killing the primary freed 7.6 GB.
-
-**When the shared condition is memory, the OOM killer's victim selection is load shedding.**
-Removing the largest consumer relieves the survivor, so the systemic condition is not
-uniformly fatal the way the original entry implies. That does not make HA a defence against
-systemic failure — it made no difference to the *cause*, and phase 4 still failed with a p99
-of 107 seconds — but the failure mode is "may or may not survive, depending on which process
-the kernel picks and how much its death releases", not "will die too".
-
-This sharpens the open questions above rather than answering them. A promoted node checking
-its own headroom would, in run 8, have **wrongly declined** a promotion it went on to
-complete successfully, because the headroom it needed did not exist until the moment the
-primary died.
-
-#### A line of attack, proposed 13 October 2026 and not yet designed in detail
-
-The systemic conditions this entry names fall into three kinds, and each needs a different answer:
-running out of memory; a command that reaches the same bug on both matching engines, called here a
-poison command; and a dependency or a mistake both machines share. The first can be removed. The second
-cannot be prevented outright, but it can be made to cost one command instead of the venue. The third
-is a matter of deployment.
-
-**Memory: make it a question answered when the engine starts, not one discovered during the day.**
-
-- **The engine refuses to start without the memory it will need.** Its memory is mostly its fixed
-  capacities: the open-order region (`order_book_region_capacity`, 2,000,000 orders in every
-  environment), the order book's table, and the pools behind its queues. A configured figure for
-  the memory needed is a start, but it can drift away from those capacities, so the figure is either
-  computed from them or checked against them, and the engine refuses to start if it is too low.
-- **The memory is reserved and touched at start-up, not looked up.** The kernel's figure for the
-  memory available is an estimate at one moment, and Linux lends memory it may not have: a process
-  can pass a check at the start of the day and be killed hours later, when its pages are first
-  touched. An engine that allocates and touches every page of its capacity when it starts, as the
-  open-order region already does when it is created, either gets the memory then or fails then. On
-  failure it logs at Critical and stops, and its launcher (`scripts/launch.py`) gives up on it after
-  its allowed restarts. One engine left is a loss of resilience, reported loudly; none is a failed
-  venue, known at the start of the day instead of in the middle of it.
-- **A full book refuses orders instead of growing.** This is what removes the shared condition. Both
-  incidents above are the book's table growing by doubling until the machine ran out
-  ([BUG-0028](#bug_0028)). A book that cannot grow past the size it reserved, and that rejects a new
-  order with a reason when it is full, gives the same answer on both engines and kills neither.
-- **Why this answers the last point above.** A promoted engine that checked its headroom at the moment
-  of promotion would have declined in run 8, wrongly, because the memory it needed was freed only by
-  the primary's death. With the memory reserved at the start of the day, both engines already hold
-  everything they will ever use, and neither needs any headroom when it is promoted.
-
-This part does not depend on the recovery plan. It needs the book's table reserved instead of grown
-(BUG-0028) and the queues' pools fixed in size ([BUG-0127](#bug_0127)).
-
-**A poison command: limit what it costs, because the standby cannot be relied on to survive it.**
-Once the two engines are deterministic and both apply the WAL, which is phases 7 and 8 of the recovery
-plan, a command that crashes one crashes the other at the same point.
-
-1. **Catch what can be caught, and reject the command.** Many faults show themselves as an exception
-   or a failed precondition check rather than a crash. If the engine catches at the point where it
-   applies one command, it rejects that command to its member and goes on. Both engines reject it
-   alike, because both are deterministic.
-2. **A crash on a command costs that command.** Before applying command N, the engine records N in a
-   small persisted slot. On restart, finding that it died applying N, it does not simply catch up and
-   apply N again, which would kill it again until its launcher gave up. It asks for N to be voided, and
-   the void is written into the WAL as a command of its own, so both engines skip N alike and its
-   member is sent a rejection. That follows the rule agreed in question 2 of
-   [ha_library_boundary.md](availability/ha_library_boundary.md): every decision that changes the book
-   enters the WAL as a command. The rule that makes it safe: a command is voided only if no running
-   engine has applied it. If the other engine applied N without harm, N did not cause the crash, and the
-   engine that crashed takes the survivor's state instead of skipping anything. A stronger form voids
-   the command and halts trading in its instrument, which keeps a damaged book to one symbol; that
-   needs a trading halt ([BUG-0065](#bug_0065)).
-3. **Make poison commands rarer.** Fuzz the engine's handling of commands: random but well-formed
-   commands applied to the matching code, with the book's invariants checked after each one. Keep the
-   gateways' strict checks of each field, so that a malformed order never reaches the engine.
-
-Parts 1 and 3 fit phase 7, making the engine deterministic, where fuzzing and running both engines on
-one WAL are natural tests. Part 2 needs phases 7 and 8.
-
-**A shared dependency or a shared mistake**, such as one disk serving both machines or the same wrong
-configuration on both, is not covered by either of the above. The answers are deployment practice, and
-start-up checks that refuse a configuration the program can see is wrong.
-
 ### BUG-0014: Python style warnings across the top-level scripts, and a lint gate that ignores them {#bug_0014}
 
 | | |
@@ -3818,7 +3659,7 @@ Also: the Warning and event 211 are given in every scenario for `INJECT-TEST`, t
 be removed.
 
 **Design:** [reports_held_until_sessions_are_announced.md](availability/reports_held_until_sessions_are_announced.md),
-a draft for review.
+agreed 24 October 2026.
 
 **Principles.** V8: every report the matching engine produces reaches the member (G3).
 
@@ -3852,7 +3693,238 @@ left.
 
 **Principles.** None of the venue's; this is the test tooling.
 
+### BUG-0192: Scenarios that kill the primary matching engine by name go on when the secondary has won the first election, and then fail for a reason unrelated to what they test {#bug_0192}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- the test harness, not the venue |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | Running scenario 77 on a build with a deliberate fault, to show it fails without the fix for [BUG-0190](#bug_0190): it failed earlier, waiting 30 seconds for the secondary engine to lead after the primary was killed. The secondary had led since start-up, five seconds after it started, before the primary was killed |
+| Impact | A scenario fails, now and then, for no fault in what it tests, and the failure reads as a failed promotion. A real failure in such a run is hidden behind it |
+
+**What happens.** In phase 2 of a scenario with both matching engines, `ha_test.py` waits until one of the two
+engines leads, and goes on whichever it is. Either may win the first election. Scenarios 16, 21, 24, 25, 26, 32, 34,
+35, 54, 55 and 77 then kill or restart `matching_engine_primary` by name, and expect `matching_engine_secondary` to be
+promoted. When the secondary already leads, the follower is killed, nothing is promoted, and the wait for the
+secondary to lead runs out.
+
+**What is wanted.** Either phase 2 of those scenarios requires the configured primary engine to lead, and fails at
+once, naming the reason, when it does not; or the steps name the leading engine and the following one, whichever
+they are, instead of the primary and the secondary. The second is closer to how the venue works, since which instance
+leads is decided at run time; the first is the smaller change.
+
+**Principles.** None of the venue's; this is the test harness.
+
+### BUG-0193: Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs {#bug_0193}
+
+| | |
+|---|---|
+| Severity | high |
+| Kind | task -- a design for phases 7 and 8 of the recovery plan |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | Discussing with Andrew whether to close [BUG-0010](#bug_0010), which named it among the failures both instances of a pair share |
+| Impact | One malformed or unexpected command stops the venue: both engines crash applying it, each restarts, catches up, applies it again and crashes again, until its launcher gives up |
+
+**Why it will happen.** Phases 7 and 8 of the [recovery plan](recovery_plan.md) make the two engines deterministic
+and have both apply every command from the WAL. That is what lets a promoted engine keep the members' resting
+orders. It also means a command that reaches a defect in the engine reaches it in both, at the same command. The
+standby gives no protection against it, by design.
+
+**What is wanted**, from BUG-0010's line of attack, to be designed in phases 7 and 8:
+
+1. **Catch what can be caught, and reject the command.** A fault that shows itself as an exception or a failed
+   precondition check, caught where the engine applies one command, rejects that command to its member, and the
+   engine goes on. Both engines reject it alike, because both are deterministic. Phase 7.
+2. **A crash on a command costs that command.** Before applying command N, the engine records N in a small
+   persisted slot. Restarting, and finding that it died applying N, it asks for N to be voided rather than applying
+   it again, and the void is written into the WAL as a command of its own, so that both engines skip N alike and its
+   member is sent a rejection. A command is voided only if no running engine has applied it: if the other engine
+   applied N without harm, N did not cause the crash. Phases 7 and 8.
+3. **Make such commands rarer.** Fuzz the engine with random, well-formed commands, checking the book's invariants
+   after each, and keep the gateways' strict checks of each field. Phase 7.
+
+**Principles.** V6: every command a gateway accepted is answered; V11: a loss of resilience is not a loss of service.
+
 ## Closed
+
+### BUG-0010: HA fails over into a condition both nodes share {#bug_0010}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-08 |
+| Recorded | 2026-08-08 (49d9dd1) |
+| Fixed | 2026-10-24 -- closed by Andrew as a broad heading; its two remaining parts are BUG-0028 and BUG-0193 |
+| How | The first clean trading-day load run — the primary was OOM-killed and the promoted secondary died 2 minutes later. Recurred 2026-08-21 |
+| Impact | Failover postponed an outage by about 4 minutes instead of preventing it |
+
+The HA mechanism itself performed correctly and quickly:
+
+```
+16:49:30  primary OOM-killed (9.9 GB, book 8,388,608)
+16:49:31  secondary: replication connection lost -- replica book now stale
+16:49:46  promotion timeout fired, arbitration requested, elected leader
+16:49:49  reconciled 58,444 records in 2.8s -- book 8,445,780
+16:51:41  reactor watchdog: callback stuck [109105 ms] -- orderly shutdown
+```
+
+Detection, arbitration, promotion and reconciliation all worked. **The secondary then died
+of the same thing**, because it came up holding a book of 8,445,780 orders on a machine
+that had just killed a process for holding 9.9 GB.
+
+**HA protects against independent failures. It cannot protect against a systemic condition
+both nodes share** — memory exhaustion, a poison message, a bug reached by the same input,
+a shared dependency. Failing over into it converts an outage into a slightly later outage
+and burns the standby doing it.
+
+**2026-08-21: the same failure, and this time the standby survived it.** The primary was
+OOM-killed again, at a larger book still, and the promoted secondary kept trading:
+
+```
+19:08:41  primary OOM-killed (anon-rss 10.3 GB, 2^25-bucket table)
+19:08:42  secondary arms the 15s promotion timeout
+19:08:57  timeout fires, arbitration requested -- decision received 3 ms later
+19:09:04  duplicate ArbitrationDecision correctly ignored
+19:11     back to 1926 orders/s, and stayed there for the remaining three phases
+```
+
+The difference is not that HA improved. It is that killing the primary **freed 10 GB**, so the
+condition the two nodes shared stopped being true the moment one of them died. Memory available
+went from zero to 12.9 GB. That is luck rather than design -- had the survivor needed to grow its
+own table again it would have gone the same way -- but it is worth recording that the mechanism
+recovers cleanly when the shared condition lifts, and that arbitration itself took 3 ms under
+genuine exhaustion with a ~10 GB book to take over.
+
+It also sharpens the point above. The systemic condition here is the growth policy, and the entry
+on it is *Growing the order book by doubling needs more memory than the machine has*. Reserving
+the table instead of growing into it removes the condition rather than surviving it.
+
+Worth designing for explicitly. Open questions rather than a plan:
+
+- Should a promoted node **check its own headroom** before accepting promotion, and decline
+  if it is in the same state the primary died in?
+- Should the arbiter know *why* the primary went, so it can distinguish "the process died"
+  from "the process died of something I am also suffering"?
+- Is there a signal a node can publish that means "I am not a safe failover target"?
+- What is the right behaviour when there is no safe target — refuse orders rather than
+  accept ones that cannot be processed? See BUG-0009, on accepting orders with no
+  matching engine.
+
+Note this run's book growth was itself an artefact: the matching engine does no matching and the load
+client cannot yet cancel, so nothing removed orders. The **failover behaviour** is the
+finding here, not the growth.
+
+#### Revised 2026-08-09: the outcome is not always this bad, and the reason is worth keeping
+
+Run 8 reached the same state — machine exhausted, MemAvailable 0.42 GB, primary matching
+engine OOM-killed at 12.9 GB while rehashing — and **failover succeeded**. The venue
+completed the trading day:
+
+```
+11:17:52  primary OOM-killed (anon-rss 12.9 GB, mid-rehash at 2^23)
+11:18:07  ArbitrationDecision (group=matching_engine leader=2 follower=1 epoch=1)
+11:19:23  secondary adopts LEADER (91s after the kill)
+          phases 5, 6 and 7 all PASS -- every order acknowledged
+11:48:51  clean shutdown, every component
+```
+
+The secondary went on to reach 14.88 GB — **larger than the primary ever was** — and
+survived, because killing the primary freed 7.6 GB.
+
+**When the shared condition is memory, the OOM killer's victim selection is load shedding.**
+Removing the largest consumer relieves the survivor, so the systemic condition is not
+uniformly fatal the way the original entry implies. That does not make HA a defence against
+systemic failure — it made no difference to the *cause*, and phase 4 still failed with a p99
+of 107 seconds — but the failure mode is "may or may not survive, depending on which process
+the kernel picks and how much its death releases", not "will die too".
+
+This sharpens the open questions above rather than answering them. A promoted node checking
+its own headroom would, in run 8, have **wrongly declined** a promotion it went on to
+complete successfully, because the headroom it needed did not exist until the moment the
+primary died.
+
+#### A line of attack, proposed 13 October 2026 and not yet designed in detail
+
+The systemic conditions this entry names fall into three kinds, and each needs a different answer:
+running out of memory; a command that reaches the same bug on both matching engines, called here a
+poison command; and a dependency or a mistake both machines share. The first can be removed. The second
+cannot be prevented outright, but it can be made to cost one command instead of the venue. The third
+is a matter of deployment.
+
+**Memory: make it a question answered when the engine starts, not one discovered during the day.**
+
+- **The engine refuses to start without the memory it will need.** Its memory is mostly its fixed
+  capacities: the open-order region (`order_book_region_capacity`, 2,000,000 orders in every
+  environment), the order book's table, and the pools behind its queues. A configured figure for
+  the memory needed is a start, but it can drift away from those capacities, so the figure is either
+  computed from them or checked against them, and the engine refuses to start if it is too low.
+- **The memory is reserved and touched at start-up, not looked up.** The kernel's figure for the
+  memory available is an estimate at one moment, and Linux lends memory it may not have: a process
+  can pass a check at the start of the day and be killed hours later, when its pages are first
+  touched. An engine that allocates and touches every page of its capacity when it starts, as the
+  open-order region already does when it is created, either gets the memory then or fails then. On
+  failure it logs at Critical and stops, and its launcher (`scripts/launch.py`) gives up on it after
+  its allowed restarts. One engine left is a loss of resilience, reported loudly; none is a failed
+  venue, known at the start of the day instead of in the middle of it.
+- **A full book refuses orders instead of growing.** This is what removes the shared condition. Both
+  incidents above are the book's table growing by doubling until the machine ran out
+  ([BUG-0028](#bug_0028)). A book that cannot grow past the size it reserved, and that rejects a new
+  order with a reason when it is full, gives the same answer on both engines and kills neither.
+- **Why this answers the last point above.** A promoted engine that checked its headroom at the moment
+  of promotion would have declined in run 8, wrongly, because the memory it needed was freed only by
+  the primary's death. With the memory reserved at the start of the day, both engines already hold
+  everything they will ever use, and neither needs any headroom when it is promoted.
+
+This part does not depend on the recovery plan. It needs the book's table reserved instead of grown
+(BUG-0028) and the queues' pools fixed in size ([BUG-0127](#bug_0127)).
+
+**A poison command: limit what it costs, because the standby cannot be relied on to survive it.**
+Once the two engines are deterministic and both apply the WAL, which is phases 7 and 8 of the recovery
+plan, a command that crashes one crashes the other at the same point.
+
+1. **Catch what can be caught, and reject the command.** Many faults show themselves as an exception
+   or a failed precondition check rather than a crash. If the engine catches at the point where it
+   applies one command, it rejects that command to its member and goes on. Both engines reject it
+   alike, because both are deterministic.
+2. **A crash on a command costs that command.** Before applying command N, the engine records N in a
+   small persisted slot. On restart, finding that it died applying N, it does not simply catch up and
+   apply N again, which would kill it again until its launcher gave up. It asks for N to be voided, and
+   the void is written into the WAL as a command of its own, so both engines skip N alike and its
+   member is sent a rejection. That follows the rule agreed in question 2 of
+   [ha_library_boundary.md](availability/ha_library_boundary.md): every decision that changes the book
+   enters the WAL as a command. The rule that makes it safe: a command is voided only if no running
+   engine has applied it. If the other engine applied N without harm, N did not cause the crash, and the
+   engine that crashed takes the survivor's state instead of skipping anything. A stronger form voids
+   the command and halts trading in its instrument, which keeps a damaged book to one symbol; that
+   needs a trading halt ([BUG-0065](#bug_0065)).
+3. **Make poison commands rarer.** Fuzz the engine's handling of commands: random but well-formed
+   commands applied to the matching code, with the book's invariants checked after each one. Keep the
+   gateways' strict checks of each field, so that a malformed order never reaches the engine.
+
+Parts 1 and 3 fit phase 7, making the engine deterministic, where fuzzing and running both engines on
+one WAL are natural tests. Part 2 needs phases 7 and 8.
+
+**A shared dependency or a shared mistake**, such as one disk serving both machines or the same wrong
+configuration on both, is not covered by either of the above. The answers are deployment practice, and
+start-up checks that refuse a configuration the program can see is wrong.
+
+**Closed, 24 October 2026, by Andrew's decision.** Most failures a venue meets are independent of each other: a disk,
+a power supply, a kernel, a cable. With one application to a machine, as in production, two such failures at once on
+the primary and the secondary are unlikely enough not to design for, and they are what high availability covers. The
+failures this entry names are not independent, and each has a home of its own:
+
+- **Running out of memory** is the book's table growing by doubling, and is [BUG-0028](#bug_0028). On separate
+  machines of the same size it would strike both engines together, since both hold the same book; on the one
+  development machine, the kernel killing one engine freed memory for the other, which separate machines would not
+  do. Reserving the memory when the engine starts removes the cause.
+- **A command that reaches a defect in the matching engine** crashes both engines at the same command once they run
+  in lockstep, which phases 7 and 8 of the [recovery plan](recovery_plan.md) build. Limiting what such a command
+  costs is [BUG-0193](#bug_0193), designed in those phases.
+- **A shared dependency or a shared mistake**, such as one disk serving both machines, or the same wrong
+  configuration on both, is a matter of deployment practice and of start-up checks, and has no entry of its own.
 
 ### BUG-0182: After a sequencer restarts and then takes the lead, members are not told of the orders the matching engine accepts {#bug_0182}
 

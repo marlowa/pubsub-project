@@ -120,7 +120,8 @@ instances share -- a poison order, a bad build, a configuration both read -- the
 and is judged in its turn. The venue then has no instance of that component and a supervisor that
 has stopped trying. That must be announced rather than discovered: a venue quietly running with
 nothing behind a component is the failure that looks like health. This is the same shape as
-BUG-0010, where high availability fails over into a condition both nodes share. **Nothing implements
+a failure both instances of a pair share, such as the book growing until the machine runs out of memory
+([BUG-0028](../bug_list.md#bug_0028)). **Nothing implements
 this announcement yet**: when the last instance's supervisor gives up, the venue is left without that
 component and only `<name>.launcher.state` says so. The announcement needs the means for the venue
 to say anything about itself, described in [Trading phases](../venue/trading_phases.md).

@@ -329,7 +329,11 @@ book and the same reports.
 - turning the decisions the leading engine now takes alone into commands in the WAL: halting after an
   absence, acting on promotion, and refusing orders while halted. This includes designing how the
   absence rule is measured, so that a restarted engine never cancels its book because of its own
-  downtime ([BUG-0146](bug_list.md#bug_0146)).
+  downtime ([BUG-0146](bug_list.md#bug_0146));
+- designing what a command that reaches a defect in the engine costs, since a deterministic engine pair meets it
+  in both engines at the same command ([BUG-0193](bug_list.md#bug_0193)): catching what can be caught where one
+  command is applied and rejecting that command alike in both engines, and fuzzing the engine with well-formed
+  commands, checking the book after each. Voiding a command that crashed the engine is designed with phase 8.
 
 **Finished when:** both engines, run on the same WAL, produce identical reports, and the high
 availability scenarios pass.
@@ -383,6 +387,11 @@ that sends and applies it; the catch-up on promotion from the end of a copy; and
 - a scenario that blocks the link between the engines, places and cancels orders during the break, kills
   the leading engine, and compares the promoted book with what the members were told, passes. It is written
   before the phase starts, and fails today with `"keep"`.
+
+**Also designed in this phase:** voiding a command that crashed an engine, so that a command both engines
+crash on costs that command and not the venue: the engine records each command before applying it, and one
+that finds it died applying a command asks for the command to be voided through the WAL, provided no running
+engine has applied it ([BUG-0193](bug_list.md#bug_0193)).
 
 **Still to settle when the phase is designed:** whether the follower compares its reports, or a summary of
 its book, with the leader's while the venue runs, so that a difference is noticed at once rather than at a
