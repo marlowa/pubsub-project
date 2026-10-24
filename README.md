@@ -4,9 +4,7 @@
 ![C++](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
-**Current version:** v0.4.0 — see [CHANGELOG.md](CHANGELOG.md).
-
-**Development is paused.** [docs/project_status.md](docs/project_status.md) says what works, what is known to be wrong, and where anyone picking the project up should start.
+**Current version:** v0.4.0 — see [CHANGELOG.md](CHANGELOG.md). Development continues: new features are frozen while the design is restored, phase by phase, under [the plan for restoring the design](docs/recovery_plan.md). [docs/project_status.md](docs/project_status.md) says what works, what is known to be wrong, and where to start.
 
 ---
 
@@ -152,7 +150,8 @@ somewhere realistic to measure things. No exchange runs it. It is not for sale a
 supporting it. It is released under the Apache 2.0 licence, so anyone may read it, use it or
 build on it.
 
-Development is currently **paused** at version 0.4.0. [The project status](docs/project_status.md)
+Development continues. New features are frozen while the design is restored, phase by phase,
+under [the plan for restoring the design](docs/recovery_plan.md). [The project status](docs/project_status.md)
 says exactly what works, what is known to be wrong, and where somebody picking it up should
 begin.
 
