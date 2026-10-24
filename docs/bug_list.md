@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 195 |
-| Open | 81 (58 defects, 23 tasks) |
+| Bugs recorded | 196 |
+| Open | 82 (58 defects, 24 tasks) |
 | Closed | 114 |
-| Next id | BUG-0196 |
+| Next id | BUG-0197 |
 
 ## Open bugs by severity
 
-22 high, 47 medium, 12 low.
+22 high, 48 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -34,7 +34,7 @@
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
 | [BUG-0193](#bug_0193) | high | task | Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
-| [BUG-0195](#bug_0195) | high | defect | When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and six scenarios fail |
+| [BUG-0195](#bug_0195) | high | defect | When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and seven scenarios fail |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -82,6 +82,7 @@
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
+| [BUG-0196](#bug_0196) | medium | task | Scenarios 13, 29 and 48 name a matching engine by its configuration, so they fail when the secondary leads at the start |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -3719,7 +3720,7 @@ a loss of resilience is not a loss of service (V11).
 **Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
 the member.
 
-### BUG-0195: When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and six scenarios fail {#bug_0195}
+### BUG-0195: When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and seven scenarios fail {#bug_0195}
 
 | | |
 |---|---|
@@ -3731,6 +3732,13 @@ the member.
 
 **What was seen.** With the secondary engine leading at the start, scenarios 16, 21, 24, 25, 54 and 55 failed; 26, 32,
 34, 35 and 77 passed. With the primary leading at the start, all 11 pass.
+
+Run again on 24 October 2026 with `ha_test.py --scenario all --secondary-engine-first`, which runs all 23 scenarios
+with both engines: 13 passed and 10 failed. The six above failed again, and so did 77, with the symptom of 16: once
+the leading secondary was killed, the primary adopted the leader role (22:01:02) and sent no `ResumedAsLeader`, so
+the scenario could not confirm which book it resumed with. 77 passed in the first run, so it fails some of the time,
+not every time. The other three that failed, 13, 29 and 48, fail because of how the scenarios are written, and are
+recorded as [BUG-0196](#bug_0196).
 
 - **16, 21 and 24: the promoted primary never resumes as leader.** The primary started as follower with an empty book,
   and the leading secondary sent it no copy of the book, because the copy is sent only from the configured primary
@@ -3762,11 +3770,44 @@ from the WAL when the first sequencer connects, and saying what role they have o
 Andrew, 24 October 2026: this is done in phase 8 of the [recovery plan](recovery_plan.md), which rewrites how the
 follower engine builds its book, and not before it, so that code phase 8 replaces is not fixed first. Phase 8's
 finish condition includes it, and includes every scenario with both engines passing whichever engine leads at the
-start. Phase 8 of the [recovery plan](recovery_plan.md) removes the
-book copy, which is the cause of 16, 21 and 24; its scenarios must then pass whichever engine leads at the start, and
-the temporary copy that starts the secondary first is the way to check that.
+start. Phase 8 also removes the book copy, which is the cause of 16, 21 and 24.
+
+**How to reproduce.** `scripts/ha_test.py --scenario all --secondary-engine-first` runs the scenarios with both
+engines, starting the secondary engine first and the primary only once the secondary leads.
 
 **Principles.** V2: the WAL is the record; V8: every report the matching engine produces reaches the member.
+
+### BUG-0196: Scenarios 13, 29 and 48 name a matching engine by its configuration, so they fail when the secondary leads at the start {#bug_0196}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- the test harness, not the venue |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | Running every scenario with both matching engines with `ha_test.py --scenario all --secondary-engine-first`; the failed scenarios' Quill logs are in `tmp/ha_test_failures/20261024-*` |
+| Impact | When the secondary engine wins the first election, which it can do on a loaded machine, these three scenarios fail for a reason unrelated to what they test, or test something other than what they say |
+
+[BUG-0192](#bug_0192) made the scenarios that kill an engine name it by the role it had when the steps began,
+`ENGINE_LEADING_AT_START` or `ENGINE_FOLLOWING_AT_START`, rather than by the configuration it was started from.
+Three scenarios still name an engine by its configuration, and each assumes the configured primary leads:
+
+- **13** restarts `matching_engine_primary`, through `_me_primary_restart_step()`, and requires that the restarted
+  engine keeps the lead. With the secondary leading, the engine it restarts was the follower, and it fails with "the
+  restarted matching_engine_primary did not take the lead within 15s".
+- **29** restarts `matching_engine_secondary` as the follower, and requires that it never leads. With the secondary
+  leading, the engine it restarts was the leader, and it fails with "the restarted follower never promoted itself --
+  matching_engine_secondary leads".
+- **48** stops the machine holding `arbiter_primary`, `sequencer_primary` and `matching_engine_primary`, and waits
+  for the secondary engine to be promoted and send `ResumedAsLeader`. With the secondary already leading, the stopped
+  machine held the follower engine, nothing is promoted, and it fails with "the promoted secondary never reported
+  resuming as leader".
+
+**What is wanted.** 13 and 29 restart the engine named by its role at the start. 48 stops a machine chosen so that
+the leading engine is on it, as it does today when the primary leads; the machine is the leading engine together
+with the arbiter and sequencer configured on the same side as it.
+
+**Principles.** None of the design principles; this is about the test harness testing what it says it tests.
 
 ## Closed
 

@@ -169,6 +169,14 @@ Options:
     --ready-timeout SECS  Max seconds for initial leader election (default: 10)
     --failover-timeout S  Max seconds per failover step (default: 30)
     --recovery-timeout S  Max seconds for recovery orders (default: 30)
+    --secondary-engine-first
+                          Start matching_engine_secondary before
+                          matching_engine_primary, and start the primary only
+                          once the secondary leads.  After any failover of the
+                          matching engine the secondary leads, so a scenario
+                          must pass from that start too.  Applies only to the
+                          scenarios that run both matching engines; with
+                          'all', only those are run.
 
 When a scenario fails, its Quill logs and the test clients' output are copied to
 tmp/ha_test_failures/<time>-scenario-<number>-<short name> under the project before the next
@@ -6194,6 +6202,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
     log(f"  ready timeout    : {args.ready_timeout:.0f}s")
     log(f"  failover timeout : {args.failover_timeout:.0f}s  (per step)")
     log(f"  recovery timeout : {args.recovery_timeout:.0f}s")
+    if args.secondary_engine_first:
+        log("  engine start     : matching_engine_secondary first, and it must lead before matching_engine_primary starts")
     log("")
 
     # Process launch table (name, binary, config).
@@ -6273,6 +6283,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
         launch_table.insert(gateway_a_index + 1,
                             ("binary_order_gateway_a", "binary_order_gateway",
                              etc_dir / "binary_order_gateway" / "binary_order_gateway_a.toml"))
+
+    # With --secondary-engine-first, the engine configured as secondary is started before the one configured as
+    # primary. That is the state a venue is in after any failover of the matching engine, when the secondary leads,
+    # and a scenario must pass from it as well as from the usual start (BUG-0195).
+    if args.secondary_engine_first:
+        primary_index = next(index for index, entry in enumerate(launch_table) if entry[0] == "matching_engine_primary")
+        secondary_index = next(index for index, entry in enumerate(launch_table) if entry[0] == "matching_engine_secondary")
+        launch_table[primary_index], launch_table[secondary_index] = launch_table[secondary_index], launch_table[primary_index]
 
     if scenario.with_publishers:
         for which in ("primary", "secondary"):
@@ -6458,6 +6476,16 @@ def run_scenario(scenario: Scenario, args) -> bool:
             app_procs.append((name, proc))
             proc_by_name[name] = proc
             time.sleep(STARTUP_DELAY)
+            # A head start of a fixed length does not make the secondary lead: how long it takes to win its election
+            # depends on the machine's load. So the primary is not started until the secondary has been seen to lead,
+            # and the scenario stops if it never does, rather than going on to test the usual start under a name that
+            # says otherwise.
+            if args.secondary_engine_first and name == "matching_engine_secondary":
+                log(f"  Waiting until {name} leads before starting matching_engine_primary (timeout {_ME_LEADER_TIMEOUT:.0f}s) ...")
+                t0 = time.monotonic()
+                if _TEST_EVENTS.wait_for(leads(_TEST_EVENTS.messages, name), timeout=_ME_LEADER_TIMEOUT) is None:
+                    die(f"--secondary-engine-first: {name} did not lead within {_ME_LEADER_TIMEOUT:.0f}s of starting on its own")
+                log(f"  {name} leads ({time.monotonic() - t0:.1f}s)")
         log("")
 
         for name, proc in app_procs:
@@ -6554,6 +6582,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 log(f"  the steps' {ENGINE_LEADING_AT_START} is {leader_name}, and {ENGINE_FOLLOWING_AT_START} is {follower_name}")
             else:
                 log(f"  neither matching engine leads within {_ME_LEADER_TIMEOUT:.0f}s -- continuing, as the scenario may expect that")
+            if args.secondary_engine_first and leader_name != "matching_engine_secondary":
+                die(f"--secondary-engine-first: matching_engine_secondary was seen to lead before matching_engine_primary started, "
+                    f"but once both were running the engine that leads is {leader_name}")
             log("")
         elif not scenario.ha_disabled:
             # The same for a single matching engine with high availability on: it asks to lead
@@ -10353,6 +10384,14 @@ def main() -> None:
         "--recovery-timeout", type=float, default=30.0, metavar="SECS",
         help="Max seconds for recovery orders to appear in the ME log (default: 30)",
     )
+    parser.add_argument(
+        "--secondary-engine-first", action="store_true",
+        help=(
+            "Start matching_engine_secondary before matching_engine_primary, and start the primary only once the "
+            "secondary leads. Applies only to the scenarios that run both matching engines; with 'all', only those "
+            "scenarios are run"
+        ),
+    )
     args = parser.parse_args()
 
     for attr, flag in [("orders_before", "--orders-before"),
@@ -10394,7 +10433,7 @@ def main() -> None:
     os.environ["LD_LIBRARY_PATH"] = f"{lib_dir}:{existing}" if existing else lib_dir
 
     if args.scenario == "all":
-        scenarios_to_run = _SCENARIOS
+        scenarios_to_run = [scenario for scenario in _SCENARIOS if scenario.me_ha] if args.secondary_engine_first else _SCENARIOS
     else:
         scenario = _SCENARIO_MAP.get(args.scenario)
         if scenario is None:
@@ -10402,6 +10441,8 @@ def main() -> None:
                 f"unknown scenario {args.scenario}; valid values: "
                 + ", ".join(str(n) for n in valid_scenario_numbers)
             )
+        if args.secondary_engine_first and not scenario.me_ha:
+            parser.error(f"--secondary-engine-first applies only to scenarios that run both matching engines, and scenario {args.scenario} runs one")
         scenarios_to_run = [scenario]
 
     overall_pass = True

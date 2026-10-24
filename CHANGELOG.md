@@ -118,7 +118,7 @@ Fifty-three bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Amon
 
 ### Known limitations
 
-- **81 bugs are open, 22 of them high severity**; `docs/bug_list.md` lists them.
+- **82 bugs are open, 22 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both
@@ -169,6 +169,9 @@ to be wrong, and what was to come next.
   pair, with and without a launcher, in each role; 48 stops a whole machine; 50, 53 and 54 cover
   orders open across a restart, orders taken while an engine was away, and a catch-up race.
   `ha_test.py` refuses to start while a port is still held, and names the process holding it.
+  `ha_test.py --secondary-engine-first` runs the scenarios with both matching engines from the
+  start a venue is in after any failover of the engine: the secondary is started first, and the
+  primary only once the secondary leads.
 - **A functional specification**, `docs/book`, built with `make -C docs/book`. 139 requirements
   with permanent identifiers, each giving its reason; 24 are verified by a named `ha_test.py`
   scenario. `make check` fails on an identifier not in the ledger, a requirement with no reason, a
