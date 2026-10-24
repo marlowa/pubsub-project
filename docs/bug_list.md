@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 194 |
-| Open | 81 (57 defects, 24 tasks) |
-| Closed | 113 |
-| Next id | BUG-0195 |
+| Bugs recorded | 195 |
+| Open | 81 (58 defects, 23 tasks) |
+| Closed | 114 |
+| Next id | BUG-0196 |
 
 ## Open bugs by severity
 
-21 high, 48 medium, 12 low.
+22 high, 47 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -34,6 +34,7 @@
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
 | [BUG-0193](#bug_0193) | high | task | Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
+| [BUG-0195](#bug_0195) | high | defect | When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and six scenarios fail |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -81,7 +82,6 @@
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
-| [BUG-0192](#bug_0192) | medium | task | Scenarios that kill the primary matching engine by name go on when the secondary has won the first election, and then fail for a reason unrelated to what they test |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -3661,30 +3661,6 @@ left.
 
 **Principles.** None of the venue's; this is the test tooling.
 
-### BUG-0192: Scenarios that kill the primary matching engine by name go on when the secondary has won the first election, and then fail for a reason unrelated to what they test {#bug_0192}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task -- the test harness, not the venue |
-| Found | 2026-10-24 |
-| Recorded | 2026-10-24 |
-| How | Running scenario 77 on a build with a deliberate fault, to show it fails without the fix for [BUG-0190](#bug_0190): it failed earlier, waiting 30 seconds for the secondary engine to lead after the primary was killed. The secondary had led since start-up, five seconds after it started, before the primary was killed |
-| Impact | A scenario fails, now and then, for no fault in what it tests, and the failure reads as a failed promotion. A real failure in such a run is hidden behind it |
-
-**What happens.** In phase 2 of a scenario with both matching engines, `ha_test.py` waits until one of the two
-engines leads, and goes on whichever it is. Either may win the first election. Scenarios 16, 21, 24, 25, 26, 32, 34,
-35, 54, 55 and 77 then kill or restart `matching_engine_primary` by name, and expect `matching_engine_secondary` to be
-promoted. When the secondary already leads, the follower is killed, nothing is promoted, and the wait for the
-secondary to lead runs out.
-
-**What is wanted.** Either phase 2 of those scenarios requires the configured primary engine to lead, and fails at
-once, naming the reason, when it does not; or the steps name the leading engine and the following one, whichever
-they are, instead of the primary and the secondary. The second is closer to how the venue works, since which instance
-leads is decided at run time; the first is the smaller change.
-
-**Principles.** None of the venue's; this is the test harness.
-
 ### BUG-0193: Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs {#bug_0193}
 
 | | |
@@ -3743,7 +3719,74 @@ a loss of resilience is not a loss of service (V11).
 **Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
 the member.
 
+### BUG-0195: When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and six scenarios fail {#bug_0195}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | Testing the fix for [BUG-0192](#bug_0192) with a temporary copy of `ha_test.py` that starts the secondary engine four seconds before the primary, so that the secondary leads at the start; the failed scenarios' Quill logs are in `tmp/ha_test_failures/` |
+| Impact | Which engine is configured as primary decides whether a failover keeps the members' orders. After a promotion of the configured primary, the members' resting orders were neither kept nor cancelled with a report |
+
+**What was seen.** With the secondary engine leading at the start, scenarios 16, 21, 24, 25, 54 and 55 failed; 26, 32,
+34, 35 and 77 passed. With the primary leading at the start, all 11 pass.
+
+- **16, 21 and 24: the promoted primary never resumes as leader.** The primary started as follower with an empty book,
+  and the leading secondary sent it no copy of the book, because the copy is sent only from the configured primary
+  ([BUG-0188](#bug_0188), which this reproduces). When the secondary was killed, the primary adopted the leader role,
+  but logged no catch-up from the WAL and sent no `ResumedAsLeader`, and the 1,000 resting orders were neither on its
+  book nor cancelled with a report to the member (scenario 16, 18:24:01).
+- **25: the follower's lease ran out while the arbiters were away.** The primary, following, asked to lead and was
+  granted a lease by the peer. Whether the two engines treat the arbiters differently, or this is timing, is not
+  known.
+- **54 and 55: the restarted engine, the secondary, logged no catch-up.** Whether the engine behaves differently, or
+  the restart step does not restart the secondary as it does the primary, is not known.
+
+**What is wanted.** The causes of 25, 54 and 55 found. Phase 8 of the [recovery plan](recovery_plan.md) removes the
+book copy, which is the cause of 16, 21 and 24; its scenarios must then pass whichever engine leads at the start, and
+the temporary copy that starts the secondary first is the way to check that.
+
+**Principles.** V2: the WAL is the record; V8: every report the matching engine produces reaches the member.
+
 ## Closed
+
+### BUG-0192: Scenarios that kill the primary matching engine by name go on when the secondary has won the first election, and then fail for a reason unrelated to what they test {#bug_0192}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- the test harness, not the venue |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| Fixed | 2026-10-24 -- the scenarios name the engine that led and the one that followed when their steps began, resolved at run time |
+| How | Running scenario 77 on a build with a deliberate fault, to show it fails without the fix for [BUG-0190](#bug_0190): it failed earlier, waiting 30 seconds for the secondary engine to lead after the primary was killed. The secondary had led since start-up, five seconds after it started, before the primary was killed |
+| Impact | A scenario fails, now and then, for no fault in what it tests, and the failure reads as a failed promotion. A real failure in such a run is hidden behind it |
+
+**What happens.** In phase 2 of a scenario with both matching engines, `ha_test.py` waits until one of the two
+engines leads, and goes on whichever it is. Either may win the first election. Scenarios 16, 21, 24, 25, 26, 32, 34,
+35, 54, 55 and 77 then kill or restart `matching_engine_primary` by name, and expect `matching_engine_secondary` to be
+promoted. When the secondary already leads, the follower is killed, nothing is promoted, and the wait for the
+secondary to lead runs out.
+
+**What is wanted.** Either phase 2 of those scenarios requires the configured primary engine to lead, and fails at
+once, naming the reason, when it does not; or the steps name the leading engine and the following one, whichever
+they are, instead of the primary and the secondary. The second is closer to how the venue works, since which instance
+leads is decided at run time; the first is the smaller change.
+
+**Principles.** None of the venue's; this is the test harness.
+
+**Fixed, 24 October 2026** (Andrew chose the second way). `ha_test.py` has two names a scenario can use,
+`ENGINE_LEADING_AT_START` and `ENGINE_FOLLOWING_AT_START`. Phase 2 records which engine each stands for once it has
+seen one lead, and every expectation and step resolves them when it runs. The 11 scenarios use them, the promotion
+checks look for the promoted engine's events from the engine that followed, and scenario 26 starts both engines
+under launchers, since which one leads is not known until both have started.
+
+Checked: a full run from cleared state passed 76 of 77, with the primary leading at the start in all 23 two-engine
+starts; scenario 34 failed, because one count in the one-leader step used an unresolved name, and passed once that
+was corrected. Then, with a temporary copy of `ha_test.py` starting the secondary engine four seconds before the
+primary, so that it led at the start of all 11 scenarios: 26, 32, 34, 35 and 77 passed, which all 11 would have
+failed before the change. The other six failed for reasons in the venue, recorded as [BUG-0195](#bug_0195).
 
 ### BUG-0190: A sequencer that takes the lead before a gateway has re-announced its sessions drops reports for those sessions in the meantime {#bug_0190}
 

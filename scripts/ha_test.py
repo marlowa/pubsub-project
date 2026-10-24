@@ -442,6 +442,27 @@ _ME_LEADER_TIMEOUT = 15.0  # seconds
 _ME_SETTLE        = 1.0   # seconds after ME readiness confirmed
 
 
+# The two matching engines of a pair, named by the role each had when the scenario's steps began, rather than by the
+# configuration it was started from. Either engine may win the first election, so a scenario that means "kill the
+# engine that leads" must not name matching_engine_primary: about one start in three, the secondary leads. Phase 2
+# resolves the two names once it has seen which engine leads (BUG-0192).
+ENGINE_LEADING_AT_START = "matching_engine_leading_at_start"
+ENGINE_FOLLOWING_AT_START = "matching_engine_following_at_start"
+# What the two names stand for in the scenario being run. Until phase 2 has seen a leader, the primary is taken to lead.
+_ENGINES_AT_START: dict[str, str] = {ENGINE_LEADING_AT_START: "matching_engine_primary", ENGINE_FOLLOWING_AT_START: "matching_engine_secondary"}
+
+
+def resolved(name: str | None) -> str | None:
+    """The component name stands for: the engine that led or followed when the steps began, for the two names above;
+    otherwise name itself."""
+    return _ENGINES_AT_START.get(name, name) if name is not None else None
+
+
+def engine_service(engine: str) -> str:
+    """The name a sequencer gives the matching engine engine's order connection."""
+    return "matching_engine" if engine == "matching_engine_primary" else "matching_engine_secondary"
+
+
 class Condition(NamedTuple):
     """One test event that an expectation needs (docs/availability/test_events.md).
 
@@ -467,42 +488,44 @@ class Expect(NamedTuple):
 
 def expect_leads(component: str) -> Expect:
     """component takes the lead (RoleChanged to Leader)."""
-    return Expect(f"{component} leads", (Condition(component, lambda m: leads(m, component)),))
+    return Expect(f"{component} leads", (Condition(component, lambda m: leads(m, resolved(component))),))
 
 
 def expect_follows(component: str) -> Expect:
     """component follows (RoleChanged to Follower)."""
-    return Expect(f"{component} follows", (Condition(component, lambda m: follows(m, component)),))
+    return Expect(f"{component} follows", (Condition(component, lambda m: follows(m, resolved(component))),))
 
 
 def expect_role(component: str) -> Expect:
     """component reports any role (any RoleChanged): its role has been decided."""
-    return Expect(f"{component} has a role", (Condition(component, lambda m: role_changed(m, component)),))
+    return Expect(f"{component} has a role", (Condition(component, lambda m: role_changed(m, resolved(component))),))
 
 
 def expect_started(component: str) -> Expect:
     """component has started: a thread of it introduced itself on the test event connection."""
-    return Expect(f"{component} started", (Condition(component, lambda m: introduced(m, component)),))
+    return Expect(f"{component} started", (Condition(component, lambda m: introduced(m, resolved(component))),))
 
 
-def expect_engine_reachable(engine: str, service: str) -> Expect:
+def expect_engine_reachable(engine: str, service: str | None = None) -> Expect:
     """
     A matching engine has started and a sequencer has connected to it, so that orders the sequencer forwards reach it.
 
     Both are needed. The engine's introduction says its thread is running; a sequencer's connection to the engine's
     service says orders have a way in. The connection alone is not enough, because the kernel completes a connection as
     soon as the engine listens, which can be before its thread is running. service is the name the sequencer gives the
-    engine: "matching_engine" for the primary, "matching_engine_secondary" for the secondary.
+    engine: "matching_engine" for the primary, "matching_engine_secondary" for the secondary. When it is not given, it is
+    the one for whichever engine engine stands for when the check runs.
     """
     return Expect(f"{engine} started and a sequencer connected to it",
-                  (Condition(engine, lambda m: introduced(m, engine)), Condition(None, lambda m: connection_made(m, None, service))))
+                  (Condition(engine, lambda m: introduced(m, resolved(engine))),
+                   Condition(None, lambda m: connection_made(m, None, service if service is not None else engine_service(resolved(engine))))))
 
 
 def expect_lease(component: str, change: str, granted_by: str | None = None) -> Expect:
     """component's lease agent reports change (a LeaseChange name), granted by granted_by (a Voter name) if given."""
     by = f" by the {granted_by}" if granted_by else ""
     return Expect(f"{component}: lease {change}{by}",
-                  (Condition(component, lambda m: lease_changed(m, component, getattr(m.LeaseChange, change),
+                  (Condition(component, lambda m: lease_changed(m, resolved(component), getattr(m.LeaseChange, change),
                                                                 getattr(m.Voter, granted_by) if granted_by else None)),))
 
 
@@ -510,7 +533,7 @@ def expect_catch_up(engine: str, stage: str) -> Expect:
     """The matching engine reached a stage (a CatchUpStage name) of catching up from the sequencer's WAL."""
     def matches(_library_events):
         engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
-        return catch_up(engine_events, engine, getattr(engine_events.CatchUpStage, stage))
+        return catch_up(engine_events, resolved(engine), getattr(engine_events.CatchUpStage, stage))
     return Expect(f"{engine}: catch-up {stage}", (Condition(engine, matches),))
 
 
@@ -519,14 +542,14 @@ def expect_message(component: str, what: str, message: str, module: str = "test_
     module and returns the field values the message must have, so that an enum value can be named through the module."""
     def matches(_library_events):
         generated = _TEST_EVENTS.modules[module]
-        return message_of(getattr(generated, message), component, **(fields(generated) if fields else {}))
+        return message_of(getattr(generated, message), resolved(component), **(fields(generated) if fields else {}))
     return Expect(f"{component}: {what}", (Condition(component, matches),))
 
 
 def expect_connection_made(component: str, service: str) -> Expect:
     """component made a connection to service (ConnectionChanged), as the framework names it."""
     return Expect(f"{component}: connection to {service} made",
-                  (Condition(component, lambda m: message_of(m.ConnectionChanged, component, made=True, service=service)),))
+                  (Condition(component, lambda m: message_of(m.ConnectionChanged, resolved(component), made=True, service=service)),))
 
 
 def expect_replication_connection(engine: str) -> Expect:
@@ -534,9 +557,10 @@ def expect_replication_connection(engine: str) -> Expect:
     connection named after the port. The port is read from engine's deployed configuration when the check runs, because
     the scenario table is built before the install directory is known."""
     def matches(library_events):
-        config = _INSTALL_PREFIX / "etc" / "matching_engine" / f"{engine if engine != 'matching_engine' else 'matching_engine_primary'}.toml"
+        actual = resolved(engine)
+        config = _INSTALL_PREFIX / "etc" / "matching_engine" / f"{actual if actual != 'matching_engine' else 'matching_engine_primary'}.toml"
         port = installed_toml_section_value(config, "book_replication", "listen_port")
-        return message_of(library_events.ConnectionChanged, engine, made=True, service=f"inbound:{port}")
+        return message_of(library_events.ConnectionChanged, actual, made=True, service=f"inbound:{port}")
     return Expect(f"{engine}: the other engine's replication connection made", (Condition(engine, matches),))
 
 
@@ -603,7 +627,7 @@ def since_present_processes(expect: Expect) -> int:
     rather than since some step of the test: the earliest of their newest introductions. This matches what reading a
     component's Quill log from its start did, because a component the test restarts has its Quill log deleted first.
     """
-    named = [condition.component for condition in expect.conditions if condition.component is not None]
+    named = [resolved(condition.component) for condition in expect.conditions if condition.component is not None]
     if not named:
         return 0
     return min(_TEST_EVENTS.since_introduction(component) for component in named)
@@ -613,7 +637,7 @@ def expectation_seen(expect: Expect, since: int) -> bool:
     """Whether every condition of expect has been met at or after since, by what has been read once each component named
     has been asked for a checkpoint. Used to check that something did NOT happen: without the checkpoint, an event
     still on its way would be missed."""
-    for component in {condition.component for condition in expect.conditions if condition.component is not None}:
+    for component in {resolved(condition.component) for condition in expect.conditions if condition.component is not None}:
         if not _TEST_EVENTS.settle(component):
             die(f"{component} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]}), so it is not known whether {expect.what}")
     _TEST_EVENTS.check()
@@ -644,7 +668,7 @@ def gateway_event(gateway: str, message: str, since: int, timeout: float, settle
 def count_seen(expect: Expect, since: int) -> int:
     """How many events at or after since meet expect's first condition, once each component it names has answered a
     checkpoint, so that the count includes everything those components had sent by then."""
-    for component in {condition.component for condition in expect.conditions if condition.component is not None}:
+    for component in {resolved(condition.component) for condition in expect.conditions if condition.component is not None}:
         if not _TEST_EVENTS.settle(component):
             die(f"{component} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]}), so how often {expect.what} is not known")
     matches = expect.conditions[0].matches(_TEST_EVENTS.messages)
@@ -1754,7 +1778,7 @@ _SCENARIOS: list[Scenario] = [
         short_name="primary_me_death",
         description="Death of primary matching engine (ME HA failover)",
         expected_outcome=(
-            "matching_engine_secondary detects primary loss, promotes via the "
+            "the engine that followed detects the loss of the one that led, promotes via the "
             "arbiter (adopts LEADER) after the ~15 s promotion timeout, "
             "reconciles against the sequencer WAL, and processes recovery orders"
         ),
@@ -1765,8 +1789,8 @@ _SCENARIOS: list[Scenario] = [
         orders_during_override=0,
         steps=[
             KillStep(
-                proc_name="matching_engine_primary",
-                takeover=expect_leads("matching_engine_secondary"),
+                proc_name=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -1973,8 +1997,8 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         steps=[
             KillStep(
-                proc_name="matching_engine_primary",
-                takeover=expect_leads("matching_engine_secondary"),
+                proc_name=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -2100,8 +2124,8 @@ _SCENARIOS: list[Scenario] = [
         short_name="me_primary_rejoins_as_follower",
         description="Restarted primary ME rejoins as follower, not leader",
         expected_outcome=(
-            "matching_engine_secondary promotes and keeps leadership; the restarted "
-            "matching_engine_primary is assigned the follower role by the arbiter and "
+            "the engine that followed promotes and keeps leadership; the restarted "
+            "engine that led is assigned the follower role by the arbiter and "
             "never adopts LEADER"
         ),
         me_ha=True,
@@ -2113,31 +2137,31 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             # 1. Kill the primary and let the secondary promote properly, timeout and all.
             KillStep(
-                proc_name="matching_engine_primary",
-                takeover=expect_leads("matching_engine_secondary"),
+                proc_name=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             # 2. Bring the primary back. The restart deletes its log first, so everything
             #    asserted on below happened after it came back.
             RestartStep(
-                proc_name="matching_engine_primary",
-                ready_log_name="matching_engine_primary.log",
-                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
+                proc_name=ENGINE_LEADING_AT_START,
+                ready_log_name=f"{ENGINE_LEADING_AT_START}.log",
+                ready=expect_engine_reachable(ENGINE_LEADING_AT_START),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
             # 3. The assertion the fix exists for, stated both ways round.
             VerifyStep(
-                expect=expect_follows("matching_engine_primary"),
+                expect=expect_follows(ENGINE_LEADING_AT_START),
                 timeout=30.0,
                 description="restarted primary is assigned the follower role",
-                absent=expect_leads("matching_engine_primary"),
+                absent=expect_leads(ENGINE_LEADING_AT_START),
             ),
             # 4. And the secondary must have kept it throughout -- a leadership that moved
             #    and moved back would satisfy step 3 on its own.
             VerifyStep(
-                expect=expect_leads("matching_engine_secondary"),
+                expect=expect_leads(ENGINE_FOLLOWING_AT_START),
                 timeout=5.0,
                 description="promoted secondary still holds leadership",
             ),
@@ -2176,21 +2200,21 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             # 1. Fail the primary so the secondary leads.
             KillStep(
-                proc_name="matching_engine_primary",
-                takeover=expect_leads("matching_engine_secondary"),
+                proc_name=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             # 2. Bring the primary back. It follows, and grants its peer its vote.
             RestartStep(
-                proc_name="matching_engine_primary",
-                ready_log_name="matching_engine_primary.log",
-                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
+                proc_name=ENGINE_LEADING_AT_START,
+                ready_log_name=f"{ENGINE_LEADING_AT_START}.log",
+                ready=expect_engine_reachable(ENGINE_LEADING_AT_START),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
             VerifyStep(
-                expect=expect_follows("matching_engine_primary"),
+                expect=expect_follows(ENGINE_LEADING_AT_START),
                 timeout=30.0,
                 description="the restarted primary follows the secondary",
             ),
@@ -2224,12 +2248,12 @@ _SCENARIOS: list[Scenario] = [
             ),
             # 4. The assertions. The secondary never lost its lease, and the primary never led.
             AssertAbsentStep(
-                absent=expect_lease("matching_engine_secondary", "RanOut"),
+                absent=expect_lease(ENGINE_FOLLOWING_AT_START, "RanOut"),
                 after_secs=10.0,
                 description="the secondary kept its lease while the arbiters were away and after they returned",
             ),
             AssertAbsentStep(
-                absent=expect_leads("matching_engine_primary"),
+                absent=expect_leads(ENGINE_LEADING_AT_START),
                 after_secs=0.0,
                 description="the restarted primary never led",
             ),
@@ -2257,18 +2281,19 @@ _SCENARIOS: list[Scenario] = [
         short_name="supervised_me_restart_beats_promotion",
         description="Supervised ME restart completes before the peer promotes",
         expected_outcome=(
-            "the launcher restarts matching_engine_primary within seconds; "
-            "matching_engine_secondary never promotes and the primary keeps leadership"
+            "the launcher restarts the engine that led within seconds; "
+            "the engine that followed never promotes and the one that led keeps leadership"
         ),
         me_ha=True,
-        supervised=("matching_engine_primary",),
+        # Both, because which one leads is not known until both have started; the step kills the one that leads.
+        supervised=("matching_engine_primary", "matching_engine_secondary"),
         recovery_on_primary=True,
         orders_during_override=0,
         steps=[],
         restart_steps=[],
         extra_steps=[
             SupervisedKillStep(
-                proc_name="matching_engine_primary",
+                proc_name=ENGINE_LEADING_AT_START,
                 restart_timeout=30.0,
                 settle_secs=2.0,
             ),
@@ -2276,7 +2301,7 @@ _SCENARIOS: list[Scenario] = [
             # a few seconds. Waiting 25 leaves no room for argument about whether the secondary
             # simply had not got round to it.
             AssertAbsentStep(
-                absent=expect_leads("matching_engine_secondary"),
+                absent=expect_leads(ENGINE_FOLLOWING_AT_START),
                 after_secs=25.0,
                 description="the secondary never promoted, because the restart beat its timeout",
             ),
@@ -2487,8 +2512,8 @@ _SCENARIOS: list[Scenario] = [
         short_name="me_pair_survives_a_second_failure",
         description="After a failover and rejoin, the pair survives a failure the other way",
         expected_outcome=(
-            "matching_engine_secondary promotes, the restarted primary rejoins as follower, "
-            "and when the secondary then dies the primary takes leadership back"
+            "the engine that followed promotes, the restarted one that led rejoins as follower, "
+            "and when the promoted one then dies the one that led takes leadership back"
         ),
         me_ha=True,
         # The primary ends up leading again, so recovery orders return to it.
@@ -2498,20 +2523,20 @@ _SCENARIOS: list[Scenario] = [
         restart_steps=[],
         extra_steps=[
             KillStep(
-                proc_name="matching_engine_primary",
-                takeover=expect_leads("matching_engine_secondary"),
+                proc_name=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             RestartStep(
-                proc_name="matching_engine_primary",
-                ready_log_name="matching_engine_primary.log",
-                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
+                proc_name=ENGINE_LEADING_AT_START,
+                ready_log_name=f"{ENGINE_LEADING_AT_START}.log",
+                ready=expect_engine_reachable(ENGINE_LEADING_AT_START),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
             VerifyStep(
-                expect=expect_follows("matching_engine_primary"),
+                expect=expect_follows(ENGINE_LEADING_AT_START),
                 timeout=60.0,
                 description="the rejoined primary is a follower before the second failure",
             ),
@@ -2523,14 +2548,14 @@ _SCENARIOS: list[Scenario] = [
             # window -- passing alone and failing inside the suite, which is worse than failing
             # outright.
             VerifyStep(
-                expect=expect_replication_connection("matching_engine_primary"),
+                expect=expect_replication_connection(ENGINE_LEADING_AT_START),
                 timeout=60.0,
                 description="the new leader's replication connection has reached the rejoined instance",
             ),
             # Now the second failure, in the other direction.
             KillStep(
-                proc_name="matching_engine_secondary",
-                takeover=expect_leads("matching_engine_primary"),
+                proc_name=ENGINE_FOLLOWING_AT_START,
+                takeover=expect_leads(ENGINE_LEADING_AT_START),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -2602,34 +2627,34 @@ _SCENARIOS: list[Scenario] = [
         restart_steps=[],
         extra_steps=[
             KillStep(
-                proc_name="matching_engine_primary",
-                takeover=expect_leads("matching_engine_secondary"),
+                proc_name=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             KillStep(
-                proc_name="matching_engine_secondary",
+                proc_name=ENGINE_FOLLOWING_AT_START,
                 takeover=None,
                 settle_secs=2.0,
             ),
             # Secondary back first, deliberately.
             RestartStep(
-                proc_name="matching_engine_secondary",
-                ready_log_name="matching_engine_secondary.log",
-                ready=expect_engine_reachable("matching_engine_secondary", "matching_engine_secondary"),
+                proc_name=ENGINE_FOLLOWING_AT_START,
+                ready_log_name=f"{ENGINE_FOLLOWING_AT_START}.log",
+                ready=expect_engine_reachable(ENGINE_FOLLOWING_AT_START),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
             RestartStep(
-                proc_name="matching_engine_primary",
-                ready_log_name="matching_engine_primary.log",
-                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
+                proc_name=ENGINE_LEADING_AT_START,
+                ready_log_name=f"{ENGINE_LEADING_AT_START}.log",
+                ready=expect_engine_reachable(ENGINE_LEADING_AT_START),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
             OneLeaderStep(
-                components=("matching_engine_primary", "matching_engine_secondary"),
+                components=(ENGINE_LEADING_AT_START, ENGINE_FOLLOWING_AT_START),
                 timeout=90.0,
                 settle_secs=10.0,
                 description="exactly one of the two engines leads",
@@ -2671,17 +2696,17 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=2.0,
             ),
             KillStep(
-                proc_name="matching_engine_primary",
+                proc_name=ENGINE_LEADING_AT_START,
                 takeover=None,
                 settle_secs=0.0,
             ),
             VerifyStep(
-                expect=expect_lease("matching_engine_secondary", "NoLeader"),
+                expect=expect_lease(ENGINE_FOLLOWING_AT_START, "NoLeader"),
                 timeout=25.0,
                 description="the secondary reported that the group has no leader",
             ),
             AssertAbsentStep(
-                absent=expect_leads("matching_engine_secondary"),
+                absent=expect_leads(ENGINE_FOLLOWING_AT_START),
                 after_secs=5.0,
                 description="the secondary did not take the lead without a majority",
             ),
@@ -3131,8 +3156,8 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             # 1. Fail the primary so the secondary is genuinely leading.
             KillStep(
-                proc_name="matching_engine_primary",
-                takeover=expect_leads("matching_engine_secondary"),
+                proc_name=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             # 2. Orders the promoted secondary takes while the primary is down. Without these the
@@ -3142,9 +3167,9 @@ _SCENARIOS: list[Scenario] = [
             InterimOrdersStep(count_batches=1),
             # 3. Bring the primary back, knowing nothing of what it promised.
             RestartStep(
-                proc_name="matching_engine_primary",
-                ready_log_name="matching_engine_primary.log",
-                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
+                proc_name=ENGINE_LEADING_AT_START,
+                ready_log_name=f"{ENGINE_LEADING_AT_START}.log",
+                ready=expect_engine_reachable(ENGINE_LEADING_AT_START),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=0.0,
@@ -3153,17 +3178,17 @@ _SCENARIOS: list[Scenario] = [
             # 4. It asked. The restart deletes the log first, so this line is from this start and
             #    not from the one before it.
             VerifyStep(
-                expect=expect_catch_up("matching_engine_primary", "Started"),
+                expect=expect_catch_up(ENGINE_LEADING_AT_START, "Started"),
                 timeout=30.0,
                 description="the restarted instance asks for a catch-up though it does not lead",
             ),
             # 5. And it stopped there. Current, and waiting -- never adopting the role on the
             #    strength of having caught up, which is what trap 5 of BUG-0064 was about.
             VerifyStep(
-                expect=expect_catch_up("matching_engine_primary", "CurrentAndWaiting"),
+                expect=expect_catch_up(ENGINE_LEADING_AT_START, "CurrentAndWaiting"),
                 timeout=30.0,
                 description="it becomes current without taking the role",
-                absent=expect_leads("matching_engine_primary"),
+                absent=expect_leads(ENGINE_LEADING_AT_START),
             ),
             # 6. Once its lease period has passed it grants its peer a renewal and follows, and the
             #    reports it produced while catching up go nowhere. It applied those records and
@@ -3171,10 +3196,10 @@ _SCENARIOS: list[Scenario] = [
             #    Being current and being entitled to act are separate things, and reporting is an
             #    act -- BUG-0077.
             VerifyStep(
-                expect=expect_message("matching_engine_primary", "its held reports discarded", "ReportsDiscarded", "matching_engine_test_events"),
+                expect=expect_message(ENGINE_LEADING_AT_START, "its held reports discarded", "ReportsDiscarded", "matching_engine_test_events"),
                 timeout=30.0,
                 description="the reports from its catch-up are discarded rather than sent",
-                absent=expect_leads("matching_engine_primary"),
+                absent=expect_leads(ENGINE_LEADING_AT_START),
             ),
         ],
     ),
@@ -3208,8 +3233,8 @@ _SCENARIOS: list[Scenario] = [
             # 1. Fail the primary so the secondary is genuinely leading, and the orders that
             #    follow are taken by a real leader rather than by nobody.
             KillStep(
-                proc_name="matching_engine_primary",
-                takeover=expect_leads("matching_engine_secondary"),
+                proc_name=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             # 2. Orders the leader takes while the primary is down. Without these the catch-up
@@ -3218,39 +3243,39 @@ _SCENARIOS: list[Scenario] = [
             InterimOrdersStep(count_batches=1),
             # 3. And now the leader as well, so the instance that comes back must serve.
             KillStep(
-                proc_name="matching_engine_secondary",
+                proc_name=ENGINE_FOLLOWING_AT_START,
                 takeover=None,
                 settle_secs=2.0,
             ),
             # 4. The primary comes back knowing nothing of what it promised, catches up, and
             #    waits -- holding the reports.
             RestartStep(
-                proc_name="matching_engine_primary",
-                ready_log_name="matching_engine_primary.log",
-                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
+                proc_name=ENGINE_LEADING_AT_START,
+                ready_log_name=f"{ENGINE_LEADING_AT_START}.log",
+                ready=expect_engine_reachable(ENGINE_LEADING_AT_START),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=True,
                 settle_secs=0.0,
                 forget_lease_promises=True,
             ),
             VerifyStep(
-                expect=expect_catch_up("matching_engine_primary", "CurrentAndWaiting"),
+                expect=expect_catch_up(ENGINE_LEADING_AT_START, "CurrentAndWaiting"),
                 timeout=30.0,
                 description="the restarted instance is current and holding its reports",
             ),
             # 5. It becomes the one serving, with the arbiter's grant.
             VerifyStep(
-                expect=expect_leads("matching_engine_primary"),
+                expect=expect_leads(ENGINE_LEADING_AT_START),
                 timeout=30.0,
                 description="the instance that was holding becomes the one serving",
             ),
             # 6. The assertion this scenario exists for.
             VerifyStep(
-                expect=expect_message("matching_engine_primary", "its held reports released now that it serves", "ReportsReleased",
+                expect=expect_message(ENGINE_LEADING_AT_START, "its held reports released now that it serves", "ReportsReleased",
                                       "matching_engine_test_events", fields=lambda m: {"reason": m.ReleaseReason.NowServes}),
                 timeout=30.0,
                 description="the held reports are released to the members who placed those orders",
-                absent=expect_message("matching_engine_primary", "its held reports discarded", "ReportsDiscarded", "matching_engine_test_events"),
+                absent=expect_message(ENGINE_LEADING_AT_START, "its held reports discarded", "ReportsDiscarded", "matching_engine_test_events"),
             ),
         ],
     ),
@@ -4064,8 +4089,8 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=0.0,
             ),
             KillStep(
-                proc_name="matching_engine_primary",
-                takeover=expect_leads("matching_engine_secondary"),
+                proc_name=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
                 settle_secs=0.0,
             ),
             VerifyStep(
@@ -5816,6 +5841,20 @@ def kill_summary_line(outcome: str | None, label: str, elapsed: float) -> str:
     return f"  outcome : {label} {outcome} in {elapsed:.1f}s"
 
 
+def with_engines_resolved(step):
+    """step, with ENGINE_LEADING_AT_START or ENGINE_FOLLOWING_AT_START in its process name, and in the Quill log it waits
+    on, replaced by the engine each stands for in this scenario."""
+    if not hasattr(step, "proc_name"):
+        return step
+    actual = resolved(step.proc_name)
+    if actual == step.proc_name:
+        return step
+    changes = {"proc_name": actual}
+    if hasattr(step, "ready_log_name"):
+        changes["ready_log_name"] = f"{actual}.log"
+    return step._replace(**changes)
+
+
 def do_kill_step(
     step: KillStep,
     proc_by_name: dict[str, subprocess.Popen],
@@ -6374,6 +6413,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
         global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW  # pylint: disable=global-statement
         _INSTALL_PREFIX = prefix
         _ANNOUNCEMENT_DELAY_MS_NOW = scenario.delay_session_announcements_ms
+        # Until phase 2 has seen which matching engine leads, the primary is taken to.
+        _ENGINES_AT_START.update({ENGINE_LEADING_AT_START: "matching_engine_primary", ENGINE_FOLLOWING_AT_START: "matching_engine_secondary"})
         # The member's orders are reported by the engine only in the scenarios whose checks no member can make: that an
         # order was applied exactly once, acted on while its reports were held back on purpose, or cancelled (or not)
         # after the member had gone.
@@ -6507,6 +6548,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     _TEST_EVENTS.pump(0.05)
             if leader_name is not None:
                 log(f"  {leader_name} leads ({time.monotonic() - t0:.1f}s)")
+                # The scenario's steps name the engines by the role each has now, not by configuration.
+                follower_name = "matching_engine_secondary" if leader_name == "matching_engine_primary" else "matching_engine_primary"
+                _ENGINES_AT_START.update({ENGINE_LEADING_AT_START: leader_name, ENGINE_FOLLOWING_AT_START: follower_name})
+                log(f"  the steps' {ENGINE_LEADING_AT_START} is {leader_name}, and {ENGINE_FOLLOWING_AT_START} is {follower_name}")
             else:
                 log(f"  neither matching engine leads within {_ME_LEADER_TIMEOUT:.0f}s -- continuing, as the scenario may expect that")
             log("")
@@ -6665,6 +6710,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         log(f"=== Phase 4: {scenario.description} ===")
         for step in effective_steps:
+            step = with_engines_resolved(step)
             if isinstance(step, KillStep):
                 outcome, label, elapsed = do_kill_step(step, proc_by_name, args.failover_timeout)
                 kill_results.append((outcome, label, elapsed))
@@ -6723,17 +6769,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 leaders = []
                 while not leaders and time.monotonic() < deadline:
                     _TEST_EVENTS.check()
-                    leaders = [c.component for c in either.conditions if _condition_met(c, _TEST_EVENTS.since_introduction(c.component))]
+                    leaders = [resolved(c.component) for c in either.conditions if _condition_met(c, _TEST_EVENTS.since_introduction(resolved(c.component)))]
                     if not leaders:
                         _TEST_EVENTS.pump(0.05)
                 if not leaders:
                     die(f"Verification failed: {step.description} -- not seen within {step.timeout:.0f}s: {either.what}")
                 log(f"    {leaders[0]} leads ({time.monotonic() - t0:.1f}s); waiting {step.settle_secs:.0f}s for any second leader ...")
                 time.sleep(step.settle_secs)
-                leaders = [name for name in step.components
-                           if expectation_seen(expect_leads(name), _TEST_EVENTS.since_introduction(name))]
+                leaders = [resolved(name) for name in step.components
+                           if expectation_seen(expect_leads(name), _TEST_EVENTS.since_introduction(resolved(name)))]
                 if len(leaders) != 1:
-                    die(f"Verification failed: {step.description} -- both {step.components} lead")
+                    die(f"Verification failed: {step.description} -- {len(leaders)} of {[resolved(name) for name in step.components]} lead: {leaders}")
                 log("    confirmed: exactly one leads, up to a checkpoint of each")
                 phase4_results.append(("verify", step.description, step.settle_secs))
             elif isinstance(step, AssertAbsentStep):
@@ -6908,10 +6954,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
             cancels_expected = scenario.open_orders_on_promotion == "cancel"
             # Under "keep" the promotion has already been observed by the time this runs, so it is confirming an absence:
             # the engine is asked for a checkpoint first, and a cancel it sent cannot still be on its way.
-            cancelled_book = engine_event("matching_engine_secondary", "BookCancelled", me_secondary_events_from,
+            promoted_engine = resolved(ENGINE_FOLLOWING_AT_START)
+            cancelled_book = engine_event(promoted_engine, "BookCancelled", me_secondary_events_from,
                                           args.failover_timeout if cancels_expected else 0.0, settle=not cancels_expected)
             cancel_count = cancelled_book.cancel_reports_sent if cancelled_book is not None else -1
-            resumed_event = engine_event("matching_engine_secondary", "ResumedAsLeader", me_secondary_events_from, 10.0)
+            resumed_event = engine_event(promoted_engine, "ResumedAsLeader", me_secondary_events_from, 10.0)
             if resumed_event is None:
                 die("ME-HA: the promoted secondary never reported resuming as leader -- "
                     "cannot confirm what book it resumed with")
@@ -6983,7 +7030,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if released is None or released.sent <= 0:
                 die(f"held reports: sequencer_primary did not send the reports it held for the member's session ({released})")
             log(f"  held reports: sequencer_primary sent {released.sent} held report(s) when the session was announced")
-            cancelled_book = engine_event("matching_engine_secondary", "BookCancelled", me_secondary_events_from, args.failover_timeout)
+            cancelled_book = engine_event(resolved(ENGINE_FOLLOWING_AT_START), "BookCancelled", me_secondary_events_from, args.failover_timeout)
             if cancelled_book is None or cancelled_book.cancel_reports_sent <= 0:
                 die(f"held reports: the promoted matching engine cancelled no order ({cancelled_book}), so there was nothing to hold")
             # Each cancel the engine sent must reach the member: counted at the member, so a report lost anywhere is missed.
