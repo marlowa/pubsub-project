@@ -3737,13 +3737,28 @@ the member.
   ([BUG-0188](#bug_0188), which this reproduces). When the secondary was killed, the primary adopted the leader role,
   but logged no catch-up from the WAL and sent no `ResumedAsLeader`, and the 1,000 resting orders were neither on its
   book nor cancelled with a report to the member (scenario 16, 18:24:01).
-- **25: the follower's lease ran out while the arbiters were away.** The primary, following, asked to lead and was
-  granted a lease by the peer. Whether the two engines treat the arbiters differently, or this is timing, is not
-  known.
-- **54 and 55: the restarted engine, the secondary, logged no catch-up.** Whether the engine behaves differently, or
-  the restart step does not restart the secondary as it does the primary, is not known.
+- **25, 54 and 55: the two engines start differently, by their configured role.** Diagnosed 24 October 2026 from the
+  kept Quill logs, and from a run of 25 with the primary leading first for comparison:
 
-**What is wanted.** The causes of 25, 54 and 55 found. Phase 8 of the [recovery plan](recovery_plan.md) removes the
+  | | Configured primary | Configured secondary |
+  |---|---|---|
+  | Role at start | unknown | follower, at once (`MatchingEngineThread.cpp`, the constructor) |
+  | Says it follows | once it has settled with its peer | immediately, while its lease agent may still be asking to lead |
+  | Catches up from the WAL | when the first sequencer connects, before it acts | only when it is promoted (the handler for a sequencer's order connection) |
+
+  In 54 the restarted secondary never asks for a catch-up while its peer leads, which is what 54 checks. In 55 it
+  catches up only once it has taken the lead (18:30:43), so it never holds its reports while waiting to lead, which is
+  what 55 checks. In 25 the restarted secondary, which was leading when it was killed, resumes with its recorded
+  promise and asks to lead at once, as a restarted primary does too; but it says it follows at the same moment, so the
+  scenario's check that it follows passes at once and the arbiters are killed two seconds after the restart, while it
+  is still asking. The leader's only remaining voter is then asking for itself rather than granting, and the leader's
+  lease runs out (18:27:17). A restarted primary says it follows only once it has granted the leader a lease (19:29:26
+  in the comparison run), nine seconds after its restart, and the arbiters are killed after that.
+
+**After any failover the secondary leads**, so in a venue that has failed over once, these are the paths it is on.
+
+**What is wanted.** Both engines start alike, whichever is configured as primary: in an unknown role, catching up
+from the WAL when the first sequencer connects, and saying what role they have only once it is settled. Phase 8 of the [recovery plan](recovery_plan.md) removes the
 book copy, which is the cause of 16, 21 and 24; its scenarios must then pass whichever engine leads at the start, and
 the temporary copy that starts the secondary first is the way to check that.
 
