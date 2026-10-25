@@ -66,6 +66,9 @@ describe the venue as it now is.
   to learn its role, and require the engine that takes the lead to catch up first and to hold exactly
   the orders the member was told are open. Scenario 79 has the book cancelled on the first promotion,
   and is marked as expected to fail (BUG-0199). A scenario can name the engine started first.
+- **Scenario 80** restarts a matching engine with a long WAL to catch up on, and has the second
+  sequencer connect in the middle of the catch-up, which must finish without the stream going
+  backwards (BUG-0200).
 - **Measurement of the order path, stage by stage**: an order is timed at every point on its way
   through the venue, the inter-thread hand-off and the socket crossing are measured in both halves,
   and a Grafana dashboard, kept in the repository as a source file, shows where an order's time goes.
@@ -123,6 +126,14 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 - **A matching engine caught up and waiting to learn its role took the lead without catching up
   again**, and lost every order accepted while it waited, telling no member. It now catches up
   before it leads unless it already leads (BUG-0198).
+- **A matching engine starting while a long catch-up was under way asked again when the second
+  sequencer connected**, the leading sequencer started the stream again, and the engine waited 15
+  seconds before asking once more. A connection made during a catch-up is now asked alone
+  (BUG-0200).
+- **`ha_test.py` sent the FIX test client a newline after each command key.** The client takes
+  every key as a command, and printed "Command not found" for each newline into the output the
+  reports are read from, sometimes in the middle of a field; at 100,000 orders four reports were
+  not counted.
 - **The ThreadSanitizer build did not compile**, and it checked the mutex variant of the queue
   rather than the lock-free one the venue runs (BUG-0150, BUG-0160).
 

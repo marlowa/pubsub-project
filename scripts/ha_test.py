@@ -1214,6 +1214,13 @@ class Scenario(NamedTuple):
     # start, in which either engine may win the first election. A scenario that sets it is not run with
     # --secondary-engine-first.
     engine_started_first: str = ""
+    # Override args.orders_before for this scenario, in thousands (None = use the CLI value). For a scenario that needs
+    # a WAL long enough that catching up from its start takes a measurable time.
+    orders_before_override: int | None = None
+    # When True, require the restarted matching_engine_primary to finish catching up from the start of the WAL, without
+    # finding the stream go backwards, while the second sequencer connected to it after the catch-up began. See
+    # run_scenario's "a second sequencer during a catch-up" block, and BUG-0200.
+    assert_catch_up_survives_second_connection: bool = False
     # When True, no instance is expected to take the lead during the scenario: it tests the halt
     # when the leader and the arbiters are lost together (R-0147). The checks that follow a
     # promotion, such as which book the promoted instance resumed with, are skipped.
@@ -4262,6 +4269,66 @@ _SCENARIOS: list[Scenario] = [
         restart_steps=[],
         extra_steps=_waiting_engine_steps(),
     ),
+
+    # 80 -- a matching engine catching up from far back finishes the catch-up when the second sequencer connects.
+    #
+    # BUG-0200. The secondary engine is started first and leads, so the primary follows and holds no orders of its own:
+    # a follower's copy of the book is sent only from the configured primary (BUG-0188). 200,000 baseline orders make
+    # the WAL long. The follower sequencer is killed, so that only the leading sequencer connects to the primary engine
+    # when it restarts. The primary engine is then killed and restarted without its record of the lease promises it
+    # made, so that it does not follow at once but catches up from the start of the WAL when the leading sequencer
+    # connects. The follower sequencer is restarted while that stream is under way, and connects to the engine in the
+    # middle of it. The engine must ask on the new connection only, and finish the catch-up already under way: no
+    # Incomplete, and Completed within 10 seconds, less than the 15 seconds after which an engine asks again. Which
+    # sequencer connects first after an engine restarts is otherwise chance, and only the leader's connection first
+    # makes the window.
+    Scenario(
+        number=80,
+        short_name="catch_up_survives_second_connection",
+        description="A matching engine catching up from far back finishes the catch-up when the second sequencer connects",
+        expected_outcome=(
+            "the restarted matching_engine_primary asks the second sequencer alone when it connects, and the catch-up "
+            "already under way finishes without the stream going backwards"
+        ),
+        me_ha=True,
+        recovery_on_primary=True,
+        engine_started_first="matching_engine_secondary",
+        orders_before_override=200,
+        assert_catch_up_survives_second_connection=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="sequencer_secondary",
+                takeover=None,
+                settle_secs=0.0,
+            ),
+            KillStep(
+                proc_name="matching_engine_primary",
+                takeover=None,
+                settle_secs=0.0,
+            ),
+            RestartStep(
+                proc_name="matching_engine_primary",
+                ready_log_name="matching_engine_primary.log",
+                ready=expect_catch_up("matching_engine_primary", "Started"),
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=0.0,
+                forget_lease_promises=True,
+            ),
+            RestartStep(
+                proc_name="sequencer_secondary",
+                ready_log_name="sequencer_secondary.log",
+                ready=expect_follows("sequencer_secondary"),
+                ready_timeout=_SEQ_FOLLOWER_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=0.0,
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4806,8 +4873,12 @@ def send_orders(f8proc: subprocess.Popen, command: bytes, times: int) -> int:
     these are."""
     reports = client_reports(f8proc)
     sent_before = reports.orders_sent
+    # The command key alone, with no newline. f8test's menu reads its input a key at a time and takes every key as a
+    # command (MyMenu::process), so a newline is a key it does not know, and it prints "Command not found" for it into
+    # the output the reports go to, at whatever point it has reached, even in the middle of a field. In a run of 100,000
+    # orders that split 100 lines, and four reports were not counted.
     for _ in range(times):
-        f8proc.stdin.write(command + b"\n")
+        f8proc.stdin.write(command)
     f8proc.stdin.flush()
     reports.orders_sent += times * _ORDERS_PER_COMMAND[command]
     return sent_before
@@ -6368,7 +6439,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
     log(f"  install prefix   : {prefix}")
     log(f"  kill sequence    : {kill_seq}")
     log(f"  expected outcome : {scenario.expected_outcome}")
-    log(f"  orders before    : {args.orders_before * 1000}")
+    orders_before = scenario.orders_before_override if scenario.orders_before_override is not None else args.orders_before
+    log(f"  orders before    : {orders_before * 1000}")
     log(f"  orders during    : {orders_during * 1000}  (in flight during kill)")
     log(f"  orders after     : {orders_after * 1000}")
     log(f"  ready timeout    : {args.ready_timeout:.0f}s")
@@ -6787,7 +6859,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.skip_baseline_orders:
             log("=== Phase 3: skipped — this scenario's subject is a venue that cannot trade ===")
             log("")
-        before_total = 0 if scenario.skip_baseline_orders else args.orders_before * 1000
+        before_total = 0 if scenario.skip_baseline_orders else orders_before * 1000
         log(f"=== Phase 3: {before_total} baseline orders ===")
 
         # The resend scenario needs a client that keeps its own sequence numbering; every
@@ -6809,7 +6881,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.skip_baseline_orders:
             f8proc = None
         else:
-            f8proc = send_burst(args.orders_before, gw_log, baseline_config, baseline_output)
+            f8proc = send_burst(orders_before, gw_log, baseline_config, baseline_output)
             log(f"  Waiting for the client to receive a New report for each of the {before_total} baseline orders ...")
             found, elapsed = await_new_orders(f8proc, before_total, 0, timeout=120.0)
             if not found:
@@ -7460,6 +7532,45 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # believes the member has open, and the matching engine's own log says what became
         # of each: a cancel report for an order it holds, or a rejection naming it as an
         # order it does not recognise.
+        # ── A second sequencer during a catch-up ──────────────────────────────
+        # BUG-0200. The restarted primary begins catching up from the start of the WAL when the first sequencer connects,
+        # and the WAL is long enough that the second sequencer connects before the catch-up ends. Asking again on every
+        # connection then would have the leading sequencer start its stream again, and the engine would find the records
+        # going backwards, report the catch-up incomplete, and ask again only after catch_up_retry_seconds. It must
+        # instead finish the catch-up it began. The scenario must also show it made the window: a second connection made
+        # after the catch-up had finished tests nothing.
+        if scenario.assert_catch_up_survives_second_connection:
+            engine = "matching_engine_primary"
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            library_events = _TEST_EVENTS.messages
+            since = _TEST_EVENTS.since_introduction(engine)
+            started = _TEST_EVENTS.find(catch_up(engine_events, engine, engine_events.CatchUpStage.Started), since=since)
+            if started is None:
+                die(f"second connection: {engine} never began catching up")
+            # Less than catch_up_retry_seconds, so that a catch-up that went wrong and was asked for again cannot pass.
+            completed = _TEST_EVENTS.wait_for(catch_up(engine_events, engine, engine_events.CatchUpStage.Completed), timeout=10.0, since=started.index)
+            incomplete = _TEST_EVENTS.find(catch_up(engine_events, engine, engine_events.CatchUpStage.Incomplete), since=since)
+            if incomplete is not None:
+                die(f"second connection: {engine} found its catch-up incomplete ({incomplete.message}) -- asked again on a connection "
+                    "whose catch-up was under way, the leading sequencer started its stream again (BUG-0200)")
+            if completed is None:
+                die(f"second connection: {engine} did not finish catching up within 10s of beginning")
+            # The window needs the leading sequencer's connection first, so that its stream is under way, and the
+            # follower's during that stream. A follower that connects first only declines.
+            if _TEST_EVENTS.find(leads(library_events, "sequencer_secondary"), since=0) is not None:
+                die("second connection: sequencer_secondary led, so sequencer_primary was not the sequencer serving the catch-up")
+            first = _TEST_EVENTS.find(connection_made(library_events, "sequencer_primary", engine_service(engine)), since=since)
+            later = _TEST_EVENTS.find(connection_made(library_events, "sequencer_secondary", engine_service(engine)),
+                                      since=_TEST_EVENTS.since_introduction("sequencer_secondary"))
+            if first is None or later is None:
+                die(f"second connection: both sequencers must connect to the restarted {engine} (leader: {first}, follower: {later})")
+            if not (first.index < later.index and started.index < later.index < completed.index):
+                die(f"second connection: the scenario did not make the window it exists for: the catch-up was events {started.index} to "
+                    f"{completed.index}, the leading sequencer connected at event {first.index} and the follower at event {later.index}")
+            log(f"  second connection: {later.component} connected to {engine} {later.arrived - started.arrived:.2f}s into a catch-up of "
+                f"{completed.message.records_applied} record(s), which then finished {completed.arrived - started.arrived:.2f}s after it "
+                "began, with the stream never going backwards -- OK")
+
         # ── An engine that waited catches up before it leads ─────────────────
         # BUG-0198 and BUG-0199. The engine that leads at the end was caught up and waiting while the other engine
         # accepted orders, so it must catch up again before it leads, and say so: ResumedAsLeader is sent only at the end

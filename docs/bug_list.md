@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 200 |
-| Open | 84 (61 defects, 23 tasks) |
-| Closed | 116 |
-| Next id | BUG-0201 |
+| Bugs recorded | 201 |
+| Open | 84 (60 defects, 24 tasks) |
+| Closed | 117 |
+| Next id | BUG-0202 |
 
 ## Open bugs by severity
 
@@ -84,7 +84,7 @@
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
-| [BUG-0200](#bug_0200) | medium | defect | A matching engine starting while a long catch-up is under way asks again when the second sequencer connects, the leader starts the stream again, and the engine waits 15 seconds before asking once more |
+| [BUG-0201](#bug_0201) | medium | task | `ha_test.py` clears the WALs only before a run, so each scenario after the first starts on a WAL holding every earlier scenario's records |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -3953,6 +3953,33 @@ are open (07:39:38). It must pass before phase 8 is finished.
 **Principles.** V4: a follower that is missing commands never takes over; V8: every report the matching engine
 produces reaches the member.
 
+### BUG-0201: `ha_test.py` clears the WALs only before a run, so each scenario after the first starts on a WAL holding every earlier scenario's records {#bug_0201}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- the test harness, not the venue |
+| Found | 2026-10-25 |
+| Recorded | 2026-10-25 |
+| How | Scenario 78 failing in a run of every scenario with both matching engines, `ha_test.py --scenario all --secondary-engine-first`, at 09:13:37, having passed on its own; the Quill logs are in `tmp/ha_test_failures/20261025-091338-scenario-78-waiting_engine_catches_up_before_leading` |
+| Impact | A scenario in a run is not the scenario it is on its own. An engine that catches up from the start of the WAL applies every earlier scenario's orders and reports each to the member again, and a check that compares counts compares the wrong things. Every trading day starts with an empty WAL (V12), so no deployment ever starts like this |
+
+**What happens.** Before each scenario the harness deletes the matching engines' open-order regions, so that the
+book is empty and numbering starts at one, but it leaves the sequencers' WALs. In scenario 78 of the run at 09:13
+the restarted `matching_engine_primary` held nothing (`recovered 0 open order(s) from the region at seq_no=0`), and
+caught up through record 371,002: "140001 record(s) applied and 23001 report(s) sent to members, each marked as a
+possible repeat". The member's client, under the same comp id as every earlier scenario's, received those reports
+for ClOrdIDs `ord1` onwards, which the scenario's own orders also use. The scenario then compared 23,001 orders
+on the book with 22,001 the member had been told are open, and failed.
+
+**What is wanted.** Each scenario starts as a trading day does: the WALs, the regions, the lease promise records and
+the arbiters' statements cleared, as `devenv.clear_state_for_a_run` clears them before a run. Every scenario then has
+to be run again, normally and with `--secondary-engine-first`, since each starts from a different state.
+
+**Principles.** V12: every trading day starts fresh.
+
+## Closed
+
 ### BUG-0200: A matching engine starting while a long catch-up is under way asks again when the second sequencer connects, the leader starts the stream again, and the engine waits 15 seconds before asking once more {#bug_0200}
 
 | | |
@@ -3960,6 +3987,7 @@ produces reaches the member.
 | Severity | medium |
 | Found | 2026-10-25 |
 | Recorded | 2026-10-25 |
+| Fixed | 2026-10-25 -- a sequencer order connection made during a catch-up is asked alone, and the catch-up under way on another is left to finish. Held by `ha_test.py` scenario 80 |
 | How | Scenario 78 failing in a run of every scenario with both matching engines, `ha_test.py --scenario all --secondary-engine-first`, at 07:56:44; the Quill logs are in `tmp/ha_test_failures/20261025-075644-scenario-78-waiting_engine_catches_up_before_leading` |
 | Impact | A restarted engine becomes current at least 15 seconds later than it could, whenever the second sequencer connects while the first is still sending it the records it missed. Nothing is lost: the engine notices the stream went backwards and does not act on it. A catch-up from far back takes longer than the gap between the two sequencers connecting, so the larger the WAL the more often it happens |
 
@@ -3981,13 +4009,33 @@ the records of the 23 scenarios before it:
 already under way. The comment there says only the leading sequencer serves the request, which is true, but the
 leader serves each request it is sent.
 
-**What is wanted.** A connection made during a catch-up is asked only on that connection, and a catch-up already
-under way on another connection is left to finish.
+**How it was fixed.** `MatchingEngineThread::ask_on_new_sequencer_connection()` is called when a sequencer order
+connection is made during a catch-up. If the catch-up has not yet been asked for, because no sequencer had
+connected, it begins it as before. Otherwise it asks on the new connection alone and keeps the count of records
+received: if the new connection's sequencer leads, the others declined and nothing has arrived to count; if it
+does not lead, it declines, and the stream under way finishes. A leader whose own connection is lost and made
+again in the middle of a stream sends the rest on the new one, the count is then more than it says it sent, and the
+catch-up is judged incomplete and asked for again after `catch_up_retry_seconds`, as before.
+
+**How to reproduce.** `ha_test.py --scenario 80`. Which sequencer connects first to a restarted engine is otherwise
+chance, and only the leader's connection first makes the window, so the scenario arranges it. The secondary engine
+is started first and leads, so the primary engine holds no orders of its own. 200,000 orders make the WAL long. The
+follower sequencer is killed, so only the leading sequencer connects when the primary engine is restarted without
+its record of the lease promises it made. The follower sequencer is restarted while the stream is under way. The
+scenario requires the leader's connection before the follower's, the follower's during the catch-up, no
+`Incomplete`, and `Completed` within 10 seconds.
+
+**Verified.** Before the fix, scenario 80 failed at 08:13:09: "found its catch-up incomplete (... records_applied=
+200256, records_sent=200000 ...)". With the fix it passed at 08:18:28: the follower sequencer connected 0.43 seconds
+into a catch-up of 200,000 records, which finished 2.69 seconds after it began. Scenarios 78 and 54 passed. The full
+suite then passed 79 of 80, with 79 failing as expected on [BUG-0199](#bug_0199) (08:56:51). Run with
+`--secondary-engine-first`, 20 of 24 passed: 25, 54 and 55 failed as before ([BUG-0195](#bug_0195)), and 78 failed
+on [BUG-0201](#bug_0201), a defect of the test harness: the restarted primary caught up on 140,001 records left by
+earlier scenarios. Its Quill log shows the fix at work in the same run: "asked on new connection 9 to be caught up
+..., leaving the catch-up asked for on the others to finish".
 
 **Principles.** None broken; the engine's check (R-0101) caught it. It delays a start, and so prolongs the time the
 venue cannot match after a failover.
-
-## Closed
 
 ### BUG-0198: A matching engine that has caught up and is waiting to learn its role takes the lead without catching up again, and loses every order accepted while it waited {#bug_0198}
 

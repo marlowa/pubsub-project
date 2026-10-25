@@ -380,17 +380,18 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer order connection {} established (state={})",
                    id.get_value(), static_cast<int>(ha_role_state_));
         if (ha_role_state_ == MeRole::Reconciling) {
-            begin_reconciliation();
+            ask_on_new_sequencer_connection(id);
         }
     } else {
         // Primary (or non-HA) inbound order connection from the sequencer.
         sequencer_order_conn_ids_.insert(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} established", id.get_value());
         if (ha_role_state_ == MeRole::Reconciling) {
-            // Re-entry: reconciliation was begun before any sequencer had dialled in, so the
-            // request could not be sent. Sending it now is what keeps that from stranding the
-            // venue with no engine leading -- the outage BUG-0043 recorded.
-            begin_reconciliation();
+            // Either reconciliation was begun before any sequencer had dialled in, so the request
+            // could not be sent, and sending it now is what keeps that from stranding the venue
+            // with no engine leading -- the outage BUG-0043 recorded; or it was sent on another
+            // connection, and only this one is still to be asked.
+            ask_on_new_sequencer_connection(id);
         } else if (!has_reconciled_ && ha_role_state_ != MeRole::Follower) {
             // The catch-up belongs here, at the moment this instance first has somewhere to ask
             // and before it has served anything, rather than later when a role is settled. An
@@ -2158,6 +2159,7 @@ void MatchingEngineThread::begin_reconciliation() {
     // already connected, request WAL catch-up immediately; otherwise
     // on_connection_established will call begin_reconciliation() again once a
     // connection is up.
+    follow_request_sent_ = false;
     if (!sequencer_order_conn_ids_.empty()) {
         send_follow_request();
     } else {
@@ -2179,6 +2181,25 @@ void MatchingEngineThread::begin_reconciliation() {
     reconciliation_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.catch_up_retry_seconds));
 }
 
+pubsub_itc_fw::WalFollowRequest MatchingEngineThread::follow_request(const std::string& follower_name) const {
+    pubsub_itc_fw::WalFollowRequest request{};
+    request.follower_name = follower_name;
+    // A negative position says "I hold nothing and have applied nothing of yours": place me at
+    // your head rather than sending me your history. The alternative reading of an instance
+    // with no region -- that it is a component at position zero which has fallen the whole day
+    // behind -- would have the venue replay everything it still holds into an engine that never
+    // held any of it.
+    request.last_seq_no = has_position_ ? last_replicated_seq_no_ : -1;
+    // Why this instance is asking. A promotion needs the sequencer to route orders here
+    // afterwards, and this request is the only thing that tells it to -- the arbiter's decision
+    // does not reach the sequencer. A start needs the records and nothing else: this instance may
+    // be about to learn from its peer that it is a follower, and a sequencer that moved the order
+    // connection here on the strength of the ask would leave the venue routing orders to an
+    // instance that will not act on them. See BUG-0077 and ha_test.py scenario 54.
+    request.wants_new_records = reconciling_to_lead_;
+    return request;
+}
+
 void MatchingEngineThread::send_follow_request() {
     if (sequencer_order_conn_ids_.empty()) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: cannot ask to be caught up -- no sequencer order connection");
@@ -2189,30 +2210,37 @@ void MatchingEngineThread::send_follow_request() {
     // that this instance receives exactly one catch-up whichever connection the leader owns.
     // The message refers to the name rather than copying it, so the name must outlive the sends below.
     const std::string follower_name = "matching_engine_" + std::to_string(config_.instance_id);
-    pubsub_itc_fw::WalFollowRequest request{};
-    request.follower_name = follower_name;
-    // A negative position says "I hold nothing and have applied nothing of yours": place me at
-    // your head rather than sending me your history. The alternative reading of an instance
-    // with no region -- that it is a component at position zero which has fallen the whole day
-    // behind -- would have the venue replay everything it still holds into an engine that never
-    // held any of it.
-    const int64_t position_presented = has_position_ ? last_replicated_seq_no_ : -1;
-    request.last_seq_no = position_presented;
-    // Why this instance is asking. A promotion needs the sequencer to route orders here
-    // afterwards, and this request is the only thing that tells it to -- the arbiter's decision
-    // does not reach the sequencer. A start needs the records and nothing else: this instance may
-    // be about to learn from its peer that it is a follower, and a sequencer that moved the order
-    // connection here on the strength of the ask would leave the venue routing orders to an
-    // instance that will not act on them. See BUG-0077 and ha_test.py scenario 54.
-    request.wants_new_records = reconciling_to_lead_;
+    const pubsub_itc_fw::WalFollowRequest request = follow_request(follower_name);
     // A repeated request is answered with the whole stream again, so the tally counts from this
     // ask rather than from the start of the reconciliation. R-0101.
-    catch_up_tally_ = pubsub_itc_fw::CatchUpTally(position_presented);
+    catch_up_tally_ = pubsub_itc_fw::CatchUpTally(request.last_seq_no);
     for (const auto& conn_id : sequencer_order_conn_ids_) {
         send_pdu(conn_id, pubsub_itc_fw::WalFollowRequest::message_pdu_id, 0, request);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: asked on connection {} to be caught up (last_seq_no={}, {})",
                    conn_id.get_value(), last_replicated_seq_no_, reconciling_to_lead_ ? "asking to lead" : "starting, not asking to lead");
     }
+    follow_request_sent_ = true;
+}
+
+void MatchingEngineThread::ask_on_new_sequencer_connection(const pubsub_itc_fw::ConnectionID& id) {
+    if (!follow_request_sent_) {
+        begin_reconciliation();
+        return;
+    }
+    // The catch-up has been asked for on the other connections already. The leading sequencer serves every request it
+    // is sent, so asking on those again would have it start its stream again from the first record, while the first
+    // stream is still arriving, and this instance would find the records going backwards and ask again only after
+    // catch_up_retry_seconds (BUG-0200). So only this connection is asked, and the tally is kept: if this connection's
+    // sequencer leads, the others declined and nothing has arrived to count; if it does not, it declines, and the
+    // stream under way finishes as it would have. A leader whose own connection was lost and made again in the middle
+    // of a stream sends the rest on this one, and the tally then counts more records than it says it sent; the
+    // catch-up is judged incomplete and asked for again, as before.
+    const std::string follower_name = "matching_engine_" + std::to_string(config_.instance_id);
+    const pubsub_itc_fw::WalFollowRequest request = follow_request(follower_name);
+    send_pdu(id, pubsub_itc_fw::WalFollowRequest::message_pdu_id, 0, request);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: asked on new connection {} to be caught up (last_seq_no={}, {}), leaving the catch-up asked for on the others to finish",
+               id.get_value(), last_replicated_seq_no_, reconciling_to_lead_ ? "asking to lead" : "starting, not asking to lead");
 }
 
 void MatchingEngineThread::handle_follow_declined(const pubsub_itc_fw::EventMessage& message) {

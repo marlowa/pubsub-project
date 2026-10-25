@@ -522,6 +522,10 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // between catch-ups, so asking again later would replay what it has already applied.
     bool has_reconciled_{false};
 
+    // Whether the current catch-up has been asked for on at least one sequencer order connection. False from the moment
+    // a catch-up begins until the request is first sent, which is later when no sequencer had connected yet.
+    bool follow_request_sent_{false};
+
     // Whether this instance knows where it had got to. A process that found a region left by a
     // predecessor does: the region says which sequence number its contents are current to. One
     // that found no region at all does not, and must not pretend the answer is zero -- asking
@@ -645,6 +649,12 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void become_leader_when_current();
     // Asks every sequencer to be caught up (WalFollowRequest); only the leading one serves it.
     void send_follow_request();
+    // A sequencer order connection was made while this instance is catching up. Asks on that connection alone if the
+    // catch-up has already been asked for on others, so that a stream already under way is left to finish (BUG-0200);
+    // otherwise begins the catch-up.
+    void ask_on_new_sequencer_connection(const pubsub_itc_fw::ConnectionID& id);
+    // The catch-up request this instance sends, naming it follower_name, which must outlive the request.
+    [[nodiscard]] pubsub_itc_fw::WalFollowRequest follow_request(const std::string& follower_name) const;
     // The leading sequencer has sent every order after this instance's position (WalFollowCaughtUp).
     void handle_caught_up(const pubsub_itc_fw::EventMessage& message);
     // A sequencer that does not lead has declined the request (WalFollowDeclined); it says when it leads.
