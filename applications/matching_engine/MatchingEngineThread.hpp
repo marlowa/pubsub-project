@@ -635,12 +635,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     void begin_reconciliation();
 
-    /// Take the leader role, catching up first where this instance is not already current.
-    /// A follower has been passive and its replica may be behind; an instance that has not yet
-    /// reconciled at all has never asked what it missed. One that has been serving since it
-    /// started is current by definition -- it has applied every record as it arrived -- and
-    /// must not reconcile, because a catch-up makes live orders arriving meanwhile read as
-    /// replay: applied silently, with no acceptance reported to the member.
+    /// Take the leader role, catching up from the WAL first unless this instance already leads.
+    /// A follower has been passive and its replica may be behind. An instance that caught up
+    /// when the first sequencer connected, and has waited since to learn its role, has been sent
+    /// no orders meanwhile, because a sequencer sends orders only to the engine that leads. An
+    /// instance that already leads has applied every record as it arrived, and must not catch
+    /// up, because a catch-up makes live orders arriving meanwhile read as replay: applied
+    /// silently, with no acceptance reported to the member.
     void become_leader_when_current();
     // Asks every sequencer to be caught up (WalFollowRequest); only the leading one serves it.
     void send_follow_request();

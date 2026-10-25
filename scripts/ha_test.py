@@ -1208,6 +1208,12 @@ class Scenario(NamedTuple):
     # once it has caught up, holding exactly as many orders as the member was told are open. See run_scenario's "an
     # engine that waited catches up before it leads" block, BUG-0198 and BUG-0199.
     assert_waiting_engine_catches_up: bool = False
+    # For a scenario with both matching engines whose subject needs one of them to lead at the start: the engine named,
+    # "matching_engine_primary" or "matching_engine_secondary", is started first, and the other only once it leads, and
+    # the steps begin once the other follows, as --secondary-engine-first does for every scenario. Empty for the usual
+    # start, in which either engine may win the first election. A scenario that sets it is not run with
+    # --secondary-engine-first.
+    engine_started_first: str = ""
     # When True, no instance is expected to take the lead during the scenario: it tests the halt
     # when the leader and the arbiters are lost together (R-0147). The checks that follow a
     # promotion, such as which book the promoted instance resumed with, are skipped.
@@ -1260,6 +1266,53 @@ def _me_leader_restart_step() -> RestartStep:
         resets_me_counter=True,
         settle_secs=_ME_SETTLE,
     )
+
+
+def _waiting_engine_steps() -> list:
+    """The steps of scenarios 78 and 79: kill matching_engine_primary, restart it without its record of the lease promises
+    it made, send orders while it is caught up and waiting to learn its role, then kill matching_engine_secondary so that
+    the primary is granted the lead. The comment above scenario 78 says why each step is there."""
+    return [
+        KillStep(
+            proc_name="matching_engine_primary",
+            takeover=None,
+            settle_secs=0.0,
+        ),
+        # Judged over everything the secondary has reported since it started, not only since the kill, because when
+        # the primary followed, the secondary has led since the start.
+        VerifyStep(
+            expect=expect_leads("matching_engine_secondary"),
+            timeout=30.0,
+            description="matching_engine_secondary leads",
+        ),
+        RestartStep(
+            proc_name="matching_engine_primary",
+            ready_log_name="matching_engine_primary.log",
+            ready=expect_catch_up("matching_engine_primary", "CurrentAndWaiting"),
+            ready_timeout=_ME_READY_TIMEOUT,
+            resets_me_counter=True,
+            settle_secs=0.0,
+            forget_lease_promises=True,
+        ),
+        InterimOrdersStep(count_batches=1),
+        VerifyStep(
+            expect=expect_catch_up("matching_engine_primary", "CurrentAndWaiting"),
+            absent=expect_follows("matching_engine_primary"),
+            timeout=1.0,
+            description="the restarted matching_engine_primary is caught up and waiting, and has not followed",
+        ),
+        KillStep(
+            proc_name="matching_engine_secondary",
+            takeover=expect_leads("matching_engine_primary"),
+            settle_secs=SETTLE_AFTER_FAILOVER,
+        ),
+        VerifyStep(
+            expect=expect_leads("matching_engine_primary"),
+            absent=expect_follows("matching_engine_primary"),
+            timeout=1.0,
+            description="the restarted matching_engine_primary took the lead without having followed",
+        ),
+    ]
 
 
 # A single matching engine with high availability on has no running peer, so its only voters are
@@ -4146,9 +4199,14 @@ _SCENARIOS: list[Scenario] = [
     # dropped, the gateway cancels every order it believes is open, and the primary must accept each cancel. A cancel
     # refused as naming an order the engine does not hold is an order lost. Before that, the primary must report
     # resuming as leader, which it does only at the end of a catch-up to lead, holding exactly as many orders as the
-    # member was told are open. When the primary led at the start, the secondary cancelled the baseline orders on
-    # promotion and told the member, while the primary's region still holds them; a primary holding them when it leads
-    # holds orders the member was told were cancelled (BUG-0199).
+    # member was told are open.
+    #
+    # The venue is set to keep the book on promotion. When the primary leads at the start, the secondary is promoted
+    # when the primary is killed, and set to cancel, it would cancel the baseline orders and tell the member, while the
+    # primary's region still holds them, so the primary would lead holding orders the member was told were cancelled.
+    # That is BUG-0199, a different defect, and the scenario would then pass or fail according to which engine won the
+    # first election. The primary itself keeps its book either way when it leads, because it is starting, not being
+    # promoted from follower.
     #
     # Two checks make sure the scenario made the window it exists for: the primary had not followed when the secondary
     # was killed, and it never followed before it led.
@@ -4162,9 +4220,39 @@ _SCENARIOS: list[Scenario] = [
         ),
         me_ha=True,
         recovery_on_primary=True,
+        # So that the first promotion cancels nothing: see above.
+        open_orders_on_promotion="keep",
+        assert_waiting_engine_catches_up=True,
+        assert_open_orders_survive=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=_waiting_engine_steps(),
+    ),
+
+    # 79 -- a matching engine restarted after its peer cancelled the book on promotion leads holding the cancelled orders.
+    #
+    # BUG-0199. The steps are scenario 78's, with the venue set to cancel the book on promotion, as every environment
+    # is, and with the primary started first and leading, so that killing it promotes the secondary. The secondary
+    # cancels the 1,000 baseline orders it inherits and tells the member. The primary's region still holds them, and a
+    # catch-up sends an engine only orders and cancels, never the reports, so nothing tells the restarted primary that
+    # they were cancelled. When it takes the lead it must hold exactly the orders the member was told are open: the
+    # 1,000 sent while it waited, and none of the 1,000 it was told were cancelled.
+    Scenario(
+        number=79,
+        short_name="restarted_engine_holds_no_cancelled_order",
+        description="A matching engine restarted after its peer cancelled the book on promotion leads holding none of the cancelled orders",
+        expected_outcome=(
+            "the restarted matching_engine_primary takes the lead holding the orders accepted while it waited and none of "
+            "those the promoted secondary cancelled, so its book is exactly what the member was told is open"
+        ),
+        me_ha=True,
+        recovery_on_primary=True,
+        engine_started_first="matching_engine_primary",
         expected_failure=(
-            "the restarted primary takes the lead without catching up again, and lacks the orders accepted while it waited "
-            "(BUG-0198); and where the primary led at the start, it holds the orders the secondary cancelled on promotion (BUG-0199)"
+            "the restarted primary leads holding the 1,000 orders the promoted secondary cancelled, because a catch-up "
+            "sends an engine no execution reports (BUG-0199)"
         ),
         assert_waiting_engine_catches_up=True,
         assert_open_orders_survive=True,
@@ -4172,47 +4260,7 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         steps=[],
         restart_steps=[],
-        extra_steps=[
-            KillStep(
-                proc_name="matching_engine_primary",
-                takeover=None,
-                settle_secs=0.0,
-            ),
-            # Judged over everything the secondary has reported since it started, not only since the kill, because when
-            # the primary followed, the secondary has led since the start.
-            VerifyStep(
-                expect=expect_leads("matching_engine_secondary"),
-                timeout=30.0,
-                description="matching_engine_secondary leads",
-            ),
-            RestartStep(
-                proc_name="matching_engine_primary",
-                ready_log_name="matching_engine_primary.log",
-                ready=expect_catch_up("matching_engine_primary", "CurrentAndWaiting"),
-                ready_timeout=_ME_READY_TIMEOUT,
-                resets_me_counter=True,
-                settle_secs=0.0,
-                forget_lease_promises=True,
-            ),
-            InterimOrdersStep(count_batches=1),
-            VerifyStep(
-                expect=expect_catch_up("matching_engine_primary", "CurrentAndWaiting"),
-                absent=expect_follows("matching_engine_primary"),
-                timeout=1.0,
-                description="the restarted matching_engine_primary is caught up and waiting, and has not followed",
-            ),
-            KillStep(
-                proc_name="matching_engine_secondary",
-                takeover=expect_leads("matching_engine_primary"),
-                settle_secs=SETTLE_AFTER_FAILOVER,
-            ),
-            VerifyStep(
-                expect=expect_leads("matching_engine_primary"),
-                absent=expect_follows("matching_engine_primary"),
-                timeout=1.0,
-                description="the restarted matching_engine_primary took the lead without having followed",
-            ),
-        ],
+        extra_steps=_waiting_engine_steps(),
     ),
 ]
 
@@ -6244,6 +6292,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
     log_dir = prefix / "log"
     run_dir = prefix / "run"
 
+    # The matching engine started first and required to lead before the other starts, or empty for the usual start.
+    engine_first = "matching_engine_secondary" if args.secondary_engine_first else scenario.engine_started_first
+    engine_second = "matching_engine_primary" if engine_first == "matching_engine_secondary" else "matching_engine_secondary"
+    start_order_source = "--secondary-engine-first" if args.secondary_engine_first else f"scenario {scenario.number}"
+
     # The ME-HA topology uses the _primary/_secondary config set: baseline
     # orders flow to matching_engine_primary; after the primary is killed the
     # promoted matching_engine_secondary becomes the active ME.  All other
@@ -6321,8 +6374,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
     log(f"  ready timeout    : {args.ready_timeout:.0f}s")
     log(f"  failover timeout : {args.failover_timeout:.0f}s  (per step)")
     log(f"  recovery timeout : {args.recovery_timeout:.0f}s")
-    if args.secondary_engine_first:
-        log("  engine start     : matching_engine_secondary first, and it must lead before matching_engine_primary starts")
+    if engine_first:
+        log(f"  engine start     : {engine_first} first, and it must lead before {engine_second} starts")
     log("")
 
     # Process launch table (name, binary, config).
@@ -6405,8 +6458,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
     # With --secondary-engine-first, the engine configured as secondary is started before the one configured as
     # primary. That is the state a venue is in after any failover of the matching engine, when the secondary leads,
-    # and a scenario must pass from it as well as from the usual start (BUG-0195).
-    if args.secondary_engine_first:
+    # and a scenario must pass from it as well as from the usual start (BUG-0195). The launch table already starts the
+    # primary first, so a scenario that wants the primary to lead needs no change of order here, only the wait below.
+    if engine_first == "matching_engine_secondary":
         primary_index = next(index for index, entry in enumerate(launch_table) if entry[0] == "matching_engine_primary")
         secondary_index = next(index for index, entry in enumerate(launch_table) if entry[0] == "matching_engine_secondary")
         launch_table[primary_index], launch_table[secondary_index] = launch_table[secondary_index], launch_table[primary_index]
@@ -6599,11 +6653,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # depends on the machine's load. So the primary is not started until the secondary has been seen to lead,
             # and the scenario stops if it never does, rather than going on to test the usual start under a name that
             # says otherwise.
-            if args.secondary_engine_first and name == "matching_engine_secondary":
-                log(f"  Waiting until {name} leads before starting matching_engine_primary (timeout {_ME_LEADER_TIMEOUT:.0f}s) ...")
+            if engine_first and name == engine_first:
+                log(f"  Waiting until {name} leads before starting {engine_second} (timeout {_ME_LEADER_TIMEOUT:.0f}s) ...")
                 t0 = time.monotonic()
                 if _TEST_EVENTS.wait_for(leads(_TEST_EVENTS.messages, name), timeout=_ME_LEADER_TIMEOUT) is None:
-                    die(f"--secondary-engine-first: {name} did not lead within {_ME_LEADER_TIMEOUT:.0f}s of starting on its own")
+                    die(f"{start_order_source}: {name} did not lead within {_ME_LEADER_TIMEOUT:.0f}s of starting on its own")
                 log(f"  {name} leads ({time.monotonic() - t0:.1f}s)")
         log("")
 
@@ -6701,20 +6755,21 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 log(f"  the steps' {ENGINE_LEADING_AT_START} is {leader_name}, and {ENGINE_FOLLOWING_AT_START} is {follower_name}")
             else:
                 log(f"  neither matching engine leads within {_ME_LEADER_TIMEOUT:.0f}s -- continuing, as the scenario may expect that")
-            if args.secondary_engine_first and leader_name != "matching_engine_secondary":
-                die(f"--secondary-engine-first: matching_engine_secondary was seen to lead before matching_engine_primary started, "
+            if engine_first and leader_name != engine_first:
+                die(f"{start_order_source}: {engine_first} was seen to lead before {engine_second} started, "
                     f"but once both were running the engine that leads is {leader_name}")
             # In a normal start the wait above lasts about a lease period, which is also how long a starting engine
             # waits before it votes, so both engines have settled their roles before the steps begin. With the
             # secondary started first, the wait ends as soon as the primary is running, while the primary is still in
             # that first period: it has promised nothing and has not said it follows. A scenario begun then would be
-            # testing a pair whose follower has not finished starting, which no normal start produces.
-            if args.secondary_engine_first:
-                log(f"  Waiting until matching_engine_primary follows (timeout {_ME_LEADER_TIMEOUT:.0f}s) ...")
+            # testing a pair whose follower has not finished starting, which no normal start produces. The same holds
+            # whichever engine is started first.
+            if engine_first:
+                log(f"  Waiting until {engine_second} follows (timeout {_ME_LEADER_TIMEOUT:.0f}s) ...")
                 t0 = time.monotonic()
-                if _TEST_EVENTS.wait_for(follows(_TEST_EVENTS.messages, "matching_engine_primary"), timeout=_ME_LEADER_TIMEOUT) is None:
-                    die(f"--secondary-engine-first: matching_engine_primary did not follow within {_ME_LEADER_TIMEOUT:.0f}s")
-                log(f"  matching_engine_primary follows ({time.monotonic() - t0:.1f}s)")
+                if _TEST_EVENTS.wait_for(follows(_TEST_EVENTS.messages, engine_second), timeout=_ME_LEADER_TIMEOUT) is None:
+                    die(f"{start_order_source}: {engine_second} did not follow within {_ME_LEADER_TIMEOUT:.0f}s")
+                log(f"  {engine_second} follows ({time.monotonic() - t0:.1f}s)")
             log("")
         elif not scenario.ha_disabled:
             # The same for a single matching engine with high availability on: it asks to lead
@@ -10590,7 +10645,8 @@ def main() -> None:
     os.environ["LD_LIBRARY_PATH"] = f"{lib_dir}:{existing}" if existing else lib_dir
 
     if args.scenario == "all":
-        scenarios_to_run = [scenario for scenario in _SCENARIOS if scenario.me_ha] if args.secondary_engine_first else _SCENARIOS
+        scenarios_to_run = ([scenario for scenario in _SCENARIOS if scenario.me_ha and not scenario.engine_started_first]
+                            if args.secondary_engine_first else _SCENARIOS)
     else:
         scenario = _SCENARIO_MAP.get(args.scenario)
         if scenario is None:
@@ -10600,6 +10656,8 @@ def main() -> None:
             )
         if args.secondary_engine_first and not scenario.me_ha:
             parser.error(f"--secondary-engine-first applies only to scenarios that run both matching engines, and scenario {args.scenario} runs one")
+        if args.secondary_engine_first and scenario.engine_started_first:
+            parser.error(f"scenario {args.scenario} starts {scenario.engine_started_first} first itself, so --secondary-engine-first does not apply to it")
         scenarios_to_run = [scenario]
 
     overall_pass = True

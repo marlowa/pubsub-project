@@ -395,13 +395,13 @@ that sends and applies it; the catch-up on promotion from the end of a copy; and
   first election, so this is checked by running them normally, and again with
   `ha_test.py --scenario all --secondary-engine-first`, which starts the secondary engine, waits until it
   leads, then starts the primary, and begins the steps once the primary follows. Today three of the 24 fail when
-  the secondary leads first ([BUG-0195](bug_list.md#bug_0195)), and scenario 78 fails with either engine leading
-  first;
+  the secondary leads first ([BUG-0195](bug_list.md#bug_0195));
 - an engine that does not lead catches up from the WAL before it acts as leader, whatever role it was in, and it
-  leads with exactly the orders the members were told are open. Scenario 78 checks both: it kills the leader while
-  the other engine is caught up and waiting to learn its role, and requires the engine that takes the lead to catch
-  up first and to hold every order a member was told is open and none a member was told was cancelled
-  ([BUG-0198](bug_list.md#bug_0198), [BUG-0199](bug_list.md#bug_0199)).
+  leads with exactly the orders the members were told are open. Scenario 78 kills the leader while the other engine
+  is caught up and waiting to learn its role, and requires the engine that takes the lead to catch up first and to
+  hold every order a member was told is open; it passes. Scenario 79 does the same with the book cancelled on the
+  first promotion, and requires the engine that takes the lead to hold none of the orders a member was told were
+  cancelled; it fails today ([BUG-0199](bug_list.md#bug_0199)).
 
 **Also designed in this phase:** voiding a command that crashed an engine, so that a command both engines
 crash on costs that command and not the venue: the engine records each command before applying it, and one

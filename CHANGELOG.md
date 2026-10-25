@@ -62,9 +62,10 @@ describe the venue as it now is.
 - **`ha_test.py --secondary-engine-first`** runs the scenarios with both matching engines from the
   start a venue is in after any failover of the engine: the secondary is started first, and the
   primary only once the secondary leads.
-- **Scenario 78** kills the leading matching engine while the other is caught up and waiting to
-  learn its role, and requires the engine that takes the lead to catch up first and to hold exactly
-  the orders the member was told are open. It is marked as expected to fail (BUG-0198, BUG-0199).
+- **Scenarios 78 and 79** kill the leading matching engine while the other is caught up and waiting
+  to learn its role, and require the engine that takes the lead to catch up first and to hold exactly
+  the orders the member was told are open. Scenario 79 has the book cancelled on the first promotion,
+  and is marked as expected to fail (BUG-0199). A scenario can name the engine started first.
 - **Measurement of the order path, stage by stage**: an order is timed at every point on its way
   through the venue, the inter-thread hand-off and the socket crossing are measured in both halves,
   and a Grafana dashboard, kept in the repository as a source file, shows where an order's time goes.
@@ -119,12 +120,15 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 - **A sequencer that leads before every gateway has announced its sessions holds the reports for
   sessions it does not know of**, and sends them when the session is announced (BUG-0190). Each
   gateway ends its announcements with the new message `SessionsAnnounced`.
+- **A matching engine caught up and waiting to learn its role took the lead without catching up
+  again**, and lost every order accepted while it waited, telling no member. It now catches up
+  before it leads unless it already leads (BUG-0198).
 - **The ThreadSanitizer build did not compile**, and it checked the mutex variant of the queue
   rather than the lock-free one the venue runs (BUG-0150, BUG-0160).
 
 ### Known limitations
 
-- **84 bugs are open, 25 of them high severity**; `docs/bug_list.md` lists them.
+- **84 bugs are open, 24 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both

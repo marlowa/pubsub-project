@@ -1758,9 +1758,8 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
     set_epoch(lease_agent_->highest_epoch());
     switch (change) {
         case pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader:
-            // The lease settles the role. Whether this instance must catch up first is a separate
-            // question, answered by what it has done so far: a follower was passive and may be
-            // behind, while an instance that caught up at its first sequencer connection is current.
+            // The lease settles the role. An instance that is not already leading catches up from
+            // the WAL before it acts on it, whatever it has done so far.
             become_leader_when_current();
             break;
         case pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading:
@@ -2129,12 +2128,18 @@ void MatchingEngineThread::recover_open_orders(bool region_existed) {
 }
 
 void MatchingEngineThread::become_leader_when_current() {
-    if (ha_role_state_ == MeRole::Follower || !has_reconciled_) {
-        reconciling_to_lead_ = true;
-        begin_reconciliation();
+    if (ha_role_state_ == MeRole::Leader) {
+        // Already serving: it has applied every order as it arrived, and catching up now would
+        // make the live orders arriving meanwhile read as replay.
         return;
     }
-    adopt_leader_role();
+    // Every other instance catches up first, whatever it has done before. One that caught up when
+    // the first sequencer connected, and has waited since to learn its role, was current only at
+    // that moment: a sequencer sends orders only to the engine that leads, so every order accepted
+    // while it waited reached it only through the WAL. Leading without catching up would lose
+    // each of them, and tell no member (BUG-0198).
+    reconciling_to_lead_ = true;
+    begin_reconciliation();
 }
 
 void MatchingEngineThread::begin_reconciliation() {

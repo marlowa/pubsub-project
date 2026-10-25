@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 199 |
+| Bugs recorded | 200 |
 | Open | 84 (61 defects, 23 tasks) |
-| Closed | 115 |
-| Next id | BUG-0200 |
+| Closed | 116 |
+| Next id | BUG-0201 |
 
 ## Open bugs by severity
 
-25 high, 47 medium, 12 low.
+24 high, 48 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -36,7 +36,6 @@
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0195](#bug_0195) | high | defect | When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and three scenarios fail |
 | [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so |
-| [BUG-0198](#bug_0198) | high | defect | A matching engine that has caught up and is waiting to learn its role takes the lead without catching up again, and loses every order accepted while it waited |
 | [BUG-0199](#bug_0199) | high | defect | A matching engine restarted after its peer cancelled the book on promotion still holds the cancelled orders, and takes the lead holding them |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
@@ -85,6 +84,7 @@
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
+| [BUG-0200](#bug_0200) | medium | defect | A matching engine starting while a long catch-up is under way asks again when the second sequencer connects, the leader starts the stream again, and the engine waits 15 seconds before asking once more |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -3912,6 +3912,83 @@ message, the table of what each phase allows, and their implementation. A way to
 
 **Principles.** V6: every command a gateway accepted is answered; V2: the WAL is the record.
 
+### BUG-0199: A matching engine restarted after its peer cancelled the book on promotion still holds the cancelled orders, and takes the lead holding them {#bug_0199}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-25 |
+| Recorded | 2026-10-25 |
+| How | Writing scenario 78 for [BUG-0198](#bug_0198): with the primary leading first, the restarted primary caught up and still had the 1,000 baseline orders on its book, which the secondary had cancelled on promotion |
+| Impact | Orders the members were told are cancelled are on the book of the engine that leads, and can trade. Every environment deploys `open_orders_on_promotion = "cancel"`, so this follows any failover of the engine in which the failed engine is restarted and later leads |
+
+**What happens.** In scenario 78, run on 25 October 2026 with the primary leading first:
+
+1. The primary held the 1,000 baseline orders when it was killed. The secondary was promoted, logged
+   "open_orders_on_promotion=cancel -- cancelling the 1000 order(s) inherited at this promotion", and sent the
+   member a cancel for each.
+2. The restarted primary logged "recovered 1000 open order(s) from the region at seq_no=1000", caught up to sequence
+   number 3000 with "0 record(s) applied", and logged "started rather than promoted -- keeping the 1000 open order(s)
+   recovered from the region".
+3. Built with the engine always catching up before it leads ([BUG-0198](#bug_0198)), the primary then took the lead
+   and sent `ResumedAsLeader` with 2,000 orders on its book: the 1,000 the member was told are open, and the 1,000
+   it was told were cancelled.
+
+**Why.** The cancels a promoted engine sends are execution reports. The sequencer writes them to the WAL, but a
+catch-up sends an engine only the orders and cancels members sent: "execution reports are outputs, not inputs, and
+are not sent" (`SequencerThread::stream_wal_record_to_me`). So nothing an engine can catch up on says that its peer
+cancelled the book. Its own region still holds the orders, and its catch-up leaves them there. The same holds for
+any order an engine removes by its own decision and not on a member's command, such as the cancels before a halt
+after a long absence (R-0117).
+
+**What is wanted.** The book an engine leads with is the one the members were told of. Phase 7 of the
+[recovery plan](recovery_plan.md) makes the decisions an engine takes alone into commands in the WAL, which every
+engine applies, and phase 8 removes the cancelling of the book on promotion.
+
+**How to reproduce.** `ha_test.py --scenario 79`, which takes scenario 78's steps with the venue set to cancel the
+book on promotion, and starts the primary first so that it leads. It fails, and is marked as expected to fail: in the
+full run on 25 October 2026 the primary resumed as leader holding 2,000 orders when the member had been told 1,000
+are open (07:39:38). It must pass before phase 8 is finished.
+
+**Principles.** V4: a follower that is missing commands never takes over; V8: every report the matching engine
+produces reaches the member.
+
+### BUG-0200: A matching engine starting while a long catch-up is under way asks again when the second sequencer connects, the leader starts the stream again, and the engine waits 15 seconds before asking once more {#bug_0200}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-25 |
+| Recorded | 2026-10-25 |
+| How | Scenario 78 failing in a run of every scenario with both matching engines, `ha_test.py --scenario all --secondary-engine-first`, at 07:56:44; the Quill logs are in `tmp/ha_test_failures/20261025-075644-scenario-78-waiting_engine_catches_up_before_leading` |
+| Impact | A restarted engine becomes current at least 15 seconds later than it could, whenever the second sequencer connects while the first is still sending it the records it missed. Nothing is lost: the engine notices the stream went backwards and does not act on it. A catch-up from far back takes longer than the gap between the two sequencers connecting, so the larger the WAL the more often it happens |
+
+**What happens.** In scenario 78 at 07:56, the restarted `matching_engine_primary` held no orders, and the WAL held
+the records of the 23 scenarios before it:
+
+1. At 07:56:31.255 the first sequencer's order connection (7) was made. The engine began catching up and asked on
+   connection 7 to be sent every record. The leading sequencer began sending them.
+2. At 07:56:31.666 the second sequencer's connection (8) was made. The engine began catching up again and asked on
+   both connections, 8 and 7. The sequencer on 8 does not lead and declined. The leading sequencer, on 7, took the
+   second request and began sending again from record 1.
+3. At 07:56:32.211 the engine logged "catch-up was not complete -- the record stream did not advance: seq_no 1
+   arrived after seq_no 223469". It does not act on the stream, and asks again after `catch_up_retry_seconds`,
+   which is 15 seconds. The scenario waits 15 seconds for the engine to say it is caught up, and failed first.
+
+**Why.** When a sequencer order connection is made while the engine is catching up,
+`MatchingEngineThread::on_connection_established` calls `begin_reconciliation()` again, and
+`send_follow_request()` sends the request on every sequencer order connection, including the one whose catch-up is
+already under way. The comment there says only the leading sequencer serves the request, which is true, but the
+leader serves each request it is sent.
+
+**What is wanted.** A connection made during a catch-up is asked only on that connection, and a catch-up already
+under way on another connection is left to finish.
+
+**Principles.** None broken; the engine's check (R-0101) caught it. It delays a start, and so prolongs the time the
+venue cannot match after a failover.
+
+## Closed
+
 ### BUG-0198: A matching engine that has caught up and is waiting to learn its role takes the lead without catching up again, and loses every order accepted while it waited {#bug_0198}
 
 | | |
@@ -3919,6 +3996,7 @@ message, the table of what each phase allows, and their implementation. A way to
 | Severity | high |
 | Found | 2026-10-24 |
 | Recorded | 2026-10-24 |
+| Fixed | 2026-10-25 -- an engine that does not already lead catches up from the WAL before it takes the lead, whatever it has done before. Held by `ha_test.py` scenario 78 |
 | How | Finding why scenarios 16, 21, 24, 48 and 77 failed under `ha_test.py --secondary-engine-first` before it waited for the primary to follow, and passed once it did; the Quill logs are in `tmp/ha_test_failures/20261024-214932-scenario-16-primary_me_death` |
 | Impact | Orders the members were told are resting are lost without a report, if the leading engine dies while the other is starting. That is the window after every failover, while the failed engine restarts, which at production size lasts 20 to 30 seconds |
 
@@ -3960,60 +4038,27 @@ the secondary accepts, and then kills the secondary. The primary is granted the 
 send `ResumedAsLeader`, which an engine sends only at the end of a catch-up to lead, holding exactly the orders the
 member was told are open, and then drops the member's session and requires every cancel the gateway sends to be
 accepted. The primary is named by its configuration, not by the role it had at the start, because the window is
-the configured primary's: a restarted secondary follows at once ([BUG-0195](#bug_0195)).
+the configured primary's: a restarted secondary follows at once ([BUG-0195](#bug_0195)). The venue is set to keep
+the book on promotion, so that the first promotion cancels nothing and [BUG-0199](#bug_0199) does not arise.
 
-Run on 25 October 2026, scenario 78 fails with either engine leading first: the primary took the lead and sent no
-`ResumedAsLeader` (05:22:29 with the primary leading first, 05:21:32 with the secondary leading first). In the run
-at 05:11:39 the primary logged "caught up at seq_no=3000 with 1000 order(s) on the book -- current, and waiting" at
-05:11:33.99 and "adopting LEADER role" at 05:11:37.59, with no catch-up between. Asked for the cancels, it refused
-them as naming orders it does not hold.
+Before the fix, run on 25 October 2026, scenario 78 failed with either engine leading first: the primary took the
+lead and sent no `ResumedAsLeader` (05:22:29 with the primary leading first, 05:21:32 with the secondary leading
+first). In the run at 05:11:39 the primary logged "caught up at seq_no=3000 with 1000 order(s) on the book --
+current, and waiting" at 05:11:33.99 and "adopting LEADER role" at 05:11:37.59, with no catch-up between.
 
-The scenario was checked against a build of the engine in which `become_leader_when_current()` always catches up
-first, which was not kept. With the secondary leading first, scenario 78 passed: the primary caught up to sequence
-number 4111 before leading, and held all 2,000 open orders. With the primary leading first, it failed on
-[BUG-0199](#bug_0199). The scenario is marked as expected to fail, naming both bugs.
+**How it was fixed.** `MatchingEngineThread::become_leader_when_current()` catches up before the engine leads
+unless it already leads. An engine that already leads has applied every order as it arrived, and a catch-up then
+would make the live orders arriving meanwhile read as replay, so that case is kept.
 
-**Principles.** V4: a follower that is missing commands never takes over; V8: every report the matching engine
-produces reaches the member.
-
-### BUG-0199: A matching engine restarted after its peer cancelled the book on promotion still holds the cancelled orders, and takes the lead holding them {#bug_0199}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-25 |
-| Recorded | 2026-10-25 |
-| How | Writing scenario 78 for [BUG-0198](#bug_0198): with the primary leading first, the restarted primary caught up and still had the 1,000 baseline orders on its book, which the secondary had cancelled on promotion |
-| Impact | Orders the members were told are cancelled are on the book of the engine that leads, and can trade. Every environment deploys `open_orders_on_promotion = "cancel"`, so this follows any failover of the engine in which the failed engine is restarted and later leads |
-
-**What happens.** In scenario 78, run on 25 October 2026 with the primary leading first:
-
-1. The primary held the 1,000 baseline orders when it was killed. The secondary was promoted, logged
-   "open_orders_on_promotion=cancel -- cancelling the 1000 order(s) inherited at this promotion", and sent the
-   member a cancel for each.
-2. The restarted primary logged "recovered 1000 open order(s) from the region at seq_no=1000", caught up to sequence
-   number 3000 with "0 record(s) applied", and logged "started rather than promoted -- keeping the 1000 open order(s)
-   recovered from the region".
-3. Built with the engine always catching up before it leads ([BUG-0198](#bug_0198)), the primary then took the lead
-   and sent `ResumedAsLeader` with 2,000 orders on its book: the 1,000 the member was told are open, and the 1,000
-   it was told were cancelled.
-
-**Why.** The cancels a promoted engine sends are execution reports. The sequencer writes them to the WAL, but a
-catch-up sends an engine only the orders and cancels members sent: "execution reports are outputs, not inputs, and
-are not sent" (`SequencerThread::stream_wal_record_to_me`). So nothing an engine can catch up on says that its peer
-cancelled the book. Its own region still holds the orders, and its catch-up leaves them there. The same holds for
-any order an engine removes by its own decision and not on a member's command, such as the cancels before a halt
-after a long absence (R-0117).
-
-**What is wanted.** The book an engine leads with is the one the members were told of. Phase 7 of the
-[recovery plan](recovery_plan.md) makes the decisions an engine takes alone into commands in the WAL, which every
-engine applies, and phase 8 removes the cancelling of the book on promotion. Scenario 78 fails on this when the
-primary leads first, and must pass, with both orders of start, before phase 8 is finished.
+**Verified.** Scenario 78 passed on its own with either engine leading first (06:52:03 and 06:52:34): the primary
+caught up to sequence number 4112, and 4196, before leading, held all 2,000 open orders, and every cancel the gateway
+sent was accepted. The full suite then passed 78 of 79 scenarios, with scenario 79 failing as expected on
+BUG-0199 (07:39:38). Run with `--secondary-engine-first`, 20 of 24 passed: 25, 54 and 55 failed as they did before
+the fix ([BUG-0195](#bug_0195)), and 78 failed on [BUG-0200](#bug_0200), a defect in how a starting engine asks to
+be caught up, which the WAL left by 23 scenarios before it made visible.
 
 **Principles.** V4: a follower that is missing commands never takes over; V8: every report the matching engine
 produces reaches the member.
-
-## Closed
 
 ### BUG-0196: Scenarios 12, 13, 29 and 48 named a matching engine by its configuration, so they failed, or passed by chance, when the secondary led at the start {#bug_0196}
 
