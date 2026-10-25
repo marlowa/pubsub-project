@@ -134,12 +134,15 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
   every key as a command, and printed "Command not found" for each newline into the output the
   reports are read from, sometimes in the middle of a field; at 100,000 orders four reports were
   not counted.
+- **`ha_test.py` cleared the WALs only before a run**, so each scenario after the first started on
+  a WAL holding every earlier scenario's records, and an engine catching up from its start applied
+  all of their orders. It now clears them before every scenario (BUG-0201).
 - **The ThreadSanitizer build did not compile**, and it checked the mutex variant of the queue
   rather than the lock-free one the venue runs (BUG-0150, BUG-0160).
 
 ### Known limitations
 
-- **84 bugs are open, 24 of them high severity**; `docs/bug_list.md` lists them.
+- **83 bugs are open, 24 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both

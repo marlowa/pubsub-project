@@ -5892,6 +5892,21 @@ def clear_open_order_regions(prefix: Path) -> None:
             die(f"could not clear the open-order region at {path}: {error}")
 
 
+def clear_write_ahead_logs(prefix: Path) -> None:
+    """Delete the write-ahead logs of the sequencers and the publishers before a scenario, as a new trading day starts
+    with none (V12).
+
+    Left in place, each scenario after the first starts on a WAL holding every earlier scenario's records. An engine
+    that catches up from the start of the WAL then applies all of their orders and reports each to the member again,
+    under the same comp id and the same ClOrdIDs as the scenario's own, and what the scenario counts is not what it
+    sent (BUG-0201). The paths are the ones the deployment configures, read by devenv.clear_durable_state, which also
+    clears the lease promise records and the arbiters' statements that belong to the day the WAL held.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import devenv  # pylint: disable=import-outside-toplevel
+    devenv.clear_durable_state(devenv.load_env(devenv._DEFAULT_ENV_FILE), prefix, fresh_book=False, fresh_wal=True)  # pylint: disable=protected-access
+
+
 def venue_state_dir(prefix: Path) -> Path:
     """The directory holding the matching engines' open-order regions.
 
@@ -6625,10 +6640,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # have a client resume a thousand messages ahead of a venue that has just started.
         clear_fix8_persisted_state()
 
-        # And the venue's own memory of what it was holding, for the same reason: a scenario
-        # that began with the previous one's open orders would be testing something nobody
-        # wrote. See clear_open_order_regions.
+        # And the venue's own memory of what it was holding and of what it sequenced, for the same reason: a
+        # scenario that began with the previous one's open orders, or its records, would be testing something
+        # nobody wrote. See clear_open_order_regions and clear_write_ahead_logs.
         clear_open_order_regions(prefix)
+        clear_write_ahead_logs(prefix)
         clear_lease_promise_records(prefix)
 
         if scenario.assert_resend_recovery:

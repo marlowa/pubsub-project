@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 201 |
-| Open | 84 (60 defects, 24 tasks) |
-| Closed | 117 |
+| Open | 83 (60 defects, 23 tasks) |
+| Closed | 118 |
 | Next id | BUG-0202 |
 
 ## Open bugs by severity
 
-24 high, 48 medium, 12 low.
+24 high, 47 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -84,7 +84,6 @@
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
-| [BUG-0201](#bug_0201) | medium | task | `ha_test.py` clears the WALs only before a run, so each scenario after the first starts on a WAL holding every earlier scenario's records |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -3953,6 +3952,8 @@ are open (07:39:38). It must pass before phase 8 is finished.
 **Principles.** V4: a follower that is missing commands never takes over; V8: every report the matching engine
 produces reaches the member.
 
+## Closed
+
 ### BUG-0201: `ha_test.py` clears the WALs only before a run, so each scenario after the first starts on a WAL holding every earlier scenario's records {#bug_0201}
 
 | | |
@@ -3961,6 +3962,7 @@ produces reaches the member.
 | Kind | task -- the test harness, not the venue |
 | Found | 2026-10-25 |
 | Recorded | 2026-10-25 |
+| Fixed | 2026-10-25 -- `ha_test.py` clears the WALs before every scenario, with the regions and the lease promise records |
 | How | Scenario 78 failing in a run of every scenario with both matching engines, `ha_test.py --scenario all --secondary-engine-first`, at 09:13:37, having passed on its own; the Quill logs are in `tmp/ha_test_failures/20261025-091338-scenario-78-waiting_engine_catches_up_before_leading` |
 | Impact | A scenario in a run is not the scenario it is on its own. An engine that catches up from the start of the WAL applies every earlier scenario's orders and reports each to the member again, and a check that compares counts compares the wrong things. Every trading day starts with an empty WAL (V12), so no deployment ever starts like this |
 
@@ -3972,13 +3974,18 @@ possible repeat". The member's client, under the same comp id as every earlier s
 for ClOrdIDs `ord1` onwards, which the scenario's own orders also use. The scenario then compared 23,001 orders
 on the book with 22,001 the member had been told are open, and failed.
 
-**What is wanted.** Each scenario starts as a trading day does: the WALs, the regions, the lease promise records and
-the arbiters' statements cleared, as `devenv.clear_state_for_a_run` clears them before a run. Every scenario then has
-to be run again, normally and with `--secondary-engine-first`, since each starts from a different state.
+**How it was fixed.** Each scenario starts as a trading day does. Before it starts anything, `ha_test.py` deletes the
+WALs of both sequencers and both publishers, through `clear_write_ahead_logs`, which uses the paths the deployment
+configures, as `devenv.clear_durable_state` reads them, alongside the regions and the lease promise records it
+already deleted.
+
+**Verified.** Run on 25 October 2026 with the change, every scenario again, the WAL of each sequencer deleted before
+each scenario after the first. With `--secondary-engine-first`, 21 of 24 passed (09:32:27), and the three that
+failed are those of [BUG-0195](#bug_0195); scenario 78 passed, the restarted primary catching up to sequence number
+4164 and holding the 2,000 orders the member was told are open. The full suite passed 79 of 80, with scenario 79
+failing as expected on [BUG-0199](#bug_0199) (10:09:03).
 
 **Principles.** V12: every trading day starts fresh.
-
-## Closed
 
 ### BUG-0200: A matching engine starting while a long catch-up is under way asks again when the second sequencer connects, the leader starts the stream again, and the engine waits 15 seconds before asking once more {#bug_0200}
 
