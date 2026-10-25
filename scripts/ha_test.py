@@ -131,10 +131,11 @@ Scenarios
 
  18  FIX gateway instance A death (no session handover to B)
        Runs both FIX gateway instances and kills a.  Nothing is elected: a
-       gateway elects nothing, and b inherits none of a's sessions.  Pins the
-       current behaviour rather than a desired one -- the sequencer drops every
-       execution report bound for the dead instance instead of rerouting it.
-       Expected: b logs no traffic of a's; the sequencer reports dropping ERs.
+       gateway elects nothing, and b inherits none of a's sessions.  The
+       sequencer holds the execution reports bound for the dead instance, to send
+       them when it connects to that instance again, and does not reroute them.
+       Expected: b reports no traffic of a's; the sequencer reports holding the
+       reports for instance 1 and drops none of them.
 
  19  Cancel-on-disconnect grace period (step 3b)
        Kills nothing: the client session drops while the gateway lives.  The
@@ -1147,6 +1148,12 @@ class Scenario(NamedTuple):
     # reports. Every order must be accepted once the relay lets the connections through. See
     # run_scenario's "reports held without a connection" block, and BUG-0120.
     assert_engine_holds_reports_without_connection: bool = False
+    # When True, each sequencer's connection for reports to fix_order_gateway_a goes through a relay this script runs,
+    # which at first accepts nothing, so that the leading sequencer has no connection for reports to the gateway while
+    # the gateway's connection to it for orders is up. A member sends orders, and every one must be reported to it once
+    # the relay lets the connection through. See run_scenario's "reports held for a gateway with no connection" block,
+    # and BUG-0202.
+    assert_reports_held_for_unconnected_gateway: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -1927,27 +1934,19 @@ _SCENARIOS: list[Scenario] = [
     # Kill order matters: gateway a first, the engine second. The reverse would let the
     # cancellation reports reach a before it died and prove nothing.
     #
-    # The first version of this scenario could not assert the drop, because the reports
-    # never reached the drop decision: cancel ERs carry seq_no 0 and the sequencer gated
-    # them on a WalAck for seq_no 0 that could never arrive, so they were parked forever
-    # (and, pending_er_ being keyed on that sequence, all but the first were discarded).
-    # That defect is fixed -- they now gate on their own WAL record -- which is what
-    # makes the drop assertion below reachable at all.
-    #
-    # No member reconnects in this scenario, so the sessions gateway a held are bound nowhere
-    # when the cancellation reports are produced, and the sequencer drops every one. That is
-    # what the venue does today, and it is BUG-0088: a report produced while its session is
-    # bound nowhere is not delivered when the session returns. When BUG-0088 is fixed the
-    # reports will be kept for the session rather than dropped, and the assertion on
-    # dropped_ers must change with it rather than be deleted.
+    # Gateway a is never restarted and no member reconnects, so the leading sequencer has no
+    # connection for reports to instance 1 when the cancellation reports are produced. It holds
+    # them, up to the capacity it is configured with, to send them when that connection is made,
+    # and it does not send them to instance b. The scenario checks that the sequencer says it is
+    # holding reports for instance 1, that it drops none, and that b sees none of them.
     Scenario(
         number=18,
         short_name="fix_gateway_a_death",
         description="Death of FIX gateway instance A (no session handover to B)",
         expected_outcome=(
             "no election (a gateway elects nothing); instance b keeps running but "
-            "inherits none of a's sessions, and the sequencer drops every execution "
-            "report bound for the dead instance instead of rerouting it to b"
+            "inherits none of a's sessions, and the sequencer holds every execution "
+            "report bound for the dead instance rather than dropping it or rerouting it to b"
         ),
         gateway_b=True,
         # Short enough that the scenario need not sit out the deployed five minutes, and the
@@ -4329,6 +4328,29 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 81 -- reports for a gateway the leading sequencer has no connection for reports to are held, and sent once it has.
+    #
+    # BUG-0202. A sequencer sends reports to a gateway on a connection it makes to the gateway, apart from the gateway's
+    # connection to it for orders. Here both sequencers' connections for reports to fix_order_gateway_a go through a
+    # relay this script runs, which at first accepts nothing, so the leading sequencer has no connection for reports to
+    # the gateway while the gateway can send it orders. A member sends 50 orders, which are sequenced and answered by the
+    # engine. The sequencer must hold their reports, say so, and send none until the relay lets the connection through;
+    # then every order must be reported to the member exactly once.
+    Scenario(
+        number=81,
+        short_name="reports_held_for_unconnected_gateway",
+        description="Reports for a gateway the leading sequencer has no connection for reports to are held, and sent once it has",
+        expected_outcome=(
+            "the leading sequencer holds the reports for the gateway while it has no connection for reports to it, drops none, "
+            "and sends every one once the connection is made; every order is reported to the member exactly once"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        skip_baseline_orders=True,
+        assert_reports_held_for_unconnected_gateway=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -5101,6 +5123,24 @@ def config_with_few_held_orders(config: Path) -> Path:
         die(f"config_with_few_held_orders: {config} has no orders_held_at_most to change")
     text = text.replace(line + "\n", f"orders_held_at_most = {_FEW_HELD_ORDERS}\n", 1)
     copy = config.with_name(config.stem + "_few_held_orders.toml")
+    copy.write_text(text)
+    return copy
+
+
+# Scenario 81: the relay port for the sequencers' connection for reports to fix_order_gateway_a, and the port the
+# gateway listens on for it.
+_GATEWAY_REPORT_RELAY_PORTS = {11931: 11010}
+
+
+def config_with_gateway_report_relay(config: Path) -> Path:
+    """A copy of a sequencer's configuration whose connection for reports to fix_order_gateway_a goes to the relay port."""
+    text = config.read_text()
+    for relay_port, gateway_port in _GATEWAY_REPORT_RELAY_PORTS.items():
+        pattern = re.compile(rf"^(port\s*=\s*){gateway_port}$", re.M)
+        if len(pattern.findall(text)) != 1:
+            die(f"config_with_gateway_report_relay: {config} does not have exactly one 'port = {gateway_port}' to send through the relay")
+        text = pattern.sub(rf"\g<1>{relay_port}", text)
+    copy = config.with_name(config.stem + "_gateway_report_relay.toml")
     copy.write_text(text)
     return copy
 
@@ -6720,6 +6760,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 extra_environment = blocked_gateway_environment(prefix, block_flag)
             if scenario.assert_logged_commands_reach_engine and name == "sequencer_secondary":
                 extra_environment = blocked_peer_environment(prefix, block_flag)
+            if scenario.assert_reports_held_for_unconnected_gateway and name in ("sequencer_primary", "sequencer_secondary"):
+                config = config_with_gateway_report_relay(config)
+                log(f"  {name} sends reports to fix_order_gateway_a through a relay on port {sorted(_GATEWAY_REPORT_RELAY_PORTS)}, which accepts nothing yet")
             if scenario.assert_engine_holds_reports_without_connection and name == "matching_engine":
                 config = config_with_report_relay(config)
                 log(f"  {name} sends its reports through a relay on ports {sorted(_REPORT_RELAY_PORTS)}, which accepts nothing yet")
@@ -7360,16 +7403,16 @@ def run_scenario(scenario: Scenario, args) -> bool:
         #
         # Three things must hold for the test to mean anything:
         #   1. the cancel burst actually happened, or the rest proves nothing;
-        #   2. the sequencer dropped those reports, naming the dead instance -- it
-        #      does NOT reroute them to the surviving instance of the same protocol;
+        #   2. the sequencer held those reports for the dead instance and dropped none --
+        #      it does NOT reroute them to the surviving instance of the same protocol;
         #   3. instance b saw none of it, i.e. it inherited nothing from a.
         #
         # Assertion 3 is the load-bearing one. Were b ever to pick up a's sessions,
         # the third check fails first and loudest.
         #
         # WHEN SESSION HANDOVER LANDS (steps 3b-6 of docs/availability/gateway_ha.md) THIS
-        # BLOCK SHOULD FAIL. Invert it rather than deleting it: dropped_ers becomes 0
-        # and b's traffic becomes non-zero.
+        # BLOCK SHOULD FAIL. Invert it rather than deleting it: the sequencer holds nothing
+        # for instance 1, and b's traffic becomes non-zero.
         if scenario.assert_gateway_orphaned:
             # Only the restarted engine's events count: those since its newest introduction.
             cancelled_book = engine_event(me_log.stem, "BookCancelled", _TEST_EVENTS.since_introduction(me_log.stem), args.failover_timeout)
@@ -7386,18 +7429,22 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # away. Every other me_ha scenario gets this delay for free from Phase 5's
             # recovery orders; this one skips Phase 5, and without the wait it sampled
             # about two seconds after promotion and saw nothing.
-            drop_expect = expect_message("sequencer_primary", "a report for the dead FIX instance 1 dropped", "ReportDroppedGatewayNotConnected", "sequencer_test_events",
+            held_expect = expect_message("sequencer_primary", "reports held for the dead FIX instance 1", "ReportsHeldForGateway", "sequencer_test_events",
                                          fields=lambda m: {"gateway_protocol": 1, "gateway_instance": 1})
-            log("  gateway orphan: waiting for the cancel ERs to reach the sequencer ...")
-            found, elapsed = await_expectation(drop_expect, args.failover_timeout, sequencer_events_pre_kill)
+            log("  gateway orphan: waiting for the cancel execution reports to reach the sequencer ...")
+            found, elapsed = await_expectation(held_expect, args.failover_timeout, sequencer_events_pre_kill)
             if not found:
-                die("gateway orphan: the sequencer never reported dropping an execution report "
+                die("gateway orphan: the sequencer never said it was holding execution reports "
                     "for the dead FIX instance 1. Either the reports went somewhere they should "
                     "not have, or session handover now exists -- if the latter, invert this "
                     "scenario's assertions rather than removing them. See docs/availability/gateway_ha.md.")
-            dropped_ers = count_seen(drop_expect, sequencer_events_pre_kill)
-            log(f"  gateway orphan: sequencer dropped {dropped_ers} ER(s) bound for the dead "
-                f"instance 1, first after {elapsed:.1f}s -- not rerouted to b")
+            drop_expect = expect_message("sequencer_primary", "a report for the dead FIX instance 1 dropped", "ReportDroppedGatewayNotConnected", "sequencer_test_events",
+                                         fields=lambda m: {"gateway_protocol": 1, "gateway_instance": 1})
+            dropped = count_seen(drop_expect, sequencer_events_pre_kill)
+            if dropped > 0:
+                die(f"gateway orphan: the sequencer dropped {dropped} execution report(s) for the dead FIX instance 1 rather than holding them (BUG-0202)")
+            log(f"  gateway orphan: the sequencer is holding the execution reports for the dead instance 1, first after {elapsed:.1f}s, "
+                "and dropped none -- not rerouted to b")
 
             # The load-bearing assertion: b was alive throughout, and the question is only whether
             # anything reached it. A gateway reports its progress every five seconds whether or not it
@@ -7419,10 +7466,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  gateway orphan: instance b reported only idle progress ({len(b_reports)} reports, all zeros) -- it inherited "
                 "nothing from a -- OK")
 
-            # The member is never told: the orders were cancelled in the book, and the
-            # reports saying so had nowhere to go.
+            # The member is not told in this scenario: the orders were cancelled in the book, and
+            # the reports saying so are held by the sequencer for an instance that never returns.
             log(f"  gateway orphan: {cancel_count} order(s) cancelled in the book, "
-                "0 cancel reports delivered to any client -- orders silently orphaned")
+                "0 cancel reports delivered to any client while instance a stays down")
 
         # ── A record of what it held that cannot be read ──────────────────────
         # R-0102 and R-0123. Three things must hold, and the third is the one that matters
@@ -9665,6 +9712,84 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if twice:
                 die(f"held reports: {len(twice)} orders were reported accepted more than once, for example {twice[:3]}.")
             log(f"  all {len(sent)} orders reported accepted exactly once -- OK")
+
+        # ── Reports held for a gateway with no connection ─────────────────────
+        # BUG-0202. The leading sequencer has no connection for reports to the gateway, because the relay accepts nothing,
+        # while the gateway's connection to it for orders is up, so the member's orders are sequenced and answered by the
+        # engine. The sequencer must hold the reports, and send every one once the connection is made.
+        if scenario.assert_reports_held_for_unconnected_gateway:
+            log("=== Reports for a gateway the leading sequencer has no connection for reports to are held and sent later ===")
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
+                die("gateway reports: sequencer_primary is not leading.")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+                time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("gateway reports: the raw client could not log on.")
+
+            events_from = _TEST_EVENTS.mark()
+            sequencer_events = "sequencer_test_events"
+            run_tag = datetime.now().strftime("%H%M%S")
+            sent = [f"gwheld-{run_tag}-{number}" for number in range(1, 51)]
+            for cl_ord_id in sent:
+                member.new_order_single(cl_ord_id)
+            held = component_event("sequencer_primary", sequencer_events, "ReportsHeldForGateway", events_from, 10.0, gateway_protocol=1, gateway_instance=1)
+            if held is None:
+                member.close()
+                die("gateway reports: sequencer_primary never said it was holding reports for fix_order_gateway_a. Either it had a "
+                    "connection for reports after all, so nothing here was tested, or it dropped the reports (BUG-0202).")
+            dropped = count_seen(expect_message("sequencer_primary", "a report dropped for a gateway not connected", "ReportDroppedGatewayNotConnected",
+                                                sequencer_events), events_from)
+            if dropped > 0:
+                member.close()
+                die(f"gateway reports: sequencer_primary dropped {dropped} report(s) for fix_order_gateway_a instead of holding them (BUG-0202).")
+            early = [m for m in member.receive(timeout=1.0) if m.get(35) == "8"]
+            if early:
+                member.close()
+                die(f"gateway reports: {len(early)} report(s) reached the member while the sequencer had no connection for reports to "
+                    "its gateway, so the relay did not keep the connection away and nothing here was tested.")
+            log(f"  {len(sent)} orders sent; sequencer_primary is holding their reports, first seq_no={held.seq_no}")
+
+            relay = PortRelay(_GATEWAY_REPORT_RELAY_PORTS)
+            relay.start()
+            try:
+                released = component_event("sequencer_primary", sequencer_events, "ReportsSentToGateway", events_from, 15.0, gateway_protocol=1,
+                                           gateway_instance=1)
+                if released is None:
+                    member.close()
+                    die("gateway reports: once its connection for reports was let through, sequencer_primary did not send the reports it held.")
+                if released.dropped != 0:
+                    member.close()
+                    die(f"gateway reports: sequencer_primary dropped {released.dropped} held report(s) for want of room.")
+                log(f"  the relay let the connection through, and sequencer_primary sent the {released.sent} report(s) it held")
+                accepted: dict[str, int] = {}
+                deadline = time.monotonic() + 20.0
+                while len(accepted) < len(sent) and time.monotonic() < deadline:
+                    for report in member.receive(timeout=0.5):
+                        if report.get(35) == "8" and report.get(39) == "0":
+                            accepted[report.get(11)] = accepted.get(report.get(11), 0) + 1
+                for report in member.receive(timeout=1.0):
+                    if report.get(35) == "8" and report.get(39) == "0":
+                        accepted[report.get(11)] = accepted.get(report.get(11), 0) + 1
+                member.close()
+            finally:
+                relay.stop()
+            missing = [c for c in sent if c not in accepted]
+            twice = [c for c, n in accepted.items() if n > 1]
+            if missing:
+                die(f"gateway reports: {len(missing)} of {len(sent)} orders were never reported to the member, for example {missing[:3]}.")
+            if twice:
+                die(f"gateway reports: {len(twice)} orders were reported to the member more than once, for example {twice[:3]}.")
+            log(f"  all {len(sent)} orders reported to the member exactly once -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

@@ -181,3 +181,27 @@ message HeldReportsReleased (id=213, version=1)
     i64    sent                     # how many held reports were sent
     i64    dropped                  # how many held reports were dropped
 end
+
+# ------------------------------------------------------------
+#  214 -- ReportsHeldForGateway
+#  The leading sequencer held a report for a gateway instance it has no
+#  connection for reports to, rather than drop it. Sent for the first
+#  report held since that connection was last up, not for every report.
+# ------------------------------------------------------------
+message ReportsHeldForGateway (id=214, version=1)
+    i16 gateway_protocol    # 1 for FIX, 2 for binary
+    i16 gateway_instance
+    i64 seq_no              # the first held report's sequence number
+end
+
+# ------------------------------------------------------------
+#  215 -- ReportsSentToGateway
+#  The connection for reports to a gateway instance was made, and the
+#  reports held for it were sent, oldest first.
+# ------------------------------------------------------------
+message ReportsSentToGateway (id=215, version=1)
+    i16 gateway_protocol    # 1 for FIX, 2 for binary
+    i16 gateway_instance
+    i64 sent                # how many held reports were sent
+    i64 dropped             # how many were dropped while held, for want of room
+end

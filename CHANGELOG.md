@@ -69,6 +69,9 @@ describe the venue as it now is.
 - **Scenario 80** restarts a matching engine with a long WAL to catch up on, and has the second
   sequencer connect in the middle of the catch-up, which must finish without the stream going
   backwards (BUG-0200).
+- **Scenario 81** holds the leading sequencer's connection for reports to a FIX gateway down, through
+  a relay the script controls, while a member sends orders, and requires every report to reach the
+  member exactly once when the connection is made (BUG-0202).
 - **Measurement of the order path, stage by stage**: an order is timed at every point on its way
   through the venue, the inter-thread hand-off and the socket crossing are measured in both halves,
   and a Grafana dashboard, kept in the repository as a source file, shows where an order's time goes.
@@ -149,12 +152,17 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
   more). Two of the counts read from logs had been zero in every run (BUG-0191).
 - **`perf_run.py` exited 0 after reporting FAIL** on the FIX gateway, so `release_check.py`, which
   gates a release on its exit status, passed a run that had lost orders. It now exits 1.
+- **A leading sequencer dropped every report for a gateway it had no connection for reports to**,
+  at a start until its first retry succeeded and after any break in that connection, and the member
+  was never told about orders the venue had acted on. It now holds them, up to 16 MB and 32,768
+  reports for each gateway, and sends them once the connection is made. Scenario 18 now requires the
+  reports for a dead gateway to be held rather than dropped (BUG-0202).
 - **The ThreadSanitizer build did not compile**, and it checked the mutex variant of the queue
   rather than the lock-free one the venue runs (BUG-0150, BUG-0160).
 
 ### Known limitations
 
-- **84 bugs are open, 25 of them high severity**; `docs/bug_list.md` lists them.
+- **83 bugs are open, 24 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both

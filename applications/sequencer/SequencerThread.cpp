@@ -292,6 +292,7 @@ void SequencerThread::on_app_ready_event() {
     for (const auto& endpoint : config_.gateway_endpoints) {
         connect_to_service(endpoint.service_name());
         gateway_announcements_[gateway_key(endpoint.protocol, endpoint.instance)] = GatewayAnnouncement{};
+        reports_held_for_gateways_.try_emplace(gateway_key(endpoint.protocol, endpoint.instance), held_report_capacity_bytes, held_report_capacity_reports);
     }
     connect_to_service("matching_engine");
     if (config_.ha_enabled) {
@@ -319,6 +320,7 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         gateway_conn_ids_[gateway_key(endpoint->protocol, endpoint->instance)] = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway protocol={} instance={} connection {} established",
                    endpoint->protocol, endpoint->instance, id.get_value());
+        send_reports_held_for_gateway(endpoint->protocol, endpoint->instance, id);
         // Tell it the acceptance state straight away. A transition-only design gets exactly
         // this case wrong: a gateway starting during an outage would otherwise assume the
         // venue was fine, which is the default that caused BUG-0009 in the first place.
@@ -1399,6 +1401,11 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
     if (stops_leading) {
         held_reports_.discard_all();
         reports_held_since_sessions_known_ = false;
+        // Likewise the reports held for a gateway with no connection: they are in the WAL, and the new leader sends them.
+        for (auto& [gateway, held] : reports_held_for_gateways_) {
+            held.discard_all();
+        }
+        gateways_holding_reports_.clear();
     }
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
@@ -2305,6 +2312,9 @@ void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instan
                        "sequencer's endpoints.",
                        protocol, instance);
         }
+        if (configured && hold_report_for_gateway(protocol, instance, er_seq_no, envelope)) {
+            return;
+        }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway protocol={} instance={} not connected -- dropping ER seq={}",
                    protocol, instance, er_seq_no);
         report(pubsub_itc_fw_app::ReportDroppedGatewayNotConnected{protocol, instance, er_seq_no});
@@ -2327,6 +2337,76 @@ void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instan
         order_path_metrics::observe_checkpoint(er_out_elapsed_histogram_, envelope.has_gateway_ingress_ns, envelope.gateway_ingress_ns,
                                                config_.wall_clock->now_ns());
     }
+}
+
+bool SequencerThread::hold_report_for_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope) {
+    if (role_ != pubsub_itc_fw_app::Role::leader) {
+        return false;
+    }
+    const GatewayKey gateway = gateway_key(protocol, instance);
+    const auto store = reports_held_for_gateways_.find(gateway);
+    if (store == reports_held_for_gateways_.end()) {
+        return false;
+    }
+    // Encoded as it would have been sent, after the sequence number its transport header carries, so that sending it
+    // later is a send of these bytes. Measure, then fit, as the WAL's encoding does.
+    size_t bytes_written = 0;
+    size_t bytes_needed = 0;
+    [[maybe_unused]] const bool measured = pubsub_itc_fw_app::encode(envelope, nullptr, 0, bytes_written, bytes_needed);
+    if (held_envelope_encoding_.size() < sizeof(er_seq_no) + bytes_needed) {
+        held_envelope_encoding_.resize(sizeof(er_seq_no) + bytes_needed);
+    }
+    std::memcpy(held_envelope_encoding_.data(), &er_seq_no, sizeof(er_seq_no));
+    if (!pubsub_itc_fw_app::encode(envelope, held_envelope_encoding_.data() + sizeof(er_seq_no), held_envelope_encoding_.size() - sizeof(er_seq_no),
+                                   bytes_written, bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "SequencerThread: failed to encode ER seq={} for gateway protocol={} instance={} to hold it ({} bytes needed) -- dropping it", er_seq_no,
+                   protocol, instance, bytes_needed);
+        return false;
+    }
+    const fix_common::SessionIdentity identity =
+        fix_common::SessionIdentity::make(envelope.has_sender_comp_id ? envelope.sender_comp_id : std::string_view{}, protocol);
+    store->second.hold(identity, held_envelope_encoding_.data(), sizeof(er_seq_no) + bytes_written);
+    if (gateways_holding_reports_.insert(gateway).second) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: gateway protocol={} instance={} has no connection for reports from this instance -- ER seq={} held, and every report "
+                   "for it after this, until the connection is made",
+                   protocol, instance, er_seq_no);
+        report(pubsub_itc_fw_app::ReportsHeldForGateway{protocol, instance, er_seq_no});
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} for gateway protocol={} instance={} held", er_seq_no, protocol,
+                   instance);
+    }
+    return true;
+}
+
+void SequencerThread::send_reports_held_for_gateway(int16_t protocol, int16_t instance, const pubsub_itc_fw::ConnectionID& connection) {
+    const GatewayKey gateway = gateway_key(protocol, instance);
+    gateways_holding_reports_.erase(gateway);
+    const auto store = reports_held_for_gateways_.find(gateway);
+    if (store == reports_held_for_gateways_.end() || store->second.count() == 0) {
+        return;
+    }
+    // Sent as they were encoded, oldest first. Not timed: a report that waited for a connection says nothing about how
+    // long the path takes.
+    const size_t sent = store->second.take_all([this, &connection](const fix_common::SessionIdentity&, const uint8_t* bytes, size_t size) {
+        int64_t er_seq_no = 0;
+        std::memcpy(&er_seq_no, bytes, sizeof(er_seq_no));
+        send_pdu_payload(connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, bytes + sizeof(er_seq_no), size - sizeof(er_seq_no));
+    });
+    int64_t& dropped_reported = gateway_held_reports_dropped_reported_[gateway];
+    const int64_t dropped = store->second.dropped_for_room() - dropped_reported;
+    dropped_reported = store->second.dropped_for_room();
+    if (dropped > 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "SequencerThread: {} report(s) held for gateway protocol={} instance={} were dropped to make room while it had no connection for "
+                   "reports; their members are not told of them",
+                   dropped, protocol, instance);
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: gateway protocol={} instance={} connection for reports made -- sent it {} report(s) held until it was", protocol, instance,
+               sent);
+    report(pubsub_itc_fw_app::ReportsSentToGateway{protocol, instance, static_cast<int64_t>(sent), dropped});
 }
 
 const fix_common::SessionDestination* SequencerThread::session_destination(const fix_common::SessionIdentity& identity) const {

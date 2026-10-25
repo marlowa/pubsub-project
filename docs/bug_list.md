@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 203 |
-| Open | 84 (62 defects, 22 tasks) |
-| Closed | 119 |
+| Open | 83 (61 defects, 22 tasks) |
+| Closed | 120 |
 | Next id | BUG-0204 |
 
 ## Open bugs by severity
 
-25 high, 48 medium, 11 low.
+24 high, 48 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -37,7 +37,6 @@
 | [BUG-0195](#bug_0195) | high | defect | When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and three scenarios fail |
 | [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so |
 | [BUG-0199](#bug_0199) | high | defect | A matching engine restarted after its peer cancelled the book on promotion still holds the cancelled orders, and takes the lead holding them |
-| [BUG-0202](#bug_0202) | high | defect | A leading sequencer drops every report for a gateway it has no connection for reports to, and nothing sends them later |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -3923,39 +3922,6 @@ are open (07:39:38). It must pass before phase 8 is finished.
 **Principles.** V4: a follower that is missing commands never takes over; V8: every report the matching engine
 produces reaches the member.
 
-### BUG-0202: A leading sequencer drops every report for a gateway it has no connection for reports to, and nothing sends them later {#bug_0202}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-25 |
-| Recorded | 2026-10-25 |
-| How | `perf_run.py --gateway binary` once it sent orders as soon as the venue said it was ready (BUG-0191): the load client received none of its 1,000 reports. The Quill logs are in `tmp/bug0191/logs-binary2` |
-| Impact | Every report for a gateway's members is lost while the leading sequencer's connection for reports to that gateway is down: at a start, until its first retry succeeds, and after any break in the connection. The member is told nothing about its orders, which the venue has acted on |
-
-**What happens.** A sequencer sends reports to a gateway on a connection of its own, which it makes to the gateway
-(`gateway_<protocol>_<instance>`), separate from the gateway's connection to it for orders. At 11:00:01 the leading
-`sequencer_primary` tried to connect to each gateway, failed because they were not yet listening, and retried every
-2 seconds. `binary_order_gateway_a` connected to the sequencers for orders at 11:00:06.88. The member logged on, its
-session was announced, and its 1,000 orders were sequenced and answered by the engine at 11:00:08.54. The
-sequencer then logged "gateway protocol=2 instance=1 not connected -- dropping ER seq=1", and so on for every report,
-in `SequencerThread::send_er_to_origin_gateway`. Its connection for reports came up at 11:00:09.18. No report was sent
-later: in 30 seconds the member received none.
-
-**Why.** `send_er_to_origin_gateway` drops a report when it has no connection for its gateway. Its comment calls the
-case transient, resolving when the gateway reconnects, but the report is not kept, so nothing sends it when the
-connection comes up. The gateway keeps each command until a report answers it, and sends it again to a new leader
-(docs/availability/commands_during_a_change_of_leader.md), but there is no change of leader here, so it waits for
-ever. A test event, `ReportDroppedGatewayNotConnected`, says that it happened.
-
-**What is wanted.** A report for a gateway that is configured but not connected waits until the connection is made,
-and is then sent, as reports for a session not yet announced wait (BUG-0190), or the gateway asks again for what its
-unanswered commands produced when the connection for reports comes up. Which of the two is a decision. A high
-availability scenario that holds the sequencer's connection for reports to a gateway down while a member sends
-orders, then lets it up, and requires every report to reach the member.
-
-**Principles.** V8: every report the matching engine produces reaches the member.
-
 ### BUG-0203: The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together {#bug_0203}
 
 | | |
@@ -3985,6 +3951,71 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0202: A leading sequencer drops every report for a gateway it has no connection for reports to, and nothing sends them later {#bug_0202}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-25 |
+| Recorded | 2026-10-25 |
+| Fixed | 2026-10-25 -- the leading sequencer holds the reports for a gateway it has no connection for reports to, and sends them once the connection is made |
+| How | `perf_run.py --gateway binary` once it sent orders as soon as the venue said it was ready (BUG-0191): the load client received none of its 1,000 reports. The Quill logs are in `tmp/bug0191/logs-binary2` |
+| Impact | Every report for a gateway's members is lost while the leading sequencer's connection for reports to that gateway is down: at a start, until its first retry succeeds, and after any break in the connection. The member is told nothing about its orders, which the venue has acted on |
+
+**What happens.** A sequencer sends reports to a gateway on a connection of its own, which it makes to the gateway
+(`gateway_<protocol>_<instance>`), separate from the gateway's connection to it for orders. At 11:00:01 the leading
+`sequencer_primary` tried to connect to each gateway, failed because they were not yet listening, and retried every
+2 seconds. `binary_order_gateway_a` connected to the sequencers for orders at 11:00:06.88. The member logged on, its
+session was announced, and its 1,000 orders were sequenced and answered by the engine at 11:00:08.54. The
+sequencer then logged "gateway protocol=2 instance=1 not connected -- dropping ER seq=1", and so on for every report,
+in `SequencerThread::send_er_to_origin_gateway`. Its connection for reports came up at 11:00:09.18. No report was sent
+later: in 30 seconds the member received none.
+
+**Why.** `send_er_to_origin_gateway` drops a report when it has no connection for its gateway. Its comment calls the
+case transient, resolving when the gateway reconnects, but the report is not kept, so nothing sends it when the
+connection comes up. The gateway keeps each command until a report answers it, and sends it again to a new leader
+(docs/availability/commands_during_a_change_of_leader.md), but there is no change of leader here, so it waits for
+ever. A test event, `ReportDroppedGatewayNotConnected`, says that it happened.
+
+**What is wanted.** A report for a gateway that is configured but not connected waits until the connection is made,
+and is then sent, as reports for a session not yet announced wait (BUG-0190). The other way, the gateway asking again
+for what its unanswered commands produced when the connection for reports comes up, was considered, and the sequencer
+holding the reports was chosen. A high availability scenario that holds the sequencer's connection for reports to a
+gateway down while a member sends orders, then lets it up, and requires every report to reach the member.
+
+**How it was fixed.**
+
+- The sequencer keeps a store of held reports for each gateway in its `[[gateway]]` configuration
+  (`ReportsHeldForUnknownSessions`, the class that holds reports for sessions not yet announced), with the same limits:
+  16 MB and 32,768 reports. When the leader has a report for a gateway it has no connection for reports to,
+  `SequencerThread::hold_report_for_gateway` encodes it exactly as it would have been sent, with its sequence number,
+  and keeps it. The first report held since the connection was last up is logged at Warning and reported as the test
+  event `ReportsHeldForGateway`.
+- When the connection for reports to the gateway is made, `send_reports_held_for_gateway` sends every held report in
+  the order it was held, logs how many were sent and how many the store had to drop for lack of room, and reports
+  `ReportsSentToGateway` with both numbers.
+- A sequencer that stops leading discards what it holds, because the new leader sends the reports itself.
+- A report is still dropped, and `ReportDroppedGatewayNotConnected` still reported, when the sequencer does not lead,
+  when the gateway is not in its configuration, or when the report cannot be encoded.
+- High availability scenario 81, `reports_held_for_unconnected_gateway`, runs each sequencer's connection for reports
+  to `fix_order_gateway_a` through a relay the script controls, which at first accepts nothing. A member sends 50
+  orders; the scenario requires the sequencer to say it is holding reports, to drop none, and the member to receive
+  none; it then lets the relay accept, and requires `ReportsSentToGateway` and each of the 50 orders to be reported to
+  the member exactly once.
+- Scenario 18, `fix_gateway_a_death`, which kills FIX gateway `a` and never restarts it, required the sequencer to
+  drop the cancel reports for `a`. It now requires the sequencer to hold them and drop none, and still requires
+  instance `b` to see none of them.
+
+**Verified** on 25 October 2026. Scenario 81 passed; with `hold_report_for_gateway` made to return false, it failed with
+"sequencer_primary never said it was holding reports for fix_order_gateway_a". Scenario 18 passed; with its check for
+dropped reports pointed on purpose at an event the sequencer does send, it failed with "the sequencer dropped 1
+execution report(s) for the dead FIX instance 1". The full high availability suite, 81 scenarios, passed except
+scenario 79, which fails as expected on [BUG-0199](#bug_0199), and scenario 18, which failed because it still required
+the drop; scenario 18 was then changed as above and passed alone. The 24 scenarios run with the secondary engine
+started first passed except 25, 54 and 55, which fail on [BUG-0195](#bug_0195).
+
+**Principles.** V8: every report the matching engine produces reaches the member.
 
 ### BUG-0191: The load and profiling scripts decide what the venue did by reading Quill logs, and callgrind_run.py waits for the configured primary sequencer to lead {#bug_0191}
 

@@ -440,6 +440,24 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // A held report read back from the bytes hold_report_if_sessions_unknown wrote.
     static PendingEr decode_held_report(const uint8_t* bytes, size_t size);
 
+    // Reports held while this instance leads for a configured gateway instance it has no connection for reports to,
+    // each as the envelope it would have sent, and sent once the connection is made (BUG-0202). One store for each
+    // configured gateway instance, made when the connections are first asked for; the room is allocated then. The
+    // connection is retried every two seconds, so a store holds what a gateway's members are sent in that time.
+    std::unordered_map<GatewayKey, ReportsHeldForUnknownSessions> reports_held_for_gateways_;
+    // The gateway instances reports have been held for since their connection for reports was last up, so that
+    // ReportsHeldForGateway is sent once each time holding begins.
+    std::unordered_set<GatewayKey> gateways_holding_reports_;
+    // How many reports held for each gateway instance had been dropped to make room when they were last sent.
+    std::unordered_map<GatewayKey, int64_t> gateway_held_reports_dropped_reported_;
+    // An envelope written into bytes to be held, kept so that holding reuses its storage.
+    std::vector<uint8_t> held_envelope_encoding_;
+    // Holds @p envelope, a report for gateway @p protocol and @p instance, if this instance leads and the gateway is
+    // configured. Returns whether it was held.
+    bool hold_report_for_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope);
+    // The connection for reports to gateway @p protocol and @p instance was made: sends it every report held for it.
+    void send_reports_held_for_gateway(int16_t protocol, int16_t instance, const pubsub_itc_fw::ConnectionID& connection);
+
     // Warn when the log has grown past this without anything having been reclaimed. Not a
     // limit: nothing is deleted on reaching it. It exists because the venue currently cannot
     // establish what is safe to discard, so the log grows for as long as it runs, and an
@@ -735,9 +753,10 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] er_seq_no  Sequence number stamped on the transport header.
      * @param[in] envelope   The WalRecord-wrapped ER.
      *
-     * Drops the ER with a warning when that gateway instance is not currently connected;
-     * the client behind it has no route, and no other instance can serve its session
-     * until session provisioning and report replay land (steps 4-6 of gateway_ha.md).
+     * When that gateway instance is configured but this instance has no connection for reports
+     * to it, the ER is held and sent once the connection is made (BUG-0202). It is dropped,
+     * with a warning, only when the gateway instance is not configured, or this instance does
+     * not lead.
      */
     void send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope, bool is_new_order_ack);
 

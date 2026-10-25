@@ -81,8 +81,8 @@ def report_service_of(gateway: str) -> str:
 
 def wait_for_reports_route(listener: TestEventListener, sequencer: str, gateway: str, timeout: float) -> bool:
     """Waits until the sequencer has made its connection for reports to the gateway, and returns whether it did within
-    timeout seconds. Until it has, a report for that gateway's members is dropped (BUG-0202), so orders sent earlier are
-    never answered."""
+    timeout seconds. Until it has, the sequencer holds the reports for that gateway's members and sends them once the
+    connection is made, so orders sent earlier are answered late, and a run that measures latency would count the wait."""
     return listener.wait_for(connection_made(listener.messages, sequencer, report_service_of(gateway)), timeout=timeout) is not None
 
 

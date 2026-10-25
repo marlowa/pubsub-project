@@ -40,6 +40,10 @@ namespace sequencer {
  * taking the lead until the gateways have announced their sessions, normally under a second, so the room is not
  * expected to fill.
  *
+ * The sequencer also keeps one of these stores for each configured gateway instance, for the reports it cannot send
+ * because it has no connection for reports to that gateway, and hands them all back when the connection is made
+ * (BUG-0202).
+ *
  * One thread, the sequencer's, calls every member function.
  */
 class ReportsHeldForUnknownSessions {
