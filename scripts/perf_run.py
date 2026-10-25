@@ -45,6 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import measurement_machine  # noqa: E402  -- needs the path set above
 import devenv  # noqa: E402  -- clears what earlier runs left
+import venue_events  # noqa: E402  -- learns from test events which instances lead
 
 # ── fix8 authentication ───────────────────────────────────────────────────────
 # fix8's f8test never sends tag 554 (Password), so it authenticates with an
@@ -56,7 +57,9 @@ FIX8_PASSWORD = ""       # empty: f8test sends no Password tag
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 STARTUP_DELAY   = 1.0    # seconds between app launches
-SETTLE_TIME     = 3.0    # seconds after last app before attaching perf
+# Longest the venue may take, from the last component started, to have a leader for each pair and the gateway under
+# test connected to a sequencer, as the components' test events say. A limit, not a wait: it ends when they say so.
+READY_TIMEOUT   = 60.0
 # Longest we will wait for every FIX session to be established before giving up. A limit
 # rather than a fixed sleep: the wait ends as soon as the gateway reports the last session,
 # so a fast machine is not delayed, and a slow one is not sent orders it cannot deliver.
@@ -96,23 +99,19 @@ MAX_ORDER_TIMEOUT = 120.0  # hard cap on order/ER completion wait (2 minutes)
 # stall. Long enough not to fire on a rehash pause -- one measured over a second.
 ORDER_STALL_SECONDS = 10.0
 
-# The gateway logs one of these per ER it discards because the target client
-# session already disconnected. Such ERs are "accounted for" but never delivered.
-_ER_DROPPED_MARKER = "client already disconnected -- dropping"
-
-# CONTRACT WITH THE GATEWAYS -- both fix_order_gateway and binary_order_gateway emit this marker, at
-# Info, every 1000 accounted-for execution reports (see report_order_progress() in
-# FixOrderGatewayThread.hpp, which carries the matching warning). It is how this script knows a
-# run has finished: the count is the authoritative end-to-end signal that every order made
-# the full NOS -> ME -> sequencer -> gateway -> client round trip.
-#
-# If a gateway stops emitting it, or renames it, or changes the field, nothing fails loudly:
-# the run just waits until it times out and reports a stall that reads like a pipeline fault.
-# The per-order GW-NOS-RECV / GW-ER-SENT lines are at Debug and must not be relied on here --
-# counting them cost around a third of the gateway's CPU, which made the gateway comparison
-# measure logging rather than protocol.
-_PROGRESS_MARKER = "GW-PROGRESS"
-_PROGRESS_ACCOUNTED_RE = re.compile(r"GW-PROGRESS accounted=(\d+)")
+# The gateway's counters (applications/fix_common/GatewayProgressMetrics.hpp): what it took from members and what it
+# answered, read from its metrics endpoint while it runs, since a stopped gateway has none. They are how this script
+# knows a run has finished. Every new order is answered by a report delivered, a report dropped because its member's
+# session had gone, or a refusal, so a run of new orders has finished when those three together reach the orders sent.
+GATEWAY_COUNTERS = {
+    "received": "gateway_orders_received_total",
+    "sent": "gateway_execution_reports_sent_total",
+    "dropped": "gateway_execution_reports_dropped_total",
+    "refused": "gateway_orders_refused_total",
+    "established": "gateway_sessions_established_total",
+    "lost": "gateway_sessions_lost_total",
+    "gap_fills": "gateway_gap_fills_sent_total",
+}
 
 FIX8_DIR  = Path("/home/marlowa/mystuff/fix8_install")
 FIX8_BIN  = FIX8_DIR / "bin" / "f8test"
@@ -401,100 +400,56 @@ def attach_perf(name: str, pid: int, perf_dir: Path) -> subprocess.Popen:
     return proc
 
 
-def _wait_for_log_pattern(log_path: Path, label: str, target: int,
-                           count_fn, timeout: float,
-                           min_idle_timeout: float = 8.0,
-                           stall_is_warning: bool = True,
-                           done_predicate=None) -> bool:
+def _wait_for_count(read_count, label: str, target: int, timeout: float, listener=None,
+                    min_idle_timeout: float = 8.0, done_predicate=None) -> bool:
     """
-    Generic log-polling loop used by both wait phases.
+    Waits until read_count(), a cumulative count read from a component's counters, reaches target.
 
-    count_fn(chunk: str) -> int  counts matching events in a new chunk.
+    read_count returns the count so far, or None when the counters cannot be read. A run that has stopped progressing
+    is reported as stalled rather than left to wait out the timeout: once the count has risen for two seconds, the rate
+    sets how long it may stand still, ten times the time the rest should take at that rate and never less than
+    min_idle_timeout. done_predicate, when given, ends the wait early when it says the rest can never arrive. listener,
+    when given, is read while waiting, so that the components' test events never back up.
 
-    min_idle_timeout controls the floor for the dynamic bail-out.  The ME
-    phase uses the default 8s.  The ER phase passes 120s because the initial
-    calibration captures a Quill burst-flush rate, not the true sequencer→
-    gateway pipeline drain rate.
-
-    stall_is_warning controls log severity on stall.  GW-ER-SENT stall is a
-    genuine failure (pass True).  ME-ORD stall is a pipeline-delay artefact —
-    the remaining NOS are still in transit; the ER phase is authoritative
-    (pass False, which logs an informational message instead of a warning).
-
-    Returns True when the running total reaches `target`, False on timeout
-    or stall.
+    Returns True when the count reaches target or done_predicate says the wait is over, False on a stall or a timeout.
     """
-    INITIAL_IDLE_TIMEOUT = max(30.0, timeout * 0.10)
-    MIN_CALIBRATION_SECS = 2.0
-    MIN_IDLE_TIMEOUT     = min_idle_timeout
-
-    deadline        = time.monotonic() + timeout
-    total_seen      = 0
-    last_change     = time.monotonic()
-    rate_start_t    = None
-    idle_timeout    = INITIAL_IDLE_TIMEOUT
-    rate_calibrated = False
-    file_pos        = 0
-
-    log(f"Waiting for {label} #{target:,} in {log_path.name} (timeout {timeout:.0f}s) ...")
-
+    deadline = time.monotonic() + timeout
+    idle_timeout = max(30.0, timeout * 0.10)
+    seen = 0
+    last_change = time.monotonic()
+    rate_start = None
+    calibrated = False
+    log(f"Waiting for {label} to reach {target:,} (timeout {timeout:.0f}s) ...")
     while time.monotonic() < deadline:
-        if log_path.is_file():
-            with open(log_path, "r", errors="replace") as fh:
-                fh.seek(file_pos)
-                chunk = fh.read()
-                file_pos = fh.tell()
-
-            if chunk:
-                new_count = count_fn(chunk)
-                if new_count > 0:
-                    now         = time.monotonic()
-                    total_seen += new_count
-                    last_change = now
-                    if rate_start_t is None:
-                        rate_start_t = now
-
-                if total_seen >= target:
-                    return True
-
-            # Optional early completion: e.g. once every client has disconnected,
-            # no ER can be delivered, so waiting for the target is pointless.
-            if done_predicate is not None and done_predicate():
-                log(f"  {label}: all client sessions gone — {total_seen:,}/{target:,} accounted, "
-                    f"remaining ERs are undeliverable; completing")
+        count = read_count()
+        if count is not None:
+            if count > seen:
+                seen, last_change = count, time.monotonic()
+                if rate_start is None:
+                    rate_start = last_change
+            if seen >= target:
                 return True
-
-            if chunk:
-                if rate_start_t is not None:
-                    elapsed = time.monotonic() - rate_start_t
-                    if elapsed >= MIN_CALIBRATION_SECS:
-                        # Only calculate the throughput and lock in the timeout once
-                        if not rate_calibrated:
-                            rate = total_seen / elapsed
-                            if rate > 0:
-                                remaining    = target - total_seen
-                                idle_timeout = max((remaining / rate) * 10, MIN_IDLE_TIMEOUT)
-                                rate_calibrated = True
-                                log(f"  {label} throughput ~{rate:,.0f}/s → "
-                                    f"dynamic idle bail-out {idle_timeout:.0f}s")
-
-            if total_seen > 0 and (time.monotonic() - last_change) >= idle_timeout:
-                if stall_is_warning:
-                    log(f"  WARNING: {label} stalled at {total_seen:,} / {target:,} "
-                        f"— {target - total_seen:,} ERs not delivered before timeout.")
-                else:
-                    log(f"  {label} live count stalled at {total_seen:,} / {target:,} "
-                        f"— {target - total_seen:,} NOS still in the sequencer pipeline; "
-                        f"GW-ER-SENT is the authoritative completion signal.")
+            if done_predicate is not None and done_predicate():
+                log(f"  {label}: every client session has gone -- {seen:,} of {target:,} accounted for, and the rest can only be "
+                    "dropped; completing")
+                return True
+            if rate_start is not None and not calibrated and time.monotonic() - rate_start >= 2.0 and seen > 0:
+                rate = seen / (time.monotonic() - rate_start)
+                idle_timeout = max((target - seen) / rate * 10, min_idle_timeout)
+                calibrated = True
+                log(f"  {label}: about {rate:,.0f} a second, so a stall is called after {idle_timeout:.0f}s without progress")
+            if seen > 0 and time.monotonic() - last_change >= idle_timeout:
+                log(f"  WARNING: {label} stalled at {seen:,} of {target:,}")
                 return False
-
-        time.sleep(0.1)
-
-    log(f"  TIMEOUT: {label} seen = {total_seen:,} / {target:,}")
+        if listener is not None:
+            venue_events.keep_reading(listener, 0.1)
+        else:
+            time.sleep(0.1)
+    log(f"  TIMEOUT: {label} reached {seen:,} of {target:,}")
     return False
 
 
-def wait_for_order_completion(metrics_port: int, total_orders: int, timeout: float) -> bool:
+def wait_for_order_completion(metrics_port: int, total_orders: int, timeout: float, listener=None) -> bool:
     """Phase 1: wait for the matching engine to accept every order.
 
     Reads orders_processed_total from the ME's own metrics endpoint. The engine's Quill line
@@ -512,7 +467,10 @@ def wait_for_order_completion(metrics_port: int, total_orders: int, timeout: flo
         if seen is None:
             log(f"  ME metrics endpoint on port {metrics_port} is not answering -- "
                 f"is the matching engine up, and metrics enabled?")
-            time.sleep(1.0)
+            if listener is not None:
+                venue_events.keep_reading(listener, 1.0)
+            else:
+                time.sleep(1.0)
             continue
         if seen > highest:
             highest, last_progress = seen, time.time()
@@ -523,58 +481,36 @@ def wait_for_order_completion(metrics_port: int, total_orders: int, timeout: flo
             log(f"  ME-ORD stalled at {int(highest):,} / {total_orders:,} for "
                 f"{ORDER_STALL_SECONDS:.0f}s")
             last_progress = time.time()
-        time.sleep(0.2)
+        if listener is not None:
+            venue_events.keep_reading(listener, 0.2)
+        else:
+            time.sleep(0.2)
 
     log(f"  TIMEOUT: ME accepted {int(highest):,} / {total_orders:,}")
     return False
 
 
-def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float, clients: int) -> bool:
-    """Phase 2: wait for the gateway to deliver all ERs back to fix8 clients.
+def wait_for_er_completion(gateway_port: int, total_orders: int, timeout: float, clients: int, listener=None) -> bool:
+    """Phase 2: wait for the gateway to answer every order: a report delivered to its client, one dropped because the
+    client had gone, or a refusal, as the gateway's counters say.
 
-    Counts GW-ER-SENT lines in the gateway log.  Each line represents one
-    completed NOS→ER round-trip.  This is the correct completion criterion:
-    the fix8 T command fires NOS messages without waiting for ERs, so the ME
-    finishing before the ERs have returned through the sequencer→gateway path
-    only measures NOS intake, not round-trip throughput.
+    This is the completion criterion, because a fix8 T command sends its orders without waiting for their reports, so
+    the matching engine finishing says only that the orders went in. The wait ends early once every client has logged on
+    and every one has since gone: no session remains, so any further report can only be dropped. Requiring every client
+    on both counts keeps one client that connects and drops during ramp-up from ending it.
 
-    The min_idle_timeout is set to 120s (not the default 8s) because the
-    initial calibration rate is dominated by a Quill burst-flush of already-
-    queued entries, not the true sequencer→gateway pipeline drain rate.  The
-    actual pipeline can be 100× slower than the burst; 120s gives it time to
-    drain the backlog that accumulated during the ME phase.
+    The stall allowance is at least 120 seconds, because the reports can drain far more slowly than the orders went in.
     """
-    # An ER is "accounted for" once the gateway either sends it to the client or
-    # drops it because that client already disconnected. Counting only GW-ER-SENT
-    # hangs forever when clients disconnect mid-stream: their ERs are dropped, so
-    # the delivered count can never reach total_orders.
-    established = [0]
-    lost        = [0]
-    lost_re     = re.compile(r"FIX client connection \d+ lost")
-
-    # The gateway reports a CUMULATIVE total, but _wait_for_log_pattern accumulates whatever
-    # this returns, so hand back the increase since the last chunk rather than the total --
-    # returning the total would count every progress line's whole history again and finish
-    # the run long before the orders had.
-    highest = [0]
-
-    def count_er(chunk: str) -> int:
-        established[0] += chunk.count("FIX session established")
-        lost[0]       += len(lost_re.findall(chunk))
-        previous = highest[0]
-        for match in _PROGRESS_ACCOUNTED_RE.finditer(chunk):
-            highest[0] = max(highest[0], int(match.group(1)))
-        return highest[0] - previous
+    def accounted():
+        counts = read_gateway_counters(gateway_port)
+        return None if counts is None else counts["sent"] + counts["dropped"] + counts["refused"]
 
     def all_clients_gone() -> bool:
-        # Only once every client has logged on AND every one has since dropped:
-        # no session remains, so any further ER can only be dropped. Requiring
-        # `clients` on both sides avoids a false trigger during ramp-up (one
-        # client connecting+dropping before the others have connected).
-        return established[0] >= clients and lost[0] >= clients
+        counts = read_gateway_counters(gateway_port)
+        return counts is not None and counts["established"] >= clients and counts["lost"] >= clients
 
-    return _wait_for_log_pattern(gw_log, "GW-ER (sent+dropped)", total_orders, count_er, timeout,
-                                  min_idle_timeout=120.0, done_predicate=all_clients_gone)
+    return _wait_for_count(accounted, "reports accounted for (sent, dropped or refused)", total_orders, timeout, listener,
+                           min_idle_timeout=120.0, done_predicate=all_clients_gone)
 
 
 def terminate_clients(procs: list[subprocess.Popen], clients: int) -> None:
@@ -1121,12 +1057,12 @@ def component_metrics_port(prefix: Path, directory: str, component: str) -> int:
     return 0  # unreachable; die() exits
 
 
-def read_counter(port: int, metric: str, timeout: float = 2.0):
-    """Return a component's counter value, or None if it cannot be read.
+def read_counters(port: int, metrics: list, timeout: float = 2.0):
+    """Return a component's counters, by name, from one reading of its metrics endpoint, or None if it cannot be read.
 
-    None rather than 0 on failure, deliberately: a component that is down and a
-    component that has processed nothing are different findings, and a caller waiting
-    for a count to rise must not mistake the first for the second.
+    None rather than zeros on failure, deliberately: a component that is down and a component that has counted nothing
+    are different findings, and a caller waiting for a count to rise must not mistake the first for the second. A
+    counter the component does not publish reads as zero. Each is summed across its label sets.
     """
     import urllib.error
     import urllib.request
@@ -1136,58 +1072,71 @@ def read_counter(port: int, metric: str, timeout: float = 2.0):
             body = response.read().decode("utf-8", errors="replace")
     except (urllib.error.URLError, OSError):
         return None
-    total = None
+    totals = {metric: 0.0 for metric in metrics}
     for line in body.splitlines():
-        if line.startswith("#") or not line.startswith(metric):
+        if line.startswith("#"):
             continue
-        # metric{labels} value  -- sum across label sets, which is what the log count did.
+        name = line.split("{", 1)[0].split(" ", 1)[0]
+        if name not in totals:
+            continue
         parts = line.rsplit(" ", 1)
         if len(parts) == 2:
             try:
-                total = (total or 0.0) + float(parts[1])
+                totals[name] += float(parts[1])
             except ValueError:
                 continue
-    return total
-
-_LOGON_ESTABLISHED_MARKER = "FIX session established"
+    return totals
 
 
-def wait_for_fix_logons(gw_log: Path, expected: int, timeout: float) -> int:
-    """Wait until the gateway log reports `expected` FIX sessions established.
+def read_counter(port: int, metric: str, timeout: float = 2.0):
+    """Return one of a component's counters, or None if its metrics endpoint cannot be read. See read_counters."""
+    totals = read_counters(port, [metric], timeout)
+    return None if totals is None else totals[metric]
+
+
+def read_gateway_counters(port: int):
+    """Return the gateway's counters, by the short names of GATEWAY_COUNTERS, as integers, or None if they cannot be read."""
+    totals = read_counters(port, list(GATEWAY_COUNTERS.values()))
+    if totals is None:
+        return None
+    return {short: int(totals[metric]) for short, metric in GATEWAY_COUNTERS.items()}
+
+
+def wait_for_fix_logons(gateway_port: int, expected: int, timeout: float, listener=None) -> int:
+    """Wait until the gateway's counter says `expected` FIX sessions have logged on.
 
     Returns the number established, which is `expected` on success and fewer on timeout.
 
-    Counted from the gateway rather than from the clients because the gateway is the
-    authority on whether a session exists: f8test's own output says it sent a Logon, not
-    that the venue accepted it. The marker is logged at Info by FixOrderGatewayThread once
-    SCRAM authentication has succeeded.
+    Counted at the gateway rather than at the clients because the gateway is the authority on whether a session exists:
+    f8test's own output says it sent a Logon, not that the venue accepted it. The gateway counts a session once its
+    member has been authenticated.
     """
     deadline = time.monotonic() + timeout
     seen = 0
     while time.monotonic() < deadline:
-        if gw_log.is_file():
-            try:
-                seen = gw_log.read_text(errors="replace").count(_LOGON_ESTABLISHED_MARKER)
-            except OSError:
-                seen = 0
+        counts = read_gateway_counters(gateway_port)
+        if counts is not None:
+            seen = counts["established"]
             if seen >= expected:
                 log(f"  All {expected} FIX session(s) established")
                 return seen
-        time.sleep(0.25)
+        if listener is not None:
+            venue_events.keep_reading(listener, 0.25)
+        else:
+            time.sleep(0.25)
     return seen
 
 
-def run_fix8_session(prefix: Path, me_log: Path, gw_log: Path, burst: int, clients: int,
+def run_fix8_session(me_metrics_port: int, gateway_metrics_port: int, burst: int, clients: int,
                      fix8_configs: list[str], client_log_dir: Path,
-                     capture_client_logs: bool) -> None:
+                     capture_client_logs: bool, listener) -> None:
     """
     Start `clients` concurrent f8test processes, wait for the gateway to confirm every
     FIX session is established, then send `burst` 'T' commands to each (each T = 1000 NOS).
 
     Two-phase completion:
-      Phase 1 — wait for the ME to accept all NOS orders (ME-ORD-N).
-      Phase 2 — wait for the gateway to deliver all ERs back to fix8 clients
-                 (GW-ER-SENT count reaches total_orders).  fix8 T commands
+      Phase 1 — wait for the leading matching engine's orders_processed_total to reach the orders sent.
+      Phase 2 — wait for the gateway's counters to say every order was answered.  fix8 T commands
                  fire NOS messages without waiting for ERs, so only phase 2
                  measures true round-trip throughput.
 
@@ -1241,7 +1190,7 @@ def run_fix8_session(prefix: Path, me_log: Path, gw_log: Path, burst: int, clien
         # sent nothing, the run came up 5,000 orders short, and -- because the shortfall was
         # then reported as ERs lost in the pipeline -- it looked like the venue had dropped
         # them. The venue had processed every order it received.
-        established = wait_for_fix_logons(gw_log, clients, FIX8_LOGON_TIMEOUT)
+        established = wait_for_fix_logons(gateway_metrics_port, clients, FIX8_LOGON_TIMEOUT, listener)
         if established < clients:
             die(f"only {established} of {clients} FIX session(s) established within "
                 f"{FIX8_LOGON_TIMEOUT:.0f}s -- not sending orders, as the run could not be "
@@ -1250,29 +1199,27 @@ def run_fix8_session(prefix: Path, me_log: Path, gw_log: Path, burst: int, clien
         log(f"  Sending {burst} T command(s) to each of {clients} client(s) ...")
         for i, proc in enumerate(procs):
             try:
+                # The key alone: f8test takes every key as a command, so a newline after it is one it does not know.
                 for _ in range(burst):
-                    proc.stdin.write(b"T\n")
+                    proc.stdin.write(b"T")
                 proc.stdin.flush()
             except BrokenPipeError:
                 die(f"f8test client {i + 1} stdin pipe broke before T commands were sent")
 
         timeout = min(ORDER_TIMEOUT * max(1, burst * clients), MAX_ORDER_TIMEOUT)
 
-        # Phase 1: ME intake.  This is a progress indicator only — the ME processes
-        # NOS in pipeline order and its log may lag the ER log.  A stall here does
-        # not mean orders are lost; GW-ER-SENT is the authoritative end-to-end signal.
-        me_metrics_port = component_metrics_port(prefix, "matching_engine",
-                                                "matching_engine_primary")
-        nos_ok = wait_for_order_completion(me_metrics_port, total_orders, timeout)
+        # Phase 1: matching engine intake.  A progress indicator only: a stall here does not mean
+        # orders are lost, since the gateway's answers are the end-to-end signal.
+        nos_ok = wait_for_order_completion(me_metrics_port, total_orders, timeout, listener)
         if not nos_ok:
             log(f"  ME-ORD live count did not reach {total_orders:,} — "
                 f"pipeline still draining; proceeding to ER phase (authoritative)")
         else:
-            log(f"  All {total_orders:,} NOS confirmed in matching engine log")
+            log(f"  All {total_orders:,} NOS confirmed by the matching engine's orders_processed_total")
 
         # Phase 2: full round-trip — wait for gateway to account for all ERs
         # (delivered or dropped for a disconnected client). Same timeout budget.
-        er_ok = wait_for_er_completion(gw_log, total_orders, timeout, clients)
+        er_ok = wait_for_er_completion(gateway_metrics_port, total_orders, timeout, clients, listener)
         if not er_ok:
             log(f"  WARNING: not all ERs accounted for before timeout — {total_orders} expected")
     finally:
@@ -1392,8 +1339,8 @@ def main() -> None:
     log_dir    = prefix / "log"
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
     perf_dir   = prefix / "perf" / ts
-    me_log     = log_dir / "matching_engine_primary.log"
-    gw_log     = log_dir / f"fix_order_gateway_{args.gateway_instance}.log"
+    gateway_under_test = gateway_component(args.gateway, args.gateway_instance)
+    gateway_metrics_port = component_metrics_port(prefix, f"{'binary' if args.gateway == 'binary' else 'fix'}_order_gateway", gateway_under_test)
 
     gw_config = prefix / "etc" / "fix_order_gateway" / f"fix_order_gateway_{args.gateway_instance}.toml"
 
@@ -1433,7 +1380,7 @@ def main() -> None:
     log(f"  install prefix : {prefix}")
     log(f"  perf output    : {perf_dir}")
     cg_desc = f"{CALLGRAPH},{DWARF_STACK_SIZE}" if CALLGRAPH == "dwarf" else CALLGRAPH
-    targets_desc = ("matching_engine_primary, "
+    targets_desc = ("the matching engine and the sequencer that lead, and "
                     + gateway_component(args.gateway, args.gateway_instance))
     log(f"  call-graph     : {cg_desc}  (freq={FREQ} Hz, mmap={PERF_MMAP_SIZE})")
     log(f"  perf targets   : {targets_desc}")
@@ -1467,6 +1414,8 @@ def main() -> None:
 
     # -- launch applications in dependency order (mirrors dev.toml startup_order)
     stop_resource_monitor = None
+    # Read from the gateway before it is shut down; None if they could not be read.
+    gateway_counts = None
     profile_manifest: list = []
 
     # Each tuple: (name, binary, config, optional_workdir).
@@ -1496,10 +1445,12 @@ def main() -> None:
     # sequencer reactor stall, growing from 91 ms to 407 ms over an hour, and the perf data
     # that would have said why had not been collected. A profile that omits a component on the
     # order path cannot be read as evidence about that component -- only about the ones it
-    # watched.
-    perf_targets = {"matching_engine_primary",
-                    "sequencer_primary",
-                    gateway_component(args.gateway, args.gateway_instance)}
+    # watched. Which sequencer and which matching engine lead is known only once they have said so, so the set is
+    # completed then: profiling an instance that follows records a process doing almost nothing.
+    perf_targets = {gateway_under_test}
+
+    # The components say which instance of each pair leads, and when the gateway is connected, as test events.
+    listener = venue_events.start_listener(prefix)
 
     app_procs:  list[tuple[str, subprocess.Popen]] = []
     perf_procs: list[tuple[str, subprocess.Popen]] = []
@@ -1512,18 +1463,25 @@ def main() -> None:
 
     try:
         for name, bin_name, config, workdir in steps:
-            proc = launch_app(name, bin_name, config, bin_dir, log_dir, workdir)
+            if not config.is_file():
+                die(f"config not found: {config}")
+            proc = launch_app(name, bin_name, venue_events.with_test_events(config, listener, name), bin_dir, log_dir, workdir)
             app_procs.append((name, proc))
-            time.sleep(STARTUP_DELAY)
-
-        log(f"Settling for {SETTLE_TIME:.0f}s ...")
-        time.sleep(SETTLE_TIME)
+            venue_events.keep_reading(listener, STARTUP_DELAY)
 
         # Verify all apps are still alive
         for name, proc in app_procs:
             if proc.poll() is not None:
                 die(f"{name} (PID {proc.pid}) died during startup "
                     f"(exit code {proc.returncode})")
+
+        log(f"Waiting until the venue is ready (up to {READY_TIMEOUT:.0f}s) ...")
+        try:
+            leaders = venue_events.wait_until_ready(listener, gateway_under_test, READY_TIMEOUT, log)
+        except TimeoutError as error:
+            die(f"the venue did not become ready: {error}")
+        perf_targets |= {leaders.sequencer, leaders.matching_engine}
+        me_metrics_port = component_metrics_port(prefix, "matching_engine", leaders.matching_engine)
 
         # Start sampling memory before any load is offered, so the baseline is recorded.
         stop_resource_monitor = start_resource_monitor(app_procs, perf_dir)
@@ -1544,21 +1502,21 @@ def main() -> None:
             run_binary_load_session(bin_dir, perf_dir, args.burst, args.clients, args.rate,
                                     gateway_listen_port(prefix, "binary", args.gateway_instance))
         else:
-            run_fix8_session(prefix, me_log, gw_log, args.burst, args.clients,
+            run_fix8_session(me_metrics_port, gateway_metrics_port, args.burst, args.clients,
                              [fix8_config_for_client(prefix, args.gateway_instance, comp_id)
                               for comp_id in fix8_comp_ids(args.clients)], log_dir,
-                             args.client_logs)
+                             args.client_logs, listener)
 
         log(f"Waiting {POST_ORDER_WAIT:.0f}s for pipeline to drain ...")
-        time.sleep(POST_ORDER_WAIT)
+        venue_events.keep_reading(listener, POST_ORDER_WAIT)
 
         # Read the ME's accepted-order counter BEFORE shutting anything down. The counter
         # lives in the process, so unlike a Quill log it does not survive SIGTERM. Taken after
         # the drain wait so it counts
         # everything the pipeline had in flight.
-        me_accepted_total = read_counter(
-            component_metrics_port(prefix, "matching_engine", "matching_engine_primary"),
-            "orders_processed_total")
+        me_accepted_total = read_counter(me_metrics_port, "orders_processed_total")
+        # The gateway's counters likewise, for the same reason.
+        gateway_counts = read_gateway_counters(gateway_metrics_port)
 
         full_shutdown()
 
@@ -1582,6 +1540,7 @@ def main() -> None:
         # exists to explain.
         if stop_resource_monitor is not None:
             stop_resource_monitor()
+        listener.close()
 
         if args.capture:
             set_fix_capture_enabled(gw_config, False)
@@ -1598,12 +1557,6 @@ def main() -> None:
         total_orders = sum(entry["orders_offered"] for entry in profile_manifest)
     else:
         total_orders = args.clients * args.burst * 1000
-    def count_in_log(path: Path, marker: str) -> int:
-        try:
-            return sum(1 for line in path.open(errors="replace") if marker in line)
-        except FileNotFoundError:
-            return 0
-
     # From the counter captured before shutdown, not from the log: the per-order line is
     # Debug now. None means the endpoint could not be read, which is a different failure
     # from "accepted nothing" and must not be reported as a count of zero.
@@ -1642,26 +1595,18 @@ def main() -> None:
         log("=== Done ===")
         return
 
-    # Read from the cumulative GW-PROGRESS totals rather than by counting per-order lines,
-    # which are at Debug and therefore absent from a normal run. See the contract note beside
-    # _PROGRESS_MARKER above.
-    def latest_progress(path: Path) -> tuple[int, int, int, int]:
-        accounted = sent = dropped = received = 0
-        try:
-            for line in path.open(errors="replace"):
-                if _PROGRESS_MARKER not in line:
-                    continue
-                fields = dict(pair.split("=", 1) for pair in line.split() if "=" in pair)
-                accounted = max(accounted, int(fields.get("accounted", 0)))
-                sent = max(sent, int(fields.get("sent", 0)))
-                dropped = max(dropped, int(fields.get("dropped", 0)))
-                received = max(received, int(fields.get("nos_received", 0)))
-        except FileNotFoundError:
-            pass
-        return accounted, sent, dropped, received
-
-    _, gw_er_sent, gw_er_dropped, gw_nos_recv = latest_progress(gw_log)
-    gw_gap_fills  = count_in_log(gw_log,  "SequenceReset-GapFill")
+    # From the gateway's counters, read before it was shut down. Unread is reported as such, not as zero: the
+    # endpoint not answering says nothing about whether any order was lost.
+    if gateway_counts is None:
+        log("=== Post-shutdown ground-truth counts ===")
+        log(f"  The gateway's counters could not be read on port {gateway_metrics_port}, so whether every order was answered "
+            "is not known. Is metrics_enabled true for this environment?")
+        log("=== NOT VERIFIED ===")
+        sys.exit(2)
+    gw_er_sent = gateway_counts["sent"]
+    gw_er_dropped = gateway_counts["dropped"]
+    gw_nos_recv = gateway_counts["received"]
+    gw_gap_fills = gateway_counts["gap_fills"]
     nos_ok        = gw_nos_recv == total_orders
     # Every order generates an ER; the gateway either delivers it (GW-ER-SENT) or
     # drops it because the client already disconnected. "short" (fewer accounted
@@ -1734,6 +1679,10 @@ def main() -> None:
             f"ME-ORD={me_final:,} NOS={gw_nos_recv:,} ER={gw_er_sent:,} ===")
 
     log("=== Done ===")
+    # A failed run exits non-zero, as the binary gateway's does above: release_check.py runs this script as a release
+    # gate and reads only its exit status, so a run that reported FAIL and exited 0 would pass the gate.
+    if not (nos_ok and not er_short):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

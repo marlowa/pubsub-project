@@ -35,6 +35,7 @@
 #include "FixSerialiser.hpp"
 #include "FixSession.hpp"
 #include "GatewayIds.hpp"
+#include "GatewayProgressMetrics.hpp"
 #include "PacedResend.hpp"
 #include "PoolMetricsReporter.hpp"
 #include "SentAgainEnvelope.hpp"
@@ -194,15 +195,10 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     /**
      * @brief Logs a running total of accounted-for execution reports.
      *
-     * **CONTRACT WITH THE PERFORMANCE HARNESS -- DO NOT CHANGE THE MARKER OR ITS FIELDS
-     * WITHOUT CHANGING perf_run.py AND callgrind_run.py TO MATCH.**
-     *
-     * `perf_run.py` parses the `GW-PROGRESS accounted=N` line to decide when a run has
-     * finished: it is the authoritative end-to-end signal that every order has completed the
-     * NOS -> ME -> sequencer -> gateway -> client round trip. Renaming the marker, dropping a
-     * field, changing the cadence, or raising the level above Info does not fail any unit test
-     * -- the run simply hangs until it times out, and the harness reports a stall that looks
-     * like a pipeline fault rather than a logging change.
+     * The `GW-PROGRESS` line tells a person reading the Quill log how far a run has got: how many
+     * orders arrived, how many were answered, and how many await an answer. Programs do not read
+     * it. The same totals are published as counters (fix_common::GatewayProgressMetrics), which
+     * perf_run.py and callgrind_run.py read to decide when a run has finished.
      *
      * The per-order GW-NOS-RECV and GW-ER-SENT lines this replaced are at Debug because at
      * 200,000 orders they cost around a third of the gateway's CPU in Quill alone -- more than
@@ -775,6 +771,9 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
     /// How many member commands of each kind the sessions' throttles have refused.
     fix_common::ThrottleRefusalMetrics throttle_refusal_metrics_;
+
+    // The running totals below, and the sessions and gap fills, published as counters for programs to read.
+    fix_common::GatewayProgressMetrics progress_metrics_;
 
     // Publishes the open-order pool's statistics. Deliberately identical to the binary
     // gateway's -- same metric family, same scope, same sample interval -- since a

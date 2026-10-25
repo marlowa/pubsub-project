@@ -238,6 +238,7 @@ FixOrderGatewayThread::FixOrderGatewayThread(pubsub_itc_fw::ApplicationThread::C
     // one gateway thread, so the names cannot collide, and the handles record nowhere when
     // metrics are disabled.
     throttle_refusal_metrics_.register_metrics(get_reactor().metrics(), "gateway_thread");
+    progress_metrics_.register_metrics(get_reactor().metrics(), "gateway_thread");
 
     // Start the reusable ER wire buffer at the common-case size; the ER send path grows
     // it if a large ExecutionReport (many echoed group instances) needs more.
@@ -378,6 +379,7 @@ void FixOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: sequencer ER inbound connection {} lost: {}", id.get_value(),
                    reason);
     } else {
+        progress_metrics_.count_session_lost();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: FIX client connection {} lost: {} -- active sessions: {}",
                    id.get_value(), reason, sessions_.size());
     }
@@ -800,8 +802,8 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
         // Expected after a client disconnect: in-flight ERs and cancel ACKs
         // arrive for sessions that are already gone.
         ++execution_reports_dropped_;
+        progress_metrics_.count_report_dropped();
         report_order_progress();
-        // TEST CONTRACT -- perf_run.py and callgrind_run.py match this text. The wording is an interface: change it and those scripts break, silently.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "FixOrderGatewayThread: ExecutionReport gateway_session_conn_id={} -- "
                    "client already disconnected -- dropping",
@@ -837,6 +839,7 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
     }
 
     ++execution_reports_sent_;
+    progress_metrics_.count_report_sent();
     report_order_progress();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "GW-ER-SENT connection={} OrderID={} ExecID={} gateway_session_conn_id={}",
                session.conn_id.get_value(), view.order_id, view.exec_id, envelope.gateway_session_conn_id);
@@ -1340,7 +1343,7 @@ void FixOrderGatewayThread::complete_session_establishment(FixSession& session, 
     undelivered.gateway_session_conn_id = session.conn_id.get_value();
     forward_pdu_to_sequencers(pubsub_itc_fw_app::UndeliveredReportsRequest::message_pdu_id, undelivered);
 
-    // TEST CONTRACT -- perf_run.py and callgrind_run.py match this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    progress_metrics_.count_session_established();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixOrderGatewayThread: connection {} authentication succeeded -- FIX session established comp_id='{}'", session.conn_id.get_value(),
                session.client_comp_id);
@@ -1853,6 +1856,7 @@ void FixOrderGatewayThread::finish_replay(FixSession& session, int32_t record_co
         reset.set(Tag::GapFillFlag, std::string("Y"));
         reset.set(Tag::NewSeqNo, std::to_string(session.replay_resume_seq_num));
         send_fix_to_session(session, reset);
+        progress_metrics_.count_gap_fill_sent();
         session.outbound_seq_num = session.replay_resume_seq_num;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: connection {} resend complete -- {} report(s) resent, gap-filled {}..{} (administrative traffic)",
@@ -1909,6 +1913,7 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
     const std::string_view price_str = msg.get(Tag::Price);
 
     ++orders_received_;
+    progress_metrics_.count_order_received();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "GW-NOS-RECV connection={} ClOrdID={} Symbol={} Side={}", session.conn_id.get_value(), cl_ord_id,
                symbol, side_str);
 
@@ -1990,6 +1995,7 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
     // A line per refused order would reproduce the 1,087,912-line flood this bug is about.
     if (!venue_accepting_orders_) {
         ++orders_refused_;
+        progress_metrics_.count_order_refused();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "FixOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused -- the venue is not accepting orders ({} refused so far)",
                    session.conn_id.get_value(), cl_ord_id, orders_refused_);
@@ -2111,6 +2117,7 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
         // The store of unanswered commands is full: so many commands wait for an answer that the
         // venue is not answering them. Refused with a reply, never dropped.
         ++orders_refused_;
+        progress_metrics_.count_order_refused();
         send_reject_execution_report(session, msg, "the venue is busy: too many commands are waiting to be answered");
         return;
     }
@@ -2472,9 +2479,6 @@ void FixOrderGatewayThread::emit_order_progress(int64_t accounted) {
     // been accounted for already carried that, and was thrown away.
     const int64_t awaiting = orders_received_ - accounted;
 
-    // TEST CONTRACT -- perf_run.py and callgrind_run.py match this text. The wording is an interface: change it and those
-    // scripts break, silently. They read a PREFIX of the line, so a field may be appended without breaking them; the existing
-    // ones may not be reordered.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "GW-PROGRESS accounted={} sent={} dropped={} nos_received={} awaiting={} refused={} refused_cancels={}", accounted, execution_reports_sent_,
                execution_reports_dropped_, orders_received_, awaiting, orders_refused_, cancels_refused_);
@@ -3109,6 +3113,7 @@ void FixOrderGatewayThread::gap_fill_unreplayable_run(FixSession& session) {
     reset.set(Tag::GapFillFlag, std::string("Y"));
     reset.set(Tag::NewSeqNo, std::to_string(run_end));
     send_fix_to_session(session, reset);
+    progress_metrics_.count_gap_fill_sent();
     session.outbound_seq_num = run_end;
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,

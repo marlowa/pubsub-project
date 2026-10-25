@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 201 |
-| Open | 83 (60 defects, 23 tasks) |
-| Closed | 118 |
-| Next id | BUG-0202 |
+| Bugs recorded | 203 |
+| Open | 84 (62 defects, 22 tasks) |
+| Closed | 119 |
+| Next id | BUG-0204 |
 
 ## Open bugs by severity
 
-24 high, 47 medium, 12 low.
+25 high, 48 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -37,6 +37,7 @@
 | [BUG-0195](#bug_0195) | high | defect | When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and three scenarios fail |
 | [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so |
 | [BUG-0199](#bug_0199) | high | defect | A matching engine restarted after its peer cancelled the book on promotion still holds the cancelled orders, and takes the lead holding them |
+| [BUG-0202](#bug_0202) | high | defect | A leading sequencer drops every report for a gateway it has no connection for reports to, and nothing sends them later |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -84,6 +85,7 @@
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
+| [BUG-0203](#bug_0203) | medium | defect | The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -95,7 +97,6 @@
 | [BUG-0177](#bug_0177) | low | defect | The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value |
 | [BUG-0179](#bug_0179) | low | defect | The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again |
 | [BUG-0185](#bug_0185) | low | defect | Scenarios 59 and 76 stop the leader the moment inject_order has sent, which can beat the leader to reading the last order |
-| [BUG-0191](#bug_0191) | low | task | The load and profiling scripts decide what the venue did by reading Quill logs, and callgrind_run.py waits for the configured primary sequencer to lead |
 
 ---
 
@@ -3693,36 +3694,6 @@ one-time secret or proof that the requester has access to the installed host.
 The first-run route must require a one-time secret generated for the installation and available only to an
 operator with access to the host. Creating the first administrator must consume that secret and close setup.
 
-### BUG-0191: The load and profiling scripts decide what the venue did by reading Quill logs, and callgrind_run.py waits for the configured primary sequencer to lead {#bug_0191}
-
-| | |
-|---|---|
-| Severity | low |
-| Kind | task -- moving test tooling off Quill log wording, not a defect in the venue |
-| Found | 2026-10-24 |
-| Recorded | 2026-10-24 |
-| How | A `callgrind_run.py` run waited its full 600 seconds and stopped before sending an order: the secondary sequencer's WAL, left by earlier runs, was ahead, so the secondary led, and the script waits for a line in the primary's Quill log saying the primary leads |
-| Impact | A run fails, or waits for its ceiling, whenever the configured primary does not lead or a message's wording changes, and nothing but the run's own output says why |
-
-**What happens.** `callgrind_run.py` decides that the venue is ready by polling Quill logs for phrases: the
-primary sequencer's and the primary arbiter's "role transition ... -> leader", and each gateway's "operational
-state". The primary is not necessarily the leader. Both `callgrind_run.py` and `perf_run.py` also read the FIX
-gateway's Quill log to count logons ("FIX session established"), the gateway's progress line (`GW-PROGRESS`), reports
-dropped because the client had disconnected, and gap fills. The matching engine's count of accepted orders is read
-from its counter, `orders_processed_total`, in both.
-
-**What is wanted.** The same as for the high availability tests in phase 6 of the
-[recovery plan](recovery_plan.md): the scripts learn what happened from test events, or from counters a component
-publishes, and not from the wording of Quill messages. Readiness is "some sequencer leads", whichever it is. A
-profiled run must not add work for each order to the processes it profiles, so per-order facts come from counters,
-not per-order test events.
-
-Both scripts now clear the WALs, the open-order regions and the lease records before they start the venue
-(`devenv.clear_state_for_a_run`), unless given `--keep-state`, so a run no longer starts on what the run before it
-left.
-
-**Principles.** None of the venue's; this is the test tooling.
-
 ### BUG-0193: Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs {#bug_0193}
 
 | | |
@@ -3952,7 +3923,128 @@ are open (07:39:38). It must pass before phase 8 is finished.
 **Principles.** V4: a follower that is missing commands never takes over; V8: every report the matching engine
 produces reaches the member.
 
+### BUG-0202: A leading sequencer drops every report for a gateway it has no connection for reports to, and nothing sends them later {#bug_0202}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-25 |
+| Recorded | 2026-10-25 |
+| How | `perf_run.py --gateway binary` once it sent orders as soon as the venue said it was ready (BUG-0191): the load client received none of its 1,000 reports. The Quill logs are in `tmp/bug0191/logs-binary2` |
+| Impact | Every report for a gateway's members is lost while the leading sequencer's connection for reports to that gateway is down: at a start, until its first retry succeeds, and after any break in the connection. The member is told nothing about its orders, which the venue has acted on |
+
+**What happens.** A sequencer sends reports to a gateway on a connection of its own, which it makes to the gateway
+(`gateway_<protocol>_<instance>`), separate from the gateway's connection to it for orders. At 11:00:01 the leading
+`sequencer_primary` tried to connect to each gateway, failed because they were not yet listening, and retried every
+2 seconds. `binary_order_gateway_a` connected to the sequencers for orders at 11:00:06.88. The member logged on, its
+session was announced, and its 1,000 orders were sequenced and answered by the engine at 11:00:08.54. The
+sequencer then logged "gateway protocol=2 instance=1 not connected -- dropping ER seq=1", and so on for every report,
+in `SequencerThread::send_er_to_origin_gateway`. Its connection for reports came up at 11:00:09.18. No report was sent
+later: in 30 seconds the member received none.
+
+**Why.** `send_er_to_origin_gateway` drops a report when it has no connection for its gateway. Its comment calls the
+case transient, resolving when the gateway reconnects, but the report is not kept, so nothing sends it when the
+connection comes up. The gateway keeps each command until a report answers it, and sends it again to a new leader
+(docs/availability/commands_during_a_change_of_leader.md), but there is no change of leader here, so it waits for
+ever. A test event, `ReportDroppedGatewayNotConnected`, says that it happened.
+
+**What is wanted.** A report for a gateway that is configured but not connected waits until the connection is made,
+and is then sent, as reports for a session not yet announced wait (BUG-0190), or the gateway asks again for what its
+unanswered commands produced when the connection for reports comes up. Which of the two is a decision. A high
+availability scenario that holds the sequencer's connection for reports to a gateway down while a member sends
+orders, then lets it up, and requires every report to reach the member.
+
+**Principles.** V8: every report the matching engine produces reaches the member.
+
+### BUG-0203: The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together {#bug_0203}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-25 |
+| Recorded | 2026-10-25 |
+| How | `perf_run.py --clients 2` at 11:02:39: one of the two FIX sessions was refused. The same run passed three times. The Quill logs and the credentials of the failed run are in `tmp/bug0191/logs-signature-mismatch` |
+| Impact | A member's logon is refused with "Authentication service identity could not be verified", although its credentials are correct. The member can log on again. When many members log on at once, as at the start of the day, some may be refused |
+
+**What happens.** Two clients logged on to `fix_order_gateway_a` within the same millisecond, as `CLIENT-1` and
+`CLIENT-2`. For `CLIENT-2` (connection 9, request 9) the gateway sent the authentication request and its proof, and the
+authentication service logged "AuthenticationResult Granted request_id=9 comp_id=CLIENT-2". The gateway then logged
+"connection 9 ServerSignature mismatch -- possible impostor -- sending Logout" and disconnected the member
+(`FixOrderGatewayThread::handle_authentication_result`). `CLIENT-1`'s logon succeeded.
+
+**Why.** Not yet known. The service granted the logon, so the client's proof matched the stored key; it is the server's
+signature that differed from the one the gateway computed from the member's password and the service's challenge
+(`session.scram_expected_server_signature`). The service keeps each exchange under its request id, and the gateway
+keeps its expectation in the session, so neither is shared between the two logons on its face. The credentials are
+written afresh, with a random salt, at the start of each run. To be found: whether the two logons share state
+anywhere else, and whether the stored server key can disagree with the stored key for some salts.
+
+**What is wanted.** Every logon with correct credentials is granted however many are under way at once. A test that
+logs on many sessions together, repeated, which fails now some of the time.
+
+**Principles.** None of the venue's guarantees about orders; members' access.
+
 ## Closed
+
+### BUG-0191: The load and profiling scripts decide what the venue did by reading Quill logs, and callgrind_run.py waits for the configured primary sequencer to lead {#bug_0191}
+
+| | |
+|---|---|
+| Severity | low |
+| Kind | task -- moving test tooling off Quill log wording, not a defect in the venue |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| Fixed | 2026-10-25 -- both scripts learn which instance of each pair leads, and when the venue is ready, from test events, and every count from counters |
+| How | A `callgrind_run.py` run waited its full 600 seconds and stopped before sending an order: the secondary sequencer's WAL, left by earlier runs, was ahead, so the secondary led, and the script waits for a line in the primary's Quill log saying the primary leads |
+| Impact | A run fails, or waits for its ceiling, whenever the configured primary does not lead or a message's wording changes, and nothing but the run's own output says why |
+
+**What happens.** `callgrind_run.py` decides that the venue is ready by polling Quill logs for phrases: the
+primary sequencer's and the primary arbiter's "role transition ... -> leader", and each gateway's "operational
+state". The primary is not necessarily the leader. Both `callgrind_run.py` and `perf_run.py` also read the FIX
+gateway's Quill log to count logons ("FIX session established"), the gateway's progress line (`GW-PROGRESS`), reports
+dropped because the client had disconnected, and gap fills. The matching engine's count of accepted orders is read
+from its counter, `orders_processed_total`, in both.
+
+**What is wanted.** The same as for the high availability tests in phase 6 of the
+[recovery plan](recovery_plan.md): the scripts learn what happened from test events, or from counters a component
+publishes, and not from the wording of Quill messages. Readiness is "some sequencer leads", whichever it is. A
+profiled run must not add work for each order to the processes it profiles, so per-order facts come from counters,
+not per-order test events.
+
+Both scripts now clear the WALs, the open-order regions and the lease records before they start the venue
+(`devenv.clear_state_for_a_run`), unless given `--keep-state`, so a run no longer starts on what the run before it
+left.
+
+**How it was fixed.**
+
+- Both gateways publish their running totals as counters (`fix_common::GatewayProgressMetrics`): new orders
+  received, execution reports sent and dropped, orders refused, sessions established and lost, and gap fills sent.
+  The scripts read them from the gateway's metrics endpoint before it is shut down, as they already read the
+  matching engine's `orders_processed_total`.
+- `scripts/venue_events.py` starts each component with a `[test_events]` section and waits, as test events, until a
+  sequencer, an arbiter and a matching engine each lead, whichever instance it is, the gateway under test is connected
+  to a sequencer, and the leading sequencer is connected to that gateway to send it reports. `perf_run.py` used a fixed
+  sleep of 3 seconds instead of any check; both now use this.
+- `perf_run.py` profiles the sequencer and the matching engine that lead, and reads the order count from the engine
+  that leads. `callgrind_run.py` must profile an engine chosen before it starts, so it starts the profiled engine
+  and the sequencers first and the other engine only once the profiled one leads.
+- The FIX test client is sent each command key without a newline, which it took as an unknown command.
+
+Two of the counts read from Quill logs had been zero in every run: reports dropped, because the line is logged at
+Debug, and gap fills, because no message contains the text the scripts looked for. And `perf_run.py` exited 0 after
+reporting FAIL on the FIX path, although `release_check.py` gates a release on its exit status, so a run that lost FIX
+orders passed the gate; it now exits 1.
+
+**Verified** on 25 October 2026. `perf_run.py` with 10,000 FIX orders passed, in one run with
+`sequencer_secondary` and `matching_engine_secondary` leading and profiled, which the old script would have failed by
+reading the primary engine's count; the committed script, run on the binary gateway at 10:59, reported "ME-ORD 0 /
+1,000 MISMATCH" for exactly that reason. With the reports counter misnamed on purpose, the run reported "GW-ER-SENT 0 /
+2,000 SHORT by 2,000", FAIL, and exited 1; restored, it passed and exited 0. The binary gateway's path passed with
+1,000 orders. `callgrind_run.py` passed with 1,000 orders, the profiled engine leading. Making the scripts send orders
+as soon as the venue says it is ready found [BUG-0202](#bug_0202) and [BUG-0203](#bug_0203), which the fixed sleep
+had hidden.
+
+**Principles.** None of the venue's; this is the test tooling.
 
 ### BUG-0201: `ha_test.py` clears the WALs only before a run, so each scenario after the first starts on a WAL holding every earlier scenario's records {#bug_0201}
 

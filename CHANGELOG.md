@@ -142,12 +142,19 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 - **`ha_test.py` cleared the WALs only before a run**, so each scenario after the first started on
   a WAL holding every earlier scenario's records, and an engine catching up from its start applied
   all of their orders. It now clears them before every scenario (BUG-0201).
+- **`perf_run.py` and `callgrind_run.py` decided what the venue did by reading Quill logs**, and
+  assumed the configured primary of each pair led. They now wait on test events until whichever
+  instance leads each pair is ready, profile those instances, and read every count from counters;
+  both gateways publish their running totals as counters (`gateway_orders_received_total` and six
+  more). Two of the counts read from logs had been zero in every run (BUG-0191).
+- **`perf_run.py` exited 0 after reporting FAIL** on the FIX gateway, so `release_check.py`, which
+  gates a release on its exit status, passed a run that had lost orders. It now exits 1.
 - **The ThreadSanitizer build did not compile**, and it checked the mutex variant of the queue
   rather than the lock-free one the venue runs (BUG-0150, BUG-0160).
 
 ### Known limitations
 
-- **83 bugs are open, 24 of them high severity**; `docs/bug_list.md` lists them.
+- **84 bugs are open, 25 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both

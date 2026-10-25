@@ -107,6 +107,7 @@ BinaryOrderGatewayThread::BinaryOrderGatewayThread(pubsub_itc_fw::ApplicationThr
     // Registered unconditionally, as in the FIX gateway: one gateway thread per process, and the
     // handles record nowhere when metrics are disabled.
     throttle_refusal_metrics_.register_metrics(get_reactor().metrics(), "gateway_thread");
+    progress_metrics_.register_metrics(get_reactor().metrics(), "gateway_thread");
     command_decode_arena_.resize(initial_command_decode_arena_size);
 }
 
@@ -290,6 +291,7 @@ void BinaryOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::Connectio
 
     auto it = sessions_.find(id.get_value());
     if (it != sessions_.end()) {
+        progress_metrics_.count_session_lost();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: client connection {} (comp id '{}') lost: {}", id.get_value(),
                    it->second.comp_id, reason);
         log_throttling_ended_by_disconnection(it->second);
@@ -712,6 +714,7 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
                session.comp_id, throttle_limits.max_place_per_second, throttle_limits.max_amend_per_second, throttle_limits.max_cancel_per_second);
 
     session.logged_on = true;
+    progress_metrics_.count_session_established();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: connection {} authenticated and logged on as '{}'",
                session.conn_id.get_value(), session.comp_id);
 
@@ -737,6 +740,7 @@ BinarySession* BinaryOrderGatewayThread::find_session_by_conn_id(int32_t conn_id
 
 void BinaryOrderGatewayThread::handle_new_order_single(BinarySession& session, const pubsub_itc_fw::EventMessage& message) {
     ++orders_received_;
+    progress_metrics_.count_order_received();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "GW-NOS-RECV connection={} bytes={} comp_id={}", session.conn_id.get_value(),
                message.payload_size(), session.comp_id);
 
@@ -767,6 +771,7 @@ void BinaryOrderGatewayThread::handle_new_order_single(BinarySession& session, c
     const std::string_view unavailable = venue_refusal(fix_common::ThrottledCommand::Place);
     if (!unavailable.empty()) {
         ++orders_refused_;
+        progress_metrics_.count_order_refused();
         // Debug: the condition is logged once, when it changes, in handle_order_acceptance, and a
         // line per refused order would flood the log for the whole outage.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "BinaryOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused: {}",
@@ -1099,8 +1104,8 @@ void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::Even
         // The ordinary case is a client that disconnected while its order was in flight,
         // including the acknowledgements of the cancels sent on its behalf.
         ++execution_reports_dropped_;
+        progress_metrics_.count_report_dropped();
         report_order_progress();
-        // TEST CONTRACT -- perf_run.py and callgrind_run.py match this text. The wording is an interface: change it and those scripts break, silently.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "BinaryOrderGatewayThread: ER seq={} for connection {} -- client already disconnected -- dropping", envelope.seq_no,
                    envelope.gateway_session_conn_id);
@@ -1159,6 +1164,7 @@ void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::Even
         send_pdu_payload(it->second.conn_id, envelope.pdu_id, envelope.seq_no, envelope.payload.data, envelope.payload.size);
     }
     ++execution_reports_sent_;
+    progress_metrics_.count_report_sent();
     report_order_progress();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "GW-ER-SENT connection={} seq={} comp_id={}", envelope.gateway_session_conn_id, envelope.seq_no,
                it->second.comp_id);
@@ -1298,9 +1304,6 @@ void BinaryOrderGatewayThread::report_order_progress() {
     if (accounted % order_progress_interval != 0) {
         return;
     }
-    // TEST CONTRACT -- perf_run.py and callgrind_run.py match this text. The wording is an interface: change it and those
-    // scripts break, silently. They read a PREFIX of the line, so a field may be appended without breaking them; the existing
-    // ones may not be reordered.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-PROGRESS accounted={} sent={} dropped={} nos_received={} refused={} refused_cancels={}",
                accounted, execution_reports_sent_, execution_reports_dropped_, orders_received_, orders_refused_, cancels_refused_);
 }
