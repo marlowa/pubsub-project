@@ -3,6 +3,7 @@
 LATEX  := lualatex -interaction=nonstopmode -halt-on-error
 JOB    := book
 CHECK  := ../../scripts/check_book_requirements.py
+CHECK_EPUB := ../../scripts/check_epub.py
 
 .PHONY: all check clean text epub
 
@@ -23,12 +24,15 @@ $(JOB).pdf: $(shell find . -name '*.tex' -o -name '*.sty' -o -name '*.bib')
 	cp $(JOB).log $(JOB)-pdf.log
 	cp $(JOB).req $(JOB)-pdf.req
 
-check: $(JOB).pdf
+# The EPUB is checked by reading it, not from what tex4ebook printed, which always includes the errors
+# described at $(JOB).epub below: check_epub.py requires a valid EPUB container and every page to parse as XML.
+check: $(JOB).pdf $(JOB).epub
 	@! grep -q 'Reference.*undefined\|Citation.*undefined' $(JOB)-pdf.log || \
 	  { echo "undefined cross-references:"; grep -o "Reference \`[^']*' on page [0-9]*" $(JOB)-pdf.log; exit 1; }
 	@! grep -q 'multiply defined' $(JOB)-pdf.log || \
 	  { echo "duplicate labels:"; grep -o "Label \`[^']*' multiply defined" $(JOB)-pdf.log; exit 1; }
 	python3 $(CHECK) $(JOB)-pdf.req
+	python3 $(CHECK_EPUB) $(JOB).epub
 
 # A plain-text copy, for tools that will not take a PDF.  Goes through HTML so
 # that no page headers, footers or contents leaders appear in the text.
@@ -40,8 +44,10 @@ $(JOB).txt: $(JOB).pdf $(JOB).mk4
 
 # An EPUB 3 copy, for e-book readers.  Built after the PDF, because TeX4ht reads the
 # glossary, bibliography and cross-reference files that the PDF's passes write.  The
-# conversion always reports one error, from TeX4ht's own support for the glossaries
-# package (see $(JOB).mk4), so it fails only on any other error, or if no EPUB was written.
+# conversion always reports the error "Missing \begin{document}", once for each of its
+# LaTeX passes, from TeX4ht's own support for the glossaries package; $(JOB).mk4 removes
+# the stray word it concerns.  So the conversion fails only on any other error, or if no
+# EPUB was written, and "make check" then reads the EPUB to confirm it is sound.
 epub: $(JOB).epub
 
 $(JOB).epub: $(JOB).pdf $(JOB).mk4
@@ -49,6 +55,7 @@ $(JOB).epub: $(JOB).pdf $(JOB).mk4
 	tex4ebook -e $(JOB).mk4 -f epub3 $(JOB).tex || true
 	@! grep '^! ' $(JOB).log | grep -v 'Missing \\begin{document}' || { echo "errors converting the book to EPUB: see $(JOB).log"; exit 1; }
 	@test -s $(JOB).epub || { echo "tex4ebook wrote no $(JOB).epub"; exit 1; }
+	@printf '%s\n' "The 'Missing \\begin{document}' errors above are expected: see $(JOB).mk4. 'make check' reads the EPUB to confirm it is sound."
 
 clean:
 	rm -f $(JOB).pdf $(JOB).aux $(JOB).bbl $(JOB).blg $(JOB).log $(JOB).toc $(JOB).out $(JOB).req
