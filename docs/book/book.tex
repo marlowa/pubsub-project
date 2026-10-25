@@ -6,11 +6,12 @@
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
 
-% Left and right are 12mm narrower than top and bottom: a 32mm side margin on A4 left a
-% great deal of unused paper. Text width is 170mm rather than 146mm. 17mm was tried first
-% and read as too dense, so 12mm is the deliberate stopping point rather than the most that
-% would fit: a wider measure is harder to read back, whatever it does for the paper.
-\usepackage[a4paper,left=20mm,right=20mm,top=32mm,bottom=32mm,marginparwidth=0mm]{geometry}
+% The side margins are much narrower than the top and bottom, 18mm on the left and 16mm on the
+% right against 32mm: a 32mm side margin on A4 leaves a great deal of unused paper. The text is
+% 176mm wide, which is as wide as it can be without reading as too dense, so the side margins are
+% not to be made narrower. The book class is two-sided, which would swap the two side margins on every even
+% page; asymmetric keeps the left margin on the left of every page.
+\usepackage[a4paper,asymmetric,left=18mm,right=16mm,top=32mm,bottom=32mm,marginparwidth=0mm]{geometry}
 \usepackage{microtype}
 \usepackage{booktabs}
 \usepackage{longtable}

@@ -74,6 +74,11 @@ docs/book/*.idv
 docs/book/*.4ct
 docs/book/*.4tc
 docs/book/*.dvi
+docs/book/*.epub
+docs/book/*.ncx
+docs/book/*.opf
+docs/book/*.xhtml
+docs/book/*-epub3/
 docs/book/**/*.aux
 
 # Scratch directories from unit tests that write a real file, left behind only when a test

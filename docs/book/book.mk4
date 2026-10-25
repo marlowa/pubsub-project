@@ -1,0 +1,18 @@
+-- Read by make4ht and tex4ebook when they convert book.tex, for "make text" and "make epub".
+--
+-- TeX4ht's support for the glossaries package (glossary.4ht, line 44 in TeX Live 2023) typesets the
+-- word "refextract" before \begin{document}. LaTeX reports "Missing \begin{document}" for it and
+-- carries on, and the word is written at the top of the first page, outside its <html> element, so
+-- that the page is not well-formed XML. It is removed from every page here.
+local function remove_stray_word(filename)
+  local page = io.open(filename, "r")
+  local text = page:read("*a")
+  page:close()
+  -- At this stage TeX4ht has broken the tag across lines and quoted the class with either kind of quote.
+  local cleaned = text:gsub("<span%s+class=[\"'][^\"']*[\"']>refextract</span>%s*", "", 1)
+  page = io.open(filename, "w")
+  page:write(cleaned)
+  page:close()
+end
+
+Make:match("html$", remove_stray_word)
