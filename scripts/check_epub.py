@@ -20,6 +20,7 @@ when it is not given a file it can open.
 
 from __future__ import annotations
 
+import argparse
 import sys
 import zipfile
 import xml.dom.minidom
@@ -61,10 +62,11 @@ def problems_in(epub_path: str) -> list[str]:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: check_epub.py <book.epub>", file=sys.stderr)
-        return 2
-    epub_path = sys.argv[1]
+    parser = argparse.ArgumentParser(description="Whether an EPUB the book's build wrote is sound enough for a reader to open: a valid "
+                                                 "EPUB container, every page parsing as XML, and no page holding the stray word "
+                                                 "docs/book/book.mk4 removes.")
+    parser.add_argument("epub", help="the EPUB to check, for example docs/book/book.epub")
+    epub_path = parser.parse_args().epub
     try:
         problems = problems_in(epub_path)
     except (OSError, zipfile.BadZipFile) as error:
