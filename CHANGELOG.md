@@ -59,6 +59,12 @@ describe the venue as it now is.
   send each second, provisioned per member. A refused cancel is answered with an
   OrderCancelReject, not a rejected order.
 - **The binary gateway checks what it passes on**, as the FIX gateway does.
+- **`ha_test.py --secondary-engine-first`** runs the scenarios with both matching engines from the
+  start a venue is in after any failover of the engine: the secondary is started first, and the
+  primary only once the secondary leads.
+- **Scenario 78** kills the leading matching engine while the other is caught up and waiting to
+  learn its role, and requires the engine that takes the lead to catch up first and to hold exactly
+  the orders the member was told are open. It is marked as expected to fail (BUG-0198, BUG-0199).
 - **Measurement of the order path, stage by stage**: an order is timed at every point on its way
   through the venue, the inter-thread hand-off and the socket crossing are measured in both halves,
   and a Grafana dashboard, kept in the repository as a source file, shows where an order's time goes.
@@ -118,7 +124,7 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 
 ### Known limitations
 
-- **83 bugs are open, 24 of them high severity**; `docs/bug_list.md` lists them.
+- **84 bugs are open, 25 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both
@@ -169,9 +175,6 @@ to be wrong, and what was to come next.
   pair, with and without a launcher, in each role; 48 stops a whole machine; 50, 53 and 54 cover
   orders open across a restart, orders taken while an engine was away, and a catch-up race.
   `ha_test.py` refuses to start while a port is still held, and names the process holding it.
-  `ha_test.py --secondary-engine-first` runs the scenarios with both matching engines from the
-  start a venue is in after any failover of the engine: the secondary is started first, and the
-  primary only once the secondary leads.
 - **A functional specification**, `docs/book`, built with `make -C docs/book`. 139 requirements
   with permanent identifiers, each giving its reason; 24 are verified by a named `ha_test.py`
   scenario. `make check` fails on an identifier not in the ledger, a requirement with no reason, a

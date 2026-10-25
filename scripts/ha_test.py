@@ -1204,6 +1204,10 @@ class Scenario(NamedTuple):
     # defers, start one engine COLD, and assert the member is answered for it. See
     # run_scenario's "deferred orders" block, BUG-0064 and the surviving half of BUG-0009.
     assert_deferred_answered: bool = False
+    # When True, require the matching engine that leads at the end, matching_engine_primary, to report resuming as leader
+    # once it has caught up, holding exactly as many orders as the member was told are open. See run_scenario's "an
+    # engine that waited catches up before it leads" block, BUG-0198 and BUG-0199.
+    assert_waiting_engine_catches_up: bool = False
     # When True, no instance is expected to take the lead during the scenario: it tests the halt
     # when the leader and the arbiters are lost together (R-0147). The checks that follow a
     # promotion, such as which book the promoted instance resumed with, are skipped.
@@ -4120,6 +4124,96 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 78 -- a matching engine that caught up and is waiting to learn its role catches up again before it leads.
+    #
+    # BUG-0198. A restarted matching_engine_primary catches up from the sequencer's WAL when the first sequencer
+    # connects to it, and then waits, in the unknown role, until it has granted the leader a lease and says it follows:
+    # about 10 seconds. A sequencer sends orders only to the engine that leads, so every order the leader accepts in that
+    # time reaches the waiting engine only through the WAL. If the leader dies then, the waiting engine is granted the
+    # lead, and it must catch up again first, or every order accepted while it waited is missing from its book and no
+    # member is told.
+    #
+    # The engines are named by their configuration here, not by the role each had at the start, because the window is
+    # the configured primary's: a restarted matching_engine_secondary follows at once (BUG-0195), so it never waits in
+    # the unknown role. matching_engine_primary is killed whichever role it had. If it led, the secondary takes the
+    # lead; if it followed, the secondary led already, and its lead from the start meets the expectation. The
+    # primary's record of the lease promises it made is deleted while it is dead, as a reboot would lose it: a primary
+    # that followed and kept that record resumes following at once, before any sequencer connects, and never waits.
+    # The primary is restarted, and once it reports that it is caught up and waiting, 1,000 orders are sent and each one's
+    # New report is received by the member. The secondary is then killed, before the primary has said it follows, and
+    # the primary takes the lead. The question is then asked the member's way, as scenario 50 asks it: the session is
+    # dropped, the gateway cancels every order it believes is open, and the primary must accept each cancel. A cancel
+    # refused as naming an order the engine does not hold is an order lost. Before that, the primary must report
+    # resuming as leader, which it does only at the end of a catch-up to lead, holding exactly as many orders as the
+    # member was told are open. When the primary led at the start, the secondary cancelled the baseline orders on
+    # promotion and told the member, while the primary's region still holds them; a primary holding them when it leads
+    # holds orders the member was told were cancelled (BUG-0199).
+    #
+    # Two checks make sure the scenario made the window it exists for: the primary had not followed when the secondary
+    # was killed, and it never followed before it led.
+    Scenario(
+        number=78,
+        short_name="waiting_engine_catches_up_before_leading",
+        description="A matching engine caught up and waiting to learn its role catches up again before it takes the lead",
+        expected_outcome=(
+            "the restarted matching_engine_primary is granted the lead while caught up and waiting, catches up again "
+            "first, and holds every order the secondary accepted meanwhile, so every cancel the gateway sends is accepted"
+        ),
+        me_ha=True,
+        recovery_on_primary=True,
+        expected_failure=(
+            "the restarted primary takes the lead without catching up again, and lacks the orders accepted while it waited "
+            "(BUG-0198); and where the primary led at the start, it holds the orders the secondary cancelled on promotion (BUG-0199)"
+        ),
+        assert_waiting_engine_catches_up=True,
+        assert_open_orders_survive=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="matching_engine_primary",
+                takeover=None,
+                settle_secs=0.0,
+            ),
+            # Judged over everything the secondary has reported since it started, not only since the kill, because when
+            # the primary followed, the secondary has led since the start.
+            VerifyStep(
+                expect=expect_leads("matching_engine_secondary"),
+                timeout=30.0,
+                description="matching_engine_secondary leads",
+            ),
+            RestartStep(
+                proc_name="matching_engine_primary",
+                ready_log_name="matching_engine_primary.log",
+                ready=expect_catch_up("matching_engine_primary", "CurrentAndWaiting"),
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=True,
+                settle_secs=0.0,
+                forget_lease_promises=True,
+            ),
+            InterimOrdersStep(count_batches=1),
+            VerifyStep(
+                expect=expect_catch_up("matching_engine_primary", "CurrentAndWaiting"),
+                absent=expect_follows("matching_engine_primary"),
+                timeout=1.0,
+                description="the restarted matching_engine_primary is caught up and waiting, and has not followed",
+            ),
+            KillStep(
+                proc_name="matching_engine_secondary",
+                takeover=expect_leads("matching_engine_primary"),
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+            VerifyStep(
+                expect=expect_leads("matching_engine_primary"),
+                absent=expect_follows("matching_engine_primary"),
+                timeout=1.0,
+                description="the restarted matching_engine_primary took the lead without having followed",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4611,6 +4705,14 @@ class ClientReports:
         """How many orders had their first New report at or after since."""
         self.read()
         return sum(1 for position in self.first_new.values() if position >= since)
+
+    def open_orders(self) -> set[str]:
+        """The ClOrdIDs of the orders this client was told are open: each has had a New report and no Canceled report. A
+        Canceled report names the order it cancelled by OrigClOrdID when the member asked for the cancel, and by ClOrdID
+        when the venue cancelled the order itself."""
+        self.read()
+        cancelled = {report.get("41") or report.get("11", "") for report in self.reports if report.get("150") == "4"}
+        return set(self.first_new) - cancelled
 
     def count(self, exec_type: str, since: int = 0, **wanted: str) -> int:
         """How many execution reports of exec_type (the FIX ExecType value, such as "4" for Canceled) arrived at or after since,
@@ -7303,6 +7405,27 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # believes the member has open, and the matching engine's own log says what became
         # of each: a cancel report for an order it holds, or a rejection naming it as an
         # order it does not recognise.
+        # ── An engine that waited catches up before it leads ─────────────────
+        # BUG-0198 and BUG-0199. The engine that leads at the end was caught up and waiting while the other engine
+        # accepted orders, so it must catch up again before it leads, and say so: ResumedAsLeader is sent only at the end
+        # of a catch-up to lead. Its book must then hold exactly the orders the member was told are open. Fewer means
+        # orders accepted while it waited were lost; more means it holds orders the member was told were cancelled.
+        if scenario.assert_waiting_engine_catches_up:
+            leader = "matching_engine_primary"
+            resumed = engine_event(leader, "ResumedAsLeader", _TEST_EVENTS.since_introduction(leader), args.failover_timeout)
+            if resumed is None:
+                die(f"waiting engine: {leader} took the lead and never reported resuming as leader, so it did not catch up "
+                    "first, and holds none of the orders the other engine accepted while it waited (BUG-0198)")
+            member_open = len(client_reports(f8proc).open_orders())
+            if resumed.book_size < member_open:
+                die(f"waiting engine: {leader} resumed as leader holding {resumed.book_size} order(s), and the member was told "
+                    f"{member_open} are open. The orders it lacks are lost, and the member was not told")
+            if resumed.book_size > member_open:
+                die(f"waiting engine: {leader} resumed as leader holding {resumed.book_size} order(s), and the member was told "
+                    f"{member_open} are open. It holds orders the member was told were cancelled (BUG-0199)")
+            log(f"  waiting engine: {leader} caught up to sequence number {resumed.through_seq_no} before leading, and holds the "
+                f"{member_open} order(s) the member was told are open -- OK")
+
         if scenario.assert_open_orders_survive:
             gateway_from = _TEST_EVENTS.mark()
             cancels_from = _TEST_EVENTS.mark()
@@ -7316,34 +7439,40 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("open orders: the gateway never reported the dropped session's open orders, so "
                     "nothing was cancelled and the question was not asked")
 
+            # How many orders the gateway believed open and so cancelled: one answer from the engine is wanted for each.
+            disconnected = component_event("fix_order_gateway_a", "fix_order_gateway_test_events", "SessionDisconnectedWithOrders", gateway_from, 0.0)
+            expected = disconnected.open_orders if disconnected is not None else 0
+            if expected <= 0:
+                die(f"open orders: the gateway reported {expected} open order(s) for the dropped session, so nothing was "
+                    "cancelled and the question was not asked")
+
             # Whichever answer comes back, it comes back from the engine. The member has gone, so the engine's events
-            # are the only record of the answers; once the first has come, a checkpoint makes sure every one sent by then
-            # has been read before they are counted.
+            # are the only record of the answers. They are read until there is one for every order the gateway cancelled,
+            # and then a checkpoint makes sure every one sent by then has been read before they are counted.
             engine = me_log.stem
             deadline = time.monotonic() + _OPEN_ORDER_CANCEL_TIMEOUT
             unknown = cancelled = 0
             while time.monotonic() < deadline:
                 unknown = outcome_count(engine, cancels_from, "CancelRefusedUnknown")
                 cancelled = outcome_count(engine, cancels_from, "Cancelled")
-                if unknown or cancelled:
-                    if not _TEST_EVENTS.settle(engine):
-                        die(f"open orders: {engine} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]})")
-                    unknown = outcome_count(engine, cancels_from, "CancelRefusedUnknown")
-                    cancelled = outcome_count(engine, cancels_from, "Cancelled")
+                if unknown + cancelled >= expected:
                     break
                 _TEST_EVENTS.pump(0.5)
+            if not _TEST_EVENTS.settle(engine):
+                die(f"open orders: {engine} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]})")
+            unknown = outcome_count(engine, cancels_from, "CancelRefusedUnknown")
+            cancelled = outcome_count(engine, cancels_from, "Cancelled")
 
             if unknown:
-                die(f"open orders: the matching engine refused {unknown} of the member's cancels as "
-                    "orders it does not recognise. The orders open before it restarted are gone, and "
+                die(f"open orders: the matching engine refused {unknown} of the {expected} cancels the gateway sent as "
+                    "orders it does not recognise. Orders the member was told are open are gone, and "
                     "neither the member nor the gateway was told -- see R-0018, and docs/bug_list.md "
                     "BUG-0064")
-            if not cancelled:
-                die("open orders: the engine neither cancelled nor refused anything within "
-                    f"{_OPEN_ORDER_CANCEL_TIMEOUT:.0f}s -- the cancels never reached it, so the "
-                    "question was not asked")
-            log(f"  the engine cancelled {cancelled} order(s) and refused none: the orders open "
-                "before the restart survived it -- OK")
+            if cancelled != expected:
+                die(f"open orders: the gateway cancelled {expected} order(s), and within {_OPEN_ORDER_CANCEL_TIMEOUT:.0f}s "
+                    f"the engine cancelled {cancelled} and refused none -- the other cancels never reached it, so the "
+                    "question was not asked of every order")
+            log(f"  the engine cancelled all {cancelled} order(s) the gateway believed open and refused none -- OK")
 
         # ── Cancel-on-disconnect grace period (step 3b) ───────────────────────
         # The gateway is alive throughout; only the client session goes away. Everything
