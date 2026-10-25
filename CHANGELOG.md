@@ -76,8 +76,8 @@ describe the venue as it now is.
   `perf_run.py` refuses to run without it. The findings are `docs/operations/latency_findings.md`.
 - **A reactor can poll instead of sleeping**, and finds a send by itself without a system call.
 - **A FIX load client**, so that the two gateways can be compared under the same load.
-- **The functional specification as an EPUB 3 e-book**, built with `make -C docs/book epub`, beside
-  the PDF. A build file, `docs/book/book.mk4`, removes a stray word that TeX4ht's support for the
+- **The functional specification as an EPUB 3 e-book**, built with the PDF by `make -C docs/book`,
+  or alone by `make -C docs/book epub`. A build file, `docs/book/book.mk4`, removes a stray word that TeX4ht's support for the
   glossaries package writes at the top of the first page, which also made that page invalid XML.
 - **The design for publishing to an external messaging system** (OAR),
   `docs/pubsub/oar_external_stream.md`. Not built.

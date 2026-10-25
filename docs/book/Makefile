@@ -6,8 +6,13 @@ CHECK  := ../../scripts/check_book_requirements.py
 
 .PHONY: all check clean text epub
 
-all: $(JOB).pdf
+# The PDF and the EPUB together: building the book builds both.
+all: $(JOB).pdf $(JOB).epub
 
+# The last pass's log and list of requirements are kept as $(JOB)-pdf.log and $(JOB)-pdf.req,
+# because converting the book to EPUB or HTML runs LaTeX again under the same name and writes
+# $(JOB).log and $(JOB).req afresh. "make check" reads the copies, so it checks the PDF's pass
+# whatever was built after it.
 $(JOB).pdf: $(shell find . -name '*.tex' -o -name '*.sty' -o -name '*.bib')
 	$(LATEX) $(JOB).tex
 	makeglossaries $(JOB)
@@ -15,13 +20,15 @@ $(JOB).pdf: $(shell find . -name '*.tex' -o -name '*.sty' -o -name '*.bib')
 	bibtex $(JOB)
 	$(LATEX) $(JOB).tex
 	$(LATEX) $(JOB).tex
+	cp $(JOB).log $(JOB)-pdf.log
+	cp $(JOB).req $(JOB)-pdf.req
 
 check: $(JOB).pdf
-	@! grep -q 'Reference.*undefined\|Citation.*undefined' $(JOB).log || \
-	  { echo "undefined cross-references:"; grep -o "Reference \`[^']*' on page [0-9]*" $(JOB).log; exit 1; }
-	@! grep -q 'multiply defined' $(JOB).log || \
-	  { echo "duplicate labels:"; grep -o "Label \`[^']*' multiply defined" $(JOB).log; exit 1; }
-	python3 $(CHECK) $(JOB).req
+	@! grep -q 'Reference.*undefined\|Citation.*undefined' $(JOB)-pdf.log || \
+	  { echo "undefined cross-references:"; grep -o "Reference \`[^']*' on page [0-9]*" $(JOB)-pdf.log; exit 1; }
+	@! grep -q 'multiply defined' $(JOB)-pdf.log || \
+	  { echo "duplicate labels:"; grep -o "Label \`[^']*' multiply defined" $(JOB)-pdf.log; exit 1; }
+	python3 $(CHECK) $(JOB)-pdf.req
 
 # A plain-text copy, for tools that will not take a PDF.  Goes through HTML so
 # that no page headers, footers or contents leaders appear in the text.
@@ -45,6 +52,7 @@ $(JOB).epub: $(JOB).pdf $(JOB).mk4
 
 clean:
 	rm -f $(JOB).pdf $(JOB).aux $(JOB).bbl $(JOB).blg $(JOB).log $(JOB).toc $(JOB).out $(JOB).req
+	rm -f $(JOB)-pdf.log $(JOB)-pdf.req
 	rm -f $(JOB).txt $(JOB).html $(JOB).css $(JOB).lg $(JOB).xref $(JOB).tmp $(JOB).idv $(JOB).4ct $(JOB).4tc $(JOB).dvi
 	rm -f $(JOB).glo $(JOB).gls $(JOB).glg $(JOB).acn $(JOB).acr $(JOB).alg $(JOB).ist
 	rm -f $(JOB).epub $(JOB).ncx content.opf *.xhtml
