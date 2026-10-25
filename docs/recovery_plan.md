@@ -335,6 +335,9 @@ book and the same reports.
   command is applied and rejecting that command alike in both engines, and fuzzing the engine with well-formed
   commands, checking the book after each. Voiding a command that crashed the engine is designed with phase 8.
 
+**Design:** [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), proposed on
+25 October 2026 for Andrew's review.
+
 **Finished when:** both engines, run on the same WAL, produce identical reports, and the high
 availability scenarios pass.
 
