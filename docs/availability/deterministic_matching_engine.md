@@ -1,10 +1,11 @@
 # A deterministic matching engine {#deterministic_matching_engine}
 
-> **Status: decided, 25 October 2026; steps 1, 2, 3 and 5 of section 8 built.** This is the design for phase 7 of the
+> **Status: decided, 25 October 2026; steps 1, 2, 3 and 5 of section 8 built, and step 4 in part.** This is the design for phase 7 of the
 > [recovery plan](../recovery_plan.md). The state machine of section 7.1, the remedies of section 5, `wal_replay_check`,
 > the identifiers of section 3 and the handling of a command the engine cannot apply, with its fuzzing, of section 6,
-> are built; steps 4 and 6 are not. Step 4 waits on decision 6 of section 9, which is not
-> yet taken; decisions 7 and 8 were taken on 25 October 2026. Andrew answered decisions 1 to 5 of section 9 on
+> are built. Of step 4, cancelling on promotion is a command in the WAL; the halt, the absence rule and a region that
+> cannot be used are not yet; step 6 is not built. Decisions 6, 7 and 8 of section 9, which step 4 needed,
+> were taken on 25 October 2026. Andrew answered decisions 1 to 5 of section 9 on
 > 25 October 2026: identifiers are scrambled with FF1, the day key is derived from a secret and the trading date, an
 > identifier is a letter and 16 hexadecimal digits, the leading sequencer measures the absence rule, and cancelling
 > on promotion becomes a command in phase 7.
@@ -215,6 +216,16 @@ cancels its book or halts on its own initiative any more. The decisions that are
   cancelled ([BUG-0199](../bug_list.md#bug_0199)). Phase 8 removes cancelling on promotion altogether; it is made a
   command now all the same, so that the venue stops holding orders its members were told are cancelled from phase 7
   on (decision 5).
+
+  This is built. A promoted engine that has caught up holding orders it inherited sends each sequencer a
+  `CancelBookRequest` naming the position it caught up to. The leading sequencer, if orders are routed to that engine,
+  writes a `CancelBook` command carrying that position (`SequencerThread::write_own_command`, which writes a command
+  of the sequencer's own and holds it until it is released, as an order is), and a follower ignores the request. The
+  command cancels the orders placed at or before the position, in the order they were placed, and keeps those placed
+  after it (decision 7). The engine applies orders that arrive meanwhile, asks again every second until it has applied
+  a cancel through its position, and tells the test it has resumed as leader (`ResumedAsLeader`) only then, so the
+  book it reports resuming with is the one it serves. A second command through the same position finds nothing to
+  cancel.
 - **The halt that BUG-0197 needs.** [BUG-0197](../bug_list.md#bug_0197) is designed with phase 8, but the commands
   here are the ones it uses: after a normal failover's length with no engine leading, the leading sequencer writes a
   halt, and the gateways refuse orders as it says.
@@ -344,8 +355,9 @@ capacity and the identifier secret of the engines that led, and pairs a replayed
 which names a report by the position of its command whichever engine sent it. `ha_test.py` runs it after every
 scenario that passes, including those in which an engine restarts or engines change roles, except where an engine
 cancelled every order by its own decision, sending at least one cancel report, or halted by its own decision (test
-events BookCancelled and Halted), and where the engines that led were configured differently. Those decisions are not
-commands in the WAL until step 4, so the WAL holds the reports they produced with no command a replay could apply.
+events BookCancelled with `by_command` false, and Halted), and where the engines that led were configured differently.
+A CancelBook command it applies as the engine does. The decisions an engine still takes by itself are not commands
+in the WAL until the rest of step 4, so the WAL holds the reports they produced with no command a replay could apply.
 Step 4 makes the engine's decisions commands in the WAL, and step 6 runs the check on every scenario.
 
 A scenario can stop the venue while the engine's answers to its last commands are in flight, so that the WAL stops
@@ -386,7 +398,7 @@ Each step is built, tested and committed on its own, and every high availability
 
 Decisions 1 to 5 were all decided on 25 October 2026. Decisions 1, 2 and 3 each chose one of the ways listed;
 decisions 4 and 5 were answered yes or no. Decisions 6, 7 and 8 are needed before step 4 is built, each a choice of
-one of the ways listed. Decisions 7 and 8 were taken on 25 October 2026; decision 6 is not yet taken.
+one of the ways listed. All three were taken on 25 October 2026.
 
 ### Decision 1. Which cipher scrambles the identifiers? (Choose one.)
 
@@ -505,6 +517,8 @@ yet: it is always, in effect, open.
 **Recommendation: A.** It is the message the venue's design already says a halt is, and building it now means no
 second kind of halt record exists to be replaced, read and explained later.
 
+**Decided 25 October 2026: A, the technical event of trading_phases.md, built now.**
+
 ### Decision 7. When cancelling on promotion is a command, which orders does it cancel? (Choose one.)
 
 **Background.** Today a promoted engine cancels the orders it holds once it has caught up and before it serves, so
@@ -548,4 +562,4 @@ when the WAL holds the day, and the venue halts only when it truly cannot say wh
 which is why it is a decision.
 
 **Decided 25 October 2026: A, rebuild without cancelling where the WAL reaches the first record, and otherwise ask the
-sequencer for a halt.** R-0123 is to be reworded to match, with the new wording agreed before it is built.
+sequencer for a halt.** R-0123 is reworded to match; Andrew approved the new wording the same day.

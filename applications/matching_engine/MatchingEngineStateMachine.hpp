@@ -189,6 +189,40 @@ class MatchingEngineStateMachine {
     void apply_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
                       const fix_common::SessionIdentity& session, CommandSource source);
 
+    /// What a CancelBook command did.
+    struct BookCancelledByCommand {
+        bool applied{false};     ///< false when the command was not applied: one a catch-up delivers again, or out of sequence
+        int64_t open_orders{0};  ///< how many orders the book held when the command was applied
+        int64_t reports_sent{0}; ///< how many orders were cancelled, each with a report
+        int64_t orders_kept{0};  ///< how many orders, placed after the command's position, stay on the book
+    };
+
+    /**
+     * @brief Applies a CancelBook command from the WAL: cancels every order placed at or before its position, in the
+     * order they were placed, reporting each to the member that placed it. Orders placed after the position stay.
+     *
+     * A command, not a decision of this engine's, so every engine that applies the WAL cancels the same orders with the
+     * same reports, including one that catches up later (docs/availability/deterministic_matching_engine.md, section 4).
+     * Each report's ExecID is made from the command's sequence number and the report's place, from 0; the reports are
+     * handed to the outputs with sequence number 0, so that the sequencer routes each by the session on its envelope.
+     * Live, each order removed is passed to order_removed_from_book, so that the follower engine's copy of the book
+     * loses it too. The book is published to the command's sequence number afterwards.
+     *
+     * A command at or below the highest acted on is not applied: during a catch-up because it was applied already, and
+     * live because the WAL the engine acted on and the one now sending disagree, as for an order. A command without a
+     * time or a trading date is a defect in the sequencer; it is applied all the same, with what it carries, because it
+     * has no member to refuse it to, and reported at Error.
+     *
+     * @param[in] orders_placed_through   The command's position: orders placed at or before it are cancelled.
+     * @param[in] sequence_number         The command's sequence number.
+     * @param[in] transact_time           The time the sequencer recorded for it, written on every report.
+     * @param[in] trading_date            The trading date it carries.
+     * @param[in] source                  Whether it is applied live or during a catch-up.
+     * @return What it did.
+     */
+    BookCancelledByCommand apply_cancel_book(int64_t orders_placed_through, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
+                                             CommandSource source);
+
     /**
      * @brief Cancels every order on the book, reporting each to the member that placed it, and empties the book.
      *

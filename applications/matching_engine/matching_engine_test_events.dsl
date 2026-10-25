@@ -75,19 +75,23 @@ end
 
 # ------------------------------------------------------------
 #  172 -- BookCancelled
-#  The engine cancelled every order on its book and sent a cancel
-#  report for each: on promotion, where the venue is configured to
-#  cancel then, or before halting.
+#  The engine cancelled orders on its book and sent a cancel report
+#  for each: by a CancelBook command in the WAL, written for a
+#  promotion where the venue is configured to cancel then; or, by
+#  its own decision, every order before halting.
 # ------------------------------------------------------------
 message BookCancelled (id=172, version=1)
     i64 live_orders            # the orders on the book when cancelling began
     i64 cancel_reports_sent    # the cancel reports sent, one for each order cancelled
+    bool by_command            # true when a CancelBook command in the WAL did it, which a replay of the WAL does again
+    i64 orders_kept            # the orders left on the book: for a command, those placed after its position
 end
 
 # ------------------------------------------------------------
 #  173 -- ResumedAsLeader
 #  A promoted engine finished catching up and serves again, holding
-#  the orders on its book.
+#  the orders on its book. Where it asked for the orders it inherited
+#  to be cancelled, sent once it has applied that command.
 # ------------------------------------------------------------
 message ResumedAsLeader (id=173, version=1)
     i64 through_seq_no         # the last record it caught up to

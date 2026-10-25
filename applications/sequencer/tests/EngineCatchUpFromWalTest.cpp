@@ -23,6 +23,7 @@ constexpr size_t segment_size = 4096;
 constexpr int16_t new_order = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle);
 constexpr int16_t report = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
 constexpr int32_t trading_date = 20261025;
+constexpr int16_t cancel_book = static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id);
 
 class EngineCatchUpFromWalTest : public ::testing::Test {
   protected:
@@ -121,6 +122,18 @@ TEST_F(EngineCatchUpFromWalTest, AnOrderIsSentWithEveryFieldTheEngineReads) {
     EXPECT_EQ(sent[0].gateway_instance_id, 2);
     EXPECT_TRUE(sent[0].has_trading_date);
     EXPECT_EQ(sent[0].trading_date, trading_date);
+}
+
+// A CancelBook command is a command the engine applies, as an order is, so a catch-up sends it with the orders.
+TEST_F(EngineCatchUpFromWalTest, ACancelBookCommandIsSentWithTheOrders) {
+    append(new_order);   // 1
+    append(cancel_book); // 2
+    append(report);      // 3
+    append(new_order);   // 4
+    std::vector<int64_t> sent;
+    const sequencer::EngineCatchUpFromWal result = catch_up(0, sent);
+    EXPECT_EQ(sent, (std::vector<int64_t>{1, 2, 4}));
+    EXPECT_EQ(result.records_sent, 3);
 }
 
 TEST_F(EngineCatchUpFromWalTest, NothingIsSentAfterADamagedRecordAndItsNumberIsReturned) {

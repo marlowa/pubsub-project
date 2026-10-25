@@ -613,6 +613,22 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // has said its peer may not lead.
     void report_settings_differ_from_peer();
 
+    // Asks every sequencer for a CancelBook command through cancel_book_awaited_through_; the leading one writes it.
+    void request_cancel_book();
+    // Applies a CancelBook command, and, where it is the one this promoted instance asked for, says that it has resumed.
+    void apply_cancel_book_command(int64_t orders_placed_through, int64_t sequence_number, int64_t transact_time, int32_t trading_date, CommandSource source);
+    // Tells the test that this instance resumed as leader, and with how many orders.
+    void report_resumed_as_leader();
+
+    // While a promoted instance waits to apply the command cancelling what it inherited: the position it asked to cancel
+    // through, which is the position it caught up to. Zero when it waits for none. Asked for again every
+    // cancel_book_request_interval, because a request sent as the sequencers change leader may reach no leader.
+    int64_t cancel_book_awaited_through_{0};
+    std::chrono::steady_clock::time_point cancel_book_requested_at_{};
+    static constexpr std::chrono::seconds cancel_book_request_interval{1};
+    // The position the last catch-up before leading reached, which the test is told when this instance resumes.
+    int64_t resumed_through_{0};
+
     // The peer's open-order region capacity and the fingerprint of its identifier secret, as it last said, and whether
     // either differs from this instance's. Kept when the connection to the peer is lost: a peer that restarts says again
     // what it is configured with.

@@ -712,3 +712,47 @@ message OrderAcceptance (id=127, version=1)
     # (docs/availability/commands_during_a_change_of_leader.md, section 3.2).
     optional i32 leader_epoch
 end
+
+# ============================================================
+#  Decisions as commands in the WAL
+#
+#  A decision that changes the matching engine's book is a
+#  command in the WAL, written by the leading sequencer, so that
+#  every engine applies it at the same position, including one
+#  that catches up later. See
+#  docs/availability/deterministic_matching_engine.md, section 4.
+# ============================================================
+
+# Why a cancel of the book was written.
+enum CancelBookReason : i8 {
+    Promotion = 1   # open_orders_on_promotion is "cancel", and a promoted engine asked for its inherited orders to be cancelled
+}
+
+# ------------------------------------------------------------
+#  138 -- CancelBookRequest
+#  Sent by a promoted matching engine, once it has caught up and
+#  holds orders it inherited, to each sequencer it has an order
+#  connection to. The leading sequencer writes a CancelBook
+#  command; a follower ignores it. The engine sends it again
+#  until it has applied a CancelBook through the same position,
+#  so a request lost to a change of leader is not lost for good,
+#  and a second command finds nothing left to cancel.
+# ------------------------------------------------------------
+message CancelBookRequest (id=138, version=1)
+    i64 instance_id              # the engine asking, for the Quill log
+    i32 epoch                    # the epoch it leads in
+    i64 orders_placed_through    # the position it caught up to: orders placed at or before it are cancelled
+end
+
+# ------------------------------------------------------------
+#  139 -- CancelBook
+#  A command in the WAL, carried as the payload of a WalRecord
+#  envelope like a new order or a cancel: cancel every order on
+#  the book placed at or before orders_placed_through, in the
+#  order they were placed, reporting each to its member. Orders
+#  placed after it stay on the book.
+# ------------------------------------------------------------
+message CancelBook (id=139, version=1)
+    CancelBookReason reason
+    i64 orders_placed_through
+end

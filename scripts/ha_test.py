@@ -4254,10 +4254,10 @@ _SCENARIOS: list[Scenario] = [
     #
     # BUG-0199. The steps are scenario 78's, with the venue set to cancel the book on promotion, as every environment
     # is, and with the primary started first and leading, so that killing it promotes the secondary. The secondary
-    # cancels the 1,000 baseline orders it inherits and tells the member. The primary's region still holds them, and a
-    # catch-up sends an engine only orders and cancels, never the reports, so nothing tells the restarted primary that
-    # they were cancelled. When it takes the lead it must hold exactly the orders the member was told are open: the
-    # 1,000 sent while it waited, and none of the 1,000 it was told were cancelled.
+    # cancels the 1,000 baseline orders it inherits, by a CancelBook command in the WAL, and tells the member. The
+    # primary's region still holds them; the restarted primary meets the command in its catch-up and cancels them too.
+    # When it takes the lead it must hold exactly the orders the member was told are open: the 1,000 sent while it
+    # waited, and none of the 1,000 it was told were cancelled.
     Scenario(
         number=79,
         short_name="restarted_engine_holds_no_cancelled_order",
@@ -4269,10 +4269,6 @@ _SCENARIOS: list[Scenario] = [
         me_ha=True,
         recovery_on_primary=True,
         engine_started_first="matching_engine_primary",
-        expected_failure=(
-            "the restarted primary leads holding the 1,000 orders the promoted secondary cancelled, because a catch-up "
-            "sends an engine no execution reports (BUG-0199)"
-        ),
         assert_waiting_engine_catches_up=True,
         assert_open_orders_survive=True,
         orders_during_override=0,
@@ -5117,7 +5113,8 @@ def replay_check_applies() -> tuple[bool, str, list[str]]:
     cannot disagree with what happened."""
     engine_module = _TEST_EVENTS.modules["matching_engine_test_events"]
     for event in _TEST_EVENTS.events:
-        if event.component in _ENGINE_COMPONENTS and isinstance(event.message, engine_module.BookCancelled) and event.message.cancel_reports_sent > 0:
+        if (event.component in _ENGINE_COMPONENTS and isinstance(event.message, engine_module.BookCancelled) and not event.message.by_command
+                and event.message.cancel_reports_sent > 0):
             return False, (f"{event.component} cancelled every order by its own decision, which is not a command in the WAL, "
                            f"and sent {event.message.cancel_reports_sent} cancel report(s)"), []
         if event.component in _ENGINE_COMPONENTS and isinstance(event.message, engine_module.Halted):
@@ -7490,10 +7487,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
             resumed = resumed_event.book_size
 
             if cancels_expected:
-                # What it inherited has to come from the cancel burst's own opening line: the
-                # book is empty by the time the engine says what it is resuming with, so
-                # "resuming as leader" reports zero under this policy and proves nothing.
-                inherited = cancelled_book.live_orders if cancelled_book is not None else -1
+                # What it inherited has to come from the cancel's own count: the engine says what it is resuming with only
+                # once the CancelBook command it asked for has been applied. The command cancels the orders placed at or
+                # before the position the engine caught up to, and keeps any placed after it, so what it inherited is
+                # what the book held less what was kept.
+                if cancelled_book is not None and not cancelled_book.by_command:
+                    die(f"ME-HA: the promoted {promoted_engine} cancelled the book by its own decision, not by a CancelBook "
+                        "command in the WAL, so an engine that catches up later would not cancel it (BUG-0199).")
+                inherited = cancelled_book.live_orders - cancelled_book.orders_kept if cancelled_book is not None else -1
                 if inherited <= 0:
                     die(f"ME-HA: the venue is configured to cancel on promotion but the promoted "
                         f"secondary reported inheriting {inherited} order(s). The baseline orders rest "
@@ -7507,13 +7508,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
                         f"{cancel_count} cancel report(s). Every order it inherited must be cancelled "
                         "and its member told: cancelling part of the book leaves the rest unmentioned, "
                         "which is worse than either answer taken whole (R-0020).")
-                if resumed != 0:
-                    die(f"ME-HA: the promoted secondary cancelled {cancel_count} order(s) and then "
-                        f"resumed as leader holding {resumed}. The book it cancelled must be the whole "
-                        "of what it held, or it is serving orders it has told the member are gone.")
+                if resumed != cancelled_book.orders_kept:
+                    die(f"ME-HA: the promoted secondary cancelled {cancel_count} order(s), kept {cancelled_book.orders_kept} "
+                        f"placed after the position it caught up to, and then resumed as leader holding {resumed}. The book "
+                        "it resumes with must be what the command kept, or it is serving orders it has told the member are gone.")
                 log(f"  ME-HA: open_orders_on_promotion=cancel -- the promoted secondary inherited "
-                    f"{inherited} order(s), cancelled all {cancel_count} of them, and resumed with an "
-                    "empty book -- OK")
+                    f"{inherited} order(s), cancelled all {cancel_count} of them by a CancelBook command, and resumed "
+                    f"holding the {resumed} placed after it caught up -- OK")
             else:
                 if cancel_count > 0:
                     die(f"ME-HA: the venue is configured to keep the book on promotion, and the "

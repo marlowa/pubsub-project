@@ -872,6 +872,90 @@ void MatchingEngineStateMachine::after_failure(int64_t sequence_number, CommandS
     }
 }
 
+MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::apply_cancel_book(int64_t orders_placed_through, int64_t sequence_number,
+                                                                                                 int64_t transact_time, int32_t trading_date,
+                                                                                                 CommandSource source) {
+    BookCancelledByCommand result;
+    const bool live = source == CommandSource::live;
+    if (!live && already_applied(sequence_number)) {
+        return result;
+    }
+    if (!ReportIdentifiers::fits(sequence_number, 0)) {
+        refuse_to_name(sequence_number);
+        return result;
+    }
+    if (live && sequence_goes_backwards(sequence_number)) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineStateMachine: CancelBook seq={} is at or below the highest command acted on -- not applied, because the WAL this "
+                   "engine acted on and the one now sending disagree",
+                   sequence_number);
+        return result;
+    }
+    if (transact_time == 0 || trading_date == 0) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineStateMachine: CancelBook seq={} carries no {} -- a defect in the sequencer; applied with what it carries, because it has "
+                   "no member to refuse it to",
+                   sequence_number, transact_time == 0 ? "time" : "trading date");
+    }
+    identifiers_.use_trading_date(trading_date);
+    const ReportIsRepeat repeat = live ? ReportIsRepeat::no : ReportIsRepeat::yes;
+    result.applied = true;
+    result.open_orders = static_cast<int64_t>(book_.size());
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineStateMachine: CancelBook seq={} -- cancelling the orders placed at or before seq={}, of {} on the book{}", sequence_number,
+               orders_placed_through, book_.size(), live ? "" : " -- during catch-up, reported as possible repeats");
+
+    int64_t place = 0;
+    result.reports_sent = static_cast<int64_t>(book_.remove_placed_through(orders_placed_through, [&](const OrderEntry& entry) {
+        ReportIdentifiers::Buffer exec_id_buf{};
+        const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, place++);
+        ReportIdentifiers::Buffer order_id_buf{};
+        const std::string_view order_id = identifiers_.order_id(order_id_buf, entry.placed_at_seq_no);
+
+        pubsub_itc_fw_app::ExecutionReport er{};
+        er.order_id = order_id;
+        er.exec_id = exec_id;
+        er.exec_type = pubsub_itc_fw_app::ExecType::Canceled;
+        er.ord_status = pubsub_itc_fw_app::OrdStatus::Canceled;
+        er.symbol = entry.get_symbol();
+        er.side = entry.side;
+        er.leaves_qty = "0";
+        er.cum_qty = "0";
+        er.avg_px = "0.00";
+        er.transact_time = transact_time;
+        er.has_cl_ord_id = true;
+        er.cl_ord_id = entry.get_cl_ord_id();
+        er.has_order_qty = true;
+        er.order_qty = entry.get_order_qty();
+        if (entry.has_price) {
+            er.has_price = true;
+            er.price = entry.get_price();
+        }
+        er.has_ord_type = true;
+        er.ord_type = entry.ord_type;
+        if (entry.has_time_in_force) {
+            er.has_time_in_force = true;
+            er.time_in_force = entry.time_in_force;
+        }
+        if (entry.has_expire_time) {
+            er.has_expire_time = true;
+            er.expire_time = entry.expire_time;
+        }
+        // Sequence number 0: the sequencer routes a report by the sequence number of the order it answers, and this
+        // command was placed by no member, so the session that placed the order rides on the report's envelope instead.
+        outputs_.send_report(er, 0, entry.session, repeat);
+        if (live) {
+            outputs_.order_removed_from_book(sequence_number, entry.session, entry.get_cl_ord_id());
+        }
+    }));
+    result.orders_kept = static_cast<int64_t>(book_.size());
+    book_.publish(sequence_number);
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineStateMachine: CancelBook seq={} -- {} order(s) cancelled and reported, {} placed after seq={} kept", sequence_number,
+               result.reports_sent, result.orders_kept, orders_placed_through);
+    return result;
+}
+
 MatchingEngineStateMachine::BookCancelled MatchingEngineStateMachine::cancel_every_order(int64_t sequence_number, int64_t first_place, int64_t transact_time,
                                                                                          int32_t trading_date) {
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineStateMachine: cancelling every order -- {} live order(s)", book_.size());

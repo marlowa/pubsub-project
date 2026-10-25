@@ -709,6 +709,67 @@ TEST_F(MatchingEngineStateMachineTest, CancellingEveryOrderReportsEachAndEmpties
     EXPECT_EQ(book_.size(), 0U);
 }
 
+// A CancelBook command, written for a promotion, cancels the orders placed at or before its position, in the order they
+// were placed, and keeps those placed after it (decision 7 of docs/availability/deterministic_matching_engine.md).
+TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandCancelsTheOrdersPlacedAtOrBeforeItsPositionAndKeepsTheRest) {
+    machine_.apply_new_order(new_order("ORD-B"), 2, taken_at, trading_day, other_member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-A"), 3, taken_at, trading_day, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-C"), 5, taken_at, trading_day, member, CommandSource::live);
+    outputs_.reports.clear();
+
+    const MatchingEngineStateMachine::BookCancelledByCommand result = machine_.apply_cancel_book(3, 6, taken_at + 7, trading_day, CommandSource::live);
+
+    EXPECT_TRUE(result.applied);
+    EXPECT_EQ(result.open_orders, 3);
+    EXPECT_EQ(result.reports_sent, 2);
+    EXPECT_EQ(result.orders_kept, 1);
+    ASSERT_EQ(outputs_.reports.size(), 2U);
+    EXPECT_EQ(outputs_.reports[0].cl_ord_id, "ORD-B") << "in the order the orders were placed";
+    EXPECT_EQ(outputs_.reports[0].order_id, order_id_of(2));
+    EXPECT_EQ(outputs_.reports[0].exec_id, exec_id_of(6, 0)) << "named by the command's sequence number and the report's place";
+    EXPECT_EQ(outputs_.reports[0].comp_id, "MEMBER-B");
+    EXPECT_EQ(outputs_.reports[1].cl_ord_id, "ORD-A");
+    EXPECT_EQ(outputs_.reports[1].exec_id, exec_id_of(6, 1));
+    for (const RecordedReport& report : outputs_.reports) {
+        EXPECT_EQ(report.exec_type, pubsub_itc_fw_app::ExecType::Canceled);
+        EXPECT_EQ(report.transact_time, taken_at + 7) << "the time the command carries";
+        EXPECT_EQ(report.repeat, ReportIsRepeat::no);
+    }
+    EXPECT_EQ(outputs_.removed, (std::vector<std::string>{"ORD-B@6", "ORD-A@6"})) << "the follower engine's copy loses them too";
+    EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-C"))) << "placed after the command's position, so kept";
+    EXPECT_EQ(book_.size(), 1U);
+    EXPECT_EQ(book_.published(), 6);
+    EXPECT_TRUE(book_.consistency_problem().empty());
+}
+
+// The same command delivered by a catch-up to an engine that applied it live is not applied again, and one that meets it
+// only in a catch-up, as a restarted engine does, cancels the same orders with the same reports, marked as possible
+// repeats (BUG-0199).
+TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandIsAppliedOnceAndAlikeLiveAndFromACatchUp) {
+    OrderBook caught_up_book;
+    caught_up_book.open(dir_ + "/caught_up.region", region_capacity, map_capacity);
+    RecordingOutputs caught_up_outputs;
+    MatchingEngineStateMachine caught_up{caught_up_book, second_identifiers_, caught_up_outputs, logger_};
+
+    for (MatchingEngineStateMachine* machine : {&machine_, &caught_up}) {
+        const CommandSource source = machine == &machine_ ? CommandSource::live : CommandSource::catch_up;
+        machine->apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, source);
+        machine->apply_new_order(new_order("ORD-2"), 2, taken_at, trading_day, member, source);
+        EXPECT_TRUE(machine->apply_cancel_book(2, 3, taken_at, trading_day, source).applied);
+    }
+    EXPECT_FALSE(machine_.apply_cancel_book(2, 3, taken_at, trading_day, CommandSource::catch_up).applied) << "applied once, by its sequence number";
+
+    ASSERT_EQ(outputs_.reports.size(), caught_up_outputs.reports.size());
+    for (size_t index = 0; index < outputs_.reports.size(); ++index) {
+        EXPECT_EQ(outputs_.reports[index].exec_id, caught_up_outputs.reports[index].exec_id) << "report " << index;
+        EXPECT_EQ(outputs_.reports[index].exec_type, caught_up_outputs.reports[index].exec_type) << "report " << index;
+    }
+    EXPECT_EQ(caught_up_outputs.reports.back().repeat, ReportIsRepeat::yes);
+    EXPECT_TRUE(caught_up_outputs.removed.empty()) << "a catch-up replicates nothing to the follower";
+    EXPECT_EQ(book_.size(), 0U);
+    EXPECT_EQ(caught_up_book.size(), 0U);
+}
+
 // Cancelled in the order the orders were placed, so that an engine that built its book live and one that built it from
 // a catch-up in a different order of arrival into the map send the same cancels in the same order.
 TEST_F(MatchingEngineStateMachineTest, CancellingEveryOrderReportsThemInTheOrderTheyWerePlaced) {

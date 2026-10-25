@@ -106,6 +106,11 @@ describe the venue as it now is.
 
 ### Changed
 
+- **Cancelling the book on promotion is a command in the WAL**, part of step 4 of phase 7: a promoted
+  engine asks the leading sequencer for a `CancelBook` command naming the position it caught up to,
+  which cancels the orders placed at or before it and keeps any placed after it, and which an engine
+  catching up later applies too. The sequencer can write commands of its own
+  (`SequencerThread::write_own_command`).
 - **A failure while the matching engine applies one command costs that command**, step 5 of phase 7:
   an exception thrown while a new order or a cancel is applied is caught, the command is rejected as
   one the venue could not process if it had changed nothing and answered nothing, and the engine
@@ -204,6 +209,9 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
   more). Two of the counts read from logs had been zero in every run (BUG-0191).
 - **`perf_run.py` exited 0 after reporting FAIL** on the FIX gateway, so `release_check.py`, which
   gates a release on its exit status, passed a run that had lost orders. It now exits 1.
+- **A matching engine restarted after its peer cancelled the book on promotion still held the
+  cancelled orders**, and could lead holding them, because the cancels were reports, which a
+  catch-up does not send an engine. Scenario 79 now passes (BUG-0199).
 - **The order book's map lost an order while it migrated to a new table**, so a cancel of that
   order was refused as unknown and a second order with its ClOrdID was accepted. A slot the
   migration empties is now a tombstone (BUG-0205).

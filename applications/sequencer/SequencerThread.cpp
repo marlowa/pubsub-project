@@ -539,6 +539,13 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         return;
     }
 
+    // A promoted matching engine asking for a command to cancel the orders it inherited.
+    if (message.pdu_id() == pubsub_itc_fw_app::CancelBookRequest::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
+        handle_cancel_book_request(conn_id, message);
+        release_pdu_payload(message);
+        return;
+    }
+
     // A matching engine stating which role it holds. Accepted on either ME connection,
     // because which of them the leader is sitting on is exactly what this establishes.
     if (message.pdu_id() == pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id) {
@@ -1823,6 +1830,14 @@ void SequencerThread::send_held_order_to_matching_engine(const HeldOrder& held) 
         return;
     }
     note_matching_engine_reachable();
+    if (held.own_payload_size > 0) {
+        // A command this sequencer wrote: its payload is held with it, since no inbound message holds it.
+        pubsub_itc_fw_app::WalRecord envelope = held.envelope;
+        envelope.payload = pubsub_itc_fw_app::BytesView{held.own_payload.data(), held.own_payload_size};
+        send_pdu(engine_routing_.active(), pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope.seq_no, envelope,
+                 pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
+        return;
+    }
     send_pdu(engine_routing_.active(), pubsub_itc_fw_app::WalRecord::message_pdu_id, held.envelope.seq_no, held.envelope,
              pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
     if (held.envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
@@ -1841,7 +1856,9 @@ void SequencerThread::release_held_orders_through(int64_t acknowledged_seq_no) {
     while (!held_orders_.empty() && held_orders_.front().envelope.seq_no <= acknowledged_seq_no) {
         const HeldOrder& held = held_orders_.front();
         send_held_order_to_matching_engine(held);
-        release_pdu_payload(held.slab_id, held.buffer);
+        if (held.buffer != nullptr) {
+            release_pdu_payload(held.slab_id, held.buffer);
+        }
         held_orders_.pop_front();
     }
     // Every held order is numbered below the first that waits in the log, so these follow them.
@@ -1964,6 +1981,83 @@ void SequencerThread::take_record_of_identifiers_if_built() {
                    "(the last because: {}). This is expected only when a repair cut the log back meanwhile, which the Quill log shows above",
                    identifiers_builder_.segments_not_read(), identifiers_builder_.last_segment_error());
     }
+}
+
+void SequencerThread::handle_cancel_book_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::CancelBookRequestView request{};
+    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode CancelBookRequest -- dropping");
+        return;
+    }
+    // Only the leader writes commands, and only for the engine orders are routed to: an engine that has since lost the
+    // lead, or one this instance does not route to, asks for a decision that is no longer its to take. The engine that
+    // leads asks again until it has applied a cancel through the position it named.
+    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value() || engine_routing_.active() != conn_id) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: CancelBookRequest from matching engine instance {} on connection {} through seq={} -- not written: {}",
+                   request.instance_id, conn_id.get_value(), request.orders_placed_through,
+                   role_ != pubsub_itc_fw_app::Role::leader ? "this instance does not lead" : "orders are not routed to that engine");
+        return;
+    }
+    pubsub_itc_fw_app::CancelBook command{};
+    command.reason = pubsub_itc_fw_app::CancelBookReason::Promotion;
+    command.orders_placed_through = request.orders_placed_through;
+    // Measured, then encoded into a buffer of the size measured.
+    size_t bytes_written = 0;
+    size_t bytes_needed = 0;
+    static_cast<void>(pubsub_itc_fw_app::encode(command, nullptr, 0, bytes_written, bytes_needed));
+    std::vector<uint8_t> bytes(bytes_needed);
+    if (!pubsub_itc_fw_app::encode(command, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a CancelBook command needs {} bytes and could not be encoded",
+                   bytes_needed);
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: matching engine instance {} at epoch {} asks for the orders it inherited, placed at or before seq={}, to be cancelled -- "
+               "writing a CancelBook command",
+               request.instance_id, request.epoch, request.orders_placed_through);
+    write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id), bytes.data(), bytes_written);
+}
+
+void SequencerThread::write_own_command(int16_t inner_pdu_id, const uint8_t* bytes, size_t size) {
+    if (size > HeldOrder::own_payload_capacity) {
+        throw pubsub_itc_fw::PreconditionAssertion("SequencerThread::write_own_command: the command is larger than a held command can carry", __FILE__,
+                                                   __LINE__);
+    }
+    const int64_t seq = replicated_wal_->next_seq_no();
+    const int64_t wall_time_ns = config_.wall_clock->now_ns();
+    pubsub_itc_fw_app::WalRecord envelope{};
+    envelope.seq_no = seq;
+    envelope.pdu_id = inner_pdu_id;
+    envelope.payload = pubsub_itc_fw_app::BytesView{bytes, size};
+    envelope.wall_time_ns = wall_time_ns;
+    envelope.has_leader_epoch = true;
+    envelope.leader_epoch = current_epoch();
+    envelope.has_trading_date = true;
+    envelope.trading_date = trading_date_for(wall_time_ns);
+    stamp_reports_forwarded_through(envelope);
+    append_envelope_to_wal(envelope);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: wrote command inner_pdu_id={} at seq={}", inner_pdu_id, seq);
+
+    // Sent to the engine as an order is, once committed, and never ahead of an order already waiting.
+    if (replicated_wal_->waits_for_follower() && (held_orders_.full() || first_unheld_seq_ != 0)) {
+        replicated_wal_->follower_too_far_behind("its storage for orders waiting on the follower is full", std::chrono::steady_clock::now());
+    }
+    HeldOrder held{envelope, pubsub_itc_fw::SlabHandle{}, nullptr, std::chrono::steady_clock::now()};
+    std::memcpy(held.own_payload.data(), bytes, size);
+    held.own_payload_size = size;
+    held.envelope.payload = pubsub_itc_fw_app::BytesView{};
+    if (first_unheld_seq_ != 0 || !held_orders_.push_back(held)) {
+        // It waits in the WAL, as an order does once the storage for held orders is full, and is sent from there.
+        if (first_unheld_seq_ == 0) {
+            first_unheld_seq_ = seq;
+        }
+    }
+    release_held_orders_through(replicated_wal_->committed_through());
 }
 
 void SequencerThread::note_trading_date(const pubsub_itc_fw_app::WalRecordView& view) {
@@ -2317,7 +2411,9 @@ void SequencerThread::discard_held_orders() {
                    held_orders_.size());
     }
     while (!held_orders_.empty()) {
-        release_pdu_payload(held_orders_.front().slab_id, held_orders_.front().buffer);
+        if (held_orders_.front().buffer != nullptr) {
+            release_pdu_payload(held_orders_.front().slab_id, held_orders_.front().buffer);
+        }
         held_orders_.pop_front();
     }
 }

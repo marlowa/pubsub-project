@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 205 |
-| Open | 82 (60 defects, 22 tasks) |
-| Closed | 123 |
+| Open | 81 (59 defects, 22 tasks) |
+| Closed | 124 |
 | Next id | BUG-0206 |
 
 ## Open bugs by severity
 
-24 high, 47 medium, 11 low.
+23 high, 47 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -36,7 +36,6 @@
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0195](#bug_0195) | high | defect | When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and three scenarios fail |
 | [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so |
-| [BUG-0199](#bug_0199) | high | defect | A matching engine restarted after its peer cancelled the book on promotion still holds the cancelled orders, and takes the lead holding them |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -3874,6 +3873,36 @@ message, the table of what each phase allows, and their implementation. A way to
 
 **Principles.** V6: every command a gateway accepted is answered; V2: the WAL is the record.
 
+### BUG-0203: The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together {#bug_0203}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-25 |
+| Recorded | 2026-10-25 |
+| How | `perf_run.py --clients 2` at 11:02:39: one of the two FIX sessions was refused. The same run passed three times. The Quill logs and the credentials of the failed run are in `tmp/bug0191/logs-signature-mismatch` |
+| Impact | A member's logon is refused with "Authentication service identity could not be verified", although its credentials are correct. The member can log on again. When many members log on at once, as at the start of the day, some may be refused |
+
+**What happens.** Two clients logged on to `fix_order_gateway_a` within the same millisecond, as `CLIENT-1` and
+`CLIENT-2`. For `CLIENT-2` (connection 9, request 9) the gateway sent the authentication request and its proof, and the
+authentication service logged "AuthenticationResult Granted request_id=9 comp_id=CLIENT-2". The gateway then logged
+"connection 9 ServerSignature mismatch -- possible impostor -- sending Logout" and disconnected the member
+(`FixOrderGatewayThread::handle_authentication_result`). `CLIENT-1`'s logon succeeded.
+
+**Why.** Not yet known. The service granted the logon, so the client's proof matched the stored key; it is the server's
+signature that differed from the one the gateway computed from the member's password and the service's challenge
+(`session.scram_expected_server_signature`). The service keeps each exchange under its request id, and the gateway
+keeps its expectation in the session, so neither is shared between the two logons on its face. The credentials are
+written afresh, with a random salt, at the start of each run. To be found: whether the two logons share state
+anywhere else, and whether the stored server key can disagree with the stored key for some salts.
+
+**What is wanted.** Every logon with correct credentials is granted however many are under way at once. A test that
+logs on many sessions together, repeated, which fails now some of the time.
+
+**Principles.** None of the venue's guarantees about orders; members' access.
+
+## Closed
+
 ### BUG-0199: A matching engine restarted after its peer cancelled the book on promotion still holds the cancelled orders, and takes the lead holding them {#bug_0199}
 
 | | |
@@ -3881,6 +3910,7 @@ message, the table of what each phase allows, and their implementation. A way to
 | Severity | high |
 | Found | 2026-10-25 |
 | Recorded | 2026-10-25 |
+| Fixed | 2026-10-25 -- cancelling on promotion is a CancelBook command in the WAL, which an engine that catches up later applies too |
 | How | Writing scenario 78 for [BUG-0198](#bug_0198): with the primary leading first, the restarted primary caught up and still had the 1,000 baseline orders on its book, which the secondary had cancelled on promotion |
 | Impact | Orders the members were told are cancelled are on the book of the engine that leads, and can trade. Every environment deploys `open_orders_on_promotion = "cancel"`, so this follows any failover of the engine in which the failed engine is restarted and later leads |
 
@@ -3915,35 +3945,29 @@ are open (07:39:38). It must pass before phase 8 is finished.
 **Principles.** V4: a follower that is missing commands never takes over; V8: every report the matching engine
 produces reaches the member.
 
-### BUG-0203: The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together {#bug_0203}
+**What was done.** Step 4 of phase 7, in part ([deterministic_matching_engine.md](availability/deterministic_matching_engine.md),
+section 4, decision 7). A promoted engine that caught up holding orders it inherited sends the sequencers a
+`CancelBookRequest` naming the position it caught up to, and the leading sequencer writes a `CancelBook` command into
+the WAL (`SequencerThread::write_own_command`), which reaches the engine as an order does. The engine cancels the orders
+placed at or before that position, in the order they were placed, and keeps any placed after it; until it has applied
+the command it asks again every second, and it says it has resumed as leader only once it has. An engine that catches
+up later, as the restarted primary does, meets the command at the same position and cancels the same orders, with the
+same ExecIDs, marked as possible repeats. The cancels before a halt after a long absence are still the engine's own
+decision; [BUG-0146](#bug_0146) and the rest of step 4 make them a command.
 
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-25 |
-| Recorded | 2026-10-25 |
-| How | `perf_run.py --clients 2` at 11:02:39: one of the two FIX sessions was refused. The same run passed three times. The Quill logs and the credentials of the failed run are in `tmp/bug0191/logs-signature-mismatch` |
-| Impact | A member's logon is refused with "Authentication service identity could not be verified", although its credentials are correct. The member can log on again. When many members log on at once, as at the start of the day, some may be refused |
+**Verified** on 25 October 2026. Unit tests require a CancelBook to cancel the orders at or before its position in the
+order placed, with ExecIDs from its sequence number, to keep the later ones, to be applied once, and to give an engine
+catching up the same reports; with the comparison made strict, so that the order at the position itself was kept, both
+failed. A unit test requires the sequencer's catch-up to send a CancelBook with the orders; with the command left out of
+what is sent to the engine, it failed. Scenario 79, until now expected to fail, passed: the restarted primary led holding
+the 1,000 orders the member was told are open and none of the 1,000 it was told were cancelled. Scenarios 16 and 21
+passed, the promoted secondary cancelling all 1,000 inherited orders by the command, and the WAL replay check, which
+had to skip every scenario with a promotion, ran on all three and passed.
+Both full suites were then run from fresh WALs. With the primary engine leading first, all 83 scenarios passed
+(23:26:27), scenario 79 among them, and the WAL replay check ran on every one of the 83 and passed. With the secondary
+engine leading first, 23 of 26 passed (23:46:06), and 25, 54 and 55 failed as they did before this change
+([BUG-0195](#bug_0195)); the replay check ran on the 23 that passed and passed on each.
 
-**What happens.** Two clients logged on to `fix_order_gateway_a` within the same millisecond, as `CLIENT-1` and
-`CLIENT-2`. For `CLIENT-2` (connection 9, request 9) the gateway sent the authentication request and its proof, and the
-authentication service logged "AuthenticationResult Granted request_id=9 comp_id=CLIENT-2". The gateway then logged
-"connection 9 ServerSignature mismatch -- possible impostor -- sending Logout" and disconnected the member
-(`FixOrderGatewayThread::handle_authentication_result`). `CLIENT-1`'s logon succeeded.
-
-**Why.** Not yet known. The service granted the logon, so the client's proof matched the stored key; it is the server's
-signature that differed from the one the gateway computed from the member's password and the service's challenge
-(`session.scram_expected_server_signature`). The service keeps each exchange under its request id, and the gateway
-keeps its expectation in the session, so neither is shared between the two logons on its face. The credentials are
-written afresh, with a random salt, at the start of each run. To be found: whether the two logons share state
-anywhere else, and whether the stored server key can disagree with the stored key for some salts.
-
-**What is wanted.** Every logon with correct credentials is granted however many are under way at once. A test that
-logs on many sessions together, repeated, which fails now some of the time.
-
-**Principles.** None of the venue's guarantees about orders; members' access.
-
-## Closed
 
 ### BUG-0205: The order book's map loses an order while it migrates, so a cancel of that order is refused as unknown and its ClOrdID can be used again {#bug_0205}
 

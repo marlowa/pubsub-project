@@ -472,8 +472,11 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
     }
 
     const int16_t inner_pdu_id = envelope.pdu_id;
+    // A CancelBook command is gated as an order is: it changes the book, so only the instance that leads applies it, and
+    // the follower's copy of the book loses the orders through the leader's book updates.
     const bool is_order_pdu = (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) ||
-                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest));
+                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) ||
+                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id));
 
     // ---- Order PDU gating by HA state -------------------------------------
     if (is_order_pdu && ha_role_state_ == MeRole::Follower) {
@@ -538,6 +541,17 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         const CommandSource source = command_source_for(message.seq_no());
         state_machine_.apply_cancel(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
                                     session_identity_from(envelope), source);
+
+    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id)) {
+        pubsub_itc_fw_app::CancelBookView view{};
+        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode CancelBook -- dropping");
+            release_pdu_payload(message);
+            return;
+        }
+        const CommandSource source = command_source_for(message.seq_no());
+        apply_cancel_book_command(view.orders_placed_through, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
+                                  source);
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         // The ME is the source of ERs, not a consumer -- discard.
@@ -897,6 +911,11 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
 
     if (id == lease_tick_timer_id_) {
         act_on(lease_agent_->on_tick(std::chrono::steady_clock::now()));
+        // A request for a cancel of the book that a change of sequencer leader lost is asked for again.
+        if (cancel_book_awaited_through_ != 0 && ha_role_state_ == MeRole::Leader &&
+            std::chrono::steady_clock::now() - cancel_book_requested_at_ >= cancel_book_request_interval) {
+            request_cancel_book();
+        }
         return;
     }
 }
@@ -1098,6 +1117,8 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
             // Stops matching at once, whatever it was doing, and tells the sequencers so they stop
             // routing orders here.
             reconciling_to_lead_ = false;
+            // The command it asked for, if any, is the next leader's to ask for; this instance no longer waits for it.
+            cancel_book_awaited_through_ = 0;
             enter_follower_state();
             break;
         case pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads:
@@ -1815,11 +1836,24 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
         // The book could have been carried across. It is not, because the configuration says the
         // venue does not promise that yet: each member is told its order is gone rather than
         // being left to trust a book nothing has checked.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: open_orders_on_promotion=cancel -- cancelling the {} order(s) inherited at this promotion rather than keeping them "
-                   "(R-0020; R-0073 is not being met, by configuration)",
-                   order_book_.size());
-        cancel_all_orders_on_failover();
+        //
+        // The cancel is a command in the WAL, written by the leading sequencer at this instance's request, so that every
+        // engine applies it at the same position, one that catches up later included (BUG-0199). It names the position
+        // this instance caught up to, so that only the orders it inherited are cancelled: an order that reaches the
+        // sequencer after the catch-up stays on the book, as it would have before (decision 7 of
+        // docs/availability/deterministic_matching_engine.md).
+        if (order_book_.size() == 0) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                           "MatchingEngineThread: open_orders_on_promotion=cancel -- no order was inherited at this promotion, so there is nothing to cancel");
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "MatchingEngineThread: open_orders_on_promotion=cancel -- asking the leading sequencer for a command to cancel the {} order(s) "
+                       "inherited at this promotion, placed at or before seq={}, rather than keeping them (R-0020; R-0073 is not being met, by "
+                       "configuration)",
+                       order_book_.size(), ack.last_seq_no);
+            cancel_book_awaited_through_ = ack.last_seq_no;
+            request_cancel_book();
+        }
     } else if (reconciling_from_follower_) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: open_orders_on_promotion=keep -- carrying {} open order(s) across the promotion (R-0073)", order_book_.size());
@@ -1858,11 +1892,13 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
 
     // Transition to LEADER -- normal processing begins.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: reconciliation complete at seq_no={} with {} order(s) on the book -- resuming as leader", ack.last_seq_no,
-               order_book_.size());
-    if (test_events_.has_value()) {
-        test_events_->send_event(pubsub_itc_fw_app::ResumedAsLeader::message_pdu_id,
-                                 pubsub_itc_fw_app::ResumedAsLeader{ack.last_seq_no, static_cast<int64_t>(order_book_.size())});
+               "MatchingEngineThread: reconciliation complete at seq_no={} with {} order(s) on the book -- resuming as leader{}", ack.last_seq_no,
+               order_book_.size(), cancel_book_awaited_through_ != 0 ? ", and applying orders while the command to cancel what it inherited arrives" : "");
+    resumed_through_ = ack.last_seq_no;
+    // Said to the test once the book is the one this instance resumes with: at once, or, where it asked for its inherited
+    // orders to be cancelled, once it has applied that command.
+    if (cancel_book_awaited_through_ == 0) {
+        report_resumed_as_leader();
     }
     adopt_leader_role();
 }
@@ -1929,6 +1965,48 @@ void MatchingEngineThread::cancel_everything_and_halt(const char* why, pubsub_it
                    "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
 }
 
+void MatchingEngineThread::request_cancel_book() {
+    pubsub_itc_fw_app::CancelBookRequest request{};
+    request.instance_id = static_cast<int64_t>(config_.instance_id);
+    request.epoch = epoch_;
+    request.orders_placed_through = cancel_book_awaited_through_;
+    // To every sequencer order connection, as a catch-up request is: only the leading sequencer writes the command.
+    for (const auto& conn_id : sequencer_order_conn_ids_) {
+        send_pdu(conn_id, pubsub_itc_fw_app::CancelBookRequest::message_pdu_id, 0, request);
+    }
+    cancel_book_requested_at_ = std::chrono::steady_clock::now();
+}
+
+void MatchingEngineThread::apply_cancel_book_command(int64_t orders_placed_through, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
+                                                     CommandSource source) {
+    const MatchingEngineStateMachine::BookCancelledByCommand result =
+        state_machine_.apply_cancel_book(orders_placed_through, sequence_number, transact_time, trading_date, source);
+    if (!result.applied) {
+        return;
+    }
+    if (test_events_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::BookCancelled::message_pdu_id,
+                                 pubsub_itc_fw_app::BookCancelled{result.open_orders, result.reports_sent, true, result.orders_kept});
+    }
+    if (cancel_book_awaited_through_ != 0 && orders_placed_through >= cancel_book_awaited_through_) {
+        cancel_book_awaited_through_ = 0;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: the {} order(s) inherited at this promotion are cancelled by the command at seq={} -- resumed as leader with "
+                   "{} order(s) on the book",
+                   result.reports_sent, sequence_number, order_book_.size());
+        if (source == CommandSource::live) {
+            report_resumed_as_leader();
+        }
+    }
+}
+
+void MatchingEngineThread::report_resumed_as_leader() {
+    if (test_events_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::ResumedAsLeader::message_pdu_id,
+                                 pubsub_itc_fw_app::ResumedAsLeader{resumed_through_, static_cast<int64_t>(order_book_.size())});
+    }
+}
+
 void MatchingEngineThread::cancel_all_orders_on_failover() {
     // Until phase 7 step 4 makes a cancel of every order a command in the WAL, it has no sequence number of its own and
     // no time or trading date from the sequencer. Its ExecIDs are made from the highest sequence number acted on, from
@@ -1938,7 +2016,7 @@ void MatchingEngineThread::cancel_all_orders_on_failover() {
         state_machine_.cancel_every_order(state_machine_.highest_applied(), 1, config_.wall_clock->now_ns(), std::max(report_identifiers_.trading_date(), 0));
     if (test_events_.has_value()) {
         test_events_->send_event(pubsub_itc_fw_app::BookCancelled::message_pdu_id,
-                                 pubsub_itc_fw_app::BookCancelled{cancelled.open_orders, cancelled.reports_sent});
+                                 pubsub_itc_fw_app::BookCancelled{cancelled.open_orders, cancelled.reports_sent, false, 0});
     }
 }
 

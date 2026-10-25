@@ -518,8 +518,14 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     struct HeldOrder {
         pubsub_itc_fw_app::WalRecord envelope;
         pubsub_itc_fw::SlabHandle slab_id;
+        // The inbound message's bytes the envelope's payload points into, released once it is sent; null for a command
+        // this sequencer wrote itself, whose payload is held below instead.
         const uint8_t* buffer{nullptr};
         std::chrono::steady_clock::time_point held_at;
+        // The payload of a command this sequencer wrote itself (write_own_command), which no inbound message holds.
+        static constexpr size_t own_payload_capacity = 64;
+        std::array<uint8_t, own_payload_capacity> own_payload{};
+        size_t own_payload_size{0};
     };
 
     // The orders held while waiting for the follower, at most SequencerConfiguration::orders_held_at_most,
@@ -668,6 +674,18 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     [[nodiscard]] int32_t trading_date_for(int64_t wall_time_ns);
     // Learns the trading date from a command in the WAL, if it carries one.
     void note_trading_date(const pubsub_itc_fw_app::WalRecordView& view);
+
+    /**
+     * @brief Writes a command of this sequencer's own into the WAL and sends it to the matching engine once released, as
+     * an order is: a decision that changes the book, which every engine is to apply at the same position
+     * (docs/availability/deterministic_matching_engine.md, section 4). Only while leading.
+     * @param[in] inner_pdu_id The command's message type, carried in the envelope as an order's is.
+     * @param[in] bytes        The command, encoded; at most HeldOrder::own_payload_capacity bytes.
+     * @param[in] size         How many bytes.
+     */
+    void write_own_command(int16_t inner_pdu_id, const uint8_t* bytes, size_t size);
+    // A promoted matching engine asking for the orders it inherited to be cancelled.
+    void handle_cancel_book_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     // Adds an identifier to the record, reporting once if it is full.
     void record_identifier(uint64_t id);
 

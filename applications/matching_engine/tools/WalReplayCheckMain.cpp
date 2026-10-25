@@ -25,8 +25,8 @@
  * that command's reports, and keys derived from the secret in --secret-file and the trading date the command carries.
  * That is what the engine does, so given the engines' secret it names every report as the engine did, whichever
  * engine led and however often it restarted (docs/availability/deterministic_matching_engine.md, sections 3 and 7.2).
- * A report the engine produced by a decision of its own, not by a command in the WAL, has no command to replay, until
- * phase 7 step 4 makes those decisions commands.
+ * A CancelBook command is applied as the engine applies it. A report the engine produced by a decision of its own,
+ * not by a command in the WAL, has no command to replay, until phase 7 step 4 makes every such decision a command.
  *
  * The book's region is created in the work directory, which must be on a filesystem with room for it (about 250 bytes
  * for each record), never in /tmp, and is removed afterwards. --region-capacity must be the capacity the engine was
@@ -203,9 +203,12 @@ struct LoggedReport {
 // the reports, which describe every order the engine accepts and every one it cancels.
 class RecordingOutputs : public MatchingEngineOutputsInterface {
   public:
-    void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number, const fix_common::SessionIdentity& /*session*/,
+    // The report is filed under the command being applied, not the sequence number it is handed with: the reports of a
+    // CancelBook command are handed over with 0, for the sequencer to route them by session, and are that command's all
+    // the same.
+    void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t /*sequence_number*/, const fix_common::SessionIdentity& /*session*/,
                      ReportIsRepeat /*repeat*/) override {
-        produced.push_back(ProducedReport{sequence_number, fields_of(report)});
+        produced.push_back(ProducedReport{current_command, fields_of(report)});
     }
     void order_added_to_book(int64_t /*sequence_number*/, const fix_common::SessionIdentity& /*session*/, std::string_view /*cl_ord_id*/,
                              const OrderEntry& /*entry*/) override {}
@@ -215,6 +218,8 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
     void order_accepted() override {}
 
     std::vector<ProducedReport> produced;
+    // The sequence number of the command being applied, set before each.
+    int64_t current_command{0};
 };
 
 // The session a command belongs to, as the matching engine works it out from the command's envelope.
@@ -301,7 +306,17 @@ int main(int argc, char** argv) {
                         return;
                     }
                     const auto inner = static_cast<pubsub_itc_fw_app::PduId::PduIdTag>(envelope.pdu_id);
-                    if (inner == pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) {
+                    outputs.current_command = record_id;
+                    if (envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id)) {
+                        pubsub_itc_fw_app::CancelBookView command{};
+                        if (!pubsub_itc_fw_app::decode(command, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+                            ++undecodable;
+                            return;
+                        }
+                        ++commands;
+                        static_cast<void>(machine.apply_cancel_book(command.orders_placed_through, record_id, envelope.wall_time_ns,
+                                                                    envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
+                    } else if (inner == pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) {
                         pubsub_itc_fw_app::NewOrderSingleView order{};
                         if (!pubsub_itc_fw_app::decode(order, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
                             ++undecodable;

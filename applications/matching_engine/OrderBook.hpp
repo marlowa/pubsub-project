@@ -253,6 +253,37 @@ class OrderBook {
         }
     }
 
+    /**
+     * @brief Takes off the book every order placed at or before a sequence number, calling fn(entry) for each just before
+     * it is removed, in the order the orders were placed.
+     *
+     * As for_each_in_order_placed, every engine that applied the same commands visits the same orders in the same
+     * order, and the list it sorts takes 16 bytes for each order removed for the length of the call. The orders are
+     * removed from the list it sorted, not while walking the map, so the map is never changed under a walk. fn must not
+     * change the book.
+     *
+     * @param[in] placed_through The highest sequence number of a new order whose order is removed.
+     * @param[in] fn             Called with each order's record, which is valid only for the call.
+     * @return How many orders were removed.
+     */
+    template <typename Fn> size_t remove_placed_through(int64_t placed_through, Fn&& fn) {
+        std::vector<std::pair<int64_t, SlotIndex>> placed;
+        for (const auto& kv : index_) {
+            const int64_t seq_no = entry_at(kv.second)->placed_at_seq_no;
+            if (seq_no <= placed_through) {
+                placed.emplace_back(seq_no, kv.second);
+            }
+        }
+        std::sort(placed.begin(), placed.end());
+        for (const auto& order : placed) {
+            const OrderEntry* entry = entry_at(order.second);
+            fn(*entry);
+            index_.erase(OrderKey::make(entry->session, entry->get_cl_ord_id()));
+            store_.release(order.second);
+        }
+        return placed.size();
+    }
+
   private:
     // A record is read back at a different address than it was written at, so it must be
     // copyable as bytes and hold nothing that reaches outside itself.

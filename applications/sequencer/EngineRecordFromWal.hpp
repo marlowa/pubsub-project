@@ -56,7 +56,8 @@ enum class EngineRecordFromWal : int8_t {
         return EngineRecordFromWal::NotDecodable;
     }
     if (view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) &&
-        view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
+        view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest) &&
+        view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id)) {
         return EngineRecordFromWal::NotForEngine;
     }
     envelope = pubsub_itc_fw_app::WalRecord{};
