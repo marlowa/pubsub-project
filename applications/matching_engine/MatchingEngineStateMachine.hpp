@@ -3,11 +3,8 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <array>
-#include <charconv>
 #include <cstddef>
 #include <cstdint> // IWYU pragma: keep
-#include <cstring>
 #include <string_view>
 #include <vector>
 
@@ -18,6 +15,7 @@
 
 #include "OrderBook.hpp"
 #include "OrderEntry.hpp"
+#include "ReportIdentifiers.hpp"
 #include "SessionIdentity.hpp"
 
 namespace matching_engine {
@@ -61,7 +59,7 @@ class MatchingEngineOutputsInterface {
      * @brief An execution report to send to the member whose order it concerns.
      * @param[in] report          The report. Its string fields point into buffers that end with the call.
      * @param[in] sequence_number The sequence number of the command that produced it, or 0 for a report no
-     *                            command produced, such as a cancel of every order.
+     *                            command produced, such as a cancel of every order on promotion.
      * @param[in] session         The session that placed the order the report concerns.
      * @param[in] repeat          Whether it may repeat a report an earlier engine sent.
      */
@@ -114,9 +112,12 @@ class MatchingEngineOutputsInterface {
  *
  * It does not own the book. The book is a region of mapped memory whose opening, recovery and
  * liveness mark belong to the engine's start-up and timers, so MatchingEngineThread owns it and the
- * state machine is given a reference. What the state machine owns is what only the handling of
- * commands uses: the counter that numbers reports, the highest sequence number acted on,
- * and whether trading is halted.
+ * state machine is given a reference. It is given the maker of identifiers too, which holds the
+ * secret the engine read at start-up. Every OrderID and ExecID it produces is made from the
+ * position of a command in the WAL, with keys derived from the trading date the command carries
+ * (docs/availability/deterministic_matching_engine.md, section 3). What the state machine owns is
+ * what only the handling of commands uses: the highest sequence number acted on, and whether
+ * trading is halted.
  *
  * Not thread-safe. It belongs to the matching engine's thread, as the book does.
  */
@@ -129,11 +130,12 @@ class MatchingEngineStateMachine {
     };
 
     /**
-     * @param[in,out] book    The book the commands are applied to. Must outlive this object.
-     * @param[in,out] outputs Where the reports and the changes to the book go. Must outlive this object.
-     * @param[in]     logger  Where to log. Must outlive this object.
+     * @param[in,out] book        The book the commands are applied to. Must outlive this object.
+     * @param[in,out] identifiers What makes the OrderID and ExecID values. Must outlive this object.
+     * @param[in,out] outputs     Where the reports and the changes to the book go. Must outlive this object.
+     * @param[in]     logger      Where to log. Must outlive this object.
      */
-    MatchingEngineStateMachine(OrderBook& book, MatchingEngineOutputsInterface& outputs, pubsub_itc_fw::QuillLogger& logger);
+    MatchingEngineStateMachine(OrderBook& book, ReportIdentifiers& identifiers, MatchingEngineOutputsInterface& outputs, pubsub_itc_fw::QuillLogger& logger);
 
     MatchingEngineStateMachine(const MatchingEngineStateMachine&) = delete;
     MatchingEngineStateMachine& operator=(const MatchingEngineStateMachine&) = delete;
@@ -141,7 +143,7 @@ class MatchingEngineStateMachine {
     /**
      * @brief Applies a new order.
      *
-     * The order is refused if it carries no time, if its ClOrdID is longer than the book's key holds,
+     * The order is refused if it carries no time or no trading date, if its ClOrdID is longer than the book's key holds,
      * if the session already has an open order with that ClOrdID, or if the book's region is full, and
      * applied live it is refused too if its sequence number is not above the highest acted on or while
      * trading is halted; otherwise it is put on the book and acknowledged. The differences between live
@@ -154,16 +156,19 @@ class MatchingEngineStateMachine {
      * @param[in] transact_time   The time the sequencer took it, in nanoseconds since the epoch, from its WAL record,
      *                            written on every report. Zero means the record carries no time, which is a defect in
      *                            the sequencer, and the command is refused.
+     * @param[in] trading_date    The trading date its WAL record carries, as the number yyyymmdd, which the keys of the
+     *                            identifiers are derived from. Zero means the record carries none, which is a defect in
+     *                            the sequencer, and the command is refused.
      * @param[in] session         The session that placed it, which with the ClOrdID identifies it on the book.
      * @param[in] source          Whether it is applied live or during a catch-up.
      */
-    void apply_new_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
+    void apply_new_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
                          const fix_common::SessionIdentity& session, CommandSource source);
 
     /**
      * @brief Applies a request to cancel an order.
      *
-     * The request is refused if it carries no time, if its ClOrdID or OrigClOrdID is longer than the
+     * The request is refused if it carries no time or no trading date, if its ClOrdID or OrigClOrdID is longer than the
      * book's key holds, or if the book holds no such order, and applied live it is refused too if its
      * sequence number is not above the highest acted on; otherwise the order is taken off the book and
      * the cancel reported, describing the order from what the book held. The differences between live
@@ -171,20 +176,25 @@ class MatchingEngineStateMachine {
      *
      * Parameters as for apply_new_order.
      */
-    void apply_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
+    void apply_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
                       const fix_common::SessionIdentity& session, CommandSource source);
 
     /**
      * @brief Cancels every order on the book, reporting each to the member that placed it, and empties the book.
      *
-     * The reports carry sequence number 0, because no command produced them, and are produced in the
-     * order the orders were placed, by the sequence numbers of the new orders that placed them, which
-     * every engine that applied the same commands agrees on.
+     * The reports are produced in the order the orders were placed, by the sequence numbers of the new
+     * orders that placed them, which every engine that applied the same commands agrees on. Their ExecIDs
+     * are made from sequence_number and their places, counting from first_place. They are handed to the
+     * outputs with sequence number 0, so that the sequencer routes each by the session on its envelope.
      *
-     * @param[in] transact_time The time written on every report.
+     * @param[in] sequence_number The sequence number the ExecIDs are made from.
+     * @param[in] first_place     The place of the first report. Places below it must already belong to the reports of
+     *                            the command with that sequence number, so that no ExecID is made twice.
+     * @param[in] transact_time   The time written on every report.
+     * @param[in] trading_date    The trading date whose keys the identifiers are made with.
      * @return How many orders there were, and how many reports were produced.
      */
-    BookCancelled cancel_every_order(int64_t transact_time);
+    BookCancelled cancel_every_order(int64_t sequence_number, int64_t first_place, int64_t transact_time, int32_t trading_date);
 
     /// Halts trading: from now on every live new order is refused. Nothing lifts a halt.
     void halt() {
@@ -210,13 +220,8 @@ class MatchingEngineStateMachine {
     }
 
   private:
-    // Formats "ME-ORD-N" or "ME-EXEC-N" into a buffer the caller provides, and returns a view of it. The buffer must
-    // outlive the view.
-    template <size_t N> static std::string_view format_id(std::array<char, N>& buf, const char* prefix, size_t prefix_len, int64_t counter) {
-        std::memcpy(buf.data(), prefix, prefix_len);
-        auto [end, ec] = std::to_chars(buf.data() + prefix_len, buf.data() + N, counter);
-        return {buf.data(), static_cast<size_t>(end - buf.data())};
-    }
+    // Halts trading, without answering, for a command whose sequence number an identifier cannot hold.
+    void refuse_to_name(int64_t sequence_number);
 
     /**
      * @brief Refuses a new order whose ClOrdID is longer than the book's key holds.
@@ -270,30 +275,36 @@ class MatchingEngineStateMachine {
     void publish_after_refusal(int64_t sequence_number, CommandSource source);
 
     /**
-     * @brief Refuses a new order whose WAL record carries no time, which is a defect in the sequencer.
+     * @brief Refuses a new order whose WAL record carries no time or no trading date, which is a defect in the sequencer.
      *
-     * The report's TransactTime is zero, which is what the command carried, so that every engine and
-     * every replay produce the same report.
+     * The report's TransactTime is what the command carried, zero where it carried no time, so that
+     * every engine and every replay produce the same report.
      *
      * @param[in] view            The order.
      * @param[in] sequence_number Its sequence number.
+     * @param[in] transact_time   The time it carried, zero if none.
      * @param[in] session         The session that placed it.
      * @param[in] repeat          Whether the report may repeat one an earlier engine sent.
      */
-    void refuse_order_without_time(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, const fix_common::SessionIdentity& session,
-                                   ReportIsRepeat repeat);
+    void refuse_order_without_time(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
+                                   const fix_common::SessionIdentity& session, ReportIsRepeat repeat);
 
     /**
-     * @brief Refuses a request to cancel whose WAL record carries no time. The report carries the OrigClOrdID, so each
-     * gateway sends it as an OrderCancelReject.
+     * @brief Refuses a request to cancel whose WAL record carries no time or no trading date. The report carries the
+     * OrigClOrdID, so each gateway sends it as an OrderCancelReject.
      *
      * Parameters as for refuse_order_without_time.
      */
-    void refuse_cancel_without_time(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, const fix_common::SessionIdentity& session,
-                                    ReportIsRepeat repeat);
+    void refuse_cancel_without_time(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
+                                    const fix_common::SessionIdentity& session, ReportIsRepeat repeat);
 
     /**
      * @brief Refuses a new order whose sequence number is not above the last the engine acted on.
+     *
+     * Its ExecID is made from its sequence number, as every report's is, so where the engine has already
+     * answered a command with that number the two reports share an ExecID. That follows from the WAL the
+     * engine acted on and the WAL of the sequencer now leading disagreeing, which is the defect this
+     * refusal reports, and no identifier made from the position could avoid it.
      *
      * Parameters as for refuse_over_long_order, without the repeat marking: this is only ever a live refusal.
      */
@@ -309,12 +320,9 @@ class MatchingEngineStateMachine {
                                        const fix_common::SessionIdentity& session);
 
     OrderBook& book_;
+    ReportIdentifiers& identifiers_;
     MatchingEngineOutputsInterface& outputs_;
     pubsub_itc_fw::QuillLogger& logger_;
-
-    // The counter the ExecID values are formatted from. An OrderID is formatted from the sequence number of the new
-    // order that placed the order, so it needs no counter.
-    int64_t exec_id_counter_{0};
 
     // The highest sequence number of any live order or cancel acted on, or the position a completed catch-up brought
     // the book to, whichever is higher. See sequence_goes_backwards().

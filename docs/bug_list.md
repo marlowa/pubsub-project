@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 204 |
-| Open | 83 (61 defects, 22 tasks) |
-| Closed | 121 |
+| Open | 82 (60 defects, 22 tasks) |
+| Closed | 122 |
 | Next id | BUG-0205 |
 
 ## Open bugs by severity
 
-24 high, 48 medium, 11 low.
+24 high, 47 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -71,7 +71,6 @@
 | [BUG-0134](#bug_0134) | medium | defect | A venue running without a standby says so once, and not at all when no follower is connected |
 | [BUG-0135](#bug_0135) | medium | defect | While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record |
 | [BUG-0136](#bug_0136) | medium | task | Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known |
-| [BUG-0139](#bug_0139) | medium | defect | A matching engine that restarts or is promoted issues report identifiers that were already used that day |
 | [BUG-0141](#bug_0141) | medium | defect | A follower that discards records while its record of command identifiers is still being built stops: the builder reads a segment the discard has deleted |
 | [BUG-0144](#bug_0144) | medium | defect | ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent |
 | [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
@@ -675,30 +674,6 @@ found, and sequenced as new.
 choice of how is a design question for the recovery plan, because the builder and the repair are both
 part of the machinery that [ha_library_boundary.md](availability/ha_library_boundary.md) proposes moving into
 the library.
-
-### BUG-0139: A matching engine that restarts or is promoted issues report identifiers that were already used that day {#bug_0139}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-11 |
-| Recorded | 2026-10-11 |
-| How | Reading how the matching engine makes its identifiers, while checking whether it is deterministic, for the design in `docs/availability/ha_library_boundary.md` |
-| Impact | After a restart or a change of leader, members receive execution reports whose `ExecID` repeats one they already received that day, for a different event. FIX expects an `ExecID` to be unique, and a member that uses it to recognise a report it has already processed may discard a new one |
-
-**What happens.** The engine makes `OrderID` and `ExecID` from two counters, `order_id_counter_` and
-`exec_id_counter_` in `MatchingEngineThread`, as `ME-ORD-N` and `ME-EXEC-N`. When it starts, it sets the
-order counter above the highest order number in its book (`MatchingEngineThread.cpp`, where it reads its
-open-order region back), so order numbers are never reused. Nothing sets the report counter: it starts at
-zero in every process. A follower engine issues no reports until it is promoted, so its counter is still
-at zero then. Either way the first reports after a restart or a promotion, including those sent while
-catching up, are `ME-EXEC-1`, `ME-EXEC-2` and so on, which the earlier engine had already issued.
-
-**What is wanted.** Report identifiers that cannot repeat within the trading day, whichever engine issues
-them and however often engines restart. The design in `docs/availability/ha_library_boundary.md`, section
-9, proposes deriving them from the position in the log (the sequence number of the command and the
-report's place among that command's reports), which is also what two engines running in lockstep need.
-A smaller fix would restore the counter from a durable record, but would not make two engines agree.
 
 ### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
 
@@ -3969,6 +3944,66 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0139: A matching engine that restarts or is promoted issues report identifiers that were already used that day {#bug_0139}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| Fixed | 2026-10-25 -- every OrderID and ExecID is made with FF1 from the position of its command in the WAL, with keys derived from a secret both engines hold and the trading date the sequencer writes on each command |
+| How | Reading how the matching engine makes its identifiers, while checking whether it is deterministic, for the design in `docs/availability/ha_library_boundary.md` |
+| Impact | After a restart or a change of leader, members receive execution reports whose `ExecID` repeats one they already received that day, for a different event. FIX expects an `ExecID` to be unique, and a member that uses it to recognise a report it has already processed may discard a new one |
+
+**What happens.** The engine makes `OrderID` and `ExecID` from two counters, `order_id_counter_` and
+`exec_id_counter_` in `MatchingEngineThread`, as `ME-ORD-N` and `ME-EXEC-N`. When it starts, it sets the
+order counter above the highest order number in its book (`MatchingEngineThread.cpp`, where it reads its
+open-order region back), so order numbers are never reused. Nothing sets the report counter: it starts at
+zero in every process. A follower engine issues no reports until it is promoted, so its counter is still
+at zero then. Either way the first reports after a restart or a promotion, including those sent while
+catching up, are `ME-EXEC-1`, `ME-EXEC-2` and so on, which the earlier engine had already issued.
+
+**What is wanted.** Report identifiers that cannot repeat within the trading day, whichever engine issues
+them and however often engines restart. The design in `docs/availability/ha_library_boundary.md`, section
+9, proposes deriving them from the position in the log (the sequence number of the command and the
+report's place among that command's reports), which is also what two engines running in lockstep need.
+A smaller fix would restore the counter from a durable record, but would not make two engines agree.
+
+**What was done.** Phase 7 step 3 ([deterministic_matching_engine.md](availability/deterministic_matching_engine.md),
+section 3). A report is named by the sequence number of the command that caused it and its place among that
+command's reports, and an order by the sequence number of the new order that placed it. The two numbers are packed
+into 64 bits, scrambled with FF1 (`Ff1Cipher`), and written as a letter and 16 hexadecimal digits. The keys are
+derived from a secret in `identifiers.secret_file`, which `deploy.py` writes where none exists, and the trading date,
+which the leading sequencer writes on every new order and cancel as `trading_date` on the `WalRecord` envelope. The
+two engines exchange a fingerprint of their secrets with their other settings, and the one that leads bars a peer
+whose secret differs (scenario 83). `identifier_to_position` turns an identifier back into its position.
+
+**Verified** on 25 October 2026. The cipher gives the nine sample results NIST publishes for FF1, with AES-128,
+AES-192 and AES-256, and decrypts each back; with one byte of its parameter block changed, both tests failed. Unit
+tests require the same identifiers from two engines with the same secret and date, different ones for another secret
+or date, every identifier turning back into its position, and a state machine's reports to carry the identifiers the
+definition gives; with an accepted order's ExecID made from the wrong sequence number, three failed. With the replay
+check run on scenarios in which the engine restarts, scenario 10 failed it: the engine, catching up after its restart,
+was sent the 20,000 orders that had waited in the WAL without their trading date, because `engine_record_from_wal`
+copies a fixed list of fields, and refused every one. The field is now copied, a unit test requires every field the
+engine reads to be sent, and with the copy removed it failed; scenario 10 then passed, the replay matching all 22,000
+commands and their reports. Run by hand on that WAL with another secret, `wal_replay_check` failed and named every
+report.
+
+The full high availability suite, with the primary engine leading first: 80 of 83 scenarios passed, 79 failed as
+expected ([BUG-0199](#bug_0199)), and 50 and 78 failed the replay check. Both end by dropping the member's session,
+and the venue was stopped while the engine's answers to the gateway's cancels were in flight, so the WAL stops before
+them: every command without an answer came after the last command answered. The check now counts such commands and
+does not compare them, and still fails on a command without an answer before the last one answered; run by hand with
+another secret on scenario 50's WAL, it failed and named all 2,000 reports. 50 and 78 then passed, 78 with 540 answers
+in flight. With the secondary engine leading first: 22 of 26 passed; 54 and 55 failed with the messages of
+[BUG-0195](#bug_0195); 78 failed as above and then passed, with 437 answers in flight; and 25 failed because the
+primary had not settled as follower within 15 seconds, the slow start BUG-0195 describes, and run again failed with
+BUG-0195's message. Scenarios 82 and 83 passed with either engine leading first. Of the 105 scenario runs that
+passed their own checks, the replay check ran on 76. It was not run on 29: on 24 because an engine cancelled its book
+or halted by its own decision, and on 5 because no engine led.
+
 
 ### BUG-0204: An order applied during a catch-up was applied by a different path from one applied live, so the two gave different books and reports {#bug_0204}
 

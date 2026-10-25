@@ -228,6 +228,16 @@ struct MatchingEngineConfiguration {
      *  A million costs roughly 320 MB of address space, which is not resident until touched. */
     int32_t order_book_region_capacity{1000000};
 
+    /** @brief The file holding the secret the engine's OrderID and ExecID keys are derived from, as 64 hexadecimal digits.
+     *
+     *  Both engines of a pair must hold the same secret, or they would name the same report
+     *  differently; each tells the other a fingerprint of it when they connect, and the one that
+     *  leads bars the other if they differ. Support staff hold it too, to turn an identifier a
+     *  member quotes back into its position in the WAL with identifier_to_position. Keep it
+     *  readable by the engine's user alone, as the venue's TLS keys are. See
+     *  docs/availability/deterministic_matching_engine.md, section 3.3. */
+    std::string identifier_secret_file;
+
     /** @brief How long the venue may be unable to match before open orders are cancelled.
      *
      *  Measured from the moment matching stopped to the moment it resumes, which is the whole

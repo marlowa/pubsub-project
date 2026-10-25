@@ -299,6 +299,30 @@ int64_t Wal::first_seq_no() const {
     return 0;
 }
 
+std::optional<int64_t> Wal::first_wall_time_ns() const {
+    for (const uint64_t segment : segment_numbers()) {
+        const int fd = ::open(segment_path_for_delete(segment).c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+        // The first entry's header, as first_seq_no reads it, followed by the start of its payload, where Wal::append
+        // stores the wall time (WalEntryContents).
+        uint8_t header[24 + sizeof(int64_t)] = {};
+        const ssize_t got = ::pread(fd, header, sizeof(header), 0);
+        ::close(fd);
+        uint32_t magic = 0;
+        uint32_t payload_size = 0;
+        int64_t wall_time_ns = 0;
+        std::memcpy(&magic, header, sizeof(magic));
+        std::memcpy(&payload_size, header + 4, sizeof(payload_size));
+        std::memcpy(&wall_time_ns, header + 24, sizeof(wall_time_ns));
+        if (got == static_cast<ssize_t>(sizeof(header)) && magic == WalWriter::entry_magic && payload_size >= wal_entry_header_size) {
+            return wall_time_ns;
+        }
+    }
+    return std::nullopt;
+}
+
 std::vector<uint64_t> Wal::segment_numbers() const {
     std::vector<uint64_t> numbers;
     DIR* dir = ::opendir(directory_.c_str());

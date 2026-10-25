@@ -5,7 +5,7 @@
  * @file WalReplayCheckMain.cpp
  * @brief wal_replay_check: whether a fresh matching engine, given a sequencer's WAL, produces the reports the WAL holds.
  *
- *   wal_replay_check --wal <directory> --region-capacity <records> --work-dir <directory>
+ *   wal_replay_check --wal <directory> --region-capacity <records> --secret-file <file> --work-dir <directory>
  *
  * The sequencer's WAL holds every command, and every report the engine that led sent it, each written when the
  * sequencer received it, with the sequence number of the command it answers. This program reads the WAL once,
@@ -17,24 +17,30 @@
  *
  * Any difference is a failure, and is printed with the command it belongs to: a report the state machine produced
  * that the WAL does not hold, a report the WAL holds that the state machine did not produce, or a field that differs.
- * It exits 0 when there is none, 1 when there is any, and 2 when it could not do the comparison.
+ * It exits 0 when there is none, 1 when there is any, and 2 when it could not do the comparison. Commands after the
+ * last one the WAL holds an answer to, with no answer of their own, are counted and not compared: the venue was stopped
+ * while their answers were in flight, and the WAL stops before them.
  *
- * The state machine numbers its reports from 1, as an engine started with an empty book does, so the comparison is
- * meaningful for a WAL in which one engine led from the start and was neither restarted nor replaced: an engine that
- * restarted numbers its reports again from 1. That is what phase 7 of the recovery plan puts right next
- * (docs/availability/deterministic_matching_engine.md, sections 3 and 7.2).
+ * The state machine makes each report's ExecID from the sequence number of the command that caused it, its place among
+ * that command's reports, and keys derived from the secret in --secret-file and the trading date the command carries.
+ * That is what the engine does, so given the engines' secret it names every report as the engine did, whichever
+ * engine led and however often it restarted (docs/availability/deterministic_matching_engine.md, sections 3 and 7.2).
+ * A report the engine produced by a decision of its own, not by a command in the WAL, has no command to replay, until
+ * phase 7 step 4 makes those decisions commands.
  *
  * The book's region is created in the work directory, which must be on a filesystem with room for it (about 250 bytes
  * for each record), never in /tmp, and is removed afterwards. --region-capacity must be the capacity the engine was
  * configured with, because an order arriving when the region is full is refused.
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -55,6 +61,7 @@
 #include "GatewayIds.hpp"
 #include "MatchingEngineStateMachine.hpp"
 #include "OrderBook.hpp"
+#include "ReportIdentifiers.hpp"
 
 namespace {
 
@@ -63,6 +70,7 @@ using matching_engine::MatchingEngineOutputsInterface;
 using matching_engine::MatchingEngineStateMachine;
 using matching_engine::OrderBook;
 using matching_engine::OrderEntry;
+using matching_engine::ReportIdentifiers;
 using matching_engine::ReportIsRepeat;
 
 // What is compared of a report, with its strings copied out. Every field the engine fills in, and the sizes of the
@@ -219,7 +227,7 @@ fix_common::SessionIdentity session_of(const pubsub_itc_fw_app::WalRecordView& e
 }
 
 int usage() {
-    fmt::print(stderr, "usage: wal_replay_check --wal <directory> --region-capacity <records> --work-dir <directory>\n");
+    fmt::print(stderr, "usage: wal_replay_check --wal <directory> --region-capacity <records> --secret-file <file> --work-dir <directory>\n");
     return 2;
 }
 
@@ -231,6 +239,7 @@ constexpr size_t differences_shown = 20;
 int main(int argc, char** argv) {
     std::string wal_directory;
     std::string work_directory;
+    std::string secret_file;
     long region_capacity = 0;
     for (int index = 1; index + 1 < argc; index += 2) {
         const std::string_view option = argv[index];
@@ -238,14 +247,23 @@ int main(int argc, char** argv) {
             wal_directory = argv[index + 1];
         } else if (option == "--work-dir") {
             work_directory = argv[index + 1];
+        } else if (option == "--secret-file") {
+            secret_file = argv[index + 1];
         } else if (option == "--region-capacity") {
             region_capacity = std::atol(argv[index + 1]);
         } else {
             return usage();
         }
     }
-    if (argc % 2 == 0 || wal_directory.empty() || work_directory.empty() || region_capacity <= 0) {
+    if (argc % 2 == 0 || wal_directory.empty() || work_directory.empty() || secret_file.empty() || region_capacity <= 0) {
         return usage();
+    }
+    std::optional<ReportIdentifiers> identifiers;
+    try {
+        identifiers.emplace(ReportIdentifiers::read_secret_file(secret_file));
+    } catch (const std::runtime_error& error) {
+        fmt::print(stderr, "wal_replay_check: {}\n", error.what());
+        return 2;
     }
 
     const std::filesystem::path region_path = std::filesystem::path(work_directory) / "wal_replay_check.region";
@@ -264,7 +282,7 @@ int main(int argc, char** argv) {
     {
         OrderBook book;
         book.open(region_path.string(), static_cast<OrderBook::SlotIndex>(region_capacity), static_cast<size_t>(region_capacity));
-        MatchingEngineStateMachine machine{book, outputs, logger};
+        MatchingEngineStateMachine machine{book, *identifiers, outputs, logger};
         std::vector<uint8_t> arena_buffer(1U << 20);
 
         try {
@@ -290,7 +308,8 @@ int main(int argc, char** argv) {
                             return;
                         }
                         ++commands;
-                        machine.apply_new_order(order, record_id, envelope.wall_time_ns, session_of(envelope), CommandSource::live);
+                        machine.apply_new_order(order, record_id, envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
+                                                session_of(envelope), CommandSource::live);
                     } else if (inner == pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest) {
                         pubsub_itc_fw_app::OrderCancelRequestView cancel{};
                         if (!pubsub_itc_fw_app::decode(cancel, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
@@ -298,7 +317,8 @@ int main(int argc, char** argv) {
                             return;
                         }
                         ++commands;
-                        machine.apply_cancel(cancel, record_id, envelope.wall_time_ns, session_of(envelope), CommandSource::live);
+                        machine.apply_cancel(cancel, record_id, envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
+                                             session_of(envelope), CommandSource::live);
                     } else if (inner == pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport) {
                         pubsub_itc_fw_app::ExecutionReportView report{};
                         if (!pubsub_itc_fw_app::decode(report, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
@@ -326,9 +346,25 @@ int main(int argc, char** argv) {
         return exit_status;
     }
 
+    // The last command the WAL holds an answer to. The engine answers commands in the order of their sequence numbers,
+    // so commands after it with no answer in the WAL are ones the engine had not answered, or whose answers had not
+    // reached the sequencer, when the WAL stops: the venue was stopped with them in flight. That says nothing about
+    // whether the engine is deterministic, so they are counted and not failed. A command before it with no answer is a
+    // failure, because the engine answered later commands.
+    int64_t last_answered = 0;
+    for (const auto& [exec_id, entry] : logged) {
+        if (entry.answers_seq_no.has_value()) {
+            last_answered = std::max(last_answered, *entry.answers_seq_no);
+        }
+    }
+    int64_t unanswered_at_end = 0;
     std::vector<std::string> failures;
     for (const ProducedReport& produced : outputs.produced) {
         const auto found = logged.find(produced.fields.exec_id);
+        if (found == logged.end() && produced.sequence_number > last_answered) {
+            ++unanswered_at_end;
+            continue;
+        }
         if (found == logged.end()) {
             failures.push_back(fmt::format("command {}: the replay produced report ExecID={} ({} for ClOrdID={}) and the WAL holds no report with that ExecID",
                                            produced.sequence_number, produced.fields.exec_id, produced.fields.order_id, shown(produced.fields.cl_ord_id)));
@@ -359,6 +395,11 @@ int main(int argc, char** argv) {
     fmt::print("wal_replay_check: {} command(s) applied; the replay produced {} report(s); the WAL holds {} report record(s), {} distinct, {} repeated "
                "copies; {} record(s) could not be decoded\n",
                commands, outputs.produced.size(), report_records, logged.size(), repeated_copies, undecodable);
+    if (unanswered_at_end > 0) {
+        fmt::print("wal_replay_check: {} report(s) the replay produced are for commands after command {}, the last the WAL holds an answer to: the WAL "
+                   "stops before the engine's answers to them, which were in flight when the venue stopped, and they are not compared\n",
+                   unanswered_at_end, last_answered);
+    }
     for (size_t index = 0; index < failures.size() && index < differences_shown; ++index) {
         fmt::print("  {}\n", failures[index]);
     }

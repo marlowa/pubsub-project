@@ -71,8 +71,14 @@ describe the venue as it now is.
   backwards (BUG-0200).
 - **`wal_replay_check`** reads a sequencer's WAL, applies its commands to a fresh matching engine state
   machine, and compares every report it produces with the report the WAL holds, field by field.
-  `ha_test.py` runs it after every scenario in which one engine led and no engine was restarted. Each
-  report's WAL record now says which command it answers (`answers_seq_no`).
+  `ha_test.py` runs it after every scenario in which no engine cancelled its book or halted by its own
+  decision, including those in which engines restart or change roles. Commands after the last one
+  the WAL holds an answer to, whose answers were in flight when the venue stopped, are counted and
+  not compared. Each report's WAL record now says which command it answers (`answers_seq_no`).
+- **`identifier_to_position`** turns a matching engine OrderID or ExecID back into the position in the
+  WAL it was made from, given the identifier secret and the trading date, for support staff.
+- **Scenario 83** starts the two matching engines with different identifier secrets, and requires the
+  one that leads to bar the other, as scenario 82 does for different region capacities.
 - **Scenario 82** starts the two matching engines with different region capacities, and requires the
   one that leads to bar the other, the other not to take the lead when the leader is killed, and the
   restarted leader to lead and bar its peer again.
@@ -94,6 +100,16 @@ describe the venue as it now is.
 
 ### Changed
 
+- **The matching engine's OrderID and ExecID values are made from positions in the WAL**, step 3 of
+  phase 7 (`docs/availability/deterministic_matching_engine.md`, section 3). An order is named by the
+  sequence number of the new order that placed it and a report by its command's sequence number and
+  its place among that command's reports, scrambled with FF1 and written as a letter and 16
+  hexadecimal digits, for example `E3F9A0C21D4B7E605`, in place of `ME-ORD-N` and `ME-EXEC-N`. The
+  keys are derived from a secret, `[identifiers] secret_file` in each engine's configuration, which
+  `deploy.py` writes where none exists, and the trading date, which the leading sequencer writes on
+  every new order and cancel (`trading_date` on `WalRecord`). A command without a trading date is
+  refused, as one without a time is. The engines exchange a fingerprint of their secrets with their
+  other settings, and the one that leads bars a peer whose secret differs.
 - **The matching engine applies the same commands the same way**, step 2 of phase 7
   (`docs/availability/deterministic_matching_engine.md`, section 5):
   - an OrderID is made from the sequence number of the new order that placed the order, so every
@@ -178,6 +194,9 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
   more). Two of the counts read from logs had been zero in every run (BUG-0191).
 - **`perf_run.py` exited 0 after reporting FAIL** on the FIX gateway, so `release_check.py`, which
   gates a release on its exit status, passed a run that had lost orders. It now exits 1.
+- **A matching engine that restarted or was promoted issued ExecIDs already used that day**, because
+  they came from a counter that started again at zero in every process. Every engine now names a
+  report by the position of its command in the WAL (BUG-0139).
 - **An order applied during a catch-up was applied by a different path from one applied live**, which
   left its TimeInForce and ExpireTime off the book and its acknowledgement, ignored a duplicate
   ClOrdID silently, and sent no report for a cancel of an order the book did not hold. One path now

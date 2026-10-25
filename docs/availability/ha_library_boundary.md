@@ -178,10 +178,10 @@ the trading phases of [trading_phases.md](../venue/trading_phases.md) meet this 
 **What it is for.** Every identifier the venue issues, such as `OrderID` and `ExecID`, is unique for
 the day.
 
-**How it is done now.** From counters in the matching engine. After a restart the order counter is set
-above the highest order number in the book, but the report counter, `exec_id_counter_`, starts again at
-zero, so an engine that restarts or is promoted issues `ME-EXEC-1`, `ME-EXEC-2` and so on a second time
-that day. Recorded as [BUG-0139](../bug_list.md#bug_0139).
+**How it is done now.** From the position in the WAL, as this section requires: built in step 3 of phase
+7, and described in section 3 of [deterministic_matching_engine.md](deterministic_matching_engine.md).
+Identifiers that came from counters in the matching engine repeated after a restart or a promotion,
+which was [BUG-0139](../bug_list.md#bug_0139), now closed.
 
 **What the design requires.** An identifier derived from the position in the WAL: for example, a
 report's identifier made from the sequence number of the command that caused it and the report's place
@@ -411,12 +411,9 @@ be designed.
 
 ### Question 3. Should identifiers be made from the position in the WAL? (Yes or no.)
 
-**What happens now.** The matching engine issues identifiers such as `OrderID` and `ExecID` from
-counters it keeps in memory. After a restart, the order counter is set above the highest order number
-in the book, but the report counter, `exec_id_counter_`, starts again at zero. So an engine that
-restarts or is promoted issues `ME-EXEC-1`, `ME-EXEC-2` and so on a second time in the same day, and
-members can receive two different reports with the same identifier. This is recorded as
-[BUG-0139](../bug_list.md#bug_0139).
+**What the question was about.** Identifiers that the matching engine issued from counters it kept in
+memory repeated after a restart or a promotion, so members could receive two different reports with the
+same identifier ([BUG-0139](../bug_list.md#bug_0139)). The answer is built: see section 9.
 
 **What "yes" means.** Each identifier is built from the sequence number of the command that caused it
 and its place among that command's reports. For example, the second report caused by command 81,234

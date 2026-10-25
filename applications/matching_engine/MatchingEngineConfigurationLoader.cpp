@@ -9,6 +9,8 @@
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
+#include "ReportIdentifiers.hpp"
+
 namespace matching_engine {
 
 MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::string& file_path) {
@@ -233,6 +235,19 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
         if (config.order_book_region_capacity < 1) {
             throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.region_capacity must be >= 1, got " +
                                                         std::to_string(config.order_book_region_capacity));
+        }
+        // A cancel of every order names its reports by their places among the command's reports, and an identifier holds
+        // places below 2^28, so the region may hold no more orders than that.
+        if (config.order_book_region_capacity >= ReportIdentifiers::place_limit) {
+            throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.region_capacity must be below " +
+                                                        std::to_string(ReportIdentifiers::place_limit) +
+                                                        ", the most reports an identifier can number for one "
+                                                        "command, got " +
+                                                        std::to_string(config.order_book_region_capacity));
+        }
+        toml.get_required_except("identifiers.secret_file", config.identifier_secret_file);
+        if (config.identifier_secret_file.empty()) {
+            throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: identifiers.secret_file must name a file");
         }
         if (config.order_book_initial_capacity < 1) {
             throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.initial_capacity must be >= 1, got " +

@@ -71,8 +71,8 @@ Scenarios
 
  10  Matching engine death and restart (simple)
        Kills matching_engine and restarts it.  ME reconnects to both
-       sequencer ER listeners (7021/7022).  ME order_id_counter_ resets to
-       0 after restart (no WAL), so recovery orders start at ME-ORD-1.
+       sequencer ER listeners (7021/7022), and catches up from the
+       sequencer's WAL before it serves.
        Expected: ME restarts and recovery orders flow.
 
  11  ME death with primary arbiter death
@@ -1165,6 +1165,11 @@ class Scenario(NamedTuple):
     # take the lead when the leader is killed. See run_scenario's "engines whose settings differ" block, and
     # docs/availability/deterministic_matching_engine.md, section 5.
     assert_engines_with_different_settings: bool = False
+    # With assert_engines_with_different_settings: when True, the two engines differ in the secret their identifiers'
+    # keys are derived from rather than in the size of their regions. matching_engine_secondary is started with a secret
+    # of its own, so the two would name the same reports differently. See docs/availability/deterministic_matching_engine.md,
+    # section 3.3.
+    different_identifier_secret: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -1770,16 +1775,13 @@ _SCENARIOS: list[Scenario] = [
     #      the secondary's current sequence number (2001) so the primary can
     #      sync and rejoin as follower at the correct position.
     #   e. sequencer_secondary is killed; sequencer_primary is elected leader.
-    #   f. 1000 recovery orders → target ME-ORD-3000.
+    #   f. 1000 recovery orders, the 3000th order in all.
     #
     # If WAL recovery + peer sequence-number sync work correctly the primary
     # resumes from seq 2001 and the ME log shows seq 1–1000, 1001–2000, 2001–3000
     # — monotonically increasing, no resets.  If the primary fails to sync and
     # resets to seq 1001, the ME log shows the range 1001–2000 a second time;
     # the seq monotonicity check catches the reset and the test fails.
-    # (ME-ORD-3000 is reached in both cases because ME-ORD is the ME's own
-    # counter, independent of sequencer seq numbers — checking ME-ORD alone is
-    # insufficient to validate WAL+sync correctness.)
     Scenario(
         number=14,
         short_name="wal_recovery",
@@ -1788,7 +1790,7 @@ _SCENARIOS: list[Scenario] = [
             "sequencer_primary restarts, reads WAL, syncs sequence number from "
             "peer and rejoins as follower; after secondary dies primary is "
             "re-elected and continues from the correct sequence number — "
-            "no ME-ORD gap or reset"
+            "no gap or reset in the sequence numbers"
         ),
         steps=[],
         restart_steps=[],
@@ -4386,6 +4388,30 @@ _SCENARIOS: list[Scenario] = [
         assert_engines_with_different_settings=True,
         steps=[],
     ),
+
+    # 83 -- two engines holding different identifier secrets: the leader bars its peer.
+    #
+    # matching_engine_secondary is started with an identifier secret of its own, so the two engines would give the same
+    # report different ExecIDs, and a member would be told of one event under two names after a failover. The engines
+    # exchange a fingerprint of their secrets when they connect, and the rest is scenario 82: the leader bars its peer,
+    # the peer does not take the lead when the leader is killed, and the restarted leader bars it again.
+    Scenario(
+        number=83,
+        short_name="engines_with_different_secrets",
+        me_ha=True,
+        description="Two matching engines holding different identifier secrets: the one that leads says the other may not lead",
+        expected_outcome=(
+            "the leading engine reports that its peer's identifier secret differs and that it has barred it; once it is killed "
+            "the peer does not take the lead; restarted, it leads again and bars its peer again"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        skip_baseline_orders=True,
+        expects_no_new_leader=True,
+        assert_engines_with_different_settings=True,
+        different_identifier_secret=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -5079,48 +5105,42 @@ _ENGINE_COMPONENTS = ("matching_engine", "matching_engine_primary", "matching_en
 _SEQUENCER_COMPONENTS = ("sequencer_primary", "sequencer_secondary")
 
 
-def replay_check_applies() -> tuple[bool, str]:
-    """Whether wal_replay_check can be relied on for the scenario just run, and why not if it cannot.
+def replay_check_applies() -> tuple[bool, str, list[str]]:
+    """Whether wal_replay_check can be relied on for the scenario just run, why not if it cannot, and the engines that led.
 
-    It can when one matching engine led, no engine process was started more than once, and no engine cancelled every
-    order or halted. The state machine it replays numbers its reports from 1, as an engine started with an empty book
-    does, and an engine that restarted, or one that took the lead from another, numbers them differently until phase 7
-    makes report identifiers come from the WAL (docs/availability/deterministic_matching_engine.md, section 7.2). An
-    engine decides by itself to cancel every order when it is promoted, or to halt, and until phase 7 step 4 makes
-    those decisions commands in the WAL, the reports they produce are in the WAL with no command there to replay.
-    Worked out from what the engines said, not from the scenario's description, so that it cannot disagree with what
-    happened."""
-    module = _TEST_EVENTS.modules["test_events"]
+    It can unless an engine cancelled every order, sending reports, or halted. Every report's ExecID is made from the
+    position in the WAL of the command that caused it (docs/availability/deterministic_matching_engine.md, section 3),
+    so the state machine it replays names each report as whichever engine sent it did, however often the engines
+    restarted or changed roles. But an engine decides by itself to cancel every order when it is promoted, or to halt,
+    and until phase 7 step 4 makes those decisions commands in the WAL, the reports they produce are in the WAL with no
+    command there to replay. Worked out from what the engines said, not from the scenario's description, so that it
+    cannot disagree with what happened."""
     engine_module = _TEST_EVENTS.modules["matching_engine_test_events"]
     for event in _TEST_EVENTS.events:
         if event.component in _ENGINE_COMPONENTS and isinstance(event.message, engine_module.BookCancelled) and event.message.cancel_reports_sent > 0:
             return False, (f"{event.component} cancelled every order by its own decision, which is not a command in the WAL, "
-                           f"and sent {event.message.cancel_reports_sent} cancel report(s)")
+                           f"and sent {event.message.cancel_reports_sent} cancel report(s)"), []
         if event.component in _ENGINE_COMPONENTS and isinstance(event.message, engine_module.Halted):
-            return False, f"{event.component} halted by its own decision, which is not a command in the WAL"
-    started: dict[str, set[int]] = {}
-    for event in _TEST_EVENTS.events:
-        if event.component in _ENGINE_COMPONENTS and isinstance(event.message, module.TestEventsHello):
-            started.setdefault(event.component, set()).add(event.message.process_id)
-    restarted = [name for name, processes in started.items() if len(processes) > 1]
-    if restarted:
-        return False, f"{', '.join(restarted)} was started more than once"
-    engines_that_led = {event.component for event in _TEST_EVENTS.events if event.component in _ENGINE_COMPONENTS
-                        and leads(_TEST_EVENTS.messages, event.component)(event)}
-    if len(engines_that_led) != 1:
-        return False, f"{len(engines_that_led)} matching engines led ({', '.join(sorted(engines_that_led)) or 'none'})"
-    return True, next(iter(engines_that_led))
+            return False, f"{event.component} halted by its own decision, which is not a command in the WAL", []
+    engines_that_led = sorted({event.component for event in _TEST_EVENTS.events if event.component in _ENGINE_COMPONENTS
+                               and leads(_TEST_EVENTS.messages, event.component)(event)})
+    if not engines_that_led:
+        return False, "no matching engine led", []
+    return True, "", engines_that_led
 
 
-def run_wal_replay_check(prefix: Path) -> None:
+def run_wal_replay_check(prefix: Path, launched_configs: dict[str, Path]) -> None:
     """Runs wal_replay_check on the WAL of the sequencer that led last, if the scenario is one it can be relied on for,
     and fails the scenario if the replay differs. Run after every process has stopped, so that nothing is written to the
-    WAL while it is read."""
-    applies, detail = replay_check_applies()
+    WAL while it is read.
+
+    The replay is given the region capacity and the identifier secret of the engines that led, from the configuration
+    each was started with. Where engines that led were configured differently, there is no one engine to replay, and
+    the scenario is one about engines configured differently, so it is not run."""
+    applies, detail, engines = replay_check_applies()
     if not applies:
         log(f"=== WAL replay check: not run -- {detail} ===")
         return
-    engine = detail
     leaders = [event.component for event in _TEST_EVENTS.events
                if event.component in _SEQUENCER_COMPONENTS and leads(_TEST_EVENTS.messages, event.component)(event)]
     if not leaders:
@@ -5128,12 +5148,21 @@ def run_wal_replay_check(prefix: Path) -> None:
     sequencer = leaders[-1]
     sequencer_config = prefix / "etc" / "sequencer" / f"{sequencer}.toml"
     wal_dir = sequencer_config.parent / installed_toml_section_value(sequencer_config, "wal", "directory")
-    engine_config_name = "matching_engine_secondary.toml" if engine == "matching_engine_secondary" else "matching_engine_primary.toml"
-    region_capacity = installed_toml_section_value(prefix / "etc" / "matching_engine" / engine_config_name, "order_book", "region_capacity")
+    settings = set()
+    for engine in engines:
+        engine_config = launched_configs.get(engine)
+        if engine_config is None:
+            die(f"WAL replay check: {engine} led, but this run did not start it, so its configuration is not known.")
+        settings.add((installed_toml_section_value(engine_config, "order_book", "region_capacity"),
+                      installed_toml_section_value(engine_config, "identifiers", "secret_file")))
+    if len(settings) != 1:
+        log(f"=== WAL replay check: not run -- the engines that led ({', '.join(engines)}) were configured differently ===")
+        return
+    region_capacity, secret_file = next(iter(settings))
     work_dir = prefix / "var"
-    log(f"=== WAL replay check: {sequencer}'s WAL, as {engine} led throughout ===")
+    log(f"=== WAL replay check: {sequencer}'s WAL, with {', '.join(engines)} having led ===")
     result = subprocess.run([str(prefix / "bin" / "wal_replay_check"), "--wal", str(wal_dir), "--region-capacity", region_capacity,
-                             "--work-dir", str(work_dir)], capture_output=True, text=True, check=False, timeout=600)
+                             "--secret-file", secret_file, "--work-dir", str(work_dir)], capture_output=True, text=True, check=False, timeout=600)
     for line in (result.stdout + result.stderr).splitlines():
         log(f"  {line}")
     if result.returncode != 0:
@@ -5244,6 +5273,24 @@ def config_with_smaller_region(config: Path) -> Path:
         die(f"config_with_smaller_region: {config} already holds {_SMALLER_REGION_CAPACITY} orders, so the copy would not differ")
     text = text.replace(line + "\n", f"region_capacity = {_SMALLER_REGION_CAPACITY}\n", 1)
     copy = config.with_name(config.stem + "_smaller_region.toml")
+    copy.write_text(text)
+    return copy
+
+
+def config_with_other_identifier_secret(config: Path) -> Path:
+    """A copy of a matching engine's configuration whose identifier secret is a new one, written beside it.
+
+    Written beside the original and used instead of it for one scenario; neither the original nor the secret it names
+    is touched."""
+    text = config.read_text()
+    line = next((candidate for candidate in text.splitlines() if candidate.startswith("secret_file =")), None)
+    if line is None:
+        die(f"config_with_other_identifier_secret: {config} has no secret_file to change")
+    secret_path = config.with_name(config.stem + "_other_identifier_secret.key")
+    secret_path.write_text(secrets.token_hex(32) + "\n")
+    secret_path.chmod(0o600)
+    text = text.replace(line + "\n", f'secret_file = "{secret_path}"\n', 1)
+    copy = config.with_name(config.stem + "_other_identifier_secret.toml")
     copy.write_text(text)
     return copy
 
@@ -6033,8 +6080,8 @@ def clear_open_order_regions(prefix: Path) -> None:
     The region holds the venue's open orders so that they outlive the process holding them,
     which is exactly what it should do between a death and a restart -- and exactly what a
     scenario must not inherit from the run before it. Left in place, a scenario starts with the
-    previous scenario's orders resting on the book and with the order numbering carried forward
-    past them, so the baseline waits for an ME-ORD-1000 that will never be issued again.
+    previous scenario's orders resting on the book, and its baseline orders, which reuse the same
+    ClOrdIDs, are refused as duplicates of orders still open.
 
     A scenario's premise is a venue whose book is empty and whose numbering starts at one. That
     is a thing the harness has to arrange deliberately, the same way it deletes the clients'
@@ -6887,7 +6934,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if scenario.assert_reports_held_for_unconnected_gateway and name in ("sequencer_primary", "sequencer_secondary"):
                 config = config_with_gateway_report_relay(config)
                 log(f"  {name} sends reports to fix_order_gateway_a through a relay on port {sorted(_GATEWAY_REPORT_RELAY_PORTS)}, which accepts nothing yet")
-            if scenario.assert_engines_with_different_settings and name == "matching_engine_secondary":
+            if scenario.assert_engines_with_different_settings and scenario.different_identifier_secret and name == "matching_engine_secondary":
+                config = config_with_other_identifier_secret(config)
+                log(f"  {name} holds an identifier secret of its own, not matching_engine_primary's")
+            elif scenario.assert_engines_with_different_settings and name == "matching_engine_secondary":
                 config = config_with_smaller_region(config)
                 log(f"  {name} holds at most {_SMALLER_REGION_CAPACITY:,} open orders, fewer than matching_engine_primary")
             if scenario.assert_engine_holds_reports_without_connection and name == "matching_engine":
@@ -9855,12 +9905,19 @@ def run_scenario(scenario: Scenario, args) -> bool:
             barred = component_event(leader, engine_events, "SettingsDifferFromPeer", _TEST_EVENTS.since_introduction(leader), 30.0, barred_peer=True)
             if barred is None:
                 die(f"different settings: {leader} leads but never reported that its peer's settings differ and that it barred it.")
-            capacities = (barred.own_region_capacity, barred.peer_region_capacity)
-            if _SMALLER_REGION_CAPACITY not in capacities or capacities[0] == capacities[1]:
-                die(f"different settings: {leader} reported capacities {barred.own_region_capacity} and {barred.peer_region_capacity}, which "
-                    f"do not include the {_SMALLER_REGION_CAPACITY} the secondary was given.")
-            log(f"  {leader} leads holding up to {barred.own_region_capacity:,} orders, its peer up to {barred.peer_region_capacity:,}, "
-                "and it has said its peer may not lead -- OK")
+            if scenario.different_identifier_secret:
+                if not barred.secrets_differ or barred.own_region_capacity != barred.peer_region_capacity:
+                    die(f"different settings: {leader} reported secrets_differ={barred.secrets_differ} and capacities "
+                        f"{barred.own_region_capacity} and {barred.peer_region_capacity}, where only the secrets were made to differ.")
+                log(f"  {leader} leads, its peer holds a different identifier secret, and it has said its peer may not lead -- OK")
+            else:
+                capacities = (barred.own_region_capacity, barred.peer_region_capacity)
+                if _SMALLER_REGION_CAPACITY not in capacities or capacities[0] == capacities[1] or barred.secrets_differ:
+                    die(f"different settings: {leader} reported capacities {barred.own_region_capacity} and {barred.peer_region_capacity} and "
+                        f"secrets_differ={barred.secrets_differ}, where only the capacity was made to differ, to {_SMALLER_REGION_CAPACITY} "
+                        "on the secondary.")
+                log(f"  {leader} leads holding up to {barred.own_region_capacity:,} orders, its peer up to {barred.peer_region_capacity:,}, "
+                    "and it has said its peer may not lead -- OK")
 
             leader_process = proc_by_name[leader]
             log(f"  SIGKILL -> {leader} (PID {leader_process.pid})")
@@ -10006,9 +10063,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # 1. A valid order reaches the matching engine, so the refusals below are the checks'
             #    doing and not a gateway that refuses everything.
             accepted = binary_order("valid")
-            if accepted["ord_status"] != "New" or not accepted["order_id"].startswith("ME-ORD-"):
+            if accepted["ord_status"] != "New" or not re.fullmatch(r"O[0-9A-F]{16}", accepted["order_id"]):
                 die(f"binary checks: a valid order came back as {accepted}; expected OrdStatus New from the matching "
-                    "engine (OrderID ME-ORD-n).")
+                    "engine (an OrderID of the letter O and 16 hexadecimal digits).")
             log(f"  binary checks: a valid order was accepted by the matching engine, OrderID={accepted['order_id']} -- OK")
 
             # 2. Orders the gateway must refuse, one field wrong in each.
@@ -10933,7 +10990,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # Once every process has stopped, so that nothing is written to the WAL while it is read.
     if result_pass:
         try:
-            run_wal_replay_check(prefix)
+            run_wal_replay_check(prefix, launched_configs)
         except TestFailure:
             result_pass = False
 

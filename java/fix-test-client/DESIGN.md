@@ -525,15 +525,15 @@ session.logout()
 ```
 === 2026-06-02T19:26:39.373Z  INBOUND  ExecutionReport (8) ===
 BeginString     (8):  FIXT.1.1
-BodyLength      (9):  144
+BodyLength      (9):  157
 MsgType        (35):  8
 SenderCompID   (49):  GATEWAY
 TargetCompID   (56):  CLIENT
 MsgSeqNum      (34):  2
 SendingTime    (52):  20260602-19:26:39
 ClOrdID        (11):  ORD-001
-OrderID        (37):  ME-ORD-001
-ExecID         (17):  ME-EXEC-001
+OrderID        (37):  O8DF3295A0BF1A1BA
+ExecID         (17):  EBA880B6C1E9AD22E
 ExecType      (150):  F
 OrdStatus      (39):  2
 Symbol         (55):  BHP

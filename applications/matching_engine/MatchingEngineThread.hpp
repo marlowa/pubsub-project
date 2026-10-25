@@ -240,9 +240,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     };
     EngineOutputs engine_outputs_{*this};
 
+    // What makes the OrderID and ExecID values, from the secret in identifiers.secret_file. Read when the thread is
+    // constructed, so that an engine whose secret cannot be read does not start.
+    ReportIdentifiers report_identifiers_{ReportIdentifiers::read_secret_file(config_.identifier_secret_file)};
+
     // The handling of commands: what each new order and cancel does to the book, and the reports it produces. Declared
-    // after the book and the outputs it is given, so that both exist when it is constructed.
-    MatchingEngineStateMachine state_machine_{order_book_, engine_outputs_, get_logger()};
+    // after the book, the maker of identifiers and the outputs it is given, so that they exist when it is constructed.
+    MatchingEngineStateMachine state_machine_{order_book_, report_identifiers_, engine_outputs_, get_logger()};
 
     // The region this process inherited could not be read, so what it held is unknown here and
     // the book cannot be vouched for however well the reconciliation goes. R-0102.
@@ -609,10 +613,12 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // has said its peer may not lead.
     void report_settings_differ_from_peer();
 
-    // The peer's open-order region capacity, as it last said, and whether it differs from this instance's. Kept when
-    // the connection to the peer is lost: a peer that restarts says again what it is configured with.
+    // The peer's open-order region capacity and the fingerprint of its identifier secret, as it last said, and whether
+    // either differs from this instance's. Kept when the connection to the peer is lost: a peer that restarts says again
+    // what it is configured with.
     bool peer_settings_known_{false};
     int64_t peer_region_capacity_{0};
+    int64_t peer_secret_fingerprint_{0};
     bool peer_settings_differ_{false};
 
     /**

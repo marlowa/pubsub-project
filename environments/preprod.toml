@@ -490,6 +490,10 @@ epoch_state_file    = "/opt/pubsub/var/matching_engine_epoch.state"
 order_book_region_path     = "/opt/pubsub/var/matching_engine_open_orders.region"
 # The most orders that may be open at once; the region cannot grow past it.
 order_book_region_capacity = 1000000
+# The secret the engine's OrderID and ExecID keys are derived from. deploy.py writes one where none
+# exists. Both engines of a pair must hold the same one, so for a pair on two machines copy the file
+# to both. See docs/availability/deterministic_matching_engine.md, section 3.3.
+identifier_secret_file = "etc/matching_engine/identifier_secret.key"
 # How many open orders the map from an order's identity to its record is sized for at start.
 # Below the region's capacity here, so the map grows by doubling if more are open, which
 # this environment accepts in return for using less memory. See docs/bug_list.md, BUG-0028.

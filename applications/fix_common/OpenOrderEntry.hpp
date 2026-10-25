@@ -31,8 +31,8 @@ namespace open_orders {
 //   manageable implementation cost.
 inline constexpr size_t max_supported_symbol_length = 64;
 inline constexpr size_t max_supported_order_qty_length = 32;
-// The matching engine's identifiers are "ME-ORD-" followed by a 64-bit counter, at most 26
-// characters, so 32 holds every one with room to spare.
+// The matching engine's OrderID is the letter O and 16 hexadecimal digits, 17 characters, so 32
+// holds every one with room to spare (docs/availability/deterministic_matching_engine.md, section 3).
 inline constexpr size_t max_supported_order_id_length = 32;
 
 /**

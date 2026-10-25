@@ -120,7 +120,7 @@ Add `-d` on the command line for verbose debug output from startup:
 ./bin/f8test -d -c myfix_gateway_client.xml -N GW1
 ```
 
-The gateway listens for FIX connections on port 9879. The matching engine log at `installed/log/matching_engine.log` contains `ME-ORD-N` entries that confirm each order was processed.
+The gateway listens for FIX connections on port 9879. With its log level at Debug, the matching engine log at `installed/log/matching_engine.log` has a line for each order it accepts, naming the order's OrderID.
 
 ---
 

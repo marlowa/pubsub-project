@@ -2266,10 +2266,10 @@ void FixOrderGatewayThread::send_fix_to_session(FixSession& session, const FixMe
 }
 
 void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason) {
-    // The matching engine never sees this order, so we synthesise the
-    // gateway-side identifiers from per-session counters. Format mirrors the
-    // ME-generated IDs (ME-ORD-N / ME-EXEC-N) but with a GW- prefix so the
-    // origin is unambiguous in logs and downstream audit trails.
+    // The matching engine never sees this order, so the gateway makes its own
+    // identifiers from per-session counters, with a GW- prefix, which no
+    // identifier of the matching engine's has, so that the origin is plain in
+    // logs and downstream audit trails.
     const std::string order_id = "GW-ORD-" + std::to_string(session.order_id_counter++);
     const std::string exec_id = "GW-EXEC-" + std::to_string(session.exec_id_counter++);
 

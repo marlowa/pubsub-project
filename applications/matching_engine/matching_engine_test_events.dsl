@@ -170,4 +170,5 @@ message SettingsDifferFromPeer (id=179, version=1)
     i64  own_region_capacity
     i64  peer_region_capacity
     bool barred_peer           # true when this instance leads and has said that its peer may not lead
+    bool secrets_differ        # true when the two hold different identifier secrets
 end

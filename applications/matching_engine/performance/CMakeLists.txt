@@ -61,3 +61,28 @@ message(STATUS "  Added performance harness: order_book_size_bench")
 install(TARGETS order_book_bench order_book_size_bench
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
+
+# What making one ExecID with FF1 costs the engine's thread. See
+# docs/availability/deterministic_matching_engine.md, section 3.2.
+add_executable(report_identifiers_bench
+    src/ReportIdentifiersBench.cpp
+    ../Ff1Cipher.cpp
+    ../ReportIdentifiers.cpp
+)
+
+target_link_libraries(report_identifiers_bench PRIVATE
+    pubsub_itc_fw
+    OpenSSL::Crypto
+)
+
+target_include_directories(report_identifiers_bench PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../fix_common
+)
+
+target_compile_options(report_identifiers_bench PRIVATE
+    -g
+    -fno-omit-frame-pointer
+)
+
+message(STATUS "  Added performance harness: report_identifiers_bench")

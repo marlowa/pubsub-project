@@ -525,7 +525,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         current_order_ingress_ns_ = envelope.gateway_ingress_ns;
 
         const CommandSource source = command_source_for(message.seq_no());
-        state_machine_.apply_new_order(view, message.seq_no(), envelope.wall_time_ns, session_identity_from(envelope), source);
+        state_machine_.apply_new_order(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
+                                       session_identity_from(envelope), source);
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
         pubsub_itc_fw_app::OrderCancelRequestView view{};
@@ -535,7 +536,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
             return;
         }
         const CommandSource source = command_source_for(message.seq_no());
-        state_machine_.apply_cancel(view, message.seq_no(), envelope.wall_time_ns, session_identity_from(envelope), source);
+        state_machine_.apply_cancel(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
+                                    session_identity_from(envelope), source);
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         // The ME is the source of ERs, not a consumer -- discard.
@@ -1592,6 +1594,7 @@ void MatchingEngineThread::send_engine_settings() {
     pubsub_itc_fw_app::EngineSettings settings{};
     settings.instance_id = static_cast<int64_t>(config_.instance_id);
     settings.order_book_region_capacity = static_cast<int64_t>(order_book_.region_capacity());
+    settings.identifier_secret_fingerprint = report_identifiers_.secret_fingerprint();
     send_pdu(outbound_replication_conn_id_, pubsub_itc_fw_app::EngineSettings::message_pdu_id, 0, settings);
 }
 
@@ -1610,15 +1613,26 @@ void MatchingEngineThread::handle_engine_settings(const pubsub_itc_fw::EventMess
     const bool differed = peer_settings_known_ && peer_settings_differ_;
     peer_settings_known_ = true;
     peer_region_capacity_ = settings.order_book_region_capacity;
-    peer_settings_differ_ = peer_region_capacity_ != own_region_capacity;
-    if (peer_settings_differ_) {
+    peer_secret_fingerprint_ = settings.identifier_secret_fingerprint;
+    const bool secrets_differ = peer_secret_fingerprint_ != report_identifiers_.secret_fingerprint();
+    peer_settings_differ_ = peer_region_capacity_ != own_region_capacity || secrets_differ;
+    if (peer_region_capacity_ != own_region_capacity) {
         // The open-order region's capacity decides when an order is refused because the venue holds as many as it can,
         // so two engines with different capacities apply the same commands differently once one of them is full.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                    "MatchingEngineThread: the peer, instance {}, holds up to {} open order(s) and this instance up to {} -- the two would apply the same "
                    "commands differently, so whichever of them leads says that the other may not lead",
                    settings.instance_id, peer_region_capacity_, own_region_capacity);
-    } else if (differed) {
+    }
+    if (secrets_differ) {
+        // The secret the identifiers' keys are derived from: two engines with different secrets give the same report
+        // different ExecIDs, so a member would be told of one event under two names after a failover.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: the peer, instance {}, holds a different identifier secret from this instance's ({}) -- the two would name the "
+                   "same reports differently, so whichever of them leads says that the other may not lead. Copy the one secret file to both",
+                   settings.instance_id, config_.identifier_secret_file);
+    }
+    if (!peer_settings_differ_ && differed) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: the peer, instance {}, is now configured as this instance is (up to {} open order(s))", settings.instance_id,
                    own_region_capacity);
@@ -1635,9 +1649,10 @@ void MatchingEngineThread::report_settings_differ_from_peer() {
         return;
     }
     const bool barred_peer = lease_agent_.has_value() && lease_agent_->leading() && !lease_agent_->says_peer_may_lead();
-    test_events_->send_event(
-        pubsub_itc_fw_app::SettingsDifferFromPeer::message_pdu_id,
-        pubsub_itc_fw_app::SettingsDifferFromPeer{peer_instance_id(), static_cast<int64_t>(order_book_.region_capacity()), peer_region_capacity_, barred_peer});
+    test_events_->send_event(pubsub_itc_fw_app::SettingsDifferFromPeer::message_pdu_id,
+                             pubsub_itc_fw_app::SettingsDifferFromPeer{peer_instance_id(), static_cast<int64_t>(order_book_.region_capacity()),
+                                                                       peer_region_capacity_, barred_peer,
+                                                                       peer_secret_fingerprint_ != report_identifiers_.secret_fingerprint()});
 }
 
 bool MatchingEngineThread::bar_peer_if_settings_differ() {
@@ -1654,8 +1669,10 @@ bool MatchingEngineThread::bar_peer_if_settings_differ() {
         lease_agent_->say_peer_may_not_lead(std::chrono::steady_clock::now());
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                    "MatchingEngineThread: leading, and saying that the peer, instance {}, may not lead -- it holds up to {} open order(s) and this instance "
-                   "up to {}. Trading continues here; if this instance stops, no engine leads until the two are configured alike",
-                   peer_instance_id(), peer_region_capacity_, order_book_.region_capacity());
+                   "up to {}, and its identifier secret is {} this instance's. Trading continues here; if this instance stops, no engine leads until "
+                   "the two are configured alike",
+                   peer_instance_id(), peer_region_capacity_, order_book_.region_capacity(),
+                   peer_secret_fingerprint_ == report_identifiers_.secret_fingerprint() ? "the same as" : "different from");
         report_settings_differ_from_peer();
         return true;
     }
@@ -1913,7 +1930,12 @@ void MatchingEngineThread::cancel_everything_and_halt(const char* why, pubsub_it
 }
 
 void MatchingEngineThread::cancel_all_orders_on_failover() {
-    const MatchingEngineStateMachine::BookCancelled cancelled = state_machine_.cancel_every_order(config_.wall_clock->now_ns());
+    // Until phase 7 step 4 makes a cancel of every order a command in the WAL, it has no sequence number of its own and
+    // no time or trading date from the sequencer. Its ExecIDs are made from the highest sequence number acted on, from
+    // place 1 on, since that command's own report holds place 0; its time is this engine's clock; and its keys are those
+    // of the trading date of the last command applied, or of no date (zero) if none has been since this process started.
+    const MatchingEngineStateMachine::BookCancelled cancelled =
+        state_machine_.cancel_every_order(state_machine_.highest_applied(), 1, config_.wall_clock->now_ns(), std::max(report_identifiers_.trading_date(), 0));
     if (test_events_.has_value()) {
         test_events_->send_event(pubsub_itc_fw_app::BookCancelled::message_pdu_id,
                                  pubsub_itc_fw_app::BookCancelled{cancelled.open_orders, cancelled.reports_sent});

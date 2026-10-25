@@ -28,7 +28,7 @@ enum class EngineRecordFromWal : int8_t {
  *
  * Each record in the sequencer's WAL is a WalRecord envelope. The engine is sent only orders and cancels;
  * every other record, an execution report for instance, is an output rather than an input, and is not
- * sent. The envelope sent carries the order, its sequencing time, and who placed it: the session's
+ * sent. The envelope sent carries the order, its sequencing time, its trading date, and who placed it: the session's
  * connection, its comp id, its gateway protocol and the gateway instance. The engine files an order under
  * the comp id and the protocol together, so both must travel.
  *
@@ -72,6 +72,10 @@ enum class EngineRecordFromWal : int8_t {
     envelope.origin_gateway_id = view.origin_gateway_id;
     envelope.has_gateway_instance_id = view.has_gateway_instance_id;
     envelope.gateway_instance_id = view.gateway_instance_id;
+    // The engine makes its identifiers with keys derived from the trading date, so a command sent without it would be
+    // refused, where the same command sent live is not.
+    envelope.has_trading_date = view.has_trading_date;
+    envelope.trading_date = view.trading_date;
     return EngineRecordFromWal::ForEngine;
 }
 

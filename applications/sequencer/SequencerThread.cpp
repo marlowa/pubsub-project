@@ -16,6 +16,7 @@
 
 #include <LeasePairNumbers.hpp>
 #include <OrderPathMetrics.hpp>
+#include <TradingDate.hpp>
 #include <lease_messages.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -713,6 +714,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // a follower, without decoding the command itself.
         envelope.has_cl_ord_id = inbound.has_cl_ord_id;
         envelope.cl_ord_id = inbound.cl_ord_id;
+        envelope.has_trading_date = true;
+        envelope.trading_date = trading_date_for(wall_time_ns);
         stamp_reports_forwarded_through(envelope);
 
         // The time the gateway read this order off the client connection travels on to the
@@ -1565,6 +1568,7 @@ void SequencerThread::SequencerReplicatedWalEvents::written_as_follower(int64_t 
         return;
     }
     owner_.note_logged_command(view);
+    owner_.note_trading_date(view);
     owner_.note_forwarded_sample(entry.wall_time_ns, view);
 }
 
@@ -1960,6 +1964,38 @@ void SequencerThread::take_record_of_identifiers_if_built() {
                    "(the last because: {}). This is expected only when a repair cut the log back meanwhile, which the Quill log shows above",
                    identifiers_builder_.segments_not_read(), identifiers_builder_.last_segment_error());
     }
+}
+
+void SequencerThread::note_trading_date(const pubsub_itc_fw_app::WalRecordView& view) {
+    if (view.has_trading_date && view.trading_date != trading_date_) {
+        if (trading_date_ != 0) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "SequencerThread: the leader wrote trading date {} on record {}, where this instance had {} -- following the leader", view.trading_date,
+                       view.seq_no, trading_date_);
+        }
+        trading_date_ = view.trading_date;
+    }
+}
+
+int32_t SequencerThread::trading_date_for(int64_t wall_time_ns) {
+    if (trading_date_ != 0) {
+        return trading_date_;
+    }
+    // The first record in the WAL, read from the start of its earliest segment. Its trading date is the date of its wall
+    // time, because a leader whose WAL is empty writes the date of the command it is writing, which then becomes that
+    // record.
+    const std::optional<int64_t> first_record_time = replicated_wal_->wal().first_wall_time_ns();
+    if (first_record_time.has_value()) {
+        trading_date_ = fix_common::trading_date_of(*first_record_time);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: the trading date is {}, the date of record {}, the first in the WAL",
+                   fix_common::trading_date_text(trading_date_), replicated_wal_->wal().first_seq_no());
+    } else {
+        trading_date_ = fix_common::trading_date_of(wall_time_ns);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: the trading date is {}, the date of the command being written, which is the first record in the WAL",
+                   fix_common::trading_date_text(trading_date_));
+    }
+    return trading_date_;
 }
 
 void SequencerThread::note_logged_command(const pubsub_itc_fw_app::WalRecordView& view) {

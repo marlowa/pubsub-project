@@ -96,15 +96,16 @@ void echo_parties(const pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::PartyIDsV
 
 } // un-named namespace
 
-MatchingEngineStateMachine::MatchingEngineStateMachine(OrderBook& book, MatchingEngineOutputsInterface& outputs, pubsub_itc_fw::QuillLogger& logger)
-    : book_(book), outputs_(outputs), logger_(logger) {}
+MatchingEngineStateMachine::MatchingEngineStateMachine(OrderBook& book, ReportIdentifiers& identifiers, MatchingEngineOutputsInterface& outputs,
+                                                       pubsub_itc_fw::QuillLogger& logger)
+    : book_(book), identifiers_(identifiers), outputs_(outputs), logger_(logger) {}
 
 void MatchingEngineStateMachine::note_caught_up_to(int64_t sequence_number) {
     highest_live_seq_no_ = std::max(highest_live_seq_no_, sequence_number);
 }
 
 void MatchingEngineStateMachine::apply_new_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
-                                                 const fix_common::SessionIdentity& session, CommandSource source) {
+                                                 int32_t trading_date, const fix_common::SessionIdentity& session, CommandSource source) {
     // One path, whichever way the order arrives, so that an engine that applies it live and one that applies it while
     // catching up hold the same book and send the same reports. The source makes these differences and no others: a
     // catch-up does not check the order of sequence numbers, whose records are below the position by construction, nor
@@ -125,13 +126,18 @@ void MatchingEngineStateMachine::apply_new_order(const pubsub_itc_fw_app::NewOrd
     if (!live && already_applied(sequence_number)) {
         return;
     }
+    if (!ReportIdentifiers::fits(sequence_number, 0)) {
+        refuse_to_name(sequence_number);
+        return;
+    }
+    identifiers_.use_trading_date(trading_date);
     if (live && sequence_goes_backwards(sequence_number)) {
         // Not published: the sequence number is at or below the position already published.
         refuse_out_of_sequence_order(view, sequence_number, transact_time, session);
         return;
     }
-    if (transact_time == 0) {
-        refuse_order_without_time(view, sequence_number, session, repeat);
+    if (transact_time == 0 || trading_date == 0) {
+        refuse_order_without_time(view, sequence_number, transact_time, session, repeat);
         publish_after_refusal(sequence_number, source);
         return;
     }
@@ -143,8 +149,8 @@ void MatchingEngineStateMachine::apply_new_order(const pubsub_itc_fw_app::NewOrd
     const OrderKey order_key = OrderKey::make(session, view.cl_ord_id);
 
     // Stack-allocated ID buffers -- no heap allocation.
-    std::array<char, 32> exec_id_buf{};
-    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+    ReportIdentifiers::Buffer exec_id_buf{};
+    const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, 0);
 
     // Refuse everything while trading is halted, and say so in the reply to the order the
     // member sent. That is how a member learns of a halt: it is the answer to the question it
@@ -220,8 +226,8 @@ void MatchingEngineStateMachine::apply_new_order(const pubsub_itc_fw_app::NewOrd
     }
 
     // Accept the order: add to book and acknowledge with ExecType=New.
-    std::array<char, 32> order_id_buf{};
-    const std::string_view order_id = format_id(order_id_buf, "ME-ORD-", 7, sequence_number);
+    ReportIdentifiers::Buffer order_id_buf{};
+    const std::string_view order_id = identifiers_.order_id(order_id_buf, sequence_number);
 
     OrderEntry entry{};
     entry.placed_at_seq_no = sequence_number;
@@ -364,7 +370,7 @@ void MatchingEngineStateMachine::apply_new_order(const pubsub_itc_fw_app::NewOrd
 }
 
 void MatchingEngineStateMachine::apply_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
-                                              const fix_common::SessionIdentity& session, CommandSource source) {
+                                              int32_t trading_date, const fix_common::SessionIdentity& session, CommandSource source) {
     // One path, whichever way the cancel arrives, for the reasons apply_new_order gives, with the same differences. A
     // cancel the sequencer deferred was never sent to any engine either, so its member is still holding an order it
     // believes is live, and a catch-up reports it. Acted on even with no connection for reports up, as an order is.
@@ -374,13 +380,18 @@ void MatchingEngineStateMachine::apply_cancel(const pubsub_itc_fw_app::OrderCanc
     if (!live && already_applied(sequence_number)) {
         return;
     }
+    if (!ReportIdentifiers::fits(sequence_number, 0)) {
+        refuse_to_name(sequence_number);
+        return;
+    }
+    identifiers_.use_trading_date(trading_date);
     if (live && sequence_goes_backwards(sequence_number)) {
         // Not published, as for an order.
         refuse_out_of_sequence_cancel(view, sequence_number, transact_time, session);
         return;
     }
-    if (transact_time == 0) {
-        refuse_cancel_without_time(view, sequence_number, session, repeat);
+    if (transact_time == 0 || trading_date == 0) {
+        refuse_cancel_without_time(view, sequence_number, transact_time, session, repeat);
         publish_after_refusal(sequence_number, source);
         return;
     }
@@ -391,8 +402,8 @@ void MatchingEngineStateMachine::apply_cancel(const pubsub_itc_fw_app::OrderCanc
     }
     const OrderKey orig_key = OrderKey::make(session, view.orig_cl_ord_id);
 
-    std::array<char, 32> exec_id_buf{};
-    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+    ReportIdentifiers::Buffer exec_id_buf{};
+    const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, 0);
 
     // At Debug, because it is written for every cancel, as the line for each accepted order is.
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineStateMachine: OrderCancelRequest seq={} ClOrdID={} OrigClOrdID={} Symbol={} Side={}{}",
@@ -441,8 +452,8 @@ void MatchingEngineStateMachine::apply_cancel(const pubsub_itc_fw_app::OrderCanc
         outputs_.order_removed_from_book(sequence_number, session, view.orig_cl_ord_id);
     }
 
-    std::array<char, 32> order_id_buf{};
-    const std::string_view order_id = format_id(order_id_buf, "ME-ORD-", 7, entry.placed_at_seq_no);
+    ReportIdentifiers::Buffer order_id_buf{};
+    const std::string_view order_id = identifiers_.order_id(order_id_buf, entry.placed_at_seq_no);
 
     pubsub_itc_fw_app::ExecutionReport er{};
     er.order_id = order_id;
@@ -503,8 +514,8 @@ void MatchingEngineStateMachine::refuse_over_long_order(const pubsub_itc_fw_app:
                repeat == ReportIsRepeat::yes ? " -- during catch-up, reported as a possible repeat" : "");
     outputs_.order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::RefusedTooLong, repeat, sequence_number, {});
 
-    std::array<char, 32> exec_id_buf{};
-    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+    ReportIdentifiers::Buffer exec_id_buf{};
+    const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, 0);
     std::array<char, 64> text_buf{};
     const auto text_written =
         fmt::format_to_n(text_buf.data(), text_buf.size(), "ClOrdID exceeds maximum length of {}", fix_order_limits::max_cl_ord_id_length);
@@ -541,8 +552,8 @@ void MatchingEngineStateMachine::refuse_over_long_cancel(const pubsub_itc_fw_app
                repeat == ReportIsRepeat::yes ? " -- during catch-up, reported as a possible repeat" : "");
     outputs_.order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::CancelRefusedTooLong, repeat, sequence_number, view.orig_cl_ord_id);
 
-    std::array<char, 32> exec_id_buf{};
-    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+    ReportIdentifiers::Buffer exec_id_buf{};
+    const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, 0);
     std::array<char, 64> text_buf{};
     const auto text_written = fmt::format_to_n(text_buf.data(), text_buf.size(), "{} exceeds maximum length of {}", orig_too_long ? "OrigClOrdID" : "ClOrdID",
                                                fix_order_limits::max_cl_ord_id_length);
@@ -601,8 +612,8 @@ bool MatchingEngineStateMachine::sequence_goes_backwards(int64_t sequence_number
 
 void MatchingEngineStateMachine::refuse_out_of_sequence_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
                                                               const fix_common::SessionIdentity& session) {
-    std::array<char, 32> exec_id_buf{};
-    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+    ReportIdentifiers::Buffer exec_id_buf{};
+    const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, 0);
 
     pubsub_itc_fw_app::ExecutionReport er{};
     er.order_id = "NONE";
@@ -628,8 +639,8 @@ void MatchingEngineStateMachine::refuse_out_of_sequence_order(const pubsub_itc_f
 
 void MatchingEngineStateMachine::refuse_out_of_sequence_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number,
                                                                int64_t transact_time, const fix_common::SessionIdentity& session) {
-    std::array<char, 32> exec_id_buf{};
-    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+    ReportIdentifiers::Buffer exec_id_buf{};
+    const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, 0);
 
     pubsub_itc_fw_app::ExecutionReport er{};
     er.order_id = "NONE";
@@ -656,18 +667,19 @@ void MatchingEngineStateMachine::refuse_out_of_sequence_cancel(const pubsub_itc_
     outputs_.send_report(er, sequence_number, session, ReportIsRepeat::no);
 }
 
-void MatchingEngineStateMachine::refuse_order_without_time(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number,
+void MatchingEngineStateMachine::refuse_order_without_time(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
                                                            const fix_common::SessionIdentity& session, ReportIsRepeat repeat) {
-    // The sequencer writes the time it took every command into the command's WAL record, so a command
-    // without one is a defect in the sequencer. The engine does not supply a time of its own, which
-    // would differ from engine to engine and from one replay to the next.
+    // The sequencer writes the time it took every command, and the trading date, into the command's WAL
+    // record, so a command without either is a defect in the sequencer. The engine does not supply one of
+    // its own, which would differ from engine to engine and from one replay to the next.
+    const std::string_view missing = transact_time == 0 ? "time" : "trading date";
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
-               "MatchingEngineStateMachine: refusing NOS seq={} ClOrdID={} (session comp_id='{}') -- its WAL record carries no time, which the sequencer "
+               "MatchingEngineStateMachine: refusing NOS seq={} ClOrdID={} (session comp_id='{}') -- its WAL record carries no {}, which the sequencer "
                "always writes, so the sequencer is at fault{}",
-               sequence_number, view.cl_ord_id, session.comp_id_view(),
+               sequence_number, view.cl_ord_id, session.comp_id_view(), missing,
                repeat == ReportIsRepeat::yes ? " -- during catch-up, reported as a possible repeat" : "");
-    std::array<char, 32> exec_id_buf{};
-    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+    ReportIdentifiers::Buffer exec_id_buf{};
+    const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, 0);
 
     pubsub_itc_fw_app::ExecutionReport er{};
     er.order_id = "NONE";
@@ -679,8 +691,8 @@ void MatchingEngineStateMachine::refuse_order_without_time(const pubsub_itc_fw_a
     er.leaves_qty = "0";
     er.cum_qty = "0";
     er.avg_px = "0.00";
-    // Zero, which is what the command carried: the same on every engine and every replay.
-    er.transact_time = 0;
+    // What the command carried, zero where it carried no time: the same on every engine and every replay.
+    er.transact_time = transact_time;
     er.has_cl_ord_id = true;
     er.cl_ord_id = view.cl_ord_id;
     er.has_order_qty = true;
@@ -688,19 +700,20 @@ void MatchingEngineStateMachine::refuse_order_without_time(const pubsub_itc_fw_a
     er.has_ord_rej_reason = true;
     er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
     er.has_text = true;
-    er.text = "Venue could not process the order: it carried no time";
+    er.text = transact_time == 0 ? "Venue could not process the order: it carried no time" : "Venue could not process the order: it carried no trading date";
     outputs_.send_report(er, sequence_number, session, repeat);
 }
 
 void MatchingEngineStateMachine::refuse_cancel_without_time(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number,
-                                                            const fix_common::SessionIdentity& session, ReportIsRepeat repeat) {
+                                                            int64_t transact_time, const fix_common::SessionIdentity& session, ReportIsRepeat repeat) {
+    const std::string_view missing = transact_time == 0 ? "time" : "trading date";
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
-               "MatchingEngineStateMachine: refusing OCR seq={} OrigClOrdID={} (session comp_id='{}') -- its WAL record carries no time, which the "
+               "MatchingEngineStateMachine: refusing OCR seq={} OrigClOrdID={} (session comp_id='{}') -- its WAL record carries no {}, which the "
                "sequencer always writes, so the sequencer is at fault{}",
-               sequence_number, view.orig_cl_ord_id, session.comp_id_view(),
+               sequence_number, view.orig_cl_ord_id, session.comp_id_view(), missing,
                repeat == ReportIsRepeat::yes ? " -- during catch-up, reported as a possible repeat" : "");
-    std::array<char, 32> exec_id_buf{};
-    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+    ReportIdentifiers::Buffer exec_id_buf{};
+    const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, 0);
 
     pubsub_itc_fw_app::ExecutionReport er{};
     er.order_id = "NONE";
@@ -712,7 +725,7 @@ void MatchingEngineStateMachine::refuse_cancel_without_time(const pubsub_itc_fw_
     er.leaves_qty = "0";
     er.cum_qty = "0";
     er.avg_px = "0.00";
-    er.transact_time = 0;
+    er.transact_time = transact_time;
     er.has_cl_ord_id = true;
     er.cl_ord_id = view.cl_ord_id;
     // Carried so the gateways send the report to the member as an OrderCancelReject.
@@ -723,8 +736,20 @@ void MatchingEngineStateMachine::refuse_cancel_without_time(const pubsub_itc_fw_
     er.has_ord_rej_reason = true;
     er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
     er.has_text = true;
-    er.text = "Venue could not process the cancel: it carried no time. The order is unchanged";
+    er.text = transact_time == 0 ? "Venue could not process the cancel: it carried no time. The order is unchanged"
+                                 : "Venue could not process the cancel: it carried no trading date. The order is unchanged";
     outputs_.send_report(er, sequence_number, session, repeat);
+}
+
+void MatchingEngineStateMachine::refuse_to_name(int64_t sequence_number) {
+    // An identifier holds sequence numbers below 2^36, about 68,700 million, far above any day's WAL. A command beyond it
+    // cannot be given a report whose identifier is not also some other report's, so it is not answered at all, and
+    // trading halts so that nothing more is accepted that could not be named.
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+               "MatchingEngineStateMachine: command seq={} is beyond the {} sequence numbers an identifier can hold -- not applied and not answered, "
+               "and trading halts",
+               sequence_number, ReportIdentifiers::sequence_number_limit);
+    halted_ = true;
 }
 
 void MatchingEngineStateMachine::publish_after_refusal(int64_t sequence_number, CommandSource source) {
@@ -737,18 +762,21 @@ void MatchingEngineStateMachine::publish_after_refusal(int64_t sequence_number, 
     }
 }
 
-MatchingEngineStateMachine::BookCancelled MatchingEngineStateMachine::cancel_every_order(int64_t transact_time) {
+MatchingEngineStateMachine::BookCancelled MatchingEngineStateMachine::cancel_every_order(int64_t sequence_number, int64_t first_place, int64_t transact_time,
+                                                                                         int32_t trading_date) {
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineStateMachine: cancelling every order -- {} live order(s)", book_.size());
     BookCancelled result;
     result.open_orders = static_cast<int64_t>(book_.size());
+    identifiers_.use_trading_date(trading_date);
 
     // In the order the orders were placed, which every engine that applied the same commands agrees on, so that two
     // engines cancelling the same book number and send the same reports in the same order.
+    int64_t place = first_place;
     book_.for_each_in_order_placed([&](const OrderEntry& entry) {
-        std::array<char, 32> exec_id_buf{};
-        const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
-        std::array<char, 32> order_id_buf{};
-        const std::string_view order_id = format_id(order_id_buf, "ME-ORD-", 7, entry.placed_at_seq_no);
+        ReportIdentifiers::Buffer exec_id_buf{};
+        const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, place++);
+        ReportIdentifiers::Buffer order_id_buf{};
+        const std::string_view order_id = identifiers_.order_id(order_id_buf, entry.placed_at_seq_no);
         const std::string_view cl_ord_id = entry.get_cl_ord_id();
 
         pubsub_itc_fw_app::ExecutionReport er{};

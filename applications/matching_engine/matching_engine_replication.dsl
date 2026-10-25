@@ -69,4 +69,8 @@ message EngineSettings(id=601)
     i64             instance_id
     # The most orders the engine's open-order region holds. An order arriving when it is full is refused.
     i64             order_book_region_capacity
+    # A fingerprint of the secret the engine's OrderID and ExecID keys are derived from, which tells two secrets apart
+    # without showing either (ReportIdentifiers::secret_fingerprint). Engines with different secrets name the same
+    # report differently.
+    i64             identifier_secret_fingerprint
 end

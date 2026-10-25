@@ -512,6 +512,10 @@ order_book_region_path     = "/opt/pubsub/var/matching_engine_open_orders.region
 # order stays open until it is cancelled, and a day of 100 million orders with none
 # cancelled must still be accepted. At 248 bytes a record, the region is 24.8 GB.
 order_book_region_capacity = 100000000
+# The secret the engine's OrderID and ExecID keys are derived from. deploy.py writes one where none
+# exists. Both engines of a pair must hold the same one, so for a pair on two machines copy the file
+# to both. See docs/availability/deterministic_matching_engine.md, section 3.3.
+identifier_secret_file = "etc/matching_engine/identifier_secret.key"
 # How many open orders the map from an order's identity to its record is sized for at start:
 # the same as the region, so the map never grows during the day. 100 million orders take a
 # map of 2^28 slots of 141 bytes, 37.8 GB. A map with many cancelled orders in it is copied

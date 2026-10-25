@@ -160,6 +160,15 @@ absence_limit_seconds = ${matching_engine_order_book_absence_limit_seconds}
 # certainly true rather than the better one that is not yet established.
 open_orders_on_promotion = "${matching_engine_order_book_open_orders_on_promotion}"
 
+[identifiers]
+# The file holding the secret the keys of this engine's OrderID and ExecID values are derived
+# from, as 64 hexadecimal digits. Both engines of the pair must hold the same secret: each
+# tells the other a fingerprint of it when they connect, and the one that leads says the other
+# may not lead if they differ. deploy.py writes one where none exists; for a pair on two
+# machines, copy the one file to both. Readable by the engine's user alone, as a TLS key is.
+# See docs/availability/deterministic_matching_engine.md, section 3.3.
+secret_file = "${matching_engine_identifier_secret_file}"
+
 [command_queue_pool]
 objects_per_slab = ${matching_engine_command_queue_pool_objects_per_slab}
 initial_slabs    = ${matching_engine_command_queue_pool_initial_slabs}

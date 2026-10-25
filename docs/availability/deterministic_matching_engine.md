@@ -1,8 +1,9 @@
 # A deterministic matching engine {#deterministic_matching_engine}
 
-> **Status: decided, 25 October 2026; steps 1 and 2 of section 8 built.** This is the design for phase 7 of the
-> [recovery plan](../recovery_plan.md). The state machine of section 7.1, the remedies of section 5 and `wal_replay_check`
-> are built; steps 3 to 6 are not. Andrew answered the five decisions of section 9 on
+> **Status: decided, 25 October 2026; steps 1 to 3 of section 8 built.** This is the design for phase 7 of the
+> [recovery plan](../recovery_plan.md). The state machine of section 7.1, the remedies of section 5, `wal_replay_check`
+> and the identifiers of section 3 are built; steps 4 to 6 are not. Step 4 waits on decisions 6, 7 and 8 of section 9,
+> which are not yet taken. Andrew answered decisions 1 to 5 of section 9 on
 > 25 October 2026: identifiers are scrambled with FF1, the day key is derived from a secret and the trading date, an
 > identifier is a letter and 16 hexadecimal digits, the leading sequencer measures the absence rule, and cancelling
 > on promotion becomes a command in phase 7.
@@ -26,8 +27,9 @@ pass. Section 7 says how that is checked.
 
 ## 2. Why the engine is not deterministic now
 
-These are the places, found by reading `MatchingEngineThread.cpp` and `OrderBook.hpp`, where the same commands can
-lead to a different book or different reports.
+These are the places, found by reading `MatchingEngineThread.cpp` and `OrderBook.hpp`, where the same commands could
+lead to a different book or different reports, and which this design removes. Steps 2 and 3 of section 8 have removed
+causes 1 and 3 to 6; cause 2 is removed by step 4.
 
 1. **Identifiers come from counters kept in memory.** `OrderID` is `ME-ORD-` and a counter, `order_id_counter_`, and
    `ExecID` is `ME-EXEC-` and another, `exec_id_counter_`. After a restart the order counter is set above the highest
@@ -99,7 +101,13 @@ inputs can never give the same identifier, so identifiers stay unique for the da
 both engines, both give the same identifier for the same report. Without the key, consecutive identifiers look
 unrelated, so the difference between two of them says nothing about how many commands came between.
 
-The cipher is FF1, the NIST standard for format-preserving encryption (decision 1 in section 9).
+The cipher is FF1, the NIST standard for format-preserving encryption (decision 1 in section 9), over AES-256 with
+OpenSSL's AES. Making one identifier takes 354 nanoseconds at the median and 375 at the 99.9th percentile, measured on
+25 October 2026 with `report_identifiers_bench` over 10 million ExecIDs, pinned to one core with the machine set up for
+measuring, in three runs that agreed to within a few nanoseconds; the times include two readings of the clock. An
+accepted order needs two, its OrderID and its ExecID, so about 0.7 microseconds of a round trip of about 98. The
+slowest one in a million took about 29 microseconds in every run, which is the size of an interruption by the
+operating system rather than of the cipher.
 
 The result is written as 16 hexadecimal digits after a letter that says what it names: `O` for an `OrderID`, `E` for
 an `ExecID`, for example `E3F9A0C21D4B7E605`. That is 17 characters, inside the 32 the gateways hold for an
@@ -113,15 +121,50 @@ as its label.
 
 The day key must be the same on both engines, different every trading day, and known to support staff, who need it to
 turn an identifier back into its sequence number. It is derived from one long-lived secret, held on both engine
-machines and by support staff as the venue's TLS keys are, and the trading date, with HMAC-SHA256. The trading date is
-the date of the first record in the day's WAL, which both engines read, so they agree even if one starts after
-midnight (decision 2).
+machines and by support staff as the venue's TLS keys are, and the trading date, with HMAC-SHA256: the day key is
+HMAC-SHA256 of the date written yyyy-mm-dd, keyed with the secret, and the key for each kind of identifier is
+HMAC-SHA256 of its name, `OrderID` or `ExecID`, keyed with the day key (decision 2).
+
+The trading date is the UTC date of the first record in the day's WAL, so the engines agree on it even if the day runs
+past midnight or one of them starts after it. An engine does not read the WAL itself, and one that restarts catches up
+from its own position, so it never sees the first record. The leading sequencer therefore writes the date on every new
+order and cancel it puts in the WAL, as `trading_date` on the `WalRecord` envelope, and the engines and
+`wal_replay_check` take it from the command. The sequencer finds the date in one of three ways:
+
+- a follower sequencer notes the date on each command its leader sends it, so on taking the lead it writes the date
+  its leader wrote;
+- a sequencer that leads before it has been sent a command reads the wall time of the first record in its WAL once,
+  with `Wal::first_wall_time_ns`, which reads the start of the earliest segment and nothing else;
+- a sequencer whose WAL holds nothing takes the date of the command it is writing, which then becomes the first record.
+
+A command that carries no trading date is a defect in the sequencer, and the engine refuses it, as it refuses a
+command that carries no time (section 5).
+
+The engines never work the date out from their own clocks, which [trading_phases.md](../venue/trading_phases.md)
+forbids: they take the date the sequencer writes. The sequencer takes it from the first record of the day's WAL because
+nothing yet declares the trading day. Once the technical event of trading_phases.md exists, carrying the trading day
+from the start of day ([BUG-0137](../bug_list.md#bug_0137)), the sequencer writes the day it declares, and the engines
+are unchanged.
+
+The secret is a file of 64 hexadecimal digits, named by `identifiers.secret_file` in each engine's configuration.
+`deploy.py` writes one, readable by its owner alone, where none exists, and never replaces one that does, because the
+identifiers members were given could then no longer be turned back. Both engines of a pair must hold the same secret,
+so for a pair on two machines the one file is copied to both. The engines check that they do: each sends its peer a
+fingerprint of its secret with its other settings (section 5), and an engine whose peer's secret differs is barred as
+one whose region differs is.
 
 ### 3.4 Turning an identifier back
 
-A small tool, `identifier_to_position`, takes the day key and an identifier and prints the sequence number and the
-place. Support staff use it to find the command behind a report a member quotes. It reads the key the same way the
-engines do, so it needs the same access.
+A small tool, `identifier_to_position`, takes the secret file, the trading date and one or more identifiers, and prints
+for each the sequence number and, for an ExecID, the place. Support staff use it to find the command behind a report a
+member quotes. It reads the secret from the file the engines read, so it needs the same access:
+
+```
+identifier_to_position --secret-file etc/matching_engine/identifier_secret.key --date 2026-10-25 E3F9A0C21D4B7E605
+```
+
+The implementation is `applications/matching_engine/ReportIdentifiers.{hpp,cpp}` for the identifiers and the keys, and
+`Ff1Cipher.{hpp,cpp}` for FF1, checked against the nine sample vectors NIST publishes for it.
 
 ### 3.5 What changes for members
 
@@ -213,8 +256,8 @@ cancels its book or halts on its own initiative any more. The decisions that are
   sequencer; the engine refuses it, reports it at Error, and treats it as section 6 treats any command it cannot
   apply. The refusal's TransactTime is zero, which is what the command carried, and so the same on every engine and
   every replay; its text says the command carried no time. Andrew decided this on 25 October 2026.
-- **Settings the pair must share.** The settings that change what the engine does with a command, starting with the
-  region's capacity, must be the same on both engines. Each engine reports them to its peer when the two connect.
+- **Settings the pair must share.** The settings that change what the engine does with a command, the region's
+  capacity and the identifier secret (as a fingerprint, section 3.3), must be the same on both engines. Each engine reports them to its peer when the two connect.
   A difference is the same seen from either side, so it is the engine that leads that keeps leading: on learning that
   its peer's settings differ from its own, it says, in the statements the lease rules already carry, that its peer
   may not lead, and reports the difference at Error. The venue goes on trading on the leader, having lost its
@@ -251,9 +294,9 @@ such a command, so that it costs that command and not the venue, needs both engi
 The engine's handling of commands is a class of its own, the engine's **state machine**,
 `MatchingEngineStateMachine`: given a command, with its sequence number, its time and the session that sent it, it
 changes the book and produces the reports, and it does nothing else. It reads no clock, opens no connection and keeps
-no timer. `MatchingEngineThread` gives it the commands, live or from a catch-up, and works out each command's time,
-which is the time the sequencer recorded for it or, where that is zero, the engine's own clock (cause 4 of section 2,
-which step 2 removes). The state machine hands what it produces to an interface, `MatchingEngineOutputsInterface`:
+no timer. `MatchingEngineThread` gives it the commands, live or from a catch-up, each with the time and the trading
+date the sequencer recorded for it, and holds the maker of identifiers, `ReportIdentifiers`, which it gives the state
+machine. The state machine hands what it produces to an interface, `MatchingEngineOutputsInterface`:
 the reports, which the thread sends to the sequencers; the changes to the book, which it sends to the follower engine;
 and what became of each order, which it sends to a test that asked. It also cancels every order on the book when
 the thread asks it to.
@@ -278,14 +321,23 @@ difference is a failure, and it names the command. Each report's WAL record carr
 command it answers (`answers_seq_no` on `WalRecord`), which the sequencer writes when it receives the report, so that
 the pairing of reports with commands is read from the WAL rather than inferred.
 
-`wal_replay_check` is built (`applications/matching_engine/tools/WalReplayCheckMain.cpp`). It pairs a replayed report
-with the WAL's copy by ExecID, which is meaningful only while ExecIDs come from a counter in one engine that started
-with an empty book; `ha_test.py` therefore runs it after every scenario in which one engine led and no engine process
-was started more than once, worked out from the engines' test events. It is not run either where an engine
+`wal_replay_check` is built (`applications/matching_engine/tools/WalReplayCheckMain.cpp`). It is given the region
+capacity and the identifier secret of the engines that led, and pairs a replayed report with the WAL's copy by ExecID,
+which names a report by the position of its command whichever engine sent it. `ha_test.py` runs it after every
+scenario that passes, including those in which an engine restarts or engines change roles, except where an engine
 cancelled every order by its own decision, sending at least one cancel report, or halted by its own decision (test
-events BookCancelled and Halted). Those decisions are not commands in the WAL until step 4, so the WAL holds the
-reports they produced with no command a replay could apply. Step 3 makes ExecIDs come from the WAL, step 4 makes the
-engine's decisions commands in the WAL, and step 6 runs it on every scenario.
+events BookCancelled and Halted), and where the engines that led were configured differently. Those decisions are not
+commands in the WAL until step 4, so the WAL holds the reports they produced with no command a replay could apply.
+Step 4 makes the engine's decisions commands in the WAL, and step 6 runs the check on every scenario.
+
+A scenario can stop the venue while the engine's answers to its last commands are in flight, so that the WAL stops
+before them. The engine answers commands in the order of their sequence numbers, so `wal_replay_check` counts the
+commands after the last one the WAL holds an answer to, and does not compare them; a command before it with no answer
+is a failure.
+
+Until step 4, a cancel of every order has no sequence number of its own, so its ExecIDs are made from the highest
+sequence number the engine has acted on, from place 1, since that command's own report holds place 0, and with the
+keys of the last trading date the engine was given.
 
 The finish condition is checked in two ways:
 
@@ -314,8 +366,9 @@ Each step is built, tested and committed on its own, and every high availability
 
 ## 9. Decisions needed
 
-There are five, all decided on 25 October 2026. Decisions 1, 2 and 3 each chose one of the ways listed; decisions 4
-and 5 were answered yes or no.
+Decisions 1 to 5 were all decided on 25 October 2026. Decisions 1, 2 and 3 each chose one of the ways listed;
+decisions 4 and 5 were answered yes or no. Decisions 6, 7 and 8 are needed before step 4 is built, and are not yet
+decided: each is a choice of one of the ways listed.
 
 ### Decision 1. Which cipher scrambles the identifiers? (Choose one.)
 
@@ -413,3 +466,63 @@ is finished.
 holding orders its members were told are cancelled from phase 7 on.
 
 **Decided 25 October 2026: yes.**
+
+### Decision 6. What do the commands to halt and to resume trading look like? (Choose one.)
+
+**Background.** Section 4.1 makes halting and resuming trading commands in the WAL, each with a reason.
+[trading_phases.md](../venue/trading_phases.md) designs one message, the technical event, which announces every change
+of the venue's phase and says whether trading is halted, carries the trading day, and is sequenced in the WAL with the
+orders. It is not built, and [BUG-0197](../bug_list.md#bug_0197) and [BUG-0137](../bug_list.md#bug_0137) need it. A
+halt in trading_phases.md is a flag the venue has while in a phase, not a phase of its own. The venue has no phases
+yet: it is always, in effect, open.
+
+- **A. The technical event of trading_phases.md, built now.** One WAL record carrying the phase, whether trading is
+  halted, the trading day and a reason. Until the start and end of day exist, the phase is always open. The engine
+  applies it; the gateways and the publishers do not yet act on it, which BUG-0197 adds in phase 8. There is one
+  message for a halt, now and later.
+- **B. Two commands for the engine alone now**, a halt with its reason and a resume, which the technical event
+  replaces when trading_phases.md is built. Smaller now, and replaced later, so that a WAL written before the
+  replacement holds the old commands.
+
+**Recommendation: A.** It is the message the venue's design already says a halt is, and building it now means no
+second kind of halt record exists to be replaced, read and explained later.
+
+### Decision 7. When cancelling on promotion is a command, which orders does it cancel? (Choose one.)
+
+**Background.** Today a promoted engine cancels the orders it holds once it has caught up and before it serves, so
+only the orders it inherited are cancelled. As a command, the cancel is written by the leading sequencer when the
+promoted engine asks for it (section 4.2). Orders that reach the sequencer between the engine catching up and the
+command being written are put in the WAL before the command. They were sent to no engine, because none was serving.
+
+- **A. The command names the position the engine caught up to, and cancels the orders placed at or before it.** Orders
+  that came after it stay on the book and are acknowledged, as they are today. Every engine applying the command
+  cancels the same orders, because the position is in the command.
+- **B. The command cancels every order on the book at its own position**, including those that came after the engine
+  caught up. Simpler, but a member whose order arrived in that interval is told it was accepted and, at once, that it
+  was cancelled, which does not happen today.
+
+**Recommendation: A.** It keeps what members see on a promotion as it is, and costs one number in the command.
+
+### Decision 8. What does an engine do when its own region cannot be used? (Choose one.)
+
+**Background.** Section 4 does not cover this case. R-0102 and R-0123: when the region holding an engine's open orders
+cannot be read at a start, the engine puts it aside and starts a new one. If the sequencer's WAL reaches back to the
+day's first record, the engine rebuilds its book from it, then cancels every order, tells each member and halts trading
+(`RecordCouldNotBeUsed`); if it does not, the engine halts without cancelling (`CannotAccountForBook`). Both are
+decisions one engine takes about its own file, so neither is a command in the WAL: a replay cannot reproduce them, and
+the other engine does not take them. Once the engine is deterministic, a book rebuilt from the WAL from its first
+record is exactly the book the venue had.
+
+- **A. Rebuild without cancelling where the WAL reaches the first record; otherwise ask the sequencer for a halt.** The
+  rebuilt book is the venue's book, so the engine carries on, and reports at Error that its region was rebuilt. Where
+  the WAL does not reach the first record, the engine asks the leading sequencer to write a halt, as section 4 has it
+  ask for a cancel on promotion. This changes R-0123, which says the engine cancels what it rebuilt.
+- **B. Keep both as decisions of one engine, outside the WAL.** R-0123 stays as it is. This is the one place where the
+  engine does something no command says, and the replay check does not run on a scenario where it happens.
+- **C. Make both commands, as they are today.** The engine asks the leading sequencer to write a cancel of the book and
+  a halt, or a halt alone. R-0123 stays as it is, and the WAL records the decisions, at the cost of cancelling a book
+  that could be kept.
+
+**Recommendation: A.** It is what a deterministic engine makes possible: a damaged file on one machine costs nothing
+when the WAL holds the day, and the venue halts only when it truly cannot say what it held. It needs R-0123 changed,
+which is why it is a decision.

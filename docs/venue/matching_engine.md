@@ -59,13 +59,22 @@ see [fix_order_gateway.md](fix_order_gateway.md) and [binary_order_gateway.md](b
 
 ### Identifiers and times
 
-`OrderID` and `ExecID` are `ME-ORD-N` and `ME-EXEC-N`, from counters that only increase. After a
-restart the order counter starts above the highest order number found in the book, so an order
-number is never issued twice.
+`OrderID` and `ExecID` are made from positions in the sequencer's WAL. An order is named by the
+sequence number of the new order that placed it, and a report by the sequence number of the command
+that caused it and its place among that command's reports. The two numbers are scrambled with FF1,
+with keys derived from a secret both engines hold and the trading date the sequencer writes on each
+command, and written as a letter and 16 hexadecimal digits: `O` for an `OrderID`, `E` for an
+`ExecID`, for example `E3F9A0C21D4B7E605`. So every engine that applies the same commands names
+every report the same, whether it applied them live or while catching up, however often it has
+restarted; identifiers are unique for the day; and a member cannot read the venue's sequence numbers
+from them. `identifier_to_position` turns one back for support staff. See
+[deterministic_matching_engine.md](../availability/deterministic_matching_engine.md), section 3.
 
 `TransactTime` on every report is the time the sequencer sequenced the command, carried in the
-envelope, so a report produced again during a catch-up carries the same time as the original. When
-the envelope has no such time the engine uses its own clock.
+envelope, so a report produced again during a catch-up carries the same time as the original. A
+command whose envelope carries no time, or no trading date, is a defect in the sequencer: the engine
+refuses it, logs the refusal at Error, and writes on the refusal the time the command carried, zero
+where it carried none.
 
 ### Where the reports go
 

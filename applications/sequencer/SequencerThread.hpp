@@ -656,6 +656,18 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void note_logged_command(std::string_view comp_id, int16_t protocol, int16_t inner_pdu_id, std::string_view cl_ord_id);
     // Notes an identifier: added to the record, or kept until the record is built.
     void note_logged_identifier(uint64_t id);
+
+    // The trading date, as the number yyyymmdd, written on every new order and cancel this instance puts in the WAL as
+    // leader: the UTC date of the first record in the day's WAL. Zero until known. A follower learns it from each
+    // command it is sent, so that on taking the lead it writes the date its leader wrote. An instance that leads before
+    // it has been sent one reads the wall time of the first record in its WAL once (Wal::first_wall_time_ns, one small
+    // read); one whose WAL holds nothing takes the date of the command it is writing, which is then the first record. The matching engine makes its identifiers
+    // with keys derived from it (docs/availability/deterministic_matching_engine.md, section 3.3).
+    int32_t trading_date_{0};
+    // The trading date to write on a command sequenced at this wall time, finding it as trading_date_ describes.
+    [[nodiscard]] int32_t trading_date_for(int64_t wall_time_ns);
+    // Learns the trading date from a command in the WAL, if it carries one.
+    void note_trading_date(const pubsub_itc_fw_app::WalRecordView& view);
     // Adds an identifier to the record, reporting once if it is full.
     void record_identifier(uint64_t id);
 

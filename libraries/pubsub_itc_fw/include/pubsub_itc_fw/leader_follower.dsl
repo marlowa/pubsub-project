@@ -233,6 +233,11 @@ message WalRecord (id=103, version=1)
     # reads the WAL can pair each command with the reports the engine sent for it
     # (docs/availability/deterministic_matching_engine.md, section 7.2).
     optional i64 answers_seq_no
+    # On a new order or a cancel the leading sequencer writes to its WAL: the trading date, as the number yyyymmdd, the
+    # UTC date of the first record in the day's WAL. The matching engine derives the keys its identifiers are made with
+    # from it, so every engine and every replay of the WAL makes the same identifiers, even on a day that runs past
+    # midnight (docs/availability/deterministic_matching_engine.md, section 3.3).
+    optional i32 trading_date
 end
 
 # ------------------------------------------------------------

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -228,6 +229,14 @@ class Wal {
 
     /// The sequence number of the first record the log holds, or zero if it holds none.
     [[nodiscard]] int64_t first_seq_no() const;
+
+    /**
+     * @brief The wall time stored with the first record the log holds, or nothing if it holds none.
+     *
+     * Read from the start of the earliest segment, as first_seq_no is: one small read, not a scan of
+     * the log. The sequencer takes the trading date from it.
+     */
+    [[nodiscard]] std::optional<int64_t> first_wall_time_ns() const;
 
     /**
      * @brief The position just after the last record written: where the next record will begin.

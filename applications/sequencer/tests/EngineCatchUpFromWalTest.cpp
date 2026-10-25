@@ -22,6 +22,7 @@ namespace {
 constexpr size_t segment_size = 4096;
 constexpr int16_t new_order = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle);
 constexpr int16_t report = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
+constexpr int32_t trading_date = 20261025;
 
 class EngineCatchUpFromWalTest : public ::testing::Test {
   protected:
@@ -50,6 +51,10 @@ class EngineCatchUpFromWalTest : public ::testing::Test {
         record.sender_comp_id = "MEMBER";
         record.has_origin_gateway_id = true;
         record.origin_gateway_id = gateway_ids::fix_order_gateway;
+        record.has_gateway_instance_id = true;
+        record.gateway_instance_id = 2;
+        record.has_trading_date = true;
+        record.trading_date = trading_date;
         size_t bytes_written = 0;
         size_t bytes_needed = 0;
         static_cast<void>(pubsub_itc_fw_app::encode(record, nullptr, 0, bytes_written, bytes_needed));
@@ -89,6 +94,33 @@ TEST_F(EngineCatchUpFromWalTest, EveryOrderAfterThePositionIsSentAndOtherRecords
     EXPECT_EQ(sent, (std::vector<int64_t>{3, 4}));
     EXPECT_EQ(result.records_sent, 2);
     EXPECT_EQ(result.damaged_seq_no, 0);
+}
+
+// The engine applies a command sent from the WAL as it applies one sent live, so the envelope it is sent must carry every
+// field the engine reads from it: without the trading date, for one, the engine refuses the command, because the keys of
+// its identifiers are derived from it.
+TEST_F(EngineCatchUpFromWalTest, AnOrderIsSentWithEveryFieldTheEngineReads) {
+    append(new_order); // 1
+    std::vector<uint8_t> arena(64 * 1024);
+    std::vector<pubsub_itc_fw_app::WalRecord> sent;
+    std::vector<std::string> comp_ids;
+    static_cast<void>(sequencer::engine_catch_up_from_wal(dir_, wal_->scan_start_for(1), 0, last_seq_no_, arena,
+                                                          [&sent, &comp_ids](int64_t /*seq_no*/, const pubsub_itc_fw_app::WalRecord& envelope) {
+                                                              sent.push_back(envelope);
+                                                              comp_ids.emplace_back(envelope.sender_comp_id);
+                                                          }));
+    ASSERT_EQ(sent.size(), 1U);
+    EXPECT_EQ(sent[0].seq_no, 1);
+    EXPECT_EQ(sent[0].pdu_id, new_order);
+    EXPECT_EQ(sent[0].wall_time_ns, 1);
+    EXPECT_EQ(sent[0].payload.size, 40U);
+    EXPECT_EQ(comp_ids[0], "MEMBER");
+    EXPECT_TRUE(sent[0].has_origin_gateway_id);
+    EXPECT_EQ(sent[0].origin_gateway_id, gateway_ids::fix_order_gateway);
+    EXPECT_TRUE(sent[0].has_gateway_instance_id);
+    EXPECT_EQ(sent[0].gateway_instance_id, 2);
+    EXPECT_TRUE(sent[0].has_trading_date);
+    EXPECT_EQ(sent[0].trading_date, trading_date);
 }
 
 TEST_F(EngineCatchUpFromWalTest, NothingIsSentAfterADamagedRecordAndItsNumberIsReturned) {

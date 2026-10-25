@@ -285,6 +285,30 @@ def _generate_self_signed_cert(cert_path: Path, key_path: Path) -> None:
     )
 
 
+def provide_identifier_secrets(install_dir: Path, namespace: dict) -> None:
+    """Makes sure the file holding each matching engine's identifier secret exists, writing a new one where none does.
+
+    The secret is 32 random bytes, written as 64 hexadecimal digits, readable by the owner alone. The keys of the
+    engine's OrderID and ExecID values are derived from it (docs/availability/deterministic_matching_engine.md,
+    section 3.3). Both engines of a pair must hold the same secret. In an environment whose two engines name the same
+    file on one machine they share it; for a pair on two machines the operator copies the one file to both, and the
+    engines bar each other from leading if their secrets differ. An existing file is never replaced, because the
+    identifiers a member was given today could then no longer be turned back into their positions in the WAL. A
+    relative path is taken from the install directory, and the expanded configuration is given the absolute path."""
+    for key in ("matching_engine_identifier_secret_file", "matching_engine_secondary_identifier_secret_file"):
+        if key not in namespace:
+            continue
+        configured = Path(namespace[key])
+        secret_path = configured if configured.is_absolute() else install_dir / configured
+        if not secret_path.exists():
+            secret_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w") as secret_file:
+                secret_file.write(secrets.token_hex(32) + "\n")
+            print(f"wrote a new identifier secret to {secret_path}")
+        namespace[key] = str(secret_path)
+
+
 def generate_tls_certs(env: dict, install_dir: Path, force: bool) -> None:
     """Generate a self-signed cert/key pair for each unique [tls.*] endpoint."""
     tls_sections = env.get("tls", {})
@@ -934,6 +958,8 @@ def main() -> None:
                             print(f"moved {earlier} to {later}")
             state_path.parent.mkdir(parents=True, exist_ok=True)
             namespace[key] = str(state_path)
+
+    provide_identifier_secrets(install_dir, namespace)
 
     expand_templates(install_dir, namespace, map_config_files_to_components(env, install_dir))
     patch_jar_properties(env, install_dir, namespace)
