@@ -40,7 +40,8 @@
 > ([test_events.md](availability/test_events.md), section 4.17). Andrew reviewed it on 20 October 2026. In the
 > review of phases 7 and 8 the same day, Andrew agreed that phase 7 goes ahead as written. He agreed phase 8 on
 > 24 October 2026, once it was written out in full. Phase 7's design,
-> [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), was decided on 25 October 2026.
+> [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), was decided on 25 October 2026,
+> and the first of its six steps, the engine's state machine, is built.
 
 ## In one page
 
@@ -338,6 +339,10 @@ book and the same reports.
 
 **Design:** [deterministic_matching_engine.md](availability/deterministic_matching_engine.md). Its five decisions
 were taken by Andrew on 25 October 2026.
+
+**Progress:** step 1 of the design's six is built: the handling of commands is in a class of its own,
+`MatchingEngineStateMachine`, with unit tests of its own, and the engine behaves as it did. Steps 2 to 6 are not
+built.
 
 **Finished when:** both engines, run on the same WAL, produce identical reports, and the high
 availability scenarios pass.

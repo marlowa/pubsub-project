@@ -1,5 +1,6 @@
 add_executable(matching_engine
         MatchingEngineConfigurationLoader.cpp
+        MatchingEngineStateMachine.cpp
         MatchingEngineThread.cpp
         MatchingEngine.cpp
         OrderBook.cpp
@@ -21,6 +22,7 @@ add_dependencies(matching_engine fix_orders_generated matching_engine_replicatio
 target_sources(matching_engine PRIVATE
         MatchingEngineConfiguration.hpp
         MatchingEngineConfigurationLoader.hpp
+        MatchingEngineStateMachine.hpp
         MatchingEngineThread.hpp
         MatchingEngine.hpp
         OrderBook.hpp
@@ -45,6 +47,8 @@ add_executable(matching_engine_tests
         tests/OrderKeyTest.cpp
         tests/CancelClOrdIdTest.cpp
         tests/OrderBookTest.cpp
+        tests/MatchingEngineStateMachineTest.cpp
+        MatchingEngineStateMachine.cpp
         OrderBook.cpp
 )
 
@@ -59,7 +63,7 @@ target_link_libraries(matching_engine_tests PRIVATE
         GTest::gtest_main
 )
 
-add_dependencies(matching_engine_tests fix_orders_generated)
+add_dependencies(matching_engine_tests fix_orders_generated matching_engine_test_events_generated)
 
 include(GoogleTest)
 if(ENABLE_TSAN)

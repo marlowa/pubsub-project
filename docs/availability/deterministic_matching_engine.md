@@ -1,7 +1,7 @@
 # A deterministic matching engine {#deterministic_matching_engine}
 
-> **Status: decided, 25 October 2026.** This is the design for phase 7 of the
-> [recovery plan](../recovery_plan.md). Nothing in it is built. Andrew answered the five decisions of section 9 on
+> **Status: decided, 25 October 2026; step 1 of section 8 built.** This is the design for phase 7 of the
+> [recovery plan](../recovery_plan.md). The state machine of section 7.1 is built; steps 2 to 6 are not. Andrew answered the five decisions of section 9 on
 > 25 October 2026: identifiers are scrambled with FF1, the day key is derived from a secret and the trading date, an
 > identifier is a letter and 16 hexadecimal digits, the leading sequencer measures the absence rule, and cancelling
 > on promotion becomes a command in phase 7.
@@ -218,11 +218,21 @@ such a command, so that it costs that command and not the venue, needs both engi
 
 ### 7.1 The engine's state machine, apart from its connections
 
-The engine's handling of commands is now mixed with its connections, its lease agent and its timers, inside
-`MatchingEngineThread`. Phase 7 moves it into a class of its own, the engine's **state machine**: given a command,
-with its sequence number and time, it changes the book and produces the reports, and it does nothing else. It reads no
-clock, opens no connection and keeps no timer. `MatchingEngineThread` gives it the commands, live or from a catch-up,
-and sends the reports it produces.
+The engine's handling of commands is a class of its own, the engine's **state machine**,
+`MatchingEngineStateMachine`: given a command, with its sequence number, its time and the session that sent it, it
+changes the book and produces the reports, and it does nothing else. It reads no clock, opens no connection and keeps
+no timer. `MatchingEngineThread` gives it the commands, live or from a catch-up, and works out each command's time,
+which is the time the sequencer recorded for it or, where that is zero, the engine's own clock (cause 4 of section 2,
+which step 2 removes). The state machine hands what it produces to an interface, `MatchingEngineOutputsInterface`:
+the reports, which the thread sends to the sequencers; the changes to the book, which it sends to the follower engine;
+and what became of each order, which it sends to a test that asked. It also cancels every order on the book when
+the thread asks it to.
+
+The thread keeps everything else: which commands to discard, by role; the counting that shows a catch-up complete;
+holding reports while the engine may not serve or has no connection; the open-order region's opening, recovery and
+liveness mark, which the state machine is given a reference to; and applying the leader's `BookUpdate` messages on
+the follower, which phase 8 removes. The state machine's unit tests are
+`applications/matching_engine/tests/MatchingEngineStateMachineTest.cpp`.
 
 That makes the property testable directly, and it is what the fuzzing of section 6 and the replay of section 7.2
 drive.

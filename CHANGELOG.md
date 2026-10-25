@@ -87,6 +87,11 @@ describe the venue as it now is.
 
 ### Changed
 
+- **The matching engine's handling of commands is a class of its own**, `MatchingEngineStateMachine`,
+  apart from its connections, its lease agent and its timers. Given a new order or a cancel, with its
+  sequence number, time and session, it changes the book and produces the reports, and reads no clock.
+  It has unit tests of its own, and the engine behaves as it did. This is step 1 of phase 7, a
+  deterministic matching engine (`docs/availability/deterministic_matching_engine.md`).
 - **The functional specification's side margins** are 18mm on the left and 16mm on the right of every
   page, so that the text is 176mm wide.
 - **Histograms are recorded without a lock.** prometheus-cpp takes a mutex for every observation,

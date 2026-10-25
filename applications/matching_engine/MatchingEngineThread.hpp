@@ -33,6 +33,7 @@
 #include "FixOrderLimits.hpp"
 #include "GatewayIds.hpp"
 #include "MatchingEngineConfiguration.hpp"
+#include "MatchingEngineStateMachine.hpp"
 #include "OrderBook.hpp"
 #include "OrderBookMetricsReporter.hpp"
 #include "OrderEntry.hpp"
@@ -96,36 +97,18 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
-    // Helper: format "ME-ORD-N" or "ME-EXEC-N" into a caller-provided stack buffer.
-    // Returns string_view into that buffer. Buffer must outlive the view.
-    template <size_t N> static std::string_view format_id(std::array<char, N>& buf, const char* prefix, size_t prefix_len, int64_t counter) {
-        std::memcpy(buf.data(), prefix, prefix_len);
-        auto [end, ec] = std::to_chars(buf.data() + prefix_len, buf.data() + N, counter);
-        return {buf.data(), static_cast<size_t>(end - buf.data())};
-    }
+    // The time written on the reports of a command: the time the sequencer recorded for it, carried on its envelope,
+    // or this engine's own clock where that time is zero.
+    [[nodiscard]] int64_t transact_time_of(int64_t sequenced_at_ns) const;
 
-    // Both come from the WalRecord envelope, not the (DD-derived) FIX PDU:
-    // sequenced_at_ns is the sequencer's wall time used as transact_time (0 => not
-    // stamped, fall back to the local wall clock); session is the identity of the client
-    // session that placed the order -- its comp id and protocol -- which forms half of the
-    // order key. Deliberately not the connection it arrived on: that is where the member
-    // was, and the book has to be keyed on who it is, or an order becomes unmanageable the
-    // moment its connection drops. An empty identity means a record with no originating
-    // client session at all.
-    void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no, int64_t sequenced_at_ns,
-                                 const fix_common::SessionIdentity& session);
-    void handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t seq_no, int64_t sequenced_at_ns,
-                                     const fix_common::SessionIdentity& session);
+    // Whether a command is applied live or as part of a catch-up, which is whether this instance is reconciling. For a
+    // catch-up, also counts the record as offered to the state machine, which is how the catch-up is known complete.
+    [[nodiscard]] CommandSource command_source_for(int64_t sequence_number);
+
     // Reusable scratch buffer for encoding an ExecutionReport before wrapping it in a
     // WalRecord envelope (send_er_to_sequencer). Grown to the largest ER seen and
     // reused -- no fixed cap that could silently drop an ER, no per-ER allocation.
     std::vector<uint8_t> er_encode_buffer_;
-
-    // Reusable arena backing the ER's echoed group element arrays (handle_new_order_single).
-    // Sized to need (grow-and-retry), not a fixed cap that could silently drop echoed groups.
-    static constexpr size_t initial_er_group_arena_size = 4096;
-    static constexpr size_t max_er_group_arena_size = 1u << 20; // 1 MiB sanity ceiling
-    std::vector<uint8_t> er_group_arena_buffer_ = std::vector<uint8_t>(initial_er_group_arena_size);
 
     // Wraps the ER in a WalRecord envelope and sends it to both sequencers. The identity of
     // the session whose order the report is about rides on the envelope, so the ER PDU itself
@@ -140,69 +123,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // session is connected -- and on the path that needs this most, promotion after a
     // gateway or ME failure, any address it remembered would name a process that has since
     // died. The sequencer holds the live bindings and resolves the identity when it sends.
-    /// Whether a report repeats one whose subject the member may already have been told
-    /// about. Carried to the gateway on the envelope and written there as PossResend
-    /// (tag 97). See R-0122.
-    enum class ReportIsRepeat { no, yes };
-
     void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, const fix_common::SessionIdentity& session,
                               ReportIsRepeat repeat = ReportIsRepeat::no);
-
-    /**
-     * @brief Refuses a new order whose ClOrdID is longer than the book's key holds.
-     *
-     * Sends a rejected report naming the limit. During a catch-up the report is marked as a
-     * possible repeat, as every report a catch-up sends is (R-0122).
-     *
-     * @param[in] view            The order.
-     * @param[in] sequence_number Its sequence number.
-     * @param[in] transact_time   The time the venue took it.
-     * @param[in] session         The session that placed it.
-     * @param[in] repeat          Whether the report may repeat one an earlier engine sent.
-     */
-    void refuse_over_long_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
-                                const fix_common::SessionIdentity& session, ReportIsRepeat repeat);
-
-    /**
-     * @brief Refuses a request to cancel whose ClOrdID or OrigClOrdID is longer than the book's key holds.
-     *
-     * The rejected report carries the OrigClOrdID, so each gateway sends it to the member as an
-     * OrderCancelReject (R-0151). The book never holds an order with an identifier that long,
-     * so there is no order to report the status of.
-     *
-     * Parameters as for refuse_over_long_order.
-     */
-    void refuse_over_long_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
-                                 const fix_common::SessionIdentity& session, ReportIsRepeat repeat);
-
-    /**
-     * @brief Whether a live order or cancel carries a sequence number at or below one already acted on.
-     *
-     * The sequence numbers the leading sequencer sends only go forward, so one that does not means
-     * the record the engine has acted on and the log of the sequencer now leading disagree. The engine
-     * refuses such a command, answering the member, rather than acting on it and holding a book that
-     * silently disagrees with the record. Never true during a catch-up, whose records are below the
-     * position by construction. See docs/availability/change_of_sequencer_leader.md, part 4.2.
-     *
-     * Raises highest_live_seq_no_ to sequence_number when it returns false.
-     */
-    [[nodiscard]] bool sequence_goes_backwards(int64_t sequence_number);
-
-    /**
-     * @brief Refuses a new order whose sequence number is not above the last the engine acted on.
-     *
-     * Parameters as for refuse_over_long_order, without the repeat marking: this is only ever a live refusal.
-     */
-    void refuse_out_of_sequence_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
-                                      const fix_common::SessionIdentity& session);
-
-    /**
-     * @brief Refuses a request to cancel whose sequence number is not above the last the engine acted on.
-     *
-     * The report carries the OrigClOrdID, so each gateway sends it as an OrderCancelReject.
-     */
-    void refuse_out_of_sequence_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
-                                       const fix_common::SessionIdentity& session);
 
     const MatchingEngineConfiguration& config_;
 
@@ -241,10 +163,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Carried forward to WAL reconciliation at promotion time (Slice C).
     int64_t last_replicated_seq_no_{0};
 
-    // The highest sequence number of any live order or cancel this engine has acted on, or the
-    // position a completed catch-up brought it to, whichever is higher. See sequence_goes_backwards().
-    int64_t highest_live_seq_no_{0};
-
     // ConnectionIDs of the outbound connections to the sequencer ER inbound listeners.
     // ERs are sent to all valid connections. The leader routes them to the gateway;
     // the follower discards. This ensures ERs reach whichever sequencer is currently leader.
@@ -282,11 +200,12 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // here to read.
     //
     // This exists so that the departure of an acknowledgement can be timed without the value
-    // being passed down to it. Reports leave through send_er_to_sequencer(), which is called
-    // from ten places, and most of them -- a report that a halt has cancelled an order, a
-    // report reconciled after a failover, a fill of an order that has rested for hours -- have
-    // no client order behind them at all. Adding a parameter to all ten would be one chance
-    // per call site to supply the wrong thing, and the wrong thing would be recorded silently.
+    // being passed down to it. Every report leaves through send_er_to_sequencer(), which the
+    // state machine reaches from each of the places it produces a report, and most of those --
+    // a report that a halt has cancelled an order, a report from a catch-up, a refusal -- have
+    // no client order behind them at all. Carrying the time through the state machine to each
+    // would be one chance per place to supply the wrong thing, and the wrong thing would be
+    // recorded silently.
     //
     // What makes reading it correct is that only an acknowledgement whose status is New is
     // ever timed. Such an acknowledgement can only arise from handling a new order, which is
@@ -306,6 +225,29 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // See docs/durability/open_order_checkpoint.md.
     OrderBook order_book_;
 
+    // Where the state machine's results go: reports to the sequencers, changes to the book to the follower engine,
+    // what became of each order to the test, and accepted orders to the counter of orders processed.
+    class EngineOutputs : public MatchingEngineOutputsInterface {
+      public:
+        explicit EngineOutputs(MatchingEngineThread& owner) : owner_(owner) {}
+        void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number, const fix_common::SessionIdentity& session,
+                         ReportIsRepeat repeat) override;
+        void order_added_to_book(int64_t sequence_number, const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
+                                 const OrderEntry& entry) override;
+        void order_removed_from_book(int64_t sequence_number, const fix_common::SessionIdentity& session, std::string_view cl_ord_id) override;
+        void order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
+                           ReportIsRepeat repeat, int64_t sequence_number, std::string_view orig_cl_ord_id) override;
+        void order_accepted() override;
+
+      private:
+        MatchingEngineThread& owner_;
+    };
+    EngineOutputs engine_outputs_{*this};
+
+    // The handling of commands: what each new order and cancel does to the book, and the reports it produces. Declared
+    // after the book and the outputs it is given, so that both exist when it is constructed.
+    MatchingEngineStateMachine state_machine_{order_book_, engine_outputs_, get_logger()};
+
     // The region this process inherited could not be read, so what it held is unknown here and
     // the book cannot be vouched for however well the reconciliation goes. R-0102.
     bool region_was_unusable_{false};
@@ -319,19 +261,11 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // and at startup there is no connection to tell anyone down.
     bool cancel_and_halt_pending_{false};
 
-    // Trading is halted and the venue is not taking orders. R-0117 halts here after a long
-    // absence; R-0023 requires a person to lift it.
-    bool halted_{false};
-
     // Says the engine is alive and able to match, independently of whether anything is being
     // traded. A second is far finer than the absence limit needs and costs one store to
     // mapped memory.
     pubsub_itc_fw::TimerID able_to_match_timer_id_{};
     static constexpr std::chrono::seconds able_to_match_interval{1};
-
-    // Monotonic counters for generated OrderID and ExecID values (primary only).
-    int64_t order_id_counter_{0};
-    int64_t exec_id_counter_{0};
 
     // Helper: send a BookUpdate PDU to ME-secondary (primary only).
     void send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
@@ -674,6 +608,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      */
     [[nodiscard]] bool book_can_be_vouched_for() const;
 
+    // Cancels every order on the book through the state machine, with the time from this engine's clock, and tells the
+    // test how many there were.
     void cancel_all_orders_on_failover();
 
     /// Does the cancel-and-halt the absence rule asked for, once there is somewhere to send
