@@ -987,6 +987,9 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     envelope.report_engine_epoch = position.has_value() ? position->epoch : 0;
     envelope.has_report_number = position.has_value();
     envelope.report_number = position.has_value() ? position->number : 0;
+    // The command the report answers, which its transport header carried; zero for a report no command produced.
+    envelope.has_answers_seq_no = er_seq_no > 0;
+    envelope.answers_seq_no = er_seq_no;
     stamp_reports_forwarded_through(envelope);
 
     append_envelope_to_wal(envelope);

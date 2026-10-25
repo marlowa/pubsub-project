@@ -223,7 +223,10 @@ from anyone and has already stopped leading, so the wait costs nothing more.
 ### 4.6 Where this does not apply
 
 **The matching engine pair and the publisher pair** do not need it. Their state is derived from the
-sequencer's log, and an engine that takes the lead catches up from the sequencer before it acts.
+sequencer's log, and an engine that takes the lead catches up from the sequencer before it acts. The matching
+engine pair uses the same statements for another reason, with leaderships that start by saying the peer may lead:
+a leading engine says its peer may not lead when the two are configured to apply commands differently (rule 12 of
+[majority_leases.md](majority_leases.md)). The rules of this document are unchanged by it.
 
 **The two arbiters** do not need it. They hold no log.
 

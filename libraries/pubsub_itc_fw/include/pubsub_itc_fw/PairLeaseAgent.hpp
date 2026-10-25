@@ -303,9 +303,9 @@ class PairLeaseAgent {
         resuming_lead_until_ = Clock::time_point{};
         record_leading();
         if (participant_.statement().leader_id != 0) {
-            // A new leadership starts by saying its peer may not lead, and the owner may wait on an
-            // echo of that before acting on a command its peer lacks; it is sent now rather than at
-            // the first renewal.
+            // A new leadership starts with a statement about its peer -- in the sequencer pair that the
+            // peer may not lead, and the owner may wait on an echo of that before acting on a command its
+            // peer lacks -- and it is sent now rather than at the first renewal.
             last_renewal_ = now;
             ask_voters(participant_.epoch(), now);
         }
@@ -341,6 +341,11 @@ class PairLeaseAgent {
                    "{}: {} has granted epoch {}, above this instance's {} -- a newer generation exists, so this instance stops {} and will ask again above it",
                    owner_name_, voter_name(voter_id), highest_epoch, epoch_before, was_leading ? "leading" : "asking");
         return was_leading ? Change::StoppedLeading : Change::Nothing;
+    }
+
+    /// Whether this instance leads, whether or not its lease has yet run out: what say_peer_may_not_lead() requires.
+    [[nodiscard]] bool leading() const {
+        return participant_.state() == LeaseHolder::State::Leading;
     }
 
     /// Whether this instance leads and holds an unexpired lease, and so may act as leader.
@@ -383,6 +388,24 @@ class PairLeaseAgent {
      */
     void peer_holds_everything(Clock::time_point now) {
         participant_.peer_holds_everything();
+        statement_changed(now);
+    }
+
+    /**
+     * @brief Say that the peer may not lead, for a reason of the owner's, such as the two instances being configured differently.
+     *
+     * The statement is written to disk in the background and sent to both other voters at once; a voter
+     * holding it refuses the peer a lease. Only in a pair constructed with
+     * PeerStatementsFlag::SayWhenPeerMayNotLead or SayWhetherPeerMayLead, and only while leading.
+     */
+    void say_peer_may_not_lead(Clock::time_point now) {
+        participant_.say_peer_may_not_lead();
+        statement_changed(now);
+    }
+
+    /// Say that the peer may lead again, once the owner's reason for saying it may not has gone. As say_peer_may_not_lead.
+    void say_peer_may_lead(Clock::time_point now) {
+        participant_.say_peer_may_lead();
         statement_changed(now);
     }
 
@@ -442,8 +465,8 @@ class PairLeaseAgent {
         reported_may_not_lead_ = may_not_lead;
         if (may_not_lead) {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                       "{}: the peer, leading at epoch {}, says this instance may not lead -- its log lacks commands the matching engine has acted on. "
-                       "It does not ask to lead until the peer says otherwise",
+                       "{}: the peer, leading at epoch {}, says this instance may not lead (the peer's Quill log says why). It does not ask to lead "
+                       "until the peer says otherwise",
                        owner_name_, participant_.recorded_statement().epoch);
         } else {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: no statement that this instance may not lead is held any longer -- it may lead again",

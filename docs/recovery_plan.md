@@ -41,7 +41,7 @@
 > review of phases 7 and 8 the same day, Andrew agreed that phase 7 goes ahead as written. He agreed phase 8 on
 > 24 October 2026, once it was written out in full. Phase 7's design,
 > [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), was decided on 25 October 2026,
-> and the first of its six steps, the engine's state machine, is built.
+> and the first two of its six steps are built.
 
 ## In one page
 
@@ -340,9 +340,11 @@ book and the same reports.
 **Design:** [deterministic_matching_engine.md](availability/deterministic_matching_engine.md). Its five decisions
 were taken by Andrew on 25 October 2026.
 
-**Progress:** step 1 of the design's six is built: the handling of commands is in a class of its own,
-`MatchingEngineStateMachine`, with unit tests of its own, and the engine behaves as it did. Steps 2 to 6 are not
-built.
+**Progress:** steps 1 and 2 of the design's six are built. The handling of commands is in a class of its own,
+`MatchingEngineStateMachine`, with unit tests of its own. An order and a cancel are applied by one path whether they
+arrive live or from a catch-up; OrderIDs come from the WAL; a cancel of every order follows the order of the WAL; a
+command's time comes only from the WAL; an engine configured differently from its leader is barred from leading; and
+`wal_replay_check` compares a fresh replay of a WAL with the reports it holds. Steps 3 to 6 are not built.
 
 **Finished when:** both engines, run on the same WAL, produce identical reports, and the high
 availability scenarios pass.

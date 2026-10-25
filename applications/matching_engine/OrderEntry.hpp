@@ -27,7 +27,11 @@ constexpr size_t max_qty_length = 24;
 // Live order stored in the order book from NOS acceptance until cancel.
 // All string fields stored as fixed-size char arrays -- no heap allocation.
 struct OrderEntry {
-    int64_t order_id_num{}; // counter value; formatted to "ME-ORD-N" on demand
+    // The sequence number, in the sequencer's WAL, of the new order that placed this order. It is the
+    // number the OrderID is formatted from ("ME-ORD-N"), and the order in which a cancel of every order
+    // reports them. Every engine that applies the same WAL gives an order the same number, which a
+    // counter kept by the engine does not.
+    int64_t placed_at_seq_no{};
     // Whose order this is: the comp id and the protocol, which together are the key
     // this entry is filed under and the address-free way to reach the member again.
     //

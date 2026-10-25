@@ -39,6 +39,31 @@ install(FILES
         DESTINATION etc/matching_engine
 )
 
+# ── wal_replay_check ──────────────────────────────────────────────────────────
+# Whether a fresh state machine, given a sequencer's WAL, produces the reports the WAL holds. See
+# docs/availability/deterministic_matching_engine.md, section 7.2.
+add_executable(wal_replay_check
+        tools/WalReplayCheckMain.cpp
+        MatchingEngineStateMachine.cpp
+        OrderBook.cpp
+)
+
+target_include_directories(wal_replay_check PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
+        ${FIX_DSL_INCLUDE_DIR}
+)
+
+target_link_libraries(wal_replay_check PRIVATE
+        pubsub_itc_fw
+)
+
+add_dependencies(wal_replay_check fix_orders_generated leader_follower_generated matching_engine_test_events_generated)
+
+install(TARGETS wal_replay_check
+        RUNTIME DESTINATION bin
+)
+
 # ── Unit tests ────────────────────────────────────────────────────────────────
 # The order book key decides which orders are the same order, and got that wrong once
 # when a second gateway arrived. It is a plain value type, so it is worth testing on its

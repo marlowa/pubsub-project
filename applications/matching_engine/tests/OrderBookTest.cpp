@@ -19,6 +19,7 @@
 
 #include <filesystem>
 #include <set>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -39,9 +40,9 @@ OrderKey key_for(const char* comp_id, const char* cl_ord_id) {
     return OrderKey::make(fix_common::SessionIdentity::make(comp_id, 1), cl_ord_id);
 }
 
-OrderEntry entry_for(int64_t order_id_num, const char* symbol, const char* quantity) {
+OrderEntry entry_for(int64_t placed_at_seq_no, const char* symbol, const char* quantity) {
     OrderEntry entry{};
-    entry.order_id_num = order_id_num;
+    entry.placed_at_seq_no = placed_at_seq_no;
     entry.session = fix_common::SessionIdentity::make("MEMBER-A", 1);
     entry.side = pubsub_itc_fw_app::Side::Buy;
     entry.ord_type = pubsub_itc_fw_app::OrdType::Limit;
@@ -105,7 +106,7 @@ TEST_F(OrderBookTest, AnOrderIsFoundByTheIdentityItWasFiledUnder) {
     EXPECT_TRUE(book.contains(key));
     const OrderEntry* found = book.find(key);
     ASSERT_NE(found, nullptr);
-    EXPECT_EQ(found->order_id_num, 1);
+    EXPECT_EQ(found->placed_at_seq_no, 1);
     EXPECT_EQ(found->get_symbol(), "BHP");
     EXPECT_EQ(found->get_order_qty(), "100");
 }
@@ -191,7 +192,7 @@ TEST_F(OrderBookTest, ReplacingAnOrderKeepsOneRecordNotTwo) {
     ASSERT_TRUE(book.add_or_replace(key, entry_for(2, "RIO", "200"), 11));
 
     EXPECT_EQ(book.size(), 1U);
-    EXPECT_EQ(book.find(key)->order_id_num, 2);
+    EXPECT_EQ(book.find(key)->placed_at_seq_no, 2);
     EXPECT_EQ(book.find(key)->get_symbol(), "RIO");
 }
 
@@ -206,7 +207,7 @@ TEST_F(OrderBookTest, EveryOrderIsVisitedOnce) {
     size_t visits = 0;
     book.for_each([&](const OrderKey& key, const OrderEntry& entry) {
         EXPECT_EQ(key.session.comp_id_view(), "MEMBER-A");
-        seen.insert(entry.order_id_num);
+        seen.insert(entry.placed_at_seq_no);
         ++visits;
     });
 
@@ -241,7 +242,7 @@ TEST_F(OrderBookTest, ReplacingAnOrderStillWorksWhenTheRegionIsFull) {
     // it does not already have.
     const OrderKey existing = key_for("MEMBER-A", "ORD-0");
     EXPECT_TRUE(book.add_or_replace(existing, entry_for(500, "RIO", "200"), 500));
-    EXPECT_EQ(book.find(existing)->order_id_num, 500);
+    EXPECT_EQ(book.find(existing)->placed_at_seq_no, 500);
     EXPECT_FALSE(book.add_or_replace(key_for("MEMBER-A", "ONE-TOO-MANY"), entry_for(99, "BHP", "100"), 99));
 }
 
@@ -265,7 +266,7 @@ TEST_F(OrderBookTest, TheOrdersAreStillInTheRegionAfterTheBookIsClosed) {
     // not built yet. What can be checked here is that the record survived, which the region
     // is asked directly.
     pubsub_itc_fw::MappedSlotStore store;
-    ASSERT_TRUE(store.open(path_, static_cast<uint32_t>(sizeof(OrderEntry)), region_capacity));
+    ASSERT_TRUE(store.open(path_, static_cast<uint32_t>(sizeof(OrderEntry)), region_capacity, OrderBook::record_format));
     EXPECT_EQ(store.published(), 10);
 
     size_t recoverable = 0;
@@ -275,7 +276,7 @@ TEST_F(OrderBookTest, TheOrdersAreStillInTheRegionAfterTheBookIsClosed) {
         }
         ++recoverable;
         const auto* entry = reinterpret_cast<const OrderEntry*>(store.payload(i));
-        EXPECT_EQ(entry->order_id_num, 7);
+        EXPECT_EQ(entry->placed_at_seq_no, 7);
         EXPECT_EQ(entry->get_symbol(), "BHP");
         EXPECT_EQ(entry->get_order_qty(), "100");
         EXPECT_EQ(entry->get_price(), "42.50");
@@ -298,14 +299,14 @@ TEST_F(OrderBookTest, AnOrderCancelledBeforeTheProcessDiedIsNotInTheRegion) {
     }
 
     pubsub_itc_fw::MappedSlotStore store;
-    ASSERT_TRUE(store.open(path_, static_cast<uint32_t>(sizeof(OrderEntry)), region_capacity));
+    ASSERT_TRUE(store.open(path_, static_cast<uint32_t>(sizeof(OrderEntry)), region_capacity, OrderBook::record_format));
 
     size_t recoverable = 0;
     int64_t surviving_order = 0;
     for (SlotIndex i = 0; i < region_capacity; ++i) {
         if (store.is_recoverable(i)) {
             ++recoverable;
-            surviving_order = reinterpret_cast<const OrderEntry*>(store.payload(i))->order_id_num;
+            surviving_order = reinterpret_cast<const OrderEntry*>(store.payload(i))->placed_at_seq_no;
         }
     }
     EXPECT_EQ(recoverable, 1U);
@@ -324,7 +325,7 @@ TEST_F(OrderBookTest, AnOrderNotYetPublishedIsAboveWhatTheRegionVouchesFor) {
     }
 
     pubsub_itc_fw::MappedSlotStore store;
-    ASSERT_TRUE(store.open(path_, static_cast<uint32_t>(sizeof(OrderEntry)), region_capacity));
+    ASSERT_TRUE(store.open(path_, static_cast<uint32_t>(sizeof(OrderEntry)), region_capacity, OrderBook::record_format));
     EXPECT_EQ(store.published(), 10);
 
     size_t recoverable = 0;
@@ -388,14 +389,13 @@ TEST_F(OrderBookTest, AnOrderOpenBeforeTheRestartIsOpenAfterIt) {
 
     EXPECT_EQ(found.orders, 1U);
     EXPECT_EQ(found.published, 10);
-    EXPECT_EQ(found.highest_order_id_num, 7);
 
     // The member's question is whether its order is still cancellable, which means the record
     // has to be filed under the identity the member will name it by.
     ASSERT_TRUE(after.contains(key));
     const OrderEntry* recovered = after.find(key);
     ASSERT_NE(recovered, nullptr);
-    EXPECT_EQ(recovered->order_id_num, 7);
+    EXPECT_EQ(recovered->placed_at_seq_no, 7);
     EXPECT_EQ(recovered->get_cl_ord_id(), "ORD-001");
     EXPECT_EQ(recovered->session.comp_id_view(), "MEMBER-A");
     EXPECT_EQ(recovered->get_symbol(), "BHP");
@@ -491,21 +491,6 @@ TEST_F(OrderBookTest, ARecoveredBookCanTakeNewOrdersInEveryRecordItFreed) {
     EXPECT_EQ(after.size(), region_capacity);
 }
 
-TEST_F(OrderBookTest, TheHighestOrderNumberComesBackSoASuccessorDoesNotReissueIt) {
-    {
-        OrderBook before;
-        ASSERT_FALSE(before.open(path_, region_capacity, map_capacity));
-        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-001"), entry_for(41, "BHP", "100"), 10));
-        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-002"), entry_for(99, "RIO", "200"), 11));
-        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-003"), entry_for(70, "CBA", "300"), 12));
-        before.publish(12);
-    }
-
-    OrderBook after;
-    ASSERT_TRUE(after.open(path_, region_capacity, map_capacity));
-    EXPECT_EQ(after.recover().highest_order_id_num, 99);
-}
-
 TEST_F(OrderBookTest, RecoveryLeavesNothingForWarmingToDo) {
     {
         OrderBook before;
@@ -535,6 +520,47 @@ TEST_F(OrderBookTest, WarmingLeavesTheOrdersAlone) {
 
     EXPECT_EQ(book.size(), 1U);
     EXPECT_EQ(book.find(key)->get_symbol(), "BHP");
+}
+
+// Visited by the sequence numbers that placed the orders, whatever order they were added in, and the same after the
+// book has been rebuilt from its region, which files them in the map in a different order.
+TEST_F(OrderBookTest, OrdersAreVisitedInTheOrderTheyWerePlaced) {
+    const std::vector<int64_t> wanted{10, 20, 30, 40};
+    {
+        OrderBook before;
+        ASSERT_FALSE(before.open(path_, region_capacity, map_capacity));
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-30"), entry_for(30, "BHP", "100"), 30));
+        ASSERT_TRUE(before.add(key_for("MEMBER-B", "ORD-10"), entry_for(10, "RIO", "100"), 10));
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-40"), entry_for(40, "CBA", "100"), 40));
+        ASSERT_TRUE(before.add(key_for("MEMBER-C", "ORD-20"), entry_for(20, "WBC", "100"), 20));
+        std::vector<int64_t> visited;
+        before.for_each_in_order_placed([&](const OrderEntry& entry) { visited.push_back(entry.placed_at_seq_no); });
+        EXPECT_EQ(visited, wanted);
+        before.publish(40);
+    }
+
+    OrderBook after;
+    ASSERT_TRUE(after.open(path_, region_capacity, map_capacity));
+    static_cast<void>(after.recover());
+    std::vector<int64_t> visited;
+    std::vector<std::string> cl_ord_ids;
+    after.for_each_in_order_placed([&](const OrderEntry& entry) {
+        visited.push_back(entry.placed_at_seq_no);
+        cl_ord_ids.emplace_back(entry.get_cl_ord_id());
+    });
+    EXPECT_EQ(visited, wanted);
+    EXPECT_EQ(cl_ord_ids, (std::vector<std::string>{"ORD-10", "ORD-20", "ORD-30", "ORD-40"}));
+}
+
+// A region whose records mean something other than what this build's OrderEntry means is refused, even
+// though its records are the same size.
+TEST_F(OrderBookTest, ARegionWrittenWithAnotherRecordFormatIsRefused) {
+    {
+        pubsub_itc_fw::MappedSlotStore store;
+        ASSERT_FALSE(store.open(path_, static_cast<uint32_t>(sizeof(OrderEntry)), region_capacity, OrderBook::record_format + 1));
+    }
+    OrderBook book;
+    EXPECT_THROW(book.open(path_, region_capacity, map_capacity), pubsub_itc_fw::PubSubItcException);
 }
 
 TEST_F(OrderBookTest, ThePublishedPositionIsWhatWasLastPublished) {

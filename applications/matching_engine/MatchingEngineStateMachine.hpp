@@ -34,10 +34,13 @@ enum class ReportIsRepeat { no, yes };
 /**
  * @brief Whether a command is being applied as it arrives or as part of catching up from the sequencer's WAL.
  *
- * A command applied live is checked against the order of sequence numbers, refused while trading is
- * halted, replicated to the follower engine and counted as processed. A command applied during a
- * catch-up is none of those: it is applied to the book, reported as a possible repeat, and, if the
- * book already holds the order, ignored.
+ * A command is applied by the same code whichever it is, so that the book and the reports are the same.
+ * These are the only differences. A command applied live is checked against the order of sequence
+ * numbers and refused while trading is halted; a new order it puts on the book is replicated to the
+ * follower engine and counted as processed. A command applied during a catch-up is not checked against
+ * the order of sequence numbers, whose records are below the position by construction, nor refused
+ * while halted, and its reports are marked as possible repeats. A command a catch-up delivers that this
+ * engine has already acted on, by its sequence number, is not applied again.
  */
 enum class CommandSource { live, catch_up };
 
@@ -112,7 +115,7 @@ class MatchingEngineOutputsInterface {
  * It does not own the book. The book is a region of mapped memory whose opening, recovery and
  * liveness mark belong to the engine's start-up and timers, so MatchingEngineThread owns it and the
  * state machine is given a reference. What the state machine owns is what only the handling of
- * commands uses: the counters that number orders and reports, the highest sequence number acted on,
+ * commands uses: the counter that numbers reports, the highest sequence number acted on,
  * and whether trading is halted.
  *
  * Not thread-safe. It belongs to the matching engine's thread, as the book does.
@@ -138,16 +141,19 @@ class MatchingEngineStateMachine {
     /**
      * @brief Applies a new order.
      *
-     * Live, the order is refused if its sequence number is not above the highest acted on, if its
-     * ClOrdID is longer than the book's key holds, while trading is halted, if the session already has
-     * an open order with that ClOrdID, or if the book's region is full; otherwise it is put on the book
-     * and acknowledged. During a catch-up, an over-long ClOrdID is refused, an order the book already
-     * holds is ignored, and any other is put on the book and acknowledged, every report marked as a
-     * possible repeat.
+     * The order is refused if it carries no time, if its ClOrdID is longer than the book's key holds,
+     * if the session already has an open order with that ClOrdID, or if the book's region is full, and
+     * applied live it is refused too if its sequence number is not above the highest acted on or while
+     * trading is halted; otherwise it is put on the book and acknowledged. The differences between live
+     * and a catch-up are those of CommandSource. The book is published to the order's sequence number
+     * once its report has been sent: live, only when the order was put on the book; during a catch-up,
+     * after every command.
      *
      * @param[in] view            The order.
      * @param[in] sequence_number Its sequence number in the sequencer's WAL.
-     * @param[in] transact_time   The time the venue took it, in nanoseconds since the epoch, written on every report.
+     * @param[in] transact_time   The time the sequencer took it, in nanoseconds since the epoch, from its WAL record,
+     *                            written on every report. Zero means the record carries no time, which is a defect in
+     *                            the sequencer, and the command is refused.
      * @param[in] session         The session that placed it, which with the ClOrdID identifies it on the book.
      * @param[in] source          Whether it is applied live or during a catch-up.
      */
@@ -157,11 +163,11 @@ class MatchingEngineStateMachine {
     /**
      * @brief Applies a request to cancel an order.
      *
-     * Live, the request is refused if its sequence number is not above the highest acted on, if its
-     * ClOrdID or OrigClOrdID is longer than the book's key holds, or if the book holds no such order;
-     * otherwise the order is taken off the book and the cancel reported. During a catch-up, an
-     * over-long identifier is refused, a cancel of an order the book does not hold produces no report,
-     * and any other takes the order off the book and is reported as a possible repeat.
+     * The request is refused if it carries no time, if its ClOrdID or OrigClOrdID is longer than the
+     * book's key holds, or if the book holds no such order, and applied live it is refused too if its
+     * sequence number is not above the highest acted on; otherwise the order is taken off the book and
+     * the cancel reported, describing the order from what the book held. The differences between live
+     * and a catch-up are those of CommandSource.
      *
      * Parameters as for apply_new_order.
      */
@@ -171,8 +177,9 @@ class MatchingEngineStateMachine {
     /**
      * @brief Cancels every order on the book, reporting each to the member that placed it, and empties the book.
      *
-     * The reports carry sequence number 0, because no command produced them, and are visited in the
-     * order the book's map holds its entries.
+     * The reports carry sequence number 0, because no command produced them, and are produced in the
+     * order the orders were placed, by the sequence numbers of the new orders that placed them, which
+     * every engine that applied the same commands agrees on.
      *
      * @param[in] transact_time The time written on every report.
      * @return How many orders there were, and how many reports were produced.
@@ -188,13 +195,6 @@ class MatchingEngineStateMachine {
     [[nodiscard]] bool halted() const {
         return halted_;
     }
-
-    /**
-     * @brief Tells the state machine the highest order number among the orders recovered from the region at start-up,
-     * so that no order accepted later is given a number one of them already has.
-     * @param[in] highest_order_id_num The highest order number recovered.
-     */
-    void note_recovered_orders(int64_t highest_order_id_num);
 
     /**
      * @brief Tells the state machine that a catch-up has brought the book to a sequence number, so that a live
@@ -217,11 +217,6 @@ class MatchingEngineStateMachine {
         auto [end, ec] = std::to_chars(buf.data() + prefix_len, buf.data() + N, counter);
         return {buf.data(), static_cast<size_t>(end - buf.data())};
     }
-
-    void apply_new_order_from_catch_up(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
-                                       const fix_common::SessionIdentity& session);
-    void apply_cancel_from_catch_up(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
-                                    const fix_common::SessionIdentity& session);
 
     /**
      * @brief Refuses a new order whose ClOrdID is longer than the book's key holds.
@@ -264,6 +259,40 @@ class MatchingEngineStateMachine {
     [[nodiscard]] bool sequence_goes_backwards(int64_t sequence_number);
 
     /**
+     * @brief Whether a command delivered by a catch-up is one this engine has already acted on, and so is not applied again.
+     *
+     * True when its sequence number is at or below the highest acted on live or reached by a completed catch-up. Every
+     * command is applied once, in the order of its sequence number, whichever way it arrives.
+     */
+    [[nodiscard]] bool already_applied(int64_t sequence_number) const;
+
+    // Publishes the book to a refused command's sequence number during a catch-up, and not live. See the definition for why.
+    void publish_after_refusal(int64_t sequence_number, CommandSource source);
+
+    /**
+     * @brief Refuses a new order whose WAL record carries no time, which is a defect in the sequencer.
+     *
+     * The report's TransactTime is zero, which is what the command carried, so that every engine and
+     * every replay produce the same report.
+     *
+     * @param[in] view            The order.
+     * @param[in] sequence_number Its sequence number.
+     * @param[in] session         The session that placed it.
+     * @param[in] repeat          Whether the report may repeat one an earlier engine sent.
+     */
+    void refuse_order_without_time(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, const fix_common::SessionIdentity& session,
+                                   ReportIsRepeat repeat);
+
+    /**
+     * @brief Refuses a request to cancel whose WAL record carries no time. The report carries the OrigClOrdID, so each
+     * gateway sends it as an OrderCancelReject.
+     *
+     * Parameters as for refuse_order_without_time.
+     */
+    void refuse_cancel_without_time(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, const fix_common::SessionIdentity& session,
+                                    ReportIsRepeat repeat);
+
+    /**
      * @brief Refuses a new order whose sequence number is not above the last the engine acted on.
      *
      * Parameters as for refuse_over_long_order, without the repeat marking: this is only ever a live refusal.
@@ -283,8 +312,8 @@ class MatchingEngineStateMachine {
     MatchingEngineOutputsInterface& outputs_;
     pubsub_itc_fw::QuillLogger& logger_;
 
-    // Counters for the OrderID and ExecID values the engine generates.
-    int64_t order_id_counter_{0};
+    // The counter the ExecID values are formatted from. An OrderID is formatted from the sequence number of the new
+    // order that placed the order, so it needs no counter.
     int64_t exec_id_counter_{0};
 
     // The highest sequence number of any live order or cancel acted on, or the position a completed catch-up brought

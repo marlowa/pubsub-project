@@ -50,6 +50,7 @@ constexpr size_t offset_payload_size = 8;
 constexpr size_t offset_slot_count = 12;
 constexpr size_t offset_published = 16;
 constexpr size_t offset_free_head = 24;
+constexpr size_t offset_payload_format = 28;
 constexpr size_t offset_alive_at_ns = 32;
 constexpr size_t slot_header_size = 16;
 constexpr size_t offset_slot_state = 0;
@@ -470,6 +471,24 @@ TEST_F(MappedSlotStoreTest, AStoreWrittenWithADifferentSlotCountIsRefused) {
     EXPECT_THROW(store.open(path_, record_size, slot_count * 2), PubSubItcException);
 }
 
+// The same size of record can mean something different to the owner, which says so by raising the
+// format it opens the store with. A store written with another format is refused, and one written with
+// the same format is opened.
+TEST_F(MappedSlotStoreTest, AStoreWrittenWithADifferentRecordFormatIsRefused) {
+    {
+        MappedSlotStore store;
+        ASSERT_FALSE(store.open(path_, record_size, slot_count, 1));
+        store_one(store, 1, 10);
+    }
+    {
+        MappedSlotStore store;
+        EXPECT_THROW(store.open(path_, record_size, slot_count, 2), PubSubItcException);
+        EXPECT_FALSE(store.is_open());
+    }
+    MappedSlotStore store;
+    EXPECT_TRUE(store.open(path_, record_size, slot_count, 1));
+}
+
 TEST_F(MappedSlotStoreTest, AStoreWrittenByAnEarlierVersionIsRefused) {
     {
         MappedSlotStore store;
@@ -697,7 +716,7 @@ TEST_F(MappedSlotStoreTest, LayoutStillAgreesWithTheStore) {
     // proving nothing, so it fails loudly rather than letting them pass for free.
     {
         MappedSlotStore store;
-        ASSERT_FALSE(store.open(path_, record_size, slot_count));
+        ASSERT_FALSE(store.open(path_, record_size, slot_count, 7));
         store_one(store, 1, 10);
         store_one(store, 2, 4242);
         store.mark_alive(1234567890123456789LL);
@@ -707,7 +726,8 @@ TEST_F(MappedSlotStoreTest, LayoutStillAgreesWithTheStore) {
     EXPECT_EQ(read_at<uint32_t>(offset_slot_count), slot_count);
     EXPECT_EQ(read_at<int64_t>(offset_published), 4242);
     EXPECT_EQ(read_at<uint32_t>(offset_magic), 0x534C4F54u);
-    EXPECT_EQ(read_at<uint32_t>(offset_version), 2u);
+    EXPECT_EQ(read_at<uint32_t>(offset_version), 3u);
+    EXPECT_EQ(read_at<uint32_t>(offset_payload_format), 7u);
     EXPECT_EQ(read_at<uint32_t>(slot_offset(1) + offset_slot_state), 1u);
     EXPECT_EQ(read_at<int64_t>(slot_offset(1) + offset_slot_seq_no), 4242);
 

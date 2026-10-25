@@ -216,7 +216,7 @@ void MatchingEngineThread::on_app_ready_event() {
         const int64_t self_id = static_cast<int64_t>(config_.instance_id);
         lease_agent_.emplace("MatchingEngineThread", get_logger(), lease_links_, fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::matching_engine),
                              self_id, peer_instance_id(), arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_,
-                             pubsub_itc_fw::PeerStatementsFlag{pubsub_itc_fw::PeerStatementsFlag::PeerAlwaysMayLead});
+                             pubsub_itc_fw::PeerStatementsFlag{pubsub_itc_fw::PeerStatementsFlag::SayWhenPeerMayNotLead});
         if (test_events_.has_value()) {
             lease_agent_->report_test_events_to(*test_events_);
         }
@@ -269,6 +269,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // instance leads, and simply held open while it follows.
         outbound_replication_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: ME-secondary replication connection {} established", id.get_value());
+        send_engine_settings();
         // Tell the peer what this instance is as soon as there is a link to tell it
         // on. An instance that has just restarted is sitting in Unknown waiting for
         // arbitration, and a leader saying so here lets it settle immediately rather
@@ -437,6 +438,11 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         release_pdu_payload(message);
         return;
     }
+    if (pdu_id == pubsub_itc_fw_app::EngineSettings::message_pdu_id) {
+        handle_engine_settings(message);
+        release_pdu_payload(message);
+        return;
+    }
     if (pdu_id == pubsub_itc_fw_app::BookUpdate::message_pdu_id) {
         // BookUpdate from ME-primary -- secondary updates its replica book.
         apply_book_update(message);
@@ -519,7 +525,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         current_order_ingress_ns_ = envelope.gateway_ingress_ns;
 
         const CommandSource source = command_source_for(message.seq_no());
-        state_machine_.apply_new_order(view, message.seq_no(), transact_time_of(envelope.wall_time_ns), session_identity_from(envelope), source);
+        state_machine_.apply_new_order(view, message.seq_no(), envelope.wall_time_ns, session_identity_from(envelope), source);
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
         pubsub_itc_fw_app::OrderCancelRequestView view{};
@@ -529,7 +535,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
             return;
         }
         const CommandSource source = command_source_for(message.seq_no());
-        state_machine_.apply_cancel(view, message.seq_no(), transact_time_of(envelope.wall_time_ns), session_identity_from(envelope), source);
+        state_machine_.apply_cancel(view, message.seq_no(), envelope.wall_time_ns, session_identity_from(envelope), source);
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         // The ME is the source of ERs, not a consumer -- discard.
@@ -553,10 +559,6 @@ CommandSource MatchingEngineThread::command_source_for(int64_t sequence_number) 
     ++reconciliation_records_seen_;
     catch_up_tally_.offer(sequence_number);
     return CommandSource::catch_up;
-}
-
-int64_t MatchingEngineThread::transact_time_of(int64_t sequenced_at_ns) const {
-    return sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
 }
 
 void MatchingEngineThread::EngineOutputs::send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number,
@@ -915,7 +917,7 @@ void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::B
     upd.cl_ord_id = cl_ord_id;
 
     if (entry != nullptr) {
-        upd.order_id_num = entry->order_id_num;
+        upd.placed_at_seq_no = entry->placed_at_seq_no;
         upd.side = static_cast<int8_t>(entry->side);
         upd.ord_type = static_cast<int8_t>(entry->ord_type);
         upd.symbol = entry->get_symbol();
@@ -959,7 +961,7 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
 
     if (update_type == pubsub_itc_fw_app::BookUpdateType::Add) {
         OrderEntry entry{};
-        entry.order_id_num = view.order_id_num;
+        entry.placed_at_seq_no = view.placed_at_seq_no;
         entry.session = session;
         entry.has_time_in_force = view.has_time_in_force;
         entry.time_in_force = static_cast<pubsub_itc_fw_app::TimeInForce>(view.time_in_force);
@@ -1088,6 +1090,7 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
             // The lease settles the role. An instance that is not already leading catches up from
             // the WAL before it acts on it, whatever it has done so far.
             become_leader_when_current();
+            static_cast<void>(bar_peer_if_settings_differ());
             break;
         case pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading:
             // Stops matching at once, whatever it was doing, and tells the sequencers so they stop
@@ -1191,6 +1194,9 @@ void MatchingEngineThread::report_present_state() {
     }
     if (halt_reason_.has_value()) {
         test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{*halt_reason_});
+    }
+    if (peer_settings_known_ && peer_settings_differ_) {
+        report_settings_differ_from_peer();
     }
     if (ha_role_state_ == MeRole::Reconciling) {
         report_catch_up(pubsub_itc_fw_app::CatchUpStage::Started, last_replicated_seq_no_, 0);
@@ -1403,11 +1409,6 @@ void MatchingEngineThread::recover_open_orders(bool region_existed) {
 
     // The scan above read every page, so there is nothing left for warm() to do.
 
-    // So that a successor does not hand out an order number the venue has already used. The
-    // counter is what "ME-ORD-N" is formatted from, and a repeated N would name two different
-    // orders in the reports a member reconciles against.
-    state_machine_.note_recovered_orders(found.highest_order_id_num);
-
     // Where the tail starts. The region is current to what it published and no further, so
     // everything the sequencer holds after that has still to be applied -- which is the
     // existing reconciliation path, asked to start here instead of at zero.
@@ -1582,6 +1583,87 @@ void MatchingEngineThread::handle_leader_changed(const pubsub_itc_fw::EventMessa
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: the sequencer on connection {} now leads -- asking again to be caught up",
                message.connection_id().get_value());
     send_follow_request();
+}
+
+void MatchingEngineThread::send_engine_settings() {
+    if (!outbound_replication_conn_id_.is_valid()) {
+        return;
+    }
+    pubsub_itc_fw_app::EngineSettings settings{};
+    settings.instance_id = static_cast<int64_t>(config_.instance_id);
+    settings.order_book_region_capacity = static_cast<int64_t>(order_book_.region_capacity());
+    send_pdu(outbound_replication_conn_id_, pubsub_itc_fw_app::EngineSettings::message_pdu_id, 0, settings);
+}
+
+void MatchingEngineThread::handle_engine_settings(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::EngineSettingsView settings{};
+    if (!pubsub_itc_fw_app::decode(settings, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode EngineSettings -- dropping");
+        return;
+    }
+    const auto own_region_capacity = static_cast<int64_t>(order_book_.region_capacity());
+    const bool differed = peer_settings_known_ && peer_settings_differ_;
+    peer_settings_known_ = true;
+    peer_region_capacity_ = settings.order_book_region_capacity;
+    peer_settings_differ_ = peer_region_capacity_ != own_region_capacity;
+    if (peer_settings_differ_) {
+        // The open-order region's capacity decides when an order is refused because the venue holds as many as it can,
+        // so two engines with different capacities apply the same commands differently once one of them is full.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: the peer, instance {}, holds up to {} open order(s) and this instance up to {} -- the two would apply the same "
+                   "commands differently, so whichever of them leads says that the other may not lead",
+                   settings.instance_id, peer_region_capacity_, own_region_capacity);
+    } else if (differed) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: the peer, instance {}, is now configured as this instance is (up to {} open order(s))", settings.instance_id,
+                   own_region_capacity);
+    }
+    // Reported whether or not this instance leads, so that the test learns the follower knows of the difference too,
+    // and only once: bar_peer_if_settings_differ reports it when it bars the peer.
+    if (!bar_peer_if_settings_differ() && peer_settings_differ_) {
+        report_settings_differ_from_peer();
+    }
+}
+
+void MatchingEngineThread::report_settings_differ_from_peer() {
+    if (!test_events_.has_value()) {
+        return;
+    }
+    const bool barred_peer = lease_agent_.has_value() && lease_agent_->leading() && !lease_agent_->says_peer_may_lead();
+    test_events_->send_event(
+        pubsub_itc_fw_app::SettingsDifferFromPeer::message_pdu_id,
+        pubsub_itc_fw_app::SettingsDifferFromPeer{peer_instance_id(), static_cast<int64_t>(order_book_.region_capacity()), peer_region_capacity_, barred_peer});
+}
+
+bool MatchingEngineThread::bar_peer_if_settings_differ() {
+    if (!lease_agent_.has_value() || !lease_agent_->leading() || !peer_settings_known_) {
+        return false;
+    }
+    // Already saying what it should, so there is nothing to record or send.
+    if (peer_settings_differ_ != lease_agent_->says_peer_may_lead()) {
+        return false;
+    }
+    // Recorded by a majority of the voters, as rule 11's statement is, so that the peer is refused a lease even after
+    // this instance has gone; and lifted once the peer says it is configured as this instance is.
+    if (peer_settings_differ_) {
+        lease_agent_->say_peer_may_not_lead(std::chrono::steady_clock::now());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: leading, and saying that the peer, instance {}, may not lead -- it holds up to {} open order(s) and this instance "
+                   "up to {}. Trading continues here; if this instance stops, no engine leads until the two are configured alike",
+                   peer_instance_id(), peer_region_capacity_, order_book_.region_capacity());
+        report_settings_differ_from_peer();
+        return true;
+    }
+    lease_agent_->say_peer_may_lead(std::chrono::steady_clock::now());
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: leading, and saying that the peer, instance {}, may lead again -- it is configured as this instance is",
+               peer_instance_id());
+    return false;
 }
 
 void MatchingEngineThread::handle_engine_position_query(const pubsub_itc_fw::EventMessage& message) {

@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 203 |
+| Bugs recorded | 204 |
 | Open | 83 (61 defects, 22 tasks) |
-| Closed | 120 |
-| Next id | BUG-0204 |
+| Closed | 121 |
+| Next id | BUG-0205 |
 
 ## Open bugs by severity
 
@@ -559,6 +559,24 @@ during its own start does not change.
 its role at the moment reconciliation begins: an engine that has not yet completed a start is still
 starting, however many times its lease runs out meanwhile. A scenario that makes the lease run out
 during a start should check it.
+
+**It happens after a start has finished as well.** Scenario 28 runs one matching engine, with no peer,
+whose lease is renewed only by the primary arbiter. Seen in the full run on 25 October 2026:
+
+1. The engine was started with an empty region, was granted a lease at 17:20:22.17, logged "started
+   rather than promoted -- keeping the 0 open order(s) recovered from the region (R-0018)", and accepted
+   the scenario's 1,000 baseline orders.
+2. The scenario killed the primary arbiter at 17:20:23, and its launcher restarted it. The engine's lease
+   ran out at 17:20:24.97, because the restarted arbiter waits one lease period before it votes.
+3. The engine was granted a lease again at 17:20:28.47, logged "open_orders_on_promotion=cancel --
+   cancelling the 1000 order(s) inherited at this promotion", and cancelled the 1,000 orders it had
+   accepted itself. No other engine exists in that venue, so none could have led in between.
+
+The scenario checks only the arbiters, so it passes. The 1,000 cancel reports are in the sequencer's
+WAL, which is how `wal_replay_check` found them. The cause is the same: the lease running out made the
+role follower, and the next reconciliation was taken for a promotion. What the engine should go by is
+whether another engine could have led and changed the book since this one last led, which the WAL
+shows. An engine that took no book over from a peer has nothing inherited to cancel.
 
 ### BUG-0142: The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader {#bug_0142}
 
@@ -3951,6 +3969,61 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0204: An order applied during a catch-up was applied by a different path from one applied live, so the two gave different books and reports {#bug_0204}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-25 |
+| Recorded | 2026-10-25 |
+| Fixed | 2026-10-25 -- the matching engine's state machine applies a new order and a cancel by one path, whichever way they arrive |
+| How | Reading `MatchingEngineStateMachine` while designing `wal_replay_check`, in step 2 of phase 7 |
+| Impact | After a catch-up, a GoodTillCancel or GoodTillDate order's record on the book did not say so, so its cancel report left out its terms and the gateway's cancel-on-disconnect exemption could not see them. A member whose order was applied in a catch-up was told less about it than one whose order was applied live. Two engines given the same commands, one catching up and one serving, held different books and sent different reports, which phase 8 cannot accept |
+
+**What happened.** The engine had two paths for a new order and two for a cancel. The one taken during a catch-up:
+
+- did not keep the order's TimeInForce or ExpireTime on the book;
+- sent an acknowledgement without TimeInForce, ExpireTime or the echoed NoUnderlyings and NoPartyIDs groups;
+- ignored a new order whose ClOrdID the session already had open, where the live path refused it with a report;
+- sent no report for a cancel of an order the book did not hold, where the live path refused it with a report, and
+  built the report of a cancel it did make from the cancel rather than from the order on the book;
+- refused nothing when the region was full, where the live path refused the order with a report;
+- took its ExecIDs at a different point, so the two paths numbered the same reports differently.
+
+**How it was fixed.** `MatchingEngineStateMachine::apply_new_order` and `apply_cancel` are each one path. The source
+of a command makes these differences and no others: a catch-up does not check the order of sequence numbers, whose
+records are below the position by construction, nor the halt, which is a decision one engine takes alone; its reports
+are marked as possible repeats; and an order it puts on the book is not replicated to the follower or counted as
+processed. A catch-up does not apply a command at or below the highest sequence number the engine has already acted
+on (`MatchingEngineStateMachine::already_applied`): a catch-up asked for again, after an order was discarded while the
+instance held no lease, starts from the position the region published and can deliver records the engine acted on
+live. The catch-up path used to absorb that overlap by ignoring an order the book already held, which also ignored a
+genuine duplicate ClOrdID; the sequence number tells the two apart exactly. A catch-up now also sends an
+`OrderOutcome` test event for every command, marked as during a catch-up, and `ha_test.py`'s helpers count only the
+outcomes of commands dealt with live unless asked for the others.
+
+**Verified** on 25 October 2026. A unit test applies the same commands -- a GoodTillDate order with an expiry, an
+order, a duplicate of it, a cancel of an order the book does not hold, a cancel of the first order, and an order from
+another member -- live to one state machine and from a catch-up to another, and requires the same reports, differing
+only in the mark of a possible repeat, and the same book, field by field. With the catch-up made to drop the
+TimeInForce again, it failed. The first full run of the high availability suite with the single path failed scenario 28
+in `wal_replay_check`: the WAL held 4,000 reports where a fresh replay produced 2,000. A thousand of them were refusals
+as duplicates, because a catch-up delivered records the engine had acted on live. With the rule above, a unit test
+that delivers acted-on records again by a catch-up requires no report and no change to the published position; with
+the rule disabled it failed. In the next full run the WAL of scenario 28 held 3,000 reports. The other thousand are
+cancels the engine decided on by itself, described under [BUG-0143](#bug_0143), and the replay check no longer runs
+on a scenario in which an engine cancelled every order or halted by its own decision, since those decisions are not
+yet commands in the WAL. Scenario 28 then passed, with the check reported as not run, and scenario 3 passed with the
+check run, 2,000 commands and their reports matched.
+
+The full high availability suite, with the primary engine leading first: 80 of 82 scenarios passed, 79 failed as
+expected ([BUG-0199](#bug_0199)), and 28 failed as above. With the secondary engine leading first: 21 of 25 passed,
+25, 54 and 55 failed as before ([BUG-0195](#bug_0195)), and 82 failed because the test restarted the engine with the
+smaller region using the deployed configuration, so the two engines were alike again. With the test restarting it as
+it was started, scenario 82 passed with either engine leading first.
+
+**Principles.** V8: every report the matching engine produces reaches the member, and describes the order it concerns.
 
 ### BUG-0202: A leading sequencer drops every report for a gateway it has no connection for reports to, and nothing sends them later {#bug_0202}
 

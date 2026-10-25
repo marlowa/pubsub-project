@@ -20,7 +20,7 @@ enum BookUpdateType : i8 {
 # secondary tracks this as its last_replicated_seq_no for WAL
 # reconciliation during promotion.
 #
-# For Remove updates, order_id_num/side/ord_type/symbol/order_qty are
+# For Remove updates, placed_at_seq_no/side/ord_type/symbol/order_qty are
 # sent as zero/empty -- the secondary uses only the session identity plus
 # cl_ord_id to locate and erase the entry from its replica book.
 # price is absent on Remove and on Add when the order has no limit price.
@@ -39,7 +39,8 @@ message BookUpdate(id=600)
     string          comp_id
     i16             origin_gateway_id
     string          cl_ord_id
-    i64             order_id_num
+    # The sequence number of the new order that placed the order, from which its OrderID is formatted.
+    i64             placed_at_seq_no
     i8              side
     i8              ord_type
     string          symbol
@@ -58,4 +59,14 @@ message BookUpdate(id=600)
     # OrderEntry::expire_time -- and replication is emphatically not the place to start.
     optional i8     time_in_force
     optional datetime_ns expire_time
+end
+
+# Sent by each engine to its peer when its connection to the peer's replication listener is established:
+# the settings that change what an engine does with a command, which the two engines of a pair must share
+# or apply the same commands differently (docs/availability/deterministic_matching_engine.md, section 5).
+# An engine that leads, and finds its peer's settings differ from its own, says that its peer may not lead.
+message EngineSettings(id=601)
+    i64             instance_id
+    # The most orders the engine's open-order region holds. An order arriving when it is full is refused.
+    i64             order_book_region_capacity
 end

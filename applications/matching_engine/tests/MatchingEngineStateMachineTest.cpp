@@ -40,6 +40,11 @@ struct RecordedReport {
     std::string orig_cl_ord_id;
     std::string symbol;
     std::string order_qty;
+    std::string price;
+    bool has_time_in_force{false};
+    pubsub_itc_fw_app::TimeInForce time_in_force{};
+    bool has_expire_time{false};
+    int64_t expire_time{0};
     std::string leaves_qty;
     bool has_ord_rej_reason{false};
     pubsub_itc_fw_app::OrdRejReason ord_rej_reason{};
@@ -71,6 +76,11 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
         recorded.orig_cl_ord_id = report.has_orig_cl_ord_id ? std::string(report.orig_cl_ord_id) : std::string();
         recorded.symbol = std::string(report.symbol);
         recorded.order_qty = report.has_order_qty ? std::string(report.order_qty) : std::string();
+        recorded.price = report.has_price ? std::string(report.price) : std::string();
+        recorded.has_time_in_force = report.has_time_in_force;
+        recorded.time_in_force = report.time_in_force;
+        recorded.has_expire_time = report.has_expire_time;
+        recorded.expire_time = report.expire_time;
         recorded.leaves_qty = std::string(report.leaves_qty);
         recorded.has_ord_rej_reason = report.has_ord_rej_reason;
         recorded.ord_rej_reason = report.ord_rej_reason;
@@ -167,7 +177,7 @@ TEST_F(MatchingEngineStateMachineTest, AcceptsANewOrderOntoTheBookAndAcknowledge
     const RecordedReport& report = outputs_.reports[0];
     EXPECT_EQ(report.exec_type, pubsub_itc_fw_app::ExecType::New);
     EXPECT_EQ(report.ord_status, pubsub_itc_fw_app::OrdStatus::New);
-    EXPECT_EQ(report.order_id, "ME-ORD-1");
+    EXPECT_EQ(report.order_id, "ME-ORD-5") << "an OrderID is the sequence number of the new order that placed it";
     EXPECT_EQ(report.exec_id, "ME-EXEC-1");
     EXPECT_EQ(report.cl_ord_id, "ORD-1");
     EXPECT_EQ(report.leaves_qty, "100");
@@ -206,6 +216,7 @@ TEST_F(MatchingEngineStateMachineTest, RefusesASecondOrderWithTheSameClOrdIdFrom
     EXPECT_EQ(refusal.ord_rej_reason, pubsub_itc_fw_app::OrdRejReason::DuplicateOrder);
     EXPECT_EQ(outputs_.accepted, 1);
     EXPECT_EQ(outputs_.outcomes.back().outcome, pubsub_itc_fw_app::OrderOutcomeKind::RefusedDuplicate);
+    EXPECT_EQ(book_.published(), 1) << "a live refusal changes nothing and is not published, so a restart applies it again";
 }
 
 TEST_F(MatchingEngineStateMachineTest, TheSameClOrdIdFromAnotherSessionIsAnotherOrder) {
@@ -273,7 +284,55 @@ TEST_F(MatchingEngineStateMachineTest, RefusesAnOrderWhenTheRegionIsFull) {
     EXPECT_EQ(outputs_.accepted, region_capacity);
 }
 
+// The sequencer writes the time of every command into its WAL record, so a record with none is the sequencer's
+// defect. The engine refuses the command rather than supply a time of its own, which would differ from one engine
+// to the next, and the refusal carries the time the command did, zero.
+TEST_F(MatchingEngineStateMachineTest, RefusesANewOrderThatCarriesNoTime) {
+    machine_.apply_new_order(new_order("ORD-1"), 1, 0, member, CommandSource::live);
+
+    ASSERT_EQ(outputs_.reports.size(), 1U);
+    EXPECT_EQ(outputs_.reports[0].exec_type, pubsub_itc_fw_app::ExecType::Rejected);
+    EXPECT_EQ(outputs_.reports[0].text, "Venue could not process the order: it carried no time");
+    EXPECT_EQ(outputs_.reports[0].transact_time, 0);
+    EXPECT_EQ(outputs_.reports[0].repeat, ReportIsRepeat::no);
+    EXPECT_EQ(book_.size(), 0U);
+    EXPECT_EQ(outputs_.accepted, 0);
+    EXPECT_EQ(machine_.highest_applied(), 1) << "the command was acted on, by refusing it";
+}
+
+TEST_F(MatchingEngineStateMachineTest, ACatchUpRefusesAnOrderThatCarriesNoTimeAsAPossibleRepeatAndPublishes) {
+    machine_.apply_new_order(new_order("ORD-1"), 8, 0, member, CommandSource::catch_up);
+
+    ASSERT_EQ(outputs_.reports.size(), 1U);
+    EXPECT_EQ(outputs_.reports[0].text, "Venue could not process the order: it carried no time");
+    EXPECT_EQ(outputs_.reports[0].repeat, ReportIsRepeat::yes);
+    EXPECT_EQ(book_.size(), 0U);
+    EXPECT_EQ(book_.published(), 8);
+}
+
 // ---- live cancels -----------------------------------------------------------------------
+
+TEST_F(MatchingEngineStateMachineTest, RefusesACancelThatCarriesNoTimeAndLeavesTheOrder) {
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, member, CommandSource::live);
+    machine_.apply_cancel(cancel_of("ORD-1", "CXL-1"), 2, 0, member, CommandSource::live);
+
+    ASSERT_EQ(outputs_.reports.size(), 2U);
+    EXPECT_EQ(outputs_.reports[1].text, "Venue could not process the cancel: it carried no time. The order is unchanged");
+    EXPECT_EQ(outputs_.reports[1].orig_cl_ord_id, "ORD-1");
+    EXPECT_EQ(outputs_.reports[1].transact_time, 0);
+    EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-1")));
+}
+
+TEST_F(MatchingEngineStateMachineTest, ACatchUpRefusesACancelThatCarriesNoTimeAndLeavesTheOrder) {
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, member, CommandSource::catch_up);
+    machine_.apply_cancel(cancel_of("ORD-1", "CXL-1"), 2, 0, member, CommandSource::catch_up);
+
+    ASSERT_EQ(outputs_.reports.size(), 2U);
+    EXPECT_EQ(outputs_.reports[1].exec_type, pubsub_itc_fw_app::ExecType::Rejected);
+    EXPECT_EQ(outputs_.reports[1].repeat, ReportIsRepeat::yes);
+    EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-1")));
+    EXPECT_EQ(book_.published(), 2);
+}
 
 TEST_F(MatchingEngineStateMachineTest, CancelsAnOpenOrderAndReportsItsTerms) {
     machine_.apply_new_order(new_order("ORD-1", "250"), 1, taken_at, member, CommandSource::live);
@@ -337,16 +396,8 @@ TEST_F(MatchingEngineStateMachineTest, ACatchUpAppliesAnOrderAndReportsItAsAPoss
     EXPECT_EQ(machine_.highest_applied(), 0) << "a catch-up moves the position only when it completes";
 }
 
-TEST_F(MatchingEngineStateMachineTest, ACatchUpIgnoresAnOrderTheBookAlreadyHolds) {
-    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, member, CommandSource::live);
-    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, member, CommandSource::catch_up);
-
-    EXPECT_EQ(outputs_.reports.size(), 1U);
-    EXPECT_EQ(book_.size(), 1U);
-}
-
-TEST_F(MatchingEngineStateMachineTest, ACatchUpDoesNotRefuseByOrderOfSequenceNumbersNorWhileHalted) {
-    machine_.note_caught_up_to(10);
+// The halt is a decision this engine takes alone, and the records a catch-up applies are ones the venue took before it.
+TEST_F(MatchingEngineStateMachineTest, ACatchUpIsNotRefusedWhileHalted) {
     machine_.halt();
     machine_.apply_new_order(new_order("ORD-1"), 5, taken_at, member, CommandSource::catch_up);
 
@@ -376,11 +427,128 @@ TEST_F(MatchingEngineStateMachineTest, ACatchUpCancelOfAnOpenOrderIsReportedAsAP
     EXPECT_TRUE(outputs_.removed.empty());
 }
 
-TEST_F(MatchingEngineStateMachineTest, ACatchUpCancelOfAnOrderNotOnTheBookProducesNoReportButPublishes) {
+// A catch-up can deliver records the engine has already acted on live. They are not applied again: no second report,
+// no refusal as a duplicate, and the published position does not move back.
+TEST_F(MatchingEngineStateMachineTest, ACatchUpDoesNotApplyAgainACommandAlreadyActedOn) {
+    machine_.apply_new_order(new_order("ORD-1"), 5, taken_at, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-2"), 6, taken_at, member, CommandSource::live);
+    machine_.apply_cancel(cancel_of("ORD-1", "CXL-1"), 7, taken_at, member, CommandSource::live);
+    outputs_.reports.clear();
+    outputs_.outcomes.clear();
+
+    machine_.apply_new_order(new_order("ORD-1"), 5, taken_at, member, CommandSource::catch_up);
+    machine_.apply_new_order(new_order("ORD-2"), 6, taken_at, member, CommandSource::catch_up);
+    machine_.apply_cancel(cancel_of("ORD-1", "CXL-1"), 7, taken_at, member, CommandSource::catch_up);
+    EXPECT_TRUE(outputs_.reports.empty()) << "a record already acted on produces no report";
+    EXPECT_TRUE(outputs_.outcomes.empty());
+    EXPECT_EQ(book_.size(), 1U);
+    EXPECT_EQ(book_.published(), 7);
+
+    machine_.apply_new_order(new_order("ORD-3"), 8, taken_at, member, CommandSource::catch_up);
+    ASSERT_EQ(outputs_.reports.size(), 1U) << "a record above what was acted on is applied";
+    EXPECT_EQ(outputs_.reports[0].exec_type, pubsub_itc_fw_app::ExecType::New);
+    EXPECT_EQ(book_.published(), 8);
+}
+
+TEST_F(MatchingEngineStateMachineTest, ACatchUpRefusesADuplicateClOrdIdAsALiveOrderIs) {
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, member, CommandSource::catch_up);
+    machine_.apply_new_order(new_order("ORD-1"), 2, taken_at, member, CommandSource::catch_up);
+
+    ASSERT_EQ(outputs_.reports.size(), 2U);
+    EXPECT_EQ(outputs_.reports[1].ord_rej_reason, pubsub_itc_fw_app::OrdRejReason::DuplicateOrder);
+    EXPECT_EQ(outputs_.reports[1].repeat, ReportIsRepeat::yes);
+    EXPECT_EQ(book_.size(), 1U);
+    EXPECT_EQ(book_.published(), 2);
+}
+
+TEST_F(MatchingEngineStateMachineTest, ACatchUpRefusesACancelOfAnOrderNotOnTheBookAsALiveCancelIs) {
     machine_.apply_cancel(cancel_of("ORD-9", "CXL-1"), 4, taken_at, member, CommandSource::catch_up);
 
-    EXPECT_TRUE(outputs_.reports.empty());
+    ASSERT_EQ(outputs_.reports.size(), 1U);
+    EXPECT_EQ(outputs_.reports[0].ord_rej_reason, pubsub_itc_fw_app::OrdRejReason::UnknownOrder);
+    EXPECT_EQ(outputs_.reports[0].repeat, ReportIsRepeat::yes);
     EXPECT_EQ(book_.published(), 4);
+}
+
+// The same commands, applied live by one state machine and from a catch-up by another, give the same reports,
+// differing only in being marked as possible repeats, and the same book. An order's terms -- its time in force and
+// its expiry -- are held and reported alike, so that a cancel after a catch-up describes the order as one after live
+// trading does.
+TEST_F(MatchingEngineStateMachineTest, TheSameCommandsLiveAndFromACatchUpGiveTheSameReportsAndBook) {
+    OrderBook caught_up_book;
+    caught_up_book.open(dir_ + "/caught_up.region", region_capacity, map_capacity);
+    RecordingOutputs caught_up_outputs;
+    MatchingEngineStateMachine caught_up{caught_up_book, caught_up_outputs, logger_};
+
+    pubsub_itc_fw_app::NewOrderSingleView good_till_date = new_order("GTD-1", "300");
+    good_till_date.has_time_in_force = true;
+    good_till_date.time_in_force = pubsub_itc_fw_app::TimeInForce::GoodTillDate;
+    good_till_date.has_expire_time = true;
+    good_till_date.expire_time = taken_at + 86'400'000'000'000;
+
+    const auto apply_all = [&](MatchingEngineStateMachine& machine, CommandSource source) {
+        machine.apply_new_order(good_till_date, 1, taken_at, member, source);
+        machine.apply_new_order(new_order("ORD-2"), 2, taken_at + 1, member, source);
+        machine.apply_new_order(new_order("ORD-2"), 3, taken_at + 2, member, source);
+        machine.apply_cancel(cancel_of("ORD-9", "CXL-9"), 4, taken_at + 3, member, source);
+        machine.apply_cancel(cancel_of("GTD-1", "CXL-1"), 5, taken_at + 4, member, source);
+        machine.apply_new_order(new_order("ORD-3"), 6, taken_at + 5, other_member, source);
+    };
+    apply_all(machine_, CommandSource::live);
+    apply_all(caught_up, CommandSource::catch_up);
+
+    ASSERT_EQ(outputs_.reports.size(), caught_up_outputs.reports.size());
+    for (size_t index = 0; index < outputs_.reports.size(); ++index) {
+        const RecordedReport& live_report = outputs_.reports[index];
+        const RecordedReport& caught_up_report = caught_up_outputs.reports[index];
+        EXPECT_EQ(live_report.order_id, caught_up_report.order_id) << "report " << index;
+        EXPECT_EQ(live_report.exec_id, caught_up_report.exec_id) << "report " << index;
+        EXPECT_EQ(live_report.exec_type, caught_up_report.exec_type) << "report " << index;
+        EXPECT_EQ(live_report.ord_status, caught_up_report.ord_status) << "report " << index;
+        EXPECT_EQ(live_report.cl_ord_id, caught_up_report.cl_ord_id) << "report " << index;
+        EXPECT_EQ(live_report.orig_cl_ord_id, caught_up_report.orig_cl_ord_id) << "report " << index;
+        EXPECT_EQ(live_report.symbol, caught_up_report.symbol) << "report " << index;
+        EXPECT_EQ(live_report.order_qty, caught_up_report.order_qty) << "report " << index;
+        EXPECT_EQ(live_report.price, caught_up_report.price) << "report " << index;
+        EXPECT_EQ(live_report.has_time_in_force, caught_up_report.has_time_in_force) << "report " << index;
+        EXPECT_EQ(live_report.time_in_force, caught_up_report.time_in_force) << "report " << index;
+        EXPECT_EQ(live_report.has_expire_time, caught_up_report.has_expire_time) << "report " << index;
+        EXPECT_EQ(live_report.expire_time, caught_up_report.expire_time) << "report " << index;
+        EXPECT_EQ(live_report.leaves_qty, caught_up_report.leaves_qty) << "report " << index;
+        EXPECT_EQ(live_report.ord_rej_reason, caught_up_report.ord_rej_reason) << "report " << index;
+        EXPECT_EQ(live_report.text, caught_up_report.text) << "report " << index;
+        EXPECT_EQ(live_report.transact_time, caught_up_report.transact_time) << "report " << index;
+        EXPECT_EQ(live_report.sequence_number, caught_up_report.sequence_number) << "report " << index;
+        EXPECT_EQ(live_report.repeat, ReportIsRepeat::no) << "report " << index;
+        EXPECT_EQ(caught_up_report.repeat, ReportIsRepeat::yes) << "report " << index;
+    }
+    // The cancel of the good-till-date order reports its terms, in both.
+    EXPECT_TRUE(caught_up_outputs.reports[4].has_time_in_force);
+    EXPECT_TRUE(caught_up_outputs.reports[4].has_expire_time);
+
+    EXPECT_EQ(book_.size(), caught_up_book.size());
+    EXPECT_EQ(book_.published(), caught_up_book.published());
+    for (const char* cl_ord_id : {"ORD-2", "ORD-3"}) {
+        const fix_common::SessionIdentity& owner = std::string_view(cl_ord_id) == "ORD-3" ? other_member : member;
+        const OrderEntry* live_entry = book_.find(OrderKey::make(owner, cl_ord_id));
+        const OrderEntry* caught_up_entry = caught_up_book.find(OrderKey::make(owner, cl_ord_id));
+        ASSERT_NE(live_entry, nullptr) << cl_ord_id;
+        ASSERT_NE(caught_up_entry, nullptr) << cl_ord_id;
+        // Field by field rather than byte by byte: the bytes between fields are not guaranteed to be the same.
+        EXPECT_EQ(live_entry->placed_at_seq_no, caught_up_entry->placed_at_seq_no) << cl_ord_id;
+        EXPECT_EQ(live_entry->side, caught_up_entry->side) << cl_ord_id;
+        EXPECT_EQ(live_entry->ord_type, caught_up_entry->ord_type) << cl_ord_id;
+        EXPECT_EQ(live_entry->has_time_in_force, caught_up_entry->has_time_in_force) << cl_ord_id;
+        EXPECT_EQ(live_entry->time_in_force, caught_up_entry->time_in_force) << cl_ord_id;
+        EXPECT_EQ(live_entry->has_expire_time, caught_up_entry->has_expire_time) << cl_ord_id;
+        EXPECT_EQ(live_entry->expire_time, caught_up_entry->expire_time) << cl_ord_id;
+        EXPECT_EQ(live_entry->has_price, caught_up_entry->has_price) << cl_ord_id;
+        EXPECT_EQ(live_entry->get_symbol(), caught_up_entry->get_symbol()) << cl_ord_id;
+        EXPECT_EQ(live_entry->get_order_qty(), caught_up_entry->get_order_qty()) << cl_ord_id;
+        EXPECT_EQ(live_entry->get_price(), caught_up_entry->get_price()) << cl_ord_id;
+        EXPECT_EQ(live_entry->get_cl_ord_id(), caught_up_entry->get_cl_ord_id()) << cl_ord_id;
+        EXPECT_EQ(live_entry->session.comp_id_view(), caught_up_entry->session.comp_id_view()) << cl_ord_id;
+    }
 }
 
 // ---- the whole book ---------------------------------------------------------------------
@@ -403,12 +571,42 @@ TEST_F(MatchingEngineStateMachineTest, CancellingEveryOrderReportsEachAndEmpties
     EXPECT_EQ(book_.size(), 0U);
 }
 
-TEST_F(MatchingEngineStateMachineTest, OrdersAcceptedAfterARecoveryAreNumberedAboveThoseRecovered) {
-    machine_.note_recovered_orders(41);
-    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, member, CommandSource::live);
+// Cancelled in the order the orders were placed, so that an engine that built its book live and one that built it from
+// a catch-up in a different order of arrival into the map send the same cancels in the same order.
+TEST_F(MatchingEngineStateMachineTest, CancellingEveryOrderReportsThemInTheOrderTheyWerePlaced) {
+    machine_.apply_new_order(new_order("ORD-C"), 3, taken_at, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-A"), 4, taken_at, other_member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-B"), 5, taken_at, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-D"), 6, taken_at, other_member, CommandSource::live);
+    machine_.apply_cancel(cancel_of("ORD-A", "CXL-A"), 7, taken_at, other_member, CommandSource::live);
+    outputs_.reports.clear();
+
+    static_cast<void>(machine_.cancel_every_order(taken_at));
+
+    std::vector<std::string> order_ids;
+    for (const RecordedReport& report : outputs_.reports) {
+        order_ids.push_back(report.order_id);
+    }
+    EXPECT_EQ(order_ids, (std::vector<std::string>{"ME-ORD-3", "ME-ORD-5", "ME-ORD-6"}));
+    EXPECT_EQ(outputs_.reports[0].cl_ord_id, "ORD-C");
+}
+
+// The OrderID is made from the sequence number, so an engine that applies an order live and one that applies it
+// while catching up give it the same OrderID, which counters kept by each engine did not.
+TEST_F(MatchingEngineStateMachineTest, AnOrderHasTheSameOrderIdLiveAndFromACatchUp) {
+    OrderBook second_book;
+    second_book.open(dir_ + "/second.region", region_capacity, map_capacity);
+    RecordingOutputs second_outputs;
+    MatchingEngineStateMachine second{second_book, second_outputs, logger_};
+
+    machine_.apply_new_order(new_order("ORD-1"), 17, taken_at, member, CommandSource::live);
+    second.apply_new_order(new_order("ORD-1"), 17, taken_at, member, CommandSource::catch_up);
 
     ASSERT_EQ(outputs_.reports.size(), 1U);
-    EXPECT_EQ(outputs_.reports[0].order_id, "ME-ORD-42");
+    ASSERT_EQ(second_outputs.reports.size(), 1U);
+    EXPECT_EQ(outputs_.reports[0].order_id, "ME-ORD-17");
+    EXPECT_EQ(second_outputs.reports[0].order_id, "ME-ORD-17");
+    EXPECT_EQ(book_.find(OrderKey::make(member, "ORD-1"))->placed_at_seq_no, 17);
 }
 
 // ---- the same commands, the same results --------------------------------------------------

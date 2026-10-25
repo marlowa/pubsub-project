@@ -19,7 +19,7 @@ namespace pubsub_itc_fw {
 
 namespace {
 constexpr uint32_t store_magic = 0x534C4F54u; // "SLOT"
-constexpr uint32_t store_version = 2;
+constexpr uint32_t store_version = 3;
 constexpr uint32_t slot_free = 0;
 constexpr uint32_t slot_live = 1;
 constexpr size_t page_size = 4096;
@@ -37,7 +37,8 @@ struct MappedSlotStore::Header {
     std::atomic<int64_t> published;
     // A hint, and rebuilt from the slots after any unclean stop.
     std::atomic<uint32_t> free_head;
-    uint32_t filler;
+    // What the owner's records mean, as the owner numbers it. See open().
+    uint32_t payload_format;
     // When the owner last said it was working, as a wall-clock time. Whoever opens the store
     // next subtracts it from the current time to learn how long nothing was tending it.
     //
@@ -73,7 +74,7 @@ const MappedSlotStore::SlotHeader* MappedSlotStore::slot(SlotIndex index) const 
     return reinterpret_cast<const SlotHeader*>(static_cast<const uint8_t*>(base_) + sizeof(Header) + index * slot_stride_);
 }
 
-bool MappedSlotStore::open(const std::string& path, uint32_t payload_size, SlotIndex slot_count) {
+bool MappedSlotStore::open(const std::string& path, uint32_t payload_size, SlotIndex slot_count, uint32_t payload_format) {
     if (payload_size == 0 || slot_count == 0 || slot_count == no_slot) {
         throw PreconditionAssertion("MappedSlotStore: a store needs a non-zero record size and a slot count below no_slot", __FILE__, __LINE__);
     }
@@ -130,11 +131,14 @@ bool MappedSlotStore::open(const std::string& path, uint32_t payload_size, SlotI
 
         // Refuse rather than reinterpret. A store read with the wrong record size produces
         // records that are wrong in ways nothing downstream can detect.
-        if (hdr->version != store_version || hdr->payload_size != payload_size || hdr->slot_count != slot_count) {
-            const std::string held = std::to_string(hdr->version) + "/" + std::to_string(hdr->payload_size) + "/" + std::to_string(hdr->slot_count);
-            const std::string want = std::to_string(store_version) + "/" + std::to_string(payload_size) + "/" + std::to_string(slot_count);
+        if (hdr->version != store_version || hdr->payload_size != payload_size || hdr->slot_count != slot_count || hdr->payload_format != payload_format) {
+            const std::string held = std::to_string(hdr->version) + "/" + std::to_string(hdr->payload_size) + "/" + std::to_string(hdr->slot_count) + "/" +
+                                     std::to_string(hdr->payload_format);
+            const std::string want =
+                std::to_string(store_version) + "/" + std::to_string(payload_size) + "/" + std::to_string(slot_count) + "/" + std::to_string(payload_format);
             close();
-            throw PubSubItcException("MappedSlotStore: " + path + " holds version/record size/slot count " + held + ", and this asks for " + want);
+            throw PubSubItcException("MappedSlotStore: " + path + " holds version/record size/slot count/record format " + held + ", and this asks for " +
+                                     want);
         }
         return true;
     }
@@ -145,7 +149,7 @@ bool MappedSlotStore::open(const std::string& path, uint32_t payload_size, SlotI
     hdr->payload_size = payload_size;
     hdr->slot_count = slot_count;
     hdr->published.store(0, std::memory_order_relaxed);
-    hdr->filler = 0;
+    hdr->payload_format = payload_format;
     hdr->alive_at_ns.store(0, std::memory_order_relaxed);
     for (SlotIndex i = 0; i < slot_count; ++i) {
         SlotHeader* s = slot(i);

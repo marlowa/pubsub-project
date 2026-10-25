@@ -228,6 +228,11 @@ message WalRecord (id=103, version=1)
     # copies of reports it keeps in case it takes the lead (docs/bug_list.md, BUG-0116).
     optional i32 reports_forwarded_through_epoch
     optional i64 reports_forwarded_through_number
+    # On an execution report a sequencer writes to its WAL: the sequence number of the command the report answers.
+    # Absent on a report no command produced, such as a cancel of every order on promotion. With it, a program that
+    # reads the WAL can pair each command with the reports the engine sent for it
+    # (docs/availability/deterministic_matching_engine.md, section 7.2).
+    optional i64 answers_seq_no
 end
 
 # ------------------------------------------------------------

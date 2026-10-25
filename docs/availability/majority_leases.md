@@ -137,6 +137,14 @@ vote of just one other voter: either its peer or the third voter.
     includes a voter that knows it lacks commands the matching engine acted on. The design, its decisions and its
     tests are in [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md), and its model check in
     section 12 of [tla/findings.md](tla/findings.md).
+12. **In the matching engine pair, the same statements say when the peer may not lead.** They are recorded, sent,
+    echoed and refused on exactly as in rule 11, with one difference: every leadership starts by saying the peer may
+    lead, because an engine that is behind catches up from the sequencer's WAL before it acts. A leading engine says
+    its peer may not lead only for a reason it finds, which is that the two are configured to apply commands
+    differently (section 5 of [deterministic_matching_engine.md](deterministic_matching_engine.md)), and says it may
+    again once the peer is configured as it is. The model check of rule 11 covers the sequencer pair's starting
+    statement; the engine pair's is not modelled. It is less restrictive, and nothing about orders depends on it: it
+    only keeps an engine configured differently from leading.
 
 ## 4. Why two instances never act as leader at the same moment
 

@@ -1,7 +1,8 @@
 # A deterministic matching engine {#deterministic_matching_engine}
 
-> **Status: decided, 25 October 2026; step 1 of section 8 built.** This is the design for phase 7 of the
-> [recovery plan](../recovery_plan.md). The state machine of section 7.1 is built; steps 2 to 6 are not. Andrew answered the five decisions of section 9 on
+> **Status: decided, 25 October 2026; steps 1 and 2 of section 8 built.** This is the design for phase 7 of the
+> [recovery plan](../recovery_plan.md). The state machine of section 7.1, the remedies of section 5 and `wal_replay_check`
+> are built; steps 3 to 6 are not. Andrew answered the five decisions of section 9 on
 > 25 October 2026: identifiers are scrambled with FF1, the day key is derived from a secret and the trading date, an
 > identifier is a letter and 16 hexadecimal digits, the leading sequencer measures the absence rule, and cancelling
 > on promotion becomes a command in phase 7.
@@ -54,6 +55,13 @@ lead to a different book or different reports.
 5. **Settings that change what the engine does can differ between the two engines.** The most direct is the size of
    the book's region: an engine whose region is full refuses an order that the other engine, with a larger region,
    accepts. Each engine reads its own configuration, and nothing checks that the pair agree.
+
+6. **An order applied during a catch-up took a different path from one applied live.** The catch-up path did not keep
+   the order's TimeInForce or ExpireTime on the book, its acknowledgement left them out and did not echo the order's
+   NoUnderlyings and NoPartyIDs groups, it ignored a new order whose ClOrdID the session already had open where the
+   live path refused it with a report, it sent no report for a cancel of an order the book did not hold, and it took
+   its ExecIDs at a different point. So an engine that caught up and one that served live held different books and
+   sent different reports for the same commands ([BUG-0204](../bug_list.md#bug_0204)).
 
 Everything else the engine does with a command depends only on the command, the book, and the commands before it:
 whether a new order's ClOrdID is already live for its session, whether its fields are too long to hold, whether a
@@ -184,14 +192,36 @@ cancels its book or halts on its own initiative any more. The decisions that are
   the sequence number of the new order that placed it, which section 3 needs as well, and the region's record format
   changes with it, so a region written before the change is not read after it. The cancel is then a sort of the live
   orders by that number. At 100 million orders the sort is a few seconds' work at the moment of a halt, which is
-  acceptable, but it is measured in step 2 before it is relied on.
+  acceptable, measured on 25 October 2026 with `order_book_size_bench`. Sorting pairs of a sequence number and a record
+  number, from a random order, took 0.58 s for 10 million, 3.1 s for 50 million and 6.6 s for 100 million, holding
+  16 bytes for each open order, 1.5 GB at 100 million, while it lasts. Visiting every order of a book recovered from
+  its region, in the order placed, took 0.18 s for 2 million orders and 1.0 s for 10 million. A region of 100 million
+  records is 24.8 GB, more than this machine can hold in memory beside everything else, so the whole visit was not
+  measured at that size; by the 10 million figure it is about 10 seconds. A cancel of every order still takes its
+  time from the engine's clock: what triggers it is a decision one engine takes alone, which step 4 makes a command
+  in the WAL, with a time of its own.
+- **One path for a command, live or from a catch-up.** A new order and a cancel are applied by the same code whichever
+  way they arrive. The source makes these differences and no others: a catch-up does not check the order of sequence
+  numbers, whose records are below the position by construction, nor the halt, which is a decision one engine takes
+  alone until step 4 makes it a command; its reports are marked as possible repeats; and an order it puts on the book
+  is not replicated to the follower engine or counted as processed. A catch-up does not apply a command at or below
+  the highest sequence number the engine has already acted on, which a catch-up asked for again can deliver; every
+  command is applied once, in the order of its sequence number. The book is published after every command during
+  a catch-up, and, live, only after a command that changed it, so that a restarted engine applies a live refusal again;
+  where the published position stands is not part of what the engine reports.
 - **Time only from the WAL.** The fallback to the engine's own clock goes. A command without a time is a defect in the
   sequencer; the engine refuses it, reports it at Error, and treats it as section 6 treats any command it cannot
-  apply.
+  apply. The refusal's TransactTime is zero, which is what the command carried, and so the same on every engine and
+  every replay; its text says the command carried no time. Andrew decided this on 25 October 2026.
 - **Settings the pair must share.** The settings that change what the engine does with a command, starting with the
-  region's capacity, must be the same on both engines. Each engine reports them to its peer when the two connect,
-  and an engine whose settings differ from its peer's does not lead, and says why at Error. A deployment cannot then
-  run a pair that would diverge.
+  region's capacity, must be the same on both engines. Each engine reports them to its peer when the two connect.
+  A difference is the same seen from either side, so it is the engine that leads that keeps leading: on learning that
+  its peer's settings differ from its own, it says, in the statements the lease rules already carry, that its peer
+  may not lead, and reports the difference at Error. The venue goes on trading on the leader, having lost its
+  resilience rather than its service. If neither engine leads when they connect, whichever wins the election leads and
+  bars the other. A barred engine does not take over if the leader dies, which is then a loss of service, but one
+  reported when the settings were first compared rather than discovered as two engines that disagree. Andrew decided
+  this on 25 October 2026.
 
 ## 6. A command the engine cannot apply
 
@@ -244,7 +274,18 @@ The sequencer's WAL holds every command, and also every report the engine that l
 it catches up. So a WAL from a run is its own record of what the engine did. A program, `wal_replay_check`, reads a
 WAL, applies its commands to a fresh state machine, and compares the reports it produces for each command with the
 first copy of each in the WAL, field by field, ignoring only the mark that says a report is a possible repeat. Any
-difference is a failure, and it names the command.
+difference is a failure, and it names the command. Each report's WAL record carries the sequence number of the
+command it answers (`answers_seq_no` on `WalRecord`), which the sequencer writes when it receives the report, so that
+the pairing of reports with commands is read from the WAL rather than inferred.
+
+`wal_replay_check` is built (`applications/matching_engine/tools/WalReplayCheckMain.cpp`). It pairs a replayed report
+with the WAL's copy by ExecID, which is meaningful only while ExecIDs come from a counter in one engine that started
+with an empty book; `ha_test.py` therefore runs it after every scenario in which one engine led and no engine process
+was started more than once, worked out from the engines' test events. It is not run either where an engine
+cancelled every order by its own decision, sending at least one cancel report, or halted by its own decision (test
+events BookCancelled and Halted). Those decisions are not commands in the WAL until step 4, so the WAL holds the
+reports they produced with no command a replay could apply. Step 3 makes ExecIDs come from the WAL, step 4 makes the
+engine's decisions commands in the WAL, and step 6 runs it on every scenario.
 
 The finish condition is checked in two ways:
 

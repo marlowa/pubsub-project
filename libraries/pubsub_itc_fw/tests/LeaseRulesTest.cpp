@@ -23,6 +23,7 @@ constexpr milliseconds drift_allowance{250};
 const Clock::time_point start{};
 const pubsub_itc_fw::PeerStatementsFlag no_statements{pubsub_itc_fw::PeerStatementsFlag::PeerAlwaysMayLead};
 const pubsub_itc_fw::PeerStatementsFlag statements{pubsub_itc_fw::PeerStatementsFlag::SayWhetherPeerMayLead};
+const pubsub_itc_fw::PeerStatementsFlag statements_when_needed{pubsub_itc_fw::PeerStatementsFlag::SayWhenPeerMayNotLead};
 
 // Makes instance 1 the leader at epoch 1 with the arbiter's grant, at start + lease_period.
 void make_first_instance_lead(pubsub_itc_fw::LeaseParticipant& participant) {
@@ -311,6 +312,49 @@ TEST(LeaseRulesTest, APairThatMakesNoStatementsNeverStopsItsPeerLeading) {
     EXPECT_EQ(participant.recorded_statement().instance_that_may_not_lead(), 0);
     EXPECT_THROW(participant.begin_running_without_peer(), pubsub_itc_fw::PreconditionAssertion);
     EXPECT_FALSE(participant.may_act_without_peer());
+}
+
+// The matching engine pair: a leadership starts by saying the peer may lead, and the leader says otherwise only for a
+// reason of its own, which its voter then enforces as it does in the sequencer pair.
+TEST(LeaseRulesTest, ALeaderThatSaysWhenItsPeerMayNotLeadStartsBySayingItMay) {
+    pubsub_itc_fw::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, statements_when_needed);
+    make_first_instance_lead(participant);
+    EXPECT_EQ(participant.statement().leader_id, 1) << "it makes statements";
+    EXPECT_TRUE(participant.statement().peer_may_lead);
+    EXPECT_EQ(participant.statement().number, 1);
+    EXPECT_EQ(participant.recorded_statement().instance_that_may_not_lead(), 0);
+}
+
+TEST(LeaseRulesTest, ALeaderThatSaysItsPeerMayNotLeadHasItsOwnVoterRefuseThePeer) {
+    pubsub_itc_fw::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, statements_when_needed);
+    make_first_instance_lead(participant);
+    participant.say_peer_may_not_lead();
+    EXPECT_FALSE(participant.statement().peer_may_lead);
+    EXPECT_EQ(participant.statement().number, 2);
+    EXPECT_EQ(participant.recorded_statement().instance_that_may_not_lead(), 2);
+
+    const Clock::time_point later = start + lease_period + milliseconds{2750};
+    ASSERT_TRUE(participant.stop_if_lease_ran_out(later));
+    EXPECT_EQ(participant.on_peer_request(2, 2, later).answer.verdict, pubsub_itc_fw::LeaseVoter::Verdict::RefusedMayNotLead)
+        << "the record outlives the leadership, as rule 11's does";
+}
+
+TEST(LeaseRulesTest, ALeaderCanSayItsPeerMayLeadAgain) {
+    pubsub_itc_fw::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, statements_when_needed);
+    make_first_instance_lead(participant);
+    participant.say_peer_may_not_lead();
+    participant.say_peer_may_not_lead();
+    EXPECT_EQ(participant.statement().number, 2) << "saying the same thing again changes nothing";
+    participant.say_peer_may_lead();
+    EXPECT_TRUE(participant.statement().peer_may_lead);
+    EXPECT_EQ(participant.statement().number, 3);
+    EXPECT_EQ(participant.recorded_statement().instance_that_may_not_lead(), 0);
+}
+
+TEST(LeaseRulesTest, APairThatMakesNoStatementsCannotSayItsPeerMayNotLead) {
+    pubsub_itc_fw::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, no_statements);
+    make_first_instance_lead(participant);
+    EXPECT_THROW(participant.say_peer_may_not_lead(), pubsub_itc_fw::PreconditionAssertion);
 }
 
 TEST(LeaseRulesTest, OnlyALeaderMakesStatements) {

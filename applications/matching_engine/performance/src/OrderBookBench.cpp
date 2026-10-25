@@ -116,9 +116,9 @@ std::vector<OrderKey> build_keys() {
     return keys;
 }
 
-OrderEntry sample_entry(int64_t order_id_num) {
+OrderEntry sample_entry(int64_t placed_at_seq_no) {
     OrderEntry entry{};
-    entry.order_id_num = order_id_num;
+    entry.placed_at_seq_no = placed_at_seq_no;
     entry.session = fix_common::SessionIdentity::make("BENCH-MEMBER", 1);
     entry.side = pubsub_itc_fw_app::Side::Buy;
     entry.ord_type = pubsub_itc_fw_app::OrdType::Limit;
@@ -153,7 +153,7 @@ void bench_map_only(const std::vector<OrderKey>& keys, const OrderEntry& entry) 
         book.erase(keys[i]);
         const auto end = Clock::now();
         cancels.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
-        if (found.order_id_num == -1) {
+        if (found.placed_at_seq_no == -1) {
             std::abort(); // never; keeps the read from being optimised away
         }
     }
@@ -200,7 +200,7 @@ void bench_with_region(const std::string& path, const std::vector<OrderKey>& key
         book.publish(static_cast<int64_t>(order_count + i) + 1);
         const auto end = Clock::now();
         cancels.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
-        if (copied.order_id_num == -1) {
+        if (copied.placed_at_seq_no == -1) {
             std::abort(); // never; keeps the read from being optimised away
         }
     }

@@ -76,12 +76,21 @@ class MappedSlotStore {
      *         that gets true has records to recover and must scan before acquiring
      *         anything; one that gets false has an empty store.
      *
-     * Throws when the file exists but was written with a different record size, slot count
-     * or version -- a store that cannot be read as the caller expects is refused rather
-     * than reinterpreted, because reinterpreting it silently produces records that are
+     * Throws when the file exists but was written with a different record size, slot count,
+     * record format or version -- a store that cannot be read as the caller expects is refused
+     * rather than reinterpreted, because reinterpreting it silently produces records that are
      * wrong in ways nothing downstream can detect.
+     *
+     * @param[in] path           The file.
+     * @param[in] payload_size   The size of each record, in bytes.
+     * @param[in] slot_count     How many records the store holds.
+     * @param[in] payload_format What the caller's records mean, as a number the caller raises
+     *                           whenever that changes. A record whose meaning changes without its
+     *                           size changing would otherwise be read as though it were the old
+     *                           one. Written into a new store, and compared on opening an existing
+     *                           one. Zero for a caller that states no format.
      */
-    bool open(const std::string& path, uint32_t payload_size, SlotIndex slot_count);
+    bool open(const std::string& path, uint32_t payload_size, SlotIndex slot_count, uint32_t payload_format = 0);
 
     void close();
 

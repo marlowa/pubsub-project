@@ -3,10 +3,13 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint> // IWYU pragma: keep
 #include <string>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 #include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
 #include <pubsub_itc_fw/IncrementalRehashMap.hpp>
@@ -48,6 +51,15 @@ namespace matching_engine {
 class OrderBook {
   public:
     using SlotIndex = pubsub_itc_fw::MappedSlotStore::SlotIndex;
+
+    /**
+     * @brief The format of the records the region holds, written in the region's header and checked when it is opened.
+     *
+     * Raised whenever what an OrderEntry's bytes mean changes, even when its size does not, so that a
+     * region written by a build that stored something else is refused rather than read as though it
+     * held this. Format 1 holds, in each record, the sequence number of the new order that placed it.
+     */
+    static constexpr uint32_t record_format = 1;
 
     ~OrderBook();
 
@@ -134,10 +146,9 @@ class OrderBook {
 
     /** @brief What a recovery found in the region. */
     struct Recovery {
-        size_t orders{};                ///< Orders the region held at or below its published position.
-        size_t discarded{};             ///< Records above it, or never made live: work that was not finished.
-        int64_t published{};            ///< How far the region says it is current.
-        int64_t highest_order_id_num{}; ///< So a successor does not reissue an order number.
+        size_t orders{};     ///< Orders the region held at or below its published position.
+        size_t discarded{};  ///< Records above it, or never made live: work that was not finished.
+        int64_t published{}; ///< How far the region says it is current.
     };
 
     /**
@@ -205,6 +216,31 @@ class OrderBook {
     template <typename Fn> void for_each(Fn&& fn) const {
         for (const auto& kv : index_) {
             fn(kv.first, *entry_at(kv.second));
+        }
+    }
+
+    /**
+     * @brief Calls fn(entry) for every open order, in the order of the sequence numbers of the new orders that placed them.
+     *
+     * Every engine that applied the same commands visits the orders in the same order, which for_each
+     * does not promise: the map's order depends on the order the keys were inserted in and on how far a
+     * rehash has got, and an engine that rebuilt its map from the region at a restart inserted them in a
+     * different order from one that accepted them live.
+     *
+     * Collects each order's sequence number and record number, sorts them, and visits the records: it
+     * allocates 16 bytes for each open order for the length of the call, and sorts them, which for a
+     * hundred million orders takes seconds. It is for a cancel of every order, which is rare, not for
+     * the order path. The book must not be changed from within fn.
+     */
+    template <typename Fn> void for_each_in_order_placed(Fn&& fn) const {
+        std::vector<std::pair<int64_t, SlotIndex>> placed;
+        placed.reserve(index_.size());
+        for (const auto& kv : index_) {
+            placed.emplace_back(entry_at(kv.second)->placed_at_seq_no, kv.second);
+        }
+        std::sort(placed.begin(), placed.end());
+        for (const auto& order : placed) {
+            fn(*entry_at(order.second));
         }
     }
 

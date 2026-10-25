@@ -158,3 +158,16 @@ end
 message ReportsDiscarded (id=178, version=1)
     i64 count
 end
+
+# ------------------------------------------------------------
+#  179 -- SettingsDifferFromPeer
+#  The engine learnt that its peer's settings differ from its own, so
+#  that the two would apply the same commands differently. If it leads,
+#  it has said that its peer may not lead.
+# ------------------------------------------------------------
+message SettingsDifferFromPeer (id=179, version=1)
+    i64  peer_instance_id
+    i64  own_region_capacity
+    i64  peer_region_capacity
+    bool barred_peer           # true when this instance leads and has said that its peer may not lead
+end

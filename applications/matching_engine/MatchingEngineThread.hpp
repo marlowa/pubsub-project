@@ -97,10 +97,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
-    // The time written on the reports of a command: the time the sequencer recorded for it, carried on its envelope,
-    // or this engine's own clock where that time is zero.
-    [[nodiscard]] int64_t transact_time_of(int64_t sequenced_at_ns) const;
-
     // Whether a command is applied live or as part of a catch-up, which is whether this instance is reconciling. For a
     // catch-up, also counts the record as offered to the state machine, which is how the catch-up is known complete.
     [[nodiscard]] CommandSource command_source_for(int64_t sequence_number);
@@ -598,6 +594,26 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // A sequencer that has just taken the lead asks for the highest order or cancel this engine has
     // acted on, so that it can send any its log holds above that (EnginePositionQuery, 118).
     void handle_engine_position_query(const pubsub_itc_fw::EventMessage& message);
+
+    // The settings that change what the engine does with a command, which the two engines of a pair must share
+    // (docs/availability/deterministic_matching_engine.md, section 5). Sent to the peer when this instance's
+    // connection to the peer's replication listener is established.
+    void send_engine_settings();
+    // The peer's settings arrived: compared with this instance's, and acted on by bar_peer_if_settings_differ.
+    void handle_engine_settings(const pubsub_itc_fw::EventMessage& message);
+    // While this instance leads, says that its peer may not lead if the peer's settings differ from its own, and that
+    // it may lead again if they no longer differ. Called when the peer's settings arrive and when this instance takes
+    // the lead. Returns whether it has just said its peer may not lead, which it reports to the test.
+    [[nodiscard]] bool bar_peer_if_settings_differ();
+    // Tells the test, if one started this instance, that the peer's settings differ, and whether this instance, leading,
+    // has said its peer may not lead.
+    void report_settings_differ_from_peer();
+
+    // The peer's open-order region capacity, as it last said, and whether it differs from this instance's. Kept when
+    // the connection to the peer is lost: a peer that restarts says again what it is configured with.
+    bool peer_settings_known_{false};
+    int64_t peer_region_capacity_{0};
+    bool peer_settings_differ_{false};
 
     /**
      * @brief Whether the engine can say what it is holding.

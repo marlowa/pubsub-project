@@ -69,6 +69,13 @@ describe the venue as it now is.
 - **Scenario 80** restarts a matching engine with a long WAL to catch up on, and has the second
   sequencer connect in the middle of the catch-up, which must finish without the stream going
   backwards (BUG-0200).
+- **`wal_replay_check`** reads a sequencer's WAL, applies its commands to a fresh matching engine state
+  machine, and compares every report it produces with the report the WAL holds, field by field.
+  `ha_test.py` runs it after every scenario in which one engine led and no engine was restarted. Each
+  report's WAL record now says which command it answers (`answers_seq_no`).
+- **Scenario 82** starts the two matching engines with different region capacities, and requires the
+  one that leads to bar the other, the other not to take the lead when the leader is killed, and the
+  restarted leader to lead and bar its peer again.
 - **Scenario 81** holds the leading sequencer's connection for reports to a FIX gateway down, through
   a relay the script controls, while a member sends orders, and requires every report to reach the
   member exactly once when the connection is made (BUG-0202).
@@ -87,6 +94,20 @@ describe the venue as it now is.
 
 ### Changed
 
+- **The matching engine applies the same commands the same way**, step 2 of phase 7
+  (`docs/availability/deterministic_matching_engine.md`, section 5):
+  - an OrderID is made from the sequence number of the new order that placed the order, so every
+    engine gives an order the same OrderID; the open-order region's records hold that number, and
+    the region's header now records the format of its records, so a region written by a build that
+    stored something else is refused;
+  - a cancel of every order reports them in the order they were placed, not the order of the map;
+  - a command's time comes only from its WAL record, and a command without one is refused with
+    TransactTime zero;
+  - the two engines exchange their settings when they connect, and the one that leads says, through
+    the lease statements, that a peer configured differently may not lead.
+- **The lease statements can start a leadership by saying the peer may lead** (`PeerStatementsFlag::
+  SayWhenPeerMayNotLead`), for the matching engine pair; the sequencer pair still starts by saying the
+  peer may not.
 - **The matching engine's handling of commands is a class of its own**, `MatchingEngineStateMachine`,
   apart from its connections, its lease agent and its timers. Given a new order or a cancel, with its
   sequence number, time and session, it changes the book and produces the reports, and reads no clock.
@@ -157,6 +178,10 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
   more). Two of the counts read from logs had been zero in every run (BUG-0191).
 - **`perf_run.py` exited 0 after reporting FAIL** on the FIX gateway, so `release_check.py`, which
   gates a release on its exit status, passed a run that had lost orders. It now exits 1.
+- **An order applied during a catch-up was applied by a different path from one applied live**, which
+  left its TimeInForce and ExpireTime off the book and its acknowledgement, ignored a duplicate
+  ClOrdID silently, and sent no report for a cancel of an order the book did not hold. One path now
+  serves both (BUG-0204).
 - **A leading sequencer dropped every report for a gateway it had no connection for reports to**,
   at a start until its first retry succeeded and after any break in that connection, and the member
   was never told about orders the venue had acted on. It now holds them, up to 16 MB and 32,768

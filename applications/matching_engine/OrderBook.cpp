@@ -20,7 +20,7 @@ bool OrderBook::open(const std::string& region_path, SlotIndex region_capacity, 
         throw pubsub_itc_fw::PreconditionAssertion("OrderBook: a book needs a region path", __FILE__, __LINE__);
     }
 
-    const bool existed = store_.open(region_path, static_cast<uint32_t>(sizeof(OrderEntry)), region_capacity);
+    const bool existed = store_.open(region_path, static_cast<uint32_t>(sizeof(OrderEntry)), region_capacity, record_format);
     index_.reserve(map_capacity);
     return existed;
 }
@@ -105,7 +105,6 @@ OrderBook::Recovery OrderBook::recover() {
         const OrderKey key = OrderKey::make(entry->session, entry->get_cl_ord_id());
         index_.emplace(key, slot);
         ++found.orders;
-        found.highest_order_id_num = std::max(found.highest_order_id_num, entry->order_id_num);
     }
 
     // Never trusted, always re-derived. The free list is changed on every accept and every

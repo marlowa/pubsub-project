@@ -52,6 +52,11 @@ namespace pubsub_itc_fw {
  *     statement that the peer may not lead.
  *   - An instance whose voter holds a statement that it may not lead does not ask to lead.
  *
+ * In the matching engine pair, constructed with PeerStatementsFlag::SayWhenPeerMayNotLead, every leadership
+ * starts by saying that the peer may lead. The owner calls say_peer_may_not_lead() when it has a reason
+ * the peer must not lead, and say_peer_may_lead() when the reason has gone. Recording, sending and the
+ * refusal by a voter that holds the statement are as in the sequencer pair.
+ *
  * The owner sends statement() on every lease request while leading, records the statement each grant
  * echoes with note_echo(), and keeps recorded_statement() durably whenever it changes, before
  * sending anything that depends on it. In every other pair the leader makes no statements, and its
@@ -134,8 +139,11 @@ class LeaseParticipant {
         const LeaseHolder::Event event = holder_.on_grant(voter_id, request_id, epoch, now);
         if (event == LeaseHolder::Event::BecameLeader) {
             voter_.learn_epoch(epoch);
-            if (peer_statements_ == PeerStatementsFlag::SayWhetherPeerMayLead) {
-                statement_ = LeaderStatement{self_id_, epoch, 1, false};
+            if (!(peer_statements_ == PeerStatementsFlag::PeerAlwaysMayLead)) {
+                // The sequencer pair's leadership starts by saying the peer may not lead; the matching engine
+                // pair's starts by saying it may.
+                const bool peer_may_lead = peer_statements_ == PeerStatementsFlag::SayWhenPeerMayNotLead;
+                statement_ = LeaderStatement{self_id_, epoch, 1, peer_may_lead};
                 echoed_ = 0;
                 voter_.record_statement(statement_);
             }
@@ -167,12 +175,7 @@ class LeaseParticipant {
      */
     void begin_running_without_peer() {
         require_leading("begin_running_without_peer");
-        if (!statement_.peer_may_lead) {
-            return;
-        }
-        statement_.number += 1;
-        statement_.peer_may_lead = false;
-        voter_.record_statement(statement_);
+        say_peer_may_not_lead();
     }
 
     /**
@@ -183,6 +186,32 @@ class LeaseParticipant {
      */
     void peer_holds_everything() {
         require_leading("peer_holds_everything");
+        say_peer_may_lead();
+    }
+
+    /**
+     * @brief Say that the peer may not lead, for a reason of the owner's.
+     *
+     * The statement is recorded by this instance's own voter at once; the owner makes it durable and
+     * sends it to both other voters, which then refuse the peer a lease. Does nothing if the current
+     * statement already says so. Only while leading, in a pair that makes statements.
+     */
+    void say_peer_may_not_lead() {
+        require_leading("say_peer_may_not_lead");
+        if (!statement_.peer_may_lead) {
+            return;
+        }
+        statement_.number += 1;
+        statement_.peer_may_lead = false;
+        voter_.record_statement(statement_);
+    }
+
+    /**
+     * @brief Say that the peer may lead again. Does nothing if the current statement already says so. Only while
+     * leading, in a pair that makes statements.
+     */
+    void say_peer_may_lead() {
+        require_leading("say_peer_may_lead");
         if (statement_.peer_may_lead) {
             return;
         }
