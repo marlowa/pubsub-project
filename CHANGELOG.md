@@ -75,6 +75,9 @@ describe the venue as it now is.
   decision, including those in which engines restart or change roles. Commands after the last one
   the WAL holds an answer to, whose answers were in flight when the venue stopped, are counted and
   not compared. Each report's WAL record now says which command it answers (`answers_seq_no`).
+- **A fuzzing test of the matching engine's state machine**, `MatchingEngineStateMachineFuzzTest`:
+  random new orders and cancels, with the book checked after each against a model of the rules, and
+  a second state machine required to answer every command alike.
 - **`identifier_to_position`** turns a matching engine OrderID or ExecID back into the position in the
   WAL it was made from, given the identifier secret and the trading date, for support staff.
 - **Scenario 83** starts the two matching engines with different identifier secrets, and requires the
@@ -100,6 +103,10 @@ describe the venue as it now is.
 
 ### Changed
 
+- **A failure while the matching engine applies one command costs that command**, step 5 of phase 7:
+  an exception thrown while a new order or a cancel is applied is caught, the command is rejected as
+  one the venue could not process if it had changed nothing and answered nothing, and the engine
+  goes on to the next command.
 - **The matching engine's OrderID and ExecID values are made from positions in the WAL**, step 3 of
   phase 7 (`docs/availability/deterministic_matching_engine.md`, section 3). An order is named by the
   sequence number of the new order that placed it and a report by its command's sequence number and
@@ -194,6 +201,9 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
   more). Two of the counts read from logs had been zero in every run (BUG-0191).
 - **`perf_run.py` exited 0 after reporting FAIL** on the FIX gateway, so `release_check.py`, which
   gates a release on its exit status, passed a run that had lost orders. It now exits 1.
+- **The order book's map lost an order while it migrated to a new table**, so a cancel of that
+  order was refused as unknown and a second order with its ClOrdID was accepted. A slot the
+  migration empties is now a tombstone (BUG-0205).
 - **A matching engine that restarted or was promoted issued ExecIDs already used that day**, because
   they came from a counter that started again at zero in every process. Every engine now names a
   report by the position of its command in the WAL (BUG-0139).

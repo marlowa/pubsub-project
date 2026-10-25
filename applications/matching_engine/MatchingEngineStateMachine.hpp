@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint> // IWYU pragma: keep
+#include <functional>
 #include <string_view>
 #include <vector>
 
@@ -151,6 +152,13 @@ class MatchingEngineStateMachine {
      * once its report has been sent: live, only when the order was put on the book; during a catch-up,
      * after every command.
      *
+     * A failure while the order is applied, a C++ exception thrown by anything it reaches, costs this
+     * order and not the engine. Where the order had not yet changed the book or been answered, it is
+     * rejected to its member as one the venue could not process; where it had, it stands as far as it
+     * went and nothing more is sent. Either way the failure is reported at Error with the sequence
+     * number, and the next command is applied as usual (docs/availability/deterministic_matching_engine.md,
+     * section 6).
+     *
      * @param[in] view            The order.
      * @param[in] sequence_number Its sequence number in the sequencer's WAL.
      * @param[in] transact_time   The time the sequencer took it, in nanoseconds since the epoch, from its WAL record,
@@ -173,6 +181,8 @@ class MatchingEngineStateMachine {
      * sequence number is not above the highest acted on; otherwise the order is taken off the book and
      * the cancel reported, describing the order from what the book held. The differences between live
      * and a catch-up are those of CommandSource.
+     *
+     * A failure while it is applied is dealt with as for apply_new_order.
      *
      * Parameters as for apply_new_order.
      */
@@ -222,6 +232,30 @@ class MatchingEngineStateMachine {
   private:
     // Halts trading, without answering, for a command whose sequence number an identifier cannot hold.
     void refuse_to_name(int64_t sequence_number);
+
+    // The work of apply_new_order and apply_cancel, which catch what it throws.
+    void apply_new_order_unguarded(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
+                                   const fix_common::SessionIdentity& session, CommandSource source);
+    void apply_cancel_unguarded(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
+                                const fix_common::SessionIdentity& session, CommandSource source);
+
+    // Starts the count of what one command has done, which after_failure reads.
+    void begin_command();
+
+    // Sends a report produced by a command, counting it.
+    void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number, const fix_common::SessionIdentity& session,
+                     ReportIsRepeat repeat);
+
+    /**
+     * @brief Deals with a failure while one command was applied: rejects the command to its member if it had changed
+     * nothing and answered nothing, and reports the failure at Error either way.
+     *
+     * @param[in] sequence_number The command's sequence number.
+     * @param[in] source          Whether it was applied live or during a catch-up.
+     * @param[in] what            What failed.
+     * @param[in] send_rejection  Sends the rejection, given a buffer for its ExecID, which outlives the call.
+     */
+    void after_failure(int64_t sequence_number, CommandSource source, const char* what, const std::function<void(ReportIdentifiers::Buffer&)>& send_rejection);
 
     /**
      * @brief Refuses a new order whose ClOrdID is longer than the book's key holds.
@@ -327,6 +361,11 @@ class MatchingEngineStateMachine {
     // The highest sequence number of any live order or cancel acted on, or the position a completed catch-up brought
     // the book to, whichever is higher. See sequence_goes_backwards().
     int64_t highest_live_seq_no_{0};
+
+    // What the command being applied has done so far: how many reports it has sent, and whether it has changed the book.
+    // after_failure reads them to decide whether a failure can still be answered with a rejection.
+    int64_t reports_for_command_{0};
+    bool book_changed_by_command_{false};
 
     // Trading is halted and the venue is not taking orders. R-0117 halts after a long absence; R-0023 requires a
     // person to lift it.

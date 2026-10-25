@@ -201,6 +201,15 @@ class OrderBook {
     [[nodiscard]] size_t size() const {
         return index_.size();
     }
+
+    /**
+     * @brief What is wrong with the book, or an empty string if nothing is: the region and the map must agree.
+     *
+     * Every order in the map must be filed under a record in use that holds that order and be found by a lookup of its
+     * key, and the region must hold no record in use that the map does not file. Reads every record of the region, so it is for tests, such as the
+     * fuzzing of the engine's state machine, and not for the order path.
+     */
+    [[nodiscard]] std::string consistency_problem() const;
     [[nodiscard]] size_t capacity() const {
         return index_.capacity();
     }

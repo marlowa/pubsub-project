@@ -1,9 +1,10 @@
 # A deterministic matching engine {#deterministic_matching_engine}
 
-> **Status: decided, 25 October 2026; steps 1 to 3 of section 8 built.** This is the design for phase 7 of the
-> [recovery plan](../recovery_plan.md). The state machine of section 7.1, the remedies of section 5, `wal_replay_check`
-> and the identifiers of section 3 are built; steps 4 to 6 are not. Step 4 waits on decisions 6, 7 and 8 of section 9,
-> which are not yet taken. Andrew answered decisions 1 to 5 of section 9 on
+> **Status: decided, 25 October 2026; steps 1, 2, 3 and 5 of section 8 built.** This is the design for phase 7 of the
+> [recovery plan](../recovery_plan.md). The state machine of section 7.1, the remedies of section 5, `wal_replay_check`,
+> the identifiers of section 3 and the handling of a command the engine cannot apply, with its fuzzing, of section 6,
+> are built; steps 4 and 6 are not. Step 4 waits on decision 6 of section 9, which is not
+> yet taken; decisions 7 and 8 were taken on 25 October 2026. Andrew answered decisions 1 to 5 of section 9 on
 > 25 October 2026: identifiers are scrambled with FF1, the day key is derived from a secret and the trading date, an
 > identifier is a letter and 16 hexadecimal digits, the leading sequencer measures the absence rule, and cancelling
 > on promotion becomes a command in phase 7.
@@ -284,6 +285,23 @@ command ([BUG-0193](../bug_list.md#bug_0193)). Phase 7 does the part of BUG-0193
   the other way round, every live ClOrdID is unique for its session, and the counts agree. It runs as an ordinary
   test with a fixed seed, so that a failure can be reproduced, and for longer by hand.
 
+These are built. `MatchingEngineStateMachine::apply_new_order` and `apply_cancel` catch a C++ exception thrown while
+one command is applied. The state machine counts what the command has done: where it has not yet changed the book or
+sent a report, it is rejected with the text "Venue could not process the order", or "Venue could not process the
+cancel. The order is unchanged", under the command's own ExecID; where it has, it stands as far as it went, the book is
+published to it, and nothing more is sent, because a rejection would contradict what the book or the member already
+has. Either way the failure is logged at Error with the sequence number. `OrderBook::add` releases the record again if
+the map cannot take the order, so that a failure there changes nothing. `OrderBook::consistency_problem` checks that the
+region and the map agree and that every order is found by its key.
+
+The fuzzing test is `applications/matching_engine/tests/MatchingEngineStateMachineFuzzTest.cpp`. It applies 200,000
+commands as an ordinary test, from three sessions over 48 ClOrdIDs, with a region of 32 records, and now and then a
+ClOrdID too long to hold or a command with no time or no trading date. After each command it checks one report with an
+ExecID never seen before, the book against a model of the rules, the book's consistency, and that a second state
+machine given the same commands gave the same report. `MATCHING_ENGINE_FUZZ_COMMANDS` and `MATCHING_ENGINE_FUZZ_SEED`
+run it longer by hand. Its first run found [BUG-0205](../bug_list.md#bug_0205): the order book's map lost an order
+while it migrated.
+
 A crash that no catch can stop, such as a segmentation fault, still crashes both engines at the same command. Voiding
 such a command, so that it costs that command and not the venue, needs both engines and is designed with phase 8.
 
@@ -367,8 +385,8 @@ Each step is built, tested and committed on its own, and every high availability
 ## 9. Decisions needed
 
 Decisions 1 to 5 were all decided on 25 October 2026. Decisions 1, 2 and 3 each chose one of the ways listed;
-decisions 4 and 5 were answered yes or no. Decisions 6, 7 and 8 are needed before step 4 is built, and are not yet
-decided: each is a choice of one of the ways listed.
+decisions 4 and 5 were answered yes or no. Decisions 6, 7 and 8 are needed before step 4 is built, each a choice of
+one of the ways listed. Decisions 7 and 8 were taken on 25 October 2026; decision 6 is not yet taken.
 
 ### Decision 1. Which cipher scrambles the identifiers? (Choose one.)
 
@@ -503,6 +521,8 @@ command being written are put in the WAL before the command. They were sent to n
 
 **Recommendation: A.** It keeps what members see on a promotion as it is, and costs one number in the command.
 
+**Decided 25 October 2026: A, the command names the position the engine caught up to.**
+
 ### Decision 8. What does an engine do when its own region cannot be used? (Choose one.)
 
 **Background.** Section 4 does not cover this case. R-0102 and R-0123: when the region holding an engine's open orders
@@ -526,3 +546,6 @@ record is exactly the book the venue had.
 **Recommendation: A.** It is what a deterministic engine makes possible: a damaged file on one machine costs nothing
 when the WAL holds the day, and the venue halts only when it truly cannot say what it held. It needs R-0123 changed,
 which is why it is a decision.
+
+**Decided 25 October 2026: A, rebuild without cancelling where the WAL reaches the first record, and otherwise ask the
+sequencer for a halt.** R-0123 is to be reworded to match, with the new wording agreed before it is built.

@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 204 |
+| Bugs recorded | 205 |
 | Open | 82 (60 defects, 22 tasks) |
-| Closed | 122 |
-| Next id | BUG-0205 |
+| Closed | 123 |
+| Next id | BUG-0206 |
 
 ## Open bugs by severity
 
@@ -3944,6 +3944,45 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0205: The order book's map loses an order while it migrates, so a cancel of that order is refused as unknown and its ClOrdID can be used again {#bug_0205}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-25 |
+| Recorded | 2026-10-25 |
+| Fixed | 2026-10-25 -- a slot the migration moves an entry out of becomes a tombstone, not an empty slot |
+| How | The fuzzing test of the matching engine's state machine, written for step 5 of phase 7 (`MatchingEngineStateMachineFuzzTest`): at its 676th command, a cancel, the book stopped finding another member's order |
+| Impact | While the map from an order's identity to its record moves its entries to a new table, an order not yet moved can stop being found. The member's cancel of it is refused as an unknown order, and a new order with the same ClOrdID from the same session is accepted while the first is still in the region. The map migrates when it grows past what it was reserved for, and also, at the same size, to clear the tombstones left by cancels, which a day of orders placed and cancelled reaches in every environment |
+
+**What happened.** `IncrementalRehashMap` uses open addressing with linear probing: an entry that collides with
+others is stored further along its probe chain, and a lookup walks the chain from the entry's home slot until it finds
+the entry or reaches an empty slot. During a migration, each insert and erase moves up to eight slots of the old
+table into the new one, in order, and `move_slot` marked each slot it emptied as Empty. An entry further along the
+same chain that had not been moved yet was then unreachable in the old table, because the lookup stopped at the slot
+just emptied, and it was not in the new table either. It stayed unreachable until the migration reached it. In the
+fuzzing test, a cancel of one member's order C33 moved the migration on, and another member's order C1 stopped being
+found; the map still counted it, so the map's size and the region agreed.
+
+**Why no test found it.** The map's test of lookups in the middle of a migration used the identity hash on consecutive
+keys, so no two keys collided and no chain was split. The order book's tests use few orders.
+
+**What was done.** `move_slot` leaves a tombstone, which a lookup passes over, as an erase does. Nothing is inserted
+into the old table while it is migrated out of, so the tombstone is never reused, and the table is released when the
+migration ends. `OrderBook::consistency_problem` now also looks up every order by its key.
+
+**Verified** on 25 October 2026. A new test of the map, `AnEntryNotYetMigratedIsFoundAfterTheEntriesBeforeItInItsChainHaveMoved`,
+gives keys that collide heavily, moves the migration one slot at a time and looks up every key after each move. It
+failed before the fix, losing an entry with 15 slots still to migrate, and passes after it. With the old map restored,
+the fuzzing test failed at the same command, and the book's consistency check named it ("the map holds the order in
+record 2 but a lookup by its key does not find it"). With the fix, the fuzzing test passed for 5 million commands with
+each of four seeds. The full high availability suite, with the primary engine leading first: 82 of 83 passed, and 79
+failed as expected ([BUG-0199](#bug_0199)). With the secondary engine leading first: 23 of 26 passed, and 25, 54 and
+55 failed with the messages of [BUG-0195](#bug_0195). No scenario failed the WAL replay check.
+
+**Principles.** V6: every command a gateway accepted is answered; a member's cancel of an order the venue holds must
+not be refused.
 
 ### BUG-0139: A matching engine that restarts or is promoted issues report identifiers that were already used that day {#bug_0139}
 

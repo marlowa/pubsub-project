@@ -5,7 +5,11 @@
 
 #include <algorithm>
 #include <cstring>
+#include <exception>
+#include <string>
 #include <string_view>
+
+#include <fmt/format.h>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
@@ -60,7 +64,14 @@ bool OrderBook::add(const OrderKey& key, const OrderEntry& entry, int64_t seq_no
     written->session = key.session;
     written->set_cl_ord_id(std::string_view(key.cl_ord_id.data(), key.cl_ord_id_len));
     store_.commit(slot, seq_no);
-    index_.emplace(key, slot);
+    // The map can fail to grow. The record is released again, so that a failure here leaves the book as it was rather
+    // than holding a record the map does not know of, which a restart would then put on the book.
+    try {
+        index_.emplace(key, slot);
+    } catch (const std::exception&) {
+        store_.release(slot);
+        throw;
+    }
     return true;
 }
 
@@ -112,6 +123,34 @@ OrderBook::Recovery OrderBook::recover() {
     // cycle; the scan above has already paid for knowing which records are in use.
     store_.rebuild_free_list();
     return found;
+}
+
+std::string OrderBook::consistency_problem() const {
+    size_t live = 0;
+    const SlotIndex capacity = store_.capacity();
+    for (SlotIndex slot = 0; slot < capacity; ++slot) {
+        if (store_.is_live(slot)) {
+            ++live;
+        }
+    }
+    if (live != index_.size()) {
+        return fmt::format("the region holds {} record(s) in use and the map {} order(s)", live, index_.size());
+    }
+    for (const auto& kv : index_) {
+        if (!store_.is_live(kv.second)) {
+            return fmt::format("the map files an order under record {}, which is not in use", kv.second);
+        }
+        const OrderEntry* entry = entry_at(kv.second);
+        if (!(OrderKey::make(entry->session, entry->get_cl_ord_id()) == kv.first)) {
+            return fmt::format("record {} holds an order other than the one the map files under it", kv.second);
+        }
+        // Walking the map visits every entry it holds, but a lookup can still fail to reach one, which is the failure a
+        // member sees: a cancel of an order the venue holds refused as unknown.
+        if (index_.find(kv.first) == index_.end()) {
+            return fmt::format("the map holds the order in record {} but a lookup by its key does not find it", kv.second);
+        }
+    }
+    return {};
 }
 
 void OrderBook::clear() {

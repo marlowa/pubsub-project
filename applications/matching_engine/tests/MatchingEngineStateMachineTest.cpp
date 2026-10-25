@@ -16,8 +16,10 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -69,6 +71,10 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
   public:
     void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number, const fix_common::SessionIdentity& session,
                      ReportIsRepeat repeat) override {
+        if (fail_next_report) {
+            fail_next_report = false;
+            throw std::runtime_error("the test made sending this report fail");
+        }
         RecordedReport recorded;
         recorded.order_id = std::string(report.order_id);
         recorded.exec_id = std::string(report.exec_id);
@@ -105,12 +111,20 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
 
     void order_outcome(const fix_common::SessionIdentity& /*session*/, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
                        ReportIsRepeat repeat, int64_t sequence_number, std::string_view /*orig_cl_ord_id*/) override {
+        if (fail_next_outcome) {
+            fail_next_outcome = false;
+            throw std::runtime_error("the test made telling it what became of this command fail");
+        }
         outcomes.push_back(RecordedOutcome{std::string(cl_ord_id), outcome, repeat, sequence_number});
     }
 
     void order_accepted() override {
         ++accepted;
     }
+
+    // Set by a test to make the next call of that kind throw, as a defect reached while applying a command would.
+    bool fail_next_report{false};
+    bool fail_next_outcome{false};
 
     std::vector<RecordedReport> reports;
     std::vector<std::string> added;
@@ -386,6 +400,49 @@ TEST_F(MatchingEngineStateMachineTest, ACommandBeyondWhatAnIdentifierHoldsIsNotA
     EXPECT_TRUE(outputs_.reports.empty());
     EXPECT_EQ(book_.size(), 0U);
     EXPECT_TRUE(machine_.halted());
+}
+
+// ---- a command that fails while it is applied --------------------------------------------
+
+// A failure while one command is applied costs that command, not the engine. Here the failure comes before the command
+// has changed the book or been answered, in a duplicate's refusal, so it is rejected to its member as one the venue could
+// not process, and the next command is applied as usual.
+TEST_F(MatchingEngineStateMachineTest, AFailureBeforeACommandChangesAnythingRejectsThatCommandAndTheNextIsApplied) {
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+    outputs_.fail_next_outcome = true;
+    machine_.apply_new_order(new_order("ORD-1"), 2, taken_at, trading_day, member, CommandSource::live);
+
+    ASSERT_EQ(outputs_.reports.size(), 2U);
+    const RecordedReport& rejection = outputs_.reports[1];
+    EXPECT_EQ(rejection.exec_type, pubsub_itc_fw_app::ExecType::Rejected);
+    EXPECT_EQ(rejection.text, "Venue could not process the order");
+    EXPECT_EQ(rejection.exec_id, exec_id_of(2, 0));
+    EXPECT_EQ(book_.size(), 1U);
+    logger_.flush();
+    EXPECT_TRUE(std::any_of(log_.begin(), log_.end(), [](const std::string& line) {
+        return line.find("command seq=2 failed while it was applied") != std::string::npos && line.find("is rejected to its member") != std::string::npos;
+    }));
+
+    machine_.apply_new_order(new_order("ORD-2"), 3, taken_at, trading_day, member, CommandSource::live);
+    ASSERT_EQ(outputs_.reports.size(), 3U);
+    EXPECT_EQ(outputs_.reports[2].exec_type, pubsub_itc_fw_app::ExecType::New);
+    EXPECT_EQ(book_.size(), 2U);
+}
+
+// Here the failure comes after the order was put on the book, in sending its acknowledgement. A rejection would then
+// contradict a book that holds the order, so nothing more is sent: the order stands, and the book is published to it.
+TEST_F(MatchingEngineStateMachineTest, AFailureAfterTheBookChangedLeavesTheChangeAndSendsNoRejection) {
+    outputs_.fail_next_report = true;
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+
+    EXPECT_TRUE(outputs_.reports.empty());
+    EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-1")));
+    EXPECT_EQ(book_.published(), 1);
+    EXPECT_TRUE(book_.consistency_problem().empty());
+
+    machine_.apply_cancel(cancel_of("ORD-1", "CXL-1"), 2, taken_at, trading_day, member, CommandSource::live);
+    ASSERT_EQ(outputs_.reports.size(), 1U);
+    EXPECT_EQ(outputs_.reports[0].exec_type, pubsub_itc_fw_app::ExecType::Canceled);
 }
 
 // ---- live cancels -----------------------------------------------------------------------

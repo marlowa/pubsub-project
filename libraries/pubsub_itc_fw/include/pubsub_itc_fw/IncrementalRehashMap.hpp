@@ -152,8 +152,8 @@ class IncrementalRehashMap {
      * @brief Forward iterator over the live entries, in unspecified order.
      *
      * Walks the table being migrated out of and then the table being migrated into. An entry
-     * that has already moved is Empty in the first and Occupied in the second, so a migration
-     * in flight neither hides an entry nor presents one twice.
+     * that has already moved is a tombstone in the first and Occupied in the second, so a
+     * migration in flight neither hides an entry nor presents one twice.
      */
     class ConstIterator {
       public:
@@ -732,7 +732,11 @@ class IncrementalRehashMap {
         ++next_.used;
 
         entry.~EntryType();
-        current_.states[slot] = SlotState::Empty;
+        // A tombstone, not Empty: an entry further along this slot's probe chain may not have been moved yet, and a lookup
+        // in this table stops at the first Empty slot, so marking it Empty would lose that entry until the migration
+        // reaches it. Nothing is inserted into this table while it is being migrated out of, so the tombstone is never
+        // reused, and the table is released when the migration ends.
+        current_.states[slot] = SlotState::Tombstone;
         --current_.live;
     }
 

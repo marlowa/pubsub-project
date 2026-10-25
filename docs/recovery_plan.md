@@ -340,14 +340,16 @@ book and the same reports.
 **Design:** [deterministic_matching_engine.md](availability/deterministic_matching_engine.md). Its five decisions
 were taken by Andrew on 25 October 2026.
 
-**Progress:** steps 1 to 3 of the design's six are built. The handling of commands is in a class of its own,
+**Progress:** steps 1, 2, 3 and 5 of the design's six are built. The handling of commands is in a class of its own,
 `MatchingEngineStateMachine`, with unit tests of its own. An order and a cancel are applied by one path whether they
 arrive live or from a catch-up; a cancel of every order follows the order of the WAL; a command's time and trading date
 come only from the WAL; an engine configured differently from its leader, in its region or its identifier secret, is
 barred from leading; every OrderID and ExecID is made with FF1 from the position of its command in the WAL, with keys
 derived from a secret and the trading date ([BUG-0139](bug_list.md#bug_0139) is fixed), and `identifier_to_position`
 turns one back; and `wal_replay_check` compares a fresh replay of a WAL with the reports it holds, on every scenario in
-which no engine took a decision of its own. Steps 4 to 6 are not built.
+which no engine took a decision of its own. A failure while one command is applied rejects that command alike in both
+engines, and a fuzzing test drives the state machine with random commands, checking the book after each; it found
+[BUG-0205](bug_list.md#bug_0205). Steps 4 and 6 are not built: step 4 waits on decisions 6, 7 and 8 of the design.
 
 **Finished when:** both engines, run on the same WAL, produce identical reports, and the high
 availability scenarios pass.

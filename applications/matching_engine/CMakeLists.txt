@@ -105,6 +105,7 @@ add_executable(matching_engine_tests
         tests/Ff1CipherTest.cpp
         tests/OrderBookTest.cpp
         tests/MatchingEngineStateMachineTest.cpp
+        tests/MatchingEngineStateMachineFuzzTest.cpp
         tests/ReportIdentifiersTest.cpp
         Ff1Cipher.cpp
         MatchingEngineStateMachine.cpp

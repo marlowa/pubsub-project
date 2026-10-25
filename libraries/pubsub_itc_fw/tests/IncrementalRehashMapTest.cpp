@@ -107,6 +107,9 @@ using SteppedCountedMap = IncrementalRehashMap<int, CountedValue, std::hash<int>
 
 using ConstantHashMap = IncrementalRehashMap<int, int, ConstantHash>;
 using NarrowHashMap = IncrementalRehashMap<int, int, NarrowHash>;
+/// Colliding keys and a migration that moves one slot per operation, so that a probe chain in the outgoing table is
+/// split by the migration, part moved and part not, which is when the slots the migration leaves behind matter.
+using SteppedNarrowHashMap = IncrementalRehashMap<int, int, NarrowHash, std::equal_to<int>, 1>;
 
 /// Move-assigns through a function, so that a self-move in a test is not visible to the
 /// compiler as one -- gcc diagnoses a literal `x = std::move(x)` and the build is -Werror.
@@ -450,6 +453,25 @@ TEST_F(IncrementalRehashMapTest, EntriesAreFoundInWhicheverTableHoldsThem) {
         ASSERT_NE(map.find(key), map.end()) << "entry " << key << " lost mid-migration";
         EXPECT_EQ(map.find(key)->second, key);
     }
+}
+
+// An entry the migration has not reached yet is found by probing the outgoing table from its home slot, through the
+// slots of entries that collided with it. The migration moves those entries out as it goes, and a slot it leaves must
+// not end the probe, or every entry further along the chain is lost until the migration reaches it: a cancel of such
+// an order is refused as unknown, and a second order with its ClOrdID is accepted. The matching engine's fuzzing test
+// found this (docs/bug_list.md, BUG-0205).
+TEST_F(IncrementalRehashMapTest, AnEntryNotYetMigratedIsFoundAfterTheEntriesBeforeItInItsChainHaveMoved) {
+    SteppedNarrowHashMap map;
+    const int inserted = fill_until_migrating(map);
+    ASSERT_TRUE(map.is_migrating());
+    while (map.is_migrating()) {
+        map.erase(-1);
+        for (int key = 0; key < inserted; ++key) {
+            ASSERT_NE(map.find(key), map.end()) << "entry " << key << " lost with " << map.migration_slots_remaining()
+                                                << " slot(s) of the outgoing table still to migrate";
+        }
+    }
+    EXPECT_EQ(map.size(), static_cast<size_t>(inserted));
 }
 
 TEST_F(IncrementalRehashMapTest, EraseMidMigrationRemovesFromEitherTable) {
