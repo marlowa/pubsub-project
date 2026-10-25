@@ -1,8 +1,10 @@
 # A deterministic matching engine {#deterministic_matching_engine}
 
-> **Status: proposed, 25 October 2026, for Andrew's review.** This is the design for phase 7 of the
-> [recovery plan](../recovery_plan.md). Nothing in it is built. Section 9 lists the decisions it needs, each
-> with its background, so that they can be answered without reading the rest first.
+> **Status: decided, 25 October 2026.** This is the design for phase 7 of the
+> [recovery plan](../recovery_plan.md). Nothing in it is built. Andrew answered the five decisions of section 9 on
+> 25 October 2026: identifiers are scrambled with FF1, the day key is derived from a secret and the trading date, an
+> identifier is a letter and 16 hexadecimal digits, the leading sequencer measures the absence rule, and cancelling
+> on promotion becomes a command in phase 7.
 
 ## 1. What this is for
 
@@ -89,11 +91,11 @@ inputs can never give the same identifier, so identifiers stay unique for the da
 both engines, both give the same identifier for the same report. Without the key, consecutive identifiers look
 unrelated, so the difference between two of them says nothing about how many commands came between.
 
-Which cipher is decision 1 in section 9.
+The cipher is FF1, the NIST standard for format-preserving encryption (decision 1 in section 9).
 
 The result is written as 16 hexadecimal digits after a letter that says what it names: `O` for an `OrderID`, `E` for
 an `ExecID`, for example `E3F9A0C21D4B7E605`. That is 17 characters, inside the 32 the gateways hold for an
-`OrderID` (`max_supported_order_id_length`). The letter is decision 3.
+`OrderID` (`max_supported_order_id_length`) (decision 3).
 
 ### 3.3 The day's key
 
@@ -102,7 +104,10 @@ Both are derived from one **day key** by a standard key derivation function, HMA
 as its label.
 
 The day key must be the same on both engines, different every trading day, and known to support staff, who need it to
-turn an identifier back into its sequence number. Where it comes from is decision 2.
+turn an identifier back into its sequence number. It is derived from one long-lived secret, held on both engine
+machines and by support staff as the venue's TLS keys are, and the trading date, with HMAC-SHA256. The trading date is
+the date of the first record in the day's WAL, which both engines read, so they agree even if one starts after
+midnight (decision 2).
 
 ### 3.4 Turning an identifier back
 
@@ -149,13 +154,15 @@ cancels its book or halts on its own initiative any more. The decisions that are
   writes a cancel of the book and a halt. When the whole venue was down, sequencers included, the leading sequencer
   measures the absence when it starts, from the time of the last record in its WAL to the time it leads; if that
   exceeds the limit, it writes the same two commands before any order. An engine never measures its own absence, so
-  a follower that was down for an hour cancels nothing ([BUG-0146](../bug_list.md#bug_0146)). Decision 4 asks
-  whether the sequencer is the right process to measure it.
+  a follower that was down for an hour cancels nothing ([BUG-0146](../bug_list.md#bug_0146)). The rule is kept in
+  one class of its own inside the sequencer, so that it can move into the library if a second rule of the kind
+  appears (decision 4).
 - **Cancelling on promotion.** While `open_orders_on_promotion = "cancel"` is set, a promoted engine asks the leading
   sequencer to write a cancel of the book before it serves, and applies it from the WAL like any other command.
   Every engine that catches up afterwards meets it too, so a restarted engine no longer keeps orders its peer
-  cancelled ([BUG-0199](../bug_list.md#bug_0199)). Phase 8 removes cancelling on promotion altogether; decision 5 asks
-  whether to make it a command now or leave it until then.
+  cancelled ([BUG-0199](../bug_list.md#bug_0199)). Phase 8 removes cancelling on promotion altogether; it is made a
+  command now all the same, so that the venue stops holding orders its members were told are cancelled from phase 7
+  on (decision 5).
 - **The halt that BUG-0197 needs.** [BUG-0197](../bug_list.md#bug_0197) is designed with phase 8, but the commands
   here are the ones it uses: after a normal failover's length with no engine leading, the leading sequencer writes a
   halt, and the gateways refuse orders as it says.
@@ -246,18 +253,18 @@ Each step is built, tested and committed on its own, and every high availability
 2. **The causes in section 5.** A cancel of the book in the order of the WAL, measured at 100 million orders; time
    only from the WAL; the pair's shared settings checked when the engines connect. With these, `wal_replay_check` is
    written and passes on scenarios that neither restart nor promote an engine.
-3. **Identifiers** (section 3), with the cipher and the source of the day key decided, and `identifier_to_position`.
+3. **Identifiers** (section 3): FF1, the day key from the secret and the trading date, and `identifier_to_position`.
    [BUG-0139](../bug_list.md#bug_0139) is fixed by this step.
 4. **Decisions as commands** (section 4): the three commands, the absence rule measured by the leading sequencer, and
-   cancelling on promotion as a command if decision 5 says so. [BUG-0146](../bug_list.md#bug_0146) and, with
-   decision 5, [BUG-0199](../bug_list.md#bug_0199) are fixed by this step, and scenario 79 passes.
+   cancelling on promotion as a command. [BUG-0146](../bug_list.md#bug_0146) and
+   [BUG-0199](../bug_list.md#bug_0199) are fixed by this step, and scenario 79 passes.
 5. **A command the engine cannot apply** (section 6), and the fuzzing test.
 6. **The finish condition** (section 7.2) on every scenario's WAL, and on both engines run one after the other.
 
 ## 9. Decisions needed
 
-There are five. Decisions 1, 2 and 3 each choose one of the ways listed. Decisions 4 and 5 are each answered yes or
-no. They are independent of each other.
+There are five, all decided on 25 October 2026. Decisions 1, 2 and 3 each chose one of the ways listed; decisions 4
+and 5 were answered yes or no.
 
 ### Decision 1. Which cipher scrambles the identifiers? (Choose one.)
 
@@ -285,7 +292,7 @@ costs below has been measured on this machine; step 3 measures the chosen one be
 small block is exactly the case FF1 is designed for, and the cost is expected to be small against a 98-microsecond
 round trip. Step 3 measures it before it is relied on.
 
-**Reply wanted:** "1A", "1B" or "1C".
+**Decided 25 October 2026: A, FF1.**
 
 ### Decision 2. Where does the day key come from? (Choose one.)
 
@@ -310,7 +317,7 @@ turn an identifier back into a sequence number. There is no start-of-day procedu
 **Recommendation: A.** It needs nothing that does not exist, and it is how keys for many systems are derived. The
 secret is held like the TLS keys already are.
 
-**Reply wanted:** "2A", "2B" or "2C".
+**Decided 25 October 2026: A, derived from a secret and the trading date.**
 
 ### Decision 3. What does an identifier look like? (Choose one.)
 
@@ -325,7 +332,7 @@ secret is held like the TLS keys already are.
 
 **Recommendation: A.**
 
-**Reply wanted:** "3A", "3B" or "3C".
+**Decided 25 October 2026: A, a letter for the kind and 16 hexadecimal digits.**
 
 ### Decision 4. Should the leading sequencer measure the absence rule? (Yes or no.)
 
@@ -340,7 +347,7 @@ build.
 **Recommendation: yes,** with the rule kept in one class of its own inside the sequencer, so that it can move into the
 library later if a second rule of this kind appears.
 
-**Reply wanted:** "4 yes" or "4 no".
+**Decided 25 October 2026: yes.**
 
 ### Decision 5. Should cancelling on promotion become a command now, in phase 7? (Yes or no.)
 
@@ -354,4 +361,4 @@ is finished.
 **Recommendation: yes.** It is a small change once the cancel command of section 4.1 exists, and it stops the venue
 holding orders its members were told are cancelled from phase 7 on.
 
-**Reply wanted:** "5 yes" or "5 no".
+**Decided 25 October 2026: yes.**

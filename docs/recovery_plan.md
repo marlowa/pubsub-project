@@ -39,7 +39,8 @@
 > three operator messages decision 8 keeps, the scenarios still pass
 > ([test_events.md](availability/test_events.md), section 4.17). Andrew reviewed it on 20 October 2026. In the
 > review of phases 7 and 8 the same day, Andrew agreed that phase 7 goes ahead as written. He agreed phase 8 on
-> 24 October 2026, once it was written out in full.
+> 24 October 2026, once it was written out in full. Phase 7's design,
+> [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), was decided on 25 October 2026.
 
 ## In one page
 
@@ -335,8 +336,8 @@ book and the same reports.
   command is applied and rejecting that command alike in both engines, and fuzzing the engine with well-formed
   commands, checking the book after each. Voiding a command that crashed the engine is designed with phase 8.
 
-**Design:** [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), proposed on
-25 October 2026 for Andrew's review.
+**Design:** [deterministic_matching_engine.md](availability/deterministic_matching_engine.md). Its five decisions
+were taken by Andrew on 25 October 2026.
 
 **Finished when:** both engines, run on the same WAL, produce identical reports, and the high
 availability scenarios pass.
