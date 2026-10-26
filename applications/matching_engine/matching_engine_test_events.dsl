@@ -102,9 +102,8 @@ end
 #  Why the engine halted trading.
 # ------------------------------------------------------------
 enum HaltReason : i8 {
-    UnableToMatchTooLong = 1   # it could not match for longer than the venue says it may; it cancelled its book first
-    RecordCouldNotBeUsed = 2   # its region could not be used, and the sequencer's record named every order, so it cancelled them first
-    CannotAccountForBook = 3   # its region could not be used, and nothing could name every order it held; it halted without cancelling
+    UnableToMatchTooLong = 1   # no engine could trade for longer than the venue allows; a CancelBook command cancelled the book and halted
+    CannotAccountForBook = 3   # its region could not be used and the WAL does not reach the first command; a TechnicalEvent halted, cancelling nothing
 }
 
 # ------------------------------------------------------------
@@ -126,6 +125,18 @@ end
 # ------------------------------------------------------------
 message RegionUnusable (id=175, version=1)
     string reason              # why it could not be used, as the region's own check states it
+end
+
+# ------------------------------------------------------------
+#  169 -- RegionRebuilt
+#  The engine's region could not be used at a start, and the WAL
+#  reached the first command of the trading day, so the engine
+#  rebuilt its book from the WAL and carries on with it, cancelling
+#  nothing (R-0123).
+# ------------------------------------------------------------
+message RegionRebuilt (id=169, version=1)
+    i64 through_seq_no         # the last record the rebuild applied
+    i64 book_size              # the orders on the rebuilt book
 end
 
 # ------------------------------------------------------------

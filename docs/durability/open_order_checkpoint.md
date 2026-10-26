@@ -298,20 +298,21 @@ Absent, damaged, or written by a different build: it is treated as no region at
 all, under R-0102. A region whose header does not describe what the engine is
 configured to read is refused outright rather than read as though it did, because
 reading it the wrong way round produces orders that are wrong in ways nothing
-downstream can detect. The engine then cannot name what it held, and cannot cancel
-what it cannot name.
+downstream can detect. The engine then cannot name what it held from the region.
 
 **The fallback is the sequencer's record.** It holds every order and every
 cancellation, so what was open can be established by replaying it — the slow path
-rejected above for ordinary recovery. Here it is worth the time: it happens once,
-it is not the normal case, and what it buys is every member being told what
-became of its orders. Cancel each, report each, halt. That is R-0123.
+rejected above for ordinary recovery. The engine asks for every record from the
+first. It applies the same commands in the same order and reaches the same result
+whatever it did before, so where the record begins with the first command of the
+trading day, the book the replay builds is exactly the venue's: the engine keeps
+it, cancels nothing, and carries on, and says at Error that it rebuilt its record.
+That is R-0123.
 
 **That record is not truncated.** The sequencer discards nothing, so a replay
 from the beginning starts at the start of the trading day. The engine therefore
 reaches the first of the two cases below, and the replay costs a whole day's
-volume — at forty million orders and a microsecond an order, tens of seconds. The
-venue is halted throughout, so that time is an operator's rather than a member's.
+volume — at forty million orders and a microsecond an order, tens of seconds.
 
 The second case becomes reachable once retention is anchored to the oldest
 position anything may still present, which is R-0022 and what closes
@@ -321,13 +322,16 @@ that they can be:
 
 | What the sequencer still holds | What the engine does |
 |---|---|
-| The first record the venue took | Cancel each order, report each cancellation, halt |
-| Only a later part of the day | Halt without cancelling, saying it cannot account for what it was holding |
+| The first record the venue took | Keep the rebuilt book and carry on, cancelling nothing |
+| Only a later part of the day | If it is about to lead, ask the leading sequencer to halt trading, by a `TechnicalEvent` in the WAL, cancelling nothing; if it follows, the engine that leads goes on trading |
 
 The second is the last resort and is still better than falling silent. **It does
 not cancel**, and that is deliberate: cancelling only the orders it can name would
 leave every earlier one unmentioned, which is the outcome R-0020 exists to
-prevent, arrived at while appearing to have done something about it.
+prevent, arrived at while appearing to have done something about it. The halt is a
+command in the WAL, so that every engine halts at the same point. No scenario
+reaches this case while the sequencer keeps every record of the day
+([BUG-0209](../bug_list.md#bug_0209)).
 
 **The region itself is kept.** It is moved aside rather than overwritten, so that
 whatever made it unreadable can still be looked at.
@@ -338,13 +342,15 @@ whatever made it unreadable can still be looked at.
 rather than resize.** The record count is in the region's header, and a header that does not
 describe what the engine is configured to read is refused --- which is right, and is what
 stops a region being reinterpreted at the wrong stride. But a deliberate resize looks
-identical to a damaged region from inside `open()`, so the engine moves the old one aside,
-finds it cannot say what it held, and halts under R-0123.
+identical to a damaged region from inside `open()`, so the engine moves the old one aside and
+rebuilds its book from the WAL under R-0123, now with the new capacity.
 
-That is the correct answer to the question it is actually being asked. It is not the answer
-anybody wants from a resize, so the resize is: stop the engine, delete the region, change the
-figure, start it. Any orders open at the time are gone, which is why this is a change to make
-when nothing is resting rather than during a trading day.
+That rebuild is the venue's book only if the new capacity refuses no order the old one
+accepted. A smaller region, or one too small for the most orders open at any moment of the
+day, refuses in the replay an order the engine accepted at the time, so the engine holds a
+book its members were not told of, and sends those members a refusal for an order they were
+told is open. So a resize is a change to make between trading days, when the WAL is new and
+nothing is resting: stop the engine, delete the region, change the figure, start it.
 
 **How big it needs to be** depends on what removes orders from the book, which is worth
 saying plainly because a load profile can make it look far worse than it is. This venue's

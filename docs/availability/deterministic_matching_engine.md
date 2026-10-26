@@ -1,11 +1,9 @@
 # A deterministic matching engine {#deterministic_matching_engine}
 
-> **Status: decided, 25 October 2026; steps 1, 2, 3 and 5 of section 8 built, and step 4 in part.** This is the design for phase 7 of the
+> **Status: decided, 25 October 2026; steps 1 to 5 of section 8 built.** This is the design for phase 7 of the
 > [recovery plan](../recovery_plan.md). The state machine of section 7.1, the remedies of section 5, `wal_replay_check`,
-> the identifiers of section 3 and the handling of a command the engine cannot apply, with its fuzzing, of section 6,
-> are built. Of step 4, cancelling on promotion and the absence rule are commands in the WAL, and the halt is state the
-> commands set, kept with the book; a region that cannot be used is not yet handled by commands (decision 8); step 6
-> is not built. Decisions 6, 7 and 8 of section 9, which step 4 needed, were taken on 25 October 2026, and decision 9
+> the identifiers of section 3, every decision of section 4 as a command in the WAL, and the handling of a command the
+> engine cannot apply, with its fuzzing, of section 6, are built; step 6 is not. Decisions 6, 7 and 8 of section 9, which step 4 needed, were taken on 25 October 2026, and decision 9
 > on 26 October 2026. Andrew answered decisions 1 to 5 of section 9 on
 > 25 October 2026: identifiers are scrambled with FF1, the day key is derived from a secret and the trading date, an
 > identifier is a letter and 16 hexadecimal digits, the leading sequencer measures the absence rule, and cancelling
@@ -32,9 +30,8 @@ pass. Section 7 says how that is checked.
 
 These are the places, found by reading `MatchingEngineThread.cpp` and `OrderBook.hpp`, where the same commands could
 lead to a different book or different reports, and which this design removes. Steps 2 and 3 of section 8 have removed
-causes 1 and 3 to 6. Of cause 2, step 4 has made the first two decisions commands in the WAL, and the halt state those
-commands set; the cancel and the halt of an engine whose own region cannot be used are still its own decisions, until
-the rest of step 4 (decision 8).
+causes 1 and 3 to 6, and step 4 has removed cause 2: each of its decisions is a command in the WAL, and the halt is
+state those commands set.
 
 1. **Identifiers come from counters kept in memory.** `OrderID` is `ME-ORD-` and a counter, `order_id_counter_`, and
    `ExecID` is `ME-EXEC-` and another, `exec_id_counter_`. After a restart the order counter is set above the highest
@@ -197,8 +194,9 @@ Three kinds of command join the new order and the cancel as commands the engine 
 The halt and the resume are one message, the technical event of [trading_phases.md](../venue/trading_phases.md)
 (decision 6): `TechnicalEvent` in `leader_follower.dsl`, carrying the phase, whether trading is halted, the trading
 day and a reason. The engine applies it; one whose trading day is older than the trading date of the record carrying it
-is refused. Nothing writes one yet: the halt of section 4.2 for a region that cannot be used will, and the resume waits
-for the operator's means of lifting a halt ([BUG-0065](../bug_list.md#bug_0065)). The phase is always open.
+is refused. The leading sequencer writes one that halts trading when an engine about to lead cannot account for the
+orders the venue holds (section 4.2); the resume waits for the operator's means of lifting a halt
+([BUG-0065](../bug_list.md#bug_0065)). The phase is always open.
 
 Each is a WAL record like an order, with a sequence number and the time the sequencer recorded, and a catch-up sends
 it to an engine like an order. So an engine that restarts and catches up meets each decision at the position where
@@ -251,6 +249,20 @@ cancels its book or halts on its own initiative any more. The decisions that are
   a cancel through its position, and tells the test it has resumed as leader (`ResumedAsLeader`) only then, so the
   book it reports resuming with is the one it serves. A second command through the same position finds nothing to
   cancel.
+- **A region that cannot be used (decision 8).** This is built. An engine whose region could not be used at a start
+  keeps it aside, starts a new one, and asks for every record of the WAL from the first, so that the catch-up rebuilds
+  its book (`MatchingEngineThread::recover_open_orders`). When the catch-up finishes, `account_for_unusable_region`
+  reads the earliest record the sequencer holds, which `WalFollowCaughtUp` carries. Where it is the first command of
+  the trading day, the rebuilt book is exactly the venue's, and the engine keeps it and carries on, cancelling
+  nothing, and says so at Error (`RegionRebuilt` to a test). Where it is not, the orders taken before it cannot be
+  named. An engine about to lead, or the only engine, then sends each sequencer a `HaltRequest`, every second until
+  it has applied a halt, and the leading sequencer writes a `TechnicalEvent` that halts trading, with reason
+  `CannotAccountForBook` (`SequencerThread::handle_halt_request`). Nothing is cancelled. Orders that reach the
+  sequencer before the halt are before it in the WAL, and are applied, by this engine and by any that replays the WAL;
+  measured once on this machine, the engine applied the halt 4.8 milliseconds after it asked for it. An engine that follows asks
+  for no halt, because the engine that leads goes on trading; it asks when it is to lead, since it catches up again
+  then. While the sequencer keeps every record of the day, the second case cannot arise, and no scenario reaches it
+  ([BUG-0209](../bug_list.md#bug_0209)).
 - **The halt that BUG-0197 needs.** [BUG-0197](../bug_list.md#bug_0197) is designed with phase 8, but the commands
   here are the ones it uses: after a normal failover's length with no engine leading, the leading sequencer writes a
   halt, and the gateways refuse orders as it says.
@@ -260,8 +272,8 @@ cancels its book or halts on its own initiative any more. The decisions that are
 - It no longer stamps its region with the time while it runs, or measures its own absence when it starts; the
   `cancel_and_halt_pending_` path goes. This is built: the region's header holds a value of its owner's in place of
   the time stamp (`MappedSlotStore::set_owner_value`), which the engine uses for the halt below.
-- It no longer cancels its book on promotion by itself; `cancel_all_orders_on_failover` is called only by the cancel
-  command.
+- It no longer cancels its book by itself, on promotion or for any other reason. This is built: every cancel of the
+  book is a `CancelBook` command, and the engine's own cancel of every order is gone.
 - It no longer keeps a halt of its own. Whether it is halted is part of its state, set and cleared by commands, and
   recovered by catching up.
 
@@ -271,8 +283,8 @@ cancels its book or halts on its own initiative any more. The decisions that are
   that restarts and resumes from that position, and is not sent the command again, finds it there. A new order is
   refused while halted whether it is applied live or during a catch-up, so an engine catching up refuses the orders
   the engine that served refused. The follower engine applies no commands, so the leader tells it of each change to
-  the halt as it tells it of each change to the book, with a `BookUpdate` of type `HaltSet` or `HaltLifted`. The halt
-  of an engine whose own region cannot be used is still that engine's decision, until the rest of step 4.
+  the halt as it tells it of each change to the book, with a `BookUpdate` of type `HaltSet` or `HaltLifted`. Every
+  halt is set by a command.
 
 ## 5. The other causes, put right
 

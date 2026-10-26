@@ -309,8 +309,14 @@ TEST_F(MatchingEngineStateMachineTest, RefusesAClOrdIdLongerThanTheBookHolds) {
 }
 
 TEST_F(MatchingEngineStateMachineTest, RefusesEveryNewOrderWhileHalted) {
-    machine_.halt();
-    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+    pubsub_itc_fw_app::TechnicalEventView halt{};
+    halt.phase = pubsub_itc_fw_app::TradingPhase::Open;
+    halt.halted = true;
+    halt.trading_day = trading_day;
+    halt.reason = pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook;
+    machine_.apply_technical_event(halt, 1, trading_day, CommandSource::live);
+    outputs_.reports.clear();
+    machine_.apply_new_order(new_order("ORD-1"), 2, taken_at, trading_day, member, CommandSource::live);
 
     ASSERT_EQ(outputs_.reports.size(), 1U);
     EXPECT_EQ(outputs_.reports[0].exec_type, pubsub_itc_fw_app::ExecType::Rejected);
@@ -814,26 +820,6 @@ TEST_F(MatchingEngineStateMachineTest, TheSameCommandsLiveAndFromACatchUpGiveThe
 
 // ---- the whole book ---------------------------------------------------------------------
 
-TEST_F(MatchingEngineStateMachineTest, CancellingEveryOrderReportsEachAndEmptiesTheBook) {
-    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
-    machine_.apply_new_order(new_order("ORD-2"), 2, taken_at, trading_day, other_member, CommandSource::live);
-    outputs_.reports.clear();
-
-    const MatchingEngineStateMachine::BookCancelled cancelled = machine_.cancel_every_order(2, 1, taken_at + 99, trading_day);
-
-    EXPECT_EQ(cancelled.open_orders, 2);
-    EXPECT_EQ(cancelled.reports_sent, 2);
-    ASSERT_EQ(outputs_.reports.size(), 2U);
-    for (const RecordedReport& report : outputs_.reports) {
-        EXPECT_EQ(report.exec_type, pubsub_itc_fw_app::ExecType::Canceled);
-        EXPECT_EQ(report.sequence_number, 0) << "no command produced these cancels";
-        EXPECT_EQ(report.transact_time, taken_at + 99);
-    }
-    EXPECT_EQ(outputs_.reports[0].exec_id, exec_id_of(2, 1)) << "named by the sequence number given, from the first place given";
-    EXPECT_EQ(outputs_.reports[1].exec_id, exec_id_of(2, 2));
-    EXPECT_EQ(book_.size(), 0U);
-}
-
 // A CancelBook command, written for a promotion, cancels the orders placed at or before its position, in the order they
 // were placed, and keeps those placed after it (decision 7 of docs/availability/deterministic_matching_engine.md).
 TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandCancelsTheOrdersPlacedAtOrBeforeItsPositionAndKeepsTheRest) {
@@ -899,7 +885,7 @@ TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandIsAppliedOnceAndAlikeLi
 
 // Cancelled in the order the orders were placed, so that an engine that built its book live and one that built it from
 // a catch-up in a different order of arrival into the map send the same cancels in the same order.
-TEST_F(MatchingEngineStateMachineTest, CancellingEveryOrderReportsThemInTheOrderTheyWerePlaced) {
+TEST_F(MatchingEngineStateMachineTest, ACancelOfEveryOrderReportsThemInTheOrderTheyWerePlaced) {
     machine_.apply_new_order(new_order("ORD-C"), 3, taken_at, trading_day, member, CommandSource::live);
     machine_.apply_new_order(new_order("ORD-A"), 4, taken_at, trading_day, other_member, CommandSource::live);
     machine_.apply_new_order(new_order("ORD-B"), 5, taken_at, trading_day, member, CommandSource::live);
@@ -907,7 +893,8 @@ TEST_F(MatchingEngineStateMachineTest, CancellingEveryOrderReportsThemInTheOrder
     machine_.apply_cancel(cancel_of("ORD-A", "CXL-A"), 7, taken_at, trading_day, other_member, CommandSource::live);
     outputs_.reports.clear();
 
-    static_cast<void>(machine_.cancel_every_order(7, 1, taken_at, trading_day));
+    static_cast<void>(
+        machine_.apply_cancel_book(std::numeric_limits<int64_t>::max(), HaltIfOrdersCancelled::no, 8, taken_at, trading_day, CommandSource::live));
 
     std::vector<std::string> order_ids;
     for (const RecordedReport& report : outputs_.reports) {

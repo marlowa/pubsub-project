@@ -346,8 +346,10 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     std::string region_unusable_reason_;
     std::optional<pubsub_itc_fw_app::HaltReason> halt_reason_;
 
-    // Halts trading for reason, and reports it to the test if one started this instance.
-    void halt_for(pubsub_itc_fw_app::HaltReason reason);
+    // While this instance waits for the TechnicalEvent halting trading that it asked for, the timer that asks again.
+    bool halt_awaited_{false};
+    pubsub_itc_fw::TimerID halt_request_timer_id_{};
+    static constexpr std::chrono::seconds halt_request_interval{1};
 
     void report_order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
                               ReportIsRepeat repeat, int64_t sequence_number, std::string_view orig_cl_ord_id = {});
@@ -614,26 +616,28 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     /**
      * @brief Whether the engine can say what it is holding.
      *
-     * The region vouches for the book. Where it cannot be used the engine holds only what the
-     * sequencer's tail replayed, which is not the same thing, and the answer is to cancel
-     * everything, report each cancel, and halt -- R-0102 and R-0123.
+     * The region vouches for the book. Where the one this process inherited could not be used, the
+     * engine asks for every record from the first, and holds what that replay rebuilt: the venue's
+     * book, if the WAL reached the first command of the trading day, and otherwise an incomplete one
+     * (R-0102, R-0123). See account_for_unusable_region.
      */
     [[nodiscard]] bool book_can_be_vouched_for() const;
 
-    // Cancels every order on the book through the state machine, with the time from this engine's clock, and tells the
-    // test how many there were.
-    void cancel_all_orders_on_failover();
-
-    /// Halts without cancelling where the region this process inherited could not be used and nothing has established
-    /// what was open from the sequencer's record (R-0123). A no-op otherwise, so it is safe to call from every point the
-    /// engine might reach first.
-    void act_on_pending_halt();
-
     /**
-     * @brief Cancels every open order, tells each member, and halts trading, where the region could not be used and the
-     * sequencer's record named every order (R-0123).
+     * @brief Decides, once a catch-up has finished, what an engine whose region could not be used does with the book the
+     * catch-up rebuilt (R-0123).
+     *
+     * Where the WAL reached the first command of the trading day, the book is exactly the venue's, so the engine carries
+     * on with it, cancelling nothing, and reports at Error that it rebuilt its record. Where it did not, the engine cannot
+     * account for the orders the venue holds: if it is about to lead, it asks the leading sequencer to halt trading, by a
+     * TechnicalEvent in the WAL, so that every engine halts at the same point; if it follows, the engine that leads goes
+     * on trading, and this one asks again when it is to lead.
      */
-    void cancel_everything_and_halt(const char* why, pubsub_itc_fw_app::HaltReason reason);
+    void account_for_unusable_region(const pubsub_itc_fw::WalFollowCaughtUpView& ack);
+
+    // Asks every sequencer for a TechnicalEvent halting trading because this instance cannot account for the book; the
+    // leading one writes it. Asked again every halt_request_interval until trading is halted.
+    void request_halt();
 };
 
 } // namespaces

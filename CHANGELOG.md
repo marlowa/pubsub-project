@@ -106,6 +106,11 @@ describe the venue as it now is.
 
 ### Changed
 
+- **A matching engine whose region cannot be used rebuilds its book from the WAL and carries on**,
+  part of step 4 of phase 7, cancelling nothing, where the WAL reaches the first command of the trading
+  day; where it does not, an engine about to lead asks the leading sequencer for a `TechnicalEvent`
+  that halts trading (`HaltRequest`), and cancels nothing. R-0123 is reworded to match. Every cancel of
+  the book and every halt is now a command in the WAL; the engine's own cancel of every order is gone.
 - **The leading sequencer measures how long no matching engine could trade**, part of step 4 of phase
   7, and when that is longer than `[absence] absence_limit_seconds`, now in the sequencer's
   configuration and declared once in each environment, writes a `CancelBook` command that cancels
@@ -227,6 +232,9 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
   cancelled its book and halted** when it came back, because it measured its own absence, not the
   venue's. New scenario 84 keeps the following engine down past the limit and requires that nothing
   is cancelled (BUG-0146).
+- **A matching engine whose region could not be used never rebuilt its book from the WAL**: it asked
+  to be caught up with no position, was sent nothing, and halted trading although the WAL reached the
+  first command of the day. Scenario 52 now requires the book rebuilt and every order kept (BUG-0208).
 - **A halt was lost when the matching engine restarted, or failed over to the follower**, which was
   never told of it, so the venue went on accepting orders that R-0023 says only a person may allow
   again (BUG-0206).

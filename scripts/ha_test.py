@@ -1040,8 +1040,9 @@ class Scenario(NamedTuple):
     # and halted. See run_scenario's "long absence" block.
     assert_absence_halt: bool = False
     # When True, damage the matching engine's open-order region before restarting it, and
-    # assert that the venue says it cannot account for what it was holding rather than
-    # resuming as though the region had been empty. See run_scenario's "damaged region" block.
+    # assert that the engine refuses it, keeps it aside, rebuilds its book from the WAL, which
+    # reaches the first command of the day, and carries on with every order, cancelling nothing
+    # (R-0123). See run_scenario's "damaged region" block.
     assert_damaged_region: bool = False
     # Why this scenario is expected to fail, when the venue is known not to meet the
     # requirement it asserts. A scenario marked this way does not fail the suite when it
@@ -3618,32 +3619,26 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
-    # 52 -- the venue's own record of what it held cannot be read.
+    # 52 -- the venue's own record of what it held cannot be read, and the WAL reaches the first command of the day.
     #
-    # R-0102 says such a record is not to be used. That leaves the engine unable to name what
-    # it held, and it cannot cancel what it cannot name -- so R-0123 sends it to the other
-    # record the venue keeps, the sequencer's log of what it took, and requires it to cancel
-    # each order and tell each member from that instead.
-    #
-    # But that log is truncated as it is consumed, so a replay from the beginning starts
-    # wherever truncation left off rather than at the start of the day. In a sandbox that has
-    # been running scenarios for hours it starts a long way in, which is the case this asserts:
-    # the engine cannot establish what was open, so it says it cannot account for what it was
-    # holding and halts WITHOUT cancelling. Cancelling only the orders it could name would
-    # leave every earlier one unmentioned, which is the silence the whole chapter exists to
-    # prevent, arrived at while appearing to have done something.
+    # R-0102 says such a record is not to be used. R-0123 sends the engine to the other record the venue keeps, the
+    # sequencer's WAL of what it took. The engine is deterministic, so replaying that WAL from its first record gives
+    # exactly the book the venue had, and the engine carries on with it: every member keeps every order, nothing is
+    # cancelled, and trading does not halt. The gateway then cancels every order it believes the member has open, and
+    # every cancel must be carried out.
     #
     # The region itself must survive: whatever made it unreadable is evidence, and a venue that
     # overwrites it destroys the only account of its own failure.
     Scenario(
         number=52,
-        short_name="damaged_region_cannot_account",
-        description="A matching engine whose record of what it held cannot be read",
+        short_name="damaged_region_rebuilt_from_wal",
+        description="A matching engine whose record of what it held cannot be read rebuilds it from the WAL",
         expected_outcome=(
-            "the engine refuses the damaged region rather than reading it, keeps it aside, "
-            "says it cannot account for what it was holding, and halts without cancelling"
+            "the engine refuses the damaged region rather than reading it, keeps it aside, rebuilds its book from the "
+            "WAL, which reaches the first command of the day, and carries on with every order, cancelling nothing"
         ),
         assert_damaged_region=True,
+        assert_open_orders_survive=True,
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -5161,23 +5156,19 @@ _SEQUENCER_COMPONENTS = ("sequencer_primary", "sequencer_secondary")
 def replay_check_applies() -> tuple[bool, str, list[str]]:
     """Whether wal_replay_check can be relied on for the scenario just run, why not if it cannot, and the engines that led.
 
-    It can unless an engine cancelled every order by a decision of its own, sending reports, or halted by one. Every
+    It can unless an engine cancelled every order by a decision of its own, sending reports. Every
     report's ExecID is made from the position in the WAL of the command that caused it
     (docs/availability/deterministic_matching_engine.md, section 3), so the state machine it replays names each report
-    as whichever engine sent it did, however often the engines restarted or changed roles. A cancel of the book on
-    promotion, and the cancel and halt after no engine could trade for too long, are commands in the WAL, and are
-    replayed. An engine whose region could not be used still cancels or halts by its own decision (R-0123), and the
-    reports that produces are in the WAL with no command there to replay. Worked out from what the engines said, not
-    from the scenario's description, so that it cannot disagree with what happened."""
+    as whichever engine sent it did, however often the engines restarted or changed roles. Every cancel of the book
+    and every halt is a command in the WAL, and is replayed; a cancel by an engine's own decision would be in the WAL
+    with no command there to replay, and is looked for so that one cannot pass unnoticed. Worked out from what the
+    engines said, not from the scenario's description, so that it cannot disagree with what happened."""
     engine_module = _TEST_EVENTS.modules["matching_engine_test_events"]
     for event in _TEST_EVENTS.events:
         if (event.component in _ENGINE_COMPONENTS and isinstance(event.message, engine_module.BookCancelled) and not event.message.by_command
                 and event.message.cancel_reports_sent > 0):
             return False, (f"{event.component} cancelled every order by its own decision, which is not a command in the WAL, "
                            f"and sent {event.message.cancel_reports_sent} cancel report(s)"), []
-        if (event.component in _ENGINE_COMPONENTS and isinstance(event.message, engine_module.Halted)
-                and event.message.reason != engine_module.HaltReason.UnableToMatchTooLong):
-            return False, f"{event.component} halted by its own decision, which is not a command in the WAL", []
     engines_that_led = sorted({event.component for event in _TEST_EVENTS.events if event.component in _ENGINE_COMPONENTS
                                and leads(_TEST_EVENTS.messages, event.component)(event)})
     if not engines_that_led:
@@ -7732,36 +7723,29 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "destroys the only account of the failure.")
             log(f"  damaged region: kept aside as {kept.name}")
 
-            # The venue must say it cannot account for what it was holding. The sequencer's log
-            # is truncated as it is consumed, so it does not reach the orders taken earlier in
-            # the day, and the engine has no way to name them.
-            halt = engine_event(me_log.stem, "Halted", region_from, args.failover_timeout)
-            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
-            cannot_account = halt is not None and halt.reason == engine_events.HaltReason.CannotAccountForBook
-            if not cannot_account:
-                die("damaged region: the engine did not say it cannot account for what it was "
-                    "holding. The sequencer's log is truncated, so it does not reach the orders "
-                    "taken earlier in the day; resuming on what it does reach would conceal "
-                    "exactly the loss being recovered from (R-0123).")
-            log("  damaged region: the venue says it cannot account for what it was holding")
+            # The WAL reaches the first command of the day, so the engine rebuilt from it exactly the book the venue had,
+            # and carries on with every order on it, cancelling nothing (R-0123). That the member's orders are all still
+            # there is checked below, by cancelling each. The other case of R-0123, a WAL that does not reach the first
+            # command, cannot arise while the WAL keeps every record of the day (BUG-0209).
+            rebuilt = engine_event(me_log.stem, "RegionRebuilt", region_from, args.failover_timeout)
+            if rebuilt is None:
+                die("damaged region: the engine did not say it rebuilt its book from the WAL. The WAL reaches the first "
+                    "command of the day, so the book it holds after catching up from the first record is the venue's (R-0123).")
+            log(f"  damaged region: the book was rebuilt from the WAL through seq_no={rebuilt.through_seq_no}, "
+                f"holding {rebuilt.book_size} order(s)")
+            halt = engine_event(me_log.stem, "Halted", region_from, 0.0, settle=True)
+            if halt is not None:
+                die("damaged region: the engine halted although it rebuilt the venue's book. Halting costs every member "
+                    "the market and protects nothing, because the book is exactly the venue's (R-0123).")
+            log("  damaged region: trading carries on")
 
-            halted = halt is not None
-            if not halted:
-                die("damaged region: the engine did not halt. Admitting it cannot say is the "
-                    "last resort and is still better than silence, but only if it stops (R-0123).")
-            log("  damaged region: trading halted")
-
-            # And it must NOT have cancelled. Cancelling the orders it can name would leave
-            # every earlier one unmentioned -- the same silence, reached while appearing to
-            # have dealt with it.
+            # Nothing is cancelled: the rebuilt book is the venue's.
             cancelled_book = engine_event(me_log.stem, "BookCancelled", region_from, 0.0, settle=True)
             cancelled = cancelled_book.cancel_reports_sent if cancelled_book is not None else -1
             if cancelled > 0:
-                die(f"damaged region: the engine cancelled {cancelled} order(s) while unable to "
-                    "account for what it held. Cancelling only what it can name leaves every "
-                    "order it cannot name unmentioned, which is the silence R-0020 exists to "
-                    "prevent, arrived at while appearing to have done something about it.")
-            log("  damaged region: nothing cancelled, because not everything could be named -- OK")
+                die(f"damaged region: the engine cancelled {cancelled} order(s), although the book it rebuilt is the venue's "
+                    "(R-0123).")
+            log("  damaged region: nothing cancelled -- OK")
 
         # ── A long absence: cancelled, reported, halted ───────────────────────
         # The engine was kept down past the period the venue says it may be absent for, with

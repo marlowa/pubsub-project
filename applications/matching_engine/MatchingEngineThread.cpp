@@ -254,7 +254,6 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: primary sequencer ER connection {} established", id.get_value());
         announce_role();
         release_reports_held_for_a_connection();
-        act_on_pending_halt();
     } else if (svc == "sequencer_er_secondary") {
         sequencer_er_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer ER connection {} established", id.get_value());
@@ -915,6 +914,14 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         return;
     }
 
+    if (id == halt_request_timer_id_) {
+        // A request lost to a change of sequencer leader is asked for again.
+        if (halt_awaited_ && !state_machine_.halted()) {
+            request_halt();
+        }
+        return;
+    }
+
     if (id == lease_tick_timer_id_) {
         act_on(lease_agent_->on_tick(std::chrono::steady_clock::now()));
         // A request for a cancel of the book that a change of sequencer leader lost is asked for again.
@@ -1110,12 +1117,6 @@ void MatchingEngineThread::adopt_leader_role() {
     // This instance is going to serve, so anything it caught up on and held back is owed to the
     // members who placed those orders.
     release_held_reports();
-
-    // This is the moment trading resumes, which is the moment R-0117 is about: an engine that
-    // was absent too long must not simply carry on with the orders its members were locked out
-    // of. Checked here rather than only after reconciliation, because an engine can reach this
-    // point without reconciling at all.
-    act_on_pending_halt();
 }
 
 void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) {
@@ -1133,6 +1134,11 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
             reconciling_to_lead_ = false;
             // The command it asked for, if any, is the next leader's to ask for; this instance no longer waits for it.
             cancel_book_awaited_through_ = 0;
+            if (halt_awaited_) {
+                halt_awaited_ = false;
+                cancel_timer(halt_request_timer_id_);
+                halt_request_timer_id_ = pubsub_itc_fw::TimerID{};
+            }
             enter_follower_state();
             break;
         case pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads:
@@ -1212,14 +1218,6 @@ void MatchingEngineThread::report_catch_up(pubsub_itc_fw_app::CatchUpStage stage
     event.reports_sent = reconciliation_reports_sent_;
     event.book_size = static_cast<int64_t>(order_book_.size());
     test_events_->send_event(pubsub_itc_fw_app::CatchUp::message_pdu_id, event);
-}
-
-void MatchingEngineThread::halt_for(pubsub_itc_fw_app::HaltReason reason) {
-    state_machine_.halt();
-    halt_reason_ = reason;
-    if (test_events_.has_value()) {
-        test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{reason});
-    }
 }
 
 void MatchingEngineThread::report_present_state() {
@@ -1410,6 +1408,18 @@ void MatchingEngineThread::announce_role() {
 // WAL reconciliation (Slice D)
 
 void MatchingEngineThread::recover_open_orders(bool region_existed) {
+    if (region_was_unusable_) {
+        // The region this process inherited could not be used, so this one is new, but the engine is not: it held orders,
+        // and the venue must say what became of them. It asks for every record from the first, so that the catch-up
+        // rebuilds the book from the WAL (R-0123); account_for_unusable_region decides what follows.
+        order_book_.warm();
+        has_position_ = true;
+        last_replicated_seq_no_ = 0;
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "MatchingEngineThread: the region it inherited could not be used -- asking for every record of the WAL from the first, to rebuild the "
+                       "book from it (R-0123)");
+        return;
+    }
     if (!region_existed) {
         // Nothing was left behind, so there is nothing to read and every page of the region is
         // a hole. Touching them now costs about half a millisecond and means no order pays a
@@ -1775,35 +1785,15 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     // deployed default until the checks behind "keep" exist. See R-0020, R-0073, and
     // docs/availability/wal_and_ha.md.
     //
-    // Cancelling everything is also the answer when the region cannot be used, whatever the
-    // policy says, which is R-0102 and R-0123: cancel each, report each, halt.
+    // Where the region could not be used, R-0123 decides first: the book the catch-up rebuilt is kept if the WAL
+    // reached the first command of the day, and otherwise trading halts. A rebuilt book is the venue's, so what
+    // follows applies to it as to any other.
     if (!book_can_be_vouched_for()) {
-        // The region could not be read, so what this engine holds is whatever the sequencer's
-        // record just supplied. R-0123: establish what was open from that record, cancel each
-        // order, and tell the member that placed it.
-        //
-        // Whether it WAS established is the question the ack answers. The log is truncated as
-        // it is consumed, so a replay from the beginning starts wherever truncation left off.
-        // If the earliest record still held is not the first the venue ever took, orders
-        // placed before that point are not in what was just replayed, and the engine has no
-        // way to name them. Resuming on that would conceal exactly the loss it is recovering
-        // from, so it says it cannot account for what it was holding, and stops.
-        const bool record_reaches_the_start = ack.first_seq_no_held <= 1;
-        if (record_reaches_the_start) {
-            // Established after all: the sequencer's record goes back to the first order the
-            // venue ever took, so what was open can be named, cancelled and reported.
-            region_was_unusable_ = false;
-            cancel_everything_and_halt("the venue's own record of what it held could not be used", pubsub_itc_fw_app::HaltReason::RecordCouldNotBeUsed);
-        } else {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                       "MatchingEngineThread: cannot account for what the venue was holding -- the order book region could not be used and the sequencer's "
-                       "record starts at seq_no={}, so orders taken before that cannot be named. Halting without cancelling, because cancelling what cannot "
-                       "be named would leave the rest unmentioned (R-0123)",
-                       ack.first_seq_no_held);
-            halt_for(pubsub_itc_fw_app::HaltReason::CannotAccountForBook);
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                           "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
-        }
+        account_for_unusable_region(ack);
+    }
+    if (!book_can_be_vouched_for()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: holding {} order(s) it cannot vouch for -- not keeping or cancelling them as a promotion would", order_book_.size());
     } else if (reconciling_from_follower_ && cancel_open_orders_on_promotion_) {
         // The book could have been carried across. It is not, because the configuration says the
         // venue does not promise that yet: each member is told its order is gone rather than
@@ -1851,7 +1841,6 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
                    "MatchingEngineThread: caught up at seq_no={} with {} order(s) on the book -- current, and waiting to be told what it may do",
                    ack.last_seq_no, order_book_.size());
         report_catch_up(pubsub_itc_fw_app::CatchUpStage::CurrentAndWaiting, ack.last_seq_no, ack.records_sent);
-        act_on_pending_halt();
         // A leader that announced itself while this catch-up was running said so on the only
         // occasion it had. Acting on it here is what keeps the startup arbitration deadline from
         // degrading this instance into a second leader while the first is alive and well.
@@ -1883,41 +1872,52 @@ bool MatchingEngineThread::book_can_be_vouched_for() const {
     return order_book_.is_open() && !region_was_unusable_;
 }
 
-void MatchingEngineThread::act_on_pending_halt() {
-    // Nothing is decided while the sequencer's record is still being asked for: that answer is
-    // what settles whether the venue can say what it held.
-    if (ha_role_state_ == MeRole::Reconciling) {
+void MatchingEngineThread::account_for_unusable_region(const pubsub_itc_fw::WalFollowCaughtUpView& ack) {
+    // The catch-up was asked for from the first record, so the book holds every order the WAL holds. Whether that is
+    // every order the venue holds is whether the WAL begins with the first command of the trading day.
+    if (ack.first_seq_no_held <= 1) {
+        region_was_unusable_ = false;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: the order book region could not be used, and the book was rebuilt from the WAL, which reaches the first command of "
+                   "the trading day -- carrying on with the {} order(s) it holds through seq_no={}, cancelling nothing, because it is exactly the venue's book "
+                   "(R-0123)",
+                   order_book_.size(), ack.last_seq_no);
+        if (test_events_.has_value()) {
+            test_events_->send_event(pubsub_itc_fw_app::RegionRebuilt::message_pdu_id,
+                                     pubsub_itc_fw_app::RegionRebuilt{ack.last_seq_no, static_cast<int64_t>(order_book_.size())});
+        }
         return;
     }
-
-    if (region_was_unusable_ && !state_machine_.halted()) {
-        // The region could not be read and nothing has established what was open from the
-        // sequencer's record. R-0123's last resort: say so and stop. It does NOT cancel --
-        // cancelling the orders it happens to know about would leave every other one
-        // unmentioned, which is the silence R-0020 exists to prevent, reached while appearing
-        // to have dealt with it.
-        //
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                       "MatchingEngineThread: cannot account for what the venue was holding -- the order book region could not be used and nothing has "
-                       "established what was open from the sequencer's record. Halting without cancelling, because cancelling what can be named would leave "
-                       "the rest unmentioned (R-0123)");
-        halt_for(pubsub_itc_fw_app::HaltReason::CannotAccountForBook);
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                       "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
+    // Orders taken before the WAL's first record cannot be named, so this book is not the venue's. Cancelling the orders
+    // it can name would leave every other one unmentioned, which is the silence R-0020 exists to prevent, reached while
+    // appearing to have dealt with it; so nothing is cancelled.
+    if (ha_enabled_ && !reconciling_to_lead_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: the order book region could not be used, and the WAL starts at seq_no={}, so the orders taken before it cannot be "
+                   "named -- this instance follows, so the engine that leads goes on trading; if this instance is to lead, it halts trading first (R-0123)",
+                   ack.first_seq_no_held);
         return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "MatchingEngineThread: cannot account for what the venue is holding -- the order book region could not be used, and the WAL starts at "
+               "seq_no={}, so the orders taken before it cannot be named. Asking the leading sequencer to halt trading, cancelling nothing (R-0123)",
+               ack.first_seq_no_held);
+    halt_awaited_ = true;
+    request_halt();
+    if (!halt_request_timer_id_.is_valid()) {
+        halt_request_timer_id_ = start_recurring_timer(halt_request_interval);
     }
 }
 
-void MatchingEngineThread::cancel_everything_and_halt(const char* why, pubsub_itc_fw_app::HaltReason reason) {
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: cancelling {} open order(s) and halting trading -- {} (R-0117)",
-               order_book_.size(), why);
-
-    // Each member is told what became of the order it placed, rather than the venue simply ceasing to mention it.
-    cancel_all_orders_on_failover();
-    halt_for(reason);
-
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
+void MatchingEngineThread::request_halt() {
+    pubsub_itc_fw_app::HaltRequest request{};
+    request.instance_id = static_cast<int64_t>(config_.instance_id);
+    request.epoch = epoch_;
+    request.reason = pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook;
+    // To every sequencer order connection, as a catch-up request is: only the leading sequencer writes the event.
+    for (const auto& conn_id : sequencer_order_conn_ids_) {
+        send_pdu(conn_id, pubsub_itc_fw_app::HaltRequest::message_pdu_id, 0, request);
+    }
 }
 
 void MatchingEngineThread::request_cancel_book() {
@@ -1981,12 +1981,19 @@ void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app
         return;
     }
     if (event.halted) {
+        if (halt_awaited_) {
+            halt_awaited_ = false;
+            cancel_timer(halt_request_timer_id_);
+            halt_request_timer_id_ = pubsub_itc_fw::TimerID{};
+        }
         if (event.reason == pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook) {
             halt_reason_ = pubsub_itc_fw_app::HaltReason::CannotAccountForBook;
             if (test_events_.has_value()) {
                 test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{*halt_reason_});
             }
         }
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
     } else {
         halt_reason_.reset();
     }
@@ -1996,19 +2003,6 @@ void MatchingEngineThread::report_resumed_as_leader() {
     if (test_events_.has_value()) {
         test_events_->send_event(pubsub_itc_fw_app::ResumedAsLeader::message_pdu_id,
                                  pubsub_itc_fw_app::ResumedAsLeader{resumed_through_, static_cast<int64_t>(order_book_.size())});
-    }
-}
-
-void MatchingEngineThread::cancel_all_orders_on_failover() {
-    // Until phase 7 step 4 makes a cancel of every order a command in the WAL, it has no sequence number of its own and
-    // no time or trading date from the sequencer. Its ExecIDs are made from the highest sequence number acted on, from
-    // place 1 on, since that command's own report holds place 0; its time is this engine's clock; and its keys are those
-    // of the trading date of the last command applied, or of no date (zero) if none has been since this process started.
-    const MatchingEngineStateMachine::BookCancelled cancelled =
-        state_machine_.cancel_every_order(state_machine_.highest_applied(), 1, config_.wall_clock->now_ns(), std::max(report_identifiers_.trading_date(), 0));
-    if (test_events_.has_value()) {
-        test_events_->send_event(pubsub_itc_fw_app::BookCancelled::message_pdu_id,
-                                 pubsub_itc_fw_app::BookCancelled{cancelled.open_orders, cancelled.reports_sent, false, 0});
     }
 }
 

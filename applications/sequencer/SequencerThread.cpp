@@ -564,6 +564,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         release_pdu_payload(message);
         return;
     }
+    if (message.pdu_id() == pubsub_itc_fw_app::HaltRequest::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
+        handle_halt_request(conn_id, message);
+        release_pdu_payload(message);
+        return;
+    }
 
     // A matching engine stating which role it holds. Accepted on either ME connection,
     // because which of them the leader is sitting on is exactly what this establishes.
@@ -2094,6 +2099,47 @@ void SequencerThread::write_absence_command(int64_t now_ns) {
                (now_ns - engine_absence_.absence_began_ns()) / 1000000000, config_.absence_limit_seconds);
     engine_absence_.command_written();
     write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id), bytes.data(), bytes_written);
+}
+
+void SequencerThread::handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::HaltRequestView request{};
+    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode HaltRequest -- dropping");
+        return;
+    }
+    // As for a cancel of the book: only the leader writes commands, and only for the engine orders are routed to. The
+    // engine asks again every second until it has applied a halt.
+    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value() || engine_routing_.active() != conn_id) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: HaltRequest from matching engine instance {} on connection {} -- not written: {}", request.instance_id,
+                   conn_id.get_value(), role_ != pubsub_itc_fw_app::Role::leader ? "this instance does not lead" : "orders are not routed to that engine");
+        return;
+    }
+    const int64_t now_ns = config_.wall_clock->now_ns();
+    pubsub_itc_fw_app::TechnicalEvent event{};
+    // The venue has only the open phase until the start and the end of the trading day are built.
+    event.phase = pubsub_itc_fw_app::TradingPhase::Open;
+    event.halted = true;
+    event.trading_day = trading_date_for(now_ns);
+    event.reason = request.reason;
+    // Measured, then encoded into a buffer of the size measured.
+    size_t bytes_written = 0;
+    size_t bytes_needed = 0;
+    static_cast<void>(pubsub_itc_fw_app::encode(event, nullptr, 0, bytes_written, bytes_needed));
+    std::vector<uint8_t> bytes(bytes_needed);
+    if (!pubsub_itc_fw_app::encode(event, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a TechnicalEvent needs {} bytes and could not be encoded", bytes_needed);
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "SequencerThread: matching engine instance {} at epoch {} cannot account for the orders the venue holds -- writing a TechnicalEvent that "
+               "halts trading on trading day {} ({}); a person must lift it (R-0123, R-0023)",
+               request.instance_id, request.epoch, event.trading_day, pubsub_itc_fw_app::to_string(request.reason));
+    write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id), bytes.data(), bytes_written);
 }
 
 void SequencerThread::write_own_command(int16_t inner_pdu_id, const uint8_t* bytes, size_t size) {

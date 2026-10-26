@@ -47,9 +47,10 @@ full day's volume takes tens of seconds where reading the region takes
 milliseconds.
 
 The venue does replay the log in one case, which \reqref{R-0123} states: where
-the region cannot be used at all. It does not resume trading while it does so. It
-establishes what was open, cancels each order, reports the cancellation to the
-member that placed it, and halts.
+the region cannot be used at all. It replays the log from the first record, and
+where the log reaches back to the first command of the trading day, the orders it
+rebuilds are exactly the ones the venue held, so it keeps them and carries on.
+Where the log does not reach back that far, it halts trading.
 
 \begin{gap}{BUG-0048}
   Nothing bounds how far back the log is kept. The venue discards no records at
@@ -160,25 +161,35 @@ exercised continually rather than only when a test produces a failover.
   \covers{ha_test:51}
 \end{requirement}
 
-\begin{requirement}{R-0123}{A member is told what it had, even when the venue's own record of it is unusable}
+\begin{requirement}{R-0123}{A member keeps what it had, even when the venue's own record of it is unusable}
   Where the record a component keeps of the orders it held cannot be used ---
   absent, damaged, or written by a different build --- the venue shall establish
-  what was open from its record of what it took, cancel each order, and report
-  the cancellation to the member that placed it. Where it cannot establish that
-  either, it shall halt and say that it cannot account for what it was holding.
+  what was open from its record of what it took. Where that record reaches back to
+  the first command of the trading day, the component shall hold those orders as
+  they were and carry on, and shall report at Error that it rebuilt its record.
+  Where it does not reach back that far, the venue shall halt trading, through a
+  command in its record so that every component halts at the same point, and say
+  that it cannot account for what it was holding.
   \rationale{\reqref{R-0102} says such a record is not to be used. That leaves
-  the venue unable to name what it held, and it cannot cancel what it cannot
-  name --- so without a second route it would fall silent about every order,
-  which is the outcome \reqref{R-0020} exists to prevent.
+  the component unable to name what it held --- so without a second route it
+  would fall silent about every order, which is the outcome \reqref{R-0020}
+  exists to prevent.
 
-  The record of what the venue took is that second route. Rebuilding from it is far
-  slower than reading a checkpoint, so it is not the ordinary recovery. This case
-  is rare and happens once, and the time it takes buys every member a report of
-  what became of its orders.
+  The record of what the venue took is that second route. The component applies
+  the same commands in the same order and reaches the same result whatever it did
+  before, so replaying that record from the first command of the day gives exactly
+  the orders the venue held. Cancelling them would cost every member its orders
+  and protect nothing, so the component keeps them. Rebuilding is far slower than
+  reading a checkpoint, so it is not the ordinary recovery; this case is rare, and
+  it is reported at Error so that someone looks at the record that could not be
+  used.
 
-  Reporting that the venue cannot say is the last resort, and it is still better
-  than silence. A member told that the venue has lost track of its orders can act
-  on that. A member told nothing cannot.}
+  Where the record does not reach the first command, the orders taken before it
+  cannot be named, and cancelling the ones that can be named would leave the
+  others unmentioned. Halting and saying that the venue cannot account for what it
+  holds is the last resort, and it is still better than silence. The halt is a
+  command in the record, so that no component trades on after another has
+  stopped.}
   \covers{ha_test:52}
 \end{requirement}
 

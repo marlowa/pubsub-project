@@ -700,6 +700,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void check_engine_absence();
     // Writes the CancelBook command that cancels every order on the book and halts trading if it cancels any (R-0117).
     void write_absence_command(int64_t now_ns);
+    // A matching engine about to lead that cannot account for the orders the venue holds, asking for trading to be halted.
+    void handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     // A promoted matching engine asking for the orders it inherited to be cancelled.
     void handle_cancel_book_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     // Adds an identifier to the record, reporting once if it is full.

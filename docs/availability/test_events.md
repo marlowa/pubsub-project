@@ -535,23 +535,25 @@ events is sent for each order, and it does not change the round trip.
 
 ### 4.7 Step 4, kind E: halting, and cancelling on promotion
 
-**The events.** `matching_engine_test_events.dsl` gains four messages:
+**The events.** `matching_engine_test_events.dsl` has five messages for these:
 
 - `BookCancelled` (172): the engine cancelled every order on its book, with the number it held when it began and the
   number of cancel reports it sent;
 - `ResumedAsLeader` (173): a promoted engine finished catching up and serves again, with the orders on its book;
-- `Halted` (174): the engine halted trading, with the reason: it could not match for longer than it may, so it cancelled
-  its book first; its region could not be used and the sequencer's record named every order, so it cancelled them
-  first; or its region could not be used and nothing could name every order, so it halted without cancelling;
-- `RegionUnusable` (175): at startup, the region holding the open orders could not be used, with the reason.
+- `Halted` (174): the engine halted trading, with the reason: no engine could trade for longer than the venue allows,
+  so a `CancelBook` command cancelled its book and halted; or its region could not be used and the WAL does not reach
+  the first command of the day, so a `TechnicalEvent` halted trading, cancelling nothing;
+- `RegionUnusable` (175): at startup, the region holding the open orders could not be used, with the reason;
+- `RegionRebuilt` (169): the region could not be used, and the engine rebuilt its book from the WAL, which reached the
+  first command of the day, and carries on with it, with the orders it holds.
 
 The region is found unusable, and trading may be halted, before the engine's connection to the test is made, so both
 are reported when it is made, with the engine's catch-up.
 
 **The checks moved.** What a promoted engine inherited, cancelled and resumed with, in every scenario with a pair of
 engines that changes leader; the cancels after a gateway's death and a long absence (scenario 18); the cancels and the
-halt after a long absence (51); and the refused region, the engine saying it cannot account for what it held, the
-halt, and the absence of any cancel (52). These were the engine's own book, which no member can see: what it inherited
+halt after a long absence (51); and the refused region, the book rebuilt from the WAL, and the absence of any cancel
+or halt (52). These were the engine's own book, which no member can see: what it inherited
 and what it resumed with. Where the check is that nothing was cancelled, the engine is asked for a checkpoint first.
 The three helpers that read these counts from the engine's Quill log are gone.
 

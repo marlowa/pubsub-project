@@ -369,9 +369,11 @@ The choice is a stated policy, `order_book.open_orders_on_promotion`, required i
 - **`keep`**: the promoted engine keeps them, and members go on holding what they placed.
 
 An engine that *starts*, rather than taking over from a peer, keeps the orders it recovered from its
-region whatever the policy says (R-0018). Where the region is missing or damaged, the engine cannot
-say what it held: it establishes the open orders from the sequencer's record, cancels each, reports
-each cancel, and halts (R-0102, R-0123).
+region whatever the policy says (R-0018). Where the region is damaged or was written by a different
+build, the engine establishes the open orders from the sequencer's record, from its first record:
+where that reaches the first command of the trading day, the engine keeps the book it rebuilt and
+carries on, cancelling nothing; where it does not, trading halts, by a command in the WAL, and nothing
+is cancelled (R-0102, R-0123).
 
 ### Orders sent while no matching engine is running
 

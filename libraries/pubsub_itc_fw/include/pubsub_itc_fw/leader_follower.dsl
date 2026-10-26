@@ -796,3 +796,21 @@ message TechnicalEvent (id=153, version=1)
     i32 trading_day                 # YYYYMMDD
     TechnicalEventReason reason
 end
+
+# ------------------------------------------------------------
+#  154 -- HaltRequest
+#  Sent by a matching engine that is about to lead, and cannot
+#  account for the orders the venue holds, to each sequencer it has
+#  an order connection to. The leading sequencer writes a
+#  TechnicalEvent that halts trading, with the reason given; a
+#  follower ignores it. The engine sends it again every second
+#  until it has applied a halt, so a request lost to a change of
+#  leader is not lost for good, and a second event finds trading
+#  halted already. See R-0123 and
+#  docs/availability/deterministic_matching_engine.md, decision 8.
+# ------------------------------------------------------------
+message HaltRequest (id=154, version=1)
+    i64 instance_id                 # the engine asking, for the Quill log
+    i32 epoch                       # the epoch it leads in
+    TechnicalEventReason reason
+end

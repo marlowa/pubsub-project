@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 207 |
-| Open | 81 (59 defects, 22 tasks) |
-| Closed | 126 |
-| Next id | BUG-0208 |
+| Bugs recorded | 211 |
+| Open | 84 (61 defects, 23 tasks) |
+| Closed | 127 |
+| Next id | BUG-0212 |
 
 ## Open bugs by severity
 
-23 high, 47 medium, 11 low.
+23 high, 50 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -83,6 +83,9 @@
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
 | [BUG-0203](#bug_0203) | medium | defect | The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together |
+| [BUG-0209](#bug_0209) | medium | task | No scenario reaches the halt when a matching engine cannot account for the orders the venue holds |
+| [BUG-0210](#bug_0210) | medium | defect | A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again |
+| [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -190,6 +193,79 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0211: Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of {#bug_0211}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-26 |
+| Recorded | 2026-10-26 |
+| How | Reading the code while making a region that cannot be used rebuild from the WAL, for step 4 of phase 7. Not yet reproduced |
+| Impact | Members hold orders the engine does not, and are sent refusals for orders they were told are open; or the reverse |
+
+**What happens.** A region whose header gives a different number of records from the one the engine is configured
+with is refused as unusable, and the engine rebuilds its book from the WAL, from the first record, with the
+configured capacity ([BUG-0208](#bug_0208)). An order arriving when the region is full is refused, so a replay with a
+smaller capacity, or one too small for the most orders open at any moment of the day, refuses orders the engine
+accepted at the time. The engine then holds a book its members were not told of, and the replay sends them, marked as
+possible repeats, refusals of orders they were told are open. [open_order_checkpoint.md](durability/open_order_checkpoint.md)
+says to change the capacity only between trading days; nothing enforces it.
+
+**What is wanted.** A region refused only because its capacity differs is told apart from a damaged one, from its
+header, which is intact; the engine then refuses to rebuild with a capacity smaller than the region's, and says so,
+rather than holding a different book.
+
+**Principles.** V8: every report the matching engine produces reaches the member, and says what the venue did.
+
+### BUG-0210: A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again {#bug_0210}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-26 |
+| Recorded | 2026-10-26 |
+| How | Writing a scenario for the halt of [BUG-0209](#bug_0209): the secondary sequencer was restarted with the first segment of its WAL deleted |
+| Impact | The sequencer stops. With its peer leading, the venue trades on and loses its resilience; with the peer down too, it cannot start |
+
+**What happens.** The sequencer opened its WAL, which began at record 281, and logged "the write-ahead log has a gap
+-- record 281 follows record 0. Discarding every record from 1 to 2000; the leader sends them again", which is how a
+follower's WAL with a gap is repaired. Discarding then called `Wal::truncate_after`, which opens the WAL's first
+segment, `wal_000000.log`; it was not there, and the sequencer logged "terminating due to exception:
+Wal::truncate_after: open(.../wal_000000.log): No such file or directory" and stopped.
+
+**What is wanted.** A missing segment is repaired as a gap is, by discarding what follows and being sent it again, or,
+on the leader, refused with a message that names the missing file and says what an operator should do.
+
+**Principles.** V11: a loss of resilience is not a loss of service.
+
+### BUG-0209: No scenario reaches the halt when a matching engine cannot account for the orders the venue holds {#bug_0209}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-26 |
+| Recorded | 2026-10-26 |
+| How | Writing the scenario for it, for step 4 of phase 7 |
+| Impact | The second case of R-0123 is built and not tested end to end: a defect in it would first be met in production, on the day a region is lost after the WAL has been reclaimed |
+
+**What there is.** An engine whose region cannot be used rebuilds its book from the WAL. Where the WAL does not reach
+the first command of the trading day, an engine about to lead asks the leading sequencer for a halt, and the
+sequencer writes a `TechnicalEvent` that halts trading
+([deterministic_matching_engine.md](availability/deterministic_matching_engine.md), section 4.2). The state machine's
+handling of the event has unit tests. The engine's decision, the request and the sequencer's answer are not tested:
+the sequencer keeps every record of the day, so its WAL always reaches the first command, and deleting the first
+segment to make it not, as a scenario tried, kills the sequencer ([BUG-0210](#bug_0210)).
+
+It was exercised once, on 26 October 2026, with the engine's decision forced to the second case in a build made for
+the purpose and scenario 52 run against it: the engine asked for the halt, the following sequencer logged that it does
+not lead and wrote nothing, the leading sequencer wrote a `TechnicalEvent` at seq 3001, and the engine applied it and
+halted. That build is not the venue's, and the check is not repeated.
+
+**What is wanted.** A scenario in which the WAL begins after the first command of the day and an engine with a damaged
+region takes the lead: trading halts by the command, nothing is cancelled, and an order sent afterwards is refused.
+It becomes possible once the WAL is reclaimed ([BUG-0048](#bug_0048)), or once BUG-0210 is fixed.
 
 ### BUG-0207: A sequencer that was down for longer than the absence limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen {#bug_0207}
 
@@ -3784,6 +3860,12 @@ killed while the primary had caught up but not yet settled, which loses orders, 
   lease runs out (18:27:17). A restarted primary says it follows only once it has granted the leader a lease (19:29:26
   in the comparison run), nine seconds after its restart, and the arbiters are killed after that.
 
+**The primary sometimes never settles that it follows.** On 26 October 2026, in the full suite with the primary
+started first, scenario 80, whose set-up starts the secondary first, failed with "matching_engine_primary did not
+follow within 15s" (20:08:23). The primary caught up, then asked the peer and the arbiter every three and a half
+seconds to let it lead at epoch 27829, was granted nothing, and was never told it follows, while the secondary led.
+Run alone three times straight afterwards, it passed each time.
+
 **After any failover the secondary leads**, so in a venue that has failed over once, these are the paths it is on.
 
 **What is wanted.** Both engines start alike, whichever is configured as primary: in an unknown role, catching up
@@ -3886,6 +3968,44 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0208: A matching engine whose region could not be used never rebuilt its book from the WAL, and halted trading although the WAL reached the first command {#bug_0208}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-26 |
+| Recorded | 2026-10-26 |
+| Fixed | 2026-10-26 -- the engine asks for every record from the first, and keeps the book it rebuilds where the WAL reaches the first command of the day |
+| How | Reading the code while building decision 8 of [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), for step 4 of phase 7 |
+| Impact | Every damaged region, and every change to the region's size, halted the venue, and a person had to lift the halt, although the venue's own WAL held everything needed to carry on |
+
+**What happened.** An engine whose region could not be used put it aside and started a new one, which, being new,
+gave it no position. It then asked to be caught up with no position, which tells the sequencer it holds nothing and
+must be placed at the head of the WAL without being sent anything. The sequencer answered that the earliest record it
+held was the head, so the engine found that the WAL did not reach the first record, said it could not account for what
+it was holding, and halted. The branch that established the open orders from the WAL could not be reached. Scenario 52
+asserted the halt, and explained it by a WAL that is cut back as it is consumed, which it is not.
+
+**What was done.** Decision 8 of the design. An engine whose region could not be used asks for every record from the
+first (`recover_open_orders`). Where the WAL reaches the first command of the day, it keeps the book it rebuilt and
+carries on, cancelling nothing, and says at Error that it rebuilt its record (`account_for_unusable_region`,
+`RegionRebuilt` to a test); where it does not, an engine about to lead asks for a halt by a command in the WAL
+([BUG-0209](#bug_0209)). R-0123 is reworded to match, as Andrew approved on 25 October 2026. The engine's own cancel
+of every order and its own halt are gone.
+
+**Verified** on 26 October 2026. Scenario 52 now damages the engine's region and requires the engine to rebuild its
+book from the WAL, to cancel nothing and not halt, and then to carry out each of the gateway's cancels of the orders
+the member had open. It passed: the book was rebuilt through seq_no=2043 holding 1,000 orders, and all 1,000 cancels
+were carried out. The WAL replay check, which had to skip scenario 52 because the engine halted by itself, ran on it
+and passed. With the engine built to take the WAL as never reaching the first command, scenario 52 failed on the
+missing rebuild.
+Both full suites were then run from fresh WALs. With the primary engine leading first, 83 of 84 passed (20:11:52),
+scenario 52 among them; scenario 80 failed in its set-up, waiting for the primary engine to follow, the way
+[BUG-0195](#bug_0195) records, and passed three times out of three when run alone. The WAL replay check ran on 78
+scenarios and passed on each: every one but the five in which no matching engine led, so scenario 52 too, now that every
+halt is a command. With the secondary engine leading first, 24 of 27 passed (20:31:30), and 25, 54 and 55 failed as
+they did before ([BUG-0195](#bug_0195)); the replay check passed on the 24 that passed.
 
 ### BUG-0146: A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout {#bug_0146}
 

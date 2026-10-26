@@ -140,12 +140,6 @@ class MatchingEngineOutputsInterface {
  */
 class MatchingEngineStateMachine {
   public:
-    /// What a cancel of every order did.
-    struct BookCancelled {
-        int64_t open_orders{0};  ///< how many orders the book held when the cancel began
-        int64_t reports_sent{0}; ///< how many cancel reports were produced
-    };
-
     /**
      * @param[in,out] book        The book the commands are applied to. Must outlive this object.
      * @param[in,out] identifiers What makes the OrderID and ExecID values. Must outlive this object.
@@ -273,28 +267,6 @@ class MatchingEngineStateMachine {
      */
     TechnicalEventApplied apply_technical_event(const pubsub_itc_fw_app::TechnicalEventView& view, int64_t sequence_number, int32_t trading_date,
                                                 CommandSource source);
-
-    /**
-     * @brief Cancels every order on the book, reporting each to the member that placed it, and empties the book.
-     *
-     * The reports are produced in the order the orders were placed, by the sequence numbers of the new
-     * orders that placed them, which every engine that applied the same commands agrees on. Their ExecIDs
-     * are made from sequence_number and their places, counting from first_place. They are handed to the
-     * outputs with sequence number 0, so that the sequencer routes each by the session on its envelope.
-     *
-     * @param[in] sequence_number The sequence number the ExecIDs are made from.
-     * @param[in] first_place     The place of the first report. Places below it must already belong to the reports of
-     *                            the command with that sequence number, so that no ExecID is made twice.
-     * @param[in] transact_time   The time written on every report.
-     * @param[in] trading_date    The trading date whose keys the identifiers are made with.
-     * @return How many orders there were, and how many reports were produced.
-     */
-    BookCancelled cancel_every_order(int64_t sequence_number, int64_t first_place, int64_t transact_time, int32_t trading_date);
-
-    /// Halts trading: from now on every live new order is refused, until a TechnicalEvent that is not halted.
-    void halt() {
-        book_.set_halted(TradingHalted::yes);
-    }
 
     /// Whether trading is halted. Kept in the region with the orders, so it is as the commands left it.
     [[nodiscard]] bool halted() const {

@@ -111,6 +111,13 @@ Those orders were priced for a market that moved while their members could not c
 book is not cancelled and does not halt. The engine does not measure the absence itself, so an engine
 that was down while the other traded cancels nothing. See [Sequencer](sequencer.md#sequencer_absence).
 
+**A file that cannot be used is rebuilt from the WAL.** A file that is damaged, or was written by a
+different build, is moved aside and kept, and a new one started (R-0102). The engine asks the leading
+sequencer for every record from the first, and where the WAL reaches the first command of the trading
+day, the book it rebuilds is exactly the venue's: it keeps it, cancels nothing, and says at Error that
+it rebuilt its record. Where the WAL does not reach that far, an engine about to lead asks the leading
+sequencer to halt trading, by a `TechnicalEvent` in the WAL, and cancels nothing (R-0123).
+
 **Whether trading is halted is kept in the file** with the orders, beside the recorded position, so
 an engine that restarts after a halt is still halted. It is set and cleared by commands: a `CancelBook`
 that asks to halt and cancels an order, and a `TechnicalEvent`, which says whether trading is halted.

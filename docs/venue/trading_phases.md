@@ -9,19 +9,20 @@ written, in the high availability chapter of the functional specification (`docs
 The venue has no way to say what it is doing. It can say one thing about itself — whether it is
 accepting orders — and that is a single boolean broadcast to the gateways as `OrderAcceptance`
 (127), alongside how many orders are waiting, how long the venue has been unable to pass them on,
-and the epoch of the sequencer that sent it. Everything else is private to the process that knows it. The clearest case: a matching
-engine that cannot account for what it was holding sets a local `halted_` flag and logs
+and the epoch of the sequencer that sent it. Everything else is known only to the matching engines. The clearest case: when a
+matching engine cannot account for what the venue holds, the leading sequencer writes a `TechnicalEvent` into the WAL that
+halts trading, every matching engine applies it, and the engine logs
 
 ```
 MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)
 ```
 
-and **nothing in the sequencer or the gateways mentions a halt at all**. The gateway goes on
+and **nothing in the sequencer or the gateways acts on the halt**. The gateway goes on
 admitting members' orders and the sequencer goes on sequencing them into a venue whose engine has
 stopped. The engine refuses each of those orders, with OrdRejReason Exchange closed and the text
 "trading is halted", so a member that places an order learns of the halt from the reply. A member
 that is connected and not trading, or that connects during the halt, is told nothing until it tries.
-"Trading is halted" is one process's private opinion.
+"Trading is halted" is known to the matching engines alone.
 
 That is [BUG-0065](../bug_list.md), and it is what R-0126 waits on: the venue cannot announce that
 it is unable to do a component's work, because it has no way to announce anything about itself.
@@ -201,10 +202,10 @@ settled by naming the phases.
 
 **Two further things this note deliberately does not settle:**
 
-- **What a halt does to resting orders.** The engine's existing halt cancels everything on one path
-  and deliberately refuses to on another, because cancelling what cannot be named would leave the
-  rest unmentioned (R-0123). The phase says the venue is halted; what each component then does with
-  what it holds is separate.
+- **What a halt does to resting orders.** The engine's halt after a long absence cancels everything
+  first (R-0117), and its halt when it cannot account for what the venue holds deliberately does
+  not, because cancelling what can be named would leave the rest unmentioned (R-0123). The phase
+  says the venue is halted; what each component then does with what it holds is separate.
 - **Whether a phase belongs to the venue or to an instrument.** Real venues halt one instrument far
   more often than the whole market. This venue is single-instrument in effect, so venue-wide is
   right and simple today — but the message shape decides whether per-instrument is an addition

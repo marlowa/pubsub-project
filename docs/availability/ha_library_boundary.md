@@ -157,14 +157,14 @@ own users when the store is full.
 **What it is for.** For every instance that applies the WAL to reach the same state, nothing that
 changes the state may depend on anything but the WAL.
 
-**How it is done now.** Mostly. The matching engine stamps its reports with the time the sequencer
+**How it is done now.** As this section requires. The matching engine stamps its reports with the time the sequencer
 recorded, carried in the WAL, and uses its own clock only when that is missing. Cancelling every
 inherited order on promotion, under `open_orders_on_promotion = "cancel"`, and cancelling every order
 and halting when no engine could trade for longer than allowed are commands in the WAL, written by the
 leading sequencer, and whether trading is halted is state those commands set, kept with the book
-([deterministic_matching_engine.md](deterministic_matching_engine.md), section 4). One thing that
-changes the engine's book is still decided by an engine alone: cancelling and halting, or halting
-alone, when its own record of its orders cannot be used (R-0123).
+([deterministic_matching_engine.md](deterministic_matching_engine.md), section 4). So is the halt when
+an engine about to lead cannot account for the orders the venue holds (R-0123). Nothing that changes
+the engine's book is decided by one engine alone.
 
 **What the design requires.** A decision that changes the state of a replicated application is made
 once and enters the WAL as a command, so that every instance applies it at the same point. Timers whose
