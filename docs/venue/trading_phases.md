@@ -218,7 +218,11 @@ settled by naming the phases.
 2. Requirements in the specification's high availability chapter, including the refusal rule for a
    stale trading day and the announcement R-0126 needs. The section exists and names the
    requirements; they are not yet written.
-3. The DSL message and the enum.
+3. The DSL message and the enum. Built: `TechnicalEvent`, `TradingPhase` and `TechnicalEventReason` in
+   `leader_follower.dsl`. The matching engine applies a technical event as a command in the WAL, takes
+   from it whether trading is halted, and refuses one whose trading day is older than the trading date
+   of the record carrying it ([deterministic_matching_engine.md](../availability/deterministic_matching_engine.md),
+   section 4.1). Nothing writes one yet, and the gateways do not act on it.
 4. The per-phase table above, settled rather than guessed.
 5. Implementation, and scenarios.
 

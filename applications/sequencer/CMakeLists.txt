@@ -19,6 +19,8 @@ add_dependencies(sequencer fix_orders_generated leader_follower_generated sequen
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(sequencer PRIVATE
+        EngineAbsenceRule.hpp
+        EngineRoutedStamp.hpp
         SequencerConfiguration.hpp
         SequencerConfigurationLoader.hpp
         SequencerThread.hpp
@@ -79,6 +81,7 @@ install(TARGETS block_sends_to_ports
 add_executable(sequencer_tests
         tests/SequencerConfigurationLoaderTest.cpp
         tests/EngineOrderRoutingTest.cpp
+        tests/EngineAbsenceRuleTest.cpp
         tests/KeptReportStoreTest.cpp
         tests/ReportsHeldForUnknownSessionsTest.cpp
         tests/LoggedCommandIdentifiersTest.cpp

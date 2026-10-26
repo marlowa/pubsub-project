@@ -51,7 +51,7 @@ constexpr size_t offset_slot_count = 12;
 constexpr size_t offset_published = 16;
 constexpr size_t offset_free_head = 24;
 constexpr size_t offset_payload_format = 28;
-constexpr size_t offset_alive_at_ns = 32;
+constexpr size_t offset_owner_value = 32;
 constexpr size_t slot_header_size = 16;
 constexpr size_t offset_slot_state = 0;
 constexpr size_t offset_slot_next_free = 4;
@@ -684,30 +684,28 @@ TEST_F(MappedSlotStoreTest, ManyRecordsSurviveWithHolesInThem) {
     }
 }
 
-TEST_F(MappedSlotStoreTest, WhenTheOwnerWasLastWorkingSurvivesTheStoreBeingClosed) {
-    constexpr int64_t alive_at = 1'700'000'000'000'000'000LL;
+TEST_F(MappedSlotStoreTest, TheOwnersValueSurvivesTheStoreBeingClosed) {
+    constexpr int64_t value = 1'700'000'000'000'000'000LL;
     {
         MappedSlotStore store;
         ASSERT_FALSE(store.open(path_, record_size, slot_count));
-        EXPECT_EQ(store.alive_at_ns(), 0) << "a store nobody has tended yet says so";
-        store.mark_alive(alive_at);
-        EXPECT_EQ(store.alive_at_ns(), alive_at);
+        EXPECT_EQ(store.owner_value(), 0) << "a new store holds zero";
+        store.set_owner_value(value);
+        EXPECT_EQ(store.owner_value(), value);
     }
 
     MappedSlotStore reopened;
     ASSERT_TRUE(reopened.open(path_, record_size, slot_count));
-    EXPECT_EQ(reopened.alive_at_ns(), alive_at) << "the successor has to be able to tell how long the store went untended";
+    EXPECT_EQ(reopened.owner_value(), value) << "the next owner has to find the value as it was left";
 }
 
-TEST_F(MappedSlotStoreTest, StoringARecordDoesNotSayTheOwnerIsWorking) {
-    // The two are separate on purpose. A store that is idle because nothing is happening is
-    // not a store nobody is tending, and if writing a record stamped this, a quiet hour
-    // followed by a restart would read as an hour of absence.
+TEST_F(MappedSlotStoreTest, StoringARecordLeavesTheOwnersValueAlone) {
     MappedSlotStore store;
     ASSERT_FALSE(store.open(path_, record_size, slot_count));
+    store.set_owner_value(5);
     store_one(store, 1, 10);
 
-    EXPECT_EQ(store.alive_at_ns(), 0);
+    EXPECT_EQ(store.owner_value(), 5);
 }
 
 TEST_F(MappedSlotStoreTest, LayoutStillAgreesWithTheStore) {
@@ -719,19 +717,19 @@ TEST_F(MappedSlotStoreTest, LayoutStillAgreesWithTheStore) {
         ASSERT_FALSE(store.open(path_, record_size, slot_count, 7));
         store_one(store, 1, 10);
         store_one(store, 2, 4242);
-        store.mark_alive(1234567890123456789LL);
+        store.set_owner_value(1234567890123456789LL);
     }
 
     EXPECT_EQ(read_at<uint32_t>(offset_payload_size), record_size);
     EXPECT_EQ(read_at<uint32_t>(offset_slot_count), slot_count);
     EXPECT_EQ(read_at<int64_t>(offset_published), 4242);
     EXPECT_EQ(read_at<uint32_t>(offset_magic), 0x534C4F54u);
-    EXPECT_EQ(read_at<uint32_t>(offset_version), 3u);
+    EXPECT_EQ(read_at<uint32_t>(offset_version), 4u);
     EXPECT_EQ(read_at<uint32_t>(offset_payload_format), 7u);
     EXPECT_EQ(read_at<uint32_t>(slot_offset(1) + offset_slot_state), 1u);
     EXPECT_EQ(read_at<int64_t>(slot_offset(1) + offset_slot_seq_no), 4242);
 
-    EXPECT_EQ(read_at<int64_t>(offset_alive_at_ns), 1234567890123456789LL);
+    EXPECT_EQ(read_at<int64_t>(offset_owner_value), 1234567890123456789LL);
 
     const std::vector<uint8_t> expected = pattern(2);
     std::array<uint8_t, record_size> held{};

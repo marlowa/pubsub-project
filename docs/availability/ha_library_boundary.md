@@ -157,14 +157,14 @@ own users when the store is full.
 **What it is for.** For every instance that applies the WAL to reach the same state, nothing that
 changes the state may depend on anything but the WAL.
 
-**How it is done now.** Partly. The matching engine stamps its reports with the time the sequencer
-recorded, carried in the WAL, and uses its own clock only when that is missing. But three things that
-change the engine's book are decided by the leading engine alone, from its own clock or its own
-circumstances:
-
-- cancelling every order and halting when it has been unable to match for longer than allowed;
-- cancelling every inherited order on promotion, under `open_orders_on_promotion = "cancel"`;
-- refusing every order while halted.
+**How it is done now.** Mostly. The matching engine stamps its reports with the time the sequencer
+recorded, carried in the WAL, and uses its own clock only when that is missing. Cancelling every
+inherited order on promotion, under `open_orders_on_promotion = "cancel"`, and cancelling every order
+and halting when no engine could trade for longer than allowed are commands in the WAL, written by the
+leading sequencer, and whether trading is halted is state those commands set, kept with the book
+([deterministic_matching_engine.md](deterministic_matching_engine.md), section 4). One thing that
+changes the engine's book is still decided by an engine alone: cancelling and halting, or halting
+alone, when its own record of its orders cannot be used (R-0123).
 
 **What the design requires.** A decision that changes the state of a replicated application is made
 once and enters the WAL as a command, so that every instance applies it at the same point. Timers whose
@@ -353,18 +353,18 @@ it chooses to, as section 11 describes. The authentication service, for example,
 
 ### Question 2. Should every decision that changes the matching engine's book enter the WAL as a command? (Yes or no.)
 
-**What happens now.** Three things change the engine's book without any command in the WAL telling
-it to:
+**The three decisions in question.** Three things change the engine's book that no order or cancel
+from a member asks for:
 
 - **Halting after an absence.** If no engine could trade for longer than the configured limit
-  (`absence_limit_seconds`, 300 seconds by default), the engine cancels every order and halts.
+  (`absence_limit_seconds`, 300 seconds by default), every order is cancelled and trading halts.
 - **Acting on promotion.** When the follower engine takes over as leader, it cancels every order it
   inherited, if `open_orders_on_promotion = "cancel"` is configured.
 - **Refusing orders while halted.**
 
-The engine that leads makes each of these decisions alone, from its own clock and its own view of
-its circumstances. The follower engine does not apply the commands in the WAL at all; it is sent a
-copy of the leading engine's book.
+The first two are now commands in the WAL, written by the leading sequencer, and the third is state
+those commands set (section 8). The follower engine does not apply the commands in the WAL at all; it
+is sent a copy of the leading engine's book, and of whether trading is halted.
 
 **What "yes" means.** Each engine no longer decides these things for itself. Something still makes
 each decision, but only once, and the decision is then written into the WAL as a command, in the same
@@ -406,8 +406,9 @@ connection retries and metrics, are not affected; they stay local to the process
 **Recommendation: yes.** Without it, the two engines can only be kept in step by copying the book from
 one to the other, which is how it is done now and is the source of several open defects.
 
-**Agreed 12 October 2026: yes.** How the absence rule is measured, the third point against, is still to
-be designed.
+**Agreed 12 October 2026: yes.** How the absence rule is measured, the third point against, is
+designed and built in section 4.2 of [deterministic_matching_engine.md](deterministic_matching_engine.md):
+the leading sequencer measures it.
 
 ### Question 3. Should identifiers be made from the position in the WAL? (Yes or no.)
 

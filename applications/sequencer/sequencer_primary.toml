@@ -59,6 +59,14 @@ port = ${sequencer_primary_matching_engine_port}
 host = "${sequencer_primary_matching_engine_secondary_host}"
 port = ${sequencer_primary_matching_engine_secondary_port}
 
+[absence]
+# How long the venue may be without a matching engine that can trade before the orders open at
+# the time are cancelled, each member told, and trading halted (R-0117). While this instance
+# leads, it measures how long it has had no matching engine to route orders to, and when that
+# is longer than this it writes a CancelBook command that halts trading if it cancels any
+# order. See docs/availability/deterministic_matching_engine.md, section 4.2.
+absence_limit_seconds = ${shared_absence_limit_seconds}
+
 [ha]
 ha_enabled                  = ${ha_enabled}
 instance_id                 = 1

@@ -19,7 +19,7 @@ namespace pubsub_itc_fw {
 
 namespace {
 constexpr uint32_t store_magic = 0x534C4F54u; // "SLOT"
-constexpr uint32_t store_version = 3;
+constexpr uint32_t store_version = 4;
 constexpr uint32_t slot_free = 0;
 constexpr uint32_t slot_live = 1;
 constexpr size_t page_size = 4096;
@@ -39,13 +39,9 @@ struct MappedSlotStore::Header {
     std::atomic<uint32_t> free_head;
     // What the owner's records mean, as the owner numbers it. See open().
     uint32_t payload_format;
-    // When the owner last said it was working, as a wall-clock time. Whoever opens the store
-    // next subtracts it from the current time to learn how long nothing was tending it.
-    //
-    // Deliberately not written by acquire() or commit(). A store that is idle because nothing
-    // is happening is not a store nobody is tending, and stamping this on writes alone would
-    // read a quiet hour followed by a two-second restart as an hour of absence.
-    std::atomic<int64_t> alive_at_ns;
+    // A value the owner keeps beside the published position, which this class does not
+    // interpret. See set_owner_value().
+    std::atomic<int64_t> owner_value;
 };
 
 struct MappedSlotStore::SlotHeader {
@@ -150,7 +146,7 @@ bool MappedSlotStore::open(const std::string& path, uint32_t payload_size, SlotI
     hdr->slot_count = slot_count;
     hdr->published.store(0, std::memory_order_relaxed);
     hdr->payload_format = payload_format;
-    hdr->alive_at_ns.store(0, std::memory_order_relaxed);
+    hdr->owner_value.store(0, std::memory_order_relaxed);
     for (SlotIndex i = 0; i < slot_count; ++i) {
         SlotHeader* s = slot(i);
         s->state.store(slot_free, std::memory_order_relaxed);
@@ -244,12 +240,12 @@ void MappedSlotStore::release(SlotIndex index) {
     hdr->free_head.store(index, std::memory_order_relaxed);
 }
 
-void MappedSlotStore::mark_alive(int64_t wall_time_ns) {
-    header()->alive_at_ns.store(wall_time_ns, std::memory_order_relaxed);
+void MappedSlotStore::set_owner_value(int64_t value) {
+    header()->owner_value.store(value, std::memory_order_relaxed);
 }
 
-int64_t MappedSlotStore::alive_at_ns() const {
-    return header()->alive_at_ns.load(std::memory_order_relaxed);
+int64_t MappedSlotStore::owner_value() const {
+    return header()->owner_value.load(std::memory_order_relaxed);
 }
 
 void MappedSlotStore::publish(int64_t seq_no) {

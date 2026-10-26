@@ -84,6 +84,7 @@ class Outputs : public MatchingEngineOutputsInterface {
     void order_added_to_book(int64_t /*sequence_number*/, const fix_common::SessionIdentity& /*session*/, std::string_view /*cl_ord_id*/,
                              const OrderEntry& /*entry*/) override {}
     void order_removed_from_book(int64_t /*sequence_number*/, const fix_common::SessionIdentity& /*session*/, std::string_view /*cl_ord_id*/) override {}
+    void trading_halt_changed(int64_t /*sequence_number*/, bool /*halted*/) override {}
     void order_outcome(const fix_common::SessionIdentity& /*session*/, std::string_view /*cl_ord_id*/, pubsub_itc_fw_app::OrderOutcomeKind /*outcome*/,
                        ReportIsRepeat /*repeat*/, int64_t /*sequence_number*/, std::string_view /*orig_cl_ord_id*/) override {}
     void order_accepted() override {}

@@ -3,9 +3,10 @@
 > **Status: decided, 25 October 2026; steps 1, 2, 3 and 5 of section 8 built, and step 4 in part.** This is the design for phase 7 of the
 > [recovery plan](../recovery_plan.md). The state machine of section 7.1, the remedies of section 5, `wal_replay_check`,
 > the identifiers of section 3 and the handling of a command the engine cannot apply, with its fuzzing, of section 6,
-> are built. Of step 4, cancelling on promotion is a command in the WAL; the halt, the absence rule and a region that
-> cannot be used are not yet; step 6 is not built. Decisions 6, 7 and 8 of section 9, which step 4 needed,
-> were taken on 25 October 2026. Andrew answered decisions 1 to 5 of section 9 on
+> are built. Of step 4, cancelling on promotion and the absence rule are commands in the WAL, and the halt is state the
+> commands set, kept with the book; a region that cannot be used is not yet handled by commands (decision 8); step 6
+> is not built. Decisions 6, 7 and 8 of section 9, which step 4 needed, were taken on 25 October 2026, and decision 9
+> on 26 October 2026. Andrew answered decisions 1 to 5 of section 9 on
 > 25 October 2026: identifiers are scrambled with FF1, the day key is derived from a secret and the trading date, an
 > identifier is a letter and 16 hexadecimal digits, the leading sequencer measures the absence rule, and cancelling
 > on promotion becomes a command in phase 7.
@@ -31,7 +32,9 @@ pass. Section 7 says how that is checked.
 
 These are the places, found by reading `MatchingEngineThread.cpp` and `OrderBook.hpp`, where the same commands could
 lead to a different book or different reports, and which this design removes. Steps 2 and 3 of section 8 have removed
-causes 1 and 3 to 6; cause 2 is removed by step 4.
+causes 1 and 3 to 6. Of cause 2, step 4 has made the first two decisions commands in the WAL, and the halt state those
+commands set; the cancel and the halt of an engine whose own region cannot be used are still its own decisions, until
+the rest of step 4 (decision 8).
 
 1. **Identifiers come from counters kept in memory.** `OrderID` is `ME-ORD-` and a counter, `order_id_counter_`, and
    `ExecID` is `ME-EXEC-` and another, `exec_id_counter_`. After a restart the order counter is set above the highest
@@ -191,6 +194,12 @@ Three kinds of command join the new order and the cancel as commands the engine 
 - **Resume trading.** The engine accepts orders again. Only a person lifts a halt (R-0023), through the operator's
   means of doing so, and the resume command is how that reaches the engines.
 
+The halt and the resume are one message, the technical event of [trading_phases.md](../venue/trading_phases.md)
+(decision 6): `TechnicalEvent` in `leader_follower.dsl`, carrying the phase, whether trading is halted, the trading
+day and a reason. The engine applies it; one whose trading day is older than the trading date of the record carrying it
+is refused. Nothing writes one yet: the halt of section 4.2 for a region that cannot be used will, and the resume waits
+for the operator's means of lifting a halt ([BUG-0065](../bug_list.md#bug_0065)). The phase is always open.
+
 Each is a WAL record like an order, with a sequence number and the time the sequencer recorded, and a catch-up sends
 it to an engine like an order. So an engine that restarts and catches up meets each decision at the position where
 it was taken, and nowhere else.
@@ -205,11 +214,27 @@ cancels its book or halts on its own initiative any more. The decisions that are
   sequencer knows when an engine leads, because it routes orders only to the engine that leads
   (`EngineOrderRouting`). It measures how long it has had no engine to route to, and when that exceeds the limit it
   writes a cancel of the book and a halt. When the whole venue was down, sequencers included, the leading sequencer
-  measures the absence when it starts, from the time of the last record in its WAL to the time it leads; if that
-  exceeds the limit, it writes the same two commands before any order. An engine never measures its own absence, so
-  a follower that was down for an hour cancels nothing ([BUG-0146](../bug_list.md#bug_0146)). The rule is kept in
-  one class of its own inside the sequencer, so that it can move into the library if a second rule of the kind
-  appears (decision 4).
+  measures the absence when it starts, and if that exceeds the limit, it writes the same command before any order. An
+  engine never measures its own absence, so a follower that was down for an hour cancels nothing
+  ([BUG-0146](../bug_list.md#bug_0146)). The rule is kept in one class of its own inside the sequencer, so that it can
+  move into the library if a second rule of the kind appears (decision 4).
+
+  This is built. `EngineAbsenceRule` decides and `SequencerThread::check_engine_absence` acts, about once a second
+  and whenever this instance takes the lead. The limit is `[absence] absence_limit_seconds` in the sequencer's
+  configuration, declared once in each environment's shared section, because both sequencers of the pair must use the
+  same figure. The decision is one command: a `CancelBook` with reason `UnableToMatchTooLong`, through the largest
+  position, so that it cancels every order on the book, and with `halt_if_orders_cancelled` set, so that it halts
+  trading if it cancelled any. Where nothing was open, no member was locked out of anything, and trading carries on;
+  the sequencer cannot know whether the book held orders, but every engine that applies the command does, and they
+  all agree. It is written once for each absence, only by the leader, and never into an empty WAL, which holds no
+  order to cancel.
+
+  When the whole venue was down, the absence is measured from a small file beside the WAL, `engine_routed_at`, which
+  each sequencer writes about once a second with the wall time while it knows of an engine it routes orders to
+  (`EngineRoutedStamp`), but from no earlier than the first record in the WAL (decision 9). The last record in the WAL
+  is the wrong measure: a quiet spell before the venue went down would count as absence, and orders that arrive while
+  no engine runs are still written, which would make the absence look shorter. When this instance is told another
+  leads, the venue was not down as a whole, and what it measured at start-up is dropped.
 - **Cancelling on promotion.** While `open_orders_on_promotion = "cancel"` is set, a promoted engine asks the leading
   sequencer to write a cancel of the book before it serves, and applies it from the WAL like any other command.
   Every engine that catches up afterwards meets it too, so a restarted engine no longer keeps orders its peer
@@ -233,11 +258,21 @@ cancels its book or halts on its own initiative any more. The decisions that are
 ### 4.3 What the engine stops doing
 
 - It no longer stamps its region with the time while it runs, or measures its own absence when it starts; the
-  `cancel_and_halt_pending_` path goes.
+  `cancel_and_halt_pending_` path goes. This is built: the region's header holds a value of its owner's in place of
+  the time stamp (`MappedSlotStore::set_owner_value`), which the engine uses for the halt below.
 - It no longer cancels its book on promotion by itself; `cancel_all_orders_on_failover` is called only by the cancel
   command.
 - It no longer keeps a halt of its own. Whether it is halted is part of its state, set and cleared by commands, and
   recovered by catching up.
+
+  This is built for the halts the commands set: a `CancelBook` that asks to halt and cancels an order, and a
+  `TechnicalEvent` (section 4.1), which says whether trading is halted. The engine records the halt in its region,
+  beside the published position and before publishing the position of the command that set it, so that an engine
+  that restarts and resumes from that position, and is not sent the command again, finds it there. A new order is
+  refused while halted whether it is applied live or during a catch-up, so an engine catching up refuses the orders
+  the engine that served refused. The follower engine applies no commands, so the leader tells it of each change to
+  the halt as it tells it of each change to the book, with a `BookUpdate` of type `HaltSet` or `HaltLifted`. The halt
+  of an engine whose own region cannot be used is still that engine's decision, until the rest of step 4.
 
 ## 5. The other causes, put right
 
@@ -563,3 +598,24 @@ which is why it is a decision.
 
 **Decided 25 October 2026: A, rebuild without cancelling where the WAL reaches the first record, and otherwise ask the
 sequencer for a halt.** R-0123 is reworded to match; Andrew approved the new wording the same day.
+
+### Decision 9. When the whole venue was down, from when is the absence measured? (Choose one.)
+
+**Background.** Section 4.2. When every process was down, sequencers included, the leading sequencer must measure at
+start-up how long no engine could trade. The last record in its WAL is the last command, not the moment the venue
+went down: after a quiet spell of ten minutes with orders resting, and a restart of the whole venue that took a minute,
+it would say eleven minutes, and every resting order would be cancelled and trading halted, although the members could
+have cancelled their orders at any point of the quiet spell.
+
+- **A. From the last record in the WAL.** Nothing more to build, at the cost above.
+- **B. From a stamp beside the WAL.** Each sequencer writes the wall time into a small file of its own, about once a
+  second, while it knows of an engine it routes orders to. The absence is measured from it, but from no earlier than
+  the first record in the WAL, before which there was nothing to cancel. Accurate to about a second.
+- **C. Leave the measure at start-up out**, and record it as a defect: an outage of the whole venue would never cancel
+  or halt.
+
+**Recommendation: B.**
+
+**Decided 26 October 2026: B.** A sequencer that was itself down for longer than the limit while its peer ran, and then
+leads after the whole venue went down with no record written in between, holds an old stamp and measures an absence
+that was not there ([BUG-0207](../bug_list.md#bug_0207)).

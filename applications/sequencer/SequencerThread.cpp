@@ -6,12 +6,12 @@
 #include "PublisherRecordFromWal.hpp"
 
 #include <cstring>
-#include <limits>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <deque>
+#include <limits>
 #include <vector>
 
 #include <LeasePairNumbers.hpp>
@@ -186,6 +186,25 @@ void SequencerThread::on_initial_event() {
     } else {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL is fresh (no prior records), starting from seq_no=1");
     }
+
+    // The last time this process knew of a matching engine it routed orders to, which measures how long the venue was
+    // without one when the whole venue was down; no earlier than the first record, before which there was nothing to
+    // cancel (EngineAbsenceRule).
+    if (!engine_routed_stamp_.open(config_.wal_directory)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: cannot open {}/{} -- after the whole venue was down, how long it was without a matching engine is measured from "
+                   "the first record in the WAL, which may be longer than it was",
+                   config_.wal_directory, EngineRoutedStamp::file_name);
+    }
+    const int64_t first_record_ns = replicated_wal_->wal().first_wall_time_ns().value_or(0);
+    engine_absence_.started(engine_routed_stamp_.stamped_at_ns(), first_record_ns);
+    if (engine_absence_.absence_began_ns() != 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: this process last knew of a matching engine it routed orders to {} s ago; if this instance leads before one is routed "
+                   "to and that is longer than the {} s the venue allows, it writes a command cancelling the book (R-0117)",
+                   (config_.wall_clock->now_ns() - engine_absence_.absence_began_ns()) / 1000000000, config_.absence_limit_seconds);
+    }
+    engine_absence_timer_id_ = start_recurring_timer(engine_absence_check_interval);
 
     wal_snapshot_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.snapshot_interval_seconds));
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL snapshot timer started (interval={}s)", config_.snapshot_interval_seconds);
@@ -1199,6 +1218,11 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         return;
     }
 
+    if (id == engine_absence_timer_id_) {
+        check_engine_absence();
+        return;
+    }
+
     if (id == acknowledgement_watch_timer_id_) {
         const auto now = std::chrono::steady_clock::now();
         replicated_wal_->on_acknowledgement_watch(now);
@@ -1458,7 +1482,14 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
         if (wal_follower_service_.has_value()) {
             wal_follower_service_->on_became_leader(epoch);
         }
+
+        // An absence longer than the venue allows, found at start-up or measured while following, is acted on before
+        // anything new is sequenced.
+        check_engine_absence();
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
+        // Another instance leads, so the venue was not down as a whole: what this process found at start-up does not
+        // say how long the venue has been without a matching engine.
+        engine_absence_.another_instance_leads(config_.wall_clock->now_ns());
         awaiting_engine_position_ = false;
         if (log_tail_index_.has_value()) {
             discard_log_tail_index("this instance has stopped leading");
@@ -2006,6 +2037,7 @@ void SequencerThread::handle_cancel_book_request(const pubsub_itc_fw::Connection
     pubsub_itc_fw_app::CancelBook command{};
     command.reason = pubsub_itc_fw_app::CancelBookReason::Promotion;
     command.orders_placed_through = request.orders_placed_through;
+    command.halt_if_orders_cancelled = false;
     // Measured, then encoded into a buffer of the size measured.
     size_t bytes_written = 0;
     size_t bytes_needed = 0;
@@ -2020,6 +2052,47 @@ void SequencerThread::handle_cancel_book_request(const pubsub_itc_fw::Connection
                "SequencerThread: matching engine instance {} at epoch {} asks for the orders it inherited, placed at or before seq={}, to be cancelled -- "
                "writing a CancelBook command",
                request.instance_id, request.epoch, request.orders_placed_through);
+    write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id), bytes.data(), bytes_written);
+}
+
+void SequencerThread::check_engine_absence() {
+    if (config_.replay_mode || !replicated_wal_.has_value()) {
+        return;
+    }
+    const int64_t now_ns = config_.wall_clock->now_ns();
+    const bool engine_routed = engine_routing_.active().is_valid();
+    if (engine_routed) {
+        static_cast<void>(engine_routed_stamp_.write(now_ns));
+    }
+    engine_absence_.observe(engine_routed, now_ns);
+    if (engine_absence_.command_due(now_ns, role_ == pubsub_itc_fw_app::Role::leader, replicated_wal_->wal().last_seq_no() > 0)) {
+        write_absence_command(now_ns);
+    }
+}
+
+void SequencerThread::write_absence_command(int64_t now_ns) {
+    pubsub_itc_fw_app::CancelBook command{};
+    command.reason = pubsub_itc_fw_app::CancelBookReason::UnableToMatchTooLong;
+    // Every order on the book: each was placed before this command.
+    command.orders_placed_through = std::numeric_limits<int64_t>::max();
+    command.halt_if_orders_cancelled = true;
+    // Measured, then encoded into a buffer of the size measured.
+    size_t bytes_written = 0;
+    size_t bytes_needed = 0;
+    static_cast<void>(pubsub_itc_fw_app::encode(command, nullptr, 0, bytes_written, bytes_needed));
+    std::vector<uint8_t> bytes(bytes_needed);
+    if (!pubsub_itc_fw_app::encode(command, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a CancelBook command needs {} bytes and could not be encoded",
+                   bytes_needed);
+        return;
+    }
+    // The orders are not stale because they are old. They are stale because the members that placed them were locked out
+    // of them while the market moved: no engine could trade, so they could not cancel.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "SequencerThread: no matching engine has been able to trade for {} s, longer than the {} s the venue allows -- writing a CancelBook "
+               "command: every open order is cancelled and its member told, and trading halts if any was open (R-0117)",
+               (now_ns - engine_absence_.absence_began_ns()) / 1000000000, config_.absence_limit_seconds);
+    engine_absence_.command_written();
     write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id), bytes.data(), bytes_written);
 }
 

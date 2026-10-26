@@ -725,7 +725,8 @@ end
 
 # Why a cancel of the book was written.
 enum CancelBookReason : i8 {
-    Promotion = 1   # open_orders_on_promotion is "cancel", and a promoted engine asked for its inherited orders to be cancelled
+    Promotion = 1              # open_orders_on_promotion is "cancel", and a promoted engine asked for its inherited orders to be cancelled
+    UnableToMatchTooLong = 2   # no matching engine could trade for longer than absence_limit_seconds (R-0117)
 }
 
 # ------------------------------------------------------------
@@ -750,9 +751,48 @@ end
 #  envelope like a new order or a cancel: cancel every order on
 #  the book placed at or before orders_placed_through, in the
 #  order they were placed, reporting each to its member. Orders
-#  placed after it stay on the book.
+#  placed after it stay on the book. A cancel written because no
+#  engine could trade for too long carries the largest i64, so that
+#  it cancels every order on the book, and halts trading if it
+#  cancelled any.
 # ------------------------------------------------------------
 message CancelBook (id=139, version=1)
     CancelBookReason reason
     i64 orders_placed_through
+    bool halt_if_orders_cancelled   # true: if the command cancels any order, trading halts too (R-0117)
+end
+
+# The venue's trading phase. See docs/venue/trading_phases.md. Until
+# the start and the end of the trading day are built, the venue is
+# always open.
+enum TradingPhase : i8 {
+    StartOfDay = 1   # the venue is preparing and is not trading
+    PreOpen = 2      # members may enter orders; nothing is matched yet
+    Open = 3         # continuous trading
+    Closed = 4       # trading has finished for the day
+    EndOfDay = 5     # work that belongs after trading
+}
+
+# Why a technical event was written.
+enum TechnicalEventReason : i8 {
+    CannotAccountForBook = 1   # a matching engine could not say what orders the venue held, so trading halts without cancelling (R-0123)
+    LiftedByOperator = 2       # a person lifted a halt (R-0023)
+}
+
+# ------------------------------------------------------------
+#  153 -- TechnicalEvent
+#  A command in the WAL, carried as the payload of a WalRecord
+#  envelope like a new order or a cancel. It says the state the
+#  venue is now in, not only what changed: the phase, whether
+#  trading is halted, and the trading day. A matching engine that
+#  applies one halted refuses every new order until one that is
+#  not halted, and still carries out cancels. One whose trading
+#  day is older than the trading day the engine holds is refused.
+#  See docs/venue/trading_phases.md.
+# ------------------------------------------------------------
+message TechnicalEvent (id=153, version=1)
+    TradingPhase phase
+    bool halted
+    i32 trading_day                 # YYYYMMDD
+    TechnicalEventReason reason
 end

@@ -211,6 +211,12 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
         }
         config.snapshot_interval_seconds = snapshot_interval_seconds;
 
+        toml.get_required_except("absence.absence_limit_seconds", config.absence_limit_seconds);
+        if (config.absence_limit_seconds < 1) {
+            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: absence.absence_limit_seconds must be >= 1, got " +
+                                                        std::to_string(config.absence_limit_seconds));
+        }
+
         std::string applog_level_str;
         std::string syslog_level_str;
         toml.get_required_except("logging.applog_level", applog_level_str);

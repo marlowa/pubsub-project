@@ -294,6 +294,13 @@ ha_only = false
 lease_period_milliseconds = 3000
 lease_drift_allowance_milliseconds = 250
 lease_renewal_interval_milliseconds = 1000
+
+# How long the venue may be without a matching engine that can trade before the orders open
+# at the time are cancelled, each member told, and trading halted (R-0117). The leading
+# sequencer measures it and writes the decision into the WAL as a command, so declared once
+# here: both sequencers of the pair must use the same figure. A trading decision: how long a
+# resting order stays meaningful here, when its member cannot reach it.
+absence_limit_seconds = 300
 # Metrics for the whole venue. One edit turns the scrape endpoints on or off
 # everywhere; each component still has its own listener host and port below.
 metrics_enabled     = false
@@ -522,9 +529,6 @@ identifier_secret_file = "etc/matching_engine/identifier_secret.key"
 # to a fresh one of the same size to clear them, and holds both while it does, 75.7 GB; with
 # the region that is 100.5 GB at most, which the 200 GB machine has room for.
 order_book_initial_capacity = 100000000
-# How long the venue may be unable to match before open orders are cancelled and
-# trading halts. A trading decision: how long a resting order stays meaningful here.
-order_book_absence_limit_seconds = 300
 # What a promoted matching engine does with the orders it inherits: "cancel" or "keep".
 # "cancel" tells every member its order is gone, which is worse and is certain. "keep" carries
 # the book across (R-0073) and is only safe once the catch-up behind it is verified -- see

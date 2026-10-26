@@ -186,8 +186,8 @@ void MatchingEngineStateMachine::apply_new_order_unguarded(const pubsub_itc_fw_a
                                                            int32_t trading_date, const fix_common::SessionIdentity& session, CommandSource source) {
     // One path, whichever way the order arrives, so that an engine that applies it live and one that applies it while
     // catching up hold the same book and send the same reports. The source makes these differences and no others: a
-    // catch-up does not check the order of sequence numbers, whose records are below the position by construction, nor
-    // the halt, which is a decision this engine takes alone; its reports are marked as possible repeats, because
+    // catch-up does not check the order of sequence numbers, whose records are below the position by construction; its
+    // reports are marked as possible repeats, because
     // nothing in the record says whether an earlier engine reported it (R-0122); and an order it puts on the book is
     // not replicated to the follower or counted as processed.
     //
@@ -205,7 +205,7 @@ void MatchingEngineStateMachine::apply_new_order_unguarded(const pubsub_itc_fw_a
         return;
     }
     if (!ReportIdentifiers::fits(sequence_number, 0)) {
-        refuse_to_name(sequence_number);
+        refuse_to_name(sequence_number, source);
         return;
     }
     identifiers_.use_trading_date(trading_date);
@@ -235,7 +235,10 @@ void MatchingEngineStateMachine::apply_new_order_unguarded(const pubsub_itc_fw_a
     // actually asked, and it reaches the member who is trading, which is the member who needs
     // to know. A broadcast should exist as well and does not replace this -- see
     // docs/availability/design_notes.md section 15.
-    if (live && halted_) {
+    //
+    // During a catch-up too: the halt was set by a command at a position in the WAL, so the engine that applied this
+    // order live refused it, and an engine catching up must refuse it as well to hold the same book.
+    if (book_.halted()) {
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                    "MatchingEngineStateMachine: trading is halted -- refusing NOS ClOrdID={} (session comp_id='{}')", view.cl_ord_id, session.comp_id_view());
 
@@ -461,7 +464,7 @@ void MatchingEngineStateMachine::apply_cancel_unguarded(const pubsub_itc_fw_app:
         return;
     }
     if (!ReportIdentifiers::fits(sequence_number, 0)) {
-        refuse_to_name(sequence_number);
+        refuse_to_name(sequence_number, source);
         return;
     }
     identifiers_.use_trading_date(trading_date);
@@ -822,7 +825,18 @@ void MatchingEngineStateMachine::refuse_cancel_without_time(const pubsub_itc_fw_
     send_report(er, sequence_number, session, repeat);
 }
 
-void MatchingEngineStateMachine::refuse_to_name(int64_t sequence_number) {
+void MatchingEngineStateMachine::set_halted(TradingHalted halted, int64_t sequence_number, CommandSource source) {
+    const bool now_halted = halted == TradingHalted::yes;
+    if (now_halted == book_.halted()) {
+        return;
+    }
+    book_.set_halted(halted);
+    if (source == CommandSource::live) {
+        outputs_.trading_halt_changed(sequence_number, now_halted);
+    }
+}
+
+void MatchingEngineStateMachine::refuse_to_name(int64_t sequence_number, CommandSource source) {
     // An identifier holds sequence numbers below 2^36, about 68,700 million, far above any day's WAL. A command beyond it
     // cannot be given a report whose identifier is not also some other report's, so it is not answered at all, and
     // trading halts so that nothing more is accepted that could not be named.
@@ -830,7 +844,7 @@ void MatchingEngineStateMachine::refuse_to_name(int64_t sequence_number) {
                "MatchingEngineStateMachine: command seq={} is beyond the {} sequence numbers an identifier can hold -- not applied and not answered, "
                "and trading halts",
                sequence_number, ReportIdentifiers::sequence_number_limit);
-    halted_ = true;
+    set_halted(TradingHalted::yes, sequence_number, source);
 }
 
 void MatchingEngineStateMachine::publish_after_refusal(int64_t sequence_number, CommandSource source) {
@@ -872,16 +886,17 @@ void MatchingEngineStateMachine::after_failure(int64_t sequence_number, CommandS
     }
 }
 
-MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::apply_cancel_book(int64_t orders_placed_through, int64_t sequence_number,
-                                                                                                 int64_t transact_time, int32_t trading_date,
-                                                                                                 CommandSource source) {
+MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::apply_cancel_book(int64_t orders_placed_through,
+                                                                                                 HaltIfOrdersCancelled halt_if_orders_cancelled,
+                                                                                                 int64_t sequence_number, int64_t transact_time,
+                                                                                                 int32_t trading_date, CommandSource source) {
     BookCancelledByCommand result;
     const bool live = source == CommandSource::live;
     if (!live && already_applied(sequence_number)) {
         return result;
     }
     if (!ReportIdentifiers::fits(sequence_number, 0)) {
-        refuse_to_name(sequence_number);
+        refuse_to_name(sequence_number, source);
         return result;
     }
     if (live && sequence_goes_backwards(sequence_number)) {
@@ -949,10 +964,50 @@ MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::a
         }
     }));
     result.orders_kept = static_cast<int64_t>(book_.size());
+    // Recorded before the position is published, so that an engine that restarts after this command finds the halt.
+    if (halt_if_orders_cancelled == HaltIfOrdersCancelled::yes && result.reports_sent > 0 && !book_.halted()) {
+        set_halted(TradingHalted::yes, sequence_number, source);
+        result.halted = true;
+    }
     book_.publish(sequence_number);
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineStateMachine: CancelBook seq={} -- {} order(s) cancelled and reported, {} placed after seq={} kept", sequence_number,
-               result.reports_sent, result.orders_kept, orders_placed_through);
+               "MatchingEngineStateMachine: CancelBook seq={} -- {} order(s) cancelled and reported, {} placed after seq={} kept{}", sequence_number,
+               result.reports_sent, result.orders_kept, orders_placed_through, result.halted ? ", and trading halts" : "");
+    return result;
+}
+
+MatchingEngineStateMachine::TechnicalEventApplied MatchingEngineStateMachine::apply_technical_event(const pubsub_itc_fw_app::TechnicalEventView& view,
+                                                                                                    int64_t sequence_number, int32_t trading_date,
+                                                                                                    CommandSource source) {
+    TechnicalEventApplied result;
+    const bool live = source == CommandSource::live;
+    if (!live && already_applied(sequence_number)) {
+        return result;
+    }
+    if (live && sequence_goes_backwards(sequence_number)) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineStateMachine: TechnicalEvent seq={} is at or below the highest command acted on -- not applied, because the WAL this "
+                   "engine acted on and the one now sending disagree",
+                   sequence_number);
+        return result;
+    }
+    if (view.trading_day < trading_date) {
+        // Published all the same, so that the position moves past it and a restart does not meet it again as new.
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineStateMachine: TechnicalEvent seq={} is for trading day {}, older than the trading day {} of the record carrying it -- "
+                   "refused, so that it cannot change trading on a later day",
+                   sequence_number, view.trading_day, trading_date);
+        book_.publish(sequence_number);
+        return result;
+    }
+    result.applied = true;
+    result.halt_changed = view.halted != book_.halted();
+    set_halted(view.halted ? TradingHalted::yes : TradingHalted::no, sequence_number, source);
+    book_.publish(sequence_number);
+    PUBSUB_LOG(logger_, view.halted ? pubsub_itc_fw::FwLogLevel::Error : pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineStateMachine: TechnicalEvent seq={} -- phase {}, trading day {}, {} ({}){}", sequence_number,
+               pubsub_itc_fw_app::to_string(view.phase), view.trading_day, view.halted ? "trading is halted" : "trading is not halted",
+               pubsub_itc_fw_app::to_string(view.reason), live ? "" : " -- during catch-up");
     return result;
 }
 

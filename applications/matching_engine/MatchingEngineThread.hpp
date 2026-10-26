@@ -231,6 +231,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         void order_added_to_book(int64_t sequence_number, const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
                                  const OrderEntry& entry) override;
         void order_removed_from_book(int64_t sequence_number, const fix_common::SessionIdentity& session, std::string_view cl_ord_id) override;
+        void trading_halt_changed(int64_t sequence_number, bool halted) override;
         void order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
                            ReportIsRepeat repeat, int64_t sequence_number, std::string_view orig_cl_ord_id) override;
         void order_accepted() override;
@@ -251,21 +252,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // The region this process inherited could not be read, so what it held is unknown here and
     // the book cannot be vouched for however well the reconciliation goes. R-0102.
     bool region_was_unusable_{false};
-
-    // How long the venue was unable to match, worked out at startup from the region and kept
-    // until there is somewhere to send the reports. Zero where there was no previous life.
-    int64_t absence_ns_{0};
-
-    // Set at startup when the absence was too long and orders were open. Acted on at the point
-    // the engine would otherwise resume trading, because cancelling means telling each member,
-    // and at startup there is no connection to tell anyone down.
-    bool cancel_and_halt_pending_{false};
-
-    // Says the engine is alive and able to match, independently of whether anything is being
-    // traded. A second is far finer than the absence limit needs and costs one store to
-    // mapped memory.
-    pubsub_itc_fw::TimerID able_to_match_timer_id_{};
-    static constexpr std::chrono::seconds able_to_match_interval{1};
 
     // Helper: send a BookUpdate PDU to ME-secondary (primary only).
     void send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
@@ -556,21 +542,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      */
     void recover_open_orders(bool region_existed);
 
-    /**
-     * @brief Whether the venue was unable to match for longer than it says it may be.
-     *
-     * Compares the wall-clock time the previous owner of the region last said it was working
-     * against the time this one started. That is the whole absence -- noticing the death,
-     * restarting the process, and rebuilding the book are all terms in it -- and the engine
-     * works it out alone, because nothing here may depend on a supervisor being present.
-     *
-     * False where there was no region, because there was no previous life to be absent from.
-     */
-    [[nodiscard]] bool absence_was_too_long() const;
-
-    /// Says the engine is able to match. On a timer, never from the order path: see R-0118.
-    void mark_able_to_match();
-
     void begin_reconciliation();
 
     /// Take the leader role, catching up from the WAL first unless this instance already leads.
@@ -616,7 +587,10 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Asks every sequencer for a CancelBook command through cancel_book_awaited_through_; the leading one writes it.
     void request_cancel_book();
     // Applies a CancelBook command, and, where it is the one this promoted instance asked for, says that it has resumed.
-    void apply_cancel_book_command(int64_t orders_placed_through, int64_t sequence_number, int64_t transact_time, int32_t trading_date, CommandSource source);
+    void apply_cancel_book_command(const pubsub_itc_fw_app::CancelBookView& command, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
+                                   CommandSource source);
+    // Applies a TechnicalEvent command, and tells the test of a halt it set.
+    void apply_technical_event_command(const pubsub_itc_fw_app::TechnicalEventView& event, int64_t sequence_number, int32_t trading_date, CommandSource source);
     // Tells the test that this instance resumed as leader, and with how many orders.
     void report_resumed_as_leader();
 
@@ -650,16 +624,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // test how many there were.
     void cancel_all_orders_on_failover();
 
-    /// Does the cancel-and-halt the absence rule asked for, once there is somewhere to send
-    /// the reports. A no-op when none was asked for, so it is safe to call from every point
-    /// the engine might reach first.
+    /// Halts without cancelling where the region this process inherited could not be used and nothing has established
+    /// what was open from the sequencer's record (R-0123). A no-op otherwise, so it is safe to call from every point the
+    /// engine might reach first.
     void act_on_pending_halt();
 
     /**
-     * @brief Cancels every open order, tells each member, and halts trading. R-0117.
-     *
-     * The orders are not stale because they are old. They are stale because the members that
-     * placed them were locked out of them while the market moved, and could not act.
+     * @brief Cancels every open order, tells each member, and halts trading, where the region could not be used and the
+     * sequencer's record named every order (R-0123).
      */
     void cancel_everything_and_halt(const char* why, pubsub_itc_fw_app::HaltReason reason);
 };

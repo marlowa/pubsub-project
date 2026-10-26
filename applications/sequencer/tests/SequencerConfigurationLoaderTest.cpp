@@ -69,6 +69,9 @@ snapshot_interval_seconds = 30
 records_kept_for_publishers = 100
 bytes_kept_for_publishers   = 40000
 
+[absence]
+absence_limit_seconds = 7
+
 [logging]
 applog_level = "info"
 syslog_level = "critical"
@@ -339,6 +342,21 @@ TEST(SequencerConfigurationLoaderTest, ReadsHowManyCommandIdentifiersToReserve) 
 TEST(SequencerConfigurationLoaderTest, ReadsHowManyOrdersTheLeaderHoldsAtMost) {
     const auto config = load_with_gateways(one_gateway);
     EXPECT_EQ(config.orders_held_at_most, 64U);
+}
+
+TEST(SequencerConfigurationLoaderTest, ReadsHowLongTheVenueMayBeWithoutAMatchingEngine) {
+    const auto config = load_with_gateways(one_gateway);
+    EXPECT_EQ(config.absence_limit_seconds, 7);
+}
+
+TEST(SequencerConfigurationLoaderTest, RejectsAnAbsenceLimitBelowOneSecond) {
+    std::string sections(required_sections);
+    const std::string limit = "absence_limit_seconds = 7";
+    sections.replace(sections.find(limit), limit.size(), "absence_limit_seconds = 0");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(SequencerConfigurationLoaderTest, ReadsHowManyRecordsAreKeptForThePublishers) {

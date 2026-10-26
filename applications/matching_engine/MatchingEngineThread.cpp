@@ -188,10 +188,6 @@ void MatchingEngineThread::on_app_ready_event() {
                                                        order_path_metrics::order_path_elapsed_help, config_.order_path_elapsed_buckets);
     }
     book_metrics_timer_id_ = start_recurring_timer(book_metrics_sample_interval);
-    // Started before anything else can take time, and stamped once immediately: a successor
-    // measures its absence from this, so a gap here would be counted against the next process.
-    mark_able_to_match();
-    able_to_match_timer_id_ = start_recurring_timer(able_to_match_interval);
     publish_book_metrics();
 
     // Only when a test started this instance (docs/availability/test_events.md).
@@ -472,11 +468,12 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
     }
 
     const int16_t inner_pdu_id = envelope.pdu_id;
-    // A CancelBook command is gated as an order is: it changes the book, so only the instance that leads applies it, and
-    // the follower's copy of the book loses the orders through the leader's book updates.
+    // A CancelBook or a TechnicalEvent command is gated as an order is: it changes the book or whether trading is halted,
+    // so only the instance that leads applies it, and the follower learns of the change through the leader's book updates.
     const bool is_order_pdu = (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) ||
                               (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) ||
-                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id));
+                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id)) ||
+                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id));
 
     // ---- Order PDU gating by HA state -------------------------------------
     if (is_order_pdu && ha_role_state_ == MeRole::Follower) {
@@ -550,8 +547,17 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
             return;
         }
         const CommandSource source = command_source_for(message.seq_no());
-        apply_cancel_book_command(view.orders_placed_through, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
-                                  source);
+        apply_cancel_book_command(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0, source);
+
+    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) {
+        pubsub_itc_fw_app::TechnicalEventView view{};
+        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode TechnicalEvent -- dropping");
+            release_pdu_payload(message);
+            return;
+        }
+        const CommandSource source = command_source_for(message.seq_no());
+        apply_technical_event_command(view, message.seq_no(), envelope.has_trading_date ? envelope.trading_date : 0, source);
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         // The ME is the source of ERs, not a consumer -- discard.
@@ -595,6 +601,11 @@ void MatchingEngineThread::EngineOutputs::order_added_to_book(int64_t sequence_n
 void MatchingEngineThread::EngineOutputs::order_removed_from_book(int64_t sequence_number, const fix_common::SessionIdentity& session,
                                                                   std::string_view cl_ord_id) {
     owner_.send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Remove, session, cl_ord_id, nullptr);
+}
+
+void MatchingEngineThread::EngineOutputs::trading_halt_changed(int64_t sequence_number, bool halted) {
+    owner_.send_book_update(sequence_number, halted ? pubsub_itc_fw_app::BookUpdateType::HaltSet : pubsub_itc_fw_app::BookUpdateType::HaltLifted,
+                            fix_common::SessionIdentity{}, std::string_view{}, nullptr);
 }
 
 void MatchingEngineThread::EngineOutputs::order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
@@ -874,11 +885,6 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         return;
     }
 
-    if (id == able_to_match_timer_id_) {
-        mark_able_to_match();
-        return;
-    }
-
     if (id == reconciliation_timer_id_) {
         if (ha_role_state_ != MeRole::Reconciling) {
             cancel_timer(reconciliation_timer_id_);
@@ -1012,6 +1018,14 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
         order_book_.publish(view.seq_no);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: replica Remove seq={} cl_ord_id={} book_size={}", view.seq_no,
                    view.cl_ord_id, order_book_.size());
+    } else if (update_type == pubsub_itc_fw_app::BookUpdateType::HaltSet || update_type == pubsub_itc_fw_app::BookUpdateType::HaltLifted) {
+        // The leader applied a command that halted trading or lifted a halt. Recorded before the position is published,
+        // as the leader does, so that this instance refuses orders as the leader does if it is promoted.
+        const bool halted = update_type == pubsub_itc_fw_app::BookUpdateType::HaltSet;
+        order_book_.set_halted(halted ? TradingHalted::yes : TradingHalted::no);
+        order_book_.publish(view.seq_no);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: replica seq={} -- the leader says trading is {}", view.seq_no,
+                   halted ? "halted" : "no longer halted");
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unknown BookUpdate type {} -- dropping", view.update_type);
     }
@@ -1395,19 +1409,6 @@ void MatchingEngineThread::announce_role() {
 
 // WAL reconciliation (Slice D)
 
-void MatchingEngineThread::mark_able_to_match() {
-    if (order_book_.is_open()) {
-        order_book_.mark_alive(config_.wall_clock->now_ns());
-    }
-}
-
-bool MatchingEngineThread::absence_was_too_long() const {
-    if (absence_ns_ <= 0) {
-        return false;
-    }
-    return absence_ns_ > static_cast<int64_t>(config_.order_book_absence_limit_seconds) * 1000000000LL;
-}
-
 void MatchingEngineThread::recover_open_orders(bool region_existed) {
     if (!region_existed) {
         // Nothing was left behind, so there is nothing to read and every page of the region is
@@ -1441,41 +1442,12 @@ void MatchingEngineThread::recover_open_orders(bool region_existed) {
                "MatchingEngineThread: recovered {} open order(s) from the region at seq_no={} in {} ms ({} unfinished record(s) discarded)", found.orders,
                found.published, elapsed_ms, found.discarded);
 
-    // How long nobody was able to match. Measured from when the previous owner last said it
-    // was working to now, so noticing the death, restarting the process and the scan above are
-    // all inside it. Worked out here and acted on later: cancelling means telling each member,
-    // and there is nothing connected to tell yet.
-    const int64_t alive_at = order_book_.alive_at_ns();
-    if (alive_at > 0) {
-        absence_ns_ = config_.wall_clock->now_ns() - alive_at;
+    if (order_book_.halted()) {
+        // Set by a command the engine applied before it stopped, and kept in the region with the orders.
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "MatchingEngineThread: the region records that trading is halted -- the venue refuses every new order until a person lifts the halt "
+                       "(R-0023)");
     }
-
-    if (!absence_was_too_long()) {
-        if (absence_ns_ > 0) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: the venue was unable to match for {} ms, within the {}s it may be",
-                       absence_ns_ / 1000000, config_.order_book_absence_limit_seconds);
-        }
-        return;
-    }
-
-    if (found.orders == 0) {
-        // Nothing was open, so nothing went stale and there is nobody to tell. Halting here
-        // would buy an outage and no safety: traffic is bursty, and a long absence during a
-        // lull is exactly the case this exception exists for.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: the venue was unable to match for {} s, longer than the {}s it may be, but held no open orders -- resuming",
-                   absence_ns_ / 1000000000, config_.order_book_absence_limit_seconds);
-        return;
-    }
-
-    // The orders are not stale because they are old. They are stale because the members that
-    // placed them were locked out of them while the market moved: the venue could not match,
-    // so they could not cancel, and their orders are priced for a market that has gone.
-    cancel_and_halt_pending_ = true;
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "MatchingEngineThread: the venue was unable to match for {} s, longer than the {}s it may be, and holds {} open order(s) -- they will be "
-               "cancelled and trading halted once there is somewhere to send the reports (R-0117)",
-               absence_ns_ / 1000000000, config_.order_book_absence_limit_seconds, found.orders);
 }
 
 void MatchingEngineThread::become_leader_when_current() {
@@ -1930,35 +1902,18 @@ void MatchingEngineThread::act_on_pending_halt() {
                        "established what was open from the sequencer's record. Halting without cancelling, because cancelling what can be named would leave "
                        "the rest unmentioned (R-0123)");
         halt_for(pubsub_itc_fw_app::HaltReason::CannotAccountForBook);
-        cancel_and_halt_pending_ = false;
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                        "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
         return;
     }
-
-    if (!cancel_and_halt_pending_) {
-        return;
-    }
-    // Cancelling means telling each member what became of its order, so there has to be a
-    // route to tell them down. Without one this waits: it is called again when a sequencer
-    // connection comes up, and again when the engine adopts leadership.
-    if (!sequencer_er_conn_id_.is_valid() && !sequencer_er_secondary_conn_id_.is_valid()) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "MatchingEngineThread: waiting for a sequencer connection before cancelling the orders held across a long absence");
-        return;
-    }
-    cancel_everything_and_halt("the venue was unable to match for longer than it may be", pubsub_itc_fw_app::HaltReason::UnableToMatchTooLong);
 }
 
 void MatchingEngineThread::cancel_everything_and_halt(const char* why, pubsub_itc_fw_app::HaltReason reason) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: cancelling {} open order(s) and halting trading -- {} (R-0117)",
                order_book_.size(), why);
 
-    // The same cancel-and-report burst a promotion used to do unconditionally, which is what
-    // this case still needs: each member is told what became of the order it placed, rather
-    // than the venue simply ceasing to mention it.
+    // Each member is told what became of the order it placed, rather than the venue simply ceasing to mention it.
     cancel_all_orders_on_failover();
-    cancel_and_halt_pending_ = false;
     halt_for(reason);
 
     PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
@@ -1977,16 +1932,35 @@ void MatchingEngineThread::request_cancel_book() {
     cancel_book_requested_at_ = std::chrono::steady_clock::now();
 }
 
-void MatchingEngineThread::apply_cancel_book_command(int64_t orders_placed_through, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
-                                                     CommandSource source) {
+void MatchingEngineThread::apply_cancel_book_command(const pubsub_itc_fw_app::CancelBookView& command, int64_t sequence_number, int64_t transact_time,
+                                                     int32_t trading_date, CommandSource source) {
+    const int64_t orders_placed_through = command.orders_placed_through;
+    const HaltIfOrdersCancelled halt_if_orders_cancelled = command.halt_if_orders_cancelled ? HaltIfOrdersCancelled::yes : HaltIfOrdersCancelled::no;
     const MatchingEngineStateMachine::BookCancelledByCommand result =
-        state_machine_.apply_cancel_book(orders_placed_through, sequence_number, transact_time, trading_date, source);
+        state_machine_.apply_cancel_book(orders_placed_through, halt_if_orders_cancelled, sequence_number, transact_time, trading_date, source);
     if (!result.applied) {
         return;
     }
     if (test_events_.has_value()) {
         test_events_->send_event(pubsub_itc_fw_app::BookCancelled::message_pdu_id,
                                  pubsub_itc_fw_app::BookCancelled{result.open_orders, result.reports_sent, true, result.orders_kept});
+    }
+    if (command.reason == pubsub_itc_fw_app::CancelBookReason::UnableToMatchTooLong) {
+        // The orders are not stale because they are old. They are stale because the members that placed them were locked
+        // out of them while the market moved: no engine could trade, so they could not cancel.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: the leading sequencer wrote at seq={} that no matching engine could trade for longer than the venue allows -- {} "
+                   "order(s) cancelled and their members told{} (R-0117)",
+                   sequence_number, result.reports_sent,
+                   result.halted             ? ", and trading is halted until a person lifts it (R-0023)"
+                   : state_machine_.halted() ? "; trading was halted already"
+                                             : "; trading carries on, because none were open");
+    }
+    if (result.halted) {
+        halt_reason_ = pubsub_itc_fw_app::HaltReason::UnableToMatchTooLong;
+        if (test_events_.has_value()) {
+            test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{*halt_reason_});
+        }
     }
     if (cancel_book_awaited_through_ != 0 && orders_placed_through >= cancel_book_awaited_through_) {
         cancel_book_awaited_through_ = 0;
@@ -1997,6 +1971,24 @@ void MatchingEngineThread::apply_cancel_book_command(int64_t orders_placed_throu
         if (source == CommandSource::live) {
             report_resumed_as_leader();
         }
+    }
+}
+
+void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app::TechnicalEventView& event, int64_t sequence_number, int32_t trading_date,
+                                                         CommandSource source) {
+    const MatchingEngineStateMachine::TechnicalEventApplied result = state_machine_.apply_technical_event(event, sequence_number, trading_date, source);
+    if (!result.applied || !result.halt_changed) {
+        return;
+    }
+    if (event.halted) {
+        if (event.reason == pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook) {
+            halt_reason_ = pubsub_itc_fw_app::HaltReason::CannotAccountForBook;
+            if (test_events_.has_value()) {
+                test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{*halt_reason_});
+            }
+        }
+    } else {
+        halt_reason_.reset();
     }
 }
 

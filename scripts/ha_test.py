@@ -855,8 +855,8 @@ class RestartStep(NamedTuple):
     down_secs:         how long to leave the process dead before restarting it.  Zero
                        for every scenario whose subject is a fast restart.  A scenario
                        testing what a LONG absence does needs the venue to be absent for
-                       real, and there is no faking it: the engine measures the absence
-                       from a wall-clock stamp it wrote before it died.
+                       real, and there is no faking it: the leading sequencer measures how
+                       long it has had no matching engine to route orders to.
     """
     proc_name: str
     ready_log_name: str
@@ -1932,8 +1932,9 @@ _SCENARIOS: list[Scenario] = [
     # Getting a deterministic ER for an order whose gateway is dead is the awkward part.
     # Killing the gateway mid-burst would work but is a race. So this borrows a burst the
     # venue produces for its own reasons: the baseline orders rest on the book, the engine
-    # is killed and left down past the period the venue says it may be unable to match, and
-    # on restart it cancels every order it recovers and reports each cancellation (R-0117).
+    # is killed and left down past the period the venue says it may be unable to match, so
+    # the leading sequencer writes a command cancelling the book, and the restarted engine
+    # cancels every order it recovers and reports each cancellation (R-0117).
     # Those orders came from gateway a, which by then is dead, so every one of those reports
     # has nowhere to go.
     #
@@ -3576,23 +3577,24 @@ _SCENARIOS: list[Scenario] = [
     # makes an order dangerous is that its owner was LOCKED OUT of it -- the venue could not
     # match, so the member could not cancel, and the market moved while it could do nothing.
     #
-    # So this kills the engine and leaves it dead. The absence has to be real: the engine
-    # measures it from a wall-clock stamp it wrote before it died, and nothing here can fake
-    # that. The deployed limit is five minutes, which no test is going to sit out, so the
-    # scenario shortens it to a few seconds and stays down past it.
+    # So this kills the engine and leaves it dead. The absence has to be real: the leading
+    # sequencer measures how long it has had no matching engine to route orders to, and when
+    # that passes the limit it writes a CancelBook command into the WAL. The deployed limit is
+    # five minutes, which no test is going to sit out, so the scenario shortens it to a few
+    # seconds and stays down past it. The restarted engine meets the command in its catch-up.
     #
-    # What must then happen, per R-0117: every recovered order cancelled, the member that
-    # placed each one told, and trading halted. And per R-0023, the halt stays until a person
-    # lifts it -- so the venue must refuse an order sent afterwards rather than quietly
+    # What must then happen, per R-0117: every recovered order cancelled, by the command, the
+    # member that placed each one told, and trading halted. And per R-0023, the halt stays until
+    # a person lifts it -- so the venue must refuse an order sent afterwards rather than quietly
     # carrying on.
     Scenario(
         number=51,
         short_name="long_absence_cancels_and_halts",
         description="Orders a member was locked out of are cancelled, reported, and trading halts",
         expected_outcome=(
-            "the restarted engine recovers its open orders, cancels every one of them, sends "
-            "the member that placed it a report saying so, halts, and refuses the orders sent "
-            "afterwards"
+            "the leading sequencer writes a command cancelling the book; the restarted engine "
+            "meets it in its catch-up, cancels every order it recovered, sends the member that "
+            "placed it a report saying so, halts, and refuses the orders sent afterwards"
         ),
         absence_limit_seconds=5,
         assert_absence_halt=True,
@@ -4408,6 +4410,61 @@ _SCENARIOS: list[Scenario] = [
         different_identifier_secret=True,
         steps=[],
     ),
+
+    # 84 -- a following engine down for longer than the absence limit, while its peer trades, cancels nothing.
+    #
+    # BUG-0146. R-0117 is about the venue: the orders are cancelled and trading halts only when no matching engine could
+    # trade for longer than the limit. An engine that is down while its peer leads is a loss of resilience and nothing
+    # more. The following engine is killed with the baseline orders resting, left down for twelve seconds against a
+    # limit of five, and restarted. The leading engine traded throughout, so the leading sequencer always had an engine
+    # to route to and writes no command; the restarted engine must neither cancel its book nor halt, and neither must
+    # the engine that leads. The orders sent afterwards are accepted as usual.
+    Scenario(
+        number=84,
+        short_name="follower_down_past_absence_limit_cancels_nothing",
+        description="A following matching engine down for longer than the absence limit, while its peer trades, cancels nothing and does not halt",
+        expected_outcome=(
+            "the following engine returns after twelve seconds against a limit of five, rejoins as a follower, and neither it "
+            "nor the engine that leads cancels the book or halts; orders sent afterwards are accepted"
+        ),
+        me_ha=True,
+        recovery_on_primary=True,
+        absence_limit_seconds=5,
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            RestartStep(
+                proc_name=ENGINE_FOLLOWING_AT_START,
+                ready_log_name=f"{ENGINE_FOLLOWING_AT_START}.log",
+                ready=expect_replication_connection(ENGINE_FOLLOWING_AT_START),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+                down_secs=12.0,
+            ),
+            AssertAbsentStep(
+                absent=expect_message(ENGINE_FOLLOWING_AT_START, "its book cancelled", "BookCancelled", "matching_engine_test_events"),
+                after_secs=10.0,
+                description="the restarted follower cancelled nothing",
+            ),
+            AssertAbsentStep(
+                absent=expect_message(ENGINE_FOLLOWING_AT_START, "trading halted", "Halted", "matching_engine_test_events"),
+                after_secs=1.0,
+                description="the restarted follower did not halt",
+            ),
+            AssertAbsentStep(
+                absent=expect_message(ENGINE_LEADING_AT_START, "its book cancelled", "BookCancelled", "matching_engine_test_events"),
+                after_secs=1.0,
+                description="the engine that leads cancelled nothing",
+            ),
+            AssertAbsentStep(
+                absent=expect_message(ENGINE_LEADING_AT_START, "trading halted", "Halted", "matching_engine_test_events"),
+                after_secs=1.0,
+                description="the engine that leads did not halt",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -5047,7 +5104,7 @@ def set_installed_ha(prefix: Path, enabled: bool) -> int:
 
 
 def set_installed_absence_limit(prefix: Path, seconds: int) -> int:
-    """Set order_book.absence_limit_seconds in every deployed matching engine config.
+    """Set absence.absence_limit_seconds in every deployed sequencer config.
 
     The deployed figure is five minutes, which is a trading decision about how long a member's
     resting order stays meaningful. No test is going to keep the venue down for five minutes to
@@ -5104,20 +5161,22 @@ _SEQUENCER_COMPONENTS = ("sequencer_primary", "sequencer_secondary")
 def replay_check_applies() -> tuple[bool, str, list[str]]:
     """Whether wal_replay_check can be relied on for the scenario just run, why not if it cannot, and the engines that led.
 
-    It can unless an engine cancelled every order, sending reports, or halted. Every report's ExecID is made from the
-    position in the WAL of the command that caused it (docs/availability/deterministic_matching_engine.md, section 3),
-    so the state machine it replays names each report as whichever engine sent it did, however often the engines
-    restarted or changed roles. But an engine decides by itself to cancel every order when it is promoted, or to halt,
-    and until phase 7 step 4 makes those decisions commands in the WAL, the reports they produce are in the WAL with no
-    command there to replay. Worked out from what the engines said, not from the scenario's description, so that it
-    cannot disagree with what happened."""
+    It can unless an engine cancelled every order by a decision of its own, sending reports, or halted by one. Every
+    report's ExecID is made from the position in the WAL of the command that caused it
+    (docs/availability/deterministic_matching_engine.md, section 3), so the state machine it replays names each report
+    as whichever engine sent it did, however often the engines restarted or changed roles. A cancel of the book on
+    promotion, and the cancel and halt after no engine could trade for too long, are commands in the WAL, and are
+    replayed. An engine whose region could not be used still cancels or halts by its own decision (R-0123), and the
+    reports that produces are in the WAL with no command there to replay. Worked out from what the engines said, not
+    from the scenario's description, so that it cannot disagree with what happened."""
     engine_module = _TEST_EVENTS.modules["matching_engine_test_events"]
     for event in _TEST_EVENTS.events:
         if (event.component in _ENGINE_COMPONENTS and isinstance(event.message, engine_module.BookCancelled) and not event.message.by_command
                 and event.message.cancel_reports_sent > 0):
             return False, (f"{event.component} cancelled every order by its own decision, which is not a command in the WAL, "
                            f"and sent {event.message.cancel_reports_sent} cancel report(s)"), []
-        if event.component in _ENGINE_COMPONENTS and isinstance(event.message, engine_module.Halted):
+        if (event.component in _ENGINE_COMPONENTS and isinstance(event.message, engine_module.Halted)
+                and event.message.reason != engine_module.HaltReason.UnableToMatchTooLong):
             return False, f"{event.component} halted by its own decision, which is not a command in the WAL", []
     engines_that_led = sorted({event.component for event in _TEST_EVENTS.events if event.component in _ENGINE_COMPONENTS
                                and leads(_TEST_EVENTS.messages, event.component)(event)})
@@ -7721,7 +7780,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     f"(count={cancelled}). It was down for longer than the venue says it may be "
                     "with orders open, so every one of them should have been cancelled -- their "
                     "members were locked out of them while the market moved (R-0117).")
-            log(f"  long absence: {cancelled} order(s) cancelled")
+            if not cancelled_book.by_command:
+                die("long absence: the engine cancelled its book by a decision of its own, not by the command the leading "
+                    "sequencer writes into the WAL. An engine that decides alone decides differently from its peer and from "
+                    "an engine that catches up later (docs/availability/deterministic_matching_engine.md, section 4.2).")
+            log(f"  long absence: {cancelled} order(s) cancelled, by the command in the WAL")
 
             halt = engine_event(me_log.stem, "Halted", restarted_from, args.failover_timeout)
             engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]

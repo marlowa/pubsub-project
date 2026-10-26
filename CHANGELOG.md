@@ -106,6 +106,17 @@ describe the venue as it now is.
 
 ### Changed
 
+- **The leading sequencer measures how long no matching engine could trade**, part of step 4 of phase
+  7, and when that is longer than `[absence] absence_limit_seconds`, now in the sequencer's
+  configuration and declared once in each environment, writes a `CancelBook` command that cancels
+  every order and halts trading if it cancelled any (R-0117). After the whole venue was down it
+  measures from `engine_routed_at`, a stamp beside its WAL. The matching engine no longer measures
+  its own absence, and `[order_book] absence_limit_seconds` is gone.
+- **Whether trading is halted is kept in the matching engine's region**, set and cleared by commands:
+  a `CancelBook` that asks to halt, and the technical event of `docs/venue/trading_phases.md`, now a
+  message, `TechnicalEvent`, which the engine applies. The follower engine is sent each change with
+  the book, and a catch-up refuses new orders while halted, as the engine that served did. The
+  region's header holds a value of its owner's where it held a time stamp, and its version is 4.
 - **Cancelling the book on promotion is a command in the WAL**, part of step 4 of phase 7: a promoted
   engine asks the leading sequencer for a `CancelBook` command naming the position it caught up to,
   which cancels the orders placed at or before it and keeps any placed after it, and which an engine
@@ -212,6 +223,13 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 - **A matching engine restarted after its peer cancelled the book on promotion still held the
   cancelled orders**, and could lead holding them, because the cancels were reports, which a
   catch-up does not send an engine. Scenario 79 now passes (BUG-0199).
+- **A matching engine that was down for longer than the absence limit while the other engine traded
+  cancelled its book and halted** when it came back, because it measured its own absence, not the
+  venue's. New scenario 84 keeps the following engine down past the limit and requires that nothing
+  is cancelled (BUG-0146).
+- **A halt was lost when the matching engine restarted, or failed over to the follower**, which was
+  never told of it, so the venue went on accepting orders that R-0023 says only a person may allow
+  again (BUG-0206).
 - **The order book's map lost an order while it migrated to a new table**, so a cancel of that
   order was refused as unknown and a second order with its ClOrdID was accepted. A slot the
   migration empties is now a tombstone (BUG-0205).

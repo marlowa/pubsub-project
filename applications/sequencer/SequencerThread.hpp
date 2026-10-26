@@ -34,10 +34,12 @@
 #include <pubsub_itc_fw/WalFollowing.hpp>
 #include <pubsub_itc_fw/WalHandedOverFollowers.hpp>
 
+#include "EngineAbsenceRule.hpp"
 #include "EngineCatchUpFromWal.hpp"
 #include "EngineOrderRouting.hpp"
 #include "EngineRecordFromWal.hpp"
 #include "EngineReportPosition.hpp"
+#include "EngineRoutedStamp.hpp"
 #include "GatewayIds.hpp"
 #include "KeptReportStore.hpp"
 #include "LogTailIndex.hpp"
@@ -151,6 +153,14 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // keeps the order connection to each instance while that connection is open, so a request to
     // catch up from either engine is always recognised (BUG-0108). See EngineOrderRouting.hpp.
     EngineOrderRouting engine_routing_;
+
+    // R-0117: when no matching engine could trade for longer than the venue allows, the leading sequencer writes a
+    // CancelBook command that halts trading if it cancels any order. EngineAbsenceRule decides when; the stamp beside the
+    // WAL says when this process last knew of an engine it routed to, for when the whole venue was down. Checked on
+    // engine_absence_timer_id_ about once a second.
+    EngineAbsenceRule engine_absence_{std::chrono::seconds(config_.absence_limit_seconds)};
+    EngineRoutedStamp engine_routed_stamp_;
+    static constexpr std::chrono::seconds engine_absence_check_interval{1};
 
     // ConnectionIDs of the outbound peer and arbiter connections.
     pubsub_itc_fw::ConnectionID peer_conn_id_;
@@ -355,6 +365,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::TimerID wal_snapshot_timer_id_{};
     pubsub_itc_fw::TimerID lease_tick_timer_id_{};
     pubsub_itc_fw::TimerID acknowledgement_watch_timer_id_{};
+    pubsub_itc_fw::TimerID engine_absence_timer_id_{};
 
     // WAL replication state (Slice 7).
     //
@@ -684,6 +695,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] size         How many bytes.
      */
     void write_own_command(int16_t inner_pdu_id, const uint8_t* bytes, size_t size);
+    // Stamps the time if an engine is routed to, tells engine_absence_ whether one is, and writes the command R-0117 asks
+    // for if it is due. Called on engine_absence_timer_id_, and when this instance takes the lead.
+    void check_engine_absence();
+    // Writes the CancelBook command that cancels every order on the book and halts trading if it cancels any (R-0117).
+    void write_absence_command(int64_t now_ns);
     // A promoted matching engine asking for the orders it inherited to be cancelled.
     void handle_cancel_book_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     // Adds an identifier to the record, reporting once if it is full.

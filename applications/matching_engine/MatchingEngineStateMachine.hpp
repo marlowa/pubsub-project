@@ -12,6 +12,7 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
 #include <fix_orders.hpp>
+#include <leader_follower.hpp>
 #include <matching_engine_test_events.hpp>
 
 #include "OrderBook.hpp"
@@ -35,13 +36,18 @@ enum class ReportIsRepeat { no, yes };
  *
  * A command is applied by the same code whichever it is, so that the book and the reports are the same.
  * These are the only differences. A command applied live is checked against the order of sequence
- * numbers and refused while trading is halted; a new order it puts on the book is replicated to the
- * follower engine and counted as processed. A command applied during a catch-up is not checked against
- * the order of sequence numbers, whose records are below the position by construction, nor refused
- * while halted, and its reports are marked as possible repeats. A command a catch-up delivers that this
- * engine has already acted on, by its sequence number, is not applied again.
+ * numbers; a new order it puts on the book is replicated to the follower engine and counted as
+ * processed. A command applied during a catch-up is not checked against the order of sequence numbers,
+ * whose records are below the position by construction, and its reports are marked as possible repeats.
+ * A command a catch-up delivers that this engine has already acted on, by its sequence number, is not
+ * applied again. A new order is refused while trading is halted whichever way it arrives, because the
+ * halt is set by a command at a position in the WAL, and an engine catching up meets it at the same
+ * position as the engine that applied it live.
  */
 enum class CommandSource { live, catch_up };
+
+/// Whether a CancelBook command also halts trading if it cancels any order. See MatchingEngineStateMachine::apply_cancel_book.
+enum class HaltIfOrdersCancelled { no, yes };
 
 /**
  * @brief Where the state machine's results go: the reports it produces, and the changes to the book that the
@@ -84,6 +90,16 @@ class MatchingEngineOutputsInterface {
      * @param[in] cl_ord_id       The ClOrdID of the order removed, which is the cancel's OrigClOrdID.
      */
     virtual void order_removed_from_book(int64_t sequence_number, const fix_common::SessionIdentity& session, std::string_view cl_ord_id) = 0;
+
+    /**
+     * @brief A live command halted trading or lifted a halt. Not called for a command applied during a catch-up.
+     *
+     * The follower engine does not apply commands, so it is told of a halt as it is told of a change to the book, and a
+     * follower promoted later refuses orders as the engine it follows does.
+     * @param[in] sequence_number The command's sequence number.
+     * @param[in] halted          Whether trading is now halted.
+     */
+    virtual void trading_halt_changed(int64_t sequence_number, bool halted) = 0;
 
     /**
      * @brief What became of an order or a cancel, for a test that asked to be told.
@@ -195,6 +211,7 @@ class MatchingEngineStateMachine {
         int64_t open_orders{0};  ///< how many orders the book held when the command was applied
         int64_t reports_sent{0}; ///< how many orders were cancelled, each with a report
         int64_t orders_kept{0};  ///< how many orders, placed after the command's position, stay on the book
+        bool halted{false};      ///< true when the command halted trading, because it asked to if it cancelled any order and it did
     };
 
     /**
@@ -213,15 +230,49 @@ class MatchingEngineStateMachine {
      * time or a trading date is a defect in the sequencer; it is applied all the same, with what it carries, because it
      * has no member to refuse it to, and reported at Error.
      *
+     * With halt_if_orders_cancelled, a command that cancels any order halts trading as well, which is what R-0117 asks
+     * of the venue after no engine could trade for too long: the orders were cancelled because their members were locked
+     * out of them, and trading stays halted until a person lifts it. One that cancels nothing leaves trading as it was,
+     * because no member was left holding an order it could not reach. The halt is recorded in the region before the
+     * position is published, so an engine that restarts later finds it there.
+     *
      * @param[in] orders_placed_through   The command's position: orders placed at or before it are cancelled.
+     * @param[in] halt_if_orders_cancelled Whether to halt trading if the command cancels any order.
      * @param[in] sequence_number         The command's sequence number.
      * @param[in] transact_time           The time the sequencer recorded for it, written on every report.
      * @param[in] trading_date            The trading date it carries.
      * @param[in] source                  Whether it is applied live or during a catch-up.
      * @return What it did.
      */
-    BookCancelledByCommand apply_cancel_book(int64_t orders_placed_through, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
-                                             CommandSource source);
+    BookCancelledByCommand apply_cancel_book(int64_t orders_placed_through, HaltIfOrdersCancelled halt_if_orders_cancelled, int64_t sequence_number,
+                                             int64_t transact_time, int32_t trading_date, CommandSource source);
+
+    /// What a TechnicalEvent command did.
+    struct TechnicalEventApplied {
+        bool applied{false};      ///< false when the command was not applied: one a catch-up delivers again, out of sequence, or for an older day
+        bool halt_changed{false}; ///< true when it halted trading that was not halted, or lifted a halt
+    };
+
+    /**
+     * @brief Applies a TechnicalEvent command from the WAL: the venue's phase, whether trading is halted, and the trading
+     * day (docs/venue/trading_phases.md).
+     *
+     * The event says the state the venue is now in, so the engine takes whether it is halted from it, whatever it was
+     * before. While halted, every live new order is refused and every cancel is still carried out. The phase is not
+     * acted on, because the venue has only the open phase until the start and the end of the trading day are built.
+     *
+     * An event whose trading day is older than the trading date of the record that carries it is refused and reported
+     * at Error, so that a halt declared for one day cannot stop trading on a later one. A command at or below the
+     * highest acted on is not applied, as for CancelBook. Nothing is sent to any member.
+     *
+     * @param[in] view            The event.
+     * @param[in] sequence_number The command's sequence number.
+     * @param[in] trading_date    The trading date of the record that carries it.
+     * @param[in] source          Whether it is applied live or during a catch-up.
+     * @return What it did.
+     */
+    TechnicalEventApplied apply_technical_event(const pubsub_itc_fw_app::TechnicalEventView& view, int64_t sequence_number, int32_t trading_date,
+                                                CommandSource source);
 
     /**
      * @brief Cancels every order on the book, reporting each to the member that placed it, and empties the book.
@@ -240,14 +291,14 @@ class MatchingEngineStateMachine {
      */
     BookCancelled cancel_every_order(int64_t sequence_number, int64_t first_place, int64_t transact_time, int32_t trading_date);
 
-    /// Halts trading: from now on every live new order is refused. Nothing lifts a halt.
+    /// Halts trading: from now on every live new order is refused, until a TechnicalEvent that is not halted.
     void halt() {
-        halted_ = true;
+        book_.set_halted(TradingHalted::yes);
     }
 
-    /// Whether trading is halted.
+    /// Whether trading is halted. Kept in the region with the orders, so it is as the commands left it.
     [[nodiscard]] bool halted() const {
-        return halted_;
+        return book_.halted();
     }
 
     /**
@@ -265,7 +316,11 @@ class MatchingEngineStateMachine {
 
   private:
     // Halts trading, without answering, for a command whose sequence number an identifier cannot hold.
-    void refuse_to_name(int64_t sequence_number);
+    void refuse_to_name(int64_t sequence_number, CommandSource source);
+
+    // Records whether trading is halted, before the command's position is published, and tells the follower engine
+    // when a live command changed it.
+    void set_halted(TradingHalted halted, int64_t sequence_number, CommandSource source);
 
     // The work of apply_new_order and apply_cancel, which catch what it throws.
     void apply_new_order_unguarded(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
@@ -400,10 +455,6 @@ class MatchingEngineStateMachine {
     // after_failure reads them to decide whether a failure can still be answered with a rejection.
     int64_t reports_for_command_{0};
     bool book_changed_by_command_{false};
-
-    // Trading is halted and the venue is not taking orders. R-0117 halts after a long absence; R-0023 requires a
-    // person to lift it.
-    bool halted_{false};
 
     // Reusable arena backing the echoed group element arrays of an order's acknowledgement (apply_new_order). Sized to
     // need, grown and retried, rather than a fixed size that could silently drop echoed groups.

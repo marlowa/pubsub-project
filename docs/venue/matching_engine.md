@@ -104,12 +104,19 @@ it is placed at the sequencer's current position without a catch-up. An order th
 and no engine had yet applied is not recovered by an engine that starts that way, and both sides log
 it.
 
-**A long absence cancels everything.** The engine writes the time into the file every so often while
-it is able to match. If a restarted engine finds that no engine was able to match for longer than
-`[order_book] absence_limit_seconds` (300 seconds in every environment), and the book holds orders,
-it cancels every order, reports each cancel to its member, and halts trading. Those orders were
-priced for a market that moved while their members could not cancel them. An empty book is not
-cancelled and does not halt.
+**A long absence cancels everything.** When no engine could trade for longer than the venue allows,
+the leading sequencer writes a `CancelBook` command into the WAL, and every engine that applies it
+cancels every order, reports each cancel to its member, and halts trading if it cancelled any (R-0117).
+Those orders were priced for a market that moved while their members could not cancel them. An empty
+book is not cancelled and does not halt. The engine does not measure the absence itself, so an engine
+that was down while the other traded cancels nothing. See [Sequencer](sequencer.md#sequencer_absence).
+
+**Whether trading is halted is kept in the file** with the orders, beside the recorded position, so
+an engine that restarts after a halt is still halted. It is set and cleared by commands: a `CancelBook`
+that asks to halt and cancels an order, and a `TechnicalEvent`, which says whether trading is halted.
+While halted, the engine refuses every new order, in the reply to that order, and still carries out
+every cancel. The engine that leads tells the follower of each change to the halt as it tells it of
+each change to the book.
 
 ## High availability
 
@@ -175,7 +182,6 @@ environment, primary first:
 | `[ha_timing] catch_up_retry_seconds` | How long to wait before asking for a catch-up again when no answer came, 15 seconds |
 | `[order_book] region_path`, `region_capacity` | The book's file, and the most orders it can hold |
 | `[order_book] initial_capacity`, `growth_report_threshold_bytes` | The size reserved for the map from order identity to record, and when its growth is reported |
-| `[order_book] absence_limit_seconds` | How long the venue may be unable to match before a restart cancels everything and halts |
 | `[order_book] open_orders_on_promotion` | `"cancel"` or `"keep"`, as above |
 | `[event_queue_pool]`, `[command_queue_pool]` | The pools the reactor's queues take their entries from |
 | `[reactor]`, `[logging]`, `[metrics]` | CPU pinning and waiting, log levels, and the Prometheus endpoint |

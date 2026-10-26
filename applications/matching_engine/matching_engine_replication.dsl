@@ -11,8 +11,10 @@
 # ============================================================
 
 enum BookUpdateType : i8 {
-    Add    = 1
-    Remove = 2
+    Add        = 1
+    Remove     = 2
+    HaltSet    = 3   # a command halted trading; the order fields are sent as zero/empty
+    HaltLifted = 4   # a command lifted a halt; the order fields are sent as zero/empty
 }
 
 # Sent by ME-primary to ME-secondary after every order book mutation.

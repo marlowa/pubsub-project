@@ -134,16 +134,6 @@ region_path = "${matching_engine_secondary_order_book_region_path}"
 # at once, not to the day's volume -- a cancelled or filled order releases its record.
 region_capacity = ${matching_engine_secondary_order_book_region_capacity}
 
-# How long the venue may be unable to match before the orders open at the time are
-# cancelled and trading halts. Measured from when matching stopped to when it resumes --
-# the whole absence, not the recovery step. Where nothing was open there is nothing stale,
-# so it resumes without halting.
-#
-# A trading decision rather than a measurement: it says how long a member's resting order
-# stays meaningful in this market. The hazard is not that an order is old, but that its
-# owner was locked out of it while the market moved. See R-0117 and R-0118.
-absence_limit_seconds = ${matching_engine_secondary_order_book_absence_limit_seconds}
-
 # What a promoted matching engine does with the orders it inherits.
 #
 #   "cancel" -- cancel every order that was open when leadership moved and tell the member

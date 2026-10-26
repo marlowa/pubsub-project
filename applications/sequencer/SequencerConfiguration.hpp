@@ -229,6 +229,22 @@ struct SequencerConfiguration {
     /** @brief How often the WAL snapshot is taken, in seconds. */
     int32_t snapshot_interval_seconds{30};
 
+    /**
+     * @brief How long the venue may be without a matching engine that can trade before the orders open at the time
+     *        are cancelled, each member told, and trading halted (R-0117). `[absence] absence_limit_seconds`.
+     *
+     * While this instance leads, it measures how long it has had no matching engine to route orders to, and when that
+     * is longer than this it writes a CancelBook command that cancels every order and halts trading if it cancels any
+     * (EngineAbsenceRule). Both instances of the pair must have the same figure.
+     *
+     * **This is a trading decision, not a measurement.** It says how long a member's resting order stays meaningful in
+     * this market. The hazard is not that the order is old -- an order that rested all morning in a working market is
+     * fine, because its owner could have cancelled it at any moment. The hazard is that its owner was locked out of it
+     * while the market moved. Five minutes by default, which is far longer than any failover and far shorter than a
+     * member would tolerate being unable to act.
+     */
+    int32_t absence_limit_seconds{300};
+
     // External WAL subscriber listener (MEP primary and secondary connect here)
 
     /** @brief Host address on which the external WAL subscriber listener binds. */

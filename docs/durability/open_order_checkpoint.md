@@ -3,8 +3,9 @@
 **Status: built.** All of it: The region itself, as `pubsub_itc_fw::MappedSlotStore`;
 the matching engine's book on top of it, as `matching_engine::OrderBook`, so an
 open order is written to the region as it is accepted and taken out of it as it is
-cancelled; reading the region back at startup; the warming; the absence rule; and
-what happens when the region cannot be used at all.
+cancelled; reading the region back at startup; the warming; the absence rule,
+measured by the leading sequencer; and what happens when the region cannot be used
+at all.
 
 Without this, the matching engine's set of open orders exists only in the running
 process, and when the process dies they are gone. Measured without the region, with
@@ -87,6 +88,8 @@ The region is a header followed by an array of fixed-size slots. Nothing else.
 | slot size, slot count | so the successor can find slot *i* without agreeing anything else |
 | published sequence number | 8 bytes, aligned. The only field written on the hot path |
 | free-list head | the index of the first free slot, or a sentinel |
+| record format | what the owner's records mean, as the owner numbers it |
+| owner's value | 8 bytes the owner keeps beside the published position. The matching engine keeps there whether trading is halted, written before the position of the command that set it is published |
 
 **A slot** holds one open order, and it is the same size whether it is live or
 free:
@@ -253,26 +256,33 @@ and not whether the order was recoverable: an order correctly recovered from the
 region, whose member was locked out of it for ten minutes, is exactly as dangerous
 as one that could not be recovered at all.
 
-**How the engine knows.** The region carries a wall-clock stamp saying when its
-owner was last able to match, written by a timer once a second. A successor
-subtracts it from the current time. That is the whole absence — noticing the
-death, restarting the process and rebuilding the book are all terms in it — and
-the engine works it out alone, because nothing in the availability design may
-depend on a supervisor being present.
+**How the venue knows.** The rule is about the venue, not one engine: an engine
+that is down while the other trades has locked nobody out. So the leading
+sequencer measures it, because it routes orders only to the engine that leads and
+so knows when it has none to route to, and when the absence passes the limit it
+writes the decision into the WAL as a command, which every engine applies at the
+same position ([deterministic_matching_engine.md](../availability/deterministic_matching_engine.md),
+section 4.2). When the whole venue was down, the sequencer measures from a
+wall-clock stamp it writes beside its WAL once a second while it knows of an
+engine it routes to. That is the whole absence — noticing the death, restarting
+the processes and rebuilding the book are all terms in it — and the sequencer
+works it out alone, because nothing in the availability design may depend on a
+supervisor being present.
 
-**The stamp is written by a timer and never by the order path.** A book that is
-idle because nothing is being traded is not a book nobody is tending. Stamping it
-on orders would read a ten-minute lull followed by a two-second restart as a
-twelve-minute absence, and cancel every member's orders for having been quiet.
-That is R-0118, and there is a test that a record write does not stamp it.
+**The stamp is written by a timer and never by the order path.** A venue that is
+idle because nothing is being traded is not a venue that cannot trade. Measuring
+from the last order would read a ten-minute lull followed by a two-second restart
+as a twelve-minute absence, and cancel every member's orders for having been
+quiet. That is R-0118, and there is a test that a quiet spell before the venue
+went down is not counted.
 
 **What happens.** Longer than the stated period, with orders open: cancel each,
 tell the member that placed it, halt. Longer than the stated period with nothing
 open: resume without halting, because nothing went stale, there is nobody to tell,
 and halting would buy an outage. That is R-0117.
 
-The period is `order_book.absence_limit_seconds`, five minutes in the environment
-templates. It is a trading decision rather than a measurement: it says how long a
+The period is `[absence] absence_limit_seconds` in the sequencer's configuration,
+five minutes in the environment templates. It is a trading decision rather than a measurement: it says how long a
 member's resting order stays meaningful in this market.
 
 **A halted venue refuses orders and says why**, in the reply to the order the

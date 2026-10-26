@@ -83,6 +83,7 @@ In the development environment. The preprod, prod and test-1 environment files u
 | `[commands] identifiers_reserved` | How many command identifiers the table that stops a command being sequenced twice is reserved for: 200 million. Read only with high availability on |
 | `[wal_subscriber] listen_port` | The listener for downstream subscribers |
 | `[wal] directory`, `segment_size`, `snapshot_interval_seconds` | Where the log is kept, the size of each segment file (4 MiB), and how often the snapshot is written (30 seconds) |
+| `[absence] absence_limit_seconds` | How long the venue may be without a matching engine that can trade before the leading sequencer writes the command that cancels the book and halts trading (R-0117): 300 seconds, from the environment's shared value, so that both instances agree. See [Sequencer](sequencer.md#sequencer_absence) |
 | `[metrics]` | The Prometheus endpoint, and the bucket bounds for the log write time and the order path histograms |
 | `[reactor]`, `[logging]`, `[event_queue_pool]`, `[command_queue_pool]` | CPU pinning and waiting, log levels, and the pools the reactor's queues take their entries from |
 

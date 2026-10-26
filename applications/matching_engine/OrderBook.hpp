@@ -20,6 +20,9 @@
 
 namespace matching_engine {
 
+/// Whether trading is halted. See OrderBook::set_halted.
+enum class TradingHalted { no, yes };
+
 /**
  * @brief The orders the venue is holding, in a form that outlives the process holding them.
  *
@@ -183,19 +186,23 @@ class OrderBook {
     }
 
     /**
-     * @brief Records that the engine was able to match at this wall-clock time.
+     * @brief Records whether trading is halted, in the region beside the published position.
      *
-     * Call it on a timer. Not from the accept or cancel path: a book that is idle because
-     * nothing is being traded is not a book nobody is tending, and stamping this on orders
-     * would read a quiet hour followed by a restart as an hour of absence.
+     * Halting is part of the state the commands build, like the orders, so it is kept where they are: an engine that
+     * restarts resumes from the published position and is not sent the command that halted trading again, so it finds
+     * the halt here instead. Call it before publishing the position of the command that set it. Kept in memory as well,
+     * so that a book with no region still answers halted().
      */
-    void mark_alive(int64_t wall_time_ns) {
-        store_.mark_alive(wall_time_ns);
+    void set_halted(TradingHalted halted) {
+        halted_ = halted == TradingHalted::yes;
+        if (store_.is_open()) {
+            store_.set_owner_value(halted_ ? 1 : 0);
+        }
     }
 
-    /** @brief When the previous owner was last able to match, or zero if it never said. */
-    [[nodiscard]] int64_t alive_at_ns() const {
-        return store_.alive_at_ns();
+    /** @brief Whether trading is halted, as last recorded in this process or found in the region when it was opened. */
+    [[nodiscard]] bool halted() const {
+        return halted_;
     }
 
     [[nodiscard]] size_t size() const {
@@ -293,6 +300,8 @@ class OrderBook {
     [[nodiscard]] OrderEntry* entry_at(SlotIndex slot);
 
     pubsub_itc_fw::MappedSlotStore store_;
+    // Whether trading is halted; see set_halted().
+    bool halted_{false};
 
     // From an order's identity to the record holding it.
     //

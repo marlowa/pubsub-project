@@ -148,6 +148,25 @@ engine asks again at once ([following_the_wal.md](../availability/following_the_
 A new leader also asks the leading engine, with `EnginePositionQuery`, which commands it has
 received, and sends it any command the log holds that the engine never got.
 
+## When no matching engine can trade {#sequencer_absence}
+
+R-0117: when no matching engine could trade for longer than the venue allows, the orders open at the
+time are cancelled, each member told, and trading halted. The rule is about the venue, not one engine,
+so the leading sequencer measures it, because it routes orders only to the engine that leads and so
+knows when it has none to route to. About once a second, and whenever it takes the lead, it notes
+whether it has an engine to route to (`EngineAbsenceRule`, `SequencerThread::check_engine_absence`).
+When it has had none for longer than `[absence] absence_limit_seconds` (300 seconds), it writes a
+`CancelBook` command into the WAL that cancels every order on the book and halts trading if it
+cancelled any. The command is written once for each absence, only by the leader, and never into an
+empty WAL. An engine that comes back applies it in its catch-up.
+
+When the whole venue was down, the sequencer measures at start-up from the last time it knew of an
+engine it routed to, which it writes about once a second into `engine_routed_at`, a file of eight
+bytes in the WAL's directory (`EngineRoutedStamp`), and from no earlier than the first record in the
+WAL. Both instances write it, since engines announce their role to both. When this instance is told
+another leads, the venue was not down as a whole, and what it measured at start-up is dropped. See
+[deterministic_matching_engine.md](../availability/deterministic_matching_engine.md), section 4.2.
+
 ---
 
 ## Downstream subscribers

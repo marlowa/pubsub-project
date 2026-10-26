@@ -25,8 +25,9 @@
  * that command's reports, and keys derived from the secret in --secret-file and the trading date the command carries.
  * That is what the engine does, so given the engines' secret it names every report as the engine did, whichever
  * engine led and however often it restarted (docs/availability/deterministic_matching_engine.md, sections 3 and 7.2).
- * A CancelBook command is applied as the engine applies it. A report the engine produced by a decision of its own,
- * not by a command in the WAL, has no command to replay, until phase 7 step 4 makes every such decision a command.
+ * A CancelBook or a TechnicalEvent command is applied as the engine applies it. A report the engine produced by a
+ * decision of its own, not by a command in the WAL, has no command to replay: the cancel of every order when the
+ * engine's region could not be used and the sequencer's record named every order (R-0123).
  *
  * The book's region is created in the work directory, which must be on a filesystem with room for it (about 250 bytes
  * for each record), never in /tmp, and is removed afterwards. --region-capacity must be the capacity the engine was
@@ -66,6 +67,7 @@
 namespace {
 
 using matching_engine::CommandSource;
+using matching_engine::HaltIfOrdersCancelled;
 using matching_engine::MatchingEngineOutputsInterface;
 using matching_engine::MatchingEngineStateMachine;
 using matching_engine::OrderBook;
@@ -213,6 +215,7 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
     void order_added_to_book(int64_t /*sequence_number*/, const fix_common::SessionIdentity& /*session*/, std::string_view /*cl_ord_id*/,
                              const OrderEntry& /*entry*/) override {}
     void order_removed_from_book(int64_t /*sequence_number*/, const fix_common::SessionIdentity& /*session*/, std::string_view /*cl_ord_id*/) override {}
+    void trading_halt_changed(int64_t /*sequence_number*/, bool /*halted*/) override {}
     void order_outcome(const fix_common::SessionIdentity& /*session*/, std::string_view /*cl_ord_id*/, pubsub_itc_fw_app::OrderOutcomeKind /*outcome*/,
                        ReportIsRepeat /*repeat*/, int64_t /*sequence_number*/, std::string_view /*orig_cl_ord_id*/) override {}
     void order_accepted() override {}
@@ -314,8 +317,18 @@ int main(int argc, char** argv) {
                             return;
                         }
                         ++commands;
-                        static_cast<void>(machine.apply_cancel_book(command.orders_placed_through, record_id, envelope.wall_time_ns,
-                                                                    envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
+                        static_cast<void>(machine.apply_cancel_book(
+                            command.orders_placed_through, command.halt_if_orders_cancelled ? HaltIfOrdersCancelled::yes : HaltIfOrdersCancelled::no, record_id,
+                            envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
+                    } else if (envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) {
+                        pubsub_itc_fw_app::TechnicalEventView event{};
+                        if (!pubsub_itc_fw_app::decode(event, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+                            ++undecodable;
+                            return;
+                        }
+                        ++commands;
+                        static_cast<void>(
+                            machine.apply_technical_event(event, record_id, envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
                     } else if (inner == pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) {
                         pubsub_itc_fw_app::NewOrderSingleView order{};
                         if (!pubsub_itc_fw_app::decode(order, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
