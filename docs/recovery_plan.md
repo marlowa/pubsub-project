@@ -386,6 +386,9 @@ availability scenarios pass.
 
 **Agreed** by Andrew on 24 October 2026.
 
+**Design:** [matching_engine_lockstep.md](availability/matching_engine_lockstep.md), written on 27 October 2026,
+awaiting Andrew's review and its five decisions.
+
 **For:** losing the leading matching engine costs a short pause and nothing else. The members' resting
 orders are still on the book afterwards.
 
