@@ -14,10 +14,13 @@
 #include <limits>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include <LeasePairNumbers.hpp>
 #include <OrderPathMetrics.hpp>
 #include <TradingDate.hpp>
 #include <lease_messages.hpp>
+
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -460,6 +463,10 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
             wal_follower_service_->on_connection_lost(id);
         }
         engine_servings_.erase(id.get_value());
+        if (id == engine_catch_up_connection_) {
+            engine_catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
+            engine_catch_up_progress_.reset();
+        }
         const bool carried_orders = engine_routing_.active() == id;
         engine_routing_.lost(id);
         if (carried_orders) {
@@ -1343,6 +1350,16 @@ void SequencerThread::SequencerWalFollowing::hand_over_falling_behind(const pubs
     owner_.pause_order_reading_for_hand_over();
 }
 
+void SequencerThread::SequencerWalFollowing::follower_progress(const pubsub_itc_fw::ConnectionID& follower, int64_t sent_through) {
+    // Only a matching engine that asked to be caught up: the recovery limit measures how long its catch-up will take.
+    const auto serving = owner_.engine_servings_.find(follower.get_value());
+    if (serving == owner_.engine_servings_.end() || !serving->second.answers_catch_up_request) {
+        return;
+    }
+    owner_.engine_catch_up_connection_ = follower;
+    owner_.engine_catch_up_progress_ = RecoveryLimitRule::CatchUpProgress{sent_through, owner_.released_through()};
+}
+
 void SequencerThread::SequencerWalFollowing::follower_cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no) {
     std::string which_follower = "the matching engine";
     if (follower == catch_up_connection_) {
@@ -2071,9 +2088,51 @@ void SequencerThread::check_engine_absence() {
         static_cast<void>(engine_routed_stamp_.write(now_ns));
     }
     engine_absence_.observe(engine_routed, now_ns);
-    if (engine_absence_.command_due(now_ns, role_ == pubsub_itc_fw_app::Role::leader, replicated_wal_->wal().last_seq_no() > 0)) {
+    const bool leads = role_ == pubsub_itc_fw_app::Role::leader;
+    const bool wal_holds_records = replicated_wal_->wal().last_seq_no() > 0;
+    if (engine_absence_.command_due(now_ns, leads, wal_holds_records)) {
         write_absence_command(now_ns);
     }
+    if (recovery_limit_.halt_due(now_ns, engine_absence_.absence_began_ns(), leads, wal_holds_records, engine_catch_up_progress_)) {
+        write_recovery_halt(now_ns);
+    }
+    if (engine_routed && recovery_limit_passed_) {
+        // An engine trades again. It applied the halt in its catch-up, so it refuses new orders as halted, and carries out
+        // cancels; the gateways go back to passing orders on, and each is answered by the engine.
+        recovery_limit_passed_ = false;
+        refresh_order_acceptance();
+    }
+}
+
+void SequencerThread::write_recovery_halt(int64_t now_ns) {
+    pubsub_itc_fw_app::TechnicalEvent event{};
+    // The venue has only the open phase until the start and the end of the trading day are built.
+    event.phase = pubsub_itc_fw_app::TradingPhase::Open;
+    event.halted = true;
+    event.trading_day = trading_date_for(now_ns);
+    event.reason = pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong;
+    // Measured, then encoded into a buffer of the size measured.
+    size_t bytes_written = 0;
+    size_t bytes_needed = 0;
+    static_cast<void>(pubsub_itc_fw_app::encode(event, nullptr, 0, bytes_written, bytes_needed));
+    std::vector<uint8_t> bytes(bytes_needed);
+    if (!pubsub_itc_fw_app::encode(event, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a TechnicalEvent needs {} bytes and could not be encoded", bytes_needed);
+        return;
+    }
+    const std::optional<int64_t> estimate_ns = recovery_limit_.estimate_ns();
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "SequencerThread: no matching engine has been able to trade for {} s, and {} -- longer together than the {} s the venue recovers by "
+               "itself. Writing a TechnicalEvent that halts trading on trading day {}, and telling the gateways to refuse orders; a person must lift "
+               "the halt (R-0023)",
+               (now_ns - engine_absence_.absence_began_ns()) / 1000000000,
+               estimate_ns.has_value() ? fmt::format("the catch-up under way will take about {} s more", *estimate_ns / 1000000000)
+                                       : std::string("no catch-up under way says when one will finish"),
+               config_.automatic_recovery_limit_seconds, event.trading_day);
+    recovery_limit_.halt_written();
+    recovery_limit_passed_ = true;
+    write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id), bytes.data(), bytes_written);
+    refresh_order_acceptance();
 }
 
 void SequencerThread::write_absence_command(int64_t now_ns) {
@@ -2735,6 +2794,10 @@ bool SequencerThread::refresh_order_acceptance() {
         degraded_for = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - deferral_began_);
         accepting = degraded_for < order_deferral_refusal_age && deferred_order_count_ < order_deferral_refusal_count;
     }
+    // Trading is halted because no engine could be trading within the longest recovery the venue does by itself.
+    if (recovery_limit_passed_) {
+        accepting = false;
+    }
     if (accepting == accepting_orders_) {
         return false;
     }
@@ -2747,8 +2810,9 @@ bool SequencerThread::refresh_order_acceptance() {
         // Name which threshold spoke. An operator reading this wants to know whether the venue
         // stopped because an outage ran long or because a burst filled it, and those call for
         // different responses.
-        const char* const because = degraded_for >= order_deferral_refusal_age ? "the outage has run longer than a failover plausibly takes"
-                                                                               : "more orders are deferred than a member should be left wrong about";
+        const char* const because = recovery_limit_passed_ ? "no matching engine could be trading within the longest recovery the venue does by itself"
+                                    : degraded_for >= order_deferral_refusal_age ? "the outage has run longer than a failover plausibly takes"
+                                                                                 : "more orders are deferred than a member should be left wrong about";
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "SequencerThread: no longer accepting orders -- {} ({} order(s) deferred over {}s, thresholds {}s / {}). Deferred orders are still "
                    "WAL-committed and recovered on promotion; what stops is taking on new ones the venue cannot act upon",
@@ -2777,6 +2841,9 @@ void SequencerThread::send_order_acceptance(const pubsub_itc_fw::ConnectionID& c
     state.degraded_for_seconds =
         deferring_orders_ ? static_cast<int32_t>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - deferral_began_).count())
                           : 0;
+    state.reason = accepting_orders_        ? pubsub_itc_fw_app::OrderAcceptanceReason::Accepting
+                   : recovery_limit_passed_ ? pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong
+                                            : pubsub_itc_fw_app::OrderAcceptanceReason::NoMatchingEngine;
     state.has_leader_epoch = true;
     state.leader_epoch = current_epoch();
     send_pdu(conn_id, pubsub_itc_fw_app::OrderAcceptance::message_pdu_id, 0, state);
@@ -3922,6 +3989,10 @@ void SequencerThread::serve_engine(const pubsub_itc_fw::ConnectionID& engine, in
 }
 
 void SequencerThread::engine_handed_over(const pubsub_itc_fw::ConnectionID& engine, int64_t through, int64_t records_sent, EngineServing serving) {
+    if (engine == engine_catch_up_connection_) {
+        engine_catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
+        engine_catch_up_progress_.reset();
+    }
     note_handed_over_through(through);
     report(pubsub_itc_fw_app::EngineHandedOver{engine.get_value(), through, records_sent, serving.answers_catch_up_request});
     if (!serving.answers_catch_up_request) {

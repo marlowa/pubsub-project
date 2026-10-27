@@ -39,9 +39,11 @@
 > three operator messages decision 8 keeps, the scenarios still pass
 > ([test_events.md](availability/test_events.md), section 4.17). Andrew reviewed it on 20 October 2026. In the
 > review of phases 7 and 8 the same day, Andrew agreed that phase 7 goes ahead as written. He agreed phase 8 on
-> 24 October 2026, once it was written out in full. Phase 7's design,
-> [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), was decided on 25 October 2026,
-> and the first two of its six steps are built.
+> 24 October 2026, once it was written out in full. Phase 7 is finished: the matching engine takes no decision
+> alone, every decision is a command in the WAL, and both engines run on the same WAL give the reports a replay gives
+> ([deterministic_matching_engine.md](availability/deterministic_matching_engine.md)); a catch-up from far back sends
+> no report the WAL already holds ([far_back_catch_up.md](availability/far_back_catch_up.md)). Andrew closed it on
+> 27 October 2026. Phase 8 is next.
 
 ## In one page
 
@@ -316,8 +318,8 @@ proposal, which Andrew supplied.
 **Reviewed.** Phases 7 and 8 change how the engine pair works and are a substantial design project, so
 Andrew reviewed whether they still serve the guarantees the venue is to give before either is designed. On
 20 October 2026 he agreed that phase 7 goes ahead as written, and on 24 October 2026 he agreed phase 8. The
-question of a limit on automatic recovery, recorded in [BUG-0176](bug_list.md#bug_0176), is designed here with
-the measurement of the absence rule.
+limit on automatic recovery, recorded in [BUG-0176](bug_list.md#bug_0176), is designed and built with the
+measurement of the absence rule, in section 5 of [far_back_catch_up.md](availability/far_back_catch_up.md).
 
 **For:** a matching engine that, given the same commands in the same order, always produces the same
 book and the same reports.
@@ -371,8 +373,9 @@ scenario 80 among them, whose WAL holds 550,000 records. [BUG-0176](bug_list.md#
 [far_back_catch_up.md](availability/far_back_catch_up.md): a matching engine catching up from far back sends no report
 the WAL already holds, and a catch-up of 1.21 million records took 2.50 seconds with the leading sequencer leading
 throughout. With it, the full suites from fresh WALs on 27 October 2026 again passed every scenario, 84 of 84 and 27
-of 27. The finish condition is met, and the phase awaits Andrew's review. The limit on automatic recovery, section 5
-of the same design, is built next, as the halt that [BUG-0197](bug_list.md#bug_0197) needs.
+of 27. The finish condition is met, and Andrew closed the phase on 27 October 2026. The limit on automatic recovery, section 5
+of the same design, is built, as the halt that [BUG-0197](bug_list.md#bug_0197) needs, and the full suites passed with
+it: 86 of 86 and 28 of 28.
 Decisions 6, 7 and 8 of the design, which step 4 needed, were taken on 25 October 2026, and decision 9 on 26 October
 2026.
 

@@ -75,6 +75,9 @@ absence_limit_seconds = 7
 [catch_up]
 send_every_report = true
 
+[recovery]
+automatic_recovery_limit_seconds = 12
+
 [logging]
 applog_level = "info"
 syslog_level = "critical"
@@ -351,6 +354,7 @@ TEST(SequencerConfigurationLoaderTest, ReadsHowLongTheVenueMayBeWithoutAMatching
     const auto config = load_with_gateways(one_gateway);
     EXPECT_EQ(config.absence_limit_seconds, 7);
     EXPECT_TRUE(config.send_every_report);
+    EXPECT_EQ(config.automatic_recovery_limit_seconds, 12);
 }
 
 TEST(SequencerConfigurationLoaderTest, RejectsAnAbsenceLimitBelowOneSecond) {

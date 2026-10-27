@@ -3732,10 +3732,11 @@ the member.
 **What happens now.** While no matching engine is reachable, the sequencer goes on taking orders. It writes
 each to the WAL and holds it without an answer. It refuses new orders only once the outage has lasted 45
 seconds or it holds 250,000 orders (`order_deferral_refusal_age` and `order_deferral_refusal_count`,
-constants in `SequencerThread.hpp`). When an engine leads again, it catches up from the WAL and answers every
-order that was held, each report marked as a possible repeat (scenario 53). Only if no engine could match for
-longer than `order_book_absence_limit_seconds`, 300 seconds in production, does the engine cancel every open
-order, tell each member, and halt.
+constants in `SequencerThread.hpp`), or once no engine could be trading within the longest recovery the venue does by
+itself, `[recovery] automatic_recovery_limit_seconds`, 10 seconds, when it also halts trading (part 2 below). When an
+engine leads again, it catches up from the WAL and answers every order that was held, each report marked as a possible
+repeat (scenario 53). Only if no engine could match for longer than `[absence] absence_limit_seconds`, 300 seconds in
+production, does the sequencer write a command that cancels every open order, tells each member, and halts.
 
 The gap happens whenever both engines are unavailable at once. The case that prompted this entry: the
 leading engine dies, the other takes the lead, and the dead one is restarted by its launcher; while it reads
@@ -3774,6 +3775,13 @@ decision, and `trading_phases.md` leaves it open on purpose.
 message, the table of what each phase allows, and their implementation. A way to declare and lift a halt
 ([BUG-0065](#bug_0065)). And rejecting a command through the WAL, which phases 7 and 8 of the
 [recovery plan](recovery_plan.md) build for BUG-0193. It is designed in phase 8.
+
+**Built so far.** Part 2, with the limit on automatic recovery, as one rule
+([far_back_catch_up.md](availability/far_back_catch_up.md), section 5): past
+`[recovery] automatic_recovery_limit_seconds`, while no engine can trade, the leading sequencer writes a
+`TechnicalEvent` that halts trading, with reason `RecoveryTooLong`, and the gateways refuse new orders and cancels
+saying the venue is halted while it recovers (scenarios 85 and 86). Parts 1, 3 and 4 are not built: the orders held
+before the halt are still answered only once an engine leads, and the 45-second limit remains.
 
 **Principles.** V6: every command a gateway accepted is answered; V2: the WAL is the record.
 

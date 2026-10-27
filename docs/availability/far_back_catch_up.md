@@ -217,8 +217,9 @@ their state, and never from further back than the start of the trading day.
 **The leading sequencer measures it**, alongside the absence rule (`EngineAbsenceRule`), once a second, for the same
 reason: the rule is about the venue, and the leading sequencer is the process that knows whether any engine can trade,
 because it routes orders only to an engine that leads (`EngineOrderRouting`). It also knows how far the catch-up has
-got, because its reading thread is sending it: the reading thread publishes, for each follower it serves, the last
-record it has sent, as it already publishes its other positions. Sending is paced by what the engine's connection
+got, because its reading thread is sending it: about every 100 milliseconds while it serves a follower, the reading
+thread tells the sequencer's thread the last record it has sent and the last it is serving up to (a `Progress`
+report, passed to `WalFollowerEventsInterface::follower_progress`). Sending is paced by what the engine's connection
 takes, so the rate at which that position moves is the rate at which the engine applies records, to within what the
 connection's buffers hold.
 
@@ -231,13 +232,22 @@ time no engine has led exceeds the limit with no estimate, for instance because 
 **What it does**, once for each absence:
 
 1. It tells every gateway the venue is not accepting orders (`OrderAcceptance` with `accepting` false), which the
-   gateways already act on: they refuse new orders and cancels at once, with a reason. `OrderAcceptance` gains a
-   reason, so that the member is told the venue is recovering and halted, not only "no".
+   gateways already act on: they refuse new orders and cancels at once, with a reason. `OrderAcceptance` carries a
+   reason, `OrderAcceptanceReason`, so that the member is told the venue is recovering and halted, not only that no
+   matching engine is available. The FIX and binary gateways refuse a new order with "Venue is halted: no matching
+   engine could be trading within the time the venue recovers by itself", and a cancel with "Venue is halted while it
+   recovers and cannot process cancels now. The order is unchanged".
 2. It writes a `TechnicalEvent` that halts trading, with a new reason `RecoveryTooLong`, as the sequencer already does
    for `CannotAccountForBook`. Every engine applies it at its position, so when the engine has caught up it does not
    resume trading by itself, and an engine that replays the WAL later meets the halt at the same place.
 3. Nothing is cancelled. The absence rule still cancels every open order if no engine can trade for longer than its
    own limit (300 seconds in production); the recovery limit is shorter, and halts only.
+
+**This is built.** `RecoveryLimitRule` decides and `SequencerThread::check_engine_absence` acts, beside the absence
+rule. The rule estimates the time still to come from how far the reading thread moved over at least the last second,
+and acts once the time so far and that estimate together pass the limit, or the time so far alone passes it. The
+gateways are told the venue is accepting again once an engine is routed to: the engine applied the halt in its
+catch-up, so it refuses new orders as halted, and each refusal comes from it.
 
 Orders that reached the sequencer before the halt are before it in the WAL, and are applied when the engine reaches
 them, so each is answered then. Trading resumes when a person lifts the halt, through the operator's means of doing
@@ -293,6 +303,15 @@ a catch-up from the start of such a day, at about 100 million commands, takes ab
    the test, and requires the gateways to refuse orders with the reason, a halt in the WAL with reason
    `RecoveryTooLong`, and the engine, once caught up, to refuse new orders as halted. A second scenario with a catch-up
    shorter than the limit requires no halt.
+
+   **Built.** `RecoveryLimitRuleTest` has eight tests; the one that requires a catch-up that will not finish in time
+   to be halted a second in fails when the estimate is ignored. Scenario 85 keeps the engine down for 8 seconds with a
+   limit of 2, and requires the FIX gateway to report that it was told the venue is halted for recovery, the
+   restarted engine to halt with reason `RecoveryTooLong` and cancel nothing, and an order sent afterwards to be
+   refused; with a limit of 30 it fails, because the gateway is never told. Scenario 86 kills the leading engine with
+   the deployed limit of 10 seconds, and requires the failover to finish with no halt; with a limit of 1 second it
+   fails, because the venue halts and the orders sent after the failover are refused. Both full suites passed on 27
+   October 2026: 86 of 86 with the primary engine leading first and 28 of 28 with the secondary first.
 
 Each step ends with both full suites from fresh WALs, as phase 7's steps have.
 

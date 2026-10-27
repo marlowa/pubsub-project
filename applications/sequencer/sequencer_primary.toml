@@ -75,6 +75,13 @@ absence_limit_seconds = ${shared_absence_limit_seconds}
 # See docs/availability/far_back_catch_up.md, section 2.
 send_every_report = false
 
+[recovery]
+# The longest the venue recovers by itself while no matching engine can trade. When the time
+# without one, added to how long the catch-up under way will still take, passes this, the leading
+# sequencer halts trading, tells the gateways to refuse orders with the reason, and leaves a person
+# to decide when trading resumes. See docs/availability/far_back_catch_up.md, section 5.
+automatic_recovery_limit_seconds = ${shared_automatic_recovery_limit_seconds}
+
 [ha]
 ha_enabled                  = ${ha_enabled}
 instance_id                 = 1

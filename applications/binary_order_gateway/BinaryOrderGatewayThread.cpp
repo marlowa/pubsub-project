@@ -864,6 +864,11 @@ std::string_view BinaryOrderGatewayThread::venue_refusal(fix_common::ThrottledCo
     if (!sequencer_connected) {
         return "Sequencer unavailable";
     }
+    if (!venue_accepting_orders_ && venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong) {
+        return command == fix_common::ThrottledCommand::Place
+                   ? "Venue is halted: no matching engine could be trading within the time the venue recovers by itself"
+                   : "Venue is halted while it recovers and cannot process cancels now. The order is unchanged";
+    }
     if (!venue_accepting_orders_) {
         return command == fix_common::ThrottledCommand::Place ? "Venue is not accepting orders: no matching engine available"
                                                               : "Venue cannot process cancels: no matching engine available. The order is unchanged";
@@ -892,14 +897,21 @@ void BinaryOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::Even
             send_unanswered_commands_again(view.leader_epoch);
         }
     }
-    if (view.accepting == venue_accepting_orders_) {
+    if (view.accepting == venue_accepting_orders_ && view.reason == venue_refusal_reason_) {
         // Logged on the change, not on each arrival: the sequencer repeats this while the venue is degraded.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "BinaryOrderGatewayThread: OrderAcceptance unchanged accepting={}", view.accepting);
         return;
     }
     venue_accepting_orders_ = view.accepting;
+    venue_refusal_reason_ = view.reason;
     if (view.accepting) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: the venue is accepting orders again");
+        return;
+    }
+    if (view.reason == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "BinaryOrderGatewayThread: the venue is halted -- no matching engine could be trading within the time it recovers by itself. "
+                       "New orders and cancels are refused, saying so, until a matching engine trades again");
         return;
     }
     // Warning rather than Error, as in the FIX gateway: nothing is lost, and refusing is the

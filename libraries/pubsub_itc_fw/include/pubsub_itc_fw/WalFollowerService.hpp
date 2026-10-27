@@ -62,6 +62,13 @@ class WalFollowerEventsInterface {
     virtual void hand_over_falling_behind(const ConnectionID& follower) = 0;
 
     /**
+     * @brief How far the reading thread has got in catching a follower up: it has sent every record up to @p sent_through.
+     *        Told about every 100 milliseconds while the follower is being caught up, so that the application can tell
+     *        how fast the follower takes records, which is how fast the connection lets them be sent.
+     */
+    virtual void follower_progress(const ConnectionID& follower, int64_t sent_through) = 0;
+
+    /**
      * @brief A follower cannot be served: record @p damaged_seq_no in the WAL could not be read, so it may
      *        have been one the follower needed. The follower is not handed over, and is no longer served;
      *        if it asks again from a position before that record, the same happens again.

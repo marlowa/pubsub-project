@@ -44,6 +44,7 @@
 #include "LogTailIndex.hpp"
 #include "LoggedCommandIdentifiers.hpp"
 #include "LoggedCommandIdentifiersBuilder.hpp"
+#include "RecoveryLimitRule.hpp"
 #include "ReportsHeldForUnknownSessions.hpp"
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
@@ -160,6 +161,19 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     EngineAbsenceRule engine_absence_{std::chrono::seconds(config_.absence_limit_seconds)};
     EngineRoutedStamp engine_routed_stamp_;
     static constexpr std::chrono::seconds engine_absence_check_interval{1};
+
+    // The longest recovery the venue does by itself: while no engine is routed to, when that time and how long the
+    // catch-up under way will still take together pass the limit, the leading sequencer halts trading with a
+    // TechnicalEvent and tells the gateways to refuse orders with the reason (docs/availability/far_back_catch_up.md,
+    // section 5). RecoveryLimitRule decides when, given the absence engine_absence_ measures and the progress of the
+    // engine's catch-up, which the reading thread reports. Checked with the absence.
+    RecoveryLimitRule recovery_limit_{std::chrono::seconds(config_.automatic_recovery_limit_seconds)};
+    // How far the catch-up of a matching engine that asked to be caught up has been sent, while one is under way.
+    std::optional<RecoveryLimitRule::CatchUpProgress> engine_catch_up_progress_;
+    pubsub_itc_fw::ConnectionID engine_catch_up_connection_{};
+    // Whether the halt for passing the limit has been written in the present absence; the gateways are told the venue is
+    // not accepting, with the reason, until an engine is routed to again.
+    bool recovery_limit_passed_{false};
 
     // ConnectionIDs of the outbound peer and arbiter connections.
     pubsub_itc_fw::ConnectionID peer_conn_id_;
@@ -302,6 +316,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         void follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through, int64_t records_sent,
                                   pubsub_itc_fw::WalPosition resume_at) override;
         void hand_over_falling_behind(const pubsub_itc_fw::ConnectionID& follower) override;
+        void follower_progress(const pubsub_itc_fw::ConnectionID& follower, int64_t sent_through) override;
         void follower_cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no) override;
         void declined_while_not_leading(const pubsub_itc_fw::ConnectionID& follower) override;
         void reading_stopped() override;
@@ -713,6 +728,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void check_engine_absence();
     // Writes the CancelBook command that cancels every order on the book and halts trading if it cancels any (R-0117).
     void write_absence_command(int64_t now_ns);
+    // Writes the TechnicalEvent that halts trading because no engine could be trading within the longest recovery the
+    // venue does by itself, and tells the gateways the venue is not accepting orders, with the reason.
+    void write_recovery_halt(int64_t now_ns);
     // A matching engine about to lead that cannot account for the orders the venue holds, asking for trading to be halted.
     void handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     // A promoted matching engine asking for the orders it inherited to be cancelled.

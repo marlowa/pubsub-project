@@ -703,10 +703,18 @@ end
 #  expected to reconcile.
 # ------------------------------------------------------------
 
+# Why the venue is not accepting orders, sent with OrderAcceptance so that a gateway can tell the member.
+enum OrderAcceptanceReason : i8 {
+    Accepting = 0          # the venue is accepting orders
+    NoMatchingEngine = 1   # no matching engine can take orders, and the outage has run long or many orders are waiting
+    RecoveryTooLong = 2    # no matching engine could be trading within the longest recovery the venue does by itself; trading is halted
+}
+
 message OrderAcceptance (id=127, version=1)
     bool accepting                  # false: the venue will not take new orders it cannot process
     i64  deferred_order_count       # orders accepted and not yet forwarded, at send time
     i32  degraded_for_seconds       # how long the venue has been unable to forward, 0 when accepting
+    OrderAcceptanceReason reason    # why the venue is not accepting, or Accepting when it is
     # The epoch of the leadership that sent this. A gateway that sees a higher epoch than any before
     # knows a new instance leads, and sends it again every command it is still holding unanswered
     # (docs/availability/commands_during_a_change_of_leader.md, section 3.2).
@@ -777,6 +785,7 @@ enum TradingPhase : i8 {
 enum TechnicalEventReason : i8 {
     CannotAccountForBook = 1   # a matching engine could not say what orders the venue held, so trading halts without cancelling (R-0123)
     LiftedByOperator = 2       # a person lifted a halt (R-0023)
+    RecoveryTooLong = 3        # no matching engine could be trading within the longest recovery the venue does by itself, so a person decides when trading resumes
 }
 
 # ------------------------------------------------------------

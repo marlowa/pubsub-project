@@ -82,6 +82,7 @@ add_executable(sequencer_tests
         tests/SequencerConfigurationLoaderTest.cpp
         tests/EngineOrderRoutingTest.cpp
         tests/EngineAbsenceRuleTest.cpp
+        tests/RecoveryLimitRuleTest.cpp
         tests/KeptReportStoreTest.cpp
         tests/ReportsHeldForUnknownSessionsTest.cpp
         tests/LoggedCommandIdentifiersTest.cpp

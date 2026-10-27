@@ -103,6 +103,11 @@ bool WalFollowerService::on_inter_thread_message(const EventMessage& message) {
     }
     Follower& follower = found->second;
 
+    if (report->kind == WalReadingReport::Kind::Progress) {
+        events_.follower_progress(follower.connection, report->reached_seq_no);
+        return true;
+    }
+
     // A damaged record: never handed over. The reading thread has stopped serving the follower already.
     if (report->kind == WalReadingReport::Kind::Damaged) {
         const ConnectionID connection = follower.connection;

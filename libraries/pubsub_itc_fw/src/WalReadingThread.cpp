@@ -203,6 +203,17 @@ void WalReadingThread::send_batch(Follower& follower) {
     }
 
     if (sent_in_batch == records_per_batch || examined_in_batch == records_examined_per_batch) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - follower.progress_reported_at >= progress_interval) {
+            follower.progress_reported_at = now;
+            auto progress = std::make_unique<WalReadingReport>();
+            progress->kind = WalReadingReport::Kind::Progress;
+            progress->connection = follower.connection;
+            progress->reached_seq_no = follower.last_sent_seq_no;
+            progress->records_sent = follower.records_sent;
+            progress->serving = follower.serving;
+            report(std::move(progress));
+        }
         // There may be more: send it once the connection has taken this batch. A batch that examined
         // many records and sent few, because the converter passes over most of them, yields the same
         // way, so that no one follower holds this thread for long.

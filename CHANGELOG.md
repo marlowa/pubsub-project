@@ -10,7 +10,7 @@ change in any release.
 ## [Unreleased]
 
 Development continues after 0.4.0. New features are frozen while the design is restored, phase by
-phase, under `docs/recovery_plan.md`; phases 1 to 6 of that plan are finished. The entries below
+phase, under `docs/recovery_plan.md`; phases 1 to 7 of that plan are finished. The entries below
 describe the venue as it now is.
 
 ### Added
@@ -103,6 +103,14 @@ describe the venue as it now is.
   glossaries package and its output cannot say whether it succeeded.
 - **The design for publishing to an external messaging system** (OAR),
   `docs/pubsub/oar_external_stream.md`. Not built.
+- **A limit on how long the venue recovers by itself.** While no matching engine can trade, the
+  leading sequencer adds to the time it has had none how long the catch-up under way will still take,
+  from how fast the reading thread is sending it. When the two together pass
+  `[recovery] automatic_recovery_limit_seconds`, 10 seconds, it writes a `TechnicalEvent` that halts
+  trading, with the new reason `RecoveryTooLong`, and tells the gateways, whose `OrderAcceptance`
+  now carries a reason; they refuse new orders and cancels saying the venue is halted while it
+  recovers. Nothing is cancelled, and a person must lift the halt. This is the halt BUG-0197 asks
+  for; scenarios 85 and 86 test it (`docs/availability/far_back_catch_up.md`, section 5).
 
 ### Changed
 

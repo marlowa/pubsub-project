@@ -53,6 +53,9 @@ class RecordingEvents : public WalFollowerEventsInterface {
     void hand_over_falling_behind(const ConnectionID& follower) override {
         falling_behind.push_back(follower.get_value());
     }
+    void follower_progress(const ConnectionID& follower, int64_t sent_through) override {
+        progress.emplace_back(follower.get_value(), sent_through);
+    }
     void declined_while_not_leading(const ConnectionID& follower) override {
         declined.push_back(follower.get_value());
     }
@@ -66,6 +69,7 @@ class RecordingEvents : public WalFollowerEventsInterface {
     std::vector<std::pair<int, int64_t>> handed_over;
     std::vector<int64_t> handed_over_records_sent;
     std::vector<int> falling_behind;
+    std::vector<std::pair<int, int64_t>> progress;
     std::vector<int> declined;
     int stopped{0};
     std::vector<std::pair<int, int64_t>> cannot_be_served;
@@ -334,6 +338,28 @@ TEST_F(WalFollowerServiceTest, AFollowerServedPastADamagedRecordIsNeverHandedOve
     ASSERT_TRUE(service_.on_inter_thread_message(reached(follower_connection, 20, 15)));
     EXPECT_FALSE(service_.is_handed_over(follower_connection));
     EXPECT_TRUE(links_.caught_up.empty());
+}
+
+// How far a follower has been sent is passed on while it is being caught up, and not from a serving that has ended.
+TEST_F(WalFollowerServiceTest, ProgressIsPassedOnForTheServingUnderWayOnly) {
+    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter, no_application_value);
+    auto progress = std::make_unique<WalReadingReport>();
+    progress->kind = WalReadingReport::Kind::Progress;
+    progress->connection = follower_connection;
+    progress->reached_seq_no = 12;
+    progress->serving = 1;
+    ASSERT_TRUE(service_.on_inter_thread_message(carry(ThreadID{9}, std::move(progress))));
+    ASSERT_EQ(events_.progress.size(), 1U);
+    EXPECT_EQ(events_.progress[0], (std::pair<int, int64_t>{7, 12}));
+    EXPECT_FALSE(service_.is_handed_over(follower_connection)) << "progress is not a hand-over";
+
+    auto earlier = std::make_unique<WalReadingReport>();
+    earlier->kind = WalReadingReport::Kind::Progress;
+    earlier->connection = follower_connection;
+    earlier->reached_seq_no = 14;
+    earlier->serving = 7; // not the serving under way
+    ASSERT_TRUE(service_.on_inter_thread_message(carry(ThreadID{9}, std::move(earlier))));
+    EXPECT_EQ(events_.progress.size(), 1U);
 }
 
 TEST_F(WalFollowerServiceTest, AMessageThatIsNotAReportIsLeftForTheApplication) {

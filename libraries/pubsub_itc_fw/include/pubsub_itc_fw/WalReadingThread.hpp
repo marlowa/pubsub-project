@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -59,6 +60,8 @@ class WalReadingThread : public ApplicationThread {
     static constexpr int records_per_batch = 256;
     /// The most records read for one follower in one batch, sent or passed over by its converter.
     static constexpr int records_examined_per_batch = 4096;
+    /// How often the owning thread is told how far a follower being caught up has been sent.
+    static constexpr std::chrono::milliseconds progress_interval{100};
     /// The most segments read back from the newest to find the application's value for WalFollowStarted.
     static constexpr int application_value_segments = 64;
 
@@ -109,6 +112,8 @@ class WalReadingThread : public ApplicationThread {
         size_t held_size{0};
         /// Where the held record ends in the WAL.
         WalPosition held_end{};
+        /// When the owning thread was last told how far this follower has been sent.
+        std::chrono::steady_clock::time_point progress_reported_at{};
         /// A position before which the follower holds or has been sent every record: the end of the last
         /// record read for it and not held, or where reading started. Reported when the follower is handed over.
         WalPosition resume_at{};

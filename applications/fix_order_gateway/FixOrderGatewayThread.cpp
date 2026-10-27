@@ -1634,7 +1634,7 @@ void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMe
         send_waiting_replay_requests_again(view.leader_epoch);
     }
 
-    if (view.accepting == venue_accepting_orders_) {
+    if (view.accepting == venue_accepting_orders_ && view.reason == venue_refusal_reason_) {
         // The sequencer repeats this while the venue is degraded, so most arrivals say nothing
         // new. Logged on the change, not on the arrival -- the same rule the heartbeats follow,
         // and for the same reason: a line per arrival buries the one that matters.
@@ -1643,9 +1643,17 @@ void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMe
         return;
     }
     venue_accepting_orders_ = view.accepting;
+    venue_refusal_reason_ = view.reason;
+    report(pubsub_itc_fw_app::OrderAcceptanceChanged{view.accepting, view.reason == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong});
 
     if (view.accepting) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: the venue is accepting orders again");
+        return;
+    }
+    if (view.reason == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "FixOrderGatewayThread: the venue is halted -- no matching engine could be trading within the time it recovers by itself. New "
+                       "orders and cancels are refused, saying so, until a matching engine trades again");
         return;
     }
     // Warning rather than Error: nothing is lost and nothing has failed. The venue has stopped
@@ -1999,7 +2007,10 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "FixOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused -- the venue is not accepting orders ({} refused so far)",
                    session.conn_id.get_value(), cl_ord_id, orders_refused_);
-        send_reject_execution_report(session, msg, "Venue is not accepting orders: no matching engine available");
+        send_reject_execution_report(session, msg,
+                                     venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong
+                                         ? "Venue is halted: no matching engine could be trading within the time the venue recovers by itself"
+                                         : "Venue is not accepting orders: no matching engine available");
         return;
     }
 
@@ -2206,7 +2217,10 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
                    "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused -- the venue is not accepting orders "
                    "({} cancels refused so far)",
                    session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id, cancels_refused_);
-        send_order_cancel_reject(session, msg, "Venue cannot process cancels: no matching engine available. The order is unchanged");
+        send_order_cancel_reject(session, msg,
+                                 venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong
+                                     ? "Venue is halted while it recovers and cannot process cancels now. The order is unchanged"
+                                     : "Venue cannot process cancels: no matching engine available. The order is unchanged");
         return;
     }
 

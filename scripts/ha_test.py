@@ -1029,6 +1029,10 @@ class Scenario(NamedTuple):
     # deployed figure is 300s, which no test is going to wait out; the scenario that exercises
     # the rule shortens it and keeps the engine down past it.
     absence_limit_seconds: int = 300
+    # The longest the venue recovers by itself while no matching engine can trade, written into the deployed
+    # configs before launch. The deployed figure is 10s, which many scenarios exceed on purpose, keeping an engine
+    # down to see what the venue does meanwhile; they get 600s, so that the halt comes only in the scenarios about it.
+    automatic_recovery_limit_seconds: int = 600
     # What a promoted matching engine does with the orders it inherits, written into the
     # deployed configs before launch: "cancel" or "keep". The deployed default is "cancel",
     # because keeping the book rests on a catch-up nothing verifies yet (R-0101, BUG-0074).
@@ -1039,6 +1043,13 @@ class Scenario(NamedTuple):
     # restarting it, then assert that it cancelled every order it recovered, told each member,
     # and halted. See run_scenario's "long absence" block.
     assert_absence_halt: bool = False
+    # When True, the matching engine is kept down for longer than automatic_recovery_limit_seconds before it is restarted:
+    # assert that the leading sequencer halted trading with a TechnicalEvent, that a gateway refused an order meanwhile
+    # saying the venue is halted, and that the restarted engine halted and cancels nothing. See run_scenario's "recovery
+    # limit" block.
+    assert_recovery_halt: bool = False
+    # When True, assert that no halt for the recovery limit was written: a failover finishes well within the limit.
+    assert_no_recovery_halt: bool = False
     # When True, damage the matching engine's open-order region before restarting it, and
     # assert that the engine refuses it, keeps it aside, rebuilds its book from the WAL, which
     # reaches the first command of the day, and carries on with every order, cancelling nothing
@@ -4460,6 +4471,69 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 85 -- no matching engine for longer than the venue recovers by itself.
+    #
+    # docs/availability/far_back_catch_up.md, section 5. While no engine can trade, the venue cannot answer members, so
+    # it states the longest recovery it does by itself, and past that it halts trading and leaves a person to decide
+    # when trading resumes, rather than leaving members' orders unanswered for as long as the recovery takes. The engine
+    # is killed and kept down past a limit shortened to two seconds, well short of the absence limit, so that the halt
+    # comes from this rule and nothing is cancelled. The leading sequencer must write a TechnicalEvent that halts
+    # trading, and tell the gateways to refuse orders, saying why; the restarted engine meets the halt in its catch-up,
+    # halts, and refuses an order sent afterwards.
+    Scenario(
+        number=85,
+        short_name="recovery_limit_halts_trading",
+        description="With no matching engine for longer than the venue recovers by itself, trading halts and orders are refused saying so",
+        expected_outcome=(
+            "the leading sequencer writes a TechnicalEvent that halts trading and tells the gateways the venue is halted; "
+            "the restarted engine halts in its catch-up, cancels nothing, and refuses the order sent afterwards"
+        ),
+        automatic_recovery_limit_seconds=2,
+        assert_recovery_halt=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+        restart_steps=[
+            RestartStep(
+                proc_name="matching_engine",
+                ready_log_name="matching_engine.log",
+                ready=expect_engine_reachable("matching_engine", "matching_engine"),
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=True,
+                settle_secs=_ME_SETTLE,
+                # Past the two seconds this scenario allows, and short of the five minutes after which the book is
+                # cancelled.
+                down_secs=8.0,
+            ),
+        ],
+    ),
+
+    # 86 -- a failover finishes well within the longest recovery the venue does by itself.
+    #
+    # The limit deployed is ten seconds. The engine that leads is killed, and the other takes over within a lease period
+    # and a short catch-up. No halt may be written for the recovery limit, and orders must flow afterwards, as they do in
+    # scenario 16, here with the deployed limit in force.
+    Scenario(
+        number=86,
+        short_name="failover_within_recovery_limit",
+        description="A matching engine failover finishes within the longest recovery the venue does by itself, and nothing halts",
+        expected_outcome=(
+            "the engine that followed takes the lead within the ten seconds the venue recovers by itself, no halt is written "
+            "for the recovery limit, and recovery orders are processed"
+        ),
+        me_ha=True,
+        automatic_recovery_limit_seconds=10,
+        assert_no_recovery_halt=True,
+        orders_during_override=0,
+        steps=[
+            KillStep(
+                proc_name=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -5098,6 +5172,24 @@ def set_installed_ha(prefix: Path, enabled: bool) -> int:
     return changed
 
 
+def set_installed_recovery_limit(prefix: Path, seconds: int) -> int:
+    """Set recovery.automatic_recovery_limit_seconds in every deployed sequencer config, as set_installed_absence_limit
+    does for the absence limit, and for the same reasons: written on every launch, so that a scenario that shortened it
+    cannot leave it short for the next."""
+    changed = 0
+    pattern = re.compile(r"^(automatic_recovery_limit_seconds\s*=\s*)\d+", re.M)
+    for toml_path in sorted((prefix / "etc").rglob("*.toml")):
+        try:
+            text = toml_path.read_text(errors="replace")
+        except OSError:
+            continue
+        result, count = pattern.subn(lambda m: m.group(1) + str(seconds), text)
+        if count and result != text:
+            toml_path.write_text(result)
+            changed += 1
+    return changed
+
+
 def set_installed_absence_limit(prefix: Path, seconds: int) -> int:
     """Set absence.absence_limit_seconds in every deployed sequencer config.
 
@@ -5288,6 +5380,7 @@ def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_
         # catching up leaves out the reports the WAL already holds (docs/availability/far_back_catch_up.md, section 2.6).
         config = config_with_values(sequencer_config, {("ha", "ha_enabled"): "false", ("wal", "directory"): f'"{wal_copy}"',
                                                        ("absence", "absence_limit_seconds"): "86400",
+                                                       ("recovery", "automatic_recovery_limit_seconds"): "86400",
                                                        ("catch_up", "send_every_report"): "true"}, work / f"{sequencer}.toml")
         since = _TEST_EVENTS.mark()
         processes.append((sequencer, launch_app(sequencer, "sequencer", config, bin_dir, log_dir)))
@@ -6970,6 +7063,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # The absence limit, set on every launch for the same reason. Scenarios that do not test
     # the rule get the deployed figure back, so one that shortened it cannot leave it short.
     set_installed_absence_limit(prefix, scenario.absence_limit_seconds)
+    # The recovery limit, on every launch for the same reason.
+    set_installed_recovery_limit(prefix, scenario.automatic_recovery_limit_seconds)
     # The promotion policy, on every launch and for the same reason: a scenario that set it
     # one way must not leave a later one asserting against a policy it did not choose.
     set_installed_promotion_policy(prefix, scenario.open_orders_on_promotion)
@@ -7897,6 +7992,52 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # cancelling without reporting loses the member's position silently, reporting without
         # halting carries on as though nothing happened, and halting without cancelling leaves
         # the stale orders in place.
+        # ── The longest recovery the venue does by itself ────────────────────
+        if scenario.assert_recovery_halt:
+            gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+            halted_said = _TEST_EVENTS.find(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False,
+                                                       halted_for_recovery=True), since=0)
+            if halted_said is None:
+                die("recovery limit: the gateway was never told the venue is halted while it recovers, so it went on telling members "
+                    "only that no matching engine is available, or nothing at all")
+            log("  recovery limit: the gateway was told the venue is halted, and refused orders saying so meanwhile -- OK")
+
+            restarted_from = _TEST_EVENTS.since_introduction(me_log.stem)
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            halt = engine_event(me_log.stem, "Halted", restarted_from, args.failover_timeout)
+            if halt is None or halt.reason != engine_events.HaltReason.RecoveryTooLong:
+                die(f"recovery limit: the restarted engine did not halt for the recovery limit ({halt}). The halt is a command in "
+                    "the WAL, so an engine that catches up meets it where it was written")
+            cancelled_book = engine_event(me_log.stem, "BookCancelled", restarted_from, 0.0, settle=True)
+            if cancelled_book is not None:
+                die(f"recovery limit: the engine cancelled its book ({cancelled_book}). The recovery limit halts and cancels nothing; "
+                    "only the absence limit cancels")
+            log("  recovery limit: the restarted engine halted in its catch-up and cancelled nothing -- OK")
+
+            log("=== Sending an order into the halt, which must be refused ===")
+            refused_from = client_reports(f8proc).mark()
+            halted_sent_before = send_orders(f8proc, b"T", 1)
+            deadline = time.monotonic() + args.recovery_timeout
+            refused = 0
+            while time.monotonic() < deadline and not refused:
+                refused = client_reports(f8proc).count("8", refused_from, ord_rej_reason="2")
+                time.sleep(POLL_INTERVAL)
+            if client_reports(f8proc).new_among(halted_sent_before, _ORDERS_PER_COMMAND[b"T"]):
+                die("recovery limit: the member was sent a New report for an order sent while halted (R-0023)")
+            if not refused:
+                die("recovery limit: the venue accepted an order while halted, so it resumed trading by itself (R-0023)")
+            log("  recovery limit: an order sent into the halt was refused -- OK")
+
+        if scenario.assert_no_recovery_halt:
+            gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+            if not _TEST_EVENTS.settle("fix_order_gateway_a"):
+                die(f"no recovery halt: fix_order_gateway_a did not answer a checkpoint ({_TEST_EVENTS.failures[-1]})")
+            halted_said = _TEST_EVENTS.find(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False,
+                                                       halted_for_recovery=True), since=0)
+            if halted_said is not None:
+                die("no recovery halt: the venue halted for the recovery limit during a failover, which finishes well within it")
+            log("  no recovery halt: the failover finished within the recovery limit, and nothing halted -- OK")
+
         if scenario.assert_absence_halt:
             restarted_from = _TEST_EVENTS.since_introduction(me_log.stem)  # the restarted engine's events
 

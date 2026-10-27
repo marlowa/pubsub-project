@@ -161,6 +161,18 @@ When it has had none for longer than `[absence] absence_limit_seconds` (300 seco
 cancelled any. The command is written once for each absence, only by the leader, and never into an
 empty WAL. An engine that comes back applies it in its catch-up.
 
+A shorter limit halts without cancelling: the longest the venue recovers by itself,
+`[recovery] automatic_recovery_limit_seconds` (10 seconds). In the same check, the leading sequencer
+adds to the time it has had no engine how long the catch-up under way will still take, worked out
+from how far its reading thread has sent the catch-up and how fast that moved over the last second
+(`RecoveryLimitRule`). When the two together pass the limit, or the time so far alone does, it writes
+a `TechnicalEvent` that halts trading, with reason `RecoveryTooLong`, and tells the gateways it is not
+accepting orders, with that reason, so that they refuse new orders and cancels saying the venue is
+halted while it recovers. Nothing is cancelled. Once an engine is routed to again, the gateways are
+told the venue is accepting: the engine met the halt in its catch-up, so it refuses new orders as
+halted, and a person must lift the halt. See
+[far_back_catch_up.md](../availability/far_back_catch_up.md), section 5.
+
 When the whole venue was down, the sequencer measures at start-up from the last time it knew of an
 engine it routed to, which it writes about once a second into `engine_routed_at`, a file of eight
 bytes in the WAL's directory (`EngineRoutedStamp`), and from no earlier than the first record in the

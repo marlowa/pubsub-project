@@ -105,6 +105,7 @@ end
 enum HaltReason : i8 {
     UnableToMatchTooLong = 1   # no engine could trade for longer than the venue allows; a CancelBook command cancelled the book and halted
     CannotAccountForBook = 3   # its region could not be used and the WAL does not reach the first command; a TechnicalEvent halted, cancelling nothing
+    RecoveryTooLong = 4        # no engine could be trading within the longest recovery the venue does by itself; a TechnicalEvent halted, cancelling nothing
 }
 
 # ------------------------------------------------------------

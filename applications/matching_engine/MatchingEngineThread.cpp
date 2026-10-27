@@ -2104,8 +2104,10 @@ void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app
             cancel_timer(halt_request_timer_id_);
             halt_request_timer_id_ = pubsub_itc_fw::TimerID{};
         }
-        if (event.reason == pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook) {
-            halt_reason_ = pubsub_itc_fw_app::HaltReason::CannotAccountForBook;
+        if (event.reason == pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook ||
+            event.reason == pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong) {
+            halt_reason_ = event.reason == pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook ? pubsub_itc_fw_app::HaltReason::CannotAccountForBook
+                                                                                                         : pubsub_itc_fw_app::HaltReason::RecoveryTooLong;
             if (test_events_.has_value()) {
                 test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{*halt_reason_});
             }

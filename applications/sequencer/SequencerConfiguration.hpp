@@ -256,6 +256,17 @@ struct SequencerConfiguration {
      */
     bool send_every_report{false};
 
+    /**
+     * @brief The longest the venue recovers by itself while no matching engine can trade.
+     *        `[recovery] automatic_recovery_limit_seconds`.
+     *
+     * While this instance leads and no engine is routed to, it measures how long that has lasted and how long the
+     * catch-up under way will still take, and when the two together pass this, it halts trading with a TechnicalEvent
+     * and tells the gateways to refuse orders with the reason (RecoveryLimitRule). Both instances of the pair must have
+     * the same figure (docs/availability/far_back_catch_up.md, section 5).
+     */
+    int32_t automatic_recovery_limit_seconds{10};
+
     // External WAL subscriber listener (MEP primary and secondary connect here)
 
     /** @brief Host address on which the external WAL subscriber listener binds. */

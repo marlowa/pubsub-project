@@ -445,6 +445,8 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // (OrderAcceptance). True until told otherwise, as in the FIX gateway; the sequencer says so
     // as soon as this gateway connects, so a gateway started during an outage learns of it at once.
     bool venue_accepting_orders_{true};
+    // Why the venue is not accepting, as the leading sequencer last said, which decides what a member is told.
+    pubsub_itc_fw_app::OrderAcceptanceReason venue_refusal_reason_{pubsub_itc_fw_app::OrderAcceptanceReason::Accepting};
     // Commands refused because the venue was not accepting orders, reported on GW-PROGRESS.
     int64_t orders_refused_{0};
     int64_t cancels_refused_{0};

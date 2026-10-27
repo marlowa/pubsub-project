@@ -234,6 +234,12 @@ cancels its book or halts on its own initiative any more. The decisions that are
   is the wrong measure: a quiet spell before the venue went down would count as absence, and orders that arrive while
   no engine runs are still written, which would make the absence look shorter. When this instance is told another
   leads, the venue was not down as a whole, and what it measured at start-up is dropped.
+- **The limit on automatic recovery.** When no engine can trade, and the time so far plus how long the catch-up
+  under way will still take passes `[recovery] automatic_recovery_limit_seconds`, the leading sequencer writes a
+  `TechnicalEvent` that halts trading, with reason `RecoveryTooLong`, and the gateways refuse orders saying the venue
+  is halted while it recovers. Nothing is cancelled. This is built (`RecoveryLimitRule`), and is the halt
+  [BUG-0197](../bug_list.md#bug_0197) asks for; the rejection of the orders held before it is designed in phase 8
+  ([far_back_catch_up.md](far_back_catch_up.md), section 5).
 - **Cancelling on promotion.** While `open_orders_on_promotion = "cancel"` is set, a promoted engine asks the leading
   sequencer to write a cancel of the book before it serves, and applies it from the WAL like any other command.
   Every engine that catches up afterwards meets it too, so a restarted engine no longer keeps orders its peer

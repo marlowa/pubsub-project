@@ -288,6 +288,14 @@ lease_renewal_interval_milliseconds = 1000
 # here: both sequencers of the pair must use the same figure. A trading decision: how long a
 # resting order stays meaningful here, when its member cannot reach it.
 absence_limit_seconds = 300
+
+# The longest the venue recovers by itself while no matching engine can trade: when the time
+# without one, and how long the catch-up under way will still take, together pass this, the
+# leading sequencer halts trading and the gateways refuse orders with the reason, and a person
+# decides when trading resumes. Declared once here: both sequencers of the pair must use the same
+# figure. Ten seconds until the catch-up rate is measured (docs/availability/far_back_catch_up.md,
+# section 5).
+automatic_recovery_limit_seconds = 10
 # Metrics for the whole venue. One edit turns the scrape endpoints on or off
 # everywhere; each component still has its own listener host and port below.
 metrics_enabled     = false

@@ -128,6 +128,7 @@ class OwnerThread : public ApplicationThread, public WalFollowerLinksInterface, 
         // From the next record released after now: the follower holds everything up to the limit now.
         handed_over_[follower.get_value()] = limits_[follower.get_value()];
     }
+    void follower_progress(const ConnectionID& /*follower*/, int64_t /*sent_through*/) override {}
     void hand_over_falling_behind(const ConnectionID& /*follower*/) override {
         // As the sequencer pauses reading new orders: write nothing for one tick.
         falling_behind_count.fetch_add(1, std::memory_order_acq_rel);
@@ -391,6 +392,7 @@ class PartlyPublishedOwnerThread : public ApplicationThread, public WalFollowerL
     void send_leader_changed(const ConnectionID& /*to*/, const WalLeaderChanged& /*changed*/) override {}
     void follower_handed_over(const ConnectionID& /*follower*/, int64_t /*through*/, int64_t /*records_sent*/, WalPosition /*resume_at*/) override {}
     void hand_over_falling_behind(const ConnectionID& /*follower*/) override {}
+    void follower_progress(const ConnectionID& /*follower*/, int64_t /*sent_through*/) override {}
     void follower_cannot_be_served(const ConnectionID& /*follower*/, int64_t /*damaged_seq_no*/) override {}
     void declined_while_not_leading(const ConnectionID& /*follower*/) override {}
     void reading_stopped() override {}
@@ -488,6 +490,7 @@ class DamagedRecordOwnerThread : public ApplicationThread, public WalFollowerLin
         handed_over_count.fetch_add(1, std::memory_order_acq_rel);
     }
     void hand_over_falling_behind(const ConnectionID& /*follower*/) override {}
+    void follower_progress(const ConnectionID& /*follower*/, int64_t /*sent_through*/) override {}
     void follower_cannot_be_served(const ConnectionID& /*follower*/, int64_t damaged_seq_no) override {
         damaged_seq_no_reported.store(damaged_seq_no, std::memory_order_release);
         cannot_be_served_count.fetch_add(1, std::memory_order_acq_rel);

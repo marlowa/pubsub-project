@@ -607,6 +607,8 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      * the sequencer sends the state on connection rather than waiting for a transition.
      */
     bool venue_accepting_orders_{true};
+    // Why the venue is not accepting, as the leading sequencer last said, which decides what a member is told.
+    pubsub_itc_fw_app::OrderAcceptanceReason venue_refusal_reason_{pubsub_itc_fw_app::OrderAcceptanceReason::Accepting};
 
     /// Whether the sequencer reported a session's numbering before the gateway opened the session.
     enum class SessionNumbering {

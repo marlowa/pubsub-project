@@ -204,6 +204,7 @@ struct WalReadingReport {
         StoppedAll, ///< Has stopped sending to every follower, in answer to StopAll.
         Confirmed,  ///< Has acted on every command before a Confirm, in answer to it.
         Damaged,    ///< Found record reached_seq_no damaged, and has stopped sending to this follower.
+        Progress,   ///< Has sent the follower every record up to reached_seq_no so far, and goes on; sent about every 100 ms.
     };
 
     uint32_t identity{marker};

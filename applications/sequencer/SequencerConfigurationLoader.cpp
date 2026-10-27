@@ -213,6 +213,11 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
 
         toml.get_required_except("absence.absence_limit_seconds", config.absence_limit_seconds);
         toml.get_required_except("catch_up.send_every_report", config.send_every_report);
+        toml.get_required_except("recovery.automatic_recovery_limit_seconds", config.automatic_recovery_limit_seconds);
+        if (config.automatic_recovery_limit_seconds < 1) {
+            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: recovery.automatic_recovery_limit_seconds must be >= 1, got " +
+                                                        std::to_string(config.automatic_recovery_limit_seconds));
+        }
         if (config.absence_limit_seconds < 1) {
             throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: absence.absence_limit_seconds must be >= 1, got " +
                                                         std::to_string(config.absence_limit_seconds));
