@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -18,7 +19,7 @@ WalFollowerService::WalFollowerService(QuillLogger& logger, const Wal& wal, cons
     : logger_(logger), wal_(wal), positions_(positions), links_(links), events_(events) {}
 
 void WalFollowerService::on_follow_request(const ConnectionID& connection, const WalFollowRequestView& request, Leading leading, FollowerLimit limit,
-                                           int converter) {
+                                           int converter, int64_t application_value) {
     if (leading == Leading::DoesNotLead) {
         declined_[connection.get_value()] = connection;
         WalFollowDeclined declined{};
@@ -32,30 +33,32 @@ void WalFollowerService::on_follow_request(const ConnectionID& connection, const
     }
     declined_.erase(connection.get_value());
 
-    // A follower that holds nothing and wants nothing from the past is placed at the newest record it
-    // may be sent, and sent nothing older.
-    if (request.last_seq_no < 0) {
-        if (followers_.find(connection.get_value()) != followers_.end()) {
-            on_connection_lost(connection);
-        }
-        Follower& follower = followers_[connection.get_value()];
-        follower.connection = connection;
-        follower.limit = limit;
-        follower.tell_when_caught_up = true;
+    // The reading thread sends it, before the first record of the answer. It is the thread that sends the records, and
+    // it acts on its commands in the order they arrive, so every record of an earlier answer on this connection is
+    // queued before it, and every record of this answer after it.
+    WalFollowStarted started{};
+    started.request_number = request.request_number;
+    started.after_seq_no = request.last_seq_no;
+    started.serving_through_seq_no = positions_.limit(limit);
+    started.application_value = application_value;
+
+    // A follower that holds nothing and wants nothing from the past is placed at the newest record it may be sent, and
+    // sent nothing older: it is served from there, so that it is sent any record released since.
+    int64_t after_seq_no = request.last_seq_no;
+    if (after_seq_no < 0) {
+        after_seq_no = started.serving_through_seq_no;
         PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: {} on connection {} holds nothing and is placed at record {}, sent nothing older",
-                   request.follower_name, connection.get_value(), positions_.limit(limit));
-        // Every record before the start of the segment that holds the record after the limit is at or below the
-        // limit, which the follower is taken to hold.
-        const int64_t placed_at = positions_.limit(limit);
-        hand_over(follower, placed_at, 0, wal_.scan_start_for(placed_at + 1));
-        return;
+                   request.follower_name, connection.get_value(), after_seq_no);
+    } else {
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: {} on connection {} holds records through {} -- the reading thread sends it the rest",
+                   request.follower_name, connection.get_value(), after_seq_no);
     }
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: {} on connection {} holds records through {} -- the reading thread sends it the rest",
-               request.follower_name, connection.get_value(), request.last_seq_no);
-    serve(connection, request.last_seq_no, limit, converter, CaughtUpMessage::Send);
+    serve(connection, after_seq_no, limit, converter, CaughtUpMessage::Send, started);
+    followers_[connection.get_value()].request_number = request.request_number;
 }
 
-void WalFollowerService::serve(const ConnectionID& connection, int64_t after_seq_no, FollowerLimit limit, int converter, CaughtUpMessage caught_up_message) {
+void WalFollowerService::serve(const ConnectionID& connection, int64_t after_seq_no, FollowerLimit limit, int converter, CaughtUpMessage caught_up_message,
+                               const std::optional<WalFollowStarted>& started) {
     // A connection already being served starts afresh: the reading thread stops the earlier serving first,
     // and a report from it still on its way carries the earlier serving's number and is ignored.
     if (followers_.find(connection.get_value()) != followers_.end()) {
@@ -75,6 +78,7 @@ void WalFollowerService::serve(const ConnectionID& connection, int64_t after_seq
     command->limit = limit;
     command->converter = converter;
     command->serving = follower.serving;
+    command->started = started;
     links_.send_to_reading_thread(std::move(command));
 }
 
@@ -138,6 +142,7 @@ void WalFollowerService::hand_over(Follower& follower, int64_t through, int64_t 
         caught_up.last_seq_no = through;
         caught_up.records_sent = records_sent;
         caught_up.first_seq_no_held = wal_.first_seq_no();
+        caught_up.request_number = follower.request_number;
         links_.send_caught_up(follower.connection, caught_up);
     }
     PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: connection {} caught up through record {} ({} records sent) and is handed over to new records",

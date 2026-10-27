@@ -363,14 +363,14 @@ In both full suites, from fresh WALs on 26 and 27 October 2026, both engines gav
 scenario they were run on: 77 with the primary engine leading first and 24 with the secondary leading first. Scenario
 72 is the 78th, and it passed when run alone once the test gave the engines the sequencer's own ports. The first half of
 the finish condition is therefore met. With both engines starting alike ([BUG-0195](bug_list.md#bug_0195) is fixed),
-the full suites from fresh WALs on 27 October 2026 passed every scenario with the secondary engine leading first, 27
-of 27, and 83 of 84 with the primary leading first; both engines gave the replay's reports on all 27 and on 77 of the
-78 respectively. The one that failed is scenario 80, which catches an engine up from the first of 550,000 records:
-the leader sends the catch-up faster than the engine reads it ([BUG-0172](bug_list.md#bug_0172)), and the engine,
-asking again, applies again records it has already applied ([BUG-0212](bug_list.md#bug_0212)). The flood of reports
-that [BUG-0176](bug_list.md#bug_0176) records comes from the same far-back catch-up. The phase is not finished while
-BUG-0176 is open. The design that fixes BUG-0176, BUG-0212 and BUG-0172 together, and sets the limit on automatic
-recovery, is [far_back_catch_up.md](availability/far_back_catch_up.md).
+an engine that asks again to be caught up applying nothing twice ([BUG-0212](bug_list.md#bug_0212) is fixed), and every
+catch-up read by the reading thread whether high availability is on or off ([BUG-0172](bug_list.md#bug_0172) is fixed),
+the full suites from fresh WALs on 27 October 2026 passed every scenario: 84 of 84 with the primary engine leading first,
+and 27 of 27 with the secondary leading first. Both engines gave the replay's reports on 79 and on all 27 respectively,
+scenario 80 among them, whose WAL holds 550,000 records. The phase is not finished while
+[BUG-0176](bug_list.md#bug_0176) is open: a matching engine catching up from far back still sends a report again for
+every command it applies. The design that fixes it, and sets the limit on automatic recovery, is
+[far_back_catch_up.md](availability/far_back_catch_up.md).
 Decisions 6, 7 and 8 of the design, which step 4 needed, were taken on 25 October 2026, and decision 9 on 26 October
 2026.
 

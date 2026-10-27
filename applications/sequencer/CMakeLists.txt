@@ -86,7 +86,6 @@ add_executable(sequencer_tests
         tests/ReportsHeldForUnknownSessionsTest.cpp
         tests/LoggedCommandIdentifiersTest.cpp
         tests/LoggedCommandIdentifiersBuilderTest.cpp
-        tests/EngineCatchUpFromWalTest.cpp
         tests/PublisherRecordFromWalTest.cpp
         tests/LogTailIndexTest.cpp
         tests/WalRecordEncodingTest.cpp

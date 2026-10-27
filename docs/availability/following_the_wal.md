@@ -119,10 +119,13 @@ leads. In order:
    that asks to start at the newest record, are given today.
 2. An instance that does not lead answers `WalFollowDeclined`. It remembers the request, so that if it
    takes the lead later it can tell the follower (step 5).
-3. The leading instance sends every record after the named position, in order, each as the
-   application's own message (section 3.5).
+3. The leading instance sends `WalFollowStarted`, then every record after the named position, in order,
+   each as the application's own message (section 3.5). `WalFollowStarted` echoes the request's number,
+   which the follower counts up from 1, and carries a value of the application's own. The reading thread
+   sends it, before the first record, so that the follower can tell the records of this answer from
+   those of an earlier answer still on its way ([far_back_catch_up.md](far_back_catch_up.md), section 3).
 4. When it has sent everything, it sends `WalFollowCaughtUp`, saying the last record it sent, how many
-   records it sent, and the earliest record its WAL holds. The follower side checks that it received
+   records it sent, the earliest record its WAL holds, and the request's number. The follower side checks that it received
    exactly that many records, which is requirement R-0101 for the matching engine today, and refuses to
    report itself caught up if it did not. If the follower asked for new records, they follow, one by
    one, as they are committed.
@@ -134,7 +137,7 @@ The follower side refuses a record that does not follow the last it received: on
 dropped, and one further on is a gap, which the follower side treats by asking again from the last
 record it holds, and reports as a warning in the Quill log.
 
-These four messages are new, and belong to the library's message file, `replication_messages.dsl`.
+These five messages belong to the library's message file, `replication_messages.dsl`.
 The matching engine and the matching engine publishers both use them (decision 2).
 
 ### 3.2 The reading thread
@@ -353,9 +356,9 @@ an envelope, or whose envelope does not decode, is damaged, and the publisher is
 Passing over it would leave a gap in the publisher's numbering, which the publisher would take for
 records lost on the way and ask about for ever.
 
-With high availability off there is no reading thread. The sequencer's own thread then catches the
-publisher up as well, through the same `WalHandedOverFollowers`, before sending it each record as it is
-committed, which with high availability off is as it is written.
+With high availability off the reading thread catches the publisher up in the same way, and the
+sequencer then sends it each record as it is committed, which with high availability off is as it is
+written ([far_back_catch_up.md](far_back_catch_up.md), section 4).
 
 A publisher therefore publishes a record a little later than if it were sent as soon as the leader wrote
 it: after the follower has acknowledged it. On this machine that is the replication round trip, tens of
@@ -500,9 +503,8 @@ below the limit the reading thread serves up to, so the reading thread sends it,
 only when the position reached equals the limit. The sequencer publishes the last order released
 (`publish_released_position`) before the service compares the two, so that the comparison is never made
 against a value that is out of date. The reading thread reads the limit once at the start of each round, as
-section 3.4 has it ([BUG-0168](../bug_list.md#bug_0168)). With high availability off there is no reading
-thread, and the sequencer reads the WAL on its own thread, as `send_logged_orders` and the catch-up's own
-path do.
+section 3.4 has it ([BUG-0168](../bug_list.md#bug_0168)). The sequencer has a reading thread with high
+availability off as well, so this holds in every configuration.
 
 Stopping the follower sequencer's catch-up stops only that serving, with the reading thread's confirmation
 (`WalFollowerService::stop_serving`), so that a matching engine being served goes on being served; every
@@ -513,11 +515,10 @@ record is damaged (`ConvertedRecord::damaged`), the reading thread stops serving
 the record's number, and the service tells the application (`follower_cannot_be_served`) instead of handing
 the follower over. The sequencer says so as an Error the first time and as Info when the follower asks
 again, and sets the gauge `sequencer_wal_damaged_record` to the record's number until a follower is handed
-over past it. A follower already past the record is served as usual. The sequencer's own catch-up, used
-with high availability off, does the same (`engine_catch_up_from_wal`).
+over past it. A follower already past the record is served as usual.
 
 **How it was checked.** Unit tests of the service (a damaged report: no hand-over, nor a caught-up
-message), of `engine_catch_up_from_wal` with a real WAL holding a malformed record, and of the setting for
+message), and of the setting for
 the storage; an integration test with real threads in which a follower from before a damaged record is never
 handed over and one past it is; and a new scenario, 75, which fills the storage for held orders and requires
 every order of a burst to be accepted exactly once. Each was made to fail by a deliberate fault first. In the
@@ -570,8 +571,8 @@ WAL: the longest wait for an order's first report in the ten seconds after was 5
 before ([BUG-0156](../bug_list.md#bug_0156)). `perf` on the leading sequencer's thread during a fill showed
 the reading back of committed records costing about a fifth of that thread's time
 ([BUG-0171](../bug_list.md#bug_0171)). Each record is now read once whatever the number of publishers, which
-halved the checking of checksums and brought that share down to about a sixth. With high availability off a publisher is still caught up on the
-sequencer's own thread ([BUG-0172](../bug_list.md#bug_0172)).
+halved the checking of checksums and brought that share down to about a sixth. With high availability off a publisher is caught up by the
+reading thread too ([far_back_catch_up.md](far_back_catch_up.md), section 4).
 
 **The order's round trip** was measured as in phase 4, swapping the installed binaries between the build
 before this step and the build with it, each arm on fresh state with five runs of 6,000 orders at 100 a
@@ -607,7 +608,7 @@ purpose before it is relied on. The documents that describe the catch-ups (`sequ
 `applications/sequencer` that is not in its table `_PERMITTED_WAL_READS`. A read is a use of anything in its
 list `_WAL_READERS`: the library's classes that read the WAL (`WalReader`, `WalCursor` and
 `WalHandedOverFollowers`), and the sequencer's own functions and members that read it with one of them
-(`LogTailIndex`, `LoggedCommandIdentifiersBuilder`, `engine_catch_up_from_wal`, `send_logged_orders`, and the
+(`LogTailIndex`, `LoggedCommandIdentifiersBuilder`, `send_logged_orders`, and the
 members holding the first two and the publishers' `WalHandedOverFollowers`). Listing the sequencer's own
 readers means that a new call to a function that already reads the WAL is refused, not only a new use of a
 library class. Each entry of the table names the function, or in a header the word on the line, that it
@@ -618,7 +619,6 @@ permits, and gives its reason:
 - the duplicate check ([BUG-0122](../bug_list.md#bug_0122), phase 9);
 - the record of command identifiers, built on a thread of its own on the background cores;
 - records read back for publishers already handed over ([BUG-0171](../bug_list.md#bug_0171));
-- every catch-up with high availability off ([BUG-0172](../bug_list.md#bug_0172));
 - orders counted as deferred while no matching engine is connected
   ([BUG-0174](../bug_list.md#bug_0174)), which listing the reads found.
 

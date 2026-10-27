@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 212 |
-| Open | 84 (61 defects, 23 tasks) |
-| Closed | 128 |
-| Next id | BUG-0213 |
+| Bugs recorded | 213 |
+| Open | 82 (59 defects, 23 tasks) |
+| Closed | 131 |
+| Next id | BUG-0214 |
 
 ## Open bugs by severity
 
-23 high, 50 medium, 11 low.
+22 high, 49 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -35,7 +35,6 @@
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the absence limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
-| [BUG-0212](#bug_0212) | high | defect | A matching engine that asks again to be caught up applies again what it has already applied, and sends a wrong report for every record |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -76,7 +75,6 @@
 | [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
 | [BUG-0167](#bug_0167) | medium | defect | A lease promise record can take longer to write than a lease period, and the leader then loses its lease |
 | [BUG-0169](#bug_0169) | medium | task | The high availability tests depend on the wording of Quill log messages; they should observe outcomes directly, or read a separate stream of named test events |
-| [BUG-0172](#bug_0172) | medium | defect | With high availability off, a matching engine publisher is caught up on the sequencer's own thread, unpaced |
 | [BUG-0173](#bug_0173) | medium | task | No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests |
 | [BUG-0174](#bug_0174) | medium | defect | With high availability on and no matching engine connected, the leading sequencer reads its WAL on its own thread to count the orders that are deferred |
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
@@ -193,49 +191,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0212: A matching engine that asks again to be caught up applies again what it has already applied, and sends a wrong report for every record {#bug_0212}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-27 |
-| Recorded | 2026-10-27 |
-| How | `ha_test.py` scenario 80, in the check that runs both matching engines on the scenario's WAL (phase 7 step 6): the first engine run, on a copy of 550,000 records holding 200,000 orders, added 741,915 records to the copy, not the 200,000 reports expected. Logs kept in `tmp/ha_test_failures/20261027-063035-scenario-80-catch_up_survives_second_connection` |
-| Impact | Members are sent reports for things the venue did not do: refusals of orders that were accepted, each marked as a possible repeat, and refusals of commands as arriving out of sequence. Applying a command twice can also change the book: an order filled the first time is placed again the second |
-
-**What was seen, on 27 October 2026.** One sequencer, with high availability off, served one engine catching up from
-the first record of a WAL holding 200,000 orders.
-
-1. The sequencer read and sent the whole catch-up on its own thread, unpaced ([BUG-0172](#bug_0172)). Once 65,536
-   sends waited on the connection, the framework closed it as not reading what is sent to it. The engine had applied
-   121,802 records by then.
-2. The engine connected again, and asked again every 15 seconds (`catch_up_retry_seconds`), four times. The
-   sequencer's thread was still busy, and answered all four requests, and the one before them, together, 84 seconds
-   later.
-3. The first stream started from the first record again, because an engine asks from the position its last
-   complete catch-up reached (`last_replicated_seq_no_`), not from the last record it has applied. The engine applied
-   every record again on top of the book it had partly built. Each of the 121,802 orders it already held was refused
-   as a duplicate ClOrdID and the member sent a rejection, marked as a possible repeat.
-4. That stream ended the catch-up. The four streams after it then arrived at an engine no longer catching up, so
-   their records were taken as live commands. Each was refused as arriving out of sequence, and a rejection was sent
-   for each: 800,000 of them.
-
-**Why.** The comment in `MatchingEngineThread::handle_caught_up` says that applying the same records twice "is
-absorbed -- an order already on the book is not added again". That holds only for an order still resting. The
-engine is deterministic, so applying a command a second time is a second command: an order already on the book is
-refused as a duplicate, a cancel already done is refused, and an order already filled is placed again. The state
-machine does skip a record at or below the highest command it acted on live (`already_applied`), but not one an
-earlier, incomplete catch-up applied. And a stream that arrives after the catch-up it answered has ended is not told
-apart from live orders.
-
-**What is wanted.** A record already applied by this engine, however it was applied, is never applied again, and
-produces no report. An engine that asks again either asks from the last record it applied, or skips those it has;
-which of the two is right depends on how an incomplete catch-up with a record missing in the middle is to be
-recovered, which R-0101 says is asked for again. A stream that answers an earlier request is not taken as live
-commands once the catch-up has ended.
-
-**Principles.** V8: every report the matching engine produces reaches the member, and says what the venue did.
 
 ### BUG-0211: Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of {#bug_0211}
 
@@ -3378,34 +3333,6 @@ part of the fix. The cost to the gateway's speed is measured
 before and after. Both gateways' orders are tested with the same malformed values, and must be
 treated identically.
 
-### BUG-0172: With high availability off, a matching engine publisher is caught up on the sequencer's own thread, unpaced {#bug_0172}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-17 |
-| Recorded | 2026-10-17 |
-| How | Building step 4 of phase 5: with high availability off there is no reading thread, so the publishers are caught up as the matching engine is in that case |
-| Impact | A publisher that starts late in a day, with high availability off, has the sequencer's thread read and send it every record it lacks before that thread does anything else, and once 65,536 sends wait on the connection the framework closes it, so the publisher connects and asks again, and the same happens again ([BUG-0156](#bug_0156) without the change of leader) |
-
-**What happens.** `SequencerThread::handle_publisher_follow_request` catches the publisher up through
-`WalHandedOverFollowers::send_to`, which reads and sends every record up to the last committed in one go.
-The matching engine's catch-up with high availability off has the same shape (`engine_catch_up_from_wal`), and so
-does `SequencerThread::send_logged_orders`, which sends the engine orders that waited in the WAL, or that a new
-leader learns it never received, by reading them back on the sequencer's thread.
-
-**Seen in ha_test, on 27 October 2026.** The check that runs both matching engines on a scenario's WAL uses one
-sequencer with high availability off. In scenario 80, whose WAL holds 200,000 orders, the sequencer's thread read and
-sent the engine's catch-up from the first record in one go, the framework closed the engine's connection once 65,536
-sends were waiting, and the sequencer's thread learned of it 20 seconds later. The engine's requests to be caught up
-again then went unanswered for 84 seconds, and were all served together, which is how
-[BUG-0212](#bug_0212) was found.
-
-**What is wanted.** A reading thread with high availability off as well, so that every catch-up is paced and
-off the order path whatever the configuration.
-
-**Principles.** F4.
-
 ### BUG-0173: No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests {#bug_0173}
 
 | | |
@@ -3953,6 +3880,155 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0213: Saying how far the engine's reports had been forwarded read every report held for an unannounced session, for every record written, so a flood of held reports slowed the sequencer's thread to about 1,200 records a second {#bug_0213}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-27 |
+| Recorded | 2026-10-27 |
+| Fixed | 2026-10-27 -- a position at or before every held report is kept as reports come and go, and the dropping of held reports is said once for each run of drops |
+| How | Scenario 80's check that runs both matching engines on a copy of its WAL, with the reading thread of [BUG-0172](#bug_0172) in place: the engine stopped receiving its catch-up at record 399,386 of 550,000 and was never answered again, twice in two runs. `perf` on the sequencer during the second run. Logs kept in `tmp/ha_test_failures/20261027-182748-scenario-80-catch_up_survives_second_connection` |
+| Impact | While many reports were held for sessions no gateway had yet announced, every record the sequencer wrote cost a read of all of them, up to 32,768, so the leading sequencer's thread could fall far behind, and with it the renewal of its lease. Each report dropped to make room was also logged as a Warning of its own |
+
+**What was seen.** The check runs one sequencer with high availability off and no gateways, so every report an engine
+sends is held until a gateway announces its sessions, which none does. Once the room for held reports, 32,768 reports,
+was full, each new report dropped the oldest, and the sequencer logged a Warning for each drop: 126,021 of them in 104
+seconds, about 1,200 a second, which was the rate at which the sequencer's thread took the engine's reports. The engine,
+whose reports waited to be read, stopped taking its catch-up, and asked again every 15 seconds; none of its six further
+requests was read before the check gave up after 120 seconds. `perf` showed the sequencer's thread busy throughout, its
+time in `decode_held_report`, `reports_forwarded_through`, and the allocation and copying they do.
+
+**Why.** Every record the leader writes says how far it has forwarded the engine's reports
+(`stamp_reports_forwarded_through`), so that a follower can discard its copies ([BUG-0116](#bug_0116)). A report held for
+an unannounced session has not been forwarded, so `reports_forwarded_through` looked through every held report for the
+oldest, decoding each, for every record. The comment beside the loop said that normally nothing is held. A catch-up from
+far back with no gateway connected holds a great many. The Warning for each drop came from logging whenever the count of
+drops had changed since it was last logged, which, with one drop for each report held, was every time;
+[reports_held_until_sessions_are_announced.md](availability/reports_held_until_sessions_are_announced.md) says it is
+logged once for each run of drops.
+
+**What was done.** The sequencer keeps a position at or before that of every held report, lowered as each report is held
+and worked out afresh only when reports leave the room for their sessions, which happens once for each session announced
+and once when every gateway has announced. A report dropped to make room leaves it where it is: a lower position is
+safe, since it only makes a follower keep its copies longer. The dropping is said once, when it starts, and again with
+the total when reports next leave the room.
+
+**Verified** on 27 October 2026. Scenario 80 passed, its check included: both engines rebuilt the book from a copy of
+572,548 records, agreeing with each other and with the WAL, in 12 seconds for the two. On the build without this fix the
+check failed twice in two runs, as above.
+
+Both full suites were then run from fresh WALs on 27 October 2026. With the primary engine leading first, all 84
+passed (19:25:08), and both engines run on each scenario's WAL gave the replay's reports on 79, scenario 80 among them.
+With the secondary engine leading first, all 27 passed (20:02:08), and the engines gave the replay's reports on all 27.
+
+**Principles.** None directly. The leading sequencer's thread renews its lease, so work on it that grows without a bound can cost the venue its leader, as [BUG-0176](#bug_0176) records.
+
+### BUG-0212: A matching engine that asked again to be caught up applied again what it had already applied, and sent a wrong report for every record {#bug_0212}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-27 |
+| Recorded | 2026-10-27 |
+| Fixed | 2026-10-27 -- the engine asks from the last command it applied, passes over a command it has applied, and ignores the records of an earlier answer |
+| How | `ha_test.py` scenario 80, in the check that runs both matching engines on the scenario's WAL (phase 7 step 6): the first engine run, on a copy of 550,000 records holding 200,000 orders, added 741,915 records to the copy, not the 200,000 reports expected. Logs kept in `tmp/ha_test_failures/20261027-063035-scenario-80-catch_up_survives_second_connection` |
+| Impact | Members are sent reports for things the venue did not do: refusals of orders that were accepted, each marked as a possible repeat, and refusals of commands as arriving out of sequence. Applying a command twice can also change the book: an order filled the first time is placed again the second |
+
+**What was seen, on 27 October 2026.** One sequencer, with high availability off, served one engine catching up from
+the first record of a WAL holding 200,000 orders.
+
+1. The sequencer read and sent the whole catch-up on its own thread, unpaced ([BUG-0172](#bug_0172)). Once 65,536
+   sends waited on the connection, the framework closed it as not reading what is sent to it. The engine had applied
+   121,802 records by then.
+2. The engine connected again, and asked again every 15 seconds (`catch_up_retry_seconds`), four times. The
+   sequencer's thread was still busy, and answered all four requests, and the one before them, together, 84 seconds
+   later.
+3. The first stream started from the first record again, because an engine asks from the position its last
+   complete catch-up reached (`last_replicated_seq_no_`), not from the last record it has applied. The engine applied
+   every record again on top of the book it had partly built. Each of the 121,802 orders it already held was refused
+   as a duplicate ClOrdID and the member sent a rejection, marked as a possible repeat.
+4. That stream ended the catch-up. The four streams after it then arrived at an engine no longer catching up, so
+   their records were taken as live commands. Each was refused as arriving out of sequence, and a rejection was sent
+   for each: 800,000 of them.
+
+**Why.** The comment in `MatchingEngineThread::handle_caught_up` says that applying the same records twice "is
+absorbed -- an order already on the book is not added again". That holds only for an order still resting. The
+engine is deterministic, so applying a command a second time is a second command: an order already on the book is
+refused as a duplicate, a cancel already done is refused, and an order already filled is placed again. The state
+machine does skip a record at or below the highest command it acted on live (`already_applied`), but not one an
+earlier, incomplete catch-up applied. And a stream that arrives after the catch-up it answered has ended is not told
+apart from live orders.
+
+**What was done.** Section 3 of [far_back_catch_up.md](availability/far_back_catch_up.md).
+
+- The engine asks from the last command it has applied, however it applied it: from the leader's copy of the book, by a
+  catch-up, complete or not, or live. A connection delivers in order, so a catch-up cut short applied a run of records
+  with none missing in the middle.
+- During a catch-up, a command at or below the highest the engine has applied is passed over without a report
+  (`MatchingEngineStateMachine::applied_before`), whichever way it was applied. A live command whose number goes
+  backwards is still refused with a report, because it means the engine's book and the leading sequencer's WAL disagree.
+- Every catch-up request carries a number, counting up from 1, which the leading sequencer echoes on a new message sent
+  before the first record, `WalFollowStarted`, and on `WalFollowCaughtUp`. While catching up, the engine applies only
+  records on the connection where the start of the answer to its latest request arrived, and after it; it ignores the
+  rest, and a `WalFollowCaughtUp` for an earlier request. The reading thread sends `WalFollowStarted`, because it sends
+  the records: it acts on what it is told in order, so every record of an earlier answer on the connection is queued
+  before it. The library's follower side, `WalFollowerClient`, which the publishers use, does the same.
+
+**Verified** on 27 October 2026. A new unit test applies the same three commands twice as a catch-up, and requires no
+report and the same book the second time; it failed on the state machine before the change, with three refusals sent,
+and passes. New unit tests of `WalFollowerClient` and `WalFollowerService` cover the numbering and the start of an
+answer. Scenario 80, whose check runs both engines on a copy of its WAL from the first of 550,000 records, passed with
+[BUG-0172](#bug_0172) and [BUG-0213](#bug_0213) fixed as well: both engines rebuilt the book and agreed with each other
+and with the WAL.
+
+Both full suites were then run from fresh WALs on 27 October 2026. With the primary engine leading first, all 84
+passed (19:25:08), and both engines run on each scenario's WAL gave the replay's reports on 79, scenario 80 among them.
+With the secondary engine leading first, all 27 passed (20:02:08), and the engines gave the replay's reports on all 27.
+
+**Principles.** V8: every report the matching engine produces reaches the member, and says what the venue did.
+
+### BUG-0172: With high availability off, a matching engine publisher was caught up on the sequencer's own thread, unpaced {#bug_0172}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-17 |
+| Recorded | 2026-10-17 |
+| Fixed | 2026-10-27 -- the sequencer has a reading thread with high availability off too, and every catch-up goes through it |
+| How | Building step 4 of phase 5: with high availability off there is no reading thread, so the publishers are caught up as the matching engine is in that case |
+| Impact | A publisher that starts late in a day, with high availability off, has the sequencer's thread read and send it every record it lacks before that thread does anything else, and once 65,536 sends wait on the connection the framework closes it, so the publisher connects and asks again, and the same happens again ([BUG-0156](#bug_0156) without the change of leader) |
+
+**What happens.** `SequencerThread::handle_publisher_follow_request` catches the publisher up through
+`WalHandedOverFollowers::send_to`, which reads and sends every record up to the last committed in one go.
+The matching engine's catch-up with high availability off has the same shape (`engine_catch_up_from_wal`), and so
+does `SequencerThread::send_logged_orders`, which sends the engine orders that waited in the WAL, or that a new
+leader learns it never received, by reading them back on the sequencer's thread.
+
+**Seen in ha_test, on 27 October 2026.** The check that runs both matching engines on a scenario's WAL uses one
+sequencer with high availability off. In scenario 80, whose WAL holds 200,000 orders, the sequencer's thread read and
+sent the engine's catch-up from the first record in one go, the framework closed the engine's connection once 65,536
+sends were waiting, and the sequencer's thread learned of it 20 seconds later. The engine's requests to be caught up
+again then went unanswered for 84 seconds, and were all served together, which is how
+[BUG-0212](#bug_0212) was found.
+
+**What was done.** Section 4 of [far_back_catch_up.md](availability/far_back_catch_up.md). The sequencer creates its
+reading thread, and the library's `WalFollowerService`, whether high availability is on or off, so every catch-up of a
+matching engine or a publisher is read on that thread and paced by what the follower's connection takes.
+`engine_catch_up_from_wal` and the path that caught a publisher up on the sequencer's thread are gone, and so are their
+entries in the table of permitted reads in `scripts/check_standards.py`. `send_logged_orders` stays only to count the
+orders deferred while no engine is connected, which sends nothing.
+
+**Verified** on 27 October 2026. Scenario 80's check that runs both engines on a copy of its WAL uses one sequencer with
+high availability off. With this and [BUG-0213](#bug_0213) fixed, both engines caught up from the first of 572,548
+records and rebuilt the book, in 12 seconds for the two.
+
+Both full suites were then run from fresh WALs on 27 October 2026. With the primary engine leading first, all 84
+passed (19:25:08), and both engines run on each scenario's WAL gave the replay's reports on 79, scenario 80 among them.
+With the secondary engine leading first, all 27 passed (20:02:08), and the engines gave the replay's reports on all 27.
+
+**Principles.** F4.
 
 ### BUG-0195: When the secondary matching engine led first, the pair did not fail over as it did when the primary led, and three scenarios failed {#bug_0195}
 

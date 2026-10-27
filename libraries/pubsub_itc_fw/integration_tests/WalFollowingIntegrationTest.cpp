@@ -170,7 +170,7 @@ class OwnerThread : public ApplicationThread, public WalFollowerLinksInterface, 
         const FollowerLimit limit = request.follower_name == "written" ? FollowerLimit::LastWritten : FollowerLimit::LastCommitted;
         limits_[message.connection_id().get_value()] = limit;
         handed_over_.erase(message.connection_id().get_value());
-        service_->on_follow_request(message.connection_id(), request, Leading::Leads, limit, 0);
+        service_->on_follow_request(message.connection_id(), request, Leading::Leads, limit, 0, 0);
     }
 
     void on_itc_message(const EventMessage& message) override {
@@ -317,7 +317,16 @@ class FollowerThread : public ApplicationThread, public WalFollowerClientLinksIn
                 case WalFollowerClient::RecordVerdict::Gap:
                     gaps.fetch_add(1, std::memory_order_acq_rel);
                     return;
+                case WalFollowerClient::RecordVerdict::ForAnEarlierRequest:
+                    return;
             }
+        }
+        if (message.pdu_id() == WalFollowStarted::message_pdu_id) {
+            WalFollowStartedView started{};
+            if (decode(started, message.payload(), size, consumed, arena, arena_needed)) {
+                client_.on_started(message.connection_id(), started);
+            }
+            return;
         }
         if (message.pdu_id() == WalFollowCaughtUp::message_pdu_id) {
             WalFollowCaughtUpView caught_up{};
@@ -397,7 +406,9 @@ class PartlyPublishedOwnerThread : public ApplicationThread, public WalFollowerL
             request.follower_name = "follower";
             request.last_seq_no = published;
             request.wants_new_records = false;
-            service_->on_follow_request(follower_, request, Leading::Leads, FollowerLimit::LastCommitted, 0);
+            // The number of the follower's own request, so that its client takes this answer as the answer to it.
+            request.request_number = follower_request_number_;
+            service_->on_follow_request(follower_, request, Leading::Leads, FollowerLimit::LastCommitted, 0, 0);
         }
     }
 
@@ -413,7 +424,8 @@ class PartlyPublishedOwnerThread : public ApplicationThread, public WalFollowerL
             return;
         }
         follower_ = message.connection_id();
-        service_->on_follow_request(message.connection_id(), request, Leading::Leads, FollowerLimit::LastCommitted, 0);
+        follower_request_number_ = request.request_number;
+        service_->on_follow_request(message.connection_id(), request, Leading::Leads, FollowerLimit::LastCommitted, 0, 0);
     }
 
     void on_itc_message(const EventMessage& message) override {
@@ -427,6 +439,7 @@ class PartlyPublishedOwnerThread : public ApplicationThread, public WalFollowerL
     WalPosition end_{};
     bool published_the_rest_{false};
     ConnectionID follower_;
+    int64_t follower_request_number_{0};
     std::unique_ptr<WalFollowerService> service_;
 };
 
@@ -491,7 +504,7 @@ class DamagedRecordOwnerThread : public ApplicationThread, public WalFollowerLin
         if (!decode(request, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
             return;
         }
-        service_->on_follow_request(message.connection_id(), request, Leading::Leads, FollowerLimit::LastCommitted, 0);
+        service_->on_follow_request(message.connection_id(), request, Leading::Leads, FollowerLimit::LastCommitted, 0, 0);
     }
 
     void on_itc_message(const EventMessage& message) override {

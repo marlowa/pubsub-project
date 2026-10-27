@@ -245,6 +245,19 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
   and say they lead or follow only once a lease settles it. An engine refused a lease by both voters,
   because each has promised its vote to the peer, now stops asking for a lease period and follows,
   where it could ask for many seconds and never settle that it follows (BUG-0195).
+- **A matching engine that asked again to be caught up applied again what it had already applied**,
+  refusing each order it held as a duplicate and each later command as out of sequence, with a report
+  to the member for every one. It now asks from the last command it applied, passes over a command it
+  has applied, and ignores records of an earlier answer, which it tells apart by a request number the
+  sequencer echoes on a new message, `WalFollowStarted`, sent before the first record (BUG-0212).
+- **With high availability off, the sequencer caught up an engine or a publisher on its own thread**,
+  unpaced, until the framework closed the connection. It now has a reading thread in every
+  configuration (BUG-0172).
+- **Saying how far the engine's reports had been forwarded read every report held for an unannounced
+  session, for every record written**, which slowed the sequencer to about 1,200 records a second
+  while many reports were held, and each report dropped from the full room was logged as a Warning of
+  its own. A position at or before every held report is now kept as they come and go, and the dropping
+  is said once for each run of drops (BUG-0213).
 - **A halt was lost when the matching engine restarted, or failed over to the follower**, which was
   never told of it, so the venue went on accepting orders that R-0023 says only a person may allow
   again (BUG-0206).
@@ -268,7 +281,7 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 
 ### Known limitations
 
-- **84 bugs are open, 23 of them high severity**; `docs/bug_list.md` lists them.
+- **82 bugs are open, 22 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both

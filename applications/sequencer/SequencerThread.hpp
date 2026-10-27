@@ -35,7 +35,6 @@
 #include <pubsub_itc_fw/WalHandedOverFollowers.hpp>
 
 #include "EngineAbsenceRule.hpp"
-#include "EngineCatchUpFromWal.hpp"
 #include "EngineOrderRouting.hpp"
 #include "EngineRecordFromWal.hpp"
 #include "EngineReportPosition.hpp"
@@ -197,8 +196,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // The matching engine publishers that have been caught up and handed over to new records, each sent every
     // record as it is committed, read back from the WAL (docs/availability/following_the_wal.md, section 4.3).
-    // Until a publisher is handed over, the reading thread sends it what it lacks; with high availability
-    // off there is no reading thread, and this catches it up as well, on this thread.
+    // Until a publisher is handed over, the reading thread sends it what it lacks.
     class SequencerPublisherLinks : public pubsub_itc_fw::WalHandedOverFollowersLinksInterface {
       public:
         explicit SequencerPublisherLinks(SequencerThread& owner) : owner_(owner) {}
@@ -325,6 +323,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         // For a catch-up request: whether the engine asked to lead, and so has the orders routed to it
         // once it is caught up.
         bool asking_to_lead{false};
+        // For a catch-up request: the start of the answer, which the reading thread sends before the first record, and
+        // whose request number WalFollowCaughtUp echoes.
+        std::optional<pubsub_itc_fw::WalFollowStarted> started;
     };
     std::unordered_map<int, EngineServing> engine_servings_;
     // The component's background cores, from the CPU layout, for the helper threads this thread starts;
@@ -424,8 +425,19 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     ReportsHeldForUnknownSessions held_reports_{held_report_capacity_bytes, held_report_capacity_reports};
     // Whether a report has been held since the sessions were last known, so that ReportsHeld is sent once.
     bool reports_held_since_sessions_known_{false};
-    // How many held reports had been dropped to make room when that was last logged.
+    // How many held reports had been dropped to make room when the dropping was last logged, which is when it started:
+    // it is said once when the room fills, and again with the total when reports next leave the room, not for each one.
     int64_t held_reports_dropped_reported_{0};
+    bool held_reports_dropping_{false};
+    // A position at or before that of every held report that has one, or none if none does. It is lowered as each report
+    // is held and worked out afresh when reports leave the room for their sessions, so that saying how far the reports
+    // have been forwarded, which is done for every record written, does not read every held report. A report dropped
+    // to make room leaves it where it is: lower than the true oldest is safe, since it only makes a follower keep its
+    // copies of reports for longer.
+    std::optional<EngineReportPosition> held_reports_oldest_position_;
+    // Works out held_reports_oldest_position_ afresh from the reports held, and says how many were dropped while the
+    // room was full, if any were.
+    void held_reports_left_the_room();
     pubsub_itc_fw::GaugeHandle held_reports_dropped_gauge_;
     // A PendingEr written into bytes to be held, kept so that holding reuses its storage.
     std::vector<uint8_t> held_report_encoding_;
@@ -570,10 +582,10 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     void hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message);
     /// Has the engine sent, in order, the orders numbered from first to through that waited in the log rather than the storage:
-    /// by the reading thread when there is one and an engine to send to, otherwise by send_logged_orders.
+    /// by the reading thread when there is an engine to send to; with none, send_logged_orders counts them as deferred.
     void send_orders_that_waited_in_the_log(int64_t first, int64_t through);
     /// Reads the WAL on this thread and sends the engine the orders numbered from first to through, or counts them as deferred
-    /// when no engine is connected. Used only without a reading thread, or without an engine.
+    /// when no engine is connected. Used only without an engine: with one, the reading thread sends them.
     void send_logged_orders(int64_t first, int64_t through);
     /// The last order released to the engine: everything numbered at or below it has been sent or deferred, and nothing above it.
     [[nodiscard]] int64_t released_through() const;

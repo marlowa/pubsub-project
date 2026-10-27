@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -70,11 +71,12 @@ class RecordingEvents : public WalFollowerEventsInterface {
     std::vector<std::pair<int, int64_t>> cannot_be_served;
 };
 
-WalFollowRequestView request(int64_t last_seq_no) {
+WalFollowRequestView request(int64_t last_seq_no, int64_t request_number = 1) {
     WalFollowRequestView view{};
     view.follower_name = "follower";
     view.last_seq_no = last_seq_no;
     view.wants_new_records = true;
+    view.request_number = request_number;
     return view;
 }
 
@@ -114,6 +116,7 @@ EventMessage confirmed() {
 
 const ConnectionID follower_connection{7};
 constexpr int converter = 0;
+constexpr int64_t no_application_value = 0;
 
 class WalFollowerServiceTest : public ::testing::Test {
   protected:
@@ -143,7 +146,7 @@ class WalFollowerServiceTest : public ::testing::Test {
 } // un-named namespace
 
 TEST_F(WalFollowerServiceTest, AnInstanceThatDoesNotLeadDeclinesAndTellsTheFollowerWhenItTakesTheLead) {
-    service_.on_follow_request(follower_connection, request(5), Leading::DoesNotLead, FollowerLimit::LastCommitted, converter);
+    service_.on_follow_request(follower_connection, request(5), Leading::DoesNotLead, FollowerLimit::LastCommitted, converter, no_application_value);
     EXPECT_EQ(links_.declined, std::vector<int>{7});
     EXPECT_EQ(events_.declined, std::vector<int>{7});
     EXPECT_TRUE(links_.commands.empty());
@@ -153,7 +156,7 @@ TEST_F(WalFollowerServiceTest, AnInstanceThatDoesNotLeadDeclinesAndTellsTheFollo
 }
 
 TEST_F(WalFollowerServiceTest, TheLeaderHasTheReadingThreadSendTheRecordsAfterTheFollowersPosition) {
-    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter);
+    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter, no_application_value);
     ASSERT_EQ(links_.commands.size(), 1U);
     const WalReadingCommand& command = links_.commands[0];
     EXPECT_EQ(command.kind, WalReadingCommand::Kind::Serve);
@@ -164,7 +167,7 @@ TEST_F(WalFollowerServiceTest, TheLeaderHasTheReadingThreadSendTheRecordsAfterTh
 }
 
 TEST_F(WalFollowerServiceTest, AFollowerIsHandedOverWhenTheReadingThreadReachesTheLimitAsItStandsNow) {
-    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter);
+    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter, no_application_value);
     ASSERT_TRUE(service_.on_inter_thread_message(reached(follower_connection, 20, 15)));
 
     EXPECT_TRUE(service_.is_handed_over(follower_connection));
@@ -178,7 +181,7 @@ TEST_F(WalFollowerServiceTest, AFollowerIsHandedOverWhenTheReadingThreadReachesT
 }
 
 TEST_F(WalFollowerServiceTest, AReportShortOfTheLimitNowSendsTheReadingThreadRoundAgain) {
-    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter);
+    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter, no_application_value);
     positions_.publish_committed(21); // released while the reading thread was sending
     ASSERT_TRUE(service_.on_inter_thread_message(reached(follower_connection, 20, 15)));
 
@@ -192,7 +195,7 @@ TEST_F(WalFollowerServiceTest, AReportShortOfTheLimitNowSendsTheReadingThreadRou
 }
 
 TEST_F(WalFollowerServiceTest, TheApplicationIsToldOnceWhenAHandOverFallsShortThreeTimesInARow) {
-    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter);
+    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter, no_application_value);
     for (int64_t limit = 21; limit <= 24; ++limit) {
         positions_.publish_committed(limit);
         ASSERT_TRUE(service_.on_inter_thread_message(reached(follower_connection, limit - 1, 0)));
@@ -200,17 +203,51 @@ TEST_F(WalFollowerServiceTest, TheApplicationIsToldOnceWhenAHandOverFallsShortTh
     EXPECT_EQ(events_.falling_behind, std::vector<int>{7});
 }
 
-TEST_F(WalFollowerServiceTest, AFollowerHoldingNothingIsHandedOverAtOnceAtTheNewestRecordItMayBeSent) {
-    service_.on_follow_request(follower_connection, request(-1), Leading::Leads, FollowerLimit::LastCommitted, converter);
-    EXPECT_TRUE(links_.commands.empty());
+// Through the reading thread, so that the start of the answer reaches the follower after anything an earlier serving of
+// the connection was still sending.
+TEST_F(WalFollowerServiceTest, AFollowerHoldingNothingIsServedFromTheNewestRecordItMayBeSentAndSentNothingOlder) {
+    service_.on_follow_request(follower_connection, request(-1), Leading::Leads, FollowerLimit::LastCommitted, converter, no_application_value);
+    ASSERT_EQ(links_.commands.size(), 1U);
+    EXPECT_EQ(links_.commands[0].kind, WalReadingCommand::Kind::Serve);
+    EXPECT_EQ(links_.commands[0].after_seq_no, 20);
+    ASSERT_TRUE(links_.commands[0].started.has_value());
+    EXPECT_EQ(links_.commands[0].started->after_seq_no, -1) << "the position the request named is echoed";
+
+    ASSERT_TRUE(service_.on_inter_thread_message(reached(follower_connection, 20, 0)));
     EXPECT_TRUE(service_.is_handed_over(follower_connection));
     ASSERT_EQ(links_.caught_up.size(), 1U);
     EXPECT_EQ(links_.caught_up[0].second.last_seq_no, 20);
     EXPECT_EQ(links_.caught_up[0].second.records_sent, 0);
 }
 
+// The reading thread sends it before the first record; the request's number comes back on it and on WalFollowCaughtUp, so
+// that the follower can tell this answer from an earlier one still on its way.
+TEST_F(WalFollowerServiceTest, TheAnswerToARequestStartsWithItsNumberAndTheApplicationsValueAndEndsWithItsNumber) {
+    constexpr int64_t request_number = 4;
+    constexpr int64_t application_value = 17;
+    service_.on_follow_request(follower_connection, request(5, request_number), Leading::Leads, FollowerLimit::LastCommitted, converter, application_value);
+    ASSERT_EQ(links_.commands.size(), 1U);
+    ASSERT_TRUE(links_.commands[0].started.has_value());
+    const WalFollowStarted& started = *links_.commands[0].started;
+    EXPECT_EQ(started.request_number, request_number);
+    EXPECT_EQ(started.after_seq_no, 5);
+    EXPECT_EQ(started.serving_through_seq_no, 20);
+    EXPECT_EQ(started.application_value, application_value);
+
+    ASSERT_TRUE(service_.on_inter_thread_message(reached(follower_connection, 20, 15)));
+    ASSERT_EQ(links_.caught_up.size(), 1U);
+    EXPECT_EQ(links_.caught_up[0].second.request_number, request_number);
+}
+
+// A follower that does not ask, such as the follower sequencer, is sent no start.
+TEST_F(WalFollowerServiceTest, AServingWithNoStartSendsNone) {
+    service_.serve(follower_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend, std::nullopt);
+    ASSERT_EQ(links_.commands.size(), 1U);
+    EXPECT_FALSE(links_.commands[0].started.has_value());
+}
+
 TEST_F(WalFollowerServiceTest, ALostConnectionStopsTheReadingThreadAndALateReportIsIgnored) {
-    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter);
+    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter, no_application_value);
     service_.on_connection_lost(follower_connection);
     ASSERT_EQ(links_.commands.size(), 2U);
     EXPECT_EQ(links_.commands[1].kind, WalReadingCommand::Kind::Stop);
@@ -221,7 +258,7 @@ TEST_F(WalFollowerServiceTest, ALostConnectionStopsTheReadingThreadAndALateRepor
 }
 
 TEST_F(WalFollowerServiceTest, StoppingAllWaitsForTheReadingThreadToSayItHasStopped) {
-    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter);
+    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter, no_application_value);
     service_.stop_all();
     EXPECT_EQ(links_.commands.back().kind, WalReadingCommand::Kind::StopAll);
     EXPECT_FALSE(service_.reading_has_stopped());
@@ -237,13 +274,13 @@ TEST_F(WalFollowerServiceTest, StoppingAllWaitsForTheReadingThreadToSayItHasStop
 
 TEST_F(WalFollowerServiceTest, AConnectionIsBeingCaughtUpFromItsServingUntilItIsHandedOver) {
     EXPECT_FALSE(service_.is_being_caught_up(follower_connection));
-    service_.serve(follower_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend);
+    service_.serve(follower_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend, std::nullopt);
     EXPECT_TRUE(service_.is_being_caught_up(follower_connection));
     ASSERT_TRUE(service_.on_inter_thread_message(reached(follower_connection, 20, 15)));
     EXPECT_FALSE(service_.is_being_caught_up(follower_connection));
     EXPECT_TRUE(service_.is_handed_over(follower_connection));
 
-    service_.serve(follower_connection, 20, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend);
+    service_.serve(follower_connection, 20, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend, std::nullopt);
     EXPECT_TRUE(service_.is_being_caught_up(follower_connection)) << "served afresh, it is being caught up again";
     service_.on_connection_lost(follower_connection);
     EXPECT_FALSE(service_.is_being_caught_up(follower_connection));
@@ -251,8 +288,8 @@ TEST_F(WalFollowerServiceTest, AConnectionIsBeingCaughtUpFromItsServingUntilItIs
 
 TEST_F(WalFollowerServiceTest, StoppingOneFollowerLeavesTheOthersServedAndWaitsForTheReadingThreadToConfirm) {
     const ConnectionID other_connection{8};
-    service_.serve(follower_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend);
-    service_.serve(other_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend);
+    service_.serve(follower_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend, std::nullopt);
+    service_.serve(other_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend, std::nullopt);
     const size_t commands_before = links_.commands.size();
 
     service_.stop_serving(follower_connection);
@@ -270,7 +307,7 @@ TEST_F(WalFollowerServiceTest, StoppingOneFollowerLeavesTheOthersServedAndWaitsF
 }
 
 TEST_F(WalFollowerServiceTest, TheReadingThreadCountsAsStoppedOnlyOnceEveryStopAskedForIsConfirmed) {
-    service_.serve(follower_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend);
+    service_.serve(follower_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend, std::nullopt);
     service_.stop_serving(follower_connection);
     service_.stop_all();
     ASSERT_TRUE(service_.on_inter_thread_message(confirmed()));
@@ -282,7 +319,7 @@ TEST_F(WalFollowerServiceTest, TheReadingThreadCountsAsStoppedOnlyOnceEveryStopA
 }
 
 TEST_F(WalFollowerServiceTest, AFollowerServedPastADamagedRecordIsNeverHandedOverNorToldItCaughtUp) {
-    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter);
+    service_.on_follow_request(follower_connection, request(5), Leading::Leads, FollowerLimit::LastCommitted, converter, no_application_value);
     ASSERT_TRUE(service_.on_inter_thread_message(damaged(follower_connection, 12, 6)));
 
     EXPECT_FALSE(service_.is_handed_over(follower_connection));
@@ -304,8 +341,8 @@ TEST_F(WalFollowerServiceTest, AMessageThatIsNotAReportIsLeftForTheApplication) 
 }
 
 TEST_F(WalFollowerServiceTest, AReportFromAnEarlierServingOfTheSameConnectionIsIgnored) {
-    service_.serve(follower_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend);
-    service_.serve(follower_connection, 8, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend); // afresh, numbered 2
+    service_.serve(follower_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend, std::nullopt);
+    service_.serve(follower_connection, 8, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend, std::nullopt); // afresh, numbered 2
     ASSERT_GE(links_.commands.size(), 3U);
     EXPECT_EQ(links_.commands.back().serving, 2U);
 

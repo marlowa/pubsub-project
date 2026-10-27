@@ -82,19 +82,24 @@ end
 #  thread of its own, then is handed over to new records as they
 #  come. The design is docs/availability/following_the_wal.md.
 #  The records themselves are sent as the application's own
-#  messages; these four are the library's.
+#  messages; these five are the library's.
 # ============================================================
 
 # ------------------------------------------------------------
 #  134 -- WalFollowRequest
 #  Sent by a follower of the WAL to each instance of the pair, which
 #  it cannot tell apart: to start following, again when told the
-#  leader has changed, and again after a gap.
+#  leader has changed, and again after a gap. The follower numbers
+#  its requests, counting up from 1, and the leading instance echoes
+#  the number on WalFollowStarted and WalFollowCaughtUp, so that the
+#  follower can tell the answer to its latest request from the
+#  answer to an earlier one still on its way.
 # ------------------------------------------------------------
 message WalFollowRequest (id=134, version=1)
     string follower_name # who is asking, for the Quill log
     i64 last_seq_no # the last record the follower holds; -1 to be placed at the newest record and sent nothing older
     bool wants_new_records # true: once caught up, go on sending new records as they come
+    i64 request_number # this request's number; the same number may be sent to each instance of the pair
 end
 
 # ------------------------------------------------------------
@@ -117,6 +122,7 @@ message WalFollowCaughtUp (id=136, version=1)
     i64 last_seq_no # the last record sent
     i64 records_sent # how many records were sent since the request
     i64 first_seq_no_held # the earliest record this instance's WAL holds, or zero if none
+    i64 request_number # the request this answers, echoed from WalFollowRequest
 end
 
 # ------------------------------------------------------------
@@ -127,4 +133,22 @@ end
 # ------------------------------------------------------------
 message WalLeaderChanged (id=137, version=1)
     i32 epoch # the leadership epoch now in force
+end
+
+# ------------------------------------------------------------
+#  155 -- WalFollowStarted
+#  Sent by the leading instance before the first record it sends in
+#  answer to a WalFollowRequest, and before WalFollowCaughtUp when
+#  there is nothing to send. A connection carries the answer to one
+#  request at a time, and the instance stops answering an earlier
+#  request on a connection before it starts on a later one, but
+#  records it had already sent still arrive. So the follower takes
+#  the records that come after the WalFollowStarted for its latest
+#  request as the answer to it, and ignores those that come before.
+# ------------------------------------------------------------
+message WalFollowStarted (id=155, version=1)
+    i64 request_number # the request this answers, echoed from WalFollowRequest
+    i64 after_seq_no # the position the request named, echoed: the records sent are numbered after it
+    i64 serving_through_seq_no # the last record the follower may be sent now; more may be released before it is caught up
+    i64 application_value # a value of the application's own, which the library carries and never reads
 end

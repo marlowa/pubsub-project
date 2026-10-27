@@ -161,6 +161,7 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     void handle_lease_grant(const pubsub_itc_fw::EventMessage& message);
     void handle_lease_refusal(const pubsub_itc_fw::EventMessage& message);
 
+    void handle_follow_started(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_follow_caught_up(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_leader_changed(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_wal_record_from_sequencer(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);

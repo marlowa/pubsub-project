@@ -400,6 +400,11 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         return;
     }
 
+    if (pdu_id == pubsub_itc_fw::WalFollowStarted::message_pdu_id) {
+        handle_follow_started(message);
+        release_pdu_payload(message);
+        return;
+    }
     if (pdu_id == pubsub_itc_fw::WalFollowCaughtUp::message_pdu_id) {
         handle_caught_up(message);
         release_pdu_payload(message);
@@ -433,6 +438,14 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
 
     if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported sequenced PDU id {} -- dropping", pdu_id);
+        release_pdu_payload(message);
+        return;
+    }
+    if (from_an_earlier_answer(message.connection_id())) {
+        ++records_from_earlier_answers_;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "MatchingEngineThread: record seq={} on connection {} is from an earlier answer to a catch-up request -- ignored", message.seq_no(),
+                   message.connection_id().get_value());
         release_pdu_payload(message);
         return;
     }
@@ -1538,6 +1551,7 @@ void MatchingEngineThread::begin_reconciliation() {
     reconciliation_records_seen_ = 0;
     reconciliation_records_at_last_tick_ = 0;
     reconciliation_reports_sent_ = 0;
+    records_from_earlier_answers_ = 0;
     cancel_timer(reconciliation_timer_id_);
     reconciliation_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.catch_up_retry_seconds));
 }
@@ -1550,7 +1564,13 @@ pubsub_itc_fw::WalFollowRequest MatchingEngineThread::follow_request(const std::
     // with no region -- that it is a component at position zero which has fallen the whole day
     // behind -- would have the venue replay everything it still holds into an engine that never
     // held any of it.
-    request.last_seq_no = has_position_ ? last_replicated_seq_no_ : -1;
+    //
+    // The position is the last command this instance has applied, however it applied it: from the leader's copy of the
+    // book, by a catch-up, complete or not, or live. A catch-up cut short applied a run of records with none missing in
+    // the middle, because a connection delivers in order, so the records after the last one applied are exactly those
+    // still needed, and none is applied twice (BUG-0212).
+    request.last_seq_no = has_position_ ? std::max(last_replicated_seq_no_, state_machine_.highest_applied()) : -1;
+    request.request_number = follow_request_number_;
     // Why this instance is asking. A promotion needs the sequencer to route orders here
     // afterwards, and this request is the only thing that tells it to -- the arbiter's decision
     // does not reach the sequencer. A start needs the records and nothing else: this instance may
@@ -1571,14 +1591,16 @@ void MatchingEngineThread::send_follow_request() {
     // that this instance receives exactly one catch-up whichever connection the leader owns.
     // The message refers to the name rather than copying it, so the name must outlive the sends below.
     const std::string follower_name = "matching_engine_" + std::to_string(config_.instance_id);
+    ++follow_request_number_;
+    catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
     const pubsub_itc_fw::WalFollowRequest request = follow_request(follower_name);
-    // A repeated request is answered with the whole stream again, so the tally counts from this
-    // ask rather than from the start of the reconciliation. R-0101.
+    // The tally counts the answer to this request, and is set again when the answer starts. R-0101.
     catch_up_tally_ = pubsub_itc_fw::CatchUpTally(request.last_seq_no);
     for (const auto& conn_id : sequencer_order_conn_ids_) {
         send_pdu(conn_id, pubsub_itc_fw::WalFollowRequest::message_pdu_id, 0, request);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: asked on connection {} to be caught up (last_seq_no={}, {})",
-                   conn_id.get_value(), last_replicated_seq_no_, reconciling_to_lead_ ? "asking to lead" : "starting, not asking to lead");
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: asked on connection {} to be caught up (request {}, last_seq_no={}, {})", conn_id.get_value(), request.request_number,
+                   request.last_seq_no, reconciling_to_lead_ ? "asking to lead" : "starting, not asking to lead");
     }
     follow_request_sent_ = true;
 }
@@ -1589,19 +1611,18 @@ void MatchingEngineThread::ask_on_new_sequencer_connection(const pubsub_itc_fw::
         return;
     }
     // The catch-up has been asked for on the other connections already. The leading sequencer serves every request it
-    // is sent, so asking on those again would have it start its stream again from the first record, while the first
-    // stream is still arriving, and this instance would find the records going backwards and ask again only after
-    // catch_up_retry_seconds (BUG-0200). So only this connection is asked, and the tally is kept: if this connection's
-    // sequencer leads, the others declined and nothing has arrived to count; if it does not, it declines, and the
-    // stream under way finishes as it would have. A leader whose own connection was lost and made again in the middle
-    // of a stream sends the rest on this one, and the tally then counts more records than it says it sent; the
-    // catch-up is judged incomplete and asked for again, as before.
+    // is sent, so asking on those again would have it start its answer again while the first is still arriving
+    // (BUG-0200). So only this connection is asked, with the same request number: if this connection's sequencer leads,
+    // the others declined and nothing has arrived; if it does not, it declines, and the answer under way finishes as it
+    // would have. A leader whose own connection was lost and made again in the middle of an answer starts a new one on
+    // this connection, from the last command applied, and the tally is set again when it starts.
     const std::string follower_name = "matching_engine_" + std::to_string(config_.instance_id);
     const pubsub_itc_fw::WalFollowRequest request = follow_request(follower_name);
     send_pdu(id, pubsub_itc_fw::WalFollowRequest::message_pdu_id, 0, request);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: asked on new connection {} to be caught up (last_seq_no={}, {}), leaving the catch-up asked for on the others to finish",
-               id.get_value(), last_replicated_seq_no_, reconciling_to_lead_ ? "asking to lead" : "starting, not asking to lead");
+               "MatchingEngineThread: asked on new connection {} to be caught up (request {}, last_seq_no={}, {}), leaving the catch-up asked for on the "
+               "others to finish",
+               id.get_value(), request.request_number, request.last_seq_no, reconciling_to_lead_ ? "asking to lead" : "starting, not asking to lead");
 }
 
 void MatchingEngineThread::handle_follow_declined(const pubsub_itc_fw::EventMessage& message) {
@@ -1748,6 +1769,40 @@ void MatchingEngineThread::handle_engine_position_query(const pubsub_itc_fw::Eve
                message.connection_id().get_value(), state_machine_.highest_applied());
 }
 
+bool MatchingEngineThread::from_an_earlier_answer(const pubsub_itc_fw::ConnectionID& connection) const {
+    // While catching up, only the answer to the latest request is applied. A record that arrives on another connection,
+    // or before that answer has started, answers an earlier request: the leading sequencer stops answering an earlier
+    // request on a connection before it answers a later one, but what it had already sent still arrives. Every record
+    // it holds is in the latest answer, which starts from the last command this instance applied (BUG-0212).
+    return ha_role_state_ == MeRole::Reconciling && connection != catch_up_connection_;
+}
+
+void MatchingEngineThread::handle_follow_started(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw::WalFollowStartedView started{};
+    if (!pubsub_itc_fw::decode(started, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode WalFollowStarted -- dropping");
+        return;
+    }
+    if (ha_role_state_ != MeRole::Reconciling || started.request_number != follow_request_number_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: the sequencer on connection {} has started to answer catch-up request {}, which is not the one this instance is "
+                   "waiting on (request {}, {}) -- its records are ignored",
+                   message.connection_id().get_value(), started.request_number, follow_request_number_,
+                   ha_role_state_ == MeRole::Reconciling ? "catching up" : "not catching up");
+        return;
+    }
+    catch_up_connection_ = message.connection_id();
+    catch_up_tally_ = pubsub_itc_fw::CatchUpTally(started.after_seq_no);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: the sequencer on connection {} has started to answer catch-up request {}, with the orders after {} up to {} or later",
+               message.connection_id().get_value(), started.request_number, started.after_seq_no, started.serving_through_seq_no);
+}
+
 void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
@@ -1770,6 +1825,12 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
                    static_cast<int>(ha_role_state_));
         return;
     }
+    if (ack.request_number != follow_request_number_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: the sequencer on connection {} has finished answering catch-up request {}, not the latest, {} -- ignored",
+                   message.connection_id().get_value(), ack.request_number, follow_request_number_);
+        return;
+    }
 
     // R-0101: establish that the catch-up was complete before acting on it. What is checked is
     // that every record the sequencer SENT arrived, exactly once and in ascending order -- not
@@ -1780,8 +1841,8 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     // Nothing is promoted, reconciled or cancelled on a catch-up that cannot be accounted for.
     // The reconciliation timer is deliberately left running: the next tick finds that nothing
     // has arrived since the last ask and repeats the request, so an incomplete stream is retried
-    // rather than becoming a state the engine sits in. Applying the same records twice is
-    // absorbed -- an order already on the book is not added again.
+    // rather than becoming a state the engine sits in. The request names the last command
+    // applied, and a command at or below it is passed over, so nothing is applied twice.
     if (!catch_up_tally_.complete_with(ack.records_sent, ack.last_seq_no)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                    "MatchingEngineThread: catch-up was not complete -- {}. Not acting on it, and asking again (R-0101). {} record(s) were applied and are "
@@ -1796,8 +1857,10 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     state_machine_.note_caught_up_to(ack.last_seq_no);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: caught up -- book reconciled to seq_no={} (book_size={}), {} record(s) applied and {} report(s) sent to "
-               "members, each marked as a possible repeat; the catch-up accounted for all {} record(s) sent (R-0101)",
-               ack.last_seq_no, order_book_.size(), reconciliation_records_seen_, reconciliation_reports_sent_, ack.records_sent);
+               "members, each marked as a possible repeat; the catch-up accounted for all {} record(s) sent (R-0101); {} record(s) from earlier "
+               "answers ignored",
+               ack.last_seq_no, order_book_.size(), reconciliation_records_seen_, reconciliation_reports_sent_, ack.records_sent,
+               records_from_earlier_answers_);
     last_catch_up_records_sent_ = ack.records_sent;
     report_catch_up(pubsub_itc_fw_app::CatchUpStage::Completed, ack.last_seq_no, ack.records_sent);
 

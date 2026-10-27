@@ -17,6 +17,8 @@
 #include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
 
+#include <replication_messages.hpp>
+
 /**
  * @file WalFollowing.hpp
  * @brief What the thread that owns a WAL and the thread that reads it for its followers share.
@@ -167,6 +169,8 @@ struct WalReadingCommand {
     /// Serve: numbers this serving of the follower, echoed on its reports, so that a report from an
     /// earlier serving of the same connection, still on its way, is told apart and ignored.
     uint64_t serving{0};
+    /// Serve: sent to the follower before the first record, when it holds a value: the answer to a follower's request.
+    std::optional<WalFollowStarted> started;
 };
 
 /**

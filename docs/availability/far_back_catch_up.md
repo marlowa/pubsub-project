@@ -76,21 +76,21 @@ repeat. So whenever the sequencer cannot be sure, it sends a lower value, and 0 
 what every engine does now.
 
 **Committed only.** A record the leader has written but the follower has not acknowledged may be lost in a change of
-leader, so only committed report records count. The leader keeps, as it writes each report record, its number and the
-command it answers, and moves the value forward when the record is committed.
+leader, so only committed report records count.
 
-**On each sequencer, at every moment:**
+**Where it is worked out.** The reading thread works it out when it starts to answer an engine's request, before it
+sends `WalFollowStarted`. It reads the newest segment of the WAL, up to the last committed record, and takes the
+highest command that any report record in it answers; if that segment holds no report record, it reads the segment
+before, and so on, up to 64 segments (256 MB at the configured segment size of 4 MB), after which it gives 0. A
+segment is read in a few milliseconds, on the reading thread, not on the sequencer's thread. Working it out from the
+WAL as it stands, rather than keeping it as records are written, means it is right on a sequencer that has just
+started, on one that has just taken the lead, and on one whose WAL a repair has just cut back, with nothing to keep in
+step. A report in an older segment could answer a higher command than any in the newest only if every report in the
+newer segment were a kept report written again on a change of leader, and even then the lower value is safe.
 
-- **The leader** notes each report record as it writes it, as above.
-- **The follower** notes each report record as it receives it (`SequencerReplicatedWalEvents::written_as_follower`,
-  which already decodes every record it receives), so that it has the value when it takes the lead. Every record a
-  follower holds that the new leader keeps is committed once the new leader leads.
-- **A sequencer that starts** reads the value from its WAL. The thread that builds the record of command identifiers
-  at start-up already reads every record in the background (`LoggedCommandIdentifiersBuilder`); it notes the highest
-  command a report answers as well. Until it has finished, the sequencer reads the newest segment that holds any
-  report record, which takes milliseconds, and uses the highest command a report in it answers. A report in an older
-  segment could answer a higher command only if every report in the newer segment were a kept report written again on
-  a change of leader, and even then the lower value is safe.
+The library reads the WAL; the sequencer supplies a function, run on the reading thread for each record read, that
+says which command a report record answers and passes over every other record, as it supplies the functions that turn
+records into followers' messages (section 3.5 of [following_the_wal.md](following_the_wal.md)).
 
 ### 2.3 How the engine is told
 
@@ -114,21 +114,21 @@ fully reported command. A publisher is given 0, and ignores it.
 `WalFollowRequest` gains `request_number`, which the follower counts up from 1 with each request it sends, and
 `WalFollowCaughtUp` gains it too, echoed. Section 3 says why.
 
-The message is sent by the sequencer's own thread before it hands the follower to the reading thread. Every message
-any thread of the sequencer sends goes through the one queue into the reactor, in the order queued, so the engine
-receives `WalFollowStarted` before the first record of the catch-up.
+The reading thread sends it, as the first thing it does when told to serve the follower, because it is the thread that
+sends the records. It acts on what it is told in the order it is told, so every record of an earlier answer on the same
+connection is queued before `WalFollowStarted`, and every record of this answer after it. Sent by the sequencer's own
+thread instead, it could overtake records of an earlier answer that the reading thread had not yet stopped sending. A
+follower that holds nothing, and asks to be placed at the newest record, is answered through the reading thread too.
 
 ### 2.4 What the engine does
 
 The engine keeps the last fully reported command from the `WalFollowStarted` that answers its latest request. While
-it catches up:
-
-- **Catching up in order to lead, or as the only engine** (`reconciling_to_lead_`, or high availability off): for a
-  command at or before the last fully reported command it applies the command and sends no report. For a command after
-  it, it sends every report, marked as a possible repeat, as now.
-- **Catching up while another engine leads**: it sends no report at all. Every command released to engines is
-  answered by the engine that leads, so every report a following engine could send is a repeat. If the leader dies,
-  this engine catches up again before it leads, and that catch-up is in order to lead.
+it catches up, for a command at or before it, it applies the command and sends no report. For a command after it, it
+sends every report, marked as a possible repeat, as now. This is the same whether it is catching up in order to lead
+or not: an engine cannot tell whether the other engine leads, and at a start of the whole venue neither does, while
+the WAL can hold orders taken while no engine was running, which nothing has reported. An engine that left those out
+because it was not catching up in order to lead, and then took the lead, would find nothing more to catch up, and
+their members would never be told.
 
 Everything else is as now: the book, the open-order region, the follower's copy, the halt state and the count of
 records checked against `WalFollowCaughtUp` (R-0101). Only the reports are left out. `CatchUpEvent` to a test gains
@@ -170,13 +170,18 @@ then never apply a command twice, and must never take the records of an old requ
   catch-up ended. A connection delivers in order, so what arrived on a connection that was lost is a run of records
   with nothing missing in the middle, and the records after the last one applied are exactly what is still needed.
   The count check (R-0101) is unchanged: it counts the records of the latest request only.
-- **A command at or before the last command applied is passed over without a report**, whether it comes during a
-  catch-up or afterwards. The state machine already does this for commands after the last it acted on live
-  (`already_applied`); it covers every command applied, by catch-up or live, from now on.
+- **A command at or before the last command applied is passed over without a report during a catch-up.** The state
+  machine does this for every command applied, live or by a catch-up, complete or not (`applied_before`). A command
+  that arrives live with a number at or below the last applied is still refused as out of sequence, with a report to
+  the member (`sequence_goes_backwards`): live, it means the engine's book and the leading sequencer's WAL disagree,
+  which the member must be told of.
 - **The records of an old request are ignored.** Each request carries a number, which `WalFollowStarted` and
-  `WalFollowCaughtUp` echo. The engine ignores records that arrive after a `WalFollowStarted` for an older request and
-  before the one for its latest, and ignores a `WalFollowCaughtUp` for an older request. A connection carries one
-  catch-up at a time: the library stops serving the earlier request on a connection before it serves a later one.
+  `WalFollowCaughtUp` echo. The engine sends the same number on every sequencer connection. While it catches up, it
+  applies only records that arrive on the connection on which the `WalFollowStarted` for its latest request arrived,
+  and after it; any other record answers an earlier request, and is ignored without a report. It ignores a
+  `WalFollowCaughtUp` for an earlier request. A connection carries one answer at a time: the library stops sending
+  the earlier answer on a connection before it sends the start of a later one (section 2.3). The library's follower
+  side, `WalFollowerClient`, which the publishers use, does the same.
 - The comment in `MatchingEngineThread::handle_caught_up` that says applying the same records twice "is absorbed" is
   replaced by one that says what is done.
 
@@ -186,8 +191,10 @@ With high availability off the sequencer has no reading thread, and catches up a
 thread, reading and sending every record in one go (`engine_catch_up_from_wal`, `WalHandedOverFollowers::send_to`,
 `SequencerThread::send_logged_orders`). It gets a reading thread in every configuration, and every catch-up goes
 through the library, as it does with high availability on. With high availability off the reading thread serves an
-engine up to the last order released and a publisher up to the last record written, since with no follower every
-record is committed as it is written. The three functions above go, and the build's check that no new code reads the
+engine up to the last order released and a publisher up to the last record committed, which with no follower is every
+record as it is written. `engine_catch_up_from_wal` goes, and so does the path that caught a publisher up on the
+sequencer's thread; `send_logged_orders` stays only to count the orders deferred while no engine is connected, which
+sends nothing. The build's check that no new code reads the
 WAL on the sequencer's thread (step 5 of phase 5) covers them.
 
 ## 5. The limit on automatic recovery
@@ -199,8 +206,9 @@ members, and a catch-up from far back takes seconds or more, so members find the
 ask whether the venue is working. The venue should state the longest recovery it does by itself, as it states the
 longest absence of an engine (R-0117). When an engine that is the only one able to trade could not be current within
 that time, the venue halts trading, every order is refused with the reason, and a person decides when trading resumes.
-A follower catching up while the other engine leads is not limited, since members do not see it, and with section 2.4
-it no longer loads the leader.
+A follower catching up while the other engine leads is not limited, since members do not see it, and with section 2
+it sends the leading sequencer only the reports of commands the WAL does not yet hold every report of: those taken
+while it was catching up.
 
 Phases 7 and 8 keep the follower engine current, so a catch-up from far back happens only when both engines have lost
 their state, and never from further back than the start of the trading day.
@@ -248,7 +256,8 @@ long a normal failover may take, and should be set from a measurement of one.
 
 The longest a normal failover takes, with a margin: the lease period, 3 seconds, plus the catch-up of an engine that
 was current, which is milliseconds. A catch-up from far back takes much longer, at a rate still to be measured with
-the reports left out (section 6, step 3). Section 7 asks what the limit should be.
+the reports left out (section 6, step 3). The limit is 10 seconds until that measurement, and is set from it
+(decision 3).
 
 ## 6. Steps, and how each is known to be right
 
@@ -285,7 +294,7 @@ the sequencer is the process that knows whether any engine leads, and it can see
 own reading thread without any new message from the engine. An engine measuring it would have to ask the sequencer
 for the halt in any case, since only the leader writes commands.
 
-Recommended: yes.
+**Decided** on 27 October 2026: yes.
 
 ### Decision 2. Are the limit and BUG-0197's halt built as one rule? (Yes or no.)
 
@@ -293,7 +302,7 @@ Section 5.2: both say that when no engine has led for longer than a stated time,
 Built once, there is one measurement and one limit. Built separately, the venue would have two limits on the same
 situation, and which fired first would depend on their values.
 
-Recommended: yes. The halt and the refusal through `OrderAcceptance` are built in phase 7 with this work; the rejection
+**Decided** on 27 October 2026: yes. The halt and the refusal through `OrderAcceptance` are built in phase 7 with this work; the rejection
 of the orders held before the halt stays in phase 8 with the rest of BUG-0197.
 
 ### Decision 3. What is the limit? (Choose one, or give a figure.)
@@ -304,4 +313,5 @@ of the orders held before the halt stays in phase 8 with the rest of BUG-0197.
   them that fast.
 - **C. Set after step 3's measurement**, and built with a value of 10 seconds until then.
 
-Recommended: C. The figure is the business's, and how much of a day's catch-up fits inside it is not yet measured.
+**Decided** on 27 October 2026: C. The figure is the business's, and how much of a day's catch-up fits inside it is not yet
+measured. The limit is built with a value of 10 seconds, and set once step 3 has measured the catch-up rate.

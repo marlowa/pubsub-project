@@ -173,8 +173,9 @@ void SequencerThread::on_initial_event() {
     replicated_wal_->publish_positions_to(wal_positions_);
     handed_over_publishers_.emplace(replicated_wal_->wal(), config_.wal_directory, make_publisher_converter(64 * 1024), publisher_links_,
                                     pubsub_itc_fw::WalKeptRecordsCapacity{config_.records_kept_for_publishers, config_.bytes_kept_for_publishers});
+    // Every follower of the WAL is caught up by the reading thread, with high availability on or off.
+    wal_follower_service_.emplace(get_logger(), replicated_wal_->wal(), wal_positions_, wal_following_, wal_following_);
     if (config_.ha_enabled) {
-        wal_follower_service_.emplace(get_logger(), replicated_wal_->wal(), wal_positions_, wal_following_, wal_following_);
         replicated_wal_->use_peer_catch_up(wal_following_);
     }
     const int64_t recovered_seq = replicated_wal_->open(std::chrono::steady_clock::now());
@@ -1268,7 +1269,7 @@ void SequencerThread::SequencerWalFollowing::start_peer_catch_up(int64_t after_s
         return;
     }
     owner_.wal_follower_service_->serve(catch_up_connection_, after_seq_no, pubsub_itc_fw::FollowerLimit::LastWritten, peer_converter,
-                                        pubsub_itc_fw::CaughtUpMessage::DoNotSend);
+                                        pubsub_itc_fw::CaughtUpMessage::DoNotSend, std::nullopt);
 }
 
 void SequencerThread::SequencerWalFollowing::stop_peer_catch_up() {
@@ -1442,6 +1443,7 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
     // Reports held for sessions not yet announced are the new leader's to send: it forwards what it kept while following.
     if (stops_leading) {
         held_reports_.discard_all();
+        held_reports_left_the_room();
         reports_held_since_sessions_known_ = false;
         // Likewise the reports held for a gateway with no connection: they are in the WAL, and the new leader sends them.
         for (auto& [gateway, held] : reports_held_for_gateways_) {
@@ -1927,8 +1929,7 @@ void SequencerThread::send_orders_that_waited_in_the_log(int64_t first, int64_t 
         }
         return;
     }
-    // With no engine, they are counted as deferred; with no reading thread (high availability off), they
-    // are read here.
+    // With no engine, they are counted as deferred.
     send_logged_orders(first, through);
 }
 
@@ -2337,14 +2338,12 @@ std::optional<EngineReportPosition> SequencerThread::reports_forwarded_through()
             oldest_waiting = pending.position;
         }
     }
-    // A report held until its session is announced has not been forwarded either. Normally nothing is held, so this
-    // reads nothing.
-    held_reports_.for_each_held([&oldest_waiting](const fix_common::SessionIdentity&, const uint8_t* bytes, size_t size) {
-        const PendingEr held = decode_held_report(bytes, size);
-        if (held.position.has_value() && (!oldest_waiting.has_value() || oldest_waiting->is_after(*held.position))) {
-            oldest_waiting = held.position;
-        }
-    });
+    // A report held until its session is announced has not been forwarded either. This is done for every record
+    // written, so the held reports are not read here: a position at or before every one of them is kept as they come
+    // and go (held_reports_oldest_position_).
+    if (held_reports_oldest_position_.has_value() && (!oldest_waiting.has_value() || oldest_waiting->is_after(*held_reports_oldest_position_))) {
+        oldest_waiting = held_reports_oldest_position_;
+    }
     return oldest_waiting.has_value() ? oldest_waiting->just_before() : latest_report_seen_;
 }
 
@@ -2876,6 +2875,9 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
     if (identity.protocol == gateway_ids::fix_order_gateway) {
         const size_t discarded = held_reports_.release(identity, [](const uint8_t*, size_t) {});
         if (discarded > 0) {
+            held_reports_left_the_room();
+        }
+        if (discarded > 0) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "SequencerThread: session comp_id='{}' protocol={} logged on -- {} report(s) held for it are left to the reports it asks for once "
                        "established",
@@ -3273,6 +3275,9 @@ bool SequencerThread::hold_report_if_sessions_unknown(const PendingEr& pending) 
     std::memcpy(held_report_encoding_.data() + sizeof(header), pending.payload.data(), pending.payload.size());
     std::memcpy(held_report_encoding_.data() + sizeof(header) + pending.payload.size(), pending.cl_ord_id.data(), pending.cl_ord_id.size());
     held_reports_.hold(pending.identity, held_report_encoding_.data(), held_report_encoding_.size());
+    if (pending.position.has_value() && (!held_reports_oldest_position_.has_value() || held_reports_oldest_position_->is_after(*pending.position))) {
+        held_reports_oldest_position_ = pending.position;
+    }
 
     if (!reports_held_since_sessions_known_) {
         reports_held_since_sessions_known_ = true;
@@ -3286,15 +3291,33 @@ bool SequencerThread::hold_report_if_sessions_unknown(const PendingEr& pending) 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq_no={} for session comp_id='{}' protocol={} held", pending.seq_no,
                    pending.identity.comp_id_view(), pending.identity.protocol);
     }
-    if (held_reports_.dropped_for_room() != held_reports_dropped_reported_) {
+    if (held_reports_.dropped_for_room() != held_reports_dropped_reported_ && !held_reports_dropping_) {
+        // Said once, when the dropping starts; the total is said when reports next leave the room.
+        held_reports_dropping_ = true;
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: the room for reports held until their sessions are announced is full, and the oldest held reports are being "
+                       "dropped to make room; their members are not told of them");
+    }
+    held_reports_dropped_gauge_.set(static_cast<double>(held_reports_.dropped_for_room()));
+    return true;
+}
+
+void SequencerThread::held_reports_left_the_room() {
+    held_reports_oldest_position_.reset();
+    held_reports_.for_each_held([this](const fix_common::SessionIdentity&, const uint8_t* bytes, size_t size) {
+        const PendingEr held = decode_held_report(bytes, size);
+        if (held.position.has_value() && (!held_reports_oldest_position_.has_value() || held_reports_oldest_position_->is_after(*held.position))) {
+            held_reports_oldest_position_ = held.position;
+        }
+    });
+    if (held_reports_dropping_) {
+        held_reports_dropping_ = false;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: the room for reports held until their sessions are announced is full, and {} held report(s) have been "
-                   "dropped to make room; their members are not told of them",
+                   "SequencerThread: {} held report(s) were dropped to make room while the room for reports held until their sessions are announced "
+                   "was full; their members are not told of them",
                    held_reports_.dropped_for_room() - held_reports_dropped_reported_);
         held_reports_dropped_reported_ = held_reports_.dropped_for_room();
-        held_reports_dropped_gauge_.set(static_cast<double>(held_reports_dropped_reported_));
     }
-    return true;
 }
 
 void SequencerThread::send_held_reports(const fix_common::SessionIdentity& identity) {
@@ -3307,6 +3330,7 @@ void SequencerThread::send_held_reports(const fix_common::SessionIdentity& ident
     if (to_send.empty()) {
         return;
     }
+    held_reports_left_the_room();
     for (PendingEr& pending : to_send) {
         pending.identity = identity;
         forward_pending_er(pending);
@@ -3326,6 +3350,7 @@ void SequencerThread::drop_held_reports_for_sessions_connected_nowhere() {
     held_reports_.take_all([&dropped](const fix_common::SessionIdentity& identity, const uint8_t* bytes, size_t size) {
         dropped.emplace_back(identity, decode_held_report(bytes, size).seq_no);
     });
+    held_reports_left_the_room();
     for (const auto& [identity, seq_no] : dropped) {
         note_report_dropped_unbound(identity, seq_no);
     }
@@ -3722,39 +3747,10 @@ void SequencerThread::handle_publisher_follow_request(const pubsub_itc_fw::Conne
     // did, it would be sent every record twice (BUG-0153). One that does not lead declines, and tells the
     // publisher if it takes the lead, when the publisher asks it again.
     const pubsub_itc_fw::Leading leading = role_ == pubsub_itc_fw_app::Role::leader ? pubsub_itc_fw::Leading::Leads : pubsub_itc_fw::Leading::DoesNotLead;
-    if (wal_follower_service_.has_value()) {
-        // The reading thread sends it every record after its position, up to the last committed, and the
-        // service hands it over (SequencerWalFollowing::follower_handed_over), after which it is sent each
-        // record from here, as it is committed.
-        wal_follower_service_->on_follow_request(conn_id, view, leading, pubsub_itc_fw::FollowerLimit::LastCommitted, publisher_converter);
-        return;
-    }
-    if (leading == pubsub_itc_fw::Leading::DoesNotLead) {
-        pubsub_itc_fw::WalFollowDeclined declined{};
-        declined.last_seq_no = view.last_seq_no;
-        send_pdu(conn_id, pubsub_itc_fw::WalFollowDeclined::message_pdu_id, 0, declined);
-        return;
-    }
-
-    // Without a reading thread (high availability off): caught up here, from the segment holding the first
-    // record the publisher lacks, and then sent each record as it is committed.
-    const int64_t committed = replicated_wal_->committed_through();
-    const int64_t holds_through = view.last_seq_no < 0 ? committed : view.last_seq_no;
-    handed_over_publishers_->add(conn_id, holds_through, replicated_wal_->wal().scan_start_for(holds_through + 1));
-    const pubsub_itc_fw::WalHandedOverFollowers::Outcome outcome = handed_over_publishers_->send_to(conn_id, committed);
-    if (outcome.damaged_seq_no != 0) {
-        report_follower_cannot_be_served(conn_id, outcome.damaged_seq_no, "a matching engine publisher");
-        return;
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: {} on connection {} held records through {} -- {} record(s) sent, through {}, and each record from here is sent as it "
-               "is committed",
-               view.follower_name, conn_id.get_value(), view.last_seq_no, outcome.records_sent, committed);
-    pubsub_itc_fw::WalFollowCaughtUp caught_up{};
-    caught_up.last_seq_no = std::max(committed, holds_through);
-    caught_up.records_sent = outcome.records_sent;
-    caught_up.first_seq_no_held = replicated_wal_->wal().first_seq_no();
-    send_pdu(conn_id, pubsub_itc_fw::WalFollowCaughtUp::message_pdu_id, 0, caught_up);
+    // The reading thread sends it every record after its position, up to the last committed, and the service hands it
+    // over (SequencerWalFollowing::follower_handed_over), after which it is sent each record from here, as it is
+    // committed.
+    wal_follower_service_->on_follow_request(conn_id, view, leading, pubsub_itc_fw::FollowerLimit::LastCommitted, publisher_converter, 0);
 }
 
 void SequencerThread::send_committed_records_to_publishers(int64_t seq_no) {
@@ -3857,14 +3853,8 @@ void SequencerThread::handle_wal_follow_request(const pubsub_itc_fw::ConnectionI
                    "SequencerThread: WalFollowRequest on connection {} but I am follower -- re-pointed ME order connection, declined, and will say when "
                    "this instance leads",
                    conn_id.get_value());
-        if (wal_follower_service_.has_value()) {
-            wal_follower_service_->on_follow_request(conn_id, view, pubsub_itc_fw::Leading::DoesNotLead, pubsub_itc_fw::FollowerLimit::LastReleased,
-                                                     engine_converter);
-        } else {
-            pubsub_itc_fw::WalFollowDeclined declined{};
-            declined.last_seq_no = last_seq_no;
-            send_pdu(conn_id, pubsub_itc_fw::WalFollowDeclined::message_pdu_id, 0, declined);
-        }
+        wal_follower_service_->on_follow_request(conn_id, view, pubsub_itc_fw::Leading::DoesNotLead, pubsub_itc_fw::FollowerLimit::LastReleased,
+                                                 engine_converter, 0);
         return;
     }
 
@@ -3872,6 +3862,18 @@ void SequencerThread::handle_wal_follow_request(const pubsub_itc_fw::ConnectionI
     // acknowledgement, or for a voter's confirmation, is sent live when it is released, and sending it
     // here as well would act on it early.
     const int64_t wal_head = released_through();
+
+    // The start of the answer, sent before the first record. Its request number is echoed on WalFollowCaughtUp, so that
+    // the engine can tell this answer from an earlier one still on its way.
+    pubsub_itc_fw::WalFollowStarted started{};
+    started.request_number = view.request_number;
+    started.after_seq_no = last_seq_no;
+    started.serving_through_seq_no = wal_head;
+    started.application_value = 0;
+    EngineServing serving{};
+    serving.answers_catch_up_request = true;
+    serving.asking_to_lead = asking_to_lead;
+    serving.started = started;
 
     // A negative position is an engine saying it holds nothing and has applied nothing of this
     // venue's record -- a process that found no region where a predecessor would have left one.
@@ -3883,63 +3885,34 @@ void SequencerThread::handle_wal_follow_request(const pubsub_itc_fw::ConnectionI
     // applied is not recovered by an instance that starts this way. Recovering it needs an
     // engine that can say where it had got to, which is what the region is for.
     if (last_seq_no < 0) {
-        // Anything the reading thread was still sending this connection stops first.
-        if (wal_follower_service_.has_value() && wal_follower_service_->is_being_caught_up(conn_id)) {
-            wal_follower_service_->on_connection_lost(conn_id);
-            engine_servings_.erase(conn_id.get_value());
-        }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "SequencerThread: WalFollowRequest from connection {} carries no position -- the engine holds nothing and is placed at head={} without "
                    "catch-up. Any order taken and not yet applied is not recovered by this instance",
                    conn_id.get_value(), wal_head);
-        pubsub_itc_fw::WalFollowCaughtUp head{};
-        head.last_seq_no = wal_head;
-        head.first_seq_no_held = wal_head;
-        head.records_sent = 0;
-        send_pdu(conn_id, pubsub_itc_fw::WalFollowCaughtUp::message_pdu_id, 0, head);
+        // With a reading thread, through it, so that the start of the answer reaches the engine after anything it was
+        // still sending this connection: it sends the engine only the orders released after the head.
+        // Through the reading thread, so that the start of the answer reaches the engine after anything it was still
+        // sending this connection: it sends the engine only the orders released after the head. Order routing is left
+        // where it is, as for an engine that is starting: placing an engine that holds nothing is not a promotion.
+        serving.asking_to_lead = false;
+        serve_engine(conn_id, wal_head, serving);
         return;
     }
 
-    // With a reading thread, it reads the WAL and sends the orders, and this thread carries on; the engine
-    // is answered when it is handed over (engine_handed_over). Orders released meanwhile reach it too.
-    if (wal_follower_service_.has_value()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: WalFollowRequest from connection {} last_seq_no={} ({}) -- the reading thread sends it the orders after that, up "
-                   "to the last released, now {}",
-                   conn_id.get_value(), last_seq_no, asking_to_lead ? "asking to lead" : "starting, not asking to lead", wal_head);
-        EngineServing serving{};
-        serving.answers_catch_up_request = true;
-        serving.asking_to_lead = asking_to_lead;
-        serve_engine(conn_id, last_seq_no, serving);
-        return;
-    }
-
-    // Without a reading thread (high availability off): read here, from the segment holding the first
-    // record the engine lacks.
+    // The reading thread reads the WAL and sends the orders, and this thread carries on; the engine is answered when it
+    // is handed over (engine_handed_over). Orders released meanwhile reach it too.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: WalFollowRequest from connection {} last_seq_no={} ({}) -- streaming WAL catch-up up to head={}", conn_id.get_value(),
-               last_seq_no, asking_to_lead ? "asking to lead" : "starting, not asking to lead", wal_head);
-    const EngineCatchUpFromWal caught_up =
-        engine_catch_up_from_wal(config_.wal_directory, replicated_wal_->wal().scan_start_for(last_seq_no + 1), last_seq_no, wal_head, decode_arena_buffer(),
-                                 [this, &conn_id](int64_t record_id, const pubsub_itc_fw_app::WalRecord& envelope) {
-                                     send_pdu(conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, record_id, envelope);
-                                 });
-    if (caught_up.damaged_seq_no != 0) {
-        // The engine is not told it has caught up: what it holds would be incomplete without anything showing it.
-        report_follower_cannot_be_served(conn_id, caught_up.damaged_seq_no, "the matching engine");
-        return;
-    }
-    const int64_t streamed = caught_up.records_sent;
-    EngineServing serving{};
-    serving.answers_catch_up_request = true;
-    serving.asking_to_lead = asking_to_lead;
-    engine_handed_over(conn_id, wal_head, streamed, serving);
+               "SequencerThread: WalFollowRequest from connection {} last_seq_no={} ({}) -- the reading thread sends it the orders after that, up "
+               "to the last released, now {}",
+               conn_id.get_value(), last_seq_no, asking_to_lead ? "asking to lead" : "starting, not asking to lead", wal_head);
+    serve_engine(conn_id, last_seq_no, serving);
 }
 
 void SequencerThread::serve_engine(const pubsub_itc_fw::ConnectionID& engine, int64_t after_seq_no, EngineServing serving) {
     publish_released_position();
     engine_servings_[engine.get_value()] = serving;
-    wal_follower_service_->serve(engine, after_seq_no, pubsub_itc_fw::FollowerLimit::LastReleased, engine_converter, pubsub_itc_fw::CaughtUpMessage::DoNotSend);
+    wal_follower_service_->serve(engine, after_seq_no, pubsub_itc_fw::FollowerLimit::LastReleased, engine_converter, pubsub_itc_fw::CaughtUpMessage::DoNotSend,
+                                 serving.started);
 }
 
 void SequencerThread::engine_handed_over(const pubsub_itc_fw::ConnectionID& engine, int64_t through, int64_t records_sent, EngineServing serving) {
@@ -3964,6 +3937,7 @@ void SequencerThread::engine_handed_over(const pubsub_itc_fw::ConnectionID& engi
     caught_up.last_seq_no = through;
     caught_up.first_seq_no_held = earliest_retained;
     caught_up.records_sent = records_sent;
+    caught_up.request_number = serving.started.has_value() ? serving.started->request_number : 0;
     send_pdu(engine, pubsub_itc_fw::WalFollowCaughtUp::message_pdu_id, 0, caught_up);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: WalFollowCaughtUp sent (last_seq_no={}, earliest retained={}, records_sent={}) -- ME is now live", through, earliest_retained,

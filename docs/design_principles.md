@@ -212,8 +212,7 @@ warning, and treated as an incident.
 - The sequencer's thread still reads its log in the cases its table of permitted reads lists: resends and
   requests for undelivered reports ([BUG-0113](bug_list.md#bug_0113)), the duplicate check
   ([BUG-0122](bug_list.md#bug_0122)), records read back for publishers already handed over
-  ([BUG-0171](bug_list.md#bug_0171)), every catch-up with high availability off
-  ([BUG-0172](bug_list.md#bug_0172)), and orders counted as deferred while no matching engine is connected
+  ([BUG-0171](bug_list.md#bug_0171)), and orders counted as deferred while no matching engine is connected
   ([BUG-0174](bug_list.md#bug_0174)).
 - The log's helper keeps only one segment ready. If it is still filling that segment when the writer
   needs it, the writer waits for it, spinning until it finishes; and the writer creates a segment

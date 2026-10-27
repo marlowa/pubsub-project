@@ -113,6 +113,11 @@ void WalReadingThread::serve(const WalReadingCommand& command) {
     followers_[command.connection.get_value()] = std::move(follower);
     PUBSUB_LOG(get_logger(), FwLogLevel::Info, "WalReadingThread: sending connection {} every record after {}, read from the WAL",
                command.connection.get_value(), command.after_seq_no);
+    // Before the first record, and after every record of an earlier serving of this connection, which this thread
+    // sent before it acted on this command.
+    if (command.started.has_value()) {
+        send_pdu(command.connection, WalFollowStarted::message_pdu_id, 0, *command.started);
+    }
     send_batch(served);
 }
 

@@ -280,10 +280,10 @@ class MatchingEngineStateMachine {
      */
     void note_caught_up_to(int64_t sequence_number);
 
-    /// The highest sequence number of any live command acted on, or the position a completed catch-up brought the
-    /// book to, whichever is higher.
+    /// The highest sequence number of any command applied, live or by a catch-up, or the position a completed catch-up
+    /// brought the book to, whichever is higher.
     [[nodiscard]] int64_t highest_applied() const {
-        return highest_live_seq_no_;
+        return highest_applied_seq_no_;
     }
 
   private:
@@ -354,17 +354,18 @@ class MatchingEngineStateMachine {
      * silently disagrees with the record. Never asked during a catch-up, whose records are below the
      * position by construction. See docs/availability/change_of_sequencer_leader.md, part 4.2.
      *
-     * Raises highest_live_seq_no_ to sequence_number when it returns false.
+     * Raises highest_applied_seq_no_ to sequence_number when it returns false.
      */
     [[nodiscard]] bool sequence_goes_backwards(int64_t sequence_number);
 
     /**
-     * @brief Whether a command delivered by a catch-up is one this engine has already acted on, and so is not applied again.
+     * @brief Whether a command delivered by a catch-up is one this engine has already applied, and so is not applied again.
      *
-     * True when its sequence number is at or below the highest acted on live or reached by a completed catch-up. Every
-     * command is applied once, in the order of its sequence number, whichever way it arrives.
+     * True when its sequence number is at or below the highest applied, live or by a catch-up, complete or not. When it
+     * is false, the command is about to be applied, and its sequence number becomes the highest applied. Every command is
+     * applied once, in the order of its sequence number, whichever way it arrives (BUG-0212).
      */
-    [[nodiscard]] bool already_applied(int64_t sequence_number) const;
+    [[nodiscard]] bool applied_before(int64_t sequence_number);
 
     // Publishes the book to a refused command's sequence number during a catch-up, and not live. See the definition for why.
     void publish_after_refusal(int64_t sequence_number, CommandSource source);
@@ -419,9 +420,9 @@ class MatchingEngineStateMachine {
     MatchingEngineOutputsInterface& outputs_;
     pubsub_itc_fw::QuillLogger& logger_;
 
-    // The highest sequence number of any live order or cancel acted on, or the position a completed catch-up brought
-    // the book to, whichever is higher. See sequence_goes_backwards().
-    int64_t highest_live_seq_no_{0};
+    // The highest sequence number of any command applied, live or by a catch-up, or the position a completed catch-up
+    // brought the book to, whichever is higher. See sequence_goes_backwards() and applied_before().
+    int64_t highest_applied_seq_no_{0};
 
     // What the command being applied has done so far: how many reports it has sent, and whether it has changed the book.
     // after_failure reads them to decide whether a failure can still be answered with a rejection.

@@ -460,10 +460,21 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // Establishes that the catch-up was complete before this instance acts on it (R-0101).
     //
-    // Its life is one ASK rather than one reconciliation, unlike the counter above: the answer to
-    // a repeated request is the whole stream again, so what the ack accounts for is what the last
-    // request produced. It is reset where the request is sent.
+    // Its life is one answer rather than one reconciliation, unlike the counter above: what the ack accounts for is what
+    // the answer to the latest request sent. It is reset when that answer starts (WalFollowStarted).
     pubsub_itc_fw::CatchUpTally catch_up_tally_{0};
+
+    // The number of the latest catch-up request, counting up from 1. The same number is sent on every sequencer order
+    // connection, and the leading sequencer echoes it on WalFollowStarted and WalFollowCaughtUp.
+    int64_t follow_request_number_{0};
+
+    // The connection on which the answer to the latest request has started, or none until it has. While catching up,
+    // records on any other connection, or before the answer starts, are from an earlier answer still on its way, and
+    // are ignored: applying them would apply again what the latest answer brings.
+    pubsub_itc_fw::ConnectionID catch_up_connection_{};
+
+    // How many records from earlier answers were ignored in the present catch-up, for the Quill log.
+    int64_t records_from_earlier_answers_{0};
 
     // Whether this catch-up is a promotion or a start. Both catch up, because both may be
     // missing records; only a promotion inherits a book from a peer, and only a promotion is
@@ -602,8 +613,12 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void ask_on_new_sequencer_connection(const pubsub_itc_fw::ConnectionID& id);
     // The catch-up request this instance sends, naming it follower_name, which must outlive the request.
     [[nodiscard]] pubsub_itc_fw::WalFollowRequest follow_request(const std::string& follower_name) const;
+    // The leading sequencer has started to answer a catch-up request (WalFollowStarted).
+    void handle_follow_started(const pubsub_itc_fw::EventMessage& message);
     // The leading sequencer has sent every order after this instance's position (WalFollowCaughtUp).
     void handle_caught_up(const pubsub_itc_fw::EventMessage& message);
+    // Whether a record arriving on @p connection is from an earlier answer still on its way, while catching up.
+    [[nodiscard]] bool from_an_earlier_answer(const pubsub_itc_fw::ConnectionID& connection) const;
     // A sequencer that does not lead has declined the request (WalFollowDeclined); it says when it leads.
     void handle_follow_declined(const pubsub_itc_fw::EventMessage& message);
     // A sequencer has taken the lead (WalLeaderChanged): a request still unanswered is made again at once.

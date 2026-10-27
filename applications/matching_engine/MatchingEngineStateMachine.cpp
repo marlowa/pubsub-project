@@ -103,7 +103,7 @@ MatchingEngineStateMachine::MatchingEngineStateMachine(OrderBook& book, ReportId
     : book_(book), identifiers_(identifiers), outputs_(outputs), logger_(logger) {}
 
 void MatchingEngineStateMachine::note_caught_up_to(int64_t sequence_number) {
-    highest_live_seq_no_ = std::max(highest_live_seq_no_, sequence_number);
+    highest_applied_seq_no_ = std::max(highest_applied_seq_no_, sequence_number);
 }
 
 void MatchingEngineStateMachine::apply_new_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
@@ -201,7 +201,7 @@ void MatchingEngineStateMachine::apply_new_order_unguarded(const pubsub_itc_fw_a
     const bool live = source == CommandSource::live;
     const ReportIsRepeat repeat = live ? ReportIsRepeat::no : ReportIsRepeat::yes;
 
-    if (!live && already_applied(sequence_number)) {
+    if (!live && applied_before(sequence_number)) {
         return;
     }
     if (!ReportIdentifiers::fits(sequence_number, 0)) {
@@ -460,7 +460,7 @@ void MatchingEngineStateMachine::apply_cancel_unguarded(const pubsub_itc_fw_app:
     const bool live = source == CommandSource::live;
     const ReportIsRepeat repeat = live ? ReportIsRepeat::no : ReportIsRepeat::yes;
 
-    if (!live && already_applied(sequence_number)) {
+    if (!live && applied_before(sequence_number)) {
         return;
     }
     if (!ReportIdentifiers::fits(sequence_number, 0)) {
@@ -668,29 +668,30 @@ void MatchingEngineStateMachine::refuse_over_long_cancel(const pubsub_itc_fw_app
     send_report(er, sequence_number, session, repeat);
 }
 
-bool MatchingEngineStateMachine::already_applied(int64_t sequence_number) const {
-    // A catch-up can deliver records this engine has already acted on live: one asked for again, after an order was
-    // discarded while this instance held no lease, starts from the position the region published, which can be below
-    // the last command acted on. Such a record is not applied twice. It produces no report, because the member was
-    // answered when it was acted on, and does not move the published position, which is already at or above it.
-    if (sequence_number > highest_live_seq_no_) {
+bool MatchingEngineStateMachine::applied_before(int64_t sequence_number) {
+    // A catch-up can deliver records this engine has already applied: live, after an order was discarded while this
+    // instance held no lease, or by an earlier catch-up that was cut short. Such a record is not applied twice. It
+    // produces no report, because the member was answered when it was applied, and does not move the published
+    // position, which is already at or above it.
+    if (sequence_number > highest_applied_seq_no_) {
+        highest_applied_seq_no_ = sequence_number;
         return false;
     }
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug,
-               "MatchingEngineStateMachine: catch-up record seq={} is at or below {}, the highest already acted on -- not applied again", sequence_number,
-               highest_live_seq_no_);
+               "MatchingEngineStateMachine: catch-up record seq={} is at or below {}, the highest already applied -- not applied again", sequence_number,
+               highest_applied_seq_no_);
     return true;
 }
 
 bool MatchingEngineStateMachine::sequence_goes_backwards(int64_t sequence_number) {
-    if (sequence_number <= highest_live_seq_no_) {
+    if (sequence_number <= highest_applied_seq_no_) {
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
                    "MatchingEngineStateMachine: a command arrived with sequence number {}, not above {}, the highest this engine has already acted on -- "
                    "refusing it, because acting on it would leave the book disagreeing with the leading sequencer's WAL",
-                   sequence_number, highest_live_seq_no_);
+                   sequence_number, highest_applied_seq_no_);
         return true;
     }
-    highest_live_seq_no_ = sequence_number;
+    highest_applied_seq_no_ = sequence_number;
     return false;
 }
 
@@ -892,7 +893,7 @@ MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::a
                                                                                                  int32_t trading_date, CommandSource source) {
     BookCancelledByCommand result;
     const bool live = source == CommandSource::live;
-    if (!live && already_applied(sequence_number)) {
+    if (!live && applied_before(sequence_number)) {
         return result;
     }
     if (!ReportIdentifiers::fits(sequence_number, 0)) {
@@ -981,7 +982,7 @@ MatchingEngineStateMachine::TechnicalEventApplied MatchingEngineStateMachine::ap
                                                                                                     CommandSource source) {
     TechnicalEventApplied result;
     const bool live = source == CommandSource::live;
-    if (!live && already_applied(sequence_number)) {
+    if (!live && applied_before(sequence_number)) {
         return result;
     }
     if (live && sequence_goes_backwards(sequence_number)) {

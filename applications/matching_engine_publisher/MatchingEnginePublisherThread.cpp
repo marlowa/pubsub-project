@@ -217,6 +217,8 @@ void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw
     if (conn_id == sequencer_conn_id_ || conn_id == sequencer_secondary_conn_id_) {
         if (message.pdu_id() == pubsub_itc_fw_app::WalRecord::message_pdu_id) {
             handle_wal_record_from_sequencer(conn_id, message);
+        } else if (message.pdu_id() == pubsub_itc_fw::WalFollowStarted::message_pdu_id) {
+            handle_follow_started(conn_id, message);
         } else if (message.pdu_id() == pubsub_itc_fw::WalFollowCaughtUp::message_pdu_id) {
             handle_follow_caught_up(conn_id, message);
         } else if (message.pdu_id() == pubsub_itc_fw::WalFollowDeclined::message_pdu_id) {
@@ -404,6 +406,23 @@ void MatchingEnginePublisherThread::PublisherFollowLinks::send_follow_request(co
     owner_.send_pdu(to, pubsub_itc_fw::WalFollowRequest::message_pdu_id, 0, request);
 }
 
+void MatchingEnginePublisherThread::handle_follow_started(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_needed = 0;
+    size_t consumed = 0;
+    pubsub_itc_fw::WalFollowStartedView started{};
+    if (!pubsub_itc_fw::decode(started, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode WalFollowStarted -- dropping");
+        return;
+    }
+    follower_client_->on_started(conn_id, started);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MepThread: the sequencer on connection {} has started to answer request {}, with the records after {}", conn_id.get_value(),
+               started.request_number, started.after_seq_no);
+}
+
 void MatchingEnginePublisherThread::handle_follow_caught_up(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
@@ -415,7 +434,14 @@ void MatchingEnginePublisherThread::handle_follow_caught_up(const pubsub_itc_fw:
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode WalFollowCaughtUp -- dropping");
         return;
     }
-    if (follower_client_->on_caught_up(conn_id, caught_up) == pubsub_itc_fw::WalFollowerClient::CaughtUpVerdict::CountMismatch) {
+    const pubsub_itc_fw::WalFollowerClient::CaughtUpVerdict verdict = follower_client_->on_caught_up(conn_id, caught_up);
+    if (verdict == pubsub_itc_fw::WalFollowerClient::CaughtUpVerdict::ForAnEarlierRequest) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MepThread: the sequencer on connection {} says it has finished answering request {}, which is not the latest asked -- ignored",
+                   conn_id.get_value(), caught_up.request_number);
+        return;
+    }
+    if (verdict == pubsub_itc_fw::WalFollowerClient::CaughtUpVerdict::CountMismatch) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "MepThread: the sequencer on connection {} says it sent {} record(s), which is not how many arrived -- asked again from record {}",
                    conn_id.get_value(), caught_up.records_sent, follower_client_->last_seq_no());
@@ -463,6 +489,10 @@ void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(const pubsu
         case pubsub_itc_fw::WalFollowerClient::RecordVerdict::AlreadyHeld:
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MepThread: record {} from connection {} is held already -- dropped", view.seq_no,
                        conn_id.get_value());
+            return;
+        case pubsub_itc_fw::WalFollowerClient::RecordVerdict::ForAnEarlierRequest:
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                       "MepThread: record {} from connection {} answers an earlier request, still on its way -- dropped", view.seq_no, conn_id.get_value());
             return;
         case pubsub_itc_fw::WalFollowerClient::RecordVerdict::Gap:
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,

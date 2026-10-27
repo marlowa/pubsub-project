@@ -541,7 +541,7 @@ TEST_F(MatchingEngineStateMachineTest, ACatchUpAppliesAnOrderAndReportsItAsAPoss
     EXPECT_EQ(book_.published(), 3);
     EXPECT_EQ(outputs_.accepted, 0) << "an order applied from a catch-up is not counted as processed";
     EXPECT_TRUE(outputs_.added.empty()) << "nor replicated to the follower";
-    EXPECT_EQ(machine_.highest_applied(), 0) << "a catch-up moves the position only when it completes";
+    EXPECT_EQ(machine_.highest_applied(), 3) << "a command applied by a catch-up is applied, whether or not the catch-up completes";
 }
 
 // The halt is set by a command at a position in the WAL, so an engine catching up meets it where the engine that applied
@@ -715,6 +715,28 @@ TEST_F(MatchingEngineStateMachineTest, ACatchUpDoesNotApplyAgainACommandAlreadyA
     ASSERT_EQ(outputs_.reports.size(), 1U) << "a record above what was acted on is applied";
     EXPECT_EQ(outputs_.reports[0].exec_type, pubsub_itc_fw_app::ExecType::New);
     EXPECT_EQ(book_.published(), 8);
+}
+
+// A catch-up cut short, by a lost connection or a count that did not match, is asked for again, and the answer can bring
+// records an earlier, incomplete catch-up applied. They are not applied again: applied twice, an order on the book would be
+// refused as a duplicate and a cancel already done refused, each with a report to the member (BUG-0212).
+TEST_F(MatchingEngineStateMachineTest, ACatchUpDoesNotApplyAgainACommandAnEarlierCatchUpApplied) {
+    machine_.apply_new_order(new_order("ORD-1"), 5, taken_at, trading_day, member, CommandSource::catch_up);
+    machine_.apply_new_order(new_order("ORD-2"), 6, taken_at, trading_day, member, CommandSource::catch_up);
+    machine_.apply_cancel(cancel_of("ORD-1", "CXL-1"), 7, taken_at, trading_day, member, CommandSource::catch_up);
+    ASSERT_EQ(outputs_.reports.size(), 3U);
+    outputs_.reports.clear();
+    outputs_.outcomes.clear();
+
+    machine_.apply_new_order(new_order("ORD-1"), 5, taken_at, trading_day, member, CommandSource::catch_up);
+    machine_.apply_new_order(new_order("ORD-2"), 6, taken_at, trading_day, member, CommandSource::catch_up);
+    machine_.apply_cancel(cancel_of("ORD-1", "CXL-1"), 7, taken_at, trading_day, member, CommandSource::catch_up);
+    EXPECT_TRUE(outputs_.reports.empty()) << "a record an earlier catch-up applied produces no report";
+    EXPECT_TRUE(outputs_.outcomes.empty());
+    EXPECT_EQ(book_.size(), 1U);
+    EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-2")));
+    EXPECT_EQ(book_.published(), 7);
+    EXPECT_EQ(machine_.highest_applied(), 7);
 }
 
 TEST_F(MatchingEngineStateMachineTest, ACatchUpRefusesADuplicateClOrdIdAsALiveOrderIs) {

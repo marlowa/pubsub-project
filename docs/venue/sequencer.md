@@ -137,10 +137,11 @@ depends on whether a matching engine is reachable. Only the leader sends it. See
 ## The matching engine's catch-up
 
 An engine catches up from the leader's log before it acts, whether it has just started or has just
-been promoted. It sends `WalFollowRequest` with the position it has reached. The leader's reading thread
-sends it every command after that position, up to the last one released, without holding up the
-sequencer's own thread, and the leader then sends `WalFollowCaughtUp` saying where it stopped and how
-many records it sent, so the engine can check it received them all. A sequencer that does not lead
+been promoted. It sends `WalFollowRequest` with the position it has reached and a request number. The
+leader's reading thread sends it `WalFollowStarted`, echoing the number, and then every command after that
+position, up to the last one released, without holding up the sequencer's own thread, and the leader then
+sends `WalFollowCaughtUp` saying where it stopped, how many records it sent and the request's number, so
+the engine can check it received them all and tell this answer from an earlier one still on its way. A sequencer that does not lead
 declines with `WalFollowDeclined`, and sends `WalLeaderChanged` when it takes the lead, so that the
 engine asks again at once ([following_the_wal.md](../availability/following_the_wal.md)). See
 [Matching Engine](matching_engine.md).
@@ -235,8 +236,7 @@ sequences orders does not stop while records are read
 ([following_the_wal.md](../availability/following_the_wal.md)). The sequencer's own thread still reads the
 log in a few named cases: replay mode; resends and requests for undelivered reports
 ([BUG-0113](../bug_list.md#bug_0113)); the duplicate check ([BUG-0122](../bug_list.md#bug_0122)); records
-read back, once each, for publishers already caught up ([BUG-0171](../bug_list.md#bug_0171)); every
-catch-up with high availability off ([BUG-0172](../bug_list.md#bug_0172)); and orders counted as deferred
+read back, once each, for publishers already caught up ([BUG-0171](../bug_list.md#bug_0171)); and orders counted as deferred
 while no matching engine is connected ([BUG-0174](../bug_list.md#bug_0174)). Check 30 of
 `scripts/check_standards.py` fails the build on any other read of the log in the sequencer; its table,
 `_PERMITTED_WAL_READS`, lists each of these with its reason.

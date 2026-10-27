@@ -105,8 +105,10 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     // The thread that reads the WAL for its followers, so that the sequencer's own thread, which
     // sequences every order, never does (docs/availability/following_the_wal.md). It stays on the
     // background cores, so the CPU layout needs no core for it. It sends a rejoining follower sequencer
-    // the records it lacks as ReplicatedRecord messages, exactly as the replicated WAL sends new ones.
-    if (config_.ha_enabled && !config_.replay_mode) {
+    // the records it lacks as ReplicatedRecord messages, exactly as the replicated WAL sends new ones. With high
+    // availability off as well, so that every catch-up is paced by what the follower's connection takes and is off the
+    // sequencer's thread, whatever the configuration (docs/availability/far_back_catch_up.md, section 4).
+    if (!config_.replay_mode) {
         // In the order of their numbers: SequencerThread::peer_converter, SequencerThread::engine_converter, then
         // SequencerThread::publisher_converter.
         std::vector<pubsub_itc_fw::WalRecordConverter> converters;

@@ -1289,14 +1289,12 @@ _WAL_READERS = [
     (r'\blog_tail_index_->holds\b', 'the sequencer member holding a LogTailIndex, reading segments it has not yet read'),
     (r'\bLoggedCommandIdentifiersBuilder\b', 'the sequencer class that reads every segment to build the record of command identifiers'),
     (r'\bidentifiers_builder_\.start\b', 'the sequencer member holding a LoggedCommandIdentifiersBuilder, starting its reading'),
-    (r'\bengine_catch_up_from_wal\s*\(', 'the sequencer function that catches a matching engine up on the calling thread'),
     (r'\bsend_logged_orders\s*\(', 'the sequencer function that reads orders back from the WAL on its own thread'),
 ]
 _WAL_READER_RES = [re.compile(pattern) for pattern, _what in _WAL_READERS]
 
 _REPLAY_MODE = 'replay mode, which runs with nothing else and sequences nothing'
 _THREAD_OF_ITS_OWN = 'runs on a thread of its own, on the background cores, not on the sequencer\'s thread'
-_HIGH_AVAILABILITY_OFF = 'only with high availability off, when there is no reading thread: BUG-0172'
 _RESENDS = 'a resend or a request for undelivered reports: BUG-0113, which moves them to a recovery service'
 _DUPLICATE_CHECK = 'the duplicate check: BUG-0122, replaced in phase 9 of docs/recovery_plan.md'
 _PUBLISHERS = ('a record sent to a publisher already handed over, read back moments after it was written, once '
@@ -1307,11 +1305,9 @@ _DEFINITION = 'where the reader itself is declared or defined; each use of it is
 # Each entry: (path relative to the project root, where, why), as for _PERMITTED_LOCKS.
 _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::on_initial_event', _REPLAY_MODE),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_orders_that_waited_in_the_log', _HIGH_AVAILABILITY_OFF + '; ' + _NO_ENGINE),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_engine_position', _HIGH_AVAILABILITY_OFF + '; ' + _NO_ENGINE),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_logged_orders', _HIGH_AVAILABILITY_OFF + '; ' + _NO_ENGINE),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_wal_follow_request', _HIGH_AVAILABILITY_OFF),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_publisher_follow_request', _HIGH_AVAILABILITY_OFF),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_orders_that_waited_in_the_log', _NO_ENGINE),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_engine_position', _NO_ENGINE),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_logged_orders', _NO_ENGINE),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_committed_records_to_publishers', _PUBLISHERS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_undelivered_reports_request', _RESENDS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_session_replay_request', _RESENDS),
@@ -1321,8 +1317,6 @@ _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.hpp', 'log_tail_index_', _DEFINITION),
     ('applications/sequencer/SequencerThread.hpp', 'identifiers_builder_', _DEFINITION),
     ('applications/sequencer/SequencerThread.hpp', 'send_logged_orders', _DEFINITION),
-    ('applications/sequencer/EngineCatchUpFromWal.hpp', 'engine_catch_up_from_wal', _DEFINITION),
-    ('applications/sequencer/EngineCatchUpFromWal.hpp', 'WalReader', _HIGH_AVAILABILITY_OFF),
     ('applications/sequencer/LogTailIndex.hpp', 'LogTailIndex', _DEFINITION),
     ('applications/sequencer/LogTailIndex.hpp', 'WalReader', _DUPLICATE_CHECK),
     ('applications/sequencer/LoggedCommandIdentifiersBuilder.hpp', 'LoggedCommandIdentifiersBuilder', _DEFINITION),

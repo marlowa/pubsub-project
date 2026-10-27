@@ -38,12 +38,17 @@ class WalFollowerClientLinksInterface {
  * instance says it sent since the request (requirement R-0101 for the matching engine); if not, it asks
  * again, and does not count itself caught up.
  *
+ * Each request carries a number, counting up from 1, which the leading instance echoes on WalFollowStarted,
+ * sent before the first record of its answer, and on WalFollowCaughtUp. A record that arrives on a connection
+ * before the WalFollowStarted for the latest request sent on that connection is from an earlier answer still on
+ * its way: it is not counted, and is dropped. A WalFollowCaughtUp for an earlier request is ignored.
+ *
  * **Threading.** Called only on the follower's thread.
  */
 class WalFollowerClient {
   public:
-    enum class RecordVerdict : int8_t { Accept, AlreadyHeld, Gap };
-    enum class CaughtUpVerdict : int8_t { CaughtUp, CountMismatch };
+    enum class RecordVerdict : int8_t { Accept, AlreadyHeld, Gap, ForAnEarlierRequest };
+    enum class CaughtUpVerdict : int8_t { CaughtUp, CountMismatch, ForAnEarlierRequest };
 
     /**
      * @param[in] follower_name     Who is asking, for the Quill log of the instance asked.
@@ -65,6 +70,9 @@ class WalFollowerClient {
 
     /// The instance on @p connection has taken the lead: ask it again.
     void on_leader_changed(const ConnectionID& connection);
+
+    /// The instance on @p connection has started to answer a request.
+    void on_started(const ConnectionID& connection, const WalFollowStartedView& started);
 
     /// A record numbered @p seq_no arrived on @p connection.
     [[nodiscard]] RecordVerdict on_record(const ConnectionID& connection, int64_t seq_no);
@@ -90,12 +98,20 @@ class WalFollowerClient {
   private:
     void ask(const ConnectionID& connection);
 
+    // The number of the latest request sent on @p connection, or 0 if none has been.
+    [[nodiscard]] int64_t latest_request_on(const ConnectionID& connection) const;
+
     std::string follower_name_;
     bool wants_new_records_;
     int64_t last_seq_no_;
     WalFollowerClientLinksInterface& links_;
-    // Records received on each connection since it was last asked, as the instance counts them.
+    // Records received on each connection since the instance started to answer the latest request, as the instance
+    // counts them. A connection is in the map only once that answer has started.
     std::unordered_map<int, int64_t> received_since_request_;
+    // The number of the latest request sent on each connection. Each request is numbered one more than the last one sent
+    // on any connection.
+    std::unordered_map<int, int64_t> request_numbers_;
+    int64_t last_request_number_{0};
     bool caught_up_{false};
     int64_t first_seq_no_held_{0};
 };

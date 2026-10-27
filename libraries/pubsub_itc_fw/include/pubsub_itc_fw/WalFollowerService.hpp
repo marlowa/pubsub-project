@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -109,13 +110,19 @@ class WalFollowerService {
     /**
      * @brief A follower's request (WalFollowRequest) arrived on @p connection.
      *
-     * @param[in] connection The connection the request arrived on, which the records are sent on.
-     * @param[in] request    The request: the follower's last record, and whether it wants new records.
-     * @param[in] leading   Whether this instance leads; one that does not declines.
-     * @param[in] limit     How far this follower may be sent; the application decides by the connection.
-     * @param[in] converter Which of the reading thread's converters turns records into its messages.
+     * An instance that leads sends WalFollowStarted, then the records, then WalFollowCaughtUp, the first and the last
+     * carrying the request's number. The reading thread sends WalFollowStarted and the records; a follower that holds
+     * nothing is placed at the newest record it may be sent and served from there.
+     *
+     * @param[in] connection        The connection the request arrived on, which the records are sent on.
+     * @param[in] request           The request: the follower's last record, whether it wants new records, and its number.
+     * @param[in] leading           Whether this instance leads; one that does not declines.
+     * @param[in] limit             How far this follower may be sent; the application decides by the connection.
+     * @param[in] converter         Which of the reading thread's converters turns records into its messages.
+     * @param[in] application_value A value of the application's own for this follower, carried on WalFollowStarted.
      */
-    void on_follow_request(const ConnectionID& connection, const WalFollowRequestView& request, Leading leading, FollowerLimit limit, int converter);
+    void on_follow_request(const ConnectionID& connection, const WalFollowRequestView& request, Leading leading, FollowerLimit limit, int converter,
+                           int64_t application_value);
 
     /**
      * @brief Offers an inter-thread message to the service; true if it was a report from the reading
@@ -129,8 +136,18 @@ class WalFollowerService {
      *        sequencer, whose replicated WAL starts its catch-up itself.
      *
      * A connection already being served is served afresh, from @p after_seq_no.
+     *
+     * @param[in] connection        The follower's connection, which the records are sent on.
+     * @param[in] after_seq_no      The last record the follower holds; it is sent every record after it.
+     * @param[in] limit             How far this follower may be sent.
+     * @param[in] converter         Which of the reading thread's converters turns records into its messages.
+     * @param[in] caught_up_message Whether the follower is sent WalFollowCaughtUp when it is handed over.
+     * @param[in] started           When it holds a value, the reading thread sends it to the follower before the first
+     *                              record, and after every record of an earlier serving of the connection: the start of
+     *                              the answer to a follower's request, for an application that answers the request itself.
      */
-    void serve(const ConnectionID& connection, int64_t after_seq_no, FollowerLimit limit, int converter, CaughtUpMessage caught_up_message);
+    void serve(const ConnectionID& connection, int64_t after_seq_no, FollowerLimit limit, int converter, CaughtUpMessage caught_up_message,
+               const std::optional<WalFollowStarted>& started);
 
     /// The connection has gone: the reading thread stops sending to it, and the service forgets it.
     void on_connection_lost(const ConnectionID& connection);
@@ -173,6 +190,8 @@ class WalFollowerService {
         ConnectionID connection;
         FollowerLimit limit{FollowerLimit::LastCommitted};
         bool tell_when_caught_up{false};
+        // The number of the request being answered, echoed on WalFollowCaughtUp.
+        int64_t request_number{0};
         bool handed_over{false};
         int short_rounds{0};
         uint64_t serving{0};
