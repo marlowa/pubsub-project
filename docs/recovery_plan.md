@@ -429,8 +429,9 @@ that sends and applies it; the catch-up on promotion from the end of a copy; and
 - the high availability scenarios that promote an engine pass, and check that the orders resting before the
   promotion are still resting after it;
 - a scenario that blocks the link between the engines, places and cancels orders during the break, kills
-  the leading engine, and compares the promoted book with what the members were told, passes. It is written
-  before the phase starts, and fails today with `"keep"`.
+  the leading engine, and compares the promoted book with what the members were told, passes. It is
+  `ha_test.py` scenario 87, written before the phase starts, and it fails with `"keep"` as
+  [BUG-0187](bug_list.md#bug_0187) describes.
 - both engines start alike, whichever is configured as primary: in an unknown role, catching up from the WAL
   when the first sequencer connects, and saying what role they have only once it is settled. Both engines
   do this ([BUG-0195](bug_list.md#bug_0195) is fixed);

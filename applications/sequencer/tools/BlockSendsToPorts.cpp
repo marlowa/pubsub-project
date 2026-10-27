@@ -24,16 +24,24 @@
 //   PUBSUB_TEST_BLOCK_FLAG    the path of the flag file. Sends pass through until it exists.
 //   PUBSUB_TEST_BLOCK_CONFIRMATION
 //                             optional: the path of a file the library creates when blocking begins.
+//   PUBSUB_TEST_BLOCK_MODE    optional: "discard", the default, or "break". See below.
 //
 // For example, with everything on one command line:
 //
 //   LD_PRELOAD=lib/libblock_sends_to_ports.so PUBSUB_TEST_BLOCK_PORTS=11003,11004 PUBSUB_TEST_BLOCK_FLAG=/path/to/flag bin/sequencer ...
 //
 // It replaces send(), which is the only call the framework uses to write to a TCP socket
-// (TcpSocket::send, and the TLS handler's sends). A blocked send reports every byte as sent, so
+// (TcpSocket::send, and the TLS handler's sends). By default a blocked send reports every byte as sent, so
 // the process does not retry or fail. Blocking is all at once and never undone: once the flag
 // has been seen, no later send on a blocked connection arrives, so the other end receives a whole
 // number of the frames sent before the flag appeared and nothing after.
+//
+// With PUBSUB_TEST_BLOCK_MODE set to "break", a blocked send fails instead, with ECONNRESET, as a send on a
+// connection the other end has reset does, so the process closes the connection as it would after a real break.
+// In this mode the block lasts only while the flag file exists: every send on a blocked connection looks for
+// the file, and once it has been removed, sends pass through again and a connection the process makes anew
+// works. This is for testing what a process does while a connection is down and after it comes back, which
+// discarding cannot show, because the connection stays up.
 //
 // When blocking begins, it creates the confirmation file, which the test waits for as evidence that
 // the block really was in force rather than assuming it. The flag is noticed at the first send after
@@ -67,6 +75,8 @@ struct Configuration {
     std::set<uint16_t> blocked_ports;
     std::string flag_path;
     std::string confirmation_path;
+    // Whether a blocked send fails, and only while the flag file exists, rather than being discarded for good.
+    bool break_connections{false};
     SendFunction real_send{nullptr};
 };
 
@@ -102,6 +112,8 @@ const Configuration& configuration() {
         result.flag_path = flag == nullptr ? "" : flag;
         const char* confirmation = std::getenv("PUBSUB_TEST_BLOCK_CONFIRMATION");
         result.confirmation_path = confirmation == nullptr ? "" : confirmation;
+        const char* mode = std::getenv("PUBSUB_TEST_BLOCK_MODE");
+        result.break_connections = mode != nullptr && std::string_view(mode) == "break";
         result.real_send = reinterpret_cast<SendFunction>(dlsym(RTLD_NEXT, "send"));
         return result;
     }();
@@ -135,6 +147,20 @@ bool connection_is_blocked(int file_descriptor, const std::set<uint16_t>& blocke
     return getpeername(file_descriptor, reinterpret_cast<sockaddr*>(&remote), &remote_length) == 0 && blocked_ports.count(port_of(remote)) != 0;
 }
 
+// Creates the confirmation file and says on standard error that blocking has begun, the first time only.
+void announce_blocking(const Configuration& config, std::string_view announcement) {
+    if (blocking.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    [[maybe_unused]] const ssize_t written = write(STDERR_FILENO, announcement.data(), announcement.size());
+    if (!config.confirmation_path.empty()) {
+        const int confirmation = open(config.confirmation_path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+        if (confirmation >= 0) {
+            close(confirmation);
+        }
+    }
+}
+
 // Whether blocking is in force, checking for the flag file until it is. The check is one system
 // call per send while the flag is absent, which is acceptable in the one process under test.
 bool blocking_has_begun(const Configuration& config) {
@@ -144,16 +170,16 @@ bool blocking_has_begun(const Configuration& config) {
     if (access(config.flag_path.c_str(), F_OK) != 0) {
         return false;
     }
-    if (!blocking.exchange(true, std::memory_order_acq_rel)) {
-        constexpr std::string_view announcement = "block_sends_to_ports: the flag file exists; sends to the blocked ports are now discarded\n";
-        [[maybe_unused]] const ssize_t written = write(STDERR_FILENO, announcement.data(), announcement.size());
-        if (!config.confirmation_path.empty()) {
-            const int confirmation = open(config.confirmation_path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
-            if (confirmation >= 0) {
-                close(confirmation);
-            }
-        }
+    announce_blocking(config, "block_sends_to_ports: the flag file exists; sends to the blocked ports are now discarded\n");
+    return true;
+}
+
+// In "break" mode: whether the flag file exists now. One system call for each send on a blocked connection.
+bool connections_are_broken(const Configuration& config) {
+    if (access(config.flag_path.c_str(), F_OK) != 0) {
+        return false;
     }
+    announce_blocking(config, "block_sends_to_ports: the flag file exists; sends to the blocked ports now fail until it is removed\n");
     return true;
 }
 
@@ -166,6 +192,13 @@ extern "C" ssize_t send(int file_descriptor, const void* data, size_t size, int 
         return -1;
     }
     if (config.blocked_ports.empty() || config.flag_path.empty()) {
+        return config.real_send(file_descriptor, data, size, flags);
+    }
+    if (config.break_connections) {
+        if (connection_is_blocked(file_descriptor, config.blocked_ports) && connections_are_broken(config)) {
+            errno = ECONNRESET;
+            return -1;
+        }
         return config.real_send(file_descriptor, data, size, flags);
     }
     if (blocking_has_begun(config) && connection_is_blocked(file_descriptor, config.blocked_ports)) {

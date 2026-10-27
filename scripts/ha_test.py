@@ -1050,6 +1050,11 @@ class Scenario(NamedTuple):
     assert_recovery_halt: bool = False
     # When True, assert that no halt for the recovery limit was written: a failover finishes well within the limit.
     assert_no_recovery_halt: bool = False
+    # When True, the leading matching engine is started with its sends on the link between the engines made to fail
+    # while a flag file exists, so that the link breaks and is mended at moments the scenario chooses; the scenario then
+    # places and cancels orders across the break, kills the leading engine, and requires the promoted engine to hold
+    # exactly the orders the member was told are open. See run_scenario's "link between the engines" block.
+    assert_book_survives_peer_link_break: bool = False
     # When True, damage the matching engine's open-order region before restarting it, and
     # assert that the engine refuses it, keeps it aside, rebuilds its book from the WAL, which
     # reaches the first command of the day, and carries on with every order, cancelling nothing
@@ -4534,6 +4539,41 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 87 -- the follower's copy of the book across a break in the link between the matching engines.
+    #
+    # BUG-0187, and the scenario phase 8 of the recovery plan requires before that phase starts. The leading engine sends
+    # the follower a BookUpdate for each order it adds to or removes from its book. The link between the two is broken
+    # while the member places five orders and cancels three, then mended, and one more order is placed, whose update
+    # reaches the follower and makes it take its copy to be complete up to that order. The leading engine is then
+    # killed, and the follower, promoted with open_orders_on_promotion = "keep", must hold exactly the orders the member
+    # was told are open: a cancel of each of them is carried out, and a cancel of each order the member was told is
+    # cancelled is refused. It fails while the follower's book is a copy, because the updates sent during the break are
+    # lost; phase 8, in which both engines apply the WAL themselves, makes it pass.
+    Scenario(
+        number=87,
+        short_name="engine_link_break_keeps_the_book",
+        description="A break in the link between the matching engines leaves the promoted engine holding exactly the orders the member was told are open",
+        expected_outcome=(
+            "after orders are placed and cancelled while the link between the engines is down, and the leading engine is "
+            "killed, the promoted engine carries out a cancel of every order the member was told is open and refuses a "
+            "cancel of every order the member was told is cancelled"
+        ),
+        me_ha=True,
+        # Only the engine configured as primary sends book updates (BUG-0188). With the secondary leading, the primary's
+        # copy is never advanced, so its catch-up on promotion starts before the break and makes up everything, and the
+        # scenario would test nothing. So the primary leads; once both engines apply the WAL themselves, either may.
+        engine_started_first="matching_engine_primary",
+        open_orders_on_promotion="keep",
+        assert_book_survives_peer_link_break=True,
+        expected_failure=(
+            "BUG-0187: the follower's copy of the book loses every change made while the link between the engines is down; "
+            "phase 8 of the recovery plan removes the copy"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -6188,6 +6228,23 @@ def await_blocking(flag: Path, timeout: float) -> bool:
     return True
 
 
+def broken_engine_link_environment(prefix: Path, flag: Path) -> dict[str, str]:
+    """The environment that makes libblock_sends_to_ports.so break a matching engine's link to its peer while flag exists.
+
+    Both engines' book_replication listening ports are named. Each engine listens on its own and connects to the other's,
+    so the two ports cover every connection between the pair, whichever side opened it. In the library's "break" mode a
+    send on them fails as a send on a reset connection does, so the engine closes the connection, and once the flag is
+    removed the engine's next connection works.
+    """
+    library = prefix / "lib" / "libblock_sends_to_ports.so"
+    if not library.is_file():
+        die(f"{library} is not installed; it is built with the sequencer and installed by devsetup.sh")
+    ports = [installed_toml_section_value(prefix / "etc" / "matching_engine" / f"matching_engine_{which}.toml", "book_replication", "listen_port")
+             for which in ("primary", "secondary")]
+    return {"LD_PRELOAD": str(library), "PUBSUB_TEST_BLOCK_PORTS": ",".join(ports), "PUBSUB_TEST_BLOCK_FLAG": str(flag),
+            "PUBSUB_TEST_BLOCK_CONFIRMATION": str(block_confirmation(flag)), "PUBSUB_TEST_BLOCK_MODE": "break"}
+
+
 def blocked_gateway_environment(prefix: Path, flag: Path) -> dict[str, str]:
     """The environment that makes libblock_sends_to_ports.so block the primary sequencer's sends to the gateways.
 
@@ -7216,6 +7273,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 extra_environment = blocked_gateway_environment(prefix, block_flag)
             if scenario.assert_logged_commands_reach_engine and name == "sequencer_secondary":
                 extra_environment = blocked_peer_environment(prefix, block_flag)
+            if scenario.assert_book_survives_peer_link_break and name == resolved(ENGINE_LEADING_AT_START):
+                extra_environment = broken_engine_link_environment(prefix, block_flag)
             if scenario.assert_reports_held_for_unconnected_gateway and name in ("sequencer_primary", "sequencer_secondary"):
                 config = config_with_gateway_report_relay(config)
                 log(f"  {name} sends reports to fix_order_gateway_a through a relay on port {sorted(_GATEWAY_REPORT_RELAY_PORTS)}, which accepts nothing yet")
@@ -7760,7 +7819,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # which nobody is expected to take the lead: there is no promotion in either, so there
         # is no book a promotion resumed with to ask about.
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
-                and not scenario.assert_deferred_answered and not scenario.expects_no_new_leader):
+                and not scenario.assert_deferred_answered and not scenario.expects_no_new_leader
+                and not scenario.assert_book_survives_peer_link_break):
             cancels_expected = scenario.open_orders_on_promotion == "cancel"
             # Under "keep" the promotion has already been observed by the time this runs, so it is confirming an absence:
             # the engine is asked for a checkpoint first, and a cancel it sent cannot still be on its way.
@@ -8670,6 +8730,122 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("  and the order is still open, because this engine started rather than being "
                 "promoted -- OK")
             member.close()
+
+        # ── The follower's copy of the book across a break in the link between the engines ──
+        # BUG-0187. Each order and cancel is answered before the next is sent, and every one of them names its ClOrdID, so
+        # what the member was told is known exactly: the orders it was told are open are those placed and not cancelled.
+        # The break is proved rather than assumed: the library confirms it failed a send, and the leading engine reports
+        # its connection to its peer lost, and then made again, before the last order is placed.
+        if scenario.assert_book_survives_peer_link_break:
+            log("=== Breaking the link between the matching engines while orders are placed and cancelled ===")
+            leader = resolved(ENGINE_LEADING_AT_START)
+            follower = resolved(ENGINE_FOLLOWING_AT_START)
+            library_events = _TEST_EVENTS.messages
+            # Dropping the FIX8 session cancels the orders it holds; those cancels reach the follower before the break.
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("link between the engines: the raw client could not log on")
+
+            def answer_to(cl_ord_id: str) -> dict[int, str] | None:
+                """The ExecutionReport or OrderCancelReject that answers cl_ord_id, or None if none comes."""
+                deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
+                while time.monotonic() < deadline:
+                    reply = member.receive_until("8", "9", timeout=min(1.0, max(0.01, deadline - time.monotonic())))
+                    if reply is not None and reply.get(11) == cl_ord_id:
+                        return reply
+                return None
+
+            def place(cl_ord_id: str) -> None:
+                member.new_order_single(cl_ord_id)
+                reply = answer_to(cl_ord_id)
+                if reply is None or reply.get(35) != "8" or reply.get(39) != "0":
+                    die(f"link between the engines: order {cl_ord_id} was not accepted ({reply})")
+
+            def cancel(cl_ord_id: str, attempt: str) -> dict[int, str] | None:
+                request = f"{cl_ord_id}-cancel-{attempt}"
+                member.order_cancel_request(request, cl_ord_id)
+                return answer_to(request)
+
+            before = [f"link-before-{i}" for i in range(1, 11)]
+            during = [f"link-during-{i}" for i in range(1, 6)]
+            after = ["link-after-1"]
+            for cl_ord_id in before:
+                place(cl_ord_id)
+            # Long enough for the updates of those orders to reach the follower while the link is up.
+            time.sleep(1.0)
+
+            broke_from = _TEST_EVENTS.mark()
+            block_flag.touch()
+            place(during[0])
+            if not await_blocking(block_flag, _RAW_REPLY_TIMEOUT):
+                die(f"link between the engines: {leader} sent nothing on the link to its peer after an order was placed, so the "
+                    "link was never broken (the engine that is not configured as primary sends no book update, BUG-0188)")
+            for cl_ord_id in during[1:]:
+                place(cl_ord_id)
+            cancelled = before[:3]
+            for cl_ord_id in cancelled:
+                reply = cancel(cl_ord_id, "during")
+                if reply is None or reply.get(35) != "8" or reply.get(39) != "4":
+                    die(f"link between the engines: the cancel of {cl_ord_id} during the break was not carried out ({reply})")
+            lost = _TEST_EVENTS.wait_for(lambda event: (isinstance(event.message, library_events.ConnectionChanged) and not event.message.made
+                                                        and event.message.service == "me_peer_replication" and event.component == leader),
+                                         timeout=_RAW_REPLY_TIMEOUT, since=broke_from)
+            if lost is None:
+                die(f"link between the engines: {leader} never reported its connection to its peer lost, so the link did not break")
+
+            block_flag.unlink()
+            block_confirmation(block_flag).unlink(missing_ok=True)
+            remade = _TEST_EVENTS.wait_for(connection_made(library_events, leader, "me_peer_replication"), timeout=30.0, since=lost.index)
+            if remade is None:
+                die(f"link between the engines: {leader} did not connect to its peer again within 30s of the break ending")
+            log(f"  link between the engines: broken for {remade.arrived - lost.arrived:.2f}s, while {len(during)} order(s) were "
+                f"placed and {len(cancelled)} cancelled -- OK")
+            for cl_ord_id in after:
+                place(cl_ord_id)
+            # Long enough for that order's update to reach the follower over the mended link.
+            time.sleep(1.0)
+
+            kill_mark = _TEST_EVENTS.mark()
+            leader_proc = proc_by_name.get(leader)
+            if leader_proc is None or leader_proc.poll() is not None:
+                die(f"link between the engines: {leader} is not running, so there is no leader to kill")
+            log(f"  SIGKILL -> {leader} (PID {leader_proc.pid})")
+            leader_proc.kill()
+            leader_proc.wait()
+            if leader_proc.poll() is None:
+                die(f"link between the engines: {leader} is still running after SIGKILL")
+            resumed = engine_event(follower, "ResumedAsLeader", kill_mark, args.failover_timeout)
+            if resumed is None:
+                die(f"link between the engines: {follower} never reported resuming as leader after {leader} was killed")
+
+            told_open = before[3:] + during + after
+            wrong: list[str] = []
+            for cl_ord_id in told_open:
+                reply = cancel(cl_ord_id, "after")
+                if reply is None or reply.get(35) != "8" or reply.get(39) != "4":
+                    wrong.append(f"{cl_ord_id}, which the member was told is open, could not be cancelled")
+            for cl_ord_id in cancelled:
+                reply = cancel(cl_ord_id, "again")
+                if reply is None or reply.get(35) != "9":
+                    wrong.append(f"{cl_ord_id}, which the member was told is cancelled, was still on the book")
+            member.close()
+            if wrong:
+                die(f"link between the engines: the promoted {follower} resumed holding {resumed.book_size} order(s), and the member "
+                    f"was told {len(told_open)} of the orders placed in this check are open. " + "; ".join(wrong) + ". The changes made while the link was down were "
+                    "lost (BUG-0187)")
+            log(f"  link between the engines: the promoted {follower} holds exactly the {len(told_open)} order(s), of those placed in this "
+                "check, that the member was told are open -- OK")
 
         if scenario.assert_order_refusal:
             log("=== Refusing orders the venue cannot process ===")

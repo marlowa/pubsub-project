@@ -3595,7 +3595,7 @@ time before the leader may act on them, and only then stop it.
 | Severity | high |
 | Found | 2026-10-24 |
 | Recorded | 2026-10-24 |
-| How | Reading the code while explaining to Andrew why `open_orders_on_promotion = "keep"` cannot be deployed. Not yet reproduced |
+| How | Reading the code while explaining to Andrew why `open_orders_on_promotion = "keep"` cannot be deployed. Reproduced on 27 October 2026 by `ha_test.py` scenario 87 |
 | Impact | With `"keep"`, a promoted engine can lack an order a member was told is resting, and hold an order a member was told is cancelled, and nobody is told either. With `"cancel"`, which every environment deploys, the second is cancelled anyway, but the member whose order is missing is never told it has gone, because the promoted engine does not know the order existed |
 
 **What happens.** The leading engine sends the follower a `BookUpdate` for each order it adds to or removes from
@@ -3620,7 +3620,14 @@ Its book lacks A's order and still holds B's.
 committed record from the WAL themselves, so a break in either engine's connection is noticed and made up by
 number. A high availability scenario that blocks the link between the engines, places and cancels orders during
 the break, kills the leading engine, and compares the promoted book with what members were told, is part of that
-phase's finish condition. It is expected to fail now with `"keep"`.
+phase's finish condition.
+
+**Reproduced** by that scenario, `ha_test.py` scenario 87, marked as expected to fail until phase 8 is built. The
+leading engine is started with `libblock_sends_to_ports.so` in its "break" mode, which makes its sends to its peer
+fail while a flag file exists, so that it closes the connection; the engine reports the connection lost and, once the
+flag is removed, made again. On 27 October 2026, with the link broken for 2.42 seconds while five orders were placed
+and three cancelled, and one order placed after it was mended, the promoted engine could not cancel any of the five
+and still held the three. With the break left out, the same checks pass.
 
 **Principles.** V2, V4.
 
@@ -3640,6 +3647,11 @@ from the configured primary to the configured secondary and never the other way.
 
 **What is wanted.** As for [BUG-0187](#bug_0187): phase 8 of the [recovery plan](recovery_plan.md) removes the
 copy, and each engine builds its book from the WAL whichever one leads.
+
+**What a change of leader does with it.** With the secondary leading, the primary's copy is never advanced, so when
+the primary is promoted it catches up from the WAL from its last update, which may be the start of the day. That makes
+up every change, so the book is right, but the catch-up is long. `ha_test.py` scenario 87 is therefore run only with the
+primary leading.
 
 **Principles.** V2.
 
