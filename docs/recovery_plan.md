@@ -367,10 +367,12 @@ an engine that asks again to be caught up applying nothing twice ([BUG-0212](bug
 catch-up read by the reading thread whether high availability is on or off ([BUG-0172](bug_list.md#bug_0172) is fixed),
 the full suites from fresh WALs on 27 October 2026 passed every scenario: 84 of 84 with the primary engine leading first,
 and 27 of 27 with the secondary leading first. Both engines gave the replay's reports on 79 and on all 27 respectively,
-scenario 80 among them, whose WAL holds 550,000 records. The phase is not finished while
-[BUG-0176](bug_list.md#bug_0176) is open: a matching engine catching up from far back still sends a report again for
-every command it applies. The design that fixes it, and sets the limit on automatic recovery, is
-[far_back_catch_up.md](availability/far_back_catch_up.md).
+scenario 80 among them, whose WAL holds 550,000 records. [BUG-0176](bug_list.md#bug_0176) is fixed, by
+[far_back_catch_up.md](availability/far_back_catch_up.md): a matching engine catching up from far back sends no report
+the WAL already holds, and a catch-up of 1.21 million records took 2.50 seconds with the leading sequencer leading
+throughout. With it, the full suites from fresh WALs on 27 October 2026 again passed every scenario, 84 of 84 and 27
+of 27. The finish condition is met, and the phase awaits Andrew's review. The limit on automatic recovery, section 5
+of the same design, is built next, as the halt that [BUG-0197](bug_list.md#bug_0197) needs.
 Decisions 6, 7 and 8 of the design, which step 4 needed, were taken on 25 October 2026, and decision 9 on 26 October
 2026.
 

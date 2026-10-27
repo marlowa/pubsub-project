@@ -89,6 +89,7 @@ add_executable(sequencer_tests
         tests/PublisherRecordFromWalTest.cpp
         tests/LogTailIndexTest.cpp
         tests/WalRecordEncodingTest.cpp
+        tests/FullyReportedThroughTest.cpp
         SequencerConfigurationLoader.cpp
 )
 

@@ -71,6 +71,7 @@ message CatchUp (id=171, version=1)
     i64          records_sent      # what the sequencer said it sent; 0 for Started
     i64          reports_sent      # the reports the engine sent members in this catch-up, each marked as a possible repeat
     i64          book_size         # the orders on the book at this stage
+    i64          reports_left_out  # the reports of this catch-up not sent, because the WAL already holds them
 end
 
 # ------------------------------------------------------------

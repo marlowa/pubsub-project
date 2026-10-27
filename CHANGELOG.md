@@ -258,6 +258,13 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
   while many reports were held, and each report dropped from the full room was logged as a Warning of
   its own. A position at or before every held report is now kept as they come and go, and the dropping
   is said once for each run of drops (BUG-0213).
+- **A matching engine catching up from far back sent a report again for every order it applied**, and
+  the flood kept the leading sequencer's thread so busy that it lost its lease without noticing. The
+  leading sequencer now tells an engine, as it starts to catch it up, the last command the WAL holds
+  every report of, and the engine sends no report for that command or any before it: those reports
+  are already in the WAL and reach their members through the sequencers. The setting
+  `[catch_up] send_every_report`, false everywhere, sends them all, for the test that compares two
+  engines' reports with a replay (BUG-0176).
 - **A halt was lost when the matching engine restarted, or failed over to the follower**, which was
   never told of it, so the venue went on accepting orders that R-0023 says only a person may allow
   again (BUG-0206).
@@ -281,7 +288,7 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 
 ### Known limitations
 
-- **82 bugs are open, 22 of them high severity**; `docs/bug_list.md` lists them.
+- **82 bugs are open, 21 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both

@@ -324,8 +324,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         // once it is caught up.
         bool asking_to_lead{false};
         // For a catch-up request: the start of the answer, which the reading thread sends before the first record, and
-        // whose request number WalFollowCaughtUp echoes.
-        std::optional<pubsub_itc_fw::WalFollowStarted> started;
+        // whose request number WalFollowCaughtUp echoes. It carries the last command the WAL holds every report of,
+        // which the reading thread reads from the WAL.
+        std::optional<pubsub_itc_fw::WalFollowStart> started;
     };
     std::unordered_map<int, EngineServing> engine_servings_;
     // The component's background cores, from the CPU layout, for the helper threads this thread starts;

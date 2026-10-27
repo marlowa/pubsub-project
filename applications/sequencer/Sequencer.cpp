@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Sequencer.hpp"
+#include "FullyReportedThrough.hpp"
 #include "PublisherRecordFromWal.hpp"
 #include "SequencerConfigurationLoader.hpp"
 #include "SequencerThread.hpp"
@@ -165,9 +166,17 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
         allocator_configuration.pool_name = "WalReadingPool";
         allocator_configuration.objects_per_pool = config_.event_queue_pool_objects_per_slab;
         allocator_configuration.initial_pools = 1;
+        // The last command the WAL holds every report of, told to a matching engine that is catching up so that it does
+        // not send those reports again (docs/availability/far_back_catch_up.md, section 2). Its own arena: only the
+        // reading thread calls it.
+        auto reports_arena = std::make_shared<std::vector<uint8_t>>(64 * 1024);
+        pubsub_itc_fw::WalApplicationValueReader fully_reported_reader =
+            [reports_arena](int64_t /*seq_no*/, const pubsub_itc_fw::WalEntryContents& entry) -> std::optional<int64_t> {
+            return fully_reported_through(entry.pdu_id, entry.bytes, entry.size, *reports_arena);
+        };
         wal_reading_thread_ = pubsub_itc_fw::ApplicationThread::create<pubsub_itc_fw::WalReadingThread>(
             *logger_, *reactor_, "WalReadingThread", SequencerThread::wal_reading_thread_id, queue_configuration, allocator_configuration,
-            pubsub_itc_fw::ThreadID{1}, config_.wal_directory, wal_positions_, std::move(converters));
+            pubsub_itc_fw::ThreadID{1}, config_.wal_directory, wal_positions_, std::move(converters), std::move(fully_reported_reader));
         reactor_->register_thread(wal_reading_thread_);
     }
 

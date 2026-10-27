@@ -59,6 +59,8 @@ class WalReadingThread : public ApplicationThread {
     static constexpr int records_per_batch = 256;
     /// The most records read for one follower in one batch, sent or passed over by its converter.
     static constexpr int records_examined_per_batch = 4096;
+    /// The most segments read back from the newest to find the application's value for WalFollowStarted.
+    static constexpr int application_value_segments = 64;
 
     /**
      * @param[in] token           From ApplicationThread::create, the only way to make one.
@@ -72,10 +74,13 @@ class WalReadingThread : public ApplicationThread {
      * @param[in] wal_directory   The directory of the WAL's segment files.
      * @param[in] positions       Published by the owning thread; outlives this thread.
      * @param[in] converters      One for each kind of follower, indexed by WalReadingCommand::converter.
+     * @param[in] application_value_reader Reads the application's value for WalFollowStarted from a record, for a
+     *                            start that asks for it (WalFollowStart::application_value_from_wal); may be empty.
      */
     WalReadingThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
                      const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config, ThreadID owner_thread_id,
-                     std::string wal_directory, const WalFollowingPositions& positions, std::vector<WalRecordConverter> converters);
+                     std::string wal_directory, const WalFollowingPositions& positions, std::vector<WalRecordConverter> converters,
+                     WalApplicationValueReader application_value_reader);
 
     /// The configuration every reading thread has: it stays on the background cores.
     [[nodiscard]] static ApplicationThreadConfiguration thread_configuration();
@@ -115,11 +120,14 @@ class WalReadingThread : public ApplicationThread {
     void report(std::unique_ptr<WalReadingReport> report_to_send);
     // Reports the follower's held record as damaged, and stops serving the follower, whose entry is erased.
     void report_damaged(Follower& follower);
+    // The highest value the application's reader gives for a committed record in the newest segment that gives any, or 0.
+    [[nodiscard]] int64_t read_application_value();
 
     ThreadID owner_thread_id_;
     std::string wal_directory_;
     const WalFollowingPositions& positions_;
     std::vector<WalRecordConverter> converters_;
+    WalApplicationValueReader application_value_reader_;
     std::unordered_map<int, std::unique_ptr<Follower>> followers_;
     std::vector<uint8_t> encoded_;
 };

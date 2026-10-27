@@ -245,6 +245,17 @@ struct SequencerConfiguration {
      */
     int32_t absence_limit_seconds{300};
 
+    /**
+     * @brief Whether a matching engine catching up is told to send every report again, rather than only those of the
+     *        commands after the last one the WAL holds every report of. `[catch_up] send_every_report`.
+     *
+     * False in every environment: the reports the WAL holds reach their members through the sequencers, and sending
+     * them again flooded the leading sequencer (docs/availability/far_back_catch_up.md, section 2). True only for the
+     * check in ha_test.py that runs both engines on a copy of a scenario's WAL, which compares every report each sends
+     * with a replay (section 2.6).
+     */
+    bool send_every_report{false};
+
     // External WAL subscriber listener (MEP primary and secondary connect here)
 
     /** @brief Host address on which the external WAL subscriber listener binds. */

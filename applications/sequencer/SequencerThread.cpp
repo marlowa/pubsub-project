@@ -3865,11 +3865,17 @@ void SequencerThread::handle_wal_follow_request(const pubsub_itc_fw::ConnectionI
 
     // The start of the answer, sent before the first record. Its request number is echoed on WalFollowCaughtUp, so that
     // the engine can tell this answer from an earlier one still on its way.
-    pubsub_itc_fw::WalFollowStarted started{};
-    started.request_number = view.request_number;
-    started.after_seq_no = last_seq_no;
-    started.serving_through_seq_no = wal_head;
-    started.application_value = 0;
+    //
+    // It carries the last command the WAL holds every report of, which the reading thread reads from the newest records,
+    // so that the engine does not send those reports again: they reach their members through the sequencers
+    // (docs/availability/far_back_catch_up.md, section 2). With [catch_up] send_every_report it carries 0, and the
+    // engine sends every report again.
+    pubsub_itc_fw::WalFollowStart started{};
+    started.message.request_number = view.request_number;
+    started.message.after_seq_no = last_seq_no;
+    started.message.serving_through_seq_no = wal_head;
+    started.message.application_value = 0;
+    started.application_value_from_wal = !config_.send_every_report;
     EngineServing serving{};
     serving.answers_catch_up_request = true;
     serving.asking_to_lead = asking_to_lead;
@@ -3937,7 +3943,7 @@ void SequencerThread::engine_handed_over(const pubsub_itc_fw::ConnectionID& engi
     caught_up.last_seq_no = through;
     caught_up.first_seq_no_held = earliest_retained;
     caught_up.records_sent = records_sent;
-    caught_up.request_number = serving.started.has_value() ? serving.started->request_number : 0;
+    caught_up.request_number = serving.started.has_value() ? serving.started->message.request_number : 0;
     send_pdu(engine, pubsub_itc_fw::WalFollowCaughtUp::message_pdu_id, 0, caught_up);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: WalFollowCaughtUp sent (last_seq_no={}, earliest retained={}, records_sent={}) -- ME is now live", through, earliest_retained,

@@ -147,7 +147,7 @@ class WalFollowerService {
      *                              the answer to a follower's request, for an application that answers the request itself.
      */
     void serve(const ConnectionID& connection, int64_t after_seq_no, FollowerLimit limit, int converter, CaughtUpMessage caught_up_message,
-               const std::optional<WalFollowStarted>& started);
+               const std::optional<WalFollowStart>& started);
 
     /// The connection has gone: the reading thread stops sending to it, and the service forgets it.
     void on_connection_lost(const ConnectionID& connection);

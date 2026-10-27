@@ -5284,8 +5284,11 @@ def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_
     started = time.monotonic()
     processes: list[tuple[str, subprocess.Popen]] = []
     try:
+        # Every report sent again, so that each engine's reports can be compared with the replay's: by default an engine
+        # catching up leaves out the reports the WAL already holds (docs/availability/far_back_catch_up.md, section 2.6).
         config = config_with_values(sequencer_config, {("ha", "ha_enabled"): "false", ("wal", "directory"): f'"{wal_copy}"',
-                                                       ("absence", "absence_limit_seconds"): "86400"}, work / f"{sequencer}.toml")
+                                                       ("absence", "absence_limit_seconds"): "86400",
+                                                       ("catch_up", "send_every_report"): "true"}, work / f"{sequencer}.toml")
         since = _TEST_EVENTS.mark()
         processes.append((sequencer, launch_app(sequencer, "sequencer", config, bin_dir, log_dir)))
         if _TEST_EVENTS.wait_for(leads(_TEST_EVENTS.messages, sequencer), timeout=15.0, since=since) is None:
@@ -7999,6 +8002,19 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  second connection: {later.component} connected to {engine} {later.arrived - started.arrived:.2f}s into a catch-up of "
                 f"{completed.message.records_applied} record(s), which then finished {completed.arrived - started.arrived:.2f}s after it "
                 "began, with the stream never going backwards -- OK")
+            # BUG-0176. The catch-up runs from the first record of a WAL that already holds a report of every order, so the
+            # engine must leave out all but the reports of commands the WAL did not yet hold every report of when the
+            # catch-up started: a handful. Sending them all again is what flooded the leading sequencer.
+            sent = completed.message.reports_sent
+            left_out = completed.message.reports_left_out
+            if left_out <= 0:
+                die(f"far-back catch-up: {engine} left out no report, so it sent the member every report again ({sent}), which the "
+                    "WAL already holds (BUG-0176)")
+            if sent * 100 > left_out:
+                die(f"far-back catch-up: {engine} sent {sent} report(s) again and left out {left_out}; the WAL already holds all but "
+                    "those of the last few commands, so it sent many it holds (BUG-0176)")
+            log(f"  far-back catch-up: {engine} left out {left_out} report(s) the WAL already holds and sent {sent}, and "
+                "sequencer_primary led throughout -- OK")
 
         # ── An engine that waited catches up before it leads ─────────────────
         # BUG-0198 and BUG-0199. The engine that leads at the end was caught up and waiting while the other engine

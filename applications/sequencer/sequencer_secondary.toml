@@ -67,6 +67,14 @@ port = ${sequencer_secondary_matching_engine_secondary_port}
 # order. See docs/availability/deterministic_matching_engine.md, section 4.2.
 absence_limit_seconds = ${shared_absence_limit_seconds}
 
+[catch_up]
+# Whether a matching engine catching up is told to send every report again. False: it sends only
+# the reports of commands after the last one the WAL holds every report of, because the WAL's
+# reports reach their members through the sequencers. ha_test.py sets it true only for its check
+# that runs both engines on a copy of a scenario's WAL and compares every report with a replay.
+# See docs/availability/far_back_catch_up.md, section 2.
+send_every_report = false
+
 [ha]
 ha_enabled                  = ${ha_enabled}
 instance_id                 = 2

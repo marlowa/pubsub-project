@@ -35,12 +35,14 @@ ApplicationThreadConfiguration WalReadingThread::thread_configuration() {
 
 WalReadingThread::WalReadingThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& thread_name, ThreadID thread_id,
                                    const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config, ThreadID owner_thread_id,
-                                   std::string wal_directory, const WalFollowingPositions& positions, std::vector<WalRecordConverter> converters)
+                                   std::string wal_directory, const WalFollowingPositions& positions, std::vector<WalRecordConverter> converters,
+                                   WalApplicationValueReader application_value_reader)
     : ApplicationThread(token, logger, reactor, thread_name, thread_id, queue_config, allocator_config, thread_configuration())
     , owner_thread_id_(owner_thread_id)
     , wal_directory_(std::move(wal_directory))
     , positions_(positions)
-    , converters_(std::move(converters)) {
+    , converters_(std::move(converters))
+    , application_value_reader_(std::move(application_value_reader)) {
     if (converters_.empty()) {
         throw PreconditionAssertion("WalReadingThread: at least one converter is needed", __FILE__, __LINE__);
     }
@@ -116,7 +118,13 @@ void WalReadingThread::serve(const WalReadingCommand& command) {
     // Before the first record, and after every record of an earlier serving of this connection, which this thread
     // sent before it acted on this command.
     if (command.started.has_value()) {
-        send_pdu(command.connection, WalFollowStarted::message_pdu_id, 0, *command.started);
+        WalFollowStarted started = command.started->message;
+        if (command.started->application_value_from_wal && application_value_reader_) {
+            started.application_value = read_application_value();
+            PUBSUB_LOG(get_logger(), FwLogLevel::Info, "WalReadingThread: the application's value for connection {}, read from the newest records, is {}",
+                       command.connection.get_value(), started.application_value);
+        }
+        send_pdu(command.connection, WalFollowStarted::message_pdu_id, 0, started);
     }
     send_batch(served);
 }
@@ -228,6 +236,48 @@ void WalReadingThread::report_damaged(Follower& follower) {
     damaged->serving = follower.serving;
     report(std::move(damaged));
     followers_.erase(follower.connection.get_value());
+}
+
+int64_t WalReadingThread::read_application_value() {
+    // Only committed records, and only bytes completely written: the committed position is published after the
+    // position of the record, so it is never ahead of the write position read after it.
+    const int64_t committed = positions_.limit(FollowerLimit::LastCommitted);
+    const WalPosition written = positions_.write_position();
+    uint64_t segment = written.segment;
+    for (int read = 0; read < application_value_segments; ++read) {
+        WalCursor cursor;
+        cursor.open(wal_directory_, WalPosition{segment, 0});
+        std::optional<int64_t> highest;
+        while (before(cursor.position(), written)) {
+            int64_t record_id = 0;
+            const uint8_t* bytes = nullptr;
+            size_t size = 0;
+            // A record from a later segment means this one is finished, or that it does not exist and the cursor has
+            // moved on to the next that does.
+            if (!cursor.read_next(record_id, bytes, size) || cursor.position().segment != segment) {
+                break;
+            }
+            if (record_id > committed) {
+                continue;
+            }
+            const std::optional<WalEntryContents> contents = read_wal_entry_contents(bytes, size);
+            if (!contents.has_value()) {
+                continue;
+            }
+            const std::optional<int64_t> value = application_value_reader_(record_id, *contents);
+            if (value.has_value() && (!highest.has_value() || *value > *highest)) {
+                highest = value;
+            }
+        }
+        if (highest.has_value()) {
+            return *highest;
+        }
+        if (segment == 0) {
+            break;
+        }
+        --segment;
+    }
+    return 0;
 }
 
 void WalReadingThread::report(std::unique_ptr<WalReadingReport> report_to_send) {

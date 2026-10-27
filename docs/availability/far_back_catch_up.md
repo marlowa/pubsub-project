@@ -1,36 +1,35 @@
 # A matching engine catching up from far back {#far_back_catch_up}
 
-This design covers three defects that all come from a matching engine catching up from far back in the WAL, and the
-limit on how long the venue recovers on its own:
+This design covers what a matching engine catching up from far back in the WAL must do so that the venue keeps
+working while it does, and the limit on how long the venue recovers on its own:
 
-- [BUG-0176](../bug_list.md#bug_0176): the engine sends a report again for every command it applies, and the flood
-  keeps the leading sequencer's thread so busy that it loses its lease without noticing.
-- [BUG-0212](../bug_list.md#bug_0212): an engine that asks again to be caught up applies again what it has already
-  applied, and sends a wrong report for each record.
-- [BUG-0172](../bug_list.md#bug_0172): with high availability off, the sequencer catches up an engine or a publisher
-  on its own thread, unpaced, until the framework closes the connection.
-- The limit on automatic recovery, which BUG-0176 records: past a stated time, the venue does not recover on its own
-  while no engine can trade, but halts and leaves the decision to a person.
+- It sends no report the WAL already holds, so a catch-up does not flood the leading sequencer with repeated reports
+  ([BUG-0176](../bug_list.md#bug_0176), section 2).
+- An engine that asks again to be caught up applies nothing twice ([BUG-0212](../bug_list.md#bug_0212), section 3).
+- Every catch-up of an engine or a publisher is read on the sequencer's reading thread and paced by the connection,
+  with high availability on or off ([BUG-0172](../bug_list.md#bug_0172), section 4).
+- Past a stated time, the venue does not recover on its own while no engine can trade, but halts and leaves the
+  decision to a person (section 5).
 
-Phase 7 of the [recovery plan](../recovery_plan.md) is finished only when BUG-0176 is fixed.
-
-## 1. What happens now
+## 1. Why a catch-up leaves reports out
 
 A matching engine that starts, or that is about to lead, asks the leading sequencer for every command after the last
 one its book reflects (`WalFollowRequest`). The leading sequencer's reading thread sends them, as fast as the engine's
 connection takes them, and then the sequencer sends `WalFollowCaughtUp`, saying how many it sent and the last one
 ([following_the_wal.md](following_the_wal.md)). The engine applies each command as it arrives.
 
-Applying a command produces execution reports, and the engine sends every one of them to the sequencers, marked as a
-possible repeat, because an earlier engine may already have sent the same report to the member (R-0122). The leading
-sequencer gives each report a record of its own in the WAL, replicates it to the follower sequencer and forwards it to
-the member's gateway, all on its own thread. A catch-up from the start of the day therefore sends the leading
-sequencer about one report for every command of the day so far. On 18 October 2026 a catch-up of 1.37 million records
-kept the leading sequencer's thread busy without a pause for over 18 seconds, its lease ran out without its noticing,
-and the member's connection was closed because 13 MB of repeated reports were waiting for it (BUG-0176).
+Applying a command produces execution reports. A report the engine sends goes to the sequencers marked as a possible
+repeat, because an earlier engine may already have sent the same report to the member (R-0122), and the leading
+sequencer gives it a record of its own in the WAL, replicates it to the follower sequencer and forwards it to the
+member's gateway, all on its own thread. An engine that sent every report of a catch-up from the start of the day
+would send the leading sequencer about one report for every command of the day so far. Measured on 18 October 2026,
+a catch-up of 1.37 million records sent that way kept the leading sequencer's thread busy without a pause for over 18
+seconds, its lease ran out without its noticing, and the member's connection was closed because 13 MB of repeated
+reports were waiting for it (BUG-0176).
 
 Almost all of those reports are already in the WAL. The engine that led before sent them, and the sequencers wrote
-them, replicated them and delivered them. Sending them again tells the member nothing it has not been told.
+them, replicated them and delivered them. Sending them again tells the member nothing it has not been told, so the
+engine leaves them out (section 2).
 
 ## 2. Reports the WAL already holds
 
@@ -255,9 +254,16 @@ long a normal failover may take, and should be set from a measurement of one.
 ### 5.3 What the limit is set to
 
 The longest a normal failover takes, with a margin: the lease period, 3 seconds, plus the catch-up of an engine that
-was current, which is milliseconds. A catch-up from far back takes much longer, at a rate still to be measured with
-the reports left out (section 6, step 3). The limit is 10 seconds until that measurement, and is set from it
-(decision 3).
+was current, which is milliseconds. The limit is 10 seconds.
+
+A catch-up from far back, with the reports the WAL holds left out, was measured on 27 October 2026 with
+`engine_catchup.sh`: after a fill of 300,000 orders and 270,145 cancels, both engines were stopped and one was started
+alone with its region at record 0. It applied 605,923 commands, the 1,209,752 records of the WAL, in 2.50 seconds,
+which is about 240,000 commands a second, and sent 3,419 reports again, nearly all for orders sent while no engine was
+running, whose reports the WAL did not yet hold. The leading sequencer led throughout. At that rate a 10-second limit,
+less the 3 seconds of a lease, leaves room for a catch-up of about 1.7 million commands. A busy day of 50 million orders and as many cancels
+over eight and a half hours is about 200,000 commands a minute, so that is a catch-up from about eight minutes back;
+a catch-up from the start of such a day, at about 100 million commands, takes about 7 minutes and is halted. The limit stays at 10 seconds until the business states another figure (decision 3).
 
 ## 6. Steps, and how each is known to be right
 
@@ -274,8 +280,14 @@ the reports left out (section 6, step 3). The limit is 10 seconds until that mea
    after a fill of 200,000 orders, and requires the leading sequencer to keep its lease throughout, the engine to send
    no report for a command the WAL already holds every report of, and every report the WAL holds to have reached the
    member. Made to fail by running it on the engine before the change, where it fails on the reports and, at that
-   size, on the lease. The catch-up rate is measured, with the reports left out, at 1.37 million records as on 18
-   October 2026, and stated in this document.
+   size, on the lease. The catch-up rate is measured, with the reports left out, at about the 1.37 million records
+   of 18 October 2026, and stated in section 5.3.
+
+   **Built.** Scenario 80 catches up an engine from the first record of its WAL and requires it to leave out more
+   than a hundred times as many reports as it sends, and the leading sequencer to lead throughout. On 27 October
+   2026 the engine left out 199,999 reports and sent 1, and the catch-up took 0.81 seconds, against 2.86 seconds
+   when every report is sent. With `send_every_report` set it fails, because the engine leaves out no report. Both full suites
+   passed on 27 October 2026: 84 of 84 with the primary engine leading first and 27 of 27 with the secondary first.
 4. **The limit (section 5).** A unit test of the rule, as for `EngineAbsenceRule`. A scenario stops both engines,
    restarts one with its region at record 0 after enough orders that its catch-up is longer than a limit set short for
    the test, and requires the gateways to refuse orders with the reason, a halt in the WAL with reason

@@ -211,7 +211,7 @@ TEST_F(WalFollowerServiceTest, AFollowerHoldingNothingIsServedFromTheNewestRecor
     EXPECT_EQ(links_.commands[0].kind, WalReadingCommand::Kind::Serve);
     EXPECT_EQ(links_.commands[0].after_seq_no, 20);
     ASSERT_TRUE(links_.commands[0].started.has_value());
-    EXPECT_EQ(links_.commands[0].started->after_seq_no, -1) << "the position the request named is echoed";
+    EXPECT_EQ(links_.commands[0].started->message.after_seq_no, -1) << "the position the request named is echoed";
 
     ASSERT_TRUE(service_.on_inter_thread_message(reached(follower_connection, 20, 0)));
     EXPECT_TRUE(service_.is_handed_over(follower_connection));
@@ -228,7 +228,8 @@ TEST_F(WalFollowerServiceTest, TheAnswerToARequestStartsWithItsNumberAndTheAppli
     service_.on_follow_request(follower_connection, request(5, request_number), Leading::Leads, FollowerLimit::LastCommitted, converter, application_value);
     ASSERT_EQ(links_.commands.size(), 1U);
     ASSERT_TRUE(links_.commands[0].started.has_value());
-    const WalFollowStarted& started = *links_.commands[0].started;
+    const WalFollowStarted& started = links_.commands[0].started->message;
+    EXPECT_FALSE(links_.commands[0].started->application_value_from_wal) << "a value given is sent as given";
     EXPECT_EQ(started.request_number, request_number);
     EXPECT_EQ(started.after_seq_no, 5);
     EXPECT_EQ(started.serving_through_seq_no, 20);

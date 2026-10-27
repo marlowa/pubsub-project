@@ -36,17 +36,17 @@ void WalFollowerService::on_follow_request(const ConnectionID& connection, const
     // The reading thread sends it, before the first record of the answer. It is the thread that sends the records, and
     // it acts on its commands in the order they arrive, so every record of an earlier answer on this connection is
     // queued before it, and every record of this answer after it.
-    WalFollowStarted started{};
-    started.request_number = request.request_number;
-    started.after_seq_no = request.last_seq_no;
-    started.serving_through_seq_no = positions_.limit(limit);
-    started.application_value = application_value;
+    WalFollowStart started{};
+    started.message.request_number = request.request_number;
+    started.message.after_seq_no = request.last_seq_no;
+    started.message.serving_through_seq_no = positions_.limit(limit);
+    started.message.application_value = application_value;
 
     // A follower that holds nothing and wants nothing from the past is placed at the newest record it may be sent, and
     // sent nothing older: it is served from there, so that it is sent any record released since.
     int64_t after_seq_no = request.last_seq_no;
     if (after_seq_no < 0) {
-        after_seq_no = started.serving_through_seq_no;
+        after_seq_no = started.message.serving_through_seq_no;
         PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: {} on connection {} holds nothing and is placed at record {}, sent nothing older",
                    request.follower_name, connection.get_value(), after_seq_no);
     } else {
@@ -58,7 +58,7 @@ void WalFollowerService::on_follow_request(const ConnectionID& connection, const
 }
 
 void WalFollowerService::serve(const ConnectionID& connection, int64_t after_seq_no, FollowerLimit limit, int converter, CaughtUpMessage caught_up_message,
-                               const std::optional<WalFollowStarted>& started) {
+                               const std::optional<WalFollowStart>& started) {
     // A connection already being served starts afresh: the reading thread stops the earlier serving first,
     // and a report from it still on its way carries the earlier serving's number and is ignored.
     if (followers_.find(connection.get_value()) != followers_.end()) {

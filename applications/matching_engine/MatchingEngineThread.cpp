@@ -584,9 +584,13 @@ CommandSource MatchingEngineThread::command_source_for(int64_t sequence_number) 
 
 void MatchingEngineThread::EngineOutputs::send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number,
                                                       const fix_common::SessionIdentity& session, ReportIsRepeat repeat) {
-    // Every report a catch-up produces is marked as a possible repeat, and no other report is, so
-    // this counts the reports sent out of the catch-up.
+    // Every report a catch-up produces is marked as a possible repeat, and no other report is. One for a command the WAL
+    // already holds every report of is not sent: the member has it, or is sent it, by the sequencers.
     if (repeat == ReportIsRepeat::yes) {
+        if (sequence_number > 0 && sequence_number <= owner_.reports_in_wal_through_) {
+            ++owner_.reconciliation_reports_left_out_;
+            return;
+        }
         ++owner_.reconciliation_reports_sent_;
     }
     owner_.send_er_to_sequencer(report, sequence_number, session, repeat);
@@ -1259,6 +1263,7 @@ void MatchingEngineThread::report_catch_up(pubsub_itc_fw_app::CatchUpStage stage
     event.records_sent = records_sent;
     event.reports_sent = reconciliation_reports_sent_;
     event.book_size = static_cast<int64_t>(order_book_.size());
+    event.reports_left_out = reconciliation_reports_left_out_;
     test_events_->send_event(pubsub_itc_fw_app::CatchUp::message_pdu_id, event);
 }
 
@@ -1551,6 +1556,8 @@ void MatchingEngineThread::begin_reconciliation() {
     reconciliation_records_seen_ = 0;
     reconciliation_records_at_last_tick_ = 0;
     reconciliation_reports_sent_ = 0;
+    reconciliation_reports_left_out_ = 0;
+    reports_in_wal_through_ = 0;
     records_from_earlier_answers_ = 0;
     cancel_timer(reconciliation_timer_id_);
     reconciliation_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.catch_up_retry_seconds));
@@ -1798,9 +1805,11 @@ void MatchingEngineThread::handle_follow_started(const pubsub_itc_fw::EventMessa
     }
     catch_up_connection_ = message.connection_id();
     catch_up_tally_ = pubsub_itc_fw::CatchUpTally(started.after_seq_no);
+    reports_in_wal_through_ = started.application_value;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: the sequencer on connection {} has started to answer catch-up request {}, with the orders after {} up to {} or later",
-               message.connection_id().get_value(), started.request_number, started.after_seq_no, started.serving_through_seq_no);
+               "MatchingEngineThread: the sequencer on connection {} has started to answer catch-up request {}, with the orders after {} up to {} or later; "
+               "the WAL holds every report up to command {}, so no report is sent again for a command at or before it",
+               message.connection_id().get_value(), started.request_number, started.after_seq_no, started.serving_through_seq_no, started.application_value);
 }
 
 void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& message) {
@@ -1857,10 +1866,10 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     state_machine_.note_caught_up_to(ack.last_seq_no);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: caught up -- book reconciled to seq_no={} (book_size={}), {} record(s) applied and {} report(s) sent to "
-               "members, each marked as a possible repeat; the catch-up accounted for all {} record(s) sent (R-0101); {} record(s) from earlier "
-               "answers ignored",
-               ack.last_seq_no, order_book_.size(), reconciliation_records_seen_, reconciliation_reports_sent_, ack.records_sent,
-               records_from_earlier_answers_);
+               "members, each marked as a possible repeat, and {} not sent because the WAL holds them; the catch-up accounted for all {} record(s) "
+               "sent (R-0101); {} record(s) from earlier answers ignored",
+               ack.last_seq_no, order_book_.size(), reconciliation_records_seen_, reconciliation_reports_sent_, reconciliation_reports_left_out_,
+               ack.records_sent, records_from_earlier_answers_);
     last_catch_up_records_sent_ = ack.records_sent;
     report_catch_up(pubsub_itc_fw_app::CatchUpStage::Completed, ack.last_seq_no, ack.records_sent);
 

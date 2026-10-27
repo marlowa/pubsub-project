@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -95,6 +96,8 @@ class OwnerThread : public ApplicationThread, public WalFollowerLinksInterface, 
     std::atomic<int> falling_behind_count{0};
     std::atomic<int64_t> committed{0};
     std::atomic<bool> stopped_writing{false}; // set once writing has stopped, after which written does not change
+    // When true, a follower's request is answered with the application's value read from the WAL by the reading thread.
+    std::atomic<bool> value_from_wal{false};
 
     OwnerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string directory, WalFollowingPositions& positions, int64_t initial_records,
                 int records_per_tick, int64_t commit_lag)
@@ -170,6 +173,15 @@ class OwnerThread : public ApplicationThread, public WalFollowerLinksInterface, 
         const FollowerLimit limit = request.follower_name == "written" ? FollowerLimit::LastWritten : FollowerLimit::LastCommitted;
         limits_[message.connection_id().get_value()] = limit;
         handed_over_.erase(message.connection_id().get_value());
+        if (value_from_wal.load(std::memory_order_acquire)) {
+            WalFollowStart start{};
+            start.message.request_number = request.request_number;
+            start.message.after_seq_no = request.last_seq_no;
+            start.message.serving_through_seq_no = positions_.limit(limit);
+            start.application_value_from_wal = true;
+            service_->serve(message.connection_id(), request.last_seq_no, limit, 0, CaughtUpMessage::Send, start);
+            return;
+        }
         service_->on_follow_request(message.connection_id(), request, Leading::Leads, limit, 0, 0);
     }
 
@@ -265,6 +277,8 @@ class FollowerThread : public ApplicationThread, public WalFollowerClientLinksIn
     std::atomic<int64_t> times_caught_up{0};
     std::atomic<int64_t> first_catch_up_records_sent{-1};
     std::atomic<int64_t> above_limit{0};
+    // The application's value on the WalFollowStarted that started the latest answer, or -1 before one arrives.
+    std::atomic<int64_t> started_application_value{-1};
 
     // @p limit is the owner's committed position, which this follower must never be sent past, or null
     // for a follower served up to the last written record. @p start is the last record it holds already.
@@ -325,6 +339,7 @@ class FollowerThread : public ApplicationThread, public WalFollowerClientLinksIn
             WalFollowStartedView started{};
             if (decode(started, message.payload(), size, consumed, arena, arena_needed)) {
                 client_.on_started(message.connection_id(), started);
+                started_application_value.store(started.application_value, std::memory_order_release);
             }
             return;
         }
@@ -573,7 +588,7 @@ TEST(WalFollowingIntegrationTest, FollowersCatchUpWhileTheWalIsWrittenAndAreHand
     auto owner = ApplicationThread::create<OwnerThread>(logger.logger, *owner_reactor, directory, positions, initial_records, records_per_tick, commit_lag);
     auto reading = ApplicationThread::create<WalReadingThread>(logger.logger, *owner_reactor, "WalReadingThread", reading_thread_id, make_queue_config(),
                                                                make_allocator_config("ReadingPool"), owner_thread_id, directory, positions,
-                                                               std::vector<WalRecordConverter>{record_converter()});
+                                                               std::vector<WalRecordConverter>{record_converter()}, WalApplicationValueReader{});
     owner_reactor->register_thread(owner);
     owner_reactor->register_thread(reading);
     ThreadWithJoinTimeout owner_reactor_thread([&]() { owner_reactor->run(); });
@@ -633,7 +648,7 @@ TEST(WalFollowingIntegrationTest, TheReadingThreadNeverReadsPastThePublishedWrit
     auto owner = ApplicationThread::create<PartlyPublishedOwnerThread>(logger.logger, *owner_reactor, directory, positions);
     auto reading = ApplicationThread::create<WalReadingThread>(logger.logger, *owner_reactor, "WalReadingThread", reading_thread_id, make_queue_config(),
                                                                make_allocator_config("ReadingPool"), owner_thread_id, directory, positions,
-                                                               std::vector<WalRecordConverter>{record_converter()});
+                                                               std::vector<WalRecordConverter>{record_converter()}, WalApplicationValueReader{});
     owner_reactor->register_thread(owner);
     owner_reactor->register_thread(reading);
     ThreadWithJoinTimeout owner_reactor_thread([&]() { owner_reactor->run(); });
@@ -687,7 +702,7 @@ TEST(WalFollowingIntegrationTest, AFollowerIsNeverHandedOverPastADamagedRecordBu
     auto owner = ApplicationThread::create<DamagedRecordOwnerThread>(logger.logger, *owner_reactor, directory, positions);
     auto reading = ApplicationThread::create<WalReadingThread>(logger.logger, *owner_reactor, "WalReadingThread", reading_thread_id, make_queue_config(),
                                                                make_allocator_config("ReadingPool"), owner_thread_id, directory, positions,
-                                                               std::vector<WalRecordConverter>{damaging_converter()});
+                                                               std::vector<WalRecordConverter>{damaging_converter()}, WalApplicationValueReader{});
     owner_reactor->register_thread(owner);
     owner_reactor->register_thread(reading);
     ThreadWithJoinTimeout owner_reactor_thread([&]() { owner_reactor->run(); });
@@ -728,6 +743,75 @@ TEST(WalFollowingIntegrationTest, AFollowerIsNeverHandedOverPastADamagedRecordBu
         owner_reactor_thread.join();
     }
     tests_common::remove_scratch_directory(directory);
+}
+
+namespace {
+
+// The reading thread reads the application's value for WalFollowStarted from the newest records of the WAL: the highest
+// value of a committed record, never one written and not yet committed, and from an older segment when the newest gives
+// none. The reader here gives each seventh record's number, up to a ceiling.
+void the_reading_thread_reads_the_application_value(int64_t ceiling, int64_t expected) {
+    constexpr int64_t initial_records = 60000; // more than one segment
+    constexpr int64_t commit_lag = 25;
+    const std::chrono::milliseconds timeout{30000};
+    LoggerWithSink logger(FwLogLevel::Info);
+    const std::string directory = tests_common::make_scratch_directory("wal_following_application_value");
+    WalFollowingPositions positions;
+
+    const ServiceRegistry owner_registry;
+    auto owner_reactor = std::make_unique<Reactor>(reactor_configuration(), owner_registry, logger.logger);
+    owner_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, owner_thread_id);
+    // No records after the first: the committed position stays commit_lag records behind the last written.
+    auto owner = ApplicationThread::create<OwnerThread>(logger.logger, *owner_reactor, directory, positions, initial_records, 0, commit_lag);
+    owner->value_from_wal.store(true, std::memory_order_release);
+    WalApplicationValueReader reader = [ceiling](int64_t seq_no, const WalEntryContents& /*entry*/) -> std::optional<int64_t> {
+        if (seq_no % 7 != 0 || seq_no > ceiling) {
+            return std::nullopt;
+        }
+        return seq_no;
+    };
+    auto reading = ApplicationThread::create<WalReadingThread>(logger.logger, *owner_reactor, "WalReadingThread", reading_thread_id, make_queue_config(),
+                                                               make_allocator_config("ReadingPool"), owner_thread_id, directory, positions,
+                                                               std::vector<WalRecordConverter>{record_converter()}, reader);
+    owner_reactor->register_thread(owner);
+    owner_reactor->register_thread(reading);
+    ThreadWithJoinTimeout owner_reactor_thread([&]() { owner_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return owner_reactor->is_initialized(); }, timeout));
+    ASSERT_TRUE(wait_for([&]() { return owner->written.load(std::memory_order_acquire) >= initial_records; }, timeout));
+    const uint16_t port = owner_reactor->get_inbound_listener_port(0);
+
+    ServiceRegistry follower_registry;
+    follower_registry.add("owner", NetworkEndpointConfiguration{"127.0.0.1", port}, NetworkEndpointConfiguration{});
+    auto follower_reactor = std::make_unique<Reactor>(reactor_configuration(), follower_registry, logger.logger);
+    auto follower = ApplicationThread::create<FollowerThread>(logger.logger, *follower_reactor, ThreadID{1}, "committed", &owner->committed);
+    follower_reactor->register_thread(follower);
+    ThreadWithJoinTimeout follower_reactor_thread([&]() { follower_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return follower->started_application_value.load(std::memory_order_acquire) >= 0; }, timeout));
+    EXPECT_EQ(follower->started_application_value.load(), expected);
+
+    follower_reactor->shutdown("test complete");
+    owner_reactor->shutdown("test complete");
+    if (follower_reactor_thread.joinable()) {
+        follower_reactor_thread.join();
+    }
+    if (owner_reactor_thread.joinable()) {
+        owner_reactor_thread.join();
+    }
+    tests_common::remove_scratch_directory(directory);
+}
+
+} // un-named namespace
+
+// 60,000 records are written and 59,975 committed. The highest seventh record committed is 59,969; 59,976 and later
+// are written but not committed, and must not be read.
+TEST(WalFollowingIntegrationTest, TheApplicationValueIsTheHighestTheNewestCommittedRecordsGive) {
+    the_reading_thread_reads_the_application_value(std::numeric_limits<int64_t>::max(), 59969);
+}
+
+// Only records up to 1,000 give a value, and they are in the first segment, so the reading thread reads back to it.
+TEST(WalFollowingIntegrationTest, TheApplicationValueIsReadFromAnOlderSegmentWhenTheNewestGivesNone) {
+    the_reading_thread_reads_the_application_value(1000, 994);
 }
 
 } // namespaces

@@ -408,6 +408,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // visible only at Debug and only per record.
     int64_t reconciliation_reports_sent_{0};
 
+    // The last command the WAL holds every report of, from the WalFollowStarted that answers the latest catch-up request,
+    // or 0 for none. A catch-up sends no report for a command at or before it: those reports reach their members
+    // through the sequencers, and sending them again flooded the leading sequencer (docs/availability/far_back_catch_up.md,
+    // section 2). A lower figure only means more reports are sent again, each marked as a possible repeat.
+    int64_t reports_in_wal_through_{0};
+    // The reports of the present catch-up that were not sent, because the WAL already holds them.
+    int64_t reconciliation_reports_left_out_{0};
+
     // A report produced by a catch-up done at startup, held until this instance knows whether it
     // is going to serve anybody.
     //

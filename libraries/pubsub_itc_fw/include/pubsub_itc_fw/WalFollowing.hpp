@@ -142,6 +142,26 @@ struct ConvertedRecord {
 using WalRecordConverter = std::function<ConvertedRecord(int64_t seq_no, const WalEntryContents& entry, std::vector<uint8_t>& out)>;
 
 /**
+ * @brief Reads, for the application, a value of its own from one WAL record: the value the record gives, or nothing if
+ *        it gives none.
+ *
+ * Runs on the reading thread, which, when told to, reads the newest segment of the WAL up to the last committed record
+ * with it before it starts to answer a follower's request, and sends the highest value found as
+ * WalFollowStarted::application_value; if that segment gives none, the segment before, and so on, up to
+ * WalReadingThread::application_value_segments segments, after which it sends 0. Like a converter, it may read only
+ * the record it is given and its own working memory.
+ */
+using WalApplicationValueReader = std::function<std::optional<int64_t>(int64_t seq_no, const WalEntryContents& entry)>;
+
+/// The start of the answer to a follower's request, which the reading thread sends before the first record.
+struct WalFollowStart {
+    WalFollowStarted message;
+    /// Whether the reading thread replaces message.application_value with the value it reads from the WAL with the
+    /// application's WalApplicationValueReader.
+    bool application_value_from_wal{false};
+};
+
+/**
  * @brief An instruction from the owning thread to the reading thread.
  *
  * Passed as a heap object whose ownership moves to the reading thread with the message that carries
@@ -170,7 +190,7 @@ struct WalReadingCommand {
     /// earlier serving of the same connection, still on its way, is told apart and ignored.
     uint64_t serving{0};
     /// Serve: sent to the follower before the first record, when it holds a value: the answer to a follower's request.
-    std::optional<WalFollowStarted> started;
+    std::optional<WalFollowStart> started;
 };
 
 /**

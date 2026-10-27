@@ -84,6 +84,7 @@ In the development environment. The preprod, prod and test-1 environment files u
 | `[wal_subscriber] listen_port` | The listener for downstream subscribers |
 | `[wal] directory`, `segment_size`, `snapshot_interval_seconds` | Where the log is kept, the size of each segment file (4 MiB), and how often the snapshot is written (30 seconds) |
 | `[absence] absence_limit_seconds` | How long the venue may be without a matching engine that can trade before the leading sequencer writes the command that cancels the book and halts trading (R-0117): 300 seconds, from the environment's shared value, so that both instances agree. See [Sequencer](sequencer.md#sequencer_absence) |
+| `[catch_up] send_every_report` | Whether a matching engine catching up is told to send every report again, rather than only the reports of commands after the last one the WAL holds every report of: false. True only in the check of `ha_test.py` that runs both engines on a copy of a scenario's WAL and compares every report with a replay. See [far_back_catch_up.md](../availability/far_back_catch_up.md) |
 | `[metrics]` | The Prometheus endpoint, and the bucket bounds for the log write time and the order path histograms |
 | `[reactor]`, `[logging]`, `[event_queue_pool]`, `[command_queue_pool]` | CPU pinning and waiting, log levels, and the pools the reactor's queues take their entries from |
 
