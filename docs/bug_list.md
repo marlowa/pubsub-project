@@ -3571,7 +3571,10 @@ failed as [BUG-0195](#bug_0195) records.
 
 **What is wanted.** A design for a far-back catch-up whose repeated reports are paced, or
 sent some other way, such as the recovery service of [BUG-0113](#bug_0113), so that they cannot take the leading
-sequencer's thread away from renewing its lease.
+sequencer's thread away from renewing its lease. Designed on 27 October 2026 in
+[far_back_catch_up.md](availability/far_back_catch_up.md), together with [BUG-0212](#bug_0212),
+[BUG-0172](#bug_0172) and the limit on automatic recovery below: the leading sequencer tells the engine the last
+command up to which the WAL holds every report, and the engine sends no report for it or any before it.
 
 **When.** Andrew judged on 18 October 2026 that it does not hold up the completion of phase 5, and is dealt
 with later.

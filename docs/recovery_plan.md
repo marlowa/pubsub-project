@@ -369,7 +369,8 @@ of 27, and 83 of 84 with the primary leading first; both engines gave the replay
 the leader sends the catch-up faster than the engine reads it ([BUG-0172](bug_list.md#bug_0172)), and the engine,
 asking again, applies again records it has already applied ([BUG-0212](bug_list.md#bug_0212)). The flood of reports
 that [BUG-0176](bug_list.md#bug_0176) records comes from the same far-back catch-up. The phase is not finished while
-BUG-0176 is open.
+BUG-0176 is open. The design that fixes BUG-0176, BUG-0212 and BUG-0172 together, and sets the limit on automatic
+recovery, is [far_back_catch_up.md](availability/far_back_catch_up.md).
 Decisions 6, 7 and 8 of the design, which step 4 needed, were taken on 25 October 2026, and decision 9 on 26 October
 2026.
 
