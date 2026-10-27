@@ -140,15 +140,13 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
                                                                          "New orders accepted onto the book by the matching engine");
 
     // HA classification. A non-HA ME is a plain single instance (Unknown state,
-    // full processing). The HA primary begins Unknown and adopts Leader once it
-    // has connected to the arbiter (holding its lease). The HA secondary begins
-    // as a passive Follower.
+    // full processing). With HA on, both instances begin Unknown, whichever is configured as
+    // primary: each catches up from the WAL when the first sequencer connects, and leads or
+    // follows only once a majority has settled which (BUG-0195). The state is logged so that
+    // someone reading a log from a machine that has just come up can see what it thinks it is
+    // before anything else happens.
     if (ha_enabled_) {
-        ha_role_state_ = is_primary_ ? MeRole::Unknown : MeRole::Follower;
-        // A secondary used to adopt FOLLOWER without saying so, which left the most common
-        // starting state of the pair as the one thing the log did not record. Someone reading
-        // a log from a machine that has just come up should be able to see what it thinks it
-        // is before anything else happens.
+        ha_role_state_ = MeRole::Unknown;
         // Recover the leadership generation before anything can elect. Without this
         // the node starts at zero, and a pair restarted together would agree on a
         // generation the venue has already used -- see pubsub_itc_fw::EpochStore.
@@ -288,18 +286,8 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // arbitration, and a leader saying so here lets it settle immediately rather
         // than waiting on an arbiter that may decline while it is still learning.
         announce_role();
-    } else if (!is_primary_ && ha_enabled_ && svc == order_inbound_svc) {
-        // Secondary: inbound order connection from the sequencer. While in FOLLOWER
-        // mode this is idle (order PDUs are discarded). If we are already RECONCILING
-        // when the sequencer connects, begin WAL catch-up immediately.
-        sequencer_order_conn_ids_.insert(id);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer order connection {} established (state={})",
-                   id.get_value(), static_cast<int>(ha_role_state_));
-        if (ha_role_state_ == MeRole::Reconciling) {
-            ask_on_new_sequencer_connection(id);
-        }
     } else {
-        // Primary (or non-HA) inbound order connection from the sequencer.
+        // An inbound order connection from a sequencer, alike for either configured role.
         sequencer_order_conn_ids_.insert(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} established", id.get_value());
         if (ha_role_state_ == MeRole::Reconciling) {
@@ -316,9 +304,8 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
             // that it has not seen, and this is the only moment it can ask about them without
             // mistaking live traffic for replay.
             //
-            // A passive follower is excluded: it catches up when it is promoted, from the
-            // replica it has been maintaining, which is a different position and a different
-            // moment.
+            // An instance that already follows is excluded: the leader's book updates keep its
+            // book, and it catches up again when it is promoted, from the last of them.
             //
             // An order the sequencer deferred while no engine was running is in the venue's
             // record and in no engine's book, so this ask is the only thing that recovers it.
@@ -989,14 +976,14 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
         return;
     }
 
-    const fix_common::SessionIdentity session = fix_common::SessionIdentity::make(view.comp_id, view.origin_gateway_id);
-    const OrderKey key = OrderKey::make(session, view.cl_ord_id);
-    const auto update_type = static_cast<pubsub_itc_fw_app::BookUpdateType>(view.update_type);
-
-    if (update_type == pubsub_itc_fw_app::BookUpdateType::Add) {
-        OrderEntry entry{};
+    DecodedBookUpdate update{};
+    update.update_type = static_cast<pubsub_itc_fw_app::BookUpdateType>(view.update_type);
+    update.seq_no = view.seq_no;
+    update.key = OrderKey::make(fix_common::SessionIdentity::make(view.comp_id, view.origin_gateway_id), view.cl_ord_id);
+    if (update.update_type == pubsub_itc_fw_app::BookUpdateType::Add) {
+        OrderEntry& entry = update.entry;
         entry.placed_at_seq_no = view.placed_at_seq_no;
-        entry.session = session;
+        entry.session = update.key.session;
         entry.has_time_in_force = view.has_time_in_force;
         entry.time_in_force = static_cast<pubsub_itc_fw_app::TimeInForce>(view.time_in_force);
         entry.has_expire_time = view.has_expire_time;
@@ -1009,44 +996,86 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
         if (view.has_price) {
             entry.set_price(view.price);
         }
-        if (!order_book_.add_or_replace(key, entry, view.seq_no)) {
+    }
+    release_pdu_payload(message);
+
+    if (ha_enabled_ && !caught_up_at_start_ && !reconciling_to_lead_) {
+        // Not yet caught up since starting: held until the catch-up says how far it reached (held_book_updates_).
+        if (held_book_updates_.size() < max_held_book_updates_) {
+            held_book_updates_.push_back(update);
+        } else if (!held_book_updates_overflowed_) {
+            held_book_updates_overflowed_ = true;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "MatchingEngineThread: {} book updates held while catching up -- dropping the rest, and asking for the catch-up again once this one "
+                       "ends, so that the WAL supplies what they said",
+                       held_book_updates_.size());
+        }
+        return;
+    }
+    apply_decoded_book_update(update);
+}
+
+void MatchingEngineThread::apply_decoded_book_update(const DecodedBookUpdate& update) {
+    book_holds_peer_copy_ = true;
+    if (update.update_type == pubsub_itc_fw_app::BookUpdateType::Add) {
+        if (!order_book_.add_or_replace(update.key, update.entry, update.seq_no)) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                       "MatchingEngineThread: replica cannot apply Add seq={} cl_ord_id={} -- the order book region is full at {} order(s)", view.seq_no,
-                       view.cl_ord_id, order_book_.region_capacity());
-            release_pdu_payload(message);
+                       "MatchingEngineThread: replica cannot apply Add seq={} cl_ord_id={} -- the order book region is full at {} order(s)", update.seq_no,
+                       update.cl_ord_id(), order_book_.region_capacity());
             return;
         }
         // The follower sends nothing outward, so there is no report to get ahead of.
-        order_book_.publish(view.seq_no);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: replica Add seq={} cl_ord_id={} book_size={}", view.seq_no,
-                   view.cl_ord_id, order_book_.size());
-    } else if (update_type == pubsub_itc_fw_app::BookUpdateType::Remove) {
-        order_book_.remove(key);
-        order_book_.publish(view.seq_no);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: replica Remove seq={} cl_ord_id={} book_size={}", view.seq_no,
-                   view.cl_ord_id, order_book_.size());
-    } else if (update_type == pubsub_itc_fw_app::BookUpdateType::HaltSet || update_type == pubsub_itc_fw_app::BookUpdateType::HaltLifted) {
+        order_book_.publish(update.seq_no);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: replica Add seq={} cl_ord_id={} book_size={}", update.seq_no,
+                   update.cl_ord_id(), order_book_.size());
+    } else if (update.update_type == pubsub_itc_fw_app::BookUpdateType::Remove) {
+        order_book_.remove(update.key);
+        order_book_.publish(update.seq_no);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: replica Remove seq={} cl_ord_id={} book_size={}", update.seq_no,
+                   update.cl_ord_id(), order_book_.size());
+    } else if (update.update_type == pubsub_itc_fw_app::BookUpdateType::HaltSet || update.update_type == pubsub_itc_fw_app::BookUpdateType::HaltLifted) {
         // The leader applied a command that halted trading or lifted a halt. Recorded before the position is published,
         // as the leader does, so that this instance refuses orders as the leader does if it is promoted.
-        const bool halted = update_type == pubsub_itc_fw_app::BookUpdateType::HaltSet;
+        const bool halted = update.update_type == pubsub_itc_fw_app::BookUpdateType::HaltSet;
         order_book_.set_halted(halted ? TradingHalted::yes : TradingHalted::no);
-        order_book_.publish(view.seq_no);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: replica seq={} -- the leader says trading is {}", view.seq_no,
+        order_book_.publish(update.seq_no);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: replica seq={} -- the leader says trading is {}", update.seq_no,
                    halted ? "halted" : "no longer halted");
     } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unknown BookUpdate type {} -- dropping", view.update_type);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unknown BookUpdate type {} -- dropping",
+                   static_cast<int>(update.update_type));
+        return;
     }
 
     const int64_t prev_seq = last_replicated_seq_no_;
-    last_replicated_seq_no_ = view.seq_no;
+    last_replicated_seq_no_ = update.seq_no;
 
     // Log the first update and every 10,000 seq_nos so progress is visible
     // without flooding the log at Info level.
-    if (prev_seq == 0 || view.seq_no % 10000 == 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: replica book seq={} size={}", view.seq_no, order_book_.size());
+    if (prev_seq == 0 || update.seq_no % 10000 == 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: replica book seq={} size={}", update.seq_no, order_book_.size());
     }
+}
 
-    release_pdu_payload(message);
+bool MatchingEngineThread::settle_held_book_updates(int64_t caught_up_through) {
+    size_t applied = 0;
+    for (const DecodedBookUpdate& update : held_book_updates_) {
+        if (update.seq_no > caught_up_through) {
+            apply_decoded_book_update(update);
+            ++applied;
+        }
+    }
+    const bool complete = !held_book_updates_overflowed_;
+    if (!held_book_updates_.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: of {} book update(s) held while catching up, applied the {} for records after seq_no={} and dropped the rest, "
+                   "which the catch-up applied from the WAL",
+                   held_book_updates_.size(), applied, caught_up_through);
+    }
+    held_book_updates_.clear();
+    held_book_updates_.shrink_to_fit();
+    held_book_updates_overflowed_ = false;
+    return complete;
 }
 
 // HA state machine (Slice C+D)
@@ -1480,7 +1509,7 @@ void MatchingEngineThread::begin_reconciliation() {
         // Read before the state is overwritten, and only on the way in: this is re-entered
         // when the sequencer's connection arrives, and a re-entry must not turn a promotion
         // into a start.
-        reconciling_from_follower_ = ha_role_state_ == MeRole::Follower;
+        reconciling_from_follower_ = ha_role_state_ == MeRole::Follower || book_holds_peer_copy_;
     }
     ha_role_state_ = MeRole::Reconciling;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: entering RECONCILING (last_replicated_seq_no={}, book_size={})",
@@ -1832,6 +1861,16 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     ha_role_state_ = MeRole::Unknown; // clear reconciling
 
     if (!reconciling_to_lead_) {
+        if (!caught_up_at_start_ && !settle_held_book_updates(ack.last_seq_no)) {
+            // Some of the leader's book updates were dropped while this catch-up ran, so the book lacks what they said.
+            // The WAL holds it: the catch-up is asked for again, from the last update applied.
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "MatchingEngineThread: some book updates were dropped while catching up -- asking to be caught up again from seq_no={}",
+                       last_replicated_seq_no_);
+            begin_reconciliation();
+            return;
+        }
+        caught_up_at_start_ = true;
         // Current, and that is all. This catch-up was done at startup so that nothing is
         // served on a stale book; whether this instance may act is a separate question, and is
         // answered by whether a majority grants it a lease. Leading here would have every
@@ -1850,6 +1889,13 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
         }
         return;
     }
+
+    // A promotion: the catch-up reached the end of the WAL and new records follow it, so book updates held from a catch-up
+    // at start, which this one replaced, say nothing it has not applied.
+    held_book_updates_.clear();
+    held_book_updates_.shrink_to_fit();
+    held_book_updates_overflowed_ = false;
+    caught_up_at_start_ = true;
 
     // Transition to LEADER -- normal processing begins.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,

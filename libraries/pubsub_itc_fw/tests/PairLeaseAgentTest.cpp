@@ -489,6 +489,46 @@ TEST_F(PairLeaseAgentTest, ALeaderRestartedWithItsRecordKeepsTheLead) {
     EXPECT_EQ(reported(0, pubsub_itc_fw::LeaseChange::ResumingLead), 1);
 }
 
+// A follower restarted without its record, and which has granted none of the leader's renewals by the end of its first
+// lease period, asks to lead then, while the leader goes on renewing; a slow write of its promise record does this in a
+// running venue. Here the leader's requests do not reach it until it has asked. The leader holds its own vote and the
+// arbiter's is promised to the leader, so both refuse. The restarted
+// instance must then give up asking, so that it grants the leader's next renewal and follows, rather than go on asking
+// and refuse every renewal while it does (BUG-0195). It agrees that the leader leads within one renewal interval of
+// asking; an instance that kept asking until its request ran out could not agree before a lease period had passed.
+TEST_F(PairLeaseAgentTest, AnInstanceRefusedByBothVotersBecauseThePeerLeadsGivesUpAskingAndFollows) {
+    ASSERT_TRUE(step_until_the_primary_leads());
+    for (int i = 0; i < 20; ++i) {
+        step();
+    }
+    crash(1);
+    for (int i = 0; i < 5; ++i) {
+        step();
+    }
+    restart(1, false);
+    outboxes_[0].connected_to_peer = false;
+    std::optional<Clock::time_point> asked_at;
+    std::optional<Clock::time_point> agreed_at;
+    bool primary_stopped = false;
+    for (int i = 0; i < 400 && !agreed_at.has_value(); ++i) {
+        step();
+        primary_stopped = primary_stopped || !agents_[0]->acting(now_);
+        if (!asked_at.has_value() && reported(1, pubsub_itc_fw::LeaseChange::AskingToLead) > 0) {
+            asked_at = now_;
+            outboxes_[0].connected_to_peer = true;
+        }
+        if (std::find(changes_[1].begin(), changes_[1].end(), pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads) != changes_[1].end()) {
+            agreed_at = now_;
+        }
+    }
+    ASSERT_TRUE(asked_at.has_value()) << "the restarted instance never asked to lead, so nothing here was tested";
+    ASSERT_TRUE(agreed_at.has_value()) << "the restarted instance never agreed that the leader leads";
+    EXPECT_FALSE(primary_stopped) << "the leader stopped leading";
+    EXPECT_LE(*agreed_at - *asked_at, timing_.renewal_interval + pubsub_itc_fw::LeaseTiming::tick_interval)
+        << "the restarted instance went on asking, refusing the leader's renewals, after both voters had refused it";
+    EXPECT_EQ(reported(1, pubsub_itc_fw::LeaseChange::AskingToLead), 1) << "the restarted instance asked to lead more than once";
+}
+
 TEST_F(PairLeaseAgentTest, ALeaderRestartedWithoutARecordIsOvertaken) {
     // The case the record exists for, shown failing without it: a restarted instance that has
     // forgotten its promises waits a lease period, and its peer takes over first.

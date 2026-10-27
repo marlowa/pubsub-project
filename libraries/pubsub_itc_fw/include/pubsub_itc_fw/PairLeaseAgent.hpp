@@ -214,6 +214,8 @@ class PairLeaseAgent {
             const int32_t epoch = participant_.begin_asking_to_lead();
             asked_at_ = now;
             peer_is_recording_promise_ = false;
+            peer_refused_promised_elsewhere_ = false;
+            third_voter_refused_promised_elsewhere_ = false;
             last_renewal_ = now;
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: asking the peer and {} to let this instance lead at epoch {}", owner_name_,
                        third_voter_name_, epoch);
@@ -332,6 +334,29 @@ class PairLeaseAgent {
         // arbiter, which keeps no epoch on disk and so first asks below the epoch it led in; waiting
         // could let those promises run out, and the other arbiter take over.
         const Clock::duration wait = now < resuming_lead_until_ ? Clock::duration::zero() : Clock::duration{wait_before_asking_again()};
+        if (reason == pubsub_itc_fw::LeaseRefusalReason::promised_elsewhere && participant_.state() == LeaseHolder::State::Candidate) {
+            (voter_id == third_voter_id_ ? third_voter_refused_promised_elsewhere_ : peer_refused_promised_elsewhere_) = true;
+        }
+        if (peer_refused_promised_elsewhere_ && third_voter_refused_promised_elsewhere_ && participant_.state() == LeaseHolder::State::Candidate) {
+            // Both other voters refused because their votes are promised elsewhere. The peer's is held for itself, so the
+            // peer leads or is asking to lead; the third voter is no member of the pair and holds no vote of its own, so
+            // its vote is promised to the peer. The peer therefore leads, or is about to. While this instance asks, it
+            // refuses the peer every request, the renewals of a peer that leads included, and so never agrees that the
+            // peer leads. Asking again after the usual short wait would refuse the peer again, and a leader renewing once
+            // a second can miss every short gap for many seconds (BUG-0195). So this instance gives up the request and
+            // does not ask again for a lease period: in that time it grants the leading peer's next renewal and follows,
+            // or, if the peer has died, the third voter's promise runs out and this instance asks as it would have.
+            // Giving up a request is always safe; it only delays a leader. Both refusals are needed: after the third
+            // voter's alone, the peer may yet grant, and this instance lead.
+            peer_refused_promised_elsewhere_ = false;
+            third_voter_refused_promised_elsewhere_ = false;
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+                       "{}: the peer holds its own vote and {} has promised its vote to the peer -- giving up asking to lead at epoch {} for a lease period, "
+                       "so that the peer's requests can be granted",
+                       owner_name_, third_voter_name_, epoch_before);
+            participant_.stop(now, timing_.period + wait);
+            return Change::Nothing;
+        }
         if (participant_.on_refusal(request_id, highest_epoch, now, wait) != LeaseHolder::Event::NewerEpochKnown) {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "{}: {} refused a request ({})", owner_name_, voter_name(voter_id),
                        pubsub_itc_fw::to_string(reason));
@@ -718,6 +743,10 @@ class PairLeaseAgent {
     // promise of its vote to disk. While asking to lead, this instance then asks again at the next
     // renewal interval instead of waiting out the lease period.
     bool peer_is_recording_promise_{false};
+    // Whether the peer and the third voter have each refused the present request to lead because their votes are
+    // promised elsewhere (on_refusal). Cleared when a request to lead begins.
+    bool peer_refused_promised_elsewhere_{false};
+    bool third_voter_refused_promised_elsewhere_{false};
 
     // Until when this instance, restarted while it led, is resuming that lead; see on_refusal().
     Clock::time_point resuming_lead_until_{};

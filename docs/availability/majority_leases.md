@@ -127,6 +127,15 @@ vote of just one other voter: either its peer or the third voter.
 10. **An instance whose request to lead fails waits before asking again.** In the implementation this wait should vary
     from one attempt to the next, which is the usual way of making repeated collisions unlikely; rule 9 is what
     guarantees they end.
+
+    An instance that, on one request, is refused by both other voters because each has promised its vote elsewhere
+    -- its peer because it holds its own vote, and the third voter because it has promised it to the peer -- has
+    learned that the peer leads. It stops asking for a lease period and the wait, and in that time grants the leader's
+    next renewal and follows. Without this, an instance asking to lead refuses the leader's renewals while it asks,
+    and with a wait of a quarter to three quarters of the renewal interval between requests (250 to 750 milliseconds
+    against a renewal every 1,000) it can miss them for many seconds,
+    never settling that it follows ([BUG-0195](../bug_list.md#bug_0195)). Both refusals are needed: a peer's refusal
+    alone may come from a peer that is itself only asking, and a grant from the third voter may still be on its way.
 11. **In the sequencer pair, a leader acts on a command its follower does not hold only once a voter other than itself
     has recorded that the follower may not lead.** The leader says on every lease request whether its peer may lead,
     as a numbered statement so that a late message cannot undo a newer one, and records it on its own disk first.

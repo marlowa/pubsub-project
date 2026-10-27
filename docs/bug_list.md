@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 211 |
+| Bugs recorded | 212 |
 | Open | 84 (61 defects, 23 tasks) |
-| Closed | 127 |
-| Next id | BUG-0212 |
+| Closed | 128 |
+| Next id | BUG-0213 |
 
 ## Open bugs by severity
 
@@ -33,9 +33,9 @@
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
 | [BUG-0193](#bug_0193) | high | task | Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
-| [BUG-0195](#bug_0195) | high | defect | When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and three scenarios fail |
 | [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the absence limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
+| [BUG-0212](#bug_0212) | high | defect | A matching engine that asks again to be caught up applies again what it has already applied, and sends a wrong report for every record |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -193,6 +193,49 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0212: A matching engine that asks again to be caught up applies again what it has already applied, and sends a wrong report for every record {#bug_0212}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-27 |
+| Recorded | 2026-10-27 |
+| How | `ha_test.py` scenario 80, in the check that runs both matching engines on the scenario's WAL (phase 7 step 6): the first engine run, on a copy of 550,000 records holding 200,000 orders, added 741,915 records to the copy, not the 200,000 reports expected. Logs kept in `tmp/ha_test_failures/20261027-063035-scenario-80-catch_up_survives_second_connection` |
+| Impact | Members are sent reports for things the venue did not do: refusals of orders that were accepted, each marked as a possible repeat, and refusals of commands as arriving out of sequence. Applying a command twice can also change the book: an order filled the first time is placed again the second |
+
+**What was seen, on 27 October 2026.** One sequencer, with high availability off, served one engine catching up from
+the first record of a WAL holding 200,000 orders.
+
+1. The sequencer read and sent the whole catch-up on its own thread, unpaced ([BUG-0172](#bug_0172)). Once 65,536
+   sends waited on the connection, the framework closed it as not reading what is sent to it. The engine had applied
+   121,802 records by then.
+2. The engine connected again, and asked again every 15 seconds (`catch_up_retry_seconds`), four times. The
+   sequencer's thread was still busy, and answered all four requests, and the one before them, together, 84 seconds
+   later.
+3. The first stream started from the first record again, because an engine asks from the position its last
+   complete catch-up reached (`last_replicated_seq_no_`), not from the last record it has applied. The engine applied
+   every record again on top of the book it had partly built. Each of the 121,802 orders it already held was refused
+   as a duplicate ClOrdID and the member sent a rejection, marked as a possible repeat.
+4. That stream ended the catch-up. The four streams after it then arrived at an engine no longer catching up, so
+   their records were taken as live commands. Each was refused as arriving out of sequence, and a rejection was sent
+   for each: 800,000 of them.
+
+**Why.** The comment in `MatchingEngineThread::handle_caught_up` says that applying the same records twice "is
+absorbed -- an order already on the book is not added again". That holds only for an order still resting. The
+engine is deterministic, so applying a command a second time is a second command: an order already on the book is
+refused as a duplicate, a cancel already done is refused, and an order already filled is placed again. The state
+machine does skip a record at or below the highest command it acted on live (`already_applied`), but not one an
+earlier, incomplete catch-up applied. And a stream that arrives after the catch-up it answered has ended is not told
+apart from live orders.
+
+**What is wanted.** A record already applied by this engine, however it was applied, is never applied again, and
+produces no report. An engine that asks again either asks from the last record it applied, or skips those it has;
+which of the two is right depends on how an incomplete catch-up with a record missing in the middle is to be
+recovered, which R-0101 says is asked for again. A stream that answers an earlier request is not taken as live
+commands once the catch-up has ended.
+
+**Principles.** V8: every report the matching engine produces reaches the member, and says what the venue did.
 
 ### BUG-0211: Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of {#bug_0211}
 
@@ -3351,6 +3394,13 @@ The matching engine's catch-up with high availability off has the same shape (`e
 does `SequencerThread::send_logged_orders`, which sends the engine orders that waited in the WAL, or that a new
 leader learns it never received, by reading them back on the sequencer's thread.
 
+**Seen in ha_test, on 27 October 2026.** The check that runs both matching engines on a scenario's WAL uses one
+sequencer with high availability off. In scenario 80, whose WAL holds 200,000 orders, the sequencer's thread read and
+sent the engine's catch-up from the first record in one go, the framework closed the engine's connection once 65,536
+sends were waiting, and the sequencer's thread learned of it 20 seconds later. The engine's requests to be caught up
+again then went unanswered for 84 seconds, and were all served together, which is how
+[BUG-0212](#bug_0212) was found.
+
 **What is wanted.** A reading thread with high availability off as well, so that every catch-up is paced and
 off the order path whatever the configuration.
 
@@ -3813,85 +3863,6 @@ a loss of resilience is not a loss of service (V11).
 **Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
 the member.
 
-### BUG-0195: When the secondary matching engine leads first, the pair does not fail over as it does when the primary leads, and three scenarios fail {#bug_0195}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-24 |
-| Recorded | 2026-10-24 |
-| How | Testing the fix for [BUG-0192](#bug_0192) with a temporary copy of `ha_test.py` that starts the secondary engine four seconds before the primary, so that the secondary leads at the start; the failed scenarios' Quill logs are in `tmp/ha_test_failures/` |
-| Impact | Which engine is configured as primary decides whether a failover keeps the members' orders. After a promotion of the configured primary, the members' resting orders were neither kept nor cancelled with a report |
-
-**What was seen.** With the secondary engine leading at the start, scenarios 16, 21, 24, 25, 54 and 55 failed; 26, 32,
-34, 35 and 77 passed. With the primary leading at the start, all 11 pass.
-
-Run again on 24 October 2026 with `ha_test.py --scenario all --secondary-engine-first`, which runs all 23 scenarios
-with both engines: 13 passed and 10 failed. The six above failed again, and so did 77, with the symptom of 16: once
-the leading secondary was killed, the primary adopted the leader role (22:01:02) and sent no `ResumedAsLeader`, so
-the scenario could not confirm which book it resumed with. 77 passed in the first run, so it fails some of the time,
-not every time. The other three that failed, 13, 29 and 48, failed because of how the scenarios were written
-([BUG-0196](#bug_0196)). Once that was corrected, 13 and 29 pass with either engine leading at the start, and 48 fails
-with the symptom of 16: the machine the leading secondary runs on was stopped, the primary took the lead 6.4 seconds
-later, and it sent no `ResumedAsLeader` (22:16:42).
-
-**Every one of those runs began its steps before the primary had settled that it follows.** In a normal start,
-`ha_test.py` waits until one engine leads, which takes about a lease period, and by then both engines have settled
-their roles. With the secondary started first, the secondary already led, so that wait ended as soon as the primary
-was running, and the steps began while the primary was still in its first lease period; the temporary copy's
-four-second head start did the same. `--secondary-engine-first` now also waits until the primary says it follows,
-which took 10.5 seconds in scenario 29. Run that way, all 23 again (23:25:50): **20 pass, and 25, 54 and 55 fail.**
-16, 21, 24, 48 and 77 pass. Their earlier failures were not a fault in following the secondary: they were the leader
-killed while the primary had caught up but not yet settled, which loses orders, and is recorded as
-[BUG-0198](#bug_0198).
-
-- **16, 21, 24, 48 and 77: the promoted primary never resumed as leader.** When the secondary was killed, the
-  primary adopted the leader role, logged no catch-up from the WAL, and sent no `ResumedAsLeader`, and the 1,000
-  resting orders were neither on its book nor cancelled with a report to the member (scenario 16, 18:24:01 and
-  21:48:50). This was first put down to [BUG-0188](#bug_0188), the book copy flowing only from the configured primary.
-  The kept Quill logs show otherwise: the primary had caught up at 21:48:44 and was waiting to be told its role when
-  it was granted the lead, and an engine in that state takes the lead without catching up again
-  ([BUG-0198](#bug_0198)). With the primary settled as follower before the steps begin, all five pass.
-- **25, 54 and 55: the two engines start differently, by their configured role.** Diagnosed 24 October 2026 from the
-  kept Quill logs, and from a run of 25 with the primary leading first for comparison:
-
-  | | Configured primary | Configured secondary |
-  |---|---|---|
-  | Role at start | unknown | follower, at once (`MatchingEngineThread.cpp`, the constructor) |
-  | Says it follows | once it has settled with its peer | immediately, while its lease agent may still be asking to lead |
-  | Catches up from the WAL | when the first sequencer connects, before it acts | only when it is promoted (the handler for a sequencer's order connection) |
-
-  In 54 the restarted secondary never asks for a catch-up while its peer leads, which is what 54 checks. In 55 it
-  catches up only once it has taken the lead (18:30:43), so it never holds its reports while waiting to lead, which is
-  what 55 checks. In 25 the restarted secondary, which was leading when it was killed, resumes with its recorded
-  promise and asks to lead at once, as a restarted primary does too; but it says it follows at the same moment, so the
-  scenario's check that it follows passes at once and the arbiters are killed two seconds after the restart, while it
-  is still asking. The leader's only remaining voter is then asking for itself rather than granting, and the leader's
-  lease runs out (18:27:17). A restarted primary says it follows only once it has granted the leader a lease (19:29:26
-  in the comparison run), nine seconds after its restart, and the arbiters are killed after that.
-
-**The primary sometimes never settles that it follows.** On 26 October 2026, in the full suite with the primary
-started first, scenario 80, whose set-up starts the secondary first, failed with "matching_engine_primary did not
-follow within 15s" (20:08:23). The primary caught up, then asked the peer and the arbiter every three and a half
-seconds to let it lead at epoch 27829, was granted nothing, and was never told it follows, while the secondary led.
-Run alone three times straight afterwards, it passed each time. On 27 October 2026 it failed the same way when run
-alone (00:52:04), in one of two runs; the other failed as [BUG-0176](#bug_0176) records.
-
-**After any failover the secondary leads**, so in a venue that has failed over once, these are the paths it is on.
-
-**What is wanted.** Both engines start alike, whichever is configured as primary: in an unknown role, catching up
-from the WAL when the first sequencer connects, and saying what role they have only once it is settled. Decided with
-Andrew, 24 October 2026: this is done in phase 8 of the [recovery plan](recovery_plan.md), which rewrites how the
-follower engine builds its book, and not before it, so that code phase 8 replaces is not fixed first. Phase 8's
-finish condition includes it, and includes every scenario with both engines passing whichever engine leads at the
-start. Phase 8 also removes the book copy.
-
-**How to reproduce.** `scripts/ha_test.py --scenario all --secondary-engine-first` runs the scenarios with both
-engines, starting the secondary engine first, the primary only once the secondary leads, and the steps only once the
-primary follows.
-
-**Principles.** V2: the WAL is the record; V8: every report the matching engine produces reaches the member.
-
 ### BUG-0197: While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so {#bug_0197}
 
 | | |
@@ -3979,6 +3950,116 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0195: When the secondary matching engine led first, the pair did not fail over as it did when the primary led, and three scenarios failed {#bug_0195}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| Fixed | 2026-10-27 -- both engines start in an unknown role and catch up when the first sequencer connects; an instance refused by both voters because its peer leads stops asking and follows |
+| How | Testing the fix for [BUG-0192](#bug_0192) with a temporary copy of `ha_test.py` that starts the secondary engine four seconds before the primary, so that the secondary leads at the start; the failed scenarios' Quill logs are in `tmp/ha_test_failures/` |
+| Impact | Which engine is configured as primary decides whether a failover keeps the members' orders. After a promotion of the configured primary, the members' resting orders were neither kept nor cancelled with a report |
+
+**What was seen.** With the secondary engine leading at the start, scenarios 16, 21, 24, 25, 54 and 55 failed; 26, 32,
+34, 35 and 77 passed. With the primary leading at the start, all 11 pass.
+
+Run again on 24 October 2026 with `ha_test.py --scenario all --secondary-engine-first`, which runs all 23 scenarios
+with both engines: 13 passed and 10 failed. The six above failed again, and so did 77, with the symptom of 16: once
+the leading secondary was killed, the primary adopted the leader role (22:01:02) and sent no `ResumedAsLeader`, so
+the scenario could not confirm which book it resumed with. 77 passed in the first run, so it fails some of the time,
+not every time. The other three that failed, 13, 29 and 48, failed because of how the scenarios were written
+([BUG-0196](#bug_0196)). Once that was corrected, 13 and 29 pass with either engine leading at the start, and 48 fails
+with the symptom of 16: the machine the leading secondary runs on was stopped, the primary took the lead 6.4 seconds
+later, and it sent no `ResumedAsLeader` (22:16:42).
+
+**Every one of those runs began its steps before the primary had settled that it follows.** In a normal start,
+`ha_test.py` waits until one engine leads, which takes about a lease period, and by then both engines have settled
+their roles. With the secondary started first, the secondary already led, so that wait ended as soon as the primary
+was running, and the steps began while the primary was still in its first lease period; the temporary copy's
+four-second head start did the same. `--secondary-engine-first` now also waits until the primary says it follows,
+which took 10.5 seconds in scenario 29. Run that way, all 23 again (23:25:50): **20 pass, and 25, 54 and 55 fail.**
+16, 21, 24, 48 and 77 pass. Their earlier failures were not a fault in following the secondary: they were the leader
+killed while the primary had caught up but not yet settled, which loses orders, and is recorded as
+[BUG-0198](#bug_0198).
+
+- **16, 21, 24, 48 and 77: the promoted primary never resumed as leader.** When the secondary was killed, the
+  primary adopted the leader role, logged no catch-up from the WAL, and sent no `ResumedAsLeader`, and the 1,000
+  resting orders were neither on its book nor cancelled with a report to the member (scenario 16, 18:24:01 and
+  21:48:50). This was first put down to [BUG-0188](#bug_0188), the book copy flowing only from the configured primary.
+  The kept Quill logs show otherwise: the primary had caught up at 21:48:44 and was waiting to be told its role when
+  it was granted the lead, and an engine in that state takes the lead without catching up again
+  ([BUG-0198](#bug_0198)). With the primary settled as follower before the steps begin, all five pass.
+- **25, 54 and 55: the two engines start differently, by their configured role.** Diagnosed 24 October 2026 from the
+  kept Quill logs, and from a run of 25 with the primary leading first for comparison:
+
+  | | Configured primary | Configured secondary |
+  |---|---|---|
+  | Role at start | unknown | follower, at once (`MatchingEngineThread.cpp`, the constructor) |
+  | Says it follows | once it has settled with its peer | immediately, while its lease agent may still be asking to lead |
+  | Catches up from the WAL | when the first sequencer connects, before it acts | only when it is promoted (the handler for a sequencer's order connection) |
+
+  In 54 the restarted secondary never asks for a catch-up while its peer leads, which is what 54 checks. In 55 it
+  catches up only once it has taken the lead (18:30:43), so it never holds its reports while waiting to lead, which is
+  what 55 checks. In 25 the restarted secondary, which was leading when it was killed, resumes with its recorded
+  promise and asks to lead at once, as a restarted primary does too; but it says it follows at the same moment, so the
+  scenario's check that it follows passes at once and the arbiters are killed two seconds after the restart, while it
+  is still asking. The leader's only remaining voter is then asking for itself rather than granting, and the leader's
+  lease runs out (18:27:17). A restarted primary says it follows only once it has granted the leader a lease (19:29:26
+  in the comparison run), nine seconds after its restart, and the arbiters are killed after that.
+
+**The primary sometimes never settles that it follows.** On 26 October 2026, in the full suite with the primary
+started first, scenario 80, whose set-up starts the secondary first, failed with "matching_engine_primary did not
+follow within 15s" (20:08:23). The primary caught up, then asked the peer and the arbiter every three and a half
+seconds to let it lead at epoch 27829, was granted nothing, and was never told it follows, while the secondary led.
+Run alone three times straight afterwards, it passed each time. On 27 October 2026 it failed the same way when run
+alone (00:52:04), in one of two runs; the other failed as [BUG-0176](#bug_0176) records.
+
+**After any failover the secondary leads**, so in a venue that has failed over once, these are the paths it is on.
+
+**What was wanted.** Both engines start alike, whichever is configured as primary: in an unknown role, catching up
+from the WAL when the first sequencer connects, and saying what role they have only once it is settled. It had been
+decided with Andrew on 24 October 2026 to do this in phase 8 of the [recovery plan](recovery_plan.md); on 27 October
+2026 he asked for it to be fixed before phase 7 is closed.
+
+**What was done.** Four changes.
+
+- **Both engines start alike** (`MatchingEngineThread.cpp`). With high availability on, each engine starts in an
+  unknown role and catches up from the WAL when the first sequencer connects, whichever is configured as primary.
+  The configured secondary no longer takes the follower role in its constructor.
+- **Book updates that arrive before the catch-up are held, not lost.** An engine that has not yet caught up at
+  start-up can be sent book updates by a leading peer. They are held, up to 200,000, and applied once the catch-up
+  completes, keeping only those beyond the last record the catch-up applied (`settle_held_book_updates`). If more
+  than 200,000 arrive, the engine says so, and the book it builds from the WAL is the one it keeps.
+- **Whether taking over is a promotion depends on what the book holds** (`book_holds_peer_copy_`). An engine whose
+  book holds changes the leader sent it takes over as a promotion, as a follower does. An engine that built its book
+  from its region and the WAL alone takes the lead as a start and keeps its orders (R-0018). Before this, an engine
+  killed within the first lease period of its peer's start had never been told it follows, and its peer, taking over,
+  reported inheriting -1 orders.
+- **An instance refused by both voters because its peer leads stops asking and follows**
+  (`PairLeaseAgent.hpp`). When both voters refuse with a promise made to the other instance while this instance is
+  asking to lead, it stops asking for a lease period and a random wait of a quarter to three quarters of the renewal
+  interval, so it follows instead of asking again every few seconds while its peer leads. This is the cause of the
+  primary that never settled that it follows, in scenario 80's set-up.
+
+[matching_engine.md](venue/matching_engine.md) and [majority_leases.md](availability/majority_leases.md) describe both.
+
+**Verified** on 27 October 2026, from fresh WALs. With the secondary engine leading first, all 27 scenarios that run
+both engines passed (09:50:36), 25, 54 and 55 among them, and both engines run on each scenario's WAL gave the reports
+the replay gives on all 27. With the primary leading first, 83 of 84 passed (09:28:52). The one that failed is scenario
+80, and only in its check that runs the engines on the WAL, which fails as [BUG-0212](#bug_0212) records and is not
+caused by this change. Scenario 80's set-up, waiting for the primary to follow, passed. Scenario 54 with the secondary
+leading first failed on the engine built before the change ("the restarted instance asks for a catch-up though it does
+not lead -- not seen within 30s", 05:32:15) and passed on the new one (05:29:52). The new unit test
+`AnInstanceRefusedByBothVotersBecauseThePeerLeadsGivesUpAskingAndFollows` failed against the lease agent before the
+change and passes with it, as do the other 83 lease tests.
+
+**How to reproduce.** `scripts/ha_test.py --scenario all --secondary-engine-first` runs the scenarios with both
+engines, starting the secondary engine first, the primary only once the secondary leads, and the steps only once the
+primary follows.
+
+**Principles.** V2: the WAL is the record; V8: every report the matching engine produces reaches the member.
 
 ### BUG-0208: A matching engine whose region could not be used never rebuilt its book from the WAL, and halted trading although the WAL reached the first command {#bug_0208}
 

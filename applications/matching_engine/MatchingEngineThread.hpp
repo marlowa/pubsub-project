@@ -257,8 +257,41 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
                           const OrderEntry* entry); // nullptr for Remove updates
 
-    // Helper: apply a received BookUpdate PDU to the replica book (secondary only).
+    // Helper: apply a received BookUpdate PDU to the replica book, or hold it while this instance catches up.
     void apply_book_update(const pubsub_itc_fw::EventMessage& message);
+
+    // A BookUpdate decoded, so that it can be held while this instance catches up from the WAL and applied afterwards.
+    struct DecodedBookUpdate {
+        pubsub_itc_fw_app::BookUpdateType update_type{pubsub_itc_fw_app::BookUpdateType::Add};
+        int64_t seq_no{0};
+        OrderKey key;
+        OrderEntry entry; ///< filled for an Add only
+        /// The ClOrdID, which the key holds.
+        [[nodiscard]] std::string_view cl_ord_id() const {
+            return {key.cl_ord_id.data(), key.cl_ord_id_len};
+        }
+    };
+    void apply_decoded_book_update(const DecodedBookUpdate& update);
+
+    // The leader's book updates that arrive after this instance starts and before its first catch-up has ended. Each is
+    // the effect of a record in the WAL, and the catch-up applies records too, in the WAL's order. Applying the two as
+    // they arrive would mix two orders: an update that removes an order could come before the catch-up record that adds
+    // it, and an update applied before the catch-up is asked for would move the position it is asked from past records
+    // that have no update. So they are held, and when the catch-up ends at a position, those for records after it are
+    // applied, in the order the leader sent them, and the rest are dropped, because the catch-up applied those records
+    // itself. Updates arrive only from a
+    // leading engine, which sends one for each change to its book, so a catch-up of a few seconds holds a few seconds of
+    // them. Past max_held_book_updates_ they are dropped, and the catch-up is asked for again from where it ended, so
+    // that what the dropped updates said is applied from the WAL instead.
+    std::vector<DecodedBookUpdate> held_book_updates_;
+    static constexpr size_t max_held_book_updates_ = 200000;
+    bool held_book_updates_overflowed_{false};
+    // Whether a catch-up has ended since this instance started, at start or at a promotion. Until one has, the leader's
+    // book updates are held. Not cleared again: once caught up, the updates follow on from the catch-up's position.
+    bool caught_up_at_start_{false};
+    // Applies or drops the held book updates once a catch-up at start has ended at caught_up_through. Returns false if
+    // some were dropped for lack of room, in which case the caller asks for the catch-up again.
+    bool settle_held_book_updates(int64_t caught_up_through);
 
     // HA state machine (Slice C+D)
 
@@ -437,6 +470,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // what order_book.open_orders_on_promotion speaks about. A restart that recovered its own
     // region is R-0018's case and keeps what it recovered whatever that setting says.
     bool reconciling_from_follower_{false};
+
+    // Whether this instance's book holds changes the leader sent it (BookUpdate), rather than only what it read from its
+    // region and applied from the WAL. Both engines start with no role, so an instance can apply the leader's copy of the
+    // book and take over before it was ever told that it follows. Its book then rests on that copy, which is what
+    // order_book.open_orders_on_promotion speaks about, so taking over is a promotion. An instance that built its book
+    // from the WAL alone takes over as a start, whoever led before it (R-0018).
+    bool book_holds_peer_copy_{false};
 
     // Whether the catch-up has been done. A venue with high availability off has no
     // lease to trigger one, so it reconciles when the sequencer first connects -- once,

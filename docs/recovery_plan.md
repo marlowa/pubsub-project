@@ -362,10 +362,14 @@ empty book, and requires every report each sends to be the one the replay produc
 In both full suites, from fresh WALs on 26 and 27 October 2026, both engines gave the replay's reports on every
 scenario they were run on: 77 with the primary engine leading first and 24 with the secondary leading first. Scenario
 72 is the 78th, and it passed when run alone once the test gave the engines the sequencer's own ports. The first half of
-the finish condition is therefore met. The second half is not met, because three high availability scenarios fail
-when the secondary engine leads first ([BUG-0195](bug_list.md#bug_0195)), and scenario 80 fails now and then on the
-flood of reports that [BUG-0176](bug_list.md#bug_0176) records. Whether the phase is finished with those open is for
-Andrew to decide.
+the finish condition is therefore met. With both engines starting alike ([BUG-0195](bug_list.md#bug_0195) is fixed),
+the full suites from fresh WALs on 27 October 2026 passed every scenario with the secondary engine leading first, 27
+of 27, and 83 of 84 with the primary leading first; both engines gave the replay's reports on all 27 and on 77 of the
+78 respectively. The one that failed is scenario 80, which catches an engine up from the first of 550,000 records:
+the leader sends the catch-up faster than the engine reads it ([BUG-0172](bug_list.md#bug_0172)), and the engine,
+asking again, applies again records it has already applied ([BUG-0212](bug_list.md#bug_0212)). The flood of reports
+that [BUG-0176](bug_list.md#bug_0176) records comes from the same far-back catch-up. The phase is not finished while
+BUG-0176 is open.
 Decisions 6, 7 and 8 of the design, which step 4 needed, were taken on 25 October 2026, and decision 9 on 26 October
 2026.
 
@@ -422,14 +426,13 @@ that sends and applies it; the catch-up on promotion from the end of a copy; and
   the leading engine, and compares the promoted book with what the members were told, passes. It is written
   before the phase starts, and fails today with `"keep"`.
 - both engines start alike, whichever is configured as primary: in an unknown role, catching up from the WAL
-  when the first sequencer connects, and saying what role they have only once it is settled. Today the
-  configured secondary starts as follower at once and catches up only when promoted
-  ([BUG-0195](bug_list.md#bug_0195));
+  when the first sequencer connects, and saying what role they have only once it is settled. Both engines
+  do this ([BUG-0195](bug_list.md#bug_0195) is fixed);
 - every scenario with both engines passes whichever engine leads at the start. Either engine can win the
   first election, so this is checked by running them normally, and again with
   `ha_test.py --scenario all --secondary-engine-first`, which starts the secondary engine, waits until it
-  leads, then starts the primary, and begins the steps once the primary follows. Today three of the 24 fail when
-  the secondary leads first ([BUG-0195](bug_list.md#bug_0195));
+  leads, then starts the primary, and begins the steps once the primary follows. On 27 October 2026 all 27 passed
+  with the secondary leading first;
 - an engine that does not lead catches up from the WAL before it acts as leader, whatever role it was in, and it
   leads with exactly the orders the members were told are open. Scenario 78 kills the leader while the other engine
   is caught up and waiting to learn its role, and requires the engine that takes the lead to catch up first and to

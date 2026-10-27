@@ -130,6 +130,14 @@ each change to the book.
 With high availability on, two instances run: `matching_engine` (the primary, instance 1) and
 `matching_engine_secondary` (instance 2).
 
+- **Both instances start alike**, whichever is configured as primary: in the unknown role, neither
+  leading nor following. Each catches up from the sequencer's log when the first sequencer connects,
+  and says it leads or follows only once a lease settles which. While that first catch-up runs, an
+  instance holds the changes to the book the leader sends it, and once it is caught up applies only
+  those the catch-up did not already cover. An instance whose book holds changes the leader sent it
+  is promoted when it takes the lead, even if it was never told that it follows, and
+  `open_orders_on_promotion` applies; one that built its book from its file and the log alone takes
+  the lead as a start, and keeps its orders.
 - **Leadership is decided by leases.** An instance leads only while a majority of itself, its peer
   and the arbiter pool has granted it a lease; see
   [Deciding leadership by majority, with leases](../availability/majority_leases.md). A sequencer sends
@@ -158,12 +166,13 @@ With high availability on, two instances run: `matching_engine` (the primary, in
   cancelled by its member. **`"cancel"` is set in every environment**, because nothing yet checks that
   the copy of the book the standby kept from `BookUpdate` is the book the leader held. See R-0073 and
   R-0101 in the functional specification.
-- **When the book file could not be used**, the engine builds its book from the sequencer's log
-  alone. If the log still reaches back to the first command the venue ever took, the engine cancels
-  every order, reports each cancel, and halts trading, whatever `open_orders_on_promotion` says. If
-  the log has been trimmed so it no longer reaches back that far, the engine cannot name every order
-  it held, so it halts without cancelling: cancelling only the orders it can name would leave the
-  others unmentioned.
+- **When the book file could not be used**, the engine rebuilds its book from the sequencer's log,
+  from the first command of the trading day. The engine is deterministic, so that book is exactly the
+  venue's: it keeps it, cancels nothing, and says at Error that it rebuilt its record (R-0123). If the
+  log no longer reaches back to the first command, the engine cannot account for its book. An engine
+  about to lead, or the only engine, then asks the leading sequencer for a halt, and the sequencer
+  writes a `TechnicalEvent` that halts trading; nothing is cancelled. An engine that follows asks for
+  no halt, because the engine that leads goes on trading.
 
 A halt stays until a person lifts it; see [Trading phases](trading_phases.md). The whole promotion
 sequence, and why cancelling is safe, are in

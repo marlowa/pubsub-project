@@ -239,6 +239,12 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 - **A matching engine whose region could not be used never rebuilt its book from the WAL**: it asked
   to be caught up with no position, was sent nothing, and halted trading although the WAL reached the
   first command of the day. Scenario 52 now requires the book rebuilt and every order kept (BUG-0208).
+- **The two matching engines started differently, by which one was configured as primary**, so with
+  the secondary leading first a restarted secondary never caught up from the WAL while its peer led,
+  and three scenarios failed. Both now start with no role, catch up when the first sequencer connects,
+  and say they lead or follow only once a lease settles it. An engine refused a lease by both voters,
+  because each has promised its vote to the peer, now stops asking for a lease period and follows,
+  where it could ask for many seconds and never settle that it follows (BUG-0195).
 - **A halt was lost when the matching engine restarted, or failed over to the follower**, which was
   never told of it, so the venue went on accepting orders that R-0023 says only a person may allow
   again (BUG-0206).
@@ -262,7 +268,7 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 
 ### Known limitations
 
-- **83 bugs are open, 24 of them high severity**; `docs/bug_list.md` lists them.
+- **84 bugs are open, 23 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both
