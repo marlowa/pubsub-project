@@ -3509,6 +3509,16 @@ records discarded when it next follows, which the repair does.
   connection was reset, before the catch-up finished. The gateway closed that connection because 65,536 sends,
   13 MB, were waiting for the client: the repeated reports reached the member faster than it read them.
 
+**Seen in ha_test.** Scenario 80 restarts the primary matching engine after 200,000 orders, with its region at
+record 0, so that it catches up from the first record while the secondary engine leads. On 27 October 2026 it failed
+in the full suite with the primary engine started first: the leading sequencer's thread wrote nothing to its Quill
+log from 00:17:30.74 until it was stopped at 00:17:36.20, its memory pool chained two new slabs in that time, it
+never logged that its lease had run out, and at 00:17:33.77 the arbiter granted the follower sequencer a lease at
+epoch 2. The scenario then failed because sequencer_secondary had led. Run alone straight afterwards, it failed again
+the same way in one of two runs: the leader's lease ran out at 00:51:29 and again at 00:51:32, the sequencers
+changed leader twice, and the engine did not finish catching up within the scenario's 10 seconds. The other run
+failed as [BUG-0195](#bug_0195) records.
+
 **What is wanted.** A design for a far-back catch-up whose repeated reports are paced, or
 sent some other way, such as the recovery service of [BUG-0113](#bug_0113), so that they cannot take the leading
 sequencer's thread away from renewing its lease.
@@ -3864,7 +3874,8 @@ killed while the primary had caught up but not yet settled, which loses orders, 
 started first, scenario 80, whose set-up starts the secondary first, failed with "matching_engine_primary did not
 follow within 15s" (20:08:23). The primary caught up, then asked the peer and the arbiter every three and a half
 seconds to let it lead at epoch 27829, was granted nothing, and was never told it follows, while the secondary led.
-Run alone three times straight afterwards, it passed each time.
+Run alone three times straight afterwards, it passed each time. On 27 October 2026 it failed the same way when run
+alone (00:52:04), in one of two runs; the other failed as [BUG-0176](#bug_0176) records.
 
 **After any failover the secondary leads**, so in a venue that has failed over once, these are the paths it is on.
 

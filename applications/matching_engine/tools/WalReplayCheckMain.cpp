@@ -6,6 +6,7 @@
  * @brief wal_replay_check: whether a fresh matching engine, given a sequencer's WAL, produces the reports the WAL holds.
  *
  *   wal_replay_check --wal <directory> --region-capacity <records> --secret-file <file> --work-dir <directory>
+ *                    [--engine-reports-after <record> --engine-runs <count>]
  *
  * The sequencer's WAL holds every command, and every report the engine that led sent it, each written when the
  * sequencer received it, with the sequence number of the command it answers. This program reads the WAL once,
@@ -28,6 +29,14 @@
  * A CancelBook or a TechnicalEvent command is applied as the engine applies it. A report the engine produced by a
  * decision of its own, not by a command in the WAL, has no command to replay: the cancel of every order when the
  * engine's region could not be used and the sequencer's record named every order (R-0123).
+ *
+ * With --engine-reports-after and --engine-runs, the reports the WAL holds in records after the one given are taken to
+ * be those of matching engines run on the WAL afterwards, one after the other, each catching up from an empty book and
+ * sending a report for every command (section 7.2 of docs/availability/deterministic_matching_engine.md). They are not
+ * compared as the WAL's own reports are. Instead every report the replay produced must be among them exactly as many
+ * times as there were runs, each copy equal to the replayed report and answering the same command, and none may be a
+ * report the replay did not produce. So every engine run gave every command the same answer as the replay, and as each
+ * other.
  *
  * The book's region is created in the work directory, which must be on a filesystem with room for it (about 250 bytes
  * for each record), never in /tmp, and is removed afterwards. --region-capacity must be the capacity the engine was
@@ -235,9 +244,16 @@ fix_common::SessionIdentity session_of(const pubsub_itc_fw_app::WalRecordView& e
 }
 
 int usage() {
-    fmt::print(stderr, "usage: wal_replay_check --wal <directory> --region-capacity <records> --secret-file <file> --work-dir <directory>\n");
+    fmt::print(stderr, "usage: wal_replay_check --wal <directory> --region-capacity <records> --secret-file <file> --work-dir <directory> "
+                       "[--engine-reports-after <record> --engine-runs <count>]\n");
     return 2;
 }
+
+// The reports engines run on the WAL afterwards added to it: every copy of each, by ExecID, with the command it answers.
+struct AddedReport {
+    std::vector<ReportFields> copies;
+    std::vector<std::optional<int64_t>> answers;
+};
 
 // The differences printed in full; past this many, only counted.
 constexpr size_t differences_shown = 20;
@@ -249,6 +265,8 @@ int main(int argc, char** argv) {
     std::string work_directory;
     std::string secret_file;
     long region_capacity = 0;
+    int64_t engine_reports_after = -1;
+    long engine_runs = 0;
     for (int index = 1; index + 1 < argc; index += 2) {
         const std::string_view option = argv[index];
         if (option == "--wal") {
@@ -259,11 +277,17 @@ int main(int argc, char** argv) {
             secret_file = argv[index + 1];
         } else if (option == "--region-capacity") {
             region_capacity = std::atol(argv[index + 1]);
+        } else if (option == "--engine-reports-after") {
+            engine_reports_after = std::atoll(argv[index + 1]);
+        } else if (option == "--engine-runs") {
+            engine_runs = std::atol(argv[index + 1]);
         } else {
             return usage();
         }
     }
-    if (argc % 2 == 0 || wal_directory.empty() || work_directory.empty() || secret_file.empty() || region_capacity <= 0) {
+    const bool engine_runs_given = engine_reports_after >= 0 || engine_runs > 0;
+    if (argc % 2 == 0 || wal_directory.empty() || work_directory.empty() || secret_file.empty() || region_capacity <= 0 ||
+        (engine_runs_given && (engine_reports_after < 0 || engine_runs <= 0))) {
         return usage();
     }
     std::optional<ReportIdentifiers> identifiers;
@@ -283,6 +307,7 @@ int main(int argc, char** argv) {
     pubsub_itc_fw::QuillLogger logger(pubsub_itc_fw::FwLogLevel::Critical);
     RecordingOutputs outputs;
     std::map<std::string, LoggedReport> logged;
+    std::map<std::string, AddedReport> added;
     int64_t commands = 0;
     int64_t report_records = 0;
     int64_t undecodable = 0;
@@ -353,6 +378,12 @@ int main(int argc, char** argv) {
                             ++undecodable;
                             return;
                         }
+                        if (engine_runs_given && record_id > engine_reports_after) {
+                            AddedReport& copies = added[std::string(report.exec_id)];
+                            copies.copies.push_back(fields_of(report));
+                            copies.answers.push_back(envelope.has_answers_seq_no ? std::optional<int64_t>(envelope.answers_seq_no) : std::nullopt);
+                            return;
+                        }
                         ++report_records;
                         LoggedReport& entry = logged[std::string(report.exec_id)];
                         if (entry.copies++ == 0) {
@@ -416,6 +447,42 @@ int main(int argc, char** argv) {
         }
     }
 
+    // The engines run on the WAL afterwards answer every command, those the WAL's own reports stop before included.
+    int64_t engine_copies_compared = 0;
+    if (engine_runs_given) {
+        std::map<std::string, bool> produced_ids;
+        for (const ProducedReport& produced : outputs.produced) {
+            produced_ids[produced.fields.exec_id] = true;
+            const auto found = added.find(produced.fields.exec_id);
+            const size_t copies = found == added.end() ? 0 : found->second.copies.size();
+            if (copies != static_cast<size_t>(engine_runs)) {
+                failures.push_back(fmt::format("command {}: report ExecID={} was sent {} time(s) by the {} engine run(s) on the WAL, not once by each",
+                                               produced.sequence_number, produced.fields.exec_id, copies, engine_runs));
+            }
+            if (found == added.end()) {
+                continue;
+            }
+            for (size_t copy = 0; copy < copies; ++copy) {
+                ++engine_copies_compared;
+                const std::optional<int64_t>& answers = found->second.answers[copy];
+                if (answers.has_value() && *answers != produced.sequence_number) {
+                    failures.push_back(fmt::format("command {}: a copy of report ExecID={} sent by an engine run on the WAL answers command {}",
+                                                   produced.sequence_number, produced.fields.exec_id, *answers));
+                }
+                for (const std::string& difference : differences(produced.fields, found->second.copies[copy])) {
+                    failures.push_back(fmt::format("command {}: a copy of report ExecID={} sent by an engine run on the WAL differs -- {}",
+                                                   produced.sequence_number, produced.fields.exec_id, difference));
+                }
+            }
+        }
+        for (const auto& [exec_id, copies] : added) {
+            if (produced_ids.count(exec_id) == 0) {
+                failures.push_back(fmt::format("an engine run on the WAL sent report ExecID={} {} time(s), and the replay produced no report with that ExecID",
+                                               exec_id, copies.copies.size()));
+            }
+        }
+    }
+
     int64_t repeated_copies = 0;
     for (const auto& [exec_id, entry] : logged) {
         repeated_copies += entry.copies - 1;
@@ -428,6 +495,18 @@ int main(int argc, char** argv) {
                    "stops before the engine's answers to them, which were in flight when the venue stopped, and they are not compared\n",
                    unanswered_at_end, last_answered);
     }
+    if (engine_runs_given) {
+        fmt::print(
+            "wal_replay_check: the {} engine run(s) on the WAL added {} report(s) after record {}, {} distinct; {} compared with the replay\n", engine_runs,
+            [&added] {
+                size_t total = 0;
+                for (const auto& [exec_id, copies] : added) {
+                    total += copies.copies.size();
+                }
+                return total;
+            }(),
+            engine_reports_after, added.size(), engine_copies_compared);
+    }
     for (size_t index = 0; index < failures.size() && index < differences_shown; ++index) {
         fmt::print("  {}\n", failures[index]);
     }
@@ -439,6 +518,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     fmt::print("wal_replay_check: PASS -- every report the replay produced is in the WAL as the engine sent it, and every report in the WAL was "
-               "produced\n");
+               "produced{}\n",
+               engine_runs_given ? "; and each engine run on the WAL sent every one of them, as the replay produced it" : "");
     return 0;
 }

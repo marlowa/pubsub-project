@@ -1,9 +1,10 @@
 # A deterministic matching engine {#deterministic_matching_engine}
 
-> **Status: decided, 25 October 2026; steps 1 to 5 of section 8 built.** This is the design for phase 7 of the
+> **Status: decided, 25 October 2026; every step of section 8 built.** This is the design for phase 7 of the
 > [recovery plan](../recovery_plan.md). The state machine of section 7.1, the remedies of section 5, `wal_replay_check`,
-> the identifiers of section 3, every decision of section 4 as a command in the WAL, and the handling of a command the
-> engine cannot apply, with its fuzzing, of section 6, are built; step 6 is not. Decisions 6, 7 and 8 of section 9, which step 4 needed, were taken on 25 October 2026, and decision 9
+> the identifiers of section 3, every decision of section 4 as a command in the WAL, the handling of a command the
+> engine cannot apply, with its fuzzing, of section 6, and the two checks of the finish condition of section 7.2, are
+> built. Decisions 6, 7 and 8 of section 9, which step 4 needed, were taken on 25 October 2026, and decision 9
 > on 26 October 2026. Andrew answered decisions 1 to 5 of section 9 on
 > 25 October 2026: identifiers are scrambled with FF1, the day key is derived from a secret and the trading date, an
 > identifier is a letter and 16 hexadecimal digits, the leading sequencer measures the absence rule, and cancelling
@@ -399,22 +400,16 @@ the pairing of reports with commands is read from the WAL rather than inferred.
 
 `wal_replay_check` is built (`applications/matching_engine/tools/WalReplayCheckMain.cpp`). It is given the region
 capacity and the identifier secret of the engines that led, and pairs a replayed report with the WAL's copy by ExecID,
-which names a report by the position of its command whichever engine sent it. `ha_test.py` runs it after every
-scenario that passes, including those in which an engine restarts or engines change roles, except where an engine
-cancelled every order by its own decision, sending at least one cancel report, or halted by its own decision (test
-events BookCancelled with `by_command` false, and Halted), and where the engines that led were configured differently.
-A CancelBook command it applies as the engine does. The decisions an engine still takes by itself are not commands
-in the WAL until the rest of step 4, so the WAL holds the reports they produced with no command a replay could apply.
-Step 4 makes the engine's decisions commands in the WAL, and step 6 runs the check on every scenario.
+which names a report by the position of its command whichever engine sent it. It applies every command as the engine
+does, `CancelBook` and `TechnicalEvent` included. `ha_test.py` runs it after every scenario that passes, including
+those in which an engine restarts or engines change roles, except where no engine led, where an engine cancelled every
+order by its own decision (the test event `BookCancelled` with `by_command` false, which no engine now sends), and
+where the engines that led were configured differently.
 
 A scenario can stop the venue while the engine's answers to its last commands are in flight, so that the WAL stops
 before them. The engine answers commands in the order of their sequence numbers, so `wal_replay_check` counts the
 commands after the last one the WAL holds an answer to, and does not compare them; a command before it with no answer
 is a failure.
-
-Until step 4, a cancel of every order has no sequence number of its own, so its ExecIDs are made from the highest
-sequence number the engine has acted on, from place 1, since that command's own report holds place 0, and with the
-keys of the last trading date the engine was given.
 
 The finish condition is checked in two ways:
 
@@ -423,6 +418,25 @@ The finish condition is checked in two ways:
   one engine, so this checks that every engine that led produced what a fresh one does.
 - Both engines are run on the same WAL from the start of the day, one after the other, each catching up from an empty
   book, and their reports are compared with each other and with the WAL.
+
+Both are built. The second is `run_engines_on_the_wal` in `ha_test.py`, run after the replay check on every scenario
+the replay check runs on. It copies the WAL, starts a sequencer on the copy with high availability off and an absence
+limit of a day, so that it writes nothing of its own, and starts each engine in turn with its own configuration, high
+availability off, and a region that cannot be read. Each engine therefore asks for every record from the first and
+rebuilds its book from the WAL (section 4.2), sending a report for every command, and the sequencer appends each report
+to the copy. Then `wal_replay_check` is run on the copy with `--engine-reports-after`, the last record of the scenario,
+and `--engine-runs 2`: every report the replay produces must be among those the two runs added, once from each,
+answering the same command, with every field equal. Where a scenario ran one engine, or the other engine was configured
+differently on purpose, the engine configured as the ones that led runs twice.
+
+What this compares, and what it does not. `wal_replay_check` and the engine apply commands with the same class,
+`MatchingEngineStateMachine`, so a defect in that class that is the same however a command arrives gives the same
+wrong answer in both, and is found by the unit tests and the fuzzing test of section 6, not here. The replay applies
+every command as it arrives live; the engines run on the WAL apply every command as a catch-up, through the engine's
+own connections, threads and region; and the WAL's own reports were sent by whichever engines led, live or catching
+up. So a difference between a command applied live and one applied in a catch-up, or between the two engines or their
+settings, is found. Made to fail on purpose, with the engine built to write a time one nanosecond later on a report it
+sends while catching up, scenario 16 failed on every report the two runs sent.
 
 ## 8. Steps
 

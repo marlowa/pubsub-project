@@ -106,6 +106,10 @@ describe the venue as it now is.
 
 ### Changed
 
+- **Both matching engines are run on each scenario's WAL**, step 6 of phase 7: after the replay check,
+  `ha_test.py` runs each engine in turn on a copy of the WAL, catching up from an empty book, and
+  `wal_replay_check --engine-reports-after --engine-runs` requires every report each sends to be the
+  one the replay produces, once from each.
 - **A matching engine whose region cannot be used rebuilds its book from the WAL and carries on**,
   part of step 4 of phase 7, cancelling nothing, where the WAL reaches the first command of the trading
   day; where it does not, an engine about to lead asks the leading sequencer for a `TechnicalEvent`

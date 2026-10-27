@@ -5176,18 +5176,21 @@ def replay_check_applies() -> tuple[bool, str, list[str]]:
     return True, "", engines_that_led
 
 
-def run_wal_replay_check(prefix: Path, launched_configs: dict[str, Path]) -> None:
+def run_wal_replay_check(prefix: Path, launched_configs: dict[str, Path]) -> tuple[str, str, str, int] | None:
     """Runs wal_replay_check on the WAL of the sequencer that led last, if the scenario is one it can be relied on for,
     and fails the scenario if the replay differs. Run after every process has stopped, so that nothing is written to the
     WAL while it is read.
 
     The replay is given the region capacity and the identifier secret of the engines that led, from the configuration
     each was started with. Where engines that led were configured differently, there is no one engine to replay, and
-    the scenario is one about engines configured differently, so it is not run."""
+    the scenario is one about engines configured differently, so it is not run.
+
+    Returns, when it ran and passed, the sequencer whose WAL it replayed, the region capacity and the secret file it was
+    given, and how many reports the replay produced, for run_engines_on_the_wal; otherwise None."""
     applies, detail, engines = replay_check_applies()
     if not applies:
         log(f"=== WAL replay check: not run -- {detail} ===")
-        return
+        return None
     leaders = [event.component for event in _TEST_EVENTS.events
                if event.component in _SEQUENCER_COMPONENTS and leads(_TEST_EVENTS.messages, event.component)(event)]
     if not leaders:
@@ -5204,7 +5207,7 @@ def run_wal_replay_check(prefix: Path, launched_configs: dict[str, Path]) -> Non
                       installed_toml_section_value(engine_config, "identifiers", "secret_file")))
     if len(settings) != 1:
         log(f"=== WAL replay check: not run -- the engines that led ({', '.join(engines)}) were configured differently ===")
-        return
+        return None
     region_capacity, secret_file = next(iter(settings))
     work_dir = prefix / "var"
     log(f"=== WAL replay check: {sequencer}'s WAL, with {', '.join(engines)} having led ===")
@@ -5215,6 +5218,129 @@ def run_wal_replay_check(prefix: Path, launched_configs: dict[str, Path]) -> Non
     if result.returncode != 0:
         die(f"WAL replay check: a fresh matching engine given {sequencer}'s WAL did not produce the reports the WAL holds "
             f"(wal_replay_check exit {result.returncode}). The engine is not deterministic, or the WAL does not hold what it sent.")
+    produced = re.search(r"the replay produced (\d+) report\(s\)", result.stdout)
+    if produced is None:
+        die("WAL replay check: wal_replay_check did not say how many reports the replay produced")
+    return sequencer, region_capacity, secret_file, int(produced.group(1))
+
+
+def config_with_values(config: Path, values: dict[tuple[str, str], str], copy: Path) -> Path:
+    """A copy of a configuration, written to copy, with each (section, key) in values set to the text given.
+
+    Only a key already in its section is changed, and every one must be found, so that a renamed setting fails here
+    rather than leaving the copy as the original."""
+    lines = config.read_text().splitlines()
+    section = ""
+    found: set[tuple[str, str]] = set()
+    for index, line in enumerate(lines):
+        header = re.match(r"^\[([^\]]+)\]\s*$", line)
+        if header:
+            section = header.group(1)
+            continue
+        assignment = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        if assignment and (section, assignment.group(1)) in values:
+            lines[index] = f"{assignment.group(1)} = {values[(section, assignment.group(1))]}"
+            found.add((section, assignment.group(1)))
+    missing = set(values) - found
+    if missing:
+        die(f"config_with_values: {config} has no {', '.join(f'[{s}] {k}' for s, k in sorted(missing))} to change")
+    copy.write_text("\n".join(lines) + "\n")
+    return copy
+
+
+def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_dir: Path, log_dir: Path,
+                           replayed: tuple[str, str, str, int]) -> None:
+    """The second half of phase 7's finish condition: both matching engines, run on the same WAL from the start of the
+    day, one after the other, each catching up from an empty book, give the same reports as each other and as the WAL
+    (section 7.2 of docs/availability/deterministic_matching_engine.md).
+
+    A copy of the WAL wal_replay_check was run on is given to a sequencer with high availability off and no absence
+    limit to speak of, so that it writes nothing of its own. Each engine is started on it in turn with its own
+    configuration, high availability off, and a region that cannot be read, so that it asks for every record from the
+    first and rebuilds its book from the WAL, sending a report for every command, which the sequencer appends to the
+    copy (R-0123). When both have run, wal_replay_check is run on the copy and requires every report the replay produces
+    to be among those the two runs added, once from each, as the replay produced it. An engine configured differently
+    from the ones that led is not run, and the one that is runs twice instead, so that two runs are compared all the
+    same."""
+    sequencer, region_capacity, secret_file, produced = replayed
+    engines = [engine for engine in ("matching_engine_primary", "matching_engine_secondary", "matching_engine") if engine in launched_configs
+               and (installed_toml_section_value(launched_configs[engine], "order_book", "region_capacity"),
+                    installed_toml_section_value(launched_configs[engine], "identifiers", "secret_file")) == (region_capacity, secret_file)]
+    if not engines:
+        die("engines on the WAL: no engine this run started is configured as the engines that led were")
+    runs = engines if len(engines) >= 2 else engines * 2
+    work = prefix / "var" / "engines_on_the_wal"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    sequencer_config = launched_configs[sequencer]
+    wal_copy = work / "wal"
+    shutil.copytree(sequencer_config.parent / installed_toml_section_value(sequencer_config, "wal", "directory"), wal_copy)
+    _, damage, last_record = wal_problems(wal_copy)
+    if damage:
+        die(f"engines on the WAL: the copy of {sequencer}'s WAL is damaged: {damage}")
+    engine_port = installed_toml_section_value(sequencer_config, "matching_engine", "port")
+    log(f"=== Engines on the WAL: {', '.join(runs)}, one after the other, each catching up on a copy of {sequencer}'s "
+        f"{last_record} records from an empty book ===")
+    started = time.monotonic()
+    processes: list[tuple[str, subprocess.Popen]] = []
+    try:
+        config = config_with_values(sequencer_config, {("ha", "ha_enabled"): "false", ("wal", "directory"): f'"{wal_copy}"',
+                                                       ("absence", "absence_limit_seconds"): "86400"}, work / f"{sequencer}.toml")
+        since = _TEST_EVENTS.mark()
+        processes.append((sequencer, launch_app(sequencer, "sequencer", config, bin_dir, log_dir)))
+        if _TEST_EVENTS.wait_for(leads(_TEST_EVENTS.messages, sequencer), timeout=15.0, since=since) is None:
+            die(f"engines on the WAL: {sequencer}, started on the copy of its WAL, did not lead within 15s")
+        for run, engine in enumerate(runs, start=1):
+            region = work / f"run_{run}.region"
+            region.write_bytes(b"\xDE\xAD\xBE\xEF" * 16)
+            # The engine's own configuration, but sending its reports to the sequencer directly: no relay runs here.
+            config = config_with_values(config_without_report_relay(launched_configs[engine]),
+                                        {("ha", "enabled"): "false", ("order_book", "region_path"): f'"{region}"',
+                                         ("network", "listen_port"): engine_port}, work / f"run_{run}_{engine}.toml")
+            since = _TEST_EVENTS.mark()
+            process = launch_app(engine, "matching_engine", config, bin_dir, log_dir)
+            processes.append((engine, process))
+            rebuilt = engine_event(engine, "RegionRebuilt", since, 120.0)
+            if rebuilt is None:
+                die(f"engines on the WAL: {engine} did not rebuild its book from the copy of the WAL within 120s")
+            expected = last_record + produced * run
+            deadline = time.monotonic() + 60.0
+            records = 0
+            while time.monotonic() < deadline:
+                _, _, records = wal_problems(wal_copy)
+                if records >= expected:
+                    break
+                time.sleep(POLL_INTERVAL)
+            if records < expected:
+                die(f"engines on the WAL: after run {run}, by {engine}, the copy holds {records} records, not the {expected} expected: "
+                    f"{last_record} of the scenario's and {produced} reports from each run so far")
+            log(f"  run {run}: {engine} rebuilt its book through seq_no={rebuilt.through_seq_no} holding {rebuilt.book_size} order(s), "
+                f"and sent {produced} report(s)")
+            process.send_signal(signal.SIGTERM)
+            process.wait(timeout=30)
+            if Path(f"/proc/{process.pid}").exists():
+                die(f"engines on the WAL: {engine} (PID {process.pid}) is still running after it was stopped")
+            region.unlink(missing_ok=True)
+            Path(str(region) + ".unusable").unlink(missing_ok=True)
+    finally:
+        for name, process in processes:
+            if process.poll() is None:
+                process.send_signal(signal.SIGTERM)
+                try:
+                    process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+    result = subprocess.run([str(prefix / "bin" / "wal_replay_check"), "--wal", str(wal_copy), "--region-capacity", region_capacity,
+                             "--secret-file", secret_file, "--work-dir", str(work), "--engine-reports-after", str(last_record),
+                             "--engine-runs", str(len(runs))], capture_output=True, text=True, check=False, timeout=600)
+    for line in (result.stdout + result.stderr).splitlines():
+        log(f"  {line}")
+    if result.returncode != 0:
+        die(f"engines on the WAL: the engines run on the same WAL did not give the reports the replay gives (wal_replay_check exit "
+            f"{result.returncode}). An engine catching up is not deterministic, or not as the engine that served was.")
+    log(f"  engines on the WAL: {len(runs)} runs agree with each other and with the WAL ({time.monotonic() - started:.0f}s)")
+    shutil.rmtree(work, ignore_errors=True)
 
 
 def check_write_ahead_logs_in_order(prefix: Path) -> None:
@@ -5373,6 +5499,20 @@ def config_with_report_relay(config: Path) -> Path:
             die(f"config_with_report_relay: {config} has no 'port = {sequencer_port}' to send through the relay")
         text = text.replace(f"port = {sequencer_port}\n", f"port = {relay_port}\n", 1)
     copy = config.with_name(config.stem + "_report_relay.toml")
+    copy.write_text(text)
+    return copy
+
+
+def config_without_report_relay(config: Path) -> Path:
+    """The configuration as config_with_report_relay found it: its connections for reports go to the sequencers' report
+    listeners again, since the relay runs only during scenario 72. A configuration that does not send through the relay
+    is returned as it is."""
+    text = config.read_text()
+    if not any(f"port = {relay_port}\n" in text for relay_port in _REPORT_RELAY_PORTS):
+        return config
+    for relay_port, sequencer_port in _REPORT_RELAY_PORTS.items():
+        text = text.replace(f"port = {relay_port}\n", f"port = {sequencer_port}\n", 1)
+    copy = config.with_name(config.stem + "_without_relay.toml")
     copy.write_text(text)
     return copy
 
@@ -11038,7 +11178,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # Once every process has stopped, so that nothing is written to the WAL while it is read.
     if result_pass:
         try:
-            run_wal_replay_check(prefix, launched_configs)
+            replayed = run_wal_replay_check(prefix, launched_configs)
+            if replayed is not None:
+                run_engines_on_the_wal(prefix, launched_configs, bin_dir, log_dir, replayed)
         except TestFailure:
             result_pass = False
 

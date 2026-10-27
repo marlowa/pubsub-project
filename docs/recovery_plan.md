@@ -340,7 +340,7 @@ book and the same reports.
 **Design:** [deterministic_matching_engine.md](availability/deterministic_matching_engine.md). Its decisions 1 to 8
 were taken by Andrew on 25 October 2026, and decision 9 on 26 October 2026.
 
-**Progress:** steps 1 to 5 of the design's six are built. Of step 4: cancelling on promotion is a
+**Progress:** all six steps of the design are built. Of step 4: cancelling on promotion is a
 command in the WAL ([BUG-0199](bug_list.md#bug_0199) is fixed); the leading sequencer measures how long no engine
 could trade and writes the cancel and the halt as a command ([BUG-0146](bug_list.md#bug_0146) is fixed); whether
 trading is halted is state the commands set, kept in the engine's region and sent to the follower engine, with the
@@ -356,8 +356,17 @@ derived from a secret and the trading date ([BUG-0139](bug_list.md#bug_0139) is 
 turns one back; and `wal_replay_check` compares a fresh replay of a WAL with the reports it holds, on every scenario in
 which no engine took a decision of its own. A failure while one command is applied rejects that command alike in both
 engines, and a fuzzing test drives the state machine with random commands, checking the book after each; it found
-[BUG-0205](bug_list.md#bug_0205). Step 6 is not built;
-decisions 6, 7 and 8 of the design, which step 4 needed, were taken on 25 October 2026, and decision 9 on 26 October
+[BUG-0205](bug_list.md#bug_0205). Step 6, the finish condition, is built: after every scenario the replay check runs
+on, `ha_test.py` runs both engines, one after the other, on a copy of the scenario's WAL, each catching up from an
+empty book, and requires every report each sends to be the one the replay produces (`run_engines_on_the_wal`).
+In both full suites, from fresh WALs on 26 and 27 October 2026, both engines gave the replay's reports on every
+scenario they were run on: 77 with the primary engine leading first and 24 with the secondary leading first. Scenario
+72 is the 78th, and it passed when run alone once the test gave the engines the sequencer's own ports. The first half of
+the finish condition is therefore met. The second half is not met, because three high availability scenarios fail
+when the secondary engine leads first ([BUG-0195](bug_list.md#bug_0195)), and scenario 80 fails now and then on the
+flood of reports that [BUG-0176](bug_list.md#bug_0176) records. Whether the phase is finished with those open is for
+Andrew to decide.
+Decisions 6, 7 and 8 of the design, which step 4 needed, were taken on 25 October 2026, and decision 9 on 26 October
 2026.
 
 **Finished when:** both engines, run on the same WAL, produce identical reports, and the high
