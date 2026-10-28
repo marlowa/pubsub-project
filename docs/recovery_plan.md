@@ -386,8 +386,8 @@ availability scenarios pass.
 
 **Agreed** by Andrew on 24 October 2026.
 
-**Design:** [matching_engine_lockstep.md](availability/matching_engine_lockstep.md), written on 27 October 2026,
-awaiting Andrew's review and its five decisions.
+**Design:** [matching_engine_lockstep.md](availability/matching_engine_lockstep.md), whose five decisions Andrew
+took on 28 October 2026.
 
 **For:** losing the leading matching engine costs a short pause and nothing else. The members' resting
 orders are still on the book afterwards.
@@ -422,8 +422,9 @@ sent on to the members (way B in [ha_library_boundary.md](availability/ha_librar
 On promotion, the follower's book is already the leader's, apart from the few records still on their way to
 it, which it applies as any engine catching up does. Keeping the resting orders is then simply correct.
 
-**Removed:** the `BookUpdate` message, the connection between the two engines that carries it, and the code
-that sends and applies it; the catch-up on promotion from the end of a copy; and the
+**Removed:** the `BookUpdate` message and the code that sends and applies it, but not the connection between
+the two engines that carries it, which also carries the lease requests between the pair, their role
+announcements and the check of their settings (decision 4 of the design); the catch-up on promotion from the end of a copy; and the
 `open_orders_on_promotion` setting, with the cancelling of inherited orders on promotion.
 
 **Finished when:**

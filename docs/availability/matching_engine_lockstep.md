@@ -206,6 +206,8 @@ records leave between commands.
 
 **Recommendation: yes.** The cost is section 7, step 5, to be measured.
 
+**Decided** on 28 October 2026: yes.
+
 ### Decision 2. Does the follower keep its reports until the WAL holds the leader's, and send those the WAL lacks when it takes the lead? (Yes or no.)
 
 Section 3. The alternative is for both engines to send every report and the sequencer to pass on the first copy of
@@ -213,6 +215,8 @@ each, which is way C of [ha_library_boundary.md](ha_library_boundary.md); it dou
 sent, and was left for later.
 
 **Recommendation: yes.**
+
+**Decided** on 28 October 2026: yes.
 
 ### Decision 3. What does a follower do when its report differs from the leader's, or its kept reports pass their limit? (Choose one.)
 
@@ -226,6 +230,8 @@ Section 4.
 
 **Recommendation: B.**
 
+**Decided** on 28 October 2026: B.
+
 ### Decision 4. Does the link between the engines stay, for the lease, the role announcements and the settings check? (Yes or no.)
 
 Section 6. The plan's list for phase 8 removes "the connection between the two engines that carries" the book
@@ -235,11 +241,15 @@ it needs both.
 
 **Recommendation: yes**, with only the book updates removed from it, and the plan's list corrected to say so.
 
+**Decided** on 28 October 2026: yes.
+
 ### Decision 5. Are voiding a command that crashed an engine, and rejecting the orders held before a halt, designed in a second document within phase 8, after steps 1 to 5? (Yes or no.)
 
 Section 9.
 
 **Recommendation: yes.**
+
+**Decided** on 28 October 2026: yes.
 
 ## 9. What else phase 8 designs
 
