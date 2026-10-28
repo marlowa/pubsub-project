@@ -1285,6 +1285,7 @@ _WAL_READERS = [
     (r'\bWalCursor\b', 'the library class that reads the WAL one record at a time'),
     (r'\bWalHandedOverFollowers\b', 'the library class that reads committed records back for followers already handed over'),
     (r'\bhanded_over_publishers_->send_to(?:_all)?\b', 'the sequencer member holding a WalHandedOverFollowers, sending records it reads'),
+    (r'\bhanded_over_engines_->send_to(?:_all)?\b', 'the sequencer member holding a WalHandedOverFollowers, sending records it reads'),
     (r'\bLogTailIndex\b', 'the sequencer class that reads the newest segments for the duplicate check'),
     (r'\blog_tail_index_->holds\b', 'the sequencer member holding a LogTailIndex, reading segments it has not yet read'),
     (r'\bLoggedCommandIdentifiersBuilder\b', 'the sequencer class that reads every segment to build the record of command identifiers'),
@@ -1299,6 +1300,8 @@ _RESENDS = 'a resend or a request for undelivered reports: BUG-0113, which moves
 _DUPLICATE_CHECK = 'the duplicate check: BUG-0122, replaced in phase 9 of docs/recovery_plan.md'
 _PUBLISHERS = ('a record sent to a publisher already handed over, read back moments after it was written, once '
                'whatever the number of publishers: BUG-0171')
+_FOLLOWER_ENGINES = ('a record sent to a matching engine that follows the WAL, already handed over, read back moments after '
+                     'it was written, as for the publishers: docs/availability/matching_engine_lockstep.md, section 2.1')
 _NO_ENGINE = 'with no matching engine connected, to count the orders deferred: BUG-0174'
 _DEFINITION = 'where the reader itself is declared or defined; each use of it is checked where it is used'
 
@@ -1309,6 +1312,8 @@ _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_engine_position', _NO_ENGINE),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_logged_orders', _NO_ENGINE),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_committed_records_to_publishers', _PUBLISHERS),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_committed_records_to_follower_engines', _FOLLOWER_ENGINES),
+    ('applications/sequencer/SequencerThread.hpp', 'handed_over_engines_', _DEFINITION),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_undelivered_reports_request', _RESENDS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_session_replay_request', _RESENDS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::command_already_logged', _DUPLICATE_CHECK),

@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <cstring>
+#include <deque>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -452,6 +453,17 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // same ordering BUG-0009 settled.
     static constexpr size_t max_held_reports_ = 50000;
     bool held_reports_overflowed_{false};
+
+    // The reports of the commands this instance has applied as a follower of the WAL, which it does not send, kept until
+    // the WAL holds the leader's reports of the same commands (docs/availability/matching_engine_lockstep.md, section 3).
+    // A report record answering command N means the WAL holds every report of every command before N, so the kept
+    // reports of those commands are dropped when it arrives. The rest are those of the few commands the leader is still
+    // answering; on taking the lead, this instance sends those of them the WAL lacks, each marked as a possible repeat.
+    // In the order of their commands, which is the order they were applied in.
+    std::deque<HeldReport> kept_reports_;
+    // Passing this many means the leading engine has had no report written for that many commands.
+    static constexpr size_t max_kept_reports_ = 100000;
+    bool kept_reports_overflowed_{false};
     // Whether reports are being held because there is no connection to a sequencer to send them on
     // (docs/bug_list.md, BUG-0120). Logged when it starts, and cleared when they are sent.
     bool waiting_for_report_connection_{false};
@@ -519,6 +531,23 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // who acts. A catch-up done at startup ends with the instance current and still waiting to
     // be told; one begun because this instance is to lead ends with it leading.
     bool reconciling_to_lead_{false};
+
+    // Following the WAL (docs/availability/matching_engine_lockstep.md, section 2). With high availability on, an engine
+    // that is not to lead asks to follow: it is sent every committed record, reports included, and applies every command
+    // among them as the leader does, sending none of their reports. Whether the latest request asked to follow.
+    bool follows_the_wal_{false};
+    // While following, after the catch-up: the number the next record must have. The WAL's records are numbered one
+    // after another, and a follower is sent every one of them, in order, so any other number means one was missed. 0
+    // when there is no record to expect, before the catch-up has ended.
+    int64_t next_followed_seq_no_{0};
+    // Whether the command being applied came to this instance as a follower of the WAL, so that its reports are not sent.
+    bool current_command_follows_{false};
+    // How many reports were not sent because their commands were applied while following, for the Quill log.
+    int64_t followed_reports_withheld_{0};
+    // Whether the present catch-up was asked for by an instance already following, after it found a record missing, lost
+    // its sequencer, or was told the leading sequencer changed; and the role it goes back to when the catch-up ends.
+    bool following_again_{false};
+    MeRole role_when_following_again_{MeRole::Unknown};
 
     // That this instance granted its peer a lease while it was still catching up at startup, and
     // so agreed that the peer leads. It cannot follow until the catch-up ends, so this is acted on
@@ -604,6 +633,32 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void recover_open_orders(bool region_existed);
 
     void begin_reconciliation();
+
+    /// Asks to be caught up again and to go on following the WAL, keeping the role this instance has once the catch-up
+    /// ends; @p why says for the Quill log what made it ask.
+    void follow_the_wal_again(const char* why);
+
+    /// Whether this instance follows the WAL now: high availability is on, it asked to follow, it does not lead, and it is
+    /// not catching up.
+    [[nodiscard]] bool following_the_wal() const;
+
+    /// Whether this instance keeps the reports of the commands it applies rather than sending them: it follows the WAL,
+    /// or is catching up in order to follow it.
+    [[nodiscard]] bool keeps_its_reports() const;
+
+    /// Keeps @p report, of command @p seq_no for @p session, until the WAL holds the leader's reports of that command.
+    void keep_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t seq_no, const fix_common::SessionIdentity& session);
+
+    /// A report record answering command @p command has arrived: the kept reports of every command before it are dropped.
+    void drop_kept_reports_before(int64_t command);
+
+    /// Taking the lead: sends the kept reports of every command after @p reported_through, the last command the WAL holds
+    /// every report of, and drops the rest.
+    void send_kept_reports_after(int64_t reported_through);
+
+    /// While following, checks that the record numbered @p seq_no is the next one; if it is not, says so and asks to be
+    /// caught up again. Returns whether the record is to be acted on.
+    [[nodiscard]] bool next_followed_record(int64_t seq_no);
 
     /// Take the leader role, catching up from the WAL first unless this instance already leads.
     /// A follower has been passive and its replica may be behind. An instance that caught up

@@ -39,9 +39,13 @@ peer has settings that would make their books differ refuses to lead after it.
 
 ### 2.1 It is sent every committed record
 
-A follower engine asks the leading sequencer to catch it up as it does now, from the last command it has applied, but
-with `wants_new_records` set in its `WalFollowRequest`. The library already serves such a request for the matching
-engine publishers: the reading thread sends every record after the position named, up to the last record committed,
+A follower engine asks the leading sequencer to catch it up as it does now, from the last command it has applied, and
+to go on sending it new records. Its `WalFollowRequest` says which it is asking for in a field of its own, `to_lead`:
+an engine that is to lead asks with it set and is then sent commands by order routing, as now, and a follower asks
+with it clear. The field is needed because an engine sets `wants_new_records` whichever it asks for, as a publisher
+does, since both want new records once caught up; the sequencer reads `to_lead` where it now reads
+`wants_new_records` to tell a promotion from a start. The library already serves a request for new records for the
+matching engine publishers: the reading thread sends every record after the position named, up to the last record committed,
 the sequencer then sends `WalFollowCaughtUp`, and from then on the sequencer's own thread sends the follower each
 record as it is committed, reading it back from the WAL (`WalHandedOverFollowers`,
 [following_the_wal.md](following_the_wal.md), section 4.3). The hand-over is made at an exact position, so nothing is
@@ -94,9 +98,9 @@ operator can see the venue has, for that time, no standby that is current (V11).
 ### 3.1 A follower sends no report
 
 A follower applying a command produces the same reports the leader produces. It does not send them: the leader's
-reports are the ones the members are sent. As a second safeguard, the leading sequencer passes on to the gateways only
-the reports of the engine it routes orders to, and drops any other engine's, saying so at Warning once for each run of
-them.
+reports are the ones the members are sent. The leading sequencer still passes on a report from any engine, because an
+engine taking the lead sends reports during its catch-up to lead (section 3.3), before the sequencer routes orders to
+it; a sequencer that passed on only the routed engine's reports would drop exactly those.
 
 ### 3.2 It keeps them until the WAL holds the leader's
 
@@ -112,7 +116,7 @@ already holds (`fully_reported_through`, section 2 of [far_back_catch_up.md](far
 
 The kept reports are therefore those of the commands applied since the last report record arrived, which in ordinary
 running is the few commands the leader is still answering. They are held in memory, up to a limit of
-`[follower] kept_reports_maximum`, 100,000 reports. Passing it means the leading engine has not had a report written
+100,000 reports (`max_kept_reports_` in `MatchingEngineThread`). Passing it means the leading engine has not had a report written
 for that many commands, and section 4 says what the follower does then.
 
 ### 3.3 On taking the lead, it sends what the WAL lacks
@@ -157,7 +161,8 @@ while starting is taken to be promoted and cancels every order it recovered: not
 **Removed:**
 
 - the `BookUpdate` message, its sending (`send_book_update`) and its applying (`apply_book_update`,
-  `held_book_updates_`, `settle_held_book_updates`), and `book_holds_peer_copy_` and `last_replicated_seq_no_`;
+  `held_book_updates_`, `settle_held_book_updates`), and `book_holds_peer_copy_`. `last_replicated_seq_no_` stays,
+  because it also holds the position the open-order region records;
 - the setting `open_orders_on_promotion`, the `CancelBook` an engine asks for on promotion, and the checks in
   `ha_test.py` that expect it;
 - the code by which a follower discards a command the sequencer sends it on its order connection
@@ -170,7 +175,7 @@ is for, and renaming it, to `[peer]`, is part of step 3.
 
 ## 7. Steps, and how each is known to be right
 
-1. **The follower follows the WAL (section 2).** The follower asks with `wants_new_records` and applies every command
+1. **The follower follows the WAL (section 2).** The follower asks with `to_lead` clear and applies every command
    it is sent; the leading engine stops sending `BookUpdate`. Unit tests of the follower's check that records run on
    one after another, made to fail by sending one out of order. Scenario 87 must then pass: its `expected_failure` is
    removed. Every scenario that promotes an engine passes, with `open_orders_on_promotion` still deployed as
@@ -192,7 +197,19 @@ is for, and renaming it, to `[peer]`, is part of step 3.
    and a send for every record, on the sequencer's own thread. It is measured with the order path's latency
    instruments on a trading-day run before and after, as the other changes to that thread were, and stated here.
 
-Each step ends with both full suites from fresh WALs.
+**Steps 1 and 2 are built.** Scenario 87 passes with either engine leading first. Scenario 88 blocks the leading
+engine's reports, kills it after a thousand orders, and requires a New report of each from the engine that takes the
+lead; with the kept reports not sent it fails. Both full suites passed on 28 October 2026: 88 of 88 with the primary
+engine leading first and 30 of 30 with the secondary first.
+
+Each step ends with both full suites from fresh WALs. Steps 1 and 2 are built and committed together: a follower that
+applies commands and sends none of their reports leaves a member with no report of a command whose leader died before
+its reports reached the WAL, until step 2 has the follower keep and send them.
+
+With step 1, an engine that has followed the WAL holds the venue's book, so taking the lead from it is a promotion
+whichever engine it is, where before it was a promotion only for an engine that had been sent book updates. So until
+step 3, the deployed `"cancel"` cancels the orders an engine accepted while it waited to lead, as scenario 79 shows; the
+member is told of each.
 
 ## 8. Decisions
 

@@ -387,7 +387,9 @@ availability scenarios pass.
 **Agreed** by Andrew on 24 October 2026.
 
 **Design:** [matching_engine_lockstep.md](availability/matching_engine_lockstep.md), whose five decisions Andrew
-took on 28 October 2026.
+took on 28 October 2026. Its steps 1 and 2 are built: a follower engine applies every command from the WAL and keeps
+its reports until the WAL holds the leader's ([BUG-0187](bug_list.md#bug_0187) and [BUG-0188](bug_list.md#bug_0188)
+are fixed).
 
 **For:** losing the leading matching engine costs a short pause and nothing else. The members' resting
 orders are still on the book afterwards.

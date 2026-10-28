@@ -100,6 +100,7 @@ message WalFollowRequest (id=134, version=1)
     i64 last_seq_no # the last record the follower holds; -1 to be placed at the newest record and sent nothing older
     bool wants_new_records # true: once caught up, go on sending new records as they come
     i64 request_number # this request's number; the same number may be sent to each instance of the pair
+    bool to_lead # true: it asks in order to lead, and once caught up its application sends it what it needs
 end
 
 # ------------------------------------------------------------

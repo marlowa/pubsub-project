@@ -189,3 +189,15 @@ message SettingsDifferFromPeer (id=179, version=1)
     bool barred_peer           # true when this instance leads and has said that its peer may not lead
     bool secrets_differ        # true when the two hold different identifier secrets
 end
+
+# ------------------------------------------------------------
+#  216 -- KeptReportsSent
+#  The engine is taking the lead after following the WAL, and has sent
+#  the reports it kept of the commands after the last one the WAL holds
+#  every report of: those the leader that went before may never have
+#  had written.
+# ------------------------------------------------------------
+message KeptReportsSent (id=216, version=1)
+    i64 count               # how many kept reports were sent
+    i64 reported_through    # the last command the WAL held every report of
+end

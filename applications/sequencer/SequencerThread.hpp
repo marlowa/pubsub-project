@@ -221,6 +221,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     };
     SequencerPublisherLinks publisher_links_{*this};
     std::optional<pubsub_itc_fw::WalHandedOverFollowers> handed_over_publishers_;
+    // The matching engines that follow the WAL rather than lead, once caught up: each is sent every record as it is
+    // committed, as a publisher is, and applies the commands among them (docs/availability/matching_engine_lockstep.md).
+    std::optional<pubsub_itc_fw::WalHandedOverFollowers> handed_over_engines_;
 
     // The test events this thread sends, when a test started this instance (docs/availability/test_events.md).
     class SequencerTestEventLinks : public pubsub_itc_fw::TestEventLinksInterface {
@@ -338,6 +341,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         // For a catch-up request: whether the engine asked to lead, and so has the orders routed to it
         // once it is caught up.
         bool asking_to_lead{false};
+        // For a catch-up request from an engine that is not to lead: it is sent every record, not only commands, and
+        // once caught up is sent each record as it is committed (handed_over_engines_).
+        bool follows_the_wal{false};
         // For a catch-up request: the start of the answer, which the reading thread sends before the first record, and
         // whose request number WalFollowCaughtUp echoes. It carries the last command the WAL holds every report of,
         // which the reading thread reads from the WAL.
@@ -350,7 +356,10 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // Has the reading thread serve @p engine from the record after @p after_seq_no, up to the last order released.
     void serve_engine(const pubsub_itc_fw::ConnectionID& engine, int64_t after_seq_no, EngineServing serving);
     // The engine the reading thread was serving has been handed over at @p through.
-    void engine_handed_over(const pubsub_itc_fw::ConnectionID& engine, int64_t through, int64_t records_sent, EngineServing serving);
+    void engine_handed_over(const pubsub_itc_fw::ConnectionID& engine, int64_t through, int64_t records_sent, pubsub_itc_fw::WalPosition resume_at,
+                            EngineServing serving);
+    // Whether the engine orders are routed to follows the WAL instead, and so is sent every command as a follower.
+    [[nodiscard]] bool routed_engine_follows_the_wal() const;
     // Publishes the last order released (released_through) as the limit a matching engine is served up to.
     void publish_released_position();
 
@@ -845,6 +854,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_publisher_follow_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     // Sends every publisher that has been handed over each record committed through @p seq_no.
     void send_committed_records_to_publishers(int64_t seq_no);
+    // Sends each matching engine that follows the WAL, once handed over, every record committed through @p seq_no.
+    void send_committed_records_to_follower_engines(int64_t seq_no);
     // Whether @p connection is a matching engine publisher's.
     [[nodiscard]] bool is_publisher_connection(const pubsub_itc_fw::ConnectionID& connection) const {
         return connection.service_name() == wal_subscriber_inbound_svc_;

@@ -273,6 +273,11 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
   are already in the WAL and reach their members through the sequencers. The setting
   `[catch_up] send_every_report`, false everywhere, sends them all, for the test that compares two
   engines' reports with a replay (BUG-0176).
+- **The follower matching engine's book was a copy sent by the leader**, which lost every change made
+  while the link between the engines was down, and was sent only by the engine configured as primary.
+  A follower engine now applies every command from the WAL itself: it is sent every committed record,
+  checks that none is missing, and sends no report, keeping each until the WAL holds the leader's; on
+  taking the lead it sends those the WAL lacks. Scenarios 87 and 88 test both (BUG-0187, BUG-0188).
 - **A halt was lost when the matching engine restarted, or failed over to the follower**, which was
   never told of it, so the venue went on accepting orders that R-0023 says only a person may allow
   again (BUG-0206).
@@ -296,7 +301,7 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 
 ### Known limitations
 
-- **82 bugs are open, 21 of them high severity**; `docs/bug_list.md` lists them.
+- **80 bugs are open, 19 of them high severity**; `docs/bug_list.md` lists them.
 - **A promoted matching engine cancels every resting order**, because every environment deploys
   `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
   nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both

@@ -1055,6 +1055,10 @@ class Scenario(NamedTuple):
     # places and cancels orders across the break, kills the leading engine, and requires the promoted engine to hold
     # exactly the orders the member was told are open. See run_scenario's "link between the engines" block.
     assert_book_survives_peer_link_break: bool = False
+    # When True, the leading matching engine is started with its sends of reports to the sequencers blocked once a flag
+    # file exists; the scenario sends orders after blocking them, kills the leading engine, and requires the member to be
+    # sent a report of every one of those orders by the engine that takes the lead. See run_scenario's "kept reports" block.
+    assert_kept_reports_sent_on_promotion: bool = False
     # When True, damage the matching engine's open-order region before restarting it, and
     # assert that the engine refuses it, keeps it aside, rebuilds its book from the WAL, which
     # reaches the first command of the day, and carries on with every order, cancelling nothing
@@ -3302,13 +3306,14 @@ _SCENARIOS: list[Scenario] = [
             # 6. Once its lease period has passed it grants its peer a renewal and follows, and the
             #    reports it produced while catching up go nowhere. It applied those records and
             #    reports none of them, because it serves nobody: the leader answered those members.
-            #    Being current and being entitled to act are separate things, and reporting is an
-            #    act -- BUG-0077.
+            #    It keeps them only until the WAL holds the leader's, and sends them only on taking
+            #    the lead (docs/availability/matching_engine_lockstep.md, section 3). Being current
+            #    and being entitled to act are separate things, and reporting is an act -- BUG-0077.
             VerifyStep(
-                expect=expect_message(ENGINE_LEADING_AT_START, "its held reports discarded", "ReportsDiscarded", "matching_engine_test_events"),
+                expect=expect_follows(ENGINE_LEADING_AT_START),
                 timeout=30.0,
-                description="the reports from its catch-up are discarded rather than sent",
-                absent=expect_leads(ENGINE_LEADING_AT_START),
+                description="it follows, and sends none of the reports its catch-up produced",
+                absent=expect_message(ENGINE_LEADING_AT_START, "it sent the reports it kept", "KeptReportsSent", "matching_engine_test_events"),
             ),
         ],
     ),
@@ -3380,10 +3385,10 @@ _SCENARIOS: list[Scenario] = [
             ),
             # 6. The assertion this scenario exists for.
             VerifyStep(
-                expect=expect_message(ENGINE_LEADING_AT_START, "its held reports released now that it serves", "ReportsReleased",
-                                      "matching_engine_test_events", fields=lambda m: {"reason": m.ReleaseReason.NowServes}),
+                expect=expect_message(ENGINE_LEADING_AT_START, "it sent the reports it kept, now that it serves", "KeptReportsSent",
+                                      "matching_engine_test_events"),
                 timeout=30.0,
-                description="the held reports are released to the members who placed those orders",
+                description="the reports it kept are sent to the members who placed those orders",
                 absent=expect_message(ENGINE_LEADING_AT_START, "its held reports discarded", "ReportsDiscarded", "matching_engine_test_events"),
             ),
         ],
@@ -4269,21 +4274,22 @@ _SCENARIOS: list[Scenario] = [
     # is, and with the primary started first and leading, so that killing it promotes the secondary. The secondary
     # cancels the 1,000 baseline orders it inherits, by a CancelBook command in the WAL, and tells the member. The
     # primary's region still holds them; the restarted primary meets the command in its catch-up and cancels them too.
-    # When it takes the lead it must hold exactly the orders the member was told are open: the 1,000 sent while it
-    # waited, and none of the 1,000 it was told were cancelled.
+    # It then follows the WAL while it waits, applying the 1,000 orders sent meanwhile, so taking the lead is a promotion
+    # too, and the venue set to cancel has it cancel those as well, telling the member. When it takes the lead it must hold
+    # exactly the orders the member was told are open: none, and in particular none of the 1,000 cancelled first. With
+    # nothing open, there is no order whose cancel by the gateway could be checked.
     Scenario(
         number=79,
         short_name="restarted_engine_holds_no_cancelled_order",
         description="A matching engine restarted after its peer cancelled the book on promotion leads holding none of the cancelled orders",
         expected_outcome=(
-            "the restarted matching_engine_primary takes the lead holding the orders accepted while it waited and none of "
-            "those the promoted secondary cancelled, so its book is exactly what the member was told is open"
+            "the restarted matching_engine_primary takes the lead holding none of the orders the promoted secondary cancelled, "
+            "and cancels those accepted while it waited as a promotion does, so its book is exactly what the member was told is open"
         ),
         me_ha=True,
         recovery_on_primary=True,
         engine_started_first="matching_engine_primary",
         assert_waiting_engine_catches_up=True,
-        assert_open_orders_survive=True,
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -4293,12 +4299,11 @@ _SCENARIOS: list[Scenario] = [
 
     # 80 -- a matching engine catching up from far back finishes the catch-up when the second sequencer connects.
     #
-    # BUG-0200. The secondary engine is started first and leads, so the primary follows and holds no orders of its own:
-    # a follower's copy of the book is sent only from the configured primary (BUG-0188). 200,000 baseline orders make
-    # the WAL long. The follower sequencer is killed, so that only the leading sequencer connects to the primary engine
-    # when it restarts. The primary engine is then killed and restarted without its record of the lease promises it
-    # made, so that it does not follow at once but catches up from the start of the WAL when the leading sequencer
-    # connects. The follower sequencer is restarted while that stream is under way, and connects to the engine in the
+    # BUG-0200. The secondary engine is started first and leads. 200,000 baseline orders make the WAL long. The follower
+    # sequencer is killed, so that only the leading sequencer connects to the primary engine when it restarts. The
+    # primary engine is then killed, its region damaged so that it holds nothing it can use, and restarted without its
+    # record of the lease promises it made, so that it does not follow at once but catches up from the start of the WAL
+    # when the leading sequencer connects. The follower sequencer is restarted while that stream is under way, and connects to the engine in the
     # middle of it. The engine must ask on the new connection only, and finish the catch-up already under way: no
     # Incomplete, and Completed within 10 seconds, less than the 15 seconds after which an engine asks again. Which
     # sequencer connects first after an engine restarts is otherwise chance, and only the leader's connection first
@@ -4338,6 +4343,7 @@ _SCENARIOS: list[Scenario] = [
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=0.0,
+                damage_region="matching_engine_open_orders.region",
                 forget_lease_promises=True,
             ),
             RestartStep(
@@ -4548,8 +4554,8 @@ _SCENARIOS: list[Scenario] = [
     # reaches the follower and makes it take its copy to be complete up to that order. The leading engine is then
     # killed, and the follower, promoted with open_orders_on_promotion = "keep", must hold exactly the orders the member
     # was told are open: a cancel of each of them is carried out, and a cancel of each order the member was told is
-    # cancelled is refused. It fails while the follower's book is a copy, because the updates sent during the break are
-    # lost; phase 8, in which both engines apply the WAL themselves, makes it pass.
+    # cancelled is refused. Both engines apply the WAL themselves, so the break costs the follower nothing: it is sent
+    # every record it missed when the link is mended (docs/availability/matching_engine_lockstep.md).
     Scenario(
         number=87,
         short_name="engine_link_break_keeps_the_book",
@@ -4560,16 +4566,31 @@ _SCENARIOS: list[Scenario] = [
             "cancel of every order the member was told is cancelled"
         ),
         me_ha=True,
-        # Only the engine configured as primary sends book updates (BUG-0188). With the secondary leading, the primary's
-        # copy is never advanced, so its catch-up on promotion starts before the break and makes up everything, and the
-        # scenario would test nothing. So the primary leads; once both engines apply the WAL themselves, either may.
-        engine_started_first="matching_engine_primary",
         open_orders_on_promotion="keep",
         assert_book_survives_peer_link_break=True,
-        expected_failure=(
-            "BUG-0187: the follower's copy of the book loses every change made while the link between the engines is down; "
-            "phase 8 of the recovery plan removes the copy"
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 88 -- the reports a leading engine never had written are sent by the engine that takes the lead.
+    #
+    # docs/availability/matching_engine_lockstep.md, section 3. A follower engine applies every command but sends none of
+    # their reports; it keeps them until the WAL holds the leader's. The leading engine's sends of reports to the
+    # sequencers are blocked, so it applies a thousand orders whose reports never reach the WAL, and it is then killed.
+    # The member has been sent nothing for those orders. The engine that takes the lead must send the reports it kept of
+    # every command after the last one the WAL holds every report of, so that the member is sent a New report for each.
+    Scenario(
+        number=88,
+        short_name="kept_reports_sent_on_promotion",
+        description="The reports a leading engine never had written are sent by the engine that takes the lead",
+        expected_outcome=(
+            "after the leading engine applies a thousand orders whose reports never reach the sequencers and is killed, the "
+            "engine that takes the lead sends the reports it kept, and the member is sent a New report for every one"
         ),
+        me_ha=True,
+        open_orders_on_promotion="keep",
+        assert_kept_reports_sent_on_promotion=True,
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -6245,6 +6266,21 @@ def broken_engine_link_environment(prefix: Path, flag: Path) -> dict[str, str]:
             "PUBSUB_TEST_BLOCK_CONFIRMATION": str(block_confirmation(flag)), "PUBSUB_TEST_BLOCK_MODE": "break"}
 
 
+def blocked_engine_reports_environment(prefix: Path, flag: Path, engine: str) -> dict[str, str]:
+    """The environment that makes libblock_sends_to_ports.so discard a matching engine's reports to the sequencers.
+
+    The engine connects to each sequencer's port for reports, named in [sequencer_er] and [sequencer_er_secondary] of
+    its configuration, so blocking those two ports discards every report it sends once the flag exists.
+    """
+    library = prefix / "lib" / "libblock_sends_to_ports.so"
+    if not library.is_file():
+        die(f"{library} is not installed; it is built with the sequencer and installed by devsetup.sh")
+    config = prefix / "etc" / "matching_engine" / f"{engine}.toml"
+    ports = [installed_toml_section_value(config, section, "port") for section in ("sequencer_er", "sequencer_er_secondary")]
+    return {"LD_PRELOAD": str(library), "PUBSUB_TEST_BLOCK_PORTS": ",".join(ports), "PUBSUB_TEST_BLOCK_FLAG": str(flag),
+            "PUBSUB_TEST_BLOCK_CONFIRMATION": str(block_confirmation(flag))}
+
+
 def blocked_gateway_environment(prefix: Path, flag: Path) -> dict[str, str]:
     """The environment that makes libblock_sends_to_ports.so block the primary sequencer's sends to the gateways.
 
@@ -7273,8 +7309,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 extra_environment = blocked_gateway_environment(prefix, block_flag)
             if scenario.assert_logged_commands_reach_engine and name == "sequencer_secondary":
                 extra_environment = blocked_peer_environment(prefix, block_flag)
-            if scenario.assert_book_survives_peer_link_break and name == resolved(ENGINE_LEADING_AT_START):
+            # The engine that leads at the start is named only once a lease settles it, after the launch, so it is taken to
+            # be the one started first, which must lead before the other starts, and otherwise the primary.
+            leading_at_launch = engine_first or "matching_engine_primary"
+            if scenario.assert_book_survives_peer_link_break and name == leading_at_launch:
                 extra_environment = broken_engine_link_environment(prefix, block_flag)
+            if scenario.assert_kept_reports_sent_on_promotion and name == leading_at_launch:
+                extra_environment = blocked_engine_reports_environment(prefix, block_flag, name)
             if scenario.assert_reports_held_for_unconnected_gateway and name in ("sequencer_primary", "sequencer_secondary"):
                 config = config_with_gateway_report_relay(config)
                 log(f"  {name} sends reports to fix_order_gateway_a through a relay on port {sorted(_GATEWAY_REPORT_RELAY_PORTS)}, which accepts nothing yet")
@@ -7820,7 +7861,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # is no book a promotion resumed with to ask about.
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
                 and not scenario.assert_deferred_answered and not scenario.expects_no_new_leader
-                and not scenario.assert_book_survives_peer_link_break):
+                and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion):
             cancels_expected = scenario.open_orders_on_promotion == "cancel"
             # Under "keep" the promotion has already been observed by the time this runs, so it is confirming an absence:
             # the engine is asked for a checkpoint first, and a cancel it sent cannot still be on its way.
@@ -8846,6 +8887,44 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "lost (BUG-0187)")
             log(f"  link between the engines: the promoted {follower} holds exactly the {len(told_open)} order(s), of those placed in this "
                 "check, that the member was told are open -- OK")
+
+        # ── Kept reports: the engine that takes the lead sends what the leader never had written ──
+        # docs/availability/matching_engine_lockstep.md, section 3. The orders are named by their ClOrdIDs, so a New report
+        # sent before the block, for an earlier order, cannot stand in for one of these.
+        if scenario.assert_kept_reports_sent_on_promotion:
+            log("=== Blocking the leading engine's reports, sending orders, and killing it ===")
+            leader = resolved(ENGINE_LEADING_AT_START)
+            follower = resolved(ENGINE_FOLLOWING_AT_START)
+            block_flag.touch()
+            reports_before = client_reports(f8proc).mark()
+            blocked_sent_before = send_orders(f8proc, b"T", 1)
+            if not await_blocking(block_flag, _RAW_REPLY_TIMEOUT):
+                die(f"kept reports: {leader} sent no report after the block began, so its reports were never blocked")
+            # Long enough for the leader to apply them and for the follower to be sent them as a follower of the WAL.
+            time.sleep(3.0)
+            early = client_reports(f8proc).new_orders_since(reports_before)
+            if early > 0:
+                die(f"kept reports: the member was sent {early} New report(s) for orders sent after the leader's reports were blocked, "
+                    "so something other than the engine that takes the lead answered them, and the scenario tests nothing")
+            kill_mark = _TEST_EVENTS.mark()
+            leader_proc = proc_by_name.get(leader)
+            if leader_proc is None or leader_proc.poll() is not None:
+                die(f"kept reports: {leader} is not running, so there is no leader to kill")
+            log(f"  SIGKILL -> {leader} (PID {leader_proc.pid})")
+            leader_proc.kill()
+            leader_proc.wait()
+            if leader_proc.poll() is None:
+                die(f"kept reports: {leader} is still running after SIGKILL")
+            sent = engine_event(follower, "KeptReportsSent", kill_mark, args.failover_timeout)
+            if sent is None:
+                die(f"kept reports: {follower} never said it sent the reports it kept, so it did not take the lead after following")
+            answered, took = await_new_orders(f8proc, _ORDERS_PER_COMMAND[b"T"], blocked_sent_before, args.recovery_timeout)
+            if not answered:
+                die(f"kept reports: the member was not sent a New report for each of the {_ORDERS_PER_COMMAND[b'T']} orders the dead leader "
+                    f"applied without its reports reaching the WAL; {follower} sent {sent.count} kept report(s) of commands after "
+                    f"{sent.reported_through}")
+            log(f"  kept reports: {follower} sent {sent.count} report(s) it kept of commands after {sent.reported_through}, and the member "
+                f"was sent a New report for every one of the {_ORDERS_PER_COMMAND[b'T']} orders within {took:.2f}s -- OK")
 
         if scenario.assert_order_refusal:
             log("=== Refusing orders the venue cannot process ===")
