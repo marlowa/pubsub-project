@@ -36,8 +36,7 @@ enum class ReportIsRepeat { no, yes };
  *
  * A command is applied by the same code whichever it is, so that the book and the reports are the same.
  * These are the only differences. A command applied live is checked against the order of sequence
- * numbers; a new order it puts on the book is replicated to the follower engine and counted as
- * processed. A command applied during a catch-up is not checked against the order of sequence numbers,
+ * numbers; a new order it puts on the book is counted as processed. A command applied during a catch-up is not checked against the order of sequence numbers,
  * whose records are below the position by construction, and its reports are marked as possible repeats.
  * A command a catch-up delivers that this engine has already acted on, by its sequence number, is not
  * applied again. A new order is refused while trading is halted whichever way it arrives, because the
@@ -50,11 +49,10 @@ enum class CommandSource { live, catch_up };
 enum class HaltIfOrdersCancelled { no, yes };
 
 /**
- * @brief Where the state machine's results go: the reports it produces, and the changes to the book that the
- * follower engine must be told of.
+ * @brief Where the state machine's results go: the reports it produces, and what became of each command.
  *
- * MatchingEngineThread implements it, sending the reports to the sequencers and the changes to the
- * follower engine. A unit test implements it by recording what it is given. Every call is made
+ * MatchingEngineThread implements it, sending the reports to the sequencers, or keeping them while it follows the
+ * WAL. A unit test implements it by recording what it is given. Every call is made
  * synchronously, from within the call to the state machine that caused it, and every string view it
  * is given is valid only for the duration of the call.
  */
@@ -74,34 +72,6 @@ class MatchingEngineOutputsInterface {
                              ReportIsRepeat repeat) = 0;
 
     /**
-     * @brief A live order was put on the book. Not called for an order applied during a catch-up.
-     * @param[in] sequence_number The order's sequence number.
-     * @param[in] session         The session that placed it.
-     * @param[in] cl_ord_id       Its ClOrdID.
-     * @param[in] entry           What the book now holds for it.
-     */
-    virtual void order_added_to_book(int64_t sequence_number, const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
-                                     const OrderEntry& entry) = 0;
-
-    /**
-     * @brief A live cancel took an order off the book. Not called for a cancel applied during a catch-up.
-     * @param[in] sequence_number The cancel's sequence number.
-     * @param[in] session         The session that placed the order.
-     * @param[in] cl_ord_id       The ClOrdID of the order removed, which is the cancel's OrigClOrdID.
-     */
-    virtual void order_removed_from_book(int64_t sequence_number, const fix_common::SessionIdentity& session, std::string_view cl_ord_id) = 0;
-
-    /**
-     * @brief A live command halted trading or lifted a halt. Not called for a command applied during a catch-up.
-     *
-     * The follower engine does not apply commands, so it is told of a halt as it is told of a change to the book, and a
-     * follower promoted later refuses orders as the engine it follows does.
-     * @param[in] sequence_number The command's sequence number.
-     * @param[in] halted          Whether trading is now halted.
-     */
-    virtual void trading_halt_changed(int64_t sequence_number, bool halted) = 0;
-
-    /**
      * @brief What became of an order or a cancel, for a test that asked to be told.
      * @param[in] session         The session that sent it.
      * @param[in] cl_ord_id       Its ClOrdID.
@@ -113,7 +83,7 @@ class MatchingEngineOutputsInterface {
     virtual void order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
                                ReportIsRepeat repeat, int64_t sequence_number, std::string_view orig_cl_ord_id) = 0;
 
-    /// A live order was accepted onto the book. Called once for each, before order_added_to_book.
+    /// A live order was accepted onto the book. Called once for each.
     virtual void order_accepted() = 0;
 };
 
@@ -216,8 +186,7 @@ class MatchingEngineStateMachine {
      * same reports, including one that catches up later (docs/availability/deterministic_matching_engine.md, section 4).
      * Each report's ExecID is made from the command's sequence number and the report's place, from 0; the reports are
      * handed to the outputs with sequence number 0, so that the sequencer routes each by the session on its envelope.
-     * Live, each order removed is passed to order_removed_from_book, so that the follower engine's copy of the book
-     * loses it too. The book is published to the command's sequence number afterwards.
+     * The book is published to the command's sequence number afterwards.
      *
      * A command at or below the highest acted on is not applied: during a catch-up because it was applied already, and
      * live because the WAL the engine acted on and the one now sending disagree, as for an order. A command without a
@@ -288,11 +257,10 @@ class MatchingEngineStateMachine {
 
   private:
     // Halts trading, without answering, for a command whose sequence number an identifier cannot hold.
-    void refuse_to_name(int64_t sequence_number, CommandSource source);
+    void refuse_to_name(int64_t sequence_number);
 
-    // Records whether trading is halted, before the command's position is published, and tells the follower engine
-    // when a live command changed it.
-    void set_halted(TradingHalted halted, int64_t sequence_number, CommandSource source);
+    // Records whether trading is halted, before the command's position is published.
+    void set_halted(TradingHalted halted);
 
     // The work of apply_new_order and apply_cancel, which catch what it throws.
     void apply_new_order_unguarded(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time, int32_t trading_date,

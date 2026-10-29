@@ -742,8 +742,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void write_recovery_halt(int64_t now_ns);
     // A matching engine about to lead that cannot account for the orders the venue holds, asking for trading to be halted.
     void handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    // A promoted matching engine asking for the orders it inherited to be cancelled.
-    void handle_cancel_book_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     // Adds an identifier to the record, reporting once if it is full.
     void record_identifier(uint64_t id);
 

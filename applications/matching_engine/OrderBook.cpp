@@ -76,18 +76,6 @@ bool OrderBook::add(const OrderKey& key, const OrderEntry& entry, int64_t seq_no
     return true;
 }
 
-bool OrderBook::add_or_replace(const OrderKey& key, const OrderEntry& entry, int64_t seq_no) {
-    if (SlotIndex* existing = index_.find_value(key)) {
-        OrderEntry* written = entry_at(*existing);
-        std::memcpy(written, &entry, sizeof(OrderEntry));
-        written->session = key.session;
-        written->set_cl_ord_id(std::string_view(key.cl_ord_id.data(), key.cl_ord_id_len));
-        store_.commit(*existing, seq_no);
-        return true;
-    }
-    return add(key, entry, seq_no);
-}
-
 bool OrderBook::remove(const OrderKey& key) {
     const auto it = index_.find(key);
     if (it == index_.end()) {

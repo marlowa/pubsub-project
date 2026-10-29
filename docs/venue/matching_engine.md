@@ -42,8 +42,7 @@ In order, the engine:
    holding as many open orders as it can". The book has a fixed number of records
    (`[order_book] region_capacity`: two million in the development environment, one million in the
    others), and it is never grown on the engine's thread.
-6. **Otherwise accepts it**: the order is written to the book, a copy is sent to the standby engine
-   (`BookUpdate`, below), and the member is sent an execution report with ExecType and OrdStatus New,
+6. **Otherwise accepts it**: the order is written to the book, and the member is sent an execution report with ExecType and OrdStatus New,
    LeavesQty equal to OrderQty, and CumQty 0. The report echoes the order's price, order type, time
    in force, expiry time, and its party and underlying repeating groups.
 
@@ -132,23 +131,21 @@ With high availability on, two instances run: `matching_engine` (the primary, in
 
 - **Both instances start alike**, whichever is configured as primary: in the unknown role, neither
   leading nor following. Each catches up from the sequencer's log when the first sequencer connects,
-  and says it leads or follows only once a lease settles which. While that first catch-up runs, an
-  instance holds the changes to the book the leader sends it, and once it is caught up applies only
-  those the catch-up did not already cover. An instance whose book holds changes the leader sent it
-  is promoted when it takes the lead, even if it was never told that it follows, and
-  `open_orders_on_promotion` applies; one that built its book from its file and the log alone takes
-  the lead as a start, and keeps its orders.
+  and says it leads or follows only once a lease settles which.
 - **Leadership is decided by leases.** An instance leads only while a majority of itself, its peer
   and the arbiter pool has granted it a lease; see
   [Deciding leadership by majority, with leases](../availability/majority_leases.md). A sequencer sends
-  orders only to the instance that leads, or to the primary while no instance has said it leads
-  (`EngineOrderRouting`). An instance holding no lease that is sent an order discards it, and marks
-  itself as needing a catch-up before it may act. Nothing is lost by discarding them: they are in the
-  sequencer's log. An instance that is sent no orders at all does not mark itself, and takes the lead
-  without catching up again ([BUG-0198](../bug_list.md#bug_0198)).
-- **The standby keeps a copy of the book.** The leader sends each order it accepts and each order it
-  removes to the standby over the book replication connection (`BookUpdate`, ports 11025 and 11026 in
-  the development environment). The sequencers send the standby no orders.
+  orders only to the instance that leads (`EngineOrderRouting`).
+- **The instance that does not lead follows the sequencer's log.** It asks the leading sequencer to
+  catch it up and to go on sending it every committed record, and applies every command as the leader
+  does, so its book is the leader's after the same record. It checks that the records' numbers run on
+  with none missing, and asks again if not. It sends no reports: it keeps each until the log holds the
+  leader's report of the same command, and when it takes the lead it sends those the log lacks, each
+  marked `PossResend`. See
+  [Running the matching engine pair in lockstep](../availability/matching_engine_lockstep.md).
+- **The two instances are linked** (`[peer]`, ports 11025 and 11026 in the development environment):
+  the link carries the lease requests between them, their role announcements, and the check that
+  their settings agree.
 - **Every engine catches up before it acts**, whether it has just been promoted or has just started.
   It sends the sequencers the position it has reached (`WalFollowRequest`), and the leading sequencer
   sends every command after it, then says where it stopped and how many records it sent
@@ -159,13 +156,8 @@ With high availability on, two instances run: `matching_engine` (the primary, in
   command an earlier engine already reported from one no engine ever saw. This is what recovers an
   order the sequencer took while no engine was running
   ([BUG-0064](../bug_list.md#bug_0064)).
-- **What a promotion does with the orders it inherits** is set by
-  `[order_book] open_orders_on_promotion`. Under `"cancel"`, the promoted engine cancels every order on
-  its book, reports each cancel to its member, and continues on an empty book. Under `"keep"` it
-  carries the book across, so an order open before the promotion is still open after it and can be
-  cancelled by its member. **`"cancel"` is set in every environment**, because nothing yet checks that
-  the copy of the book the standby kept from `BookUpdate` is the book the leader held. See R-0073 and
-  R-0101 in the functional specification.
+- **A promotion keeps every order.** The promoted engine followed the log, so an order open before the
+  promotion is still open after it and can be cancelled by its member (R-0073).
 - **When the book file could not be used**, the engine rebuilds its book from the sequencer's log,
   from the first command of the trading day. The engine is deterministic, so that book is exactly the
   venue's: it keeps it, cancels nothing, and says at Error that it rebuilt its record (R-0123). If the
@@ -174,9 +166,7 @@ With high availability on, two instances run: `matching_engine` (the primary, in
   writes a `TechnicalEvent` that halts trading; nothing is cancelled. An engine that follows asks for
   no halt, because the engine that leads goes on trading.
 
-A halt stays until a person lifts it; see [Trading phases](trading_phases.md). The whole promotion
-sequence, and why cancelling is safe, are in
-[WAL and High Availability](../availability/wal_and_ha.md).
+A halt stays until a person lifts it; see [Trading phases](trading_phases.md).
 
 `ha_test.py` scenario 16 kills the primary engine and checks that the secondary takes over.
 
@@ -191,14 +181,13 @@ environment, primary first:
 | `[sequencer_er] host`, `port` | The primary sequencer's report listener, 11021 |
 | `[sequencer_er_secondary] host`, `port` | The secondary sequencer's report listener, 11022 |
 | `[ha] enabled`, `role` | The venue-wide high availability switch, and which instance this is |
-| `[book_replication] listen_port`, `port` | The book replication connection between the two instances: each listens on one and connects to the other's (11025 and 11026) |
+| `[peer] listen_port`, `port` | The link between the two instances: each listens on one and connects to the other's (11025 and 11026) |
 | `[ha_instance] instance_id`, `epoch_state_file` | This instance's number, and the file holding the highest leadership epoch it has seen |
 | `[arbiter_primary]`, `[arbiter_secondary]` | The arbiters, 11200 and 11201 |
 | `[lease]` | The lease period, the allowance for clock drift, and how often a lease is renewed, shared by every component that takes part in leases |
 | `[ha_timing] catch_up_retry_seconds` | How long to wait before asking for a catch-up again when no answer came, 15 seconds |
 | `[order_book] region_path`, `region_capacity` | The book's file, and the most orders it can hold |
 | `[order_book] initial_capacity`, `growth_report_threshold_bytes` | The size reserved for the map from order identity to record, and when its growth is reported |
-| `[order_book] open_orders_on_promotion` | `"cancel"` or `"keep"`, as above |
 | `[event_queue_pool]`, `[command_queue_pool]` | The pools the reactor's queues take their entries from |
 | `[reactor]`, `[logging]`, `[metrics]` | CPU pinning and waiting, log levels, and the Prometheus endpoint |
 
@@ -209,7 +198,8 @@ template of that name: it installs only `matching_engine_primary.toml` and
 
 ## See Also
 
-- [WAL and High Availability](../availability/wal_and_ha.md) — the promotion sequence and the cancel-on-failover rule
+- [Running the matching engine pair in lockstep](../availability/matching_engine_lockstep.md) — how the follower follows the log, and what a promotion does
+- [WAL and High Availability](../availability/wal_and_ha.md) — the sequencer pair and the log
 - [Open order checkpoint](../durability/open_order_checkpoint.md) — the book's file, and recovery from it
 - [Sequencer Application](sequencer_app.md) — the sequencer that feeds the engine and delivers its reports
 - [Trading phases](trading_phases.md) — halting and lifting a halt

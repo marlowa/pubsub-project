@@ -389,7 +389,8 @@ availability scenarios pass.
 **Design:** [matching_engine_lockstep.md](availability/matching_engine_lockstep.md), whose five decisions Andrew
 took on 28 October 2026. Its steps 1 and 2 are built: a follower engine applies every command from the WAL and keeps
 its reports until the WAL holds the leader's ([BUG-0187](bug_list.md#bug_0187) and [BUG-0188](bug_list.md#bug_0188)
-are fixed).
+are fixed). Its step 3 is built: `BookUpdate` and `open_orders_on_promotion` are gone, and a promoted engine keeps every
+order ([BUG-0143](bug_list.md#bug_0143) is fixed). The first two points of the finish condition below are met.
 
 **For:** losing the leading matching engine costs a short pause and nothing else. The members' resting
 orders are still on the book afterwards.

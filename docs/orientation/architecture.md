@@ -113,7 +113,7 @@ instruments is not designed.
 | Commands to the engine | Leading sequencer → leading engine | Numbered commands, in order |
 | Reports from the engine | Engine → both sequencers | Each report; only the leader forwards it |
 | Log replication | Leading → following sequencer | Every record; the follower acknowledges each |
-| Book replication | Leading → following engine | Every change to the book (`BookUpdate`) |
+| Link between the engines | Each engine ↔ the other | The lease requests between the pair, role announcements and the settings check; no book |
 | Leases | Each instance ↔ its peer and both arbiters | `LeaseRequest`, `LeaseGrant`, `LeaseRefusal` |
 | Arbiters | Arbiter ↔ arbiter, arbiter ↔ witness | The same lease messages, and the highest epoch granted in each group |
 | Topics | Publisher → subscribers | Records from the sequencer's log, by topic |

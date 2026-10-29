@@ -246,8 +246,6 @@ Three consequences:
 
 - **The matching engine's book is keyed on the session identity** and the `ClOrdID`
   (`OrderKey`), which is what lets a member cancel, from a new connection, an order it left resting.
-- **`BookUpdate` replication carries the identity,** not a connection. On promotion, any connection
-  in the replica would name the process whose death caused the promotion.
 - **The matching engine stamps whose report it is, never where it goes.** The sequencer resolves
   the destination. The engine has no way to know where a member is, and on the cancel-on-failover
   path any address it remembered would be out of date by construction.

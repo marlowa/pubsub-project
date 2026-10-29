@@ -88,8 +88,8 @@ they are not one latency class:
   execution report until the follower's `WalAck` arrives. The follower's wake-up latency is
   therefore added to every order's round trip, and a follower on a slow core slows the leader's
   responses to clients.
-- **The matching engine secondary is not.** The primary sends book updates to it without waiting
-  for any acknowledgement; the secondary only follows the book.
+- **The matching engine secondary is not.** While it follows, it is sent every committed record
+  and applies it, but nothing waits for it: no report waits on anything it does.
 
 Same high availability pattern, opposite conclusion. This is why the design declares a ranking
 rather than deriving one: no tool can infer the `WalAck` dependency from where processes run or
@@ -113,7 +113,7 @@ latency-critical. A single flag for both would put it on an E-core and slow ever
 | `sequencer_primary` | yes | **yes** | the sequencing point |
 | `sequencer_secondary` | **no** | **yes** | `WalAck` holds back every execution report |
 | `matching_engine_primary` | yes | **yes** | matching |
-| `matching_engine_secondary` | **no** | **no** | book updates are not acknowledged |
+| `matching_engine_secondary` | **no** | **no** | while it follows, nothing waits for it |
 | `mep_primary`, `mep_secondary` | undecided | no | downstream of the execution report path |
 | `auth_service_a`, `auth_service_b` | yes | no | logon only, not per order |
 | `arbiter_primary`, `arbiter_secondary`, `witness` | for resilience, not trading | no | election and failover only |
@@ -162,7 +162,7 @@ same on every machine, and on a dedicated production host never makes a differen
 - **Rank — declared, the same on every machine.** The order in which components give up their
   claim to hot-path cores when a machine is short of them. This is knowledge about the venue —
   the sequencer follower's `WalAck` holds back every execution report, the matching engine
-  secondary's book updates do not — and it is true in every environment.
+  secondary holds back none — and it is true in every environment.
 - **Cut point — computed for each machine.** Where the supply of cores runs out. It depends on
   which components the machine runs and on its real core topology, both of which `deploy.py` can
   find out on the target host.

@@ -101,19 +101,6 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
         reports.push_back(recorded);
     }
 
-    void order_added_to_book(int64_t sequence_number, const fix_common::SessionIdentity& /*session*/, std::string_view cl_ord_id,
-                             const OrderEntry& /*entry*/) override {
-        added.push_back(std::string(cl_ord_id) + "@" + std::to_string(sequence_number));
-    }
-
-    void order_removed_from_book(int64_t sequence_number, const fix_common::SessionIdentity& /*session*/, std::string_view cl_ord_id) override {
-        removed.push_back(std::string(cl_ord_id) + "@" + std::to_string(sequence_number));
-    }
-
-    void trading_halt_changed(int64_t sequence_number, bool halted) override {
-        halt_changes.push_back(std::string(halted ? "halted" : "lifted") + "@" + std::to_string(sequence_number));
-    }
-
     void order_outcome(const fix_common::SessionIdentity& /*session*/, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
                        ReportIsRepeat repeat, int64_t sequence_number, std::string_view /*orig_cl_ord_id*/) override {
         if (fail_next_outcome) {
@@ -132,9 +119,6 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
     bool fail_next_outcome{false};
 
     std::vector<RecordedReport> reports;
-    std::vector<std::string> added;
-    std::vector<std::string> halt_changes;
-    std::vector<std::string> removed;
     std::vector<RecordedOutcome> outcomes;
     int accepted{0};
 };
@@ -239,7 +223,6 @@ TEST_F(MatchingEngineStateMachineTest, AcceptsANewOrderOntoTheBookAndAcknowledge
     EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-1")));
     EXPECT_EQ(book_.published(), 5) << "the book is published to the order once its report has been sent";
     EXPECT_EQ(outputs_.accepted, 1);
-    EXPECT_EQ(outputs_.added, std::vector<std::string>{"ORD-1@5"});
     ASSERT_EQ(outputs_.outcomes.size(), 1U);
     EXPECT_EQ(outputs_.outcomes[0].outcome, pubsub_itc_fw_app::OrderOutcomeKind::Accepted);
     EXPECT_EQ(machine_.highest_applied(), 5);
@@ -496,7 +479,6 @@ TEST_F(MatchingEngineStateMachineTest, CancelsAnOpenOrderAndReportsItsTerms) {
     EXPECT_EQ(cancelled.transact_time, taken_at + 1);
     EXPECT_FALSE(book_.contains(OrderKey::make(member, "ORD-1")));
     EXPECT_EQ(book_.published(), 2);
-    EXPECT_EQ(outputs_.removed, std::vector<std::string>{"ORD-1@2"});
     EXPECT_EQ(outputs_.outcomes.back().outcome, pubsub_itc_fw_app::OrderOutcomeKind::Cancelled);
 }
 
@@ -507,7 +489,6 @@ TEST_F(MatchingEngineStateMachineTest, RefusesACancelOfAnOrderTheBookDoesNotHold
     EXPECT_EQ(outputs_.reports[0].exec_type, pubsub_itc_fw_app::ExecType::Rejected);
     EXPECT_EQ(outputs_.reports[0].ord_rej_reason, pubsub_itc_fw_app::OrdRejReason::UnknownOrder);
     EXPECT_EQ(outputs_.reports[0].orig_cl_ord_id, "ORD-9") << "carried so the gateway answers with an OrderCancelReject";
-    EXPECT_TRUE(outputs_.removed.empty());
     EXPECT_EQ(outputs_.outcomes.back().outcome, pubsub_itc_fw_app::OrderOutcomeKind::CancelRefusedUnknown);
 }
 
@@ -540,7 +521,6 @@ TEST_F(MatchingEngineStateMachineTest, ACatchUpAppliesAnOrderAndReportsItAsAPoss
     EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-1")));
     EXPECT_EQ(book_.published(), 3);
     EXPECT_EQ(outputs_.accepted, 0) << "an order applied from a catch-up is not counted as processed";
-    EXPECT_TRUE(outputs_.added.empty()) << "nor replicated to the follower";
     EXPECT_EQ(machine_.highest_applied(), 3) << "a command applied by a catch-up is applied, whether or not the catch-up completes";
 }
 
@@ -579,7 +559,6 @@ TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandThatAsksToHaltHaltsOnly
     EXPECT_TRUE(empty.applied);
     EXPECT_FALSE(empty.halted);
     EXPECT_FALSE(machine_.halted());
-    EXPECT_TRUE(outputs_.halt_changes.empty());
 
     machine_.apply_new_order(new_order("ORD-1"), 2, taken_at, trading_day, member, CommandSource::live);
     const MatchingEngineStateMachine::BookCancelledByCommand held =
@@ -587,7 +566,6 @@ TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandThatAsksToHaltHaltsOnly
     EXPECT_EQ(held.reports_sent, 1);
     EXPECT_TRUE(held.halted);
     EXPECT_TRUE(machine_.halted());
-    EXPECT_EQ(outputs_.halt_changes, (std::vector<std::string>{"halted@3"})) << "the follower engine is told, as of the command";
 
     outputs_.reports.clear();
     machine_.apply_new_order(new_order("ORD-2"), 4, taken_at, trading_day, member, CommandSource::live);
@@ -649,7 +627,6 @@ TEST_F(MatchingEngineStateMachineTest, ATechnicalEventHaltsAndLiftsAndACancelIsC
         machine_.apply_technical_event(technical_event(false, trading_day), 5, trading_day, CommandSource::live);
     EXPECT_TRUE(lift.halt_changed);
     EXPECT_FALSE(machine_.halted());
-    EXPECT_EQ(outputs_.halt_changes, (std::vector<std::string>{"halted@2", "lifted@5"}));
     outputs_.reports.clear();
     machine_.apply_new_order(new_order("ORD-3"), 6, taken_at, trading_day, member, CommandSource::live);
     ASSERT_EQ(outputs_.reports.size(), 1U);
@@ -665,11 +642,10 @@ TEST_F(MatchingEngineStateMachineTest, ATechnicalEventForAnOlderTradingDayIsRefu
     EXPECT_EQ(book_.published(), 1) << "published all the same, so a restart does not meet it as new";
 }
 
-// A catch-up tells the follower engine nothing: it is the engine catching up that is about to lead.
-TEST_F(MatchingEngineStateMachineTest, AHaltAppliedDuringACatchUpIsNotSentToTheFollower) {
+// A halt met during a catch-up halts the engine catching up, as it halted the engine that applied it live.
+TEST_F(MatchingEngineStateMachineTest, AHaltAppliedDuringACatchUpHalts) {
     machine_.apply_technical_event(technical_event(true, trading_day), 1, trading_day, CommandSource::catch_up);
     EXPECT_TRUE(machine_.halted());
-    EXPECT_TRUE(outputs_.halt_changes.empty());
 }
 
 TEST_F(MatchingEngineStateMachineTest, ACatchUpRefusesAnOverLongClOrdIdAsAPossibleRepeatAndPublishes) {
@@ -691,7 +667,6 @@ TEST_F(MatchingEngineStateMachineTest, ACatchUpCancelOfAnOpenOrderIsReportedAsAP
     EXPECT_EQ(outputs_.reports[1].order_id, order_id_of(1));
     EXPECT_EQ(outputs_.reports[1].repeat, ReportIsRepeat::yes);
     EXPECT_EQ(book_.size(), 0U);
-    EXPECT_TRUE(outputs_.removed.empty());
 }
 
 // A catch-up can deliver records the engine has already acted on live. They are not applied again: no second report,
@@ -869,7 +844,6 @@ TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandCancelsTheOrdersPlacedA
         EXPECT_EQ(report.transact_time, taken_at + 7) << "the time the command carries";
         EXPECT_EQ(report.repeat, ReportIsRepeat::no);
     }
-    EXPECT_EQ(outputs_.removed, (std::vector<std::string>{"ORD-B@6", "ORD-A@6"})) << "the follower engine's copy loses them too";
     EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-C"))) << "placed after the command's position, so kept";
     EXPECT_EQ(book_.size(), 1U);
     EXPECT_EQ(book_.published(), 6);
@@ -900,7 +874,6 @@ TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandIsAppliedOnceAndAlikeLi
         EXPECT_EQ(outputs_.reports[index].exec_type, caught_up_outputs.reports[index].exec_type) << "report " << index;
     }
     EXPECT_EQ(caught_up_outputs.reports.back().repeat, ReportIsRepeat::yes);
-    EXPECT_TRUE(caught_up_outputs.removed.empty()) << "a catch-up replicates nothing to the follower";
     EXPECT_EQ(book_.size(), 0U);
     EXPECT_EQ(caught_up_book.size(), 0U);
 }

@@ -135,12 +135,6 @@ class OrderBook {
      */
     [[nodiscard]] bool add(const OrderKey& key, const OrderEntry& entry, int64_t seq_no);
 
-    /**
-     * @brief Records an open order, replacing whatever was filed under this identity.
-     * @return false when the region is full and there was nothing to replace.
-     */
-    [[nodiscard]] bool add_or_replace(const OrderKey& key, const OrderEntry& entry, int64_t seq_no);
-
     /** @brief Removes an open order. @return true when there was one to remove. */
     bool remove(const OrderKey& key);
 

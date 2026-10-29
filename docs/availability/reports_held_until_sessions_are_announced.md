@@ -127,8 +127,15 @@ The options are in section 6, question 2.
   the oldest dropped when full; a gateway whose link is lost becoming not announced again. Each made to fail on
   purpose.
 - **The full set of scenarios**, from cleared state.
-- **A scenario in which the window happens on purpose.** No scenario does today: in 27 and 36 the window occurred
-  but no report fell in it. The options are in section 6, question 3.
+- **A scenario in which the window happens on purpose**, `ha_test.py` scenario 77, by option A of section 6, question
+  3. The gateways wait 40 seconds before announcing their sessions on a link that comes up. The leading sequencer is
+  killed and restarted; while it is restarting, the leading engine's reports are blocked and 1,000 orders are sent,
+  which it applies without the member being sent anything; then the other sequencer and the leading engine are killed.
+  The restarted sequencer leads before it is told of the member's session, and the engine that takes the lead sends
+  the reports it kept of those orders ([matching_engine_lockstep.md](matching_engine_lockstep.md), section 3). It
+  passes when the sequencer sent `ReportsHeld` and then `HeldReportsReleased` for the member's comp id, no report was
+  dropped, and the member received a New report for each of the 1,000. With no wait before the announcements, nothing
+  is held and it fails.
 
 ## 6. Decisions
 

@@ -572,12 +572,6 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         return;
     }
 
-    // A promoted matching engine asking for a command to cancel the orders it inherited.
-    if (message.pdu_id() == pubsub_itc_fw_app::CancelBookRequest::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
-        handle_cancel_book_request(conn_id, message);
-        release_pdu_payload(message);
-        return;
-    }
     if (message.pdu_id() == pubsub_itc_fw_app::HaltRequest::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
         handle_halt_request(conn_id, message);
         release_pdu_payload(message);
@@ -2058,47 +2052,6 @@ void SequencerThread::take_record_of_identifiers_if_built() {
                    "(the last because: {}). This is expected only when a repair cut the log back meanwhile, which the Quill log shows above",
                    identifiers_builder_.segments_not_read(), identifiers_builder_.last_segment_error());
     }
-}
-
-void SequencerThread::handle_cancel_book_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::CancelBookRequestView request{};
-    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode CancelBookRequest -- dropping");
-        return;
-    }
-    // Only the leader writes commands, and only for the engine orders are routed to: an engine that has since lost the
-    // lead, or one this instance does not route to, asks for a decision that is no longer its to take. The engine that
-    // leads asks again until it has applied a cancel through the position it named.
-    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value() || engine_routing_.active() != conn_id) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: CancelBookRequest from matching engine instance {} on connection {} through seq={} -- not written: {}",
-                   request.instance_id, conn_id.get_value(), request.orders_placed_through,
-                   role_ != pubsub_itc_fw_app::Role::leader ? "this instance does not lead" : "orders are not routed to that engine");
-        return;
-    }
-    pubsub_itc_fw_app::CancelBook command{};
-    command.reason = pubsub_itc_fw_app::CancelBookReason::Promotion;
-    command.orders_placed_through = request.orders_placed_through;
-    command.halt_if_orders_cancelled = false;
-    // Measured, then encoded into a buffer of the size measured.
-    size_t bytes_written = 0;
-    size_t bytes_needed = 0;
-    static_cast<void>(pubsub_itc_fw_app::encode(command, nullptr, 0, bytes_written, bytes_needed));
-    std::vector<uint8_t> bytes(bytes_needed);
-    if (!pubsub_itc_fw_app::encode(command, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a CancelBook command needs {} bytes and could not be encoded",
-                   bytes_needed);
-        return;
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: matching engine instance {} at epoch {} asks for the orders it inherited, placed at or before seq={}, to be cancelled -- "
-               "writing a CancelBook command",
-               request.instance_id, request.epoch, request.orders_placed_through);
-    write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id), bytes.data(), bytes_written);
 }
 
 void SequencerThread::check_engine_absence() {

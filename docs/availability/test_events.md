@@ -562,9 +562,6 @@ the promoted engine inherited, 18 and 51 at the cancels, and 52 at the refused r
 not reported, 16 failed at what the engine resumed with, 51 at the halt, and 52 at the engine saying it cannot account
 for what it held.
 
-No scenario sets `open_orders_on_promotion` to keep, so the branch of the check for a promoted engine that keeps its
-book has not run, before this step or since.
-
 From fresh WALs, 73 of the 76 scenarios pass, and scenarios 14, 27 and 36 fail as expected under
 [BUG-0182](../bug_list.md#bug_0182).
 

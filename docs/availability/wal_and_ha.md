@@ -313,8 +313,10 @@ and a half seconds in `ha_test.py` scenario 1, including the new leader's first 
 
 ### What the follower holds
 
-The leading engine sends every change to its book to the follower (`BookUpdate`), so the follower
-holds a copy. Each engine also writes its open orders into a memory-mapped region as it accepts them
+The follower engine follows the sequencer's log: it is sent every committed record, applies every
+command as the leader does, and keeps the reports it produces until the log holds the leader's
+([Running the matching engine pair in lockstep](matching_engine_lockstep.md)). So its book is the
+leader's after the same record. Each engine also writes its open orders into a memory-mapped region as it accepts them
 and reads it back when it starts ([Open-order checkpoint](../durability/open_order_checkpoint.md)), so
 an engine that restarts has its own record of what it held.
 
@@ -331,50 +333,24 @@ it has received every record the sequencer said it sent, before it acts (R-0101)
 it asks again; it does not act on an incomplete catch-up. Each report it sends while catching up is
 marked as a possible repeat, because an earlier engine may already have sent the same report (R-0122).
 
-**Why the order matters.** Suppose the leading engine accepts an order and trades it, sends the
-execution report, and the sequencer writes that report to its log -- and then the engine dies before
-the change to its book reaches the follower. The follower's copy of the book still shows the order as
-open. If the follower acted on that copy as soon as it took the lead, it would treat a trade that has
-already happened as an order still resting, and could cancel it. A trade that has legally happened
-must never be undone.
-
-Catching up first closes that gap. The records the follower is sent include everything the old
-leader did that reached the sequencer's log, so once it has applied them its book agrees with the log,
-and any order still on it is genuinely open. The price is time: nothing on the order path happens
-until the catch-up is complete. A delay is acceptable; undoing a trade is not.
+**Why the order matters.** A follower may lack the last few records still on their way to it when the
+leader dies. Catching up before it acts gives it every record that reached the sequencer's log, so its
+book agrees with the log, and any order still on it is genuinely open. It is also when the follower
+learns which of its kept reports the log lacks, and sends them. The price is time: nothing on the
+order path happens until the catch-up is complete.
 
 If a sequencer and the matching engine fail at the same time, the engine's catch-up waits for the
 sequencers to settle on a leader, because only a leading sequencer answers a catch-up.
 
 ### What happens to resting orders on promotion
 
-**The options considered.** When the leading engine fails, something must be decided about the orders
-resting on its book. These were the choices, and what became of each:
-
-| Option | What it means | Decision |
-|---|---|---|
-| Start cold | A new engine starts with an empty book and rebuilds it by replaying the sequencer's log from the start of the day | Rejected: replaying a day's orders takes too long to be a failover, and it needs the whole day's log to be kept |
-| Run in lockstep | Both engines process every command in parallel; failover switches to the follower's output, which is already identical | Not built. It needs every decision the engine makes to be deterministic, so that two engines given the same commands always produce the same results. A possible later direction |
-| Halt | The engine's failure stops trading until an operator recovers it | Kept as the last resort, for when an engine cannot establish what it held (below) |
-| Take over and cancel | The follower, which holds a copy of the book, takes the lead, catches up, then cancels every resting order and reports each cancel | Built, and selected by `"cancel"`, which every environment uses |
-| Take over and keep | As above, but the orders stay on the book and members go on holding them | Built, and selected by `"keep"`. What must be shown before it is used is still being established |
-
-Cancelling gives a member an explicit "your order has been cancelled" rather than silence, and needs
-neither the time of a cold start nor the determinism of lockstep. Keeping is better for members, who
-lose nothing, and is what an engine that restarts on its own already does.
-
-The choice is a stated policy, `order_book.open_orders_on_promotion`, required in every deployment:
-
-- **`cancel`**: the promoted engine cancels every order still on its caught-up book and reports each
-  cancel. Every environment is set to this.
-- **`keep`**: the promoted engine keeps them, and members go on holding what they placed.
-
-An engine that *starts*, rather than taking over from a peer, keeps the orders it recovered from its
-region whatever the policy says (R-0018). Where the region is damaged or was written by a different
-build, the engine establishes the open orders from the sequencer's record, from its first record:
-where that reaches the first command of the trading day, the engine keeps the book it rebuilt and
-carries on, cancelling nothing; where it does not, trading halts, by a command in the WAL, and nothing
-is cancelled (R-0102, R-0123).
+The promoted engine keeps them. It followed the log, so its book is the one the members were told of,
+and an order still on it is genuinely outstanding (R-0073). An engine that *starts* keeps the orders
+it recovered from its region in the same way (R-0018). Where the region is damaged or was written by
+a different build, the engine establishes the open orders from the sequencer's record, from its first
+record: where that reaches the first command of the trading day, the engine keeps the book it rebuilt
+and carries on, cancelling nothing; where it does not, trading halts, by a command in the WAL, and
+nothing is cancelled (R-0102, R-0123).
 
 ### Orders sent while no matching engine is running
 
@@ -392,7 +368,7 @@ those moments:
 4. **The member is answered then**: the execution report for an order sent during the gap arrives
    late, when the engine has caught up, and the order is on the book. Nothing is silently lost.
 
-What happens next to the orders on the caught-up book is the promotion policy above.
+The orders on the caught-up book are kept, as above.
 
 **If the outage lasts longer than any failover plausibly takes**, the sequencer stops accepting
 orders, and tells the gateways so (`OrderAcceptance`). The gateways then refuse new orders and cancels

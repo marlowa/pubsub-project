@@ -98,16 +98,13 @@ replication connection and writes its own copy.
 `ME-primary` and `ME-secondary` are two machines, each running one matching
 engine instance. Each holds an order book in memory.
 
-The configured primary sends book updates to the configured secondary, so the
-secondary holds a copy of the book and can take over knowing which orders
-were resting. What a promoted engine then does with those orders is a stated
-policy, `order_book.open_orders_on_promotion`: `cancel`, which every
-environment uses, cancels each one and reports the cancel to its member;
-`keep` leaves them on the book. See "What happens to resting orders on
-promotion" in [WAL and High Availability](../availability/wal_and_ha.md).
+Both engines apply every command from the sequencer's log, whichever leads: the
+leader is sent commands as they are released, and the follower is sent every
+committed record and applies the commands among them, so it can take over
+holding the book the members were told of, and keeps every resting order. See
+[Running the matching engine pair in lockstep](../availability/matching_engine_lockstep.md).
 
-The order book is shown as a database symbol inside each machine box. The
-secondary's book is annotated as "replicated".
+The order book is shown as a database symbol inside each machine box.
 
 ### Arbiter pool (two arbiters and a witness)
 
@@ -169,10 +166,9 @@ state that is part of processing orders:
    acknowledged the record it depends on, so the acknowledgement is on the
    critical path.
 
-7. **Book replication (matching engine pair)** — `ME-primary` → `ME-secondary`.
-   One arrow: the configured primary sends book updates and nothing is
-   acknowledged. The secondary's book is kept current so it can take over
-   knowing which orders were resting.
+7. **The link between the matching engines** — `ME-primary` ↔ `ME-secondary`.
+   Each instance listens and each connects to the other. It carries no book:
+   each engine builds its own from the sequencer's log.
 
 The connections between the two instances of a pair, in items 6 and 7, also
 carry each instance's lease requests to its peer and the peer's answers.

@@ -72,7 +72,7 @@ node "ME-primary\n(machine)" as MP_M {
 }
 node "ME-secondary\n(machine)" as MS_M {
     component "Matching Engine\n(instance, configured SECONDARY)" as MS
-    database  "Order book\n(replicated,\nin memory)" as MS_BOOK
+    database  "Order book\n(in memory)" as MS_BOOK
     MS -- MS_BOOK
 }
 
@@ -144,11 +144,10 @@ MS --> SS : "ER PDUs"
 SP --> SS : "WAL records\n(leader -> follower)"
 SS --> SP : "WAL acks\n(follower -> leader)"
 
-' --- ME book replication (within ME pair)
-'     The configured primary sends book updates to the secondary. Nothing
-'     is acknowledged. The same connections carry each instance's lease
-'     requests to its peer.
-MP --> MS : "book updates\n(no acknowledgement)"
+' --- The link between the ME pair. No book is sent on it: each engine
+'     applies the sequencer's log itself. It carries each instance's lease
+'     requests to its peer, the role announcements and the settings check.
+MP <--> MS : "leases, roles,\nsettings"
 
 ' =====================================================================
 ' Control-plane connections (dotted blue)
@@ -195,7 +194,7 @@ W  .[#0066CC].> AS : "lease grant / refusal"
 ' =====================================================================
 legend bottom
 |= Line style |= Meaning |
-| solid black arrow | Data-plane TCP connection (FIX wire, commands, ER PDUs, WAL and book replication) |
+| solid black arrow | Data-plane TCP connection (FIX wire, commands, ER PDUs, WAL replication, the link between the engines) |
 | dotted blue arrow | Control-plane TCP connection (lease requests: component <-> arbiter, arbiter <-> arbiter, arbiter <-> witness) |
 | each direction = one arrow | Bidirectional channels are drawn as two arrows, each labelled with what flows in that direction |
 endlegend

@@ -104,11 +104,10 @@ requires.
 obvious repairs and neither is sufficient alone:
 
 - Restart each death in place and the flap gives **silent holes**, as above.
-- Let the peer take over instead, and each death promotes the peer --
-  but `open_orders_on_promotion` is `cancel`, so **every one of those promotions cancels the whole
-  book and tells every member their resting orders are gone.** Eight cycles become eight mass
-  cancellations, which for a member is worse than not knowing: they are repeatedly told their
-  orders are destroyed and asked to replace them into a venue about to do it again.
+- Let the peer take over instead, and each death promotes the peer. The promoted engine keeps the
+  book, but **every one of those promotions is a pause of about a lease period in which no engine
+  leads**, and every order sent in it waits unanswered. Eight cycles become eight pauses, which for
+  a member is a venue that keeps stopping without saying why.
 
 So making recovery faster changes the shape of the damage rather than removing it. What bounds it
 is judging the instance, because that turns an open-ended series of interruptions into exactly

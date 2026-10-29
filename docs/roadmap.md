@@ -21,9 +21,9 @@ them, wait until it is finished.
 | 11 | The order activity recorder (OAR) — a topic subscriber to the matching engine publisher; Kafka/Pulsar publisher | Designed, not built |
 | 12+ | Market data; seamless matching engine failover; a disaster recovery site; multi-instrument scaling | Forward-looking, not yet planned |
 
-The matching engine already runs as a pair: book replication (`BookUpdate`), leadership by majority
-lease, and a catch-up from the sequencer's log before a new leader acts, with a configured policy for
-the orders it inherits ([WAL and HA](availability/wal_and_ha.md)). The venue has two gateways, FIX
+The matching engine already runs as a pair: both engines apply every command from the sequencer's log,
+leadership is by majority lease, and a new leader catches up over the last few records before it acts
+and keeps every resting order ([lockstep](availability/matching_engine_lockstep.md)). The venue has two gateways, FIX
 and binary, each run as two instances; that is not the pool of gateways of slice 12+.
 
 See [WAL and High Availability](availability/wal_and_ha.md) for the full design behind slices 1–11.
@@ -230,10 +230,7 @@ when.
   `ExpireTime` when reporting the terms back to the member needed it. Neither was an oversight; the
   structure guarantees it recurs.  
   The failure is quiet in a way that matters. A missing field costs nothing until something has to
-  report on an order long after the NewOrderSingle has gone -- and worse, `BookUpdate` replicates only
-  what the struct holds, so a promoted secondary serves a book with the missing terms stripped. That is
-  invisible until a failover, which is the same shape as the connection-id defect the same commit
-  mentions.  
+  report on an order long after the NewOrderSingle has gone.  
   The shape of the fix is to separate the two things the struct is currently doing at once: the fields
   the engine matches on, and the full record of what the member sent and is entitled to be told. The
   second tier is written once at acceptance and echoed thereafter, so a new reportable field does not
@@ -371,11 +368,10 @@ Each entry is a decision. Where what it describes is not built, the entry says s
 
 - **Epochs travel on the lease messages and on the matching engine's announcement of its role.** A receiver refuses a lease request or an announcement at an epoch lower than one it has already seen. Order-path messages do not carry an epoch; an instance that is not leading forwards nothing and acts on nothing, which is what keeps a stale leader off the order path.
 
-- **What a promoted matching engine does with open orders is a setting.** The follower keeps a
-  replicated book. On promotion it catches up from the leading sequencer's log, and then, as
-  `open_orders_on_promotion` says, either cancels every open order and tells each member (`cancel`,
-  the development environment's value) or keeps them (`keep`). An engine that cannot account for
-  what it held halts rather than resume.
+- **A promoted matching engine keeps every open order.** The follower applies every command from the
+  leading sequencer's log as it follows it, and on promotion catches up over the last few records, so
+  its book is the one the members were told of. An engine that cannot account for what it held halts
+  rather than resume.
 
 - **Integer prices and quantities, once the venue matches.** Prices and quantities are to be held
   as integers scaled by a constant, so that replay and comparison between instances cannot be

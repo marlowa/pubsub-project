@@ -21,8 +21,8 @@ follower's book is then the leader's book because the two applied the same comma
 the other. If the two engines could reach different books from the same commands, phase 8 would replace one way of
 losing orders with another.
 
-Phase 7 changes only the engine and the commands it is given. The follower engine still receives the leader's book
-as `BookUpdate` messages until phase 8 removes them.
+Phase 7 changes only the engine and the commands it is given. Phase 8 has the follower engine apply every command
+from the WAL itself ([matching_engine_lockstep.md](matching_engine_lockstep.md)).
 
 **Finished when** both engines, run on the same WAL, produce identical reports, and the high availability scenarios
 pass. Section 7 says how that is checked.
@@ -240,22 +240,9 @@ cancels its book or halts on its own initiative any more. The decisions that are
   is halted while it recovers. Nothing is cancelled. This is built (`RecoveryLimitRule`), and is the halt
   [BUG-0197](../bug_list.md#bug_0197) asks for; the rejection of the orders held before it is designed in phase 8
   ([far_back_catch_up.md](far_back_catch_up.md), section 5).
-- **Cancelling on promotion.** While `open_orders_on_promotion = "cancel"` is set, a promoted engine asks the leading
-  sequencer to write a cancel of the book before it serves, and applies it from the WAL like any other command.
-  Every engine that catches up afterwards meets it too, so a restarted engine no longer keeps orders its peer
-  cancelled ([BUG-0199](../bug_list.md#bug_0199)). Phase 8 removes cancelling on promotion altogether; it is made a
-  command now all the same, so that the venue stops holding orders its members were told are cancelled from phase 7
-  on (decision 5).
-
-  This is built. A promoted engine that has caught up holding orders it inherited sends each sequencer a
-  `CancelBookRequest` naming the position it caught up to. The leading sequencer, if orders are routed to that engine,
-  writes a `CancelBook` command carrying that position (`SequencerThread::write_own_command`, which writes a command
-  of the sequencer's own and holds it until it is released, as an order is), and a follower ignores the request. The
-  command cancels the orders placed at or before the position, in the order they were placed, and keeps those placed
-  after it (decision 7). The engine applies orders that arrive meanwhile, asks again every second until it has applied
-  a cancel through its position, and tells the test it has resumed as leader (`ResumedAsLeader`) only then, so the
-  book it reports resuming with is the one it serves. A second command through the same position finds nothing to
-  cancel.
+- **Cancelling on promotion** is gone. A promoted engine followed the WAL, so it keeps every order on its book
+  ([matching_engine_lockstep.md](matching_engine_lockstep.md), section 5). The only cancel of the book is the absence
+  rule's, a command in the WAL like any other.
 - **A region that cannot be used (decision 8).** This is built. An engine whose region could not be used at a start
   keeps it aside, starts a new one, and asks for every record of the WAL from the first, so that the catch-up rebuilds
   its book (`MatchingEngineThread::recover_open_orders`). When the catch-up finishes, `account_for_unusable_region`
@@ -289,9 +276,8 @@ cancels its book or halts on its own initiative any more. The decisions that are
   beside the published position and before publishing the position of the command that set it, so that an engine
   that restarts and resumes from that position, and is not sent the command again, finds it there. A new order is
   refused while halted whether it is applied live or during a catch-up, so an engine catching up refuses the orders
-  the engine that served refused. The follower engine applies no commands, so the leader tells it of each change to
-  the halt as it tells it of each change to the book, with a `BookUpdate` of type `HaltSet` or `HaltLifted`. Every
-  halt is set by a command.
+  the engine that served refused. The follower engine applies the same commands as it follows the WAL, so it halts
+  at the same command. Every halt is set by a command.
 
 ## 5. The other causes, put right
 
@@ -386,8 +372,7 @@ the thread asks it to.
 
 The thread keeps everything else: which commands to discard, by role; the counting that shows a catch-up complete;
 holding reports while the engine may not serve or has no connection; the open-order region's opening, recovery and
-liveness mark, which the state machine is given a reference to; and applying the leader's `BookUpdate` messages on
-the follower, which phase 8 removes. The state machine's unit tests are
+liveness mark, which the state machine is given a reference to; and following the WAL, with the reports it keeps. The state machine's unit tests are
 `applications/matching_engine/tests/MatchingEngineStateMachineTest.cpp`.
 
 That makes the property testable directly, and it is what the fuzzing of section 6 and the replay of section 7.2

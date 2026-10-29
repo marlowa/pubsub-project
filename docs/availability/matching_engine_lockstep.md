@@ -202,6 +202,13 @@ engine's reports, kills it after a thousand orders, and requires a New report of
 lead; with the kept reports not sent it fails. Both full suites passed on 28 October 2026: 88 of 88 with the primary
 engine leading first and 30 of 30 with the secondary first.
 
+**Step 3 is built.** The code and setting of section 6 are gone, and the link between the engines is `[peer]`. The
+check after every scenario that promotes an engine requires it to cancel nothing and to resume holding the book;
+scenario 79's restarted engine leads after two promotions holding all 2,000 orders. Scenario 77, of reports held for a
+session not yet announced, uses the reports a promoted engine kept, and fails with no wait before the announcement.
+Both full suites passed on 29 October 2026: 88 of 88 with the primary engine leading first and 30 of 30 with the
+secondary first.
+
 Each step ends with both full suites from fresh WALs. Steps 1 and 2 are built and committed together: a follower that
 applies commands and sends none of their reports leaves a member with no report of a command whose leader died before
 its reports reached the WAL, until step 2 has the follower keep and send them.

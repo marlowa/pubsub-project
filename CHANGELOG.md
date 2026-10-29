@@ -278,6 +278,12 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
   A follower engine now applies every command from the WAL itself: it is sent every committed record,
   checks that none is missing, and sends no report, keeping each until the WAL holds the leader's; on
   taking the lead it sends those the WAL lacks. Scenarios 87 and 88 test both (BUG-0187, BUG-0188).
+- **A promoted matching engine cancelled every order it inherited**, by the setting
+  `open_orders_on_promotion = "cancel"` that every environment deployed, and an engine whose lease ran
+  out while it was starting was taken for a promoted one and cancelled what it recovered. A follower
+  engine applies the WAL itself, so the book it takes the lead with is the one the members were told
+  of: it keeps every order, and the setting, the `BookUpdate` copy of the book and the request for a
+  cancel on promotion are gone. R-0073, an open order survives a failover, is met (BUG-0143).
 - **A halt was lost when the matching engine restarted, or failed over to the follower**, which was
   never told of it, so the venue went on accepting orders that R-0023 says only a person may allow
   again (BUG-0206).
@@ -301,11 +307,7 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 
 ### Known limitations
 
-- **80 bugs are open, 19 of them high severity**; `docs/bug_list.md` lists them.
-- **A promoted matching engine cancels every resting order**, because every environment deploys
-  `open_orders_on_promotion = "cancel"`. The follower engine does not apply the WAL itself, so
-  nothing establishes that its copy of the book is complete. Phase 8 of the recovery plan makes both
-  engines apply the WAL.
+- **79 bugs are open, 18 of them high severity**; `docs/bug_list.md` lists them.
 
 ## [0.4.0] - 2026-09-14
 

@@ -125,37 +125,32 @@ struct MatchingEngineConfiguration {
     /** @brief Number of command queue pool slabs pre-allocated at startup. */
     int32_t command_queue_pool_initial_slabs{1};
 
-    // HA -- book replication (Slice A+B)
-    //
-    // When ha_enabled=true the ME runs as a primary/secondary pair.
-    // Primary: processes orders, sends ERs, streams BookUpdate PDUs to
-    //          the secondary over a dedicated outbound connection.
-    // Secondary: receives BookUpdate PDUs from the primary and maintains
-    //            a replica order book.  Does not process sequencer orders
-    //            or send ERs until promoted (Slice C).
+    // High availability. When ha_enabled is true the matching engine runs as one of a pair. The instance that leads is
+    // sent commands by order routing and sends the reports; the other follows the WAL, applying every command and
+    // keeping its reports until the WAL holds the leader's (docs/availability/matching_engine_lockstep.md). The two are
+    // linked by [peer], which carries the lease requests between them, their role announcements and their settings.
 
-    /** @brief Enable HA book replication. Default false (single instance). */
+    /** @brief Whether this instance is one of a pair. Default false (a single instance). */
     bool ha_enabled{false};
 
     /** @brief This instance's role: "primary" or "secondary". */
     std::string ha_role{"primary"};
 
-    // Where this instance dials to reach its peer's replication listener. Both instances
-    // dial and both listen: the connection that carries book updates is the one on which the
-    // LEADER is the sender, and holding both permanently means a role change needs no
-    // connection work at the moment the venue can least afford it.
-    std::string peer_replication_host{"127.0.0.1"};
-    uint16_t peer_replication_port{7026};
+    // Where this instance dials to reach its peer's listener ([peer] host and port). Both instances dial and both listen,
+    // and holding both connections permanently means a role change needs no connection work at the moment the venue can
+    // least afford it.
+    std::string peer_host{"127.0.0.1"};
+    uint16_t peer_port{7026};
 
-    // Secondary-side: inbound listener for book updates from primary.
-    std::string replication_listen_host{"127.0.0.1"};
-    uint16_t replication_listen_port{7026};
+    // Where this instance listens for its peer's connection ([peer] listen_host and listen_port).
+    std::string peer_listen_host{"127.0.0.1"};
+    uint16_t peer_listen_port{7026};
 
     // HA -- which instance leads, and cancel-on-failover
     //
     // An instance leads only while a majority of three voters -- itself, its peer and the arbiter
     // pool -- has granted it a lease that has not run out. Both instances connect to both arbiters,
-    // and ask their peer over the replication connections. See docs/availability/majority_leases.md.
+    // and ask their peer over the connections to it ([peer]). See docs/availability/majority_leases.md.
 
     /** @brief Unique instance identity within the ME pair (1 = primary, 2 = secondary). */
     int32_t instance_id{1};
@@ -237,23 +232,6 @@ struct MatchingEngineConfiguration {
      *  readable by the engine's user alone, as the venue's TLS keys are. See
      *  docs/availability/deterministic_matching_engine.md, section 3.3. */
     std::string identifier_secret_file;
-
-    /** @brief What a promoted matching engine does with the orders it inherits: "cancel" or "keep".
-     *
-     *  "cancel" cancels every order that was open when leadership moved, tells the member that
-     *  placed each one, and resumes leading an empty book. The member is left in no doubt about
-     *  where it stands, and must place again what it still wants.
-     *
-     *  "keep" carries the book across, so an order open before the promotion is open after it and
-     *  remains cancellable by its owner. That is what R-0073 asks for and it is the better outcome
-     *  for a member -- but it is only safe where the book the promoted instance holds is known to
-     *  be the book the venue had. Two things it is assembled from are unverified today: the
-     *  replica maintained by BookUpdate, and the catch-up that follows it, which nothing checks
-     *  for completeness (R-0101, and docs/bug_list.md BUG-0074).
-     *
-     *  So "cancel" is the default: it is a worse outcome that is certainly true, in place of a
-     *  better one that is not yet established. See R-0073 and R-0020.  */
-    std::string order_book_open_orders_on_promotion{"cancel"};
 
     // Wall clock
 

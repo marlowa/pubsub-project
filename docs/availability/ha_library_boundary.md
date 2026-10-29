@@ -158,9 +158,8 @@ own users when the store is full.
 changes the state may depend on anything but the WAL.
 
 **How it is done now.** As this section requires. The matching engine stamps its reports with the time the sequencer
-recorded, carried in the WAL, and uses its own clock only when that is missing. Cancelling every
-inherited order on promotion, under `open_orders_on_promotion = "cancel"`, and cancelling every order
-and halting when no engine could trade for longer than allowed are commands in the WAL, written by the
+recorded, carried in the WAL, and uses its own clock only when that is missing. Cancelling every order
+and halting when no engine could trade for longer than allowed is a command in the WAL, written by the
 leading sequencer, and whether trading is halted is state those commands set, kept with the book
 ([deterministic_matching_engine.md](deterministic_matching_engine.md), section 4). So is the halt when
 an engine about to lead cannot account for the orders the venue holds (R-0123). Nothing that changes
@@ -196,11 +195,10 @@ trading day and shared by both engines. Question 3 of section 13 gives the reaso
 
 **What it is for.** Losing the leading engine costs a short pause, not the orders on the book.
 
-**How it is done now.** The follower engine is sent the leading engine's book (`BookUpdate`) and
-discards the commands the sequencer sends it. On promotion it catches up from the WAL and then cancels
-or keeps the inherited orders. The design notes considered running both engines in lockstep and left it
-"not built", because it needs every decision the engine makes to be deterministic
-([wal_and_ha.md](wal_and_ha.md), "What happens to resting orders on promotion").
+**How it is done now.** Way B below, built in phase 8: both engines apply every committed command, the
+follower as a follower of the WAL, and only the leading engine's reports are sent on. On promotion the
+follower catches up over the few records still on their way and keeps every order
+([matching_engine_lockstep.md](matching_engine_lockstep.md)).
 
 **What is now known.** The engine does not match: orders rest until cancelled, and nothing is filled,
 so its book changes only by accepting, refusing and cancelling. Its report times already come from the

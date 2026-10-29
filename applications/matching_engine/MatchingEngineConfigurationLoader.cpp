@@ -34,10 +34,7 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
             }
         }
 
-        // No role check here any more: every HA section is read identically for both roles.
-        // Replication used to be the exception -- the primary read only the dial half and the
-        // secondary only the listen half -- and that asymmetry is what left no channel in the
-        // direction replication needed after a failover.
+        // Every HA section is read identically for both roles.
 
         // Network/sequencer sections are required for both roles.
         // The secondary needs them for pre-warmed connections (Slice C): it must
@@ -73,7 +70,7 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
             config.sequencer_er_secondary_port = static_cast<uint16_t>(sequencer_er_secondary_port);
         }
 
-        // Book replication configuration (required when ha_enabled).
+        // The link to the peer engine, [peer] (required when ha_enabled).
         if (config.ha_enabled) {
             auto validate_port = [&](int32_t port, const std::string& name) {
                 if (port < 1 || port > 65535) {
@@ -81,22 +78,18 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
                                                                 std::to_string(port));
                 }
             };
-            // Both halves, for both roles. Replication used to be read one way round -- the
-            // primary only dialled, the secondary only listened -- which left no channel at
-            // all in the direction replication needed after a failover. Both instances now
-            // listen and both dial; which connection carries book updates follows the ROLE,
-            // because the leader is the sender.
-            toml.get_required_except("book_replication.host", config.peer_replication_host);
+            // Both halves, for both roles: each instance listens and each dials.
+            toml.get_required_except("peer.host", config.peer_host);
             int32_t repl_port = 0;
-            toml.get_required_except("book_replication.port", repl_port);
-            validate_port(repl_port, "book_replication.port");
-            config.peer_replication_port = static_cast<uint16_t>(repl_port);
+            toml.get_required_except("peer.port", repl_port);
+            validate_port(repl_port, "peer.port");
+            config.peer_port = static_cast<uint16_t>(repl_port);
 
-            toml.get_required_except("book_replication.listen_host", config.replication_listen_host);
+            toml.get_required_except("peer.listen_host", config.peer_listen_host);
             int32_t repl_listen_port = 0;
-            toml.get_required_except("book_replication.listen_port", repl_listen_port);
-            validate_port(repl_listen_port, "book_replication.listen_port");
-            config.replication_listen_port = static_cast<uint16_t>(repl_listen_port);
+            toml.get_required_except("peer.listen_port", repl_listen_port);
+            validate_port(repl_listen_port, "peer.listen_port");
+            config.peer_listen_port = static_cast<uint16_t>(repl_listen_port);
 
             // Arbiter-mediated promotion (Slice C+D). Required for both roles when HA is on.
             toml.get_required_except("ha_instance.instance_id", config.instance_id);
@@ -220,12 +213,6 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
         toml.get_required_except("order_book.region_capacity", config.order_book_region_capacity);
         if (config.order_book_region_path.empty()) {
             throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.region_path must name a file");
-        }
-        toml.get_required_except("order_book.open_orders_on_promotion", config.order_book_open_orders_on_promotion);
-        if (config.order_book_open_orders_on_promotion != "cancel" && config.order_book_open_orders_on_promotion != "keep") {
-            throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.open_orders_on_promotion must be 'cancel' or "
-                                                        "'keep', got '" +
-                                                        config.order_book_open_orders_on_promotion + "'");
         }
         if (config.order_book_region_capacity < 1) {
             throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.region_capacity must be >= 1, got " +

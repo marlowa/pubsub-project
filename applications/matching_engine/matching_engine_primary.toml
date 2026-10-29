@@ -14,15 +14,15 @@ port = ${matching_engine_sequencer_er_secondary_port}
 enabled = ${ha_enabled}
 role    = "primary"
 
-[book_replication]
-# Symmetric: this instance listens, and also dials its peer. Both connections stand at all
-# times; which one carries book updates follows the ROLE, because the leader is the sender.
-# Wiring it one way round left no channel at all in the direction replication needed after a
-# failover, and the survivor never noticed the leader die.
-listen_host = "${matching_engine_book_replication_listen_host}"
-listen_port = ${matching_engine_book_replication_listen_port}
-host = "${matching_engine_book_replication_host}"
-port = ${matching_engine_book_replication_port}
+[peer]
+# The link between the two engines. Symmetric: this instance listens, and also dials its peer,
+# and both connections stand at all times. Whichever is up carries the lease requests and grants
+# between the pair, each engine's announcement of its role, and the check that the two engines'
+# settings agree. Each engine applies the WAL itself, so no book is sent on it.
+listen_host = "${matching_engine_peer_listen_host}"
+listen_port = ${matching_engine_peer_listen_port}
+host = "${matching_engine_peer_host}"
+port = ${matching_engine_peer_port}
 
 [ha_instance]
 instance_id = ${matching_engine_instance_id}
@@ -135,20 +135,6 @@ region_path = "${matching_engine_order_book_region_path}"
 # at once, not to the day's volume -- a cancelled or filled order releases its record.
 region_capacity = ${matching_engine_order_book_region_capacity}
 
-# What a promoted matching engine does with the orders it inherits.
-#
-#   "cancel" -- cancel every order that was open when leadership moved and tell the member
-#               that placed it, then lead an empty book. The member is left in no doubt and
-#               must place again what it still wants.
-#   "keep"   -- carry the book across, so an order open before the promotion is open after it
-#               and still cancellable by its owner. This is what R-0073 asks for.
-#
-# "keep" is the better outcome for a member and is only safe where the book the promoted
-# instance holds is known to be the book the venue had. Nothing establishes that yet: neither
-# the replica maintained by BookUpdate nor the completeness of the catch-up that follows it
-# (R-0101, and docs/bug_list.md BUG-0074). So the default is the worse outcome that is
-# certainly true rather than the better one that is not yet established.
-open_orders_on_promotion = "${matching_engine_order_book_open_orders_on_promotion}"
 
 [identifiers]
 # The file holding the secret the keys of this engine's OrderID and ExecID values are derived

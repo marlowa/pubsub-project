@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 214 |
-| Open | 80 (57 defects, 23 tasks) |
-| Closed | 134 |
+| Open | 79 (56 defects, 23 tasks) |
+| Closed | 135 |
 | Next id | BUG-0215 |
 
 ## Open bugs by severity
 
-19 high, 49 medium, 12 low.
+18 high, 49 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,7 +25,6 @@
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
-| [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
 | [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
 | [BUG-0193](#bug_0193) | high | task | Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs |
@@ -599,57 +598,6 @@ readers do the same (`ha_test.py`, near lines 4616 and 4645).
 
 **What is wanted.** Every reader keeps the unfinished end of what it read and searches only complete
 lines, joining the remainder to the next read. A unit test feeds a reader a line in two pieces.
-
-### BUG-0143: A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered {#bug_0143}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-11 |
-| Recorded | 2026-10-11 |
-| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenario 53 failed: the member was told its order was accepted and then that it was cancelled |
-| Impact | With `open_orders_on_promotion = cancel`, which is the setting today, every order the engine recovered from its own region is cancelled and each member is told so, although the engine took no book over from a peer. Requirement R-0018 says a started engine keeps what it recovered |
-
-**What happened.** In scenario 53, the primary matching engine was started cold with 1,000 orders in its
-region and an order waiting in the sequencer's log.
-
-1. It was granted a lease and began its first reconciliation with the sequencers.
-2. Recording the new epoch took 5.5 seconds ([BUG-0142](#bug_0142)), and the lease ran out. The engine
-   logged "role now FOLLOWER (was RECONCILING, epoch=2165)".
-3. It was granted a lease again and reconciled again. Its book was reconciled to 1,001 orders, and it
-   then logged "open_orders_on_promotion=cancel -- cancelling the 1001 order(s) inherited at this
-   promotion" and cancelled them all, where the scenario expects "started rather than promoted --
-   keeping the ... open order(s) recovered from the region (R-0018)".
-
-**Why.** When reconciliation begins, `MatchingEngineThread` sets `reconciling_from_follower_` from whether
-its role is follower at that moment (`MatchingEngineThread.cpp`, where it enters RECONCILING). A lease
-that runs out during the first reconciliation of a start sets the role to follower, so the next
-reconciliation is taken for a promotion from follower. Whether an instance is starting or being
-promoted depends on whether it ever followed a leader and took a book over from it, which a lapse
-during its own start does not change.
-
-**What is wanted.** The engine decides between a start and a promotion from what it has done, not from
-its role at the moment reconciliation begins: an engine that has not yet completed a start is still
-starting, however many times its lease runs out meanwhile. A scenario that makes the lease run out
-during a start should check it.
-
-**It happens after a start has finished as well.** Scenario 28 runs one matching engine, with no peer,
-whose lease is renewed only by the primary arbiter. Seen in the full run on 25 October 2026:
-
-1. The engine was started with an empty region, was granted a lease at 17:20:22.17, logged "started
-   rather than promoted -- keeping the 0 open order(s) recovered from the region (R-0018)", and accepted
-   the scenario's 1,000 baseline orders.
-2. The scenario killed the primary arbiter at 17:20:23, and its launcher restarted it. The engine's lease
-   ran out at 17:20:24.97, because the restarted arbiter waits one lease period before it votes.
-3. The engine was granted a lease again at 17:20:28.47, logged "open_orders_on_promotion=cancel --
-   cancelling the 1000 order(s) inherited at this promotion", and cancelled the 1,000 orders it had
-   accepted itself. No other engine exists in that venue, so none could have led in between.
-
-The scenario checks only the arbiters, so it passes. The 1,000 cancel reports are in the sequencer's
-WAL, which is how `wal_replay_check` found them. The cause is the same: the lease running out made the
-role follower, and the next reconciliation was taken for a promotion. What the engine should go by is
-whether another engine could have led and changed the book since this one last led, which the WAL
-shows. An engine that took no book over from a peer has nothing inherited to cancel.
 
 ### BUG-0142: The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader {#bug_0142}
 
@@ -3757,6 +3705,47 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0143: A matching engine whose lease ran out while it was starting was then treated as promoted, and cancelled every order it recovered {#bug_0143}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| Fixed | 2026-10-28 -- an engine no longer tells a start from a promotion, and cancels nothing when it takes the lead |
+| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenario 53 failed: the member was told its order was accepted and then that it was cancelled |
+| Impact | With `open_orders_on_promotion = cancel`, which is the setting today, every order the engine recovered from its own region is cancelled and each member is told so, although the engine took no book over from a peer. Requirement R-0018 says a started engine keeps what it recovered |
+
+**What happened.** In scenario 53, the primary matching engine was started cold with 1,000 orders in its
+region and an order waiting in the sequencer's log.
+
+1. It was granted a lease and began its first reconciliation with the sequencers.
+2. Recording the new epoch took 5.5 seconds ([BUG-0142](#bug_0142)), and the lease ran out. The engine
+   logged "role now FOLLOWER (was RECONCILING, epoch=2165)".
+3. It was granted a lease again and reconciled again. Its book was reconciled to 1,001 orders, and it
+   then logged "open_orders_on_promotion=cancel -- cancelling the 1001 order(s) inherited at this
+   promotion" and cancelled them all, where the scenario expects "started rather than promoted --
+   keeping the ... open order(s) recovered from the region (R-0018)".
+
+**Why.** When reconciliation begins, `MatchingEngineThread` sets `reconciling_from_follower_` from whether
+its role is follower at that moment (`MatchingEngineThread.cpp`, where it enters RECONCILING). A lease
+that runs out during the first reconciliation of a start sets the role to follower, so the next
+reconciliation is taken for a promotion from follower. Whether an instance is starting or being
+promoted depends on whether it ever followed a leader and took a book over from it, which a lapse
+during its own start does not change.
+
+**What was done.** Step 3 of [matching_engine_lockstep.md](availability/matching_engine_lockstep.md). A follower
+engine applies every command from the WAL, so the book an engine takes the lead with is the one the members were told
+of, whether it is starting or being promoted. `reconciling_from_follower_`, which decided between the two, and the
+setting `open_orders_on_promotion`, which cancelled the book on promotion, are gone, and every catch-up keeps the
+orders on the book.
+
+**Verified** on 28 October 2026. No scenario makes a lease run out during a start; what is verified is that the code
+which took the second catch-up for a promotion no longer exists, and that no engine cancels its book on taking the
+lead. The scenarios that promote an engine require it to cancel nothing and to resume holding the book: 16, 24, 54, 86
+and 87 among them, and 79, whose restarted engine leads after two promotions holding all 2,000 orders. Scenario 53, in
+which this was found, passes. Both full suites, from fresh WALs, passed: 88 of 88 with the primary engine leading first and 30 of 30 with the secondary leading first.
 
 ### BUG-0187: The follower matching engine's copy of the book lost every change made while the link between the two engines was down, and nothing noticed {#bug_0187}
 

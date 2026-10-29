@@ -563,16 +563,16 @@ def expect_connection_made(component: str, service: str) -> Expect:
                   (Condition(component, lambda m: message_of(m.ConnectionChanged, resolved(component), made=True, service=service)),))
 
 
-def expect_replication_connection(engine: str) -> Expect:
-    """The other engine of the pair connected to engine's book replication listener, which engine accepts as an inbound
+def expect_peer_connection(engine: str) -> Expect:
+    """The other engine of the pair connected to engine's [peer] listener, which engine accepts as an inbound
     connection named after the port. The port is read from engine's deployed configuration when the check runs, because
     the scenario table is built before the install directory is known."""
     def matches(library_events):
         actual = resolved(engine)
         config = _INSTALL_PREFIX / "etc" / "matching_engine" / f"{actual if actual != 'matching_engine' else 'matching_engine_primary'}.toml"
-        port = installed_toml_section_value(config, "book_replication", "listen_port")
+        port = installed_toml_section_value(config, "peer", "listen_port")
         return message_of(library_events.ConnectionChanged, actual, made=True, service=f"inbound:{port}")
-    return Expect(f"{engine}: the other engine's replication connection made", (Condition(engine, matches),))
+    return Expect(f"{engine}: the other engine's connection to it made", (Condition(engine, matches),))
 
 
 def expect_granted_to(arbiter: str, pair_id: int, instance: int) -> Expect:
@@ -918,8 +918,15 @@ class InterimOrdersStep(NamedTuple):
     count_batches * 1000 orders are sent and confirmed before proceeding.
     Confirmed at the client, so the check holds whichever matching engine
     is doing the work and however far its order numbering has been carried.
+
+    With with_leader_reports_blocked, the leading matching engine's reports to the
+    sequencers are blocked first, so that it applies the orders and no member is sent
+    a report of them: the step confirms the block was in force and waits only for the
+    orders to be applied. The scenario must start the leading engine with its reports
+    blockable (Scenario.block_leading_engine_reports).
     """
     count_batches: int
+    with_leader_reports_blocked: bool = False
 
 
 class OneLeaderStep(NamedTuple):
@@ -976,10 +983,9 @@ class Scenario(NamedTuple):
     # matching_engine_secondary.log.  Leaves all non-me_ha scenarios untouched.
     #
     # me_ha scenarios also assert what a promotion does to the book (Phase 5): the
-    # ME never matches, so every baseline order rests in the book and replicates to
-    # the secondary; on promotion the secondary keeps that book rather than
-    # cancelling it, because its own region plus the sequencer's tail say what it
-    # holds.  See run_scenario's "ME-HA: the promoted book" block.
+    # ME never matches, so every baseline order rests in the book, which the
+    # secondary builds too by following the log; on promotion the secondary keeps
+    # that book.  See run_scenario's "ME-HA: the promoted book" block.
     # Components to start under scripts/launch.py, so that killing one has it restarted by a
     # real supervisor rather than by this harness. Needed for any scenario whose subject is
     # what happens when a restart beats a timeout: a harness restarting the process itself
@@ -1033,12 +1039,6 @@ class Scenario(NamedTuple):
     # configs before launch. The deployed figure is 10s, which many scenarios exceed on purpose, keeping an engine
     # down to see what the venue does meanwhile; they get 600s, so that the halt comes only in the scenarios about it.
     automatic_recovery_limit_seconds: int = 600
-    # What a promoted matching engine does with the orders it inherits, written into the
-    # deployed configs before launch: "cancel" or "keep". The deployed default is "cancel",
-    # because keeping the book rests on a catch-up nothing verifies yet (R-0101, BUG-0074).
-    # A scenario that promotes an engine asserts against whichever of the two is set here, so
-    # the assertion follows the venue's stated policy rather than assuming one of them.
-    open_orders_on_promotion: str = "cancel"
     # When True, keep the matching engine down for longer than absence_limit_seconds before
     # restarting it, then assert that it cancelled every order it recovered, told each member,
     # and halted. See run_scenario's "long absence" block.
@@ -1059,6 +1059,9 @@ class Scenario(NamedTuple):
     # file exists; the scenario sends orders after blocking them, kills the leading engine, and requires the member to be
     # sent a report of every one of those orders by the engine that takes the lead. See run_scenario's "kept reports" block.
     assert_kept_reports_sent_on_promotion: bool = False
+    # When True, the leading matching engine is started with its sends of reports to the sequencers blockable, as for
+    # assert_kept_reports_sent_on_promotion, for an InterimOrdersStep with with_leader_reports_blocked.
+    block_leading_engine_reports: bool = False
     # When True, damage the matching engine's open-order region before restarting it, and
     # assert that the engine refuses it, keeps it aside, rebuilds its book from the WAL, which
     # reaches the first command of the day, and carries on with every order, cancelling nothing
@@ -2527,7 +2530,7 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name=ENGINE_FOLLOWING_AT_START,
                 ready_log_name=f"{ENGINE_FOLLOWING_AT_START}.log",
-                ready=expect_replication_connection(ENGINE_FOLLOWING_AT_START),
+                ready=expect_peer_connection(ENGINE_FOLLOWING_AT_START),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
@@ -2661,7 +2664,7 @@ _SCENARIOS: list[Scenario] = [
             # window -- passing alone and failing inside the suite, which is worse than failing
             # outright.
             VerifyStep(
-                expect=expect_replication_connection(ENGINE_LEADING_AT_START),
+                expect=expect_peer_connection(ENGINE_LEADING_AT_START),
                 timeout=60.0,
                 description="the new leader's replication connection has reached the rejoined instance",
             ),
@@ -4161,24 +4164,27 @@ _SCENARIOS: list[Scenario] = [
     # BUG-0190. A sequencer keeps where each session is connected only in memory, and a restarted one learns it from
     # the gateways when their links to it come up. One that takes the lead before that would drop every report for the
     # member's session. Here the gateways are asked to wait 40 seconds before announcing their sessions on a link that
-    # comes up, so the restarted primary leads, and the promoted matching engine cancels the book, inside that wait.
-    # The primary must hold each cancel and send it when the session is announced, and the member must receive a
-    # cancel for every order the engine cancelled. See docs/availability/reports_held_until_sessions_are_announced.md.
+    # comes up, so the restarted primary leads inside that wait. Meanwhile the leading engine's reports are blocked and
+    # 1,000 orders are sent, so that it applies them and the member is sent nothing; then it is killed, and the engine
+    # that takes the lead sends the reports it kept of those orders (docs/availability/matching_engine_lockstep.md,
+    # section 3). The primary must hold each and send it when the session is announced, and the member must receive a
+    # New report for every one of the 1,000. See docs/availability/reports_held_until_sessions_are_announced.md.
     #
-    # The 40 seconds must cover the restarted primary coming up, the secondary sequencer and the leading engine being
-    # killed, the primary taking the lead and the other engine being promoted and cancelling.
+    # The 40 seconds must cover the restarted primary coming up, the orders, the secondary sequencer and the leading
+    # engine being killed, the primary taking the lead and the other engine being promoted and sending its kept reports.
     Scenario(
         number=77,
         short_name="held_reports_reach_member",
         description="A restarted sequencer that leads before it is told of the member's session holds the member's reports until it is",
         expected_outcome=(
-            "the restarted primary sequencer leads before the gateway announces the member's session, holds the cancels "
-            "the promoted engine sends, and sends them when the session is announced; the member receives every cancel"
+            "the restarted primary sequencer leads before the gateway announces the member's session, holds the reports "
+            "the promoted engine kept and sends, and sends them when the session is announced; the member receives every one"
         ),
         me_ha=True,
         delay_session_announcements_ms=40000,
         assert_held_reports_reach_member=True,
-        # No orders in flight and none after: the cancels for the resting baseline orders are the subject.
+        block_leading_engine_reports=True,
+        # No orders in flight and none after: the reports of the orders the dead leader never had written are the subject.
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -4197,6 +4203,7 @@ _SCENARIOS: list[Scenario] = [
                 resets_me_counter=False,
                 settle_secs=0.0,
             ),
+            InterimOrdersStep(count_batches=1, with_leader_reports_blocked=True),
             KillStep(
                 proc_name="sequencer_secondary",
                 takeover=None,
@@ -4237,14 +4244,6 @@ _SCENARIOS: list[Scenario] = [
     # refused as naming an order the engine does not hold is an order lost. Before that, the primary must report
     # resuming as leader, which it does only at the end of a catch-up to lead, holding exactly as many orders as the
     # member was told are open.
-    #
-    # The venue is set to keep the book on promotion. When the primary leads at the start, the secondary is promoted
-    # when the primary is killed, and set to cancel, it would cancel the baseline orders and tell the member, while the
-    # primary's region still holds them, so the primary would lead holding orders the member was told were cancelled.
-    # That is BUG-0199, a different defect, and the scenario would then pass or fail according to which engine won the
-    # first election. The primary itself keeps its book either way when it leads, because it is starting, not being
-    # promoted from follower.
-    #
     # Two checks make sure the scenario made the window it exists for: the primary had not followed when the secondary
     # was killed, and it never followed before it led.
     Scenario(
@@ -4257,8 +4256,6 @@ _SCENARIOS: list[Scenario] = [
         ),
         me_ha=True,
         recovery_on_primary=True,
-        # So that the first promotion cancels nothing: see above.
-        open_orders_on_promotion="keep",
         assert_waiting_engine_catches_up=True,
         assert_open_orders_survive=True,
         orders_during_override=0,
@@ -4270,26 +4267,24 @@ _SCENARIOS: list[Scenario] = [
 
     # 79 -- a matching engine restarted after its peer cancelled the book on promotion leads holding the cancelled orders.
     #
-    # BUG-0199. The steps are scenario 78's, with the venue set to cancel the book on promotion, as every environment
-    # is, and with the primary started first and leading, so that killing it promotes the secondary. The secondary
-    # cancels the 1,000 baseline orders it inherits, by a CancelBook command in the WAL, and tells the member. The
-    # primary's region still holds them; the restarted primary meets the command in its catch-up and cancels them too.
-    # It then follows the WAL while it waits, applying the 1,000 orders sent meanwhile, so taking the lead is a promotion
-    # too, and the venue set to cancel has it cancel those as well, telling the member. When it takes the lead it must hold
-    # exactly the orders the member was told are open: none, and in particular none of the 1,000 cancelled first. With
-    # nothing open, there is no order whose cancel by the gateway could be checked.
+    # The steps are scenario 78's, with the primary started first and leading, so that killing it promotes the secondary,
+    # and the restarted primary leads after a second promotion. Neither promotion cancels anything: each engine follows
+    # the WAL, so the book it takes the lead with is the one the members were told of. When the primary takes the lead it
+    # must hold exactly the orders the member was told are open, the 1,000 baseline orders and the 1,000 sent while it
+    # waited, and the gateway's cancel of each must be carried out.
     Scenario(
         number=79,
-        short_name="restarted_engine_holds_no_cancelled_order",
-        description="A matching engine restarted after its peer cancelled the book on promotion leads holding none of the cancelled orders",
+        short_name="restarted_engine_keeps_the_book_across_two_promotions",
+        description="A matching engine restarted after its peer was promoted leads, after a second promotion, holding every open order",
         expected_outcome=(
-            "the restarted matching_engine_primary takes the lead holding none of the orders the promoted secondary cancelled, "
-            "and cancels those accepted while it waited as a promotion does, so its book is exactly what the member was told is open"
+            "the restarted matching_engine_primary takes the lead holding the baseline orders and those accepted while it waited, "
+            "none cancelled at either promotion, so its book is exactly what the member was told is open"
         ),
         me_ha=True,
         recovery_on_primary=True,
         engine_started_first="matching_engine_primary",
         assert_waiting_engine_catches_up=True,
+        assert_open_orders_survive=True,
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -4340,7 +4335,9 @@ _SCENARIOS: list[Scenario] = [
                 proc_name="matching_engine_primary",
                 ready_log_name="matching_engine_primary.log",
                 ready=expect_catch_up("matching_engine_primary", "Started"),
-                ready_timeout=_ME_READY_TIMEOUT,
+                # The engine creates a new region, writing every block of it, before it starts its catch-up. That took 2.3
+                # seconds when this scenario ran alone, and more than 15 in a full suite, after the fill of 200,000 orders.
+                ready_timeout=60.0,
                 resets_me_counter=False,
                 settle_secs=0.0,
                 damage_region="matching_engine_open_orders.region",
@@ -4454,7 +4451,7 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name=ENGINE_FOLLOWING_AT_START,
                 ready_log_name=f"{ENGINE_FOLLOWING_AT_START}.log",
-                ready=expect_replication_connection(ENGINE_FOLLOWING_AT_START),
+                ready=expect_peer_connection(ENGINE_FOLLOWING_AT_START),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
@@ -4548,11 +4545,9 @@ _SCENARIOS: list[Scenario] = [
 
     # 87 -- the follower's copy of the book across a break in the link between the matching engines.
     #
-    # BUG-0187, and the scenario phase 8 of the recovery plan requires before that phase starts. The leading engine sends
-    # the follower a BookUpdate for each order it adds to or removes from its book. The link between the two is broken
-    # while the member places five orders and cancels three, then mended, and one more order is placed, whose update
-    # reaches the follower and makes it take its copy to be complete up to that order. The leading engine is then
-    # killed, and the follower, promoted with open_orders_on_promotion = "keep", must hold exactly the orders the member
+    # BUG-0187, and the scenario phase 8 of the recovery plan requires. The link between the two engines is broken while
+    # the member places five orders and cancels three, then mended, and one more order is placed. The leading engine is
+    # then killed, and the follower, promoted, must hold exactly the orders the member
     # was told are open: a cancel of each of them is carried out, and a cancel of each order the member was told is
     # cancelled is refused. Both engines apply the WAL themselves, so the break costs the follower nothing: it is sent
     # every record it missed when the link is mended (docs/availability/matching_engine_lockstep.md).
@@ -4566,7 +4561,6 @@ _SCENARIOS: list[Scenario] = [
             "cancel of every order the member was told is cancelled"
         ),
         me_ha=True,
-        open_orders_on_promotion="keep",
         assert_book_survives_peer_link_break=True,
         orders_during_override=0,
         orders_after_override=0,
@@ -4589,7 +4583,6 @@ _SCENARIOS: list[Scenario] = [
             "engine that takes the lead sends the reports it kept, and the member is sent a New report for every one"
         ),
         me_ha=True,
-        open_orders_on_promotion="keep",
         assert_kept_reports_sent_on_promotion=True,
         orders_during_override=0,
         orders_after_override=0,
@@ -5272,30 +5265,6 @@ def set_installed_absence_limit(prefix: Path, seconds: int) -> int:
         except OSError:
             continue
         result, count = pattern.subn(lambda m: m.group(1) + str(seconds), text)
-        if count and result != text:
-            toml_path.write_text(result)
-            changed += 1
-    return changed
-
-
-def set_installed_promotion_policy(prefix: Path, policy: str) -> int:
-    """Set order_book.open_orders_on_promotion in every deployed matching engine config.
-
-    What a promoted engine does with the book it inherits is a stated policy rather than a
-    behaviour of the code, so a scenario that promotes one has to know which answer the venue
-    is configured to give before it can assert anything about the result.
-
-    Written on every launch rather than restored afterwards, for the same reason
-    set_installed_absence_limit is.
-    """
-    changed = 0
-    pattern = re.compile(r'^(open_orders_on_promotion\s*=\s*)"[a-z]*"', re.M)
-    for toml_path in sorted((prefix / "etc").rglob("*.toml")):
-        try:
-            text = toml_path.read_text(errors="replace")
-        except OSError:
-            continue
-        result, count = pattern.subn(lambda m: m.group(1) + '"' + policy + '"', text)
         if count and result != text:
             toml_path.write_text(result)
             changed += 1
@@ -6252,7 +6221,7 @@ def await_blocking(flag: Path, timeout: float) -> bool:
 def broken_engine_link_environment(prefix: Path, flag: Path) -> dict[str, str]:
     """The environment that makes libblock_sends_to_ports.so break a matching engine's link to its peer while flag exists.
 
-    Both engines' book_replication listening ports are named. Each engine listens on its own and connects to the other's,
+    Both engines' [peer] listening ports are named. Each engine listens on its own and connects to the other's,
     so the two ports cover every connection between the pair, whichever side opened it. In the library's "break" mode a
     send on them fails as a send on a reset connection does, so the engine closes the connection, and once the flag is
     removed the engine's next connection works.
@@ -6260,7 +6229,7 @@ def broken_engine_link_environment(prefix: Path, flag: Path) -> dict[str, str]:
     library = prefix / "lib" / "libblock_sends_to_ports.so"
     if not library.is_file():
         die(f"{library} is not installed; it is built with the sequencer and installed by devsetup.sh")
-    ports = [installed_toml_section_value(prefix / "etc" / "matching_engine" / f"matching_engine_{which}.toml", "book_replication", "listen_port")
+    ports = [installed_toml_section_value(prefix / "etc" / "matching_engine" / f"matching_engine_{which}.toml", "peer", "listen_port")
              for which in ("primary", "secondary")]
     return {"LD_PRELOAD": str(library), "PUBSUB_TEST_BLOCK_PORTS": ",".join(ports), "PUBSUB_TEST_BLOCK_FLAG": str(flag),
             "PUBSUB_TEST_BLOCK_CONFIRMATION": str(block_confirmation(flag)), "PUBSUB_TEST_BLOCK_MODE": "break"}
@@ -7160,7 +7129,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
     set_installed_recovery_limit(prefix, scenario.automatic_recovery_limit_seconds)
     # The promotion policy, on every launch and for the same reason: a scenario that set it
     # one way must not leave a later one asserting against a policy it did not choose.
-    set_installed_promotion_policy(prefix, scenario.open_orders_on_promotion)
 
     changed = set_installed_ha(prefix, not scenario.ha_disabled)
     if scenario.ha_disabled:
@@ -7180,6 +7148,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
     kill_results:    list[tuple[bool, str, float]]      = []
     restart_results: list[tuple[str, float]]            = []
     phase4_results:  list                               = []
+    # Where the orders an InterimOrdersStep sent with the leader's reports blocked begin, for the checks that require
+    # them answered later by another engine; None if no such step ran.
+    unreported_orders_sent_before: int | None = None
     before_total     = 0
     after_total      = 0
 
@@ -7314,7 +7285,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             leading_at_launch = engine_first or "matching_engine_primary"
             if scenario.assert_book_survives_peer_link_break and name == leading_at_launch:
                 extra_environment = broken_engine_link_environment(prefix, block_flag)
-            if scenario.assert_kept_reports_sent_on_promotion and name == leading_at_launch:
+            if (scenario.assert_kept_reports_sent_on_promotion or scenario.block_leading_engine_reports) and name == leading_at_launch:
                 extra_environment = blocked_engine_reports_environment(prefix, block_flag, name)
             if scenario.assert_reports_held_for_unconnected_gateway and name in ("sequencer_primary", "sequencer_secondary"):
                 config = config_with_gateway_report_relay(config)
@@ -7417,7 +7388,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # no promotion would ever fire.
         if scenario.me_ha:
             log("  Waiting for the primary engine's replication connection to the secondary ...")
-            found, elapsed = await_expectation(expect_replication_connection("matching_engine_secondary"), args.ready_timeout, 0)
+            found, elapsed = await_expectation(expect_peer_connection("matching_engine_secondary"), args.ready_timeout, 0)
             if not found:
                 die(
                     "ME-primary → secondary replication connection not established "
@@ -7702,6 +7673,16 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     die(f"Verification failed: {step.description} -- {step.absent.what}")
                 log("    confirmed absent, up to a checkpoint")
                 phase4_results.append(("verify", step.description, step.after_secs))
+            elif isinstance(step, InterimOrdersStep) and step.with_leader_reports_blocked:
+                count = step.count_batches * 1000
+                log(f"  Blocking the leading engine's reports, then sending {count} interim orders, which no member is sent a report of ...")
+                block_flag.touch()
+                unreported_orders_sent_before = send_orders(f8proc, b"T", step.count_batches)
+                if not await_blocking(block_flag, _RAW_REPLY_TIMEOUT):
+                    die("interim orders: the leading engine sent no report after the block began, so its reports were never blocked")
+                # Long enough for the leader to apply them and for the follower to be sent them as a follower of the WAL.
+                time.sleep(3.0)
+                phase4_results.append(("interim", count))
             elif isinstance(step, InterimOrdersStep):
                 count = step.count_batches * 1000
                 log(f"  Sending {count} interim orders ...")
@@ -7843,16 +7824,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # MatchingEngineThread::handle_new_order_single). So at the ME-primary kill the
         # promoted secondary's replicated book is non-empty.
         #
-        # What happens to that book is the venue's stated policy,
-        # order_book.open_orders_on_promotion, so this asserts whichever answer the scenario
-        # is configured for rather than assuming one. Both answers matter and they fail in
-        # opposite directions: a venue set to cancel that quietly keeps has told a member its
-        # order is gone and kept it; a venue set to keep that quietly cancels has thrown away
-        # a book it could have carried.
-        #
-        # Either way the engine must be able to SAY what it holds -- it writes every
-        # replicated order into a memory-mapped region of its own and reconciles the
-        # sequencer's tail on top -- so the resumed book size is checked under both.
+        # The promoted engine followed the WAL, so its book is the one the members were told of, and it keeps every order
+        # on it: it must cancel nothing, and hold the book (docs/availability/matching_engine_lockstep.md, section 5). A
+        # promotion that cancelled would tell members their orders are gone for no reason; one that resumed empty would
+        # have lost the book.
         #
         # Skipped when leadership never moved: there is no promotion and no book to decide
         # about.
@@ -7862,60 +7837,24 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
                 and not scenario.assert_deferred_answered and not scenario.expects_no_new_leader
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion):
-            cancels_expected = scenario.open_orders_on_promotion == "cancel"
-            # Under "keep" the promotion has already been observed by the time this runs, so it is confirming an absence:
-            # the engine is asked for a checkpoint first, and a cancel it sent cannot still be on its way.
+            # The promotion has already been observed by the time this runs, so this confirms an absence: the engine is
+            # asked for a checkpoint first, and a cancel it sent cannot still be on its way.
             promoted_engine = resolved(ENGINE_FOLLOWING_AT_START)
-            cancelled_book = engine_event(promoted_engine, "BookCancelled", me_secondary_events_from,
-                                          args.failover_timeout if cancels_expected else 0.0, settle=not cancels_expected)
+            cancelled_book = engine_event(promoted_engine, "BookCancelled", me_secondary_events_from, 0.0, settle=True)
             cancel_count = cancelled_book.cancel_reports_sent if cancelled_book is not None else -1
             resumed_event = engine_event(promoted_engine, "ResumedAsLeader", me_secondary_events_from, 10.0)
             if resumed_event is None:
                 die(f"ME-HA: the promoted {promoted_engine} never reported resuming as leader -- "
                     "cannot confirm what book it resumed with")
             resumed = resumed_event.book_size
-
-            if cancels_expected:
-                # What it inherited has to come from the cancel's own count: the engine says what it is resuming with only
-                # once the CancelBook command it asked for has been applied. The command cancels the orders placed at or
-                # before the position the engine caught up to, and keeps any placed after it, so what it inherited is
-                # what the book held less what was kept.
-                if cancelled_book is not None and not cancelled_book.by_command:
-                    die(f"ME-HA: the promoted {promoted_engine} cancelled the book by its own decision, not by a CancelBook "
-                        "command in the WAL, so an engine that catches up later would not cancel it (BUG-0199).")
-                inherited = cancelled_book.live_orders - cancelled_book.orders_kept if cancelled_book is not None else -1
-                if inherited <= 0:
-                    die(f"ME-HA: the venue is configured to cancel on promotion but the promoted "
-                        f"secondary reported inheriting {inherited} order(s). The baseline orders rest "
-                        "in the book and replicate, so it should have had them to cancel: nothing here "
-                        "distinguishes a book correctly cancelled from a book never recovered.")
-                # The count is the discriminator. Cancelling SOME of the book would leave the
-                # rest unmentioned, which is the silence the policy exists to avoid, and it
-                # would pass any check that only asked whether cancelling happened at all.
-                if cancel_count != inherited:
-                    die(f"ME-HA: the promoted secondary inherited {inherited} order(s) and sent "
-                        f"{cancel_count} cancel report(s). Every order it inherited must be cancelled "
-                        "and its member told: cancelling part of the book leaves the rest unmentioned, "
-                        "which is worse than either answer taken whole (R-0020).")
-                if resumed != cancelled_book.orders_kept:
-                    die(f"ME-HA: the promoted secondary cancelled {cancel_count} order(s), kept {cancelled_book.orders_kept} "
-                        f"placed after the position it caught up to, and then resumed as leader holding {resumed}. The book "
-                        "it resumes with must be what the command kept, or it is serving orders it has told the member are gone.")
-                log(f"  ME-HA: open_orders_on_promotion=cancel -- the promoted secondary inherited "
-                    f"{inherited} order(s), cancelled all {cancel_count} of them by a CancelBook command, and resumed "
-                    f"holding the {resumed} placed after it caught up -- OK")
-            else:
-                if cancel_count > 0:
-                    die(f"ME-HA: the venue is configured to keep the book on promotion, and the "
-                        f"promoted secondary cancelled {cancel_count} order(s). Its region and the "
-                        "sequencer's tail say what it holds, so an order still on the reconciled "
-                        "book is genuinely outstanding (R-0073).")
-                if resumed <= 0:
-                    die(f"ME-HA: the promoted secondary resumed as leader holding {resumed} order(s). "
-                        "The baseline orders rest in the book and replicate, so it should hold them: "
-                        "an empty book here means the region was not recovered or was recovered empty.")
-                log(f"  ME-HA: open_orders_on_promotion=keep -- the promoted secondary resumed as "
-                    f"leader holding {resumed} order(s), none cancelled -- OK")
+            if cancel_count > 0:
+                die(f"ME-HA: the promoted {promoted_engine} cancelled {cancel_count} order(s). It followed the WAL, so its book "
+                    "is the one the members were told of, and an order still on it is genuinely outstanding (R-0073).")
+            if resumed <= 0:
+                die(f"ME-HA: the promoted {promoted_engine} resumed as leader holding {resumed} order(s). "
+                    "The baseline orders rest in the book, so it should hold them: an empty book here means "
+                    "it did not follow the WAL, or lost what it applied.")
+            log(f"  ME-HA: the promoted {promoted_engine} resumed as leader holding {resumed} order(s), none cancelled -- OK")
 
             dropped = count_seen(expect_message("fix_order_gateway_a", "a report dropped for want of a session", "ReportDroppedNoSession",
                                                 "fix_order_gateway_test_events"), gateway_events_pre_kill)
@@ -7935,8 +7874,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
             held = component_event("sequencer_primary", sequencer_events, "ReportsHeld", primary_from, args.failover_timeout, comp_id=FIX8_COMP_ID)
             if held is None:
                 die("held reports: the restarted sequencer_primary held no report for the member's session. Either it was told of the "
-                    "session before the engine cancelled the book, so the scenario did not make the window it exists for, or it "
-                    "dropped the cancels")
+                    "session before the promoted engine sent its kept reports, so the scenario did not make the window it exists for, or "
+                    "it dropped them")
             log(f"  held reports: sequencer_primary held reports for comp_id='{held.comp_id}' while {held.gateways_not_announced} "
                 "gateway instance(s) had not announced")
             delay_seconds = scenario.delay_session_announcements_ms / 1000.0
@@ -7945,23 +7884,24 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if released is None or released.sent <= 0:
                 die(f"held reports: sequencer_primary did not send the reports it held for the member's session ({released})")
             log(f"  held reports: sequencer_primary sent {released.sent} held report(s) when the session was announced")
-            cancelled_book = engine_event(resolved(ENGINE_FOLLOWING_AT_START), "BookCancelled", me_secondary_events_from, args.failover_timeout)
-            if cancelled_book is None or cancelled_book.cancel_reports_sent <= 0:
-                die(f"held reports: the promoted matching engine cancelled no order ({cancelled_book}), so there was nothing to hold")
-            # Each cancel the engine sent must reach the member: counted at the member, so a report lost anywhere is missed.
-            expected = cancelled_book.cancel_reports_sent
-            deadline = time.monotonic() + args.recovery_timeout
-            received = client_reports(f8proc).count("4")
-            while received < expected and time.monotonic() < deadline:
-                time.sleep(0.2)
-                received = client_reports(f8proc).count("4")
-            if received != expected:
-                die(f"held reports: the promoted engine cancelled {expected} order(s) and the member received {received} cancel(s)")
+            kept = engine_event(resolved(ENGINE_FOLLOWING_AT_START), "KeptReportsSent", me_secondary_events_from, args.failover_timeout)
+            if kept is None or kept.count <= 0:
+                die(f"held reports: the promoted matching engine sent none of the reports it kept ({kept}), so there was nothing to hold")
+            if unreported_orders_sent_before is None:
+                die("held reports: no orders were sent with the leading engine's reports blocked, so no report was owed")
+            # Each of the orders must reach the member as a New report: counted at the member, by ClOrdID, so a report lost
+            # anywhere is missed.
+            expected = _ORDERS_PER_COMMAND[b"T"]
+            answered, _took = await_new_orders(f8proc, expected, unreported_orders_sent_before, args.recovery_timeout)
+            if not answered:
+                die(f"held reports: the promoted engine sent {kept.count} kept report(s), and the member was not sent a New report for "
+                    f"each of the {expected} orders the dead leader applied without its reports reaching the WAL")
+            received = expected
             dropped = count_seen(expect_message("sequencer_primary", "a report dropped for a session connected nowhere", "ReportDroppedSessionNotConnected",
                                                 sequencer_events, fields=lambda m: {"comp_id": FIX8_COMP_ID}), primary_from)
             if dropped > 0:
                 die(f"held reports: sequencer_primary dropped {dropped} report(s) for the member's session as connected nowhere")
-            log(f"  held reports: the member received all {received} cancel(s) -- OK")
+            log(f"  held reports: the member received a New report for all {received} order(s) -- OK")
 
         # ── Gateway orphan: no session handover between instances ─────────────
         # Asserts a GAP rather than a guarantee. Instance a is dead and the engine has just
@@ -8756,12 +8696,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "the member already had reads as a second event (R-0122).")
             log("  the member is told the order was accepted, marked PossResend -- OK")
 
-            # And the order is still open, whatever order_book.open_orders_on_promotion says.
-            # That setting speaks about a book a promoted instance inherits from a peer; this
-            # instance was not promoted, it started, and what it holds it read from its own
-            # region and caught up on top of. Cancelling here would be R-0018 broken by a
-            # setting that is not about restarts -- the same mistake as reading the absence
-            # limit as a promotion gate.
+            # And the order is still open: this instance started, and what it holds it read from
+            # its own region and caught up on top of, which it keeps (R-0018).
             if answers[-1].get(39) != "0":
                 member.close()
                 die("deferred orders: the member's last word on this order was OrdStatus="
@@ -8840,14 +8776,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 if reply is None or reply.get(35) != "8" or reply.get(39) != "4":
                     die(f"link between the engines: the cancel of {cl_ord_id} during the break was not carried out ({reply})")
             lost = _TEST_EVENTS.wait_for(lambda event: (isinstance(event.message, library_events.ConnectionChanged) and not event.message.made
-                                                        and event.message.service == "me_peer_replication" and event.component == leader),
+                                                        and event.message.service == "me_peer" and event.component == leader),
                                          timeout=_RAW_REPLY_TIMEOUT, since=broke_from)
             if lost is None:
                 die(f"link between the engines: {leader} never reported its connection to its peer lost, so the link did not break")
 
             block_flag.unlink()
             block_confirmation(block_flag).unlink(missing_ok=True)
-            remade = _TEST_EVENTS.wait_for(connection_made(library_events, leader, "me_peer_replication"), timeout=30.0, since=lost.index)
+            remade = _TEST_EVENTS.wait_for(connection_made(library_events, leader, "me_peer"), timeout=30.0, since=lost.index)
             if remade is None:
                 die(f"link between the engines: {leader} did not connect to its peer again within 30s of the break ending")
             log(f"  link between the engines: broken for {remade.arrived - lost.arrived:.2f}s, while {len(during)} order(s) were "

@@ -80,7 +80,6 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     , config_(config)
     , ha_enabled_(config.ha_enabled)
     , is_primary_(!config.ha_enabled || config.ha_role == "primary")
-    , cancel_open_orders_on_promotion_(config.order_book_open_orders_on_promotion == "cancel")
     , sequencer_er_conn_id_{}
     , sequencer_er_secondary_conn_id_{}
     , order_book_(&book_growth_reporter_)
@@ -200,10 +199,9 @@ void MatchingEngineThread::on_app_ready_event() {
     connect_to_service("sequencer_er_secondary");
 
     if (ha_enabled_) {
-        // Both roles dial, and both listen. Which connection carries book updates follows the
-        // role, because the leader is the sender; holding both permanently means a role
-        // change costs no connection work at the moment the venue can least afford it.
-        connect_to_service("me_peer_replication");
+        // Both roles dial, and both listen: holding both connections to the peer permanently means a role change costs
+        // no connection work at the moment the venue can least afford it.
+        connect_to_service("me_peer");
     }
 
     if (ha_enabled_) {
@@ -245,7 +243,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
     }
     const std::string& svc = id.service_name();
     const std::string order_inbound_svc = "inbound:" + std::to_string(config_.listen_port);
-    const std::string replication_inbound_svc = "inbound:" + std::to_string(config_.replication_listen_port);
+    const std::string peer_inbound_svc = "inbound:" + std::to_string(config_.peer_listen_port);
 
     if (svc == "sequencer_er") {
         sequencer_er_conn_id_ = id;
@@ -257,11 +255,11 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer ER connection {} established", id.get_value());
         announce_role();
         release_reports_held_for_a_connection();
-    } else if (svc == "me_peer_replication") {
-        // Our dial to the peer's replication listener. Used to send book updates while this
-        // instance leads, and simply held open while it follows.
-        outbound_replication_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: ME-secondary replication connection {} established", id.get_value());
+    } else if (svc == "me_peer") {
+        // Our dial to the peer's listener, for the lease requests between the pair, the role announcements and the
+        // settings check.
+        outbound_peer_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: connection {} to the peer engine established", id.get_value());
         send_engine_settings();
         // Tell the peer what this instance is as soon as there is a link to tell it
         // on. An instance that has just restarted is sitting in Unknown waiting for
@@ -274,13 +272,10 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
     } else if (svc == "arbiter_secondary") {
         arbiter_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter-secondary connection {} established", id.get_value());
-    } else if (ha_enabled_ && svc == replication_inbound_svc) {
-        // The peer's dial to us. This is the channel we receive book updates on while we
-        // follow, and losing it is how we learn the leader has gone -- which is why both
-        // instances must have one, not only the configured secondary.
-        inbound_replication_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: ME-primary replication connection {} established -- replica book will be updated", id.get_value());
+    } else if (ha_enabled_ && svc == peer_inbound_svc) {
+        // The peer's dial to us, which carries the same as ours.
+        inbound_peer_conn_id_ = id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: connection {} from the peer engine established", id.get_value());
         // Tell the peer what this instance is as soon as there is a link to tell it
         // on. An instance that has just restarted is sitting in Unknown waiting for
         // arbitration, and a leader saying so here lets it settle immediately rather
@@ -304,8 +299,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
             // that it has not seen, and this is the only moment it can ask about them without
             // mistaking live traffic for replay.
             //
-            // An instance that already follows is excluded: the leader's book updates keep its
-            // book, and it catches up again when it is promoted, from the last of them.
+            // An instance that already follows is excluded: it follows the WAL, and asks again itself when it needs to.
             //
             // An order the sequencer deferred while no engine was running is in the venue's
             // record and in no engine's book, so this ask is the only thing that recovers it.
@@ -334,16 +328,13 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
         sequencer_er_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: secondary sequencer ER connection {} lost: {}", id.get_value(),
                    reason);
-    } else if (id == outbound_replication_conn_id_) {
-        outbound_replication_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: ME-secondary replication connection {} lost: {} -- book updates paused until secondary reconnects", id.get_value(),
+    } else if (id == outbound_peer_conn_id_) {
+        outbound_peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: connection {} to the peer engine lost: {}", id.get_value(), reason);
+    } else if (id == inbound_peer_conn_id_) {
+        inbound_peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: connection {} from the peer engine lost: {}", id.get_value(),
                    reason);
-    } else if (id == inbound_replication_conn_id_) {
-        inbound_replication_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: ME-primary replication connection {} lost: {} -- replica book is now stale (last seq={})", id.get_value(), reason,
-                   last_replicated_seq_no_);
         // Nothing is armed here. Losing the link is not how a follower decides its leader has gone:
         // the lease rules decide, when the promise this instance made to the leader runs out.
     } else if (id == arbiter_primary_conn_id_) {
@@ -430,11 +421,6 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         release_pdu_payload(message);
         return;
     }
-    if (pdu_id == pubsub_itc_fw_app::BookUpdate::message_pdu_id) {
-        // BookUpdate from ME-primary -- secondary updates its replica book.
-        apply_book_update(message);
-        return; // apply_book_update calls release_pdu_payload internally.
-    }
 
     if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported sequenced PDU id {} -- dropping", pdu_id);
@@ -472,7 +458,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
 
     const int16_t inner_pdu_id = envelope.pdu_id;
     // A CancelBook or a TechnicalEvent command is gated as an order is: it changes the book or whether trading is halted,
-    // so only the instance that leads applies it, and the follower learns of the change through the leader's book updates.
+    // so it is applied live only by the instance that leads, and by a follower as it follows the WAL.
     const bool is_order_pdu = (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) ||
                               (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) ||
                               (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id)) ||
@@ -480,8 +466,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
 
     // ---- Order PDU gating by HA state -------------------------------------
     if (is_order_pdu && ha_role_state_ == MeRole::Follower && !following_the_wal()) {
-        // Passive follower: order PDUs from the sequencer are discarded (the primary
-        // is authoritative; the follower's book is maintained via BookUpdate replication).
+        // A follower applies only what it is sent as a follower of the WAL. A command reaching it otherwise, from order
+        // routing before the sequencer learned it follows, is in the WAL, and reaches it as a follower in its turn.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: FOLLOWER -- discarding order PDU inner_pdu_id={} on connection {}",
                    inner_pdu_id, message.connection_id().get_value());
         release_pdu_payload(message);
@@ -586,9 +572,7 @@ CommandSource MatchingEngineThread::command_source_for(int64_t sequence_number) 
     current_command_follows_ = keeps_its_reports();
     if (following_the_wal()) {
         // Applied as a catch-up applies a command: one applied already is passed over, and the book is published after
-        // every command. None of its reports is sent: the leader's are the ones the members are sent. The book is now
-        // one built while another engine led, so taking the lead with it is a promotion, not a start.
-        book_holds_peer_copy_ = true;
+        // every command. None of its reports is sent: the leader's are the ones the members are sent.
         return CommandSource::catch_up;
     }
     if (ha_role_state_ != MeRole::Reconciling) {
@@ -623,21 +607,6 @@ void MatchingEngineThread::EngineOutputs::send_report(const pubsub_itc_fw_app::E
         ++owner_.reconciliation_reports_sent_;
     }
     owner_.send_er_to_sequencer(report, sequence_number, session, repeat);
-}
-
-void MatchingEngineThread::EngineOutputs::order_added_to_book(int64_t sequence_number, const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
-                                                              const OrderEntry& entry) {
-    owner_.send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Add, session, cl_ord_id, &entry);
-}
-
-void MatchingEngineThread::EngineOutputs::order_removed_from_book(int64_t sequence_number, const fix_common::SessionIdentity& session,
-                                                                  std::string_view cl_ord_id) {
-    owner_.send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Remove, session, cl_ord_id, nullptr);
-}
-
-void MatchingEngineThread::EngineOutputs::trading_halt_changed(int64_t sequence_number, bool halted) {
-    owner_.send_book_update(sequence_number, halted ? pubsub_itc_fw_app::BookUpdateType::HaltSet : pubsub_itc_fw_app::BookUpdateType::HaltLifted,
-                            fix_common::SessionIdentity{}, std::string_view{}, nullptr);
 }
 
 void MatchingEngineThread::EngineOutputs::order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
@@ -957,142 +926,11 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
 
     if (id == lease_tick_timer_id_) {
         act_on(lease_agent_->on_tick(std::chrono::steady_clock::now()));
-        // A request for a cancel of the book that a change of sequencer leader lost is asked for again.
-        if (cancel_book_awaited_through_ != 0 && ha_role_state_ == MeRole::Leader &&
-            std::chrono::steady_clock::now() - cancel_book_requested_at_ >= cancel_book_request_interval) {
-            request_cancel_book();
-        }
         return;
     }
 }
 
 void MatchingEngineThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
-
-void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, const fix_common::SessionIdentity& session,
-                                            std::string_view cl_ord_id, const OrderEntry* entry) {
-    // The follower applies the WAL itself (docs/availability/matching_engine_lockstep.md), so no book update is sent.
-    static_cast<void>(seq_no);
-    static_cast<void>(update_type);
-    static_cast<void>(session);
-    static_cast<void>(cl_ord_id);
-    static_cast<void>(entry);
-}
-
-void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::BookUpdateView view{};
-
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode BookUpdate -- dropping");
-        release_pdu_payload(message);
-        return;
-    }
-
-    DecodedBookUpdate update{};
-    update.update_type = static_cast<pubsub_itc_fw_app::BookUpdateType>(view.update_type);
-    update.seq_no = view.seq_no;
-    update.key = OrderKey::make(fix_common::SessionIdentity::make(view.comp_id, view.origin_gateway_id), view.cl_ord_id);
-    if (update.update_type == pubsub_itc_fw_app::BookUpdateType::Add) {
-        OrderEntry& entry = update.entry;
-        entry.placed_at_seq_no = view.placed_at_seq_no;
-        entry.session = update.key.session;
-        entry.has_time_in_force = view.has_time_in_force;
-        entry.time_in_force = static_cast<pubsub_itc_fw_app::TimeInForce>(view.time_in_force);
-        entry.has_expire_time = view.has_expire_time;
-        entry.expire_time = view.expire_time;
-        entry.side = static_cast<pubsub_itc_fw_app::Side>(view.side);
-        entry.ord_type = static_cast<pubsub_itc_fw_app::OrdType>(view.ord_type);
-        entry.set_symbol(view.symbol);
-        entry.set_order_qty(view.order_qty);
-        entry.has_price = view.has_price;
-        if (view.has_price) {
-            entry.set_price(view.price);
-        }
-    }
-    release_pdu_payload(message);
-
-    if (ha_enabled_ && !caught_up_at_start_ && !reconciling_to_lead_) {
-        // Not yet caught up since starting: held until the catch-up says how far it reached (held_book_updates_).
-        if (held_book_updates_.size() < max_held_book_updates_) {
-            held_book_updates_.push_back(update);
-        } else if (!held_book_updates_overflowed_) {
-            held_book_updates_overflowed_ = true;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "MatchingEngineThread: {} book updates held while catching up -- dropping the rest, and asking for the catch-up again once this one "
-                       "ends, so that the WAL supplies what they said",
-                       held_book_updates_.size());
-        }
-        return;
-    }
-    apply_decoded_book_update(update);
-}
-
-void MatchingEngineThread::apply_decoded_book_update(const DecodedBookUpdate& update) {
-    book_holds_peer_copy_ = true;
-    if (update.update_type == pubsub_itc_fw_app::BookUpdateType::Add) {
-        if (!order_book_.add_or_replace(update.key, update.entry, update.seq_no)) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                       "MatchingEngineThread: replica cannot apply Add seq={} cl_ord_id={} -- the order book region is full at {} order(s)", update.seq_no,
-                       update.cl_ord_id(), order_book_.region_capacity());
-            return;
-        }
-        // The follower sends nothing outward, so there is no report to get ahead of.
-        order_book_.publish(update.seq_no);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: replica Add seq={} cl_ord_id={} book_size={}", update.seq_no,
-                   update.cl_ord_id(), order_book_.size());
-    } else if (update.update_type == pubsub_itc_fw_app::BookUpdateType::Remove) {
-        order_book_.remove(update.key);
-        order_book_.publish(update.seq_no);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: replica Remove seq={} cl_ord_id={} book_size={}", update.seq_no,
-                   update.cl_ord_id(), order_book_.size());
-    } else if (update.update_type == pubsub_itc_fw_app::BookUpdateType::HaltSet || update.update_type == pubsub_itc_fw_app::BookUpdateType::HaltLifted) {
-        // The leader applied a command that halted trading or lifted a halt. Recorded before the position is published,
-        // as the leader does, so that this instance refuses orders as the leader does if it is promoted.
-        const bool halted = update.update_type == pubsub_itc_fw_app::BookUpdateType::HaltSet;
-        order_book_.set_halted(halted ? TradingHalted::yes : TradingHalted::no);
-        order_book_.publish(update.seq_no);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: replica seq={} -- the leader says trading is {}", update.seq_no,
-                   halted ? "halted" : "no longer halted");
-    } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unknown BookUpdate type {} -- dropping",
-                   static_cast<int>(update.update_type));
-        return;
-    }
-
-    const int64_t prev_seq = last_replicated_seq_no_;
-    last_replicated_seq_no_ = update.seq_no;
-
-    // Log the first update and every 10,000 seq_nos so progress is visible
-    // without flooding the log at Info level.
-    if (prev_seq == 0 || update.seq_no % 10000 == 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: replica book seq={} size={}", update.seq_no, order_book_.size());
-    }
-}
-
-bool MatchingEngineThread::settle_held_book_updates(int64_t caught_up_through) {
-    size_t applied = 0;
-    for (const DecodedBookUpdate& update : held_book_updates_) {
-        if (update.seq_no > caught_up_through) {
-            apply_decoded_book_update(update);
-            ++applied;
-        }
-    }
-    const bool complete = !held_book_updates_overflowed_;
-    if (!held_book_updates_.empty()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: of {} book update(s) held while catching up, applied the {} for records after seq_no={} and dropped the rest, "
-                   "which the catch-up applied from the WAL",
-                   held_book_updates_.size(), applied, caught_up_through);
-    }
-    held_book_updates_.clear();
-    held_book_updates_.shrink_to_fit();
-    held_book_updates_overflowed_ = false;
-    return complete;
-}
 
 // HA state machine (Slice C+D)
 
@@ -1177,8 +1015,6 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
             // Stops matching at once, whatever it was doing, and tells the sequencers so they stop
             // routing orders here.
             reconciling_to_lead_ = false;
-            // The command it asked for, if any, is the next leader's to ask for; this instance no longer waits for it.
-            cancel_book_awaited_through_ = 0;
             if (halt_awaited_) {
                 halt_awaited_ = false;
                 cancel_timer(halt_request_timer_id_);
@@ -1202,8 +1038,7 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
 }
 
 void MatchingEngineThread::EngineLeaseLinks::send_request_to_peer(const pubsub_itc_fw::LeaseRequest& request) {
-    const pubsub_itc_fw::ConnectionID peer =
-        owner_.outbound_replication_conn_id_.is_valid() ? owner_.outbound_replication_conn_id_ : owner_.inbound_replication_conn_id_;
+    const pubsub_itc_fw::ConnectionID peer = owner_.outbound_peer_conn_id_.is_valid() ? owner_.outbound_peer_conn_id_ : owner_.inbound_peer_conn_id_;
     if (peer.is_valid()) {
         owner_.send_pdu(peer, pubsub_itc_fw::LeaseRequest::message_pdu_id, 0, request);
     }
@@ -1535,10 +1370,9 @@ void MatchingEngineThread::announce_role() {
     // The peer gets this too, not just the sequencers. An instance starting beside
     // an established leader can then adopt follower on the strength of the leader
     // saying so, instead of waiting on arbitration that a recently started arbiter
-    // will decline. Both replication connections are held permanently in both
-    // directions, so whichever one is up carries it.
-    for (const pubsub_itc_fw::ConnectionID& conn :
-         {sequencer_er_conn_id_, sequencer_er_secondary_conn_id_, outbound_replication_conn_id_, inbound_replication_conn_id_}) {
+    // will decline. Both connections to the peer are held permanently, so whichever
+    // one is up carries it.
+    for (const pubsub_itc_fw::ConnectionID& conn : {sequencer_er_conn_id_, sequencer_er_secondary_conn_id_, outbound_peer_conn_id_, inbound_peer_conn_id_}) {
         if (conn.is_valid()) {
             send_pdu(conn, pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id, 0, announcement);
         }
@@ -1618,12 +1452,6 @@ void MatchingEngineThread::become_leader_when_current() {
 }
 
 void MatchingEngineThread::begin_reconciliation() {
-    if (ha_role_state_ != MeRole::Reconciling) {
-        // Read before the state is overwritten, and only on the way in: this is re-entered
-        // when the sequencer's connection arrives, and a re-entry must not turn a promotion
-        // into a start.
-        reconciling_from_follower_ = ha_role_state_ == MeRole::Follower || book_holds_peer_copy_;
-    }
     ha_role_state_ = MeRole::Reconciling;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: entering RECONCILING (last_replicated_seq_no={}, book_size={})",
                last_replicated_seq_no_, order_book_.size());
@@ -1760,14 +1588,14 @@ void MatchingEngineThread::handle_leader_changed(const pubsub_itc_fw::EventMessa
 }
 
 void MatchingEngineThread::send_engine_settings() {
-    if (!outbound_replication_conn_id_.is_valid()) {
+    if (!outbound_peer_conn_id_.is_valid()) {
         return;
     }
     pubsub_itc_fw_app::EngineSettings settings{};
     settings.instance_id = static_cast<int64_t>(config_.instance_id);
     settings.order_book_region_capacity = static_cast<int64_t>(order_book_.region_capacity());
     settings.identifier_secret_fingerprint = report_identifiers_.secret_fingerprint();
-    send_pdu(outbound_replication_conn_id_, pubsub_itc_fw_app::EngineSettings::message_pdu_id, 0, settings);
+    send_pdu(outbound_peer_conn_id_, pubsub_itc_fw_app::EngineSettings::message_pdu_id, 0, settings);
 }
 
 void MatchingEngineThread::handle_engine_settings(const pubsub_itc_fw::EventMessage& message) {
@@ -2000,59 +1828,21 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
         return;
     }
 
-    // The book is now assembled: what the region vouched for, plus every record the sequencer
-    // held after it. What happens to it next is a stated policy rather than a decision taken
-    // here -- order_book.open_orders_on_promotion, "cancel" or "keep".
-    //
-    // "keep" is R-0018 and R-0073: an order still on the book is genuinely outstanding, so the
-    // member goes on holding what it placed. It is the better outcome and it rests on the book
-    // being the one the venue had, which nothing yet establishes -- neither the replica this
-    // instance maintained nor the completeness of the catch-up that followed it (R-0101).
-    //
-    // "cancel" tells every member its orders are gone, which is worse and is certain. It is the
-    // deployed default until the checks behind "keep" exist. See R-0020, R-0073, and
-    // docs/availability/wal_and_ha.md.
+    // The book is now assembled: what the region vouched for, plus every record the sequencer held after it. Every order
+    // on it is kept, whether this instance is starting or taking the lead: an engine that followed the WAL applied every
+    // command the leader applied, so its book is the one the members were told of (R-0018, R-0073;
+    // docs/availability/matching_engine_lockstep.md, section 5).
     //
     // Where the region could not be used, R-0123 decides first: the book the catch-up rebuilt is kept if the WAL
-    // reached the first command of the day, and otherwise trading halts. A rebuilt book is the venue's, so what
-    // follows applies to it as to any other.
+    // reached the first command of the day, and otherwise trading halts.
     if (!book_can_be_vouched_for()) {
         account_for_unusable_region(ack);
     }
     if (!book_can_be_vouched_for()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "MatchingEngineThread: holding {} order(s) it cannot vouch for -- not keeping or cancelling them as a promotion would", order_book_.size());
-    } else if (reconciling_from_follower_ && cancel_open_orders_on_promotion_) {
-        // The book could have been carried across. It is not, because the configuration says the
-        // venue does not promise that yet: each member is told its order is gone rather than
-        // being left to trust a book nothing has checked.
-        //
-        // The cancel is a command in the WAL, written by the leading sequencer at this instance's request, so that every
-        // engine applies it at the same position, one that catches up later included (BUG-0199). It names the position
-        // this instance caught up to, so that only the orders it inherited are cancelled: an order that reaches the
-        // sequencer after the catch-up stays on the book, as it would have before (decision 7 of
-        // docs/availability/deterministic_matching_engine.md).
-        if (order_book_.size() == 0) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                           "MatchingEngineThread: open_orders_on_promotion=cancel -- no order was inherited at this promotion, so there is nothing to cancel");
-        } else {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "MatchingEngineThread: open_orders_on_promotion=cancel -- asking the leading sequencer for a command to cancel the {} order(s) "
-                       "inherited at this promotion, placed at or before seq={}, rather than keeping them (R-0020; R-0073 is not being met, by "
-                       "configuration)",
-                       order_book_.size(), ack.last_seq_no);
-            cancel_book_awaited_through_ = ack.last_seq_no;
-            request_cancel_book();
-        }
-    } else if (reconciling_from_follower_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: open_orders_on_promotion=keep -- carrying {} open order(s) across the promotion (R-0073)", order_book_.size());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: holding {} order(s) it cannot vouch for", order_book_.size());
     } else {
-        // A start rather than a promotion. This instance took no book over from a peer: what it
-        // holds it read from its own region and caught up on top of, which is R-0018 and is not
-        // what the promotion policy speaks about.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: started rather than promoted -- keeping the {} open order(s) recovered from the region (R-0018)", order_book_.size());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: caught up -- keeping the {} open order(s) on the book (R-0018)",
+                   order_book_.size());
     }
 
     has_reconciled_ = true;
@@ -2060,16 +1850,6 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     ha_role_state_ = MeRole::Unknown; // clear reconciling
 
     if (!reconciling_to_lead_) {
-        if (!caught_up_at_start_ && !settle_held_book_updates(ack.last_seq_no)) {
-            // Some of the leader's book updates were dropped while this catch-up ran, so the book lacks what they said.
-            // The WAL holds it: the catch-up is asked for again, from the last update applied.
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "MatchingEngineThread: some book updates were dropped while catching up -- asking to be caught up again from seq_no={}",
-                       last_replicated_seq_no_);
-            begin_reconciliation();
-            return;
-        }
-        caught_up_at_start_ = true;
         if (follows_the_wal_) {
             next_followed_seq_no_ = ack.last_seq_no + 1;
         }
@@ -2092,23 +1872,12 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
         return;
     }
 
-    // A promotion: the catch-up reached the end of the WAL and new records follow it, so book updates held from a catch-up
-    // at start, which this one replaced, say nothing it has not applied.
-    held_book_updates_.clear();
-    held_book_updates_.shrink_to_fit();
-    held_book_updates_overflowed_ = false;
-    caught_up_at_start_ = true;
-
     // Transition to LEADER -- normal processing begins.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: reconciliation complete at seq_no={} with {} order(s) on the book -- resuming as leader{}", ack.last_seq_no,
-               order_book_.size(), cancel_book_awaited_through_ != 0 ? ", and applying orders while the command to cancel what it inherited arrives" : "");
+               "MatchingEngineThread: reconciliation complete at seq_no={} with {} order(s) on the book -- resuming as leader", ack.last_seq_no,
+               order_book_.size());
     resumed_through_ = ack.last_seq_no;
-    // Said to the test once the book is the one this instance resumes with: at once, or, where it asked for its inherited
-    // orders to be cancelled, once it has applied that command.
-    if (cancel_book_awaited_through_ == 0) {
-        report_resumed_as_leader();
-    }
+    report_resumed_as_leader();
     adopt_leader_role();
 }
 
@@ -2168,18 +1937,6 @@ void MatchingEngineThread::request_halt() {
     }
 }
 
-void MatchingEngineThread::request_cancel_book() {
-    pubsub_itc_fw_app::CancelBookRequest request{};
-    request.instance_id = static_cast<int64_t>(config_.instance_id);
-    request.epoch = epoch_;
-    request.orders_placed_through = cancel_book_awaited_through_;
-    // To every sequencer order connection, as a catch-up request is: only the leading sequencer writes the command.
-    for (const auto& conn_id : sequencer_order_conn_ids_) {
-        send_pdu(conn_id, pubsub_itc_fw_app::CancelBookRequest::message_pdu_id, 0, request);
-    }
-    cancel_book_requested_at_ = std::chrono::steady_clock::now();
-}
-
 void MatchingEngineThread::apply_cancel_book_command(const pubsub_itc_fw_app::CancelBookView& command, int64_t sequence_number, int64_t transact_time,
                                                      int32_t trading_date, CommandSource source) {
     const int64_t orders_placed_through = command.orders_placed_through;
@@ -2208,16 +1965,6 @@ void MatchingEngineThread::apply_cancel_book_command(const pubsub_itc_fw_app::Ca
         halt_reason_ = pubsub_itc_fw_app::HaltReason::UnableToMatchTooLong;
         if (test_events_.has_value()) {
             test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{*halt_reason_});
-        }
-    }
-    if (cancel_book_awaited_through_ != 0 && orders_placed_through >= cancel_book_awaited_through_) {
-        cancel_book_awaited_through_ = 0;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: the {} order(s) inherited at this promotion are cancelled by the command at seq={} -- resumed as leader with "
-                   "{} order(s) on the book",
-                   result.reports_sent, sequence_number, order_book_.size());
-        if (source == CommandSource::live) {
-            report_resumed_as_leader();
         }
     }
 }

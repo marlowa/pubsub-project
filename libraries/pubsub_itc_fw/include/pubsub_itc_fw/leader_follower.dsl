@@ -733,25 +733,8 @@ end
 
 # Why a cancel of the book was written.
 enum CancelBookReason : i8 {
-    Promotion = 1              # open_orders_on_promotion is "cancel", and a promoted engine asked for its inherited orders to be cancelled
     UnableToMatchTooLong = 2   # no matching engine could trade for longer than absence_limit_seconds (R-0117)
 }
-
-# ------------------------------------------------------------
-#  138 -- CancelBookRequest
-#  Sent by a promoted matching engine, once it has caught up and
-#  holds orders it inherited, to each sequencer it has an order
-#  connection to. The leading sequencer writes a CancelBook
-#  command; a follower ignores it. The engine sends it again
-#  until it has applied a CancelBook through the same position,
-#  so a request lost to a change of leader is not lost for good,
-#  and a second command finds nothing left to cancel.
-# ------------------------------------------------------------
-message CancelBookRequest (id=138, version=1)
-    i64 instance_id              # the engine asking, for the Quill log
-    i32 epoch                    # the epoch it leads in
-    i64 orders_placed_through    # the position it caught up to: orders placed at or before it are cancelled
-end
 
 # ------------------------------------------------------------
 #  139 -- CancelBook

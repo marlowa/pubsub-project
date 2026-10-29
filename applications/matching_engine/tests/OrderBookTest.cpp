@@ -183,19 +183,6 @@ TEST_F(OrderBookTest, ClearingEmptiesTheBookAndGivesEveryRecordBack) {
     }
 }
 
-TEST_F(OrderBookTest, ReplacingAnOrderKeepsOneRecordNotTwo) {
-    OrderBook book;
-    ASSERT_FALSE(book.open(path_, region_capacity, map_capacity));
-    const OrderKey key = key_for("MEMBER-A", "ORD-001");
-
-    ASSERT_TRUE(book.add_or_replace(key, entry_for(1, "BHP", "100"), 10));
-    ASSERT_TRUE(book.add_or_replace(key, entry_for(2, "RIO", "200"), 11));
-
-    EXPECT_EQ(book.size(), 1U);
-    EXPECT_EQ(book.find(key)->placed_at_seq_no, 2);
-    EXPECT_EQ(book.find(key)->get_symbol(), "RIO");
-}
-
 TEST_F(OrderBookTest, EveryOrderIsVisitedOnce) {
     OrderBook book;
     ASSERT_FALSE(book.open(path_, region_capacity, map_capacity));
@@ -229,21 +216,6 @@ TEST_F(OrderBookTest, AnOrderArrivingWithNoRecordLeftIsRefused) {
     EXPECT_FALSE(book.add(key_for("MEMBER-A", "ONE-TOO-MANY"), entry_for(99, "BHP", "100"), 99));
     EXPECT_EQ(book.size(), region_capacity);
     EXPECT_FALSE(book.contains(key_for("MEMBER-A", "ONE-TOO-MANY")));
-}
-
-TEST_F(OrderBookTest, ReplacingAnOrderStillWorksWhenTheRegionIsFull) {
-    OrderBook book;
-    ASSERT_FALSE(book.open(path_, region_capacity, map_capacity));
-    for (SlotIndex i = 0; i < region_capacity; ++i) {
-        ASSERT_TRUE(book.add(key_for("MEMBER-A", ("ORD-" + std::to_string(i)).c_str()), entry_for(i, "BHP", "100"), 10 + i));
-    }
-
-    // The replica applies these, and an update to an order it already holds needs no record
-    // it does not already have.
-    const OrderKey existing = key_for("MEMBER-A", "ORD-0");
-    EXPECT_TRUE(book.add_or_replace(existing, entry_for(500, "RIO", "200"), 500));
-    EXPECT_EQ(book.find(existing)->placed_at_seq_no, 500);
-    EXPECT_FALSE(book.add_or_replace(key_for("MEMBER-A", "ONE-TOO-MANY"), entry_for(99, "BHP", "100"), 99));
 }
 
 // ---- what a successor process finds -----------------------------------------------------

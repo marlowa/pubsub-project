@@ -52,9 +52,8 @@ namespace matching_engine {
  * @brief HA state for the matching-engine instance (Slice C+D).
  *
  * Unknown    -- HA disabled or not yet classified.
- * Follower   -- passive replica: receives BookUpdate PDUs, discards order and ER PDUs.
- * Reconciling-- promotion in progress: replaying WAL catch-up from the sequencer,
- *               applying NOS/OCR to the book WITHOUT emitting ERs.
+ * Follower   -- another instance leads: this one follows the WAL, applying every command and keeping its reports.
+ * Reconciling-- catching up from the WAL, to follow it or to lead.
  * Leader     -- active: processes orders and emits ERs normally.
  */
 enum class MeRole { Unknown, Follower, Reconciling, Leader };
@@ -143,21 +142,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     bool ha_enabled_{false};
     bool is_primary_{true};
 
-    // Whether a promotion cancels the book it inherits, from order_book.open_orders_on_promotion.
-    // The policy is stated in configuration rather than settled here because keeping the book is
-    // only safe once the catch-up behind it is verified; see the configuration field's comment.
-    bool cancel_open_orders_on_promotion_{true};
+    // The connection this instance made to its peer's listener ([peer]), and the one its peer made to this instance's.
+    // Whichever is up carries the lease requests and grants between the pair, the role announcements and the settings
+    // check (EngineSettings).
+    pubsub_itc_fw::ConnectionID outbound_peer_conn_id_;
+    pubsub_itc_fw::ConnectionID inbound_peer_conn_id_;
 
-    // Primary: outbound connection to ME-secondary's book replication listener.
-    pubsub_itc_fw::ConnectionID outbound_replication_conn_id_;
-
-    // Secondary: inbound replication connection from ME-primary.
-    // Any inbound connection on the secondary IS the replication channel
-    // (the secondary only has one inbound listener: the replication port).
-    pubsub_itc_fw::ConnectionID inbound_replication_conn_id_;
-
-    // Secondary: seq_no of the most recently applied BookUpdate.
-    // Carried forward to WAL reconciliation at promotion time (Slice C).
+    // The last command the open-order region records as applied when this process found it, or 0. A catch-up is asked
+    // for from the larger of this and the last command applied since.
     int64_t last_replicated_seq_no_{0};
 
     // ConnectionIDs of the outbound connections to the sequencer ER inbound listeners.
@@ -167,8 +159,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID sequencer_er_secondary_conn_id_;
 
     // Order book keyed by (session identity, cl_ord_id).
-    // Primary:   live orders currently on the book.
-    // Secondary: replica of the primary's book, maintained via BookUpdate PDUs.
+    // Built by applying the WAL's commands, whether this instance leads or follows.
     //
     // The book reports the growth of its map directly to book_growth_reporter_ rather than
     // through an allocator: the map owns its tables outright and knows each one's size at the
@@ -229,10 +220,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         explicit EngineOutputs(MatchingEngineThread& owner) : owner_(owner) {}
         void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number, const fix_common::SessionIdentity& session,
                          ReportIsRepeat repeat) override;
-        void order_added_to_book(int64_t sequence_number, const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
-                                 const OrderEntry& entry) override;
-        void order_removed_from_book(int64_t sequence_number, const fix_common::SessionIdentity& session, std::string_view cl_ord_id) override;
-        void trading_halt_changed(int64_t sequence_number, bool halted) override;
         void order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
                            ReportIsRepeat repeat, int64_t sequence_number, std::string_view orig_cl_ord_id) override;
         void order_accepted() override;
@@ -253,46 +240,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // The region this process inherited could not be read, so what it held is unknown here and
     // the book cannot be vouched for however well the reconciliation goes. R-0102.
     bool region_was_unusable_{false};
-
-    // Helper: send a BookUpdate PDU to ME-secondary (primary only).
-    void send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
-                          const OrderEntry* entry); // nullptr for Remove updates
-
-    // Helper: apply a received BookUpdate PDU to the replica book, or hold it while this instance catches up.
-    void apply_book_update(const pubsub_itc_fw::EventMessage& message);
-
-    // A BookUpdate decoded, so that it can be held while this instance catches up from the WAL and applied afterwards.
-    struct DecodedBookUpdate {
-        pubsub_itc_fw_app::BookUpdateType update_type{pubsub_itc_fw_app::BookUpdateType::Add};
-        int64_t seq_no{0};
-        OrderKey key;
-        OrderEntry entry; ///< filled for an Add only
-        /// The ClOrdID, which the key holds.
-        [[nodiscard]] std::string_view cl_ord_id() const {
-            return {key.cl_ord_id.data(), key.cl_ord_id_len};
-        }
-    };
-    void apply_decoded_book_update(const DecodedBookUpdate& update);
-
-    // The leader's book updates that arrive after this instance starts and before its first catch-up has ended. Each is
-    // the effect of a record in the WAL, and the catch-up applies records too, in the WAL's order. Applying the two as
-    // they arrive would mix two orders: an update that removes an order could come before the catch-up record that adds
-    // it, and an update applied before the catch-up is asked for would move the position it is asked from past records
-    // that have no update. So they are held, and when the catch-up ends at a position, those for records after it are
-    // applied, in the order the leader sent them, and the rest are dropped, because the catch-up applied those records
-    // itself. Updates arrive only from a
-    // leading engine, which sends one for each change to its book, so a catch-up of a few seconds holds a few seconds of
-    // them. Past max_held_book_updates_ they are dropped, and the catch-up is asked for again from where it ended, so
-    // that what the dropped updates said is applied from the WAL instead.
-    std::vector<DecodedBookUpdate> held_book_updates_;
-    static constexpr size_t max_held_book_updates_ = 200000;
-    bool held_book_updates_overflowed_{false};
-    // Whether a catch-up has ended since this instance started, at start or at a promotion. Until one has, the leader's
-    // book updates are held. Not cleared again: once caught up, the updates follow on from the catch-up's position.
-    bool caught_up_at_start_{false};
-    // Applies or drops the held book updates once a catch-up at start has ended at caught_up_through. Returns false if
-    // some were dropped for lack of room, in which case the caller asks for the catch-up again.
-    bool settle_held_book_updates(int64_t caught_up_through);
 
     // HA state machine (Slice C+D)
 
@@ -327,8 +274,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Drives the lease rules that decide whether this instance leads. Recurring.
     pubsub_itc_fw::TimerID lease_tick_timer_id_{};
 
-    // How the lease rules reach the other two voters: the peer instance over whichever replication
-    // connection is up, and the arbiter pool on both arbiter connections.
+    // How the lease rules reach the other two voters: the peer instance over whichever connection
+    // to it is up, and the arbiter pool on both arbiter connections.
     class EngineLeaseLinks : public pubsub_itc_fw::LeaseLinksInterface {
       public:
         explicit EngineLeaseLinks(MatchingEngineThread& owner) : owner_(owner) {}
@@ -496,19 +443,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // How many records from earlier answers were ignored in the present catch-up, for the Quill log.
     int64_t records_from_earlier_answers_{0};
 
-    // Whether this catch-up is a promotion or a start. Both catch up, because both may be
-    // missing records; only a promotion inherits a book from a peer, and only a promotion is
-    // what order_book.open_orders_on_promotion speaks about. A restart that recovered its own
-    // region is R-0018's case and keeps what it recovered whatever that setting says.
-    bool reconciling_from_follower_{false};
-
-    // Whether this instance's book holds changes the leader sent it (BookUpdate), rather than only what it read from its
-    // region and applied from the WAL. Both engines start with no role, so an instance can apply the leader's copy of the
-    // book and take over before it was ever told that it follows. Its book then rests on that copy, which is what
-    // order_book.open_orders_on_promotion speaks about, so taking over is a promotion. An instance that built its book
-    // from the WAL alone takes over as a start, whoever led before it (R-0018).
-    bool book_holds_peer_copy_{false};
-
     // Whether the catch-up has been done. A venue with high availability off has no
     // lease to trigger one, so it reconciles when the sequencer first connects -- once,
     // not on every reconnect: this instance's position advances as it works and is not tracked
@@ -661,9 +595,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     [[nodiscard]] bool next_followed_record(int64_t seq_no);
 
     /// Take the leader role, catching up from the WAL first unless this instance already leads.
-    /// A follower has been passive and its replica may be behind. An instance that caught up
-    /// when the first sequencer connected, and has waited since to learn its role, has been sent
-    /// no orders meanwhile, because a sequencer sends orders only to the engine that leads. An
+    /// A follower may lack the last few records still on their way to it, and its catch-up to lead
+    /// is also when it learns which of its kept reports the WAL lacks. An
     /// instance that already leads has applied every record as it arrived, and must not catch
     /// up, because a catch-up makes live orders arriving meanwhile read as replay: applied
     /// silently, with no acceptance reported to the member.
@@ -692,7 +625,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // The settings that change what the engine does with a command, which the two engines of a pair must share
     // (docs/availability/deterministic_matching_engine.md, section 5). Sent to the peer when this instance's
-    // connection to the peer's replication listener is established.
+    // connection to the peer's listener is established.
     void send_engine_settings();
     // The peer's settings arrived: compared with this instance's, and acted on by bar_peer_if_settings_differ.
     void handle_engine_settings(const pubsub_itc_fw::EventMessage& message);
@@ -704,9 +637,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // has said its peer may not lead.
     void report_settings_differ_from_peer();
 
-    // Asks every sequencer for a CancelBook command through cancel_book_awaited_through_; the leading one writes it.
-    void request_cancel_book();
-    // Applies a CancelBook command, and, where it is the one this promoted instance asked for, says that it has resumed.
+    // Applies a CancelBook command, and tells the test what it cancelled.
     void apply_cancel_book_command(const pubsub_itc_fw_app::CancelBookView& command, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
                                    CommandSource source);
     // Applies a TechnicalEvent command, and tells the test of a halt it set.
@@ -714,12 +645,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Tells the test that this instance resumed as leader, and with how many orders.
     void report_resumed_as_leader();
 
-    // While a promoted instance waits to apply the command cancelling what it inherited: the position it asked to cancel
-    // through, which is the position it caught up to. Zero when it waits for none. Asked for again every
-    // cancel_book_request_interval, because a request sent as the sequencers change leader may reach no leader.
-    int64_t cancel_book_awaited_through_{0};
-    std::chrono::steady_clock::time_point cancel_book_requested_at_{};
-    static constexpr std::chrono::seconds cancel_book_request_interval{1};
     // The position the last catch-up before leading reached, which the test is told when this instance resumes.
     int64_t resumed_through_{0};
 

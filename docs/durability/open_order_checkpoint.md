@@ -181,10 +181,10 @@ lengthens the tail and makes R-0108's bound harder to hold.
 
 ### The follower keeps one too
 
-The passive instance maintains its replica of the book in a region of its own, on its own
-file, exactly as the leader does. Its updates arrive as BookUpdate messages rather than as
-orders, and it publishes each one as it applies it -- it sends nothing outward, so there is
-no report for a publish to get ahead of.
+The follower keeps its book in a region of its own, on its own file, exactly as the leader
+does. It builds the book by applying every command from the sequencer's log, as the leader
+does, and publishes after each one -- it sends nothing outward, so there is no report for a
+publish to get ahead of.
 
 This is decided rather than incidental. A follower without a region is a follower that has
 to be handed the whole book again every time it restarts, which is the same recovery problem
@@ -386,16 +386,11 @@ fault of its own that it will not find.
 
 ## What this changes for the availability design
 
-**What a promoted engine does with the orders it inherits is a configured policy**,
-`order_book.open_orders_on_promotion` ([wal_and_ha.md](../availability/wal_and_ha.md),
-"What happens to resting orders on promotion"). Under `"cancel"` it cancels every order on its
-caught-up book and reports each cancel; under `"keep"` it keeps them. Every environment uses
-`"cancel"`. The region is what makes `"keep"` possible: the engine can vouch for the book it
-has reconstructed, because its own region says what it held and to what position, and the
-sequencer's tail supplies the rest. An engine that *restarts*, rather than taking over from a
-peer, keeps the orders it recovered from its region whatever the policy says (R-0018).
-
-Cancelling everything is also the answer where the region has failed, as described above.
+**A promoted engine keeps the orders on its book** ([wal_and_ha.md](../availability/wal_and_ha.md),
+"What happens to resting orders on promotion"): it followed the sequencer's log, so its book is
+the one the members were told of. The region is what lets an engine that *restarts* keep what it
+held as well (R-0018): its own region says what it held and to what position, and the
+sequencer's tail supplies the rest.
 
 Section 11e of [design_notes.md](../availability/design_notes.md) records three
 defects that had one shape between them: a rule that held while the epoch was

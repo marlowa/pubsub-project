@@ -56,32 +56,8 @@ has got wrong, which is why acting on the peer's assertion alone is safe here.
   recovers what it can recover, and reports what it cannot. The member is told
   exactly where it stands in either case, and the venue cancels only where it does
   not have the orders.}
-  \uncovered{scenario 21 asserts the fallback, and nothing asserts this}
+  \covers{ha_test:16, ha_test:79, ha_test:87}
 \end{requirement}
-
-\begin{gap}{}
-  \textbf{The venue does not meet this requirement as it is configured, and says
-  so.} What a promoted matching engine does with the orders it inherits is a
-  stated policy, \texttt{order\_book.open\_orders\_on\_promotion}, and it is set
-  to \texttt{cancel} in every environment. Every promotion therefore takes the
-  fallback path: each order is cancelled, its member is told, and the venue leads
-  an empty book.
-
-  The engine can give the other answer, because \texttt{keep} carries the book
-  across. The mechanism exists, and what is missing is the grounds for trusting it.
-  A promoted instance assembles its book from two sources, and \textbf{one of them
-  is checked and the other is not}. The catch-up applied before the instance acts
-  is accounted for, which is \reqref{R-0101}. The replica the instance maintained
-  by \texttt{BookUpdate} while it was the follower is not accounted for: it applies
-  those updates as they arrive, and nothing establishes that none was missed.
-  Keeping a book that is short of an order is worse than cancelling every order,
-  because the member is told nothing and believes it holds an order that the venue
-  does not.
-
-  The setting therefore stands at the outcome that is worse and certain. Changing
-  it requires the same check to be applied to the replication stream that
-  \reqref{R-0101} applies to the catch-up.
-\end{gap}
 
 \begin{requirement}{R-0074}{An instance that gives up leadership cannot thereby create a second one}
   An instance shall adopt the follower position only on its peer's assertion that

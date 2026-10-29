@@ -134,8 +134,9 @@ ca   = ""
 #                                        mandatory for trading
 #   3  matching_engine_primary           matching
 #   4  mep_primary, mep_secondary        downstream of the ER path
-#   5  matching_engine_secondary         BookUpdate is fire-and-forget, so this
-#                                        one yields first
+#   5  matching_engine_secondary         the follower in normal running: it
+#                                        applies the WAL but answers nobody, so
+#                                        this one yields first
 #
 # No thread counts appear here.  The application knows how many threads it
 # registers with the Reactor; deploy.py asks the binary rather than reading a
@@ -690,11 +691,6 @@ identifier_secret_file = "etc/matching_engine/identifier_secret.key"
 # Below the region's capacity here, so the map grows by doubling if more are open, which
 # this environment accepts in return for using less memory. See docs/bug_list.md, BUG-0028.
 order_book_initial_capacity = 262144
-# What a promoted matching engine does with the orders it inherits: "cancel" or "keep".
-# "cancel" tells every member its order is gone, which is worse and is certain. "keep" carries
-# the book across (R-0073) and is only safe once the catch-up behind it is verified -- see
-# docs/bug_list.md, BUG-0074.
-order_book_open_orders_on_promotion = "cancel"
 metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9205
 network_listen_host           = "127.0.0.1"
@@ -703,15 +699,14 @@ sequencer_er_host             = "127.0.0.1"
 sequencer_er_port             = 11021
 sequencer_er_secondary_host   = "127.0.0.1"
 sequencer_er_secondary_port   = 11022
-# Book replication is symmetric: each instance listens, and each dials the other. Both
-# connections stand at all times and a role change only switches which one carries traffic.
-# Wiring it one way round -- primary dials, secondary listens -- meant that after a failover
-# there was no channel at all in the direction replication then needed to flow, and the
-# surviving instance never noticed the leader die. See docs/bug_list.md, BUG-0034.
-book_replication_listen_host  = "127.0.0.1"
-book_replication_listen_port  = 11025
-book_replication_host         = "127.0.0.1"
-book_replication_port         = 11026
+# The link between the two engines is symmetric: each instance listens, and each dials the other.
+# Both connections stand at all times, and whichever is up carries the lease requests between the
+# pair, the role announcements and the settings check. Wired one way round, after a failover one
+# direction has no channel at all (docs/bug_list.md, BUG-0034).
+peer_listen_host  = "127.0.0.1"
+peer_listen_port  = 11025
+peer_host         = "127.0.0.1"
+peer_port         = 11026
 # HA arbiter-mediated promotion (Slice C+D).
 instance_id                   = 1
 arbiter_primary_host          = "127.0.0.1"
@@ -743,17 +738,12 @@ identifier_secret_file = "etc/matching_engine/identifier_secret.key"
 # Below the region's capacity here, so the map grows by doubling if more are open, which
 # this environment accepts in return for using less memory. See docs/bug_list.md, BUG-0028.
 order_book_initial_capacity = 262144
-# What a promoted matching engine does with the orders it inherits: "cancel" or "keep".
-# "cancel" tells every member its order is gone, which is worse and is certain. "keep" carries
-# the book across (R-0073) and is only safe once the catch-up behind it is verified -- see
-# docs/bug_list.md, BUG-0074.
-order_book_open_orders_on_promotion = "cancel"
 metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9206
-book_replication_listen_host  = "127.0.0.1"
-book_replication_listen_port  = 11026
-book_replication_host         = "127.0.0.1"
-book_replication_port         = 11025
+peer_listen_host  = "127.0.0.1"
+peer_listen_port  = 11026
+peer_host         = "127.0.0.1"
+peer_port         = 11025
 # Order listener (distinct port from the primary; both run on the same dev host).
 network_listen_host           = "127.0.0.1"
 network_listen_port           = 11023
