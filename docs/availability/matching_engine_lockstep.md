@@ -189,10 +189,23 @@ is for, and renaming it, to `[peer]`, is part of step 3.
 3. **Removing the copy (section 6).** The code and setting of section 6 go, the environments drop
    `open_orders_on_promotion`, and the scenarios that promote an engine require the orders resting before the
    promotion to be resting after it. This meets the first and second points of the phase's finish condition.
-4. **Comparing (section 4).** If decision 3 is yes. Made to fail on purpose by a scenario that gives the two engines
-   different identifier secrets, so that their order identifiers differ, and requires the follower to report the
-   difference and the leader to go on trading. The settings check refuses that pair today, so the scenario turns it
-   off for the test.
+4. **Comparing (section 4).** Made to fail on purpose by a scenario that gives the two engines different identifier
+   secrets, so that their order identifiers differ, and requires the follower to report the difference and the
+   leader to go on trading. The settings check also has the leader say its peer may not lead, so the scenario
+   requires the follower's own finding, which the settings check does not produce.
+
+   **Built.** When a report record arrives, the follower compares its kept report of the same command with it, byte
+   for byte. A kept report of an earlier command that the leader never sent, and a leader's report of a command the
+   follower produced none of, are differences too. A report the WAL holds already and that a sequencer taking the lead
+   writes again is recognised, by being of a command earlier than any compared or the same bytes as one compared, and
+   is not a difference. On the first difference, or when its kept reports reach their limit, the follower says so at
+   Error and by the test event `FollowerCannotLead`, counts it (`follower_report_differences_total`), stops asking for
+   a lease (`PairLeaseAgent::stop_asking_to_lead`, which leaves it answering its peer's requests), and marks its
+   open-order region unusable (`MappedSlotStore::mark_unusable`), so that, restarted, it rebuilds its book from the
+   WAL. Scenario 89 passes, and fails when the two engines hold the same secret. Unit tests cover the lease agent's
+   refusal to ask and the region refused once marked; each fails when the change is taken out. No scenario restarts
+   a follower after a difference to see it rebuild, and none fills the kept reports to their limit. Both full suites
+   passed on 29 October 2026: 89 of 89 with the primary engine leading first and 31 of 31 with the secondary first.
 5. **The cost on the sequencer's thread.** Sending every record to the follower engine adds a read back from the WAL
    and a send for every record, on the sequencer's own thread. It is measured with the order path's latency
    instruments on a trading-day run before and after, as the other changes to that thread were, and stated here.

@@ -248,6 +248,11 @@ int64_t MappedSlotStore::owner_value() const {
     return header()->owner_value.load(std::memory_order_relaxed);
 }
 
+void MappedSlotStore::mark_unusable() {
+    // Any word other than the magic: open() then refuses the file, saying what it found.
+    header()->magic = 0;
+}
+
 void MappedSlotStore::publish(int64_t seq_no) {
     header()->published.store(seq_no, std::memory_order_release);
 }

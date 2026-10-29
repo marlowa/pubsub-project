@@ -466,9 +466,10 @@ of an order ([BUG-0197](bug_list.md#bug_0197)). It needs the technical event of
 [trading_phases.md](venue/trading_phases.md) and a way to declare a halt ([BUG-0065](bug_list.md#bug_0065)),
 which this phase's design must place in the plan.
 
-**Still to settle when the phase is designed:** whether the follower compares its reports, or a summary of
-its book, with the leader's while the venue runs, so that a difference is noticed at once rather than at a
-promotion; and what happens when one is found. Under principle V11 the leader carries on trading either way.
+**Settled in the design:** the follower compares each of its reports with the leader's while the venue runs,
+so that a difference is noticed at once rather than at a promotion. When one is found, the follower says so and
+does not lead until it has been restarted and has rebuilt its book from the WAL; under principle V11 the leader
+carries on trading (decision 3 of [matching_engine_lockstep.md](availability/matching_engine_lockstep.md)).
 
 ### Phase 9. One check against sequencing a command twice, and the gateways as clients
 

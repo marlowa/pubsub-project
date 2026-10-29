@@ -380,6 +380,18 @@ Cancels are not counted. A cancel is a different operation on an order that alre
 and folding the two into one number leaves neither rate readable. If cancel throughput is
 wanted it gets its own counter.
 
+### `follower_report_differences_total`
+
+Reports a matching engine produced while following the WAL that differ from the leader's report of
+the same command, or that one of the two produced and the other did not.
+
+    follower_report_differences_total{application="pubsub",component="matching_engine_secondary",scope="matching_engine_thread"}
+
+Zero in a healthy pair, because the two engines apply the same commands alike. The first
+difference makes the follower stop asking to lead and mark its open-order region unusable, so that,
+restarted, it rebuilds its book from the WAL; the count goes on rising for each later difference
+([matching_engine_lockstep.md](../availability/matching_engine_lockstep.md), section 4).
+
 ### `order_round_trip_nanoseconds`
 
 A histogram, registered by **both** order gateways, measuring from the moment a gateway took

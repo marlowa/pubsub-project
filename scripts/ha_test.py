@@ -1062,6 +1062,10 @@ class Scenario(NamedTuple):
     # When True, the leading matching engine is started with its sends of reports to the sequencers blockable, as for
     # assert_kept_reports_sent_on_promotion, for an InterimOrdersStep with with_leader_reports_blocked.
     block_leading_engine_reports: bool = False
+    # When True, matching_engine_secondary holds an identifier secret of its own, so that the two engines give the same
+    # order different identifiers and their reports differ; the scenario requires the follower to find the difference,
+    # say it cannot lead, and the leader to go on trading. See run_scenario's "reports that differ" block.
+    assert_follower_finds_reports_differ: bool = False
     # When True, damage the matching engine's open-order region before restarting it, and
     # assert that the engine refuses it, keeps it aside, rebuilds its book from the WAL, which
     # reaches the first command of the day, and carries on with every order, cancelling nothing
@@ -4588,6 +4592,28 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         steps=[],
     ),
+
+    # 89 -- a follower whose reports differ from the leader's does not lead.
+    #
+    # docs/availability/matching_engine_lockstep.md, section 4 and decision 3. The follower compares each report it kept
+    # with the leader's report of the same command when it arrives in the WAL. The secondary is given an identifier
+    # secret of its own, so that the two engines give each order a different identifier and every report differs. The
+    # follower must say it cannot lead, because a report differs, and stop asking for a lease; the leader must go on
+    # trading, as the recovery orders show. The settings check also has the leader say its peer may not lead, so this
+    # scenario shows the follower's own finding, not the check of settings.
+    Scenario(
+        number=89,
+        short_name="follower_whose_reports_differ_does_not_lead",
+        description="A follower whose reports differ from the leader's says it cannot lead, and the leader trades on",
+        expected_outcome=(
+            "the follower finds its report of a command differs from the leader's, says it cannot lead and stops asking to, "
+            "and the recovery orders are processed by the leader"
+        ),
+        me_ha=True,
+        assert_follower_finds_reports_differ=True,
+        orders_during_override=0,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -7290,7 +7316,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if scenario.assert_reports_held_for_unconnected_gateway and name in ("sequencer_primary", "sequencer_secondary"):
                 config = config_with_gateway_report_relay(config)
                 log(f"  {name} sends reports to fix_order_gateway_a through a relay on port {sorted(_GATEWAY_REPORT_RELAY_PORTS)}, which accepts nothing yet")
-            if scenario.assert_engines_with_different_settings and scenario.different_identifier_secret and name == "matching_engine_secondary":
+            if ((scenario.assert_engines_with_different_settings and scenario.different_identifier_secret) or scenario.assert_follower_finds_reports_differ) \
+                    and name == "matching_engine_secondary":
                 config = config_with_other_identifier_secret(config)
                 log(f"  {name} holds an identifier secret of its own, not matching_engine_primary's")
             elif scenario.assert_engines_with_different_settings and name == "matching_engine_secondary":
@@ -7836,7 +7863,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # is no book a promotion resumed with to ask about.
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
                 and not scenario.assert_deferred_answered and not scenario.expects_no_new_leader
-                and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion):
+                and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
+                and not scenario.assert_follower_finds_reports_differ):
             # The promotion has already been observed by the time this runs, so this confirms an absence: the engine is
             # asked for a checkpoint first, and a cancel it sent cannot still be on its way.
             promoted_engine = resolved(ENGINE_FOLLOWING_AT_START)
@@ -8861,6 +8889,21 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     f"{sent.reported_through}")
             log(f"  kept reports: {follower} sent {sent.count} report(s) it kept of commands after {sent.reported_through}, and the member "
                 f"was sent a New report for every one of the {_ORDERS_PER_COMMAND[b'T']} orders within {took:.2f}s -- OK")
+
+        # ── Reports that differ: the follower finds it cannot lead ──
+        if scenario.assert_follower_finds_reports_differ:
+            follower = resolved(ENGINE_FOLLOWING_AT_START)
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            refused = engine_event(follower, "FollowerCannotLead", _TEST_EVENTS.since_introduction(follower), args.failover_timeout)
+            if refused is None:
+                die(f"reports that differ: {follower} holds a different identifier secret, so every report it keeps differs from the "
+                    "leader's, and it never said it cannot lead")
+            if refused.reason != engine_events.FollowerCannotLeadReason.ReportDiffers:
+                die(f"reports that differ: {follower} said it cannot lead for another reason ({refused.reason}), not that a report differs")
+            if engine_event(follower, "ResumedAsLeader", _TEST_EVENTS.since_introduction(follower), 0.0, settle=True) is not None:
+                die(f"reports that differ: {follower} led although it found its reports differ from the leader's")
+            log(f"  reports that differ: {follower} found its report of command {refused.command} differs from the leader's, and said it "
+                "cannot lead -- OK")
 
         if scenario.assert_order_refusal:
             log("=== Refusing orders the venue cannot process ===")

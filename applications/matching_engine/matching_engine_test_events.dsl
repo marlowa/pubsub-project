@@ -201,3 +201,22 @@ message KeptReportsSent (id=216, version=1)
     i64 count               # how many kept reports were sent
     i64 reported_through    # the last command the WAL held every report of
 end
+
+# ------------------------------------------------------------
+#  217 -- FollowerCannotLead
+#  The engine, following the WAL, found that it cannot be trusted to
+#  lead: one of its reports differs from the leader's, or it kept more
+#  reports than it has room for. It stops asking to lead, and marks its
+#  region unusable so that, restarted, it rebuilds its book from the WAL.
+# ------------------------------------------------------------
+enum FollowerCannotLeadReason : i8 {
+    ReportDiffers = 1      # the leader's report of a command differs from this engine's
+    ReportNotProduced = 2  # the leader sent a report of a command that this engine did not produce
+    ReportNotSent = 3      # this engine produced a report of a command that the leader did not send
+    KeptReportsFull = 4    # it kept as many reports as it has room for, so it can no longer send all the WAL lacks
+}
+
+message FollowerCannotLead (id=217, version=1)
+    i64 command                    # the command whose reports differ, or the last kept when full
+    FollowerCannotLeadReason reason
+end

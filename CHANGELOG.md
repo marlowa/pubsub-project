@@ -103,6 +103,12 @@ describe the venue as it now is.
   glossaries package and its output cannot say whether it succeeded.
 - **The design for publishing to an external messaging system** (OAR),
   `docs/pubsub/oar_external_stream.md`. Not built.
+- **A follower matching engine checks its reports against the leader's.** As each of the leader's
+  reports reaches the WAL, the follower compares it with its own report of the same command. On a
+  difference, or when it has kept as many reports as it has room for, it says so at Error, counts it
+  (`follower_report_differences_total`), stops asking to lead, and marks its open-order region
+  unusable so that, restarted, it rebuilds its book from the WAL; the leader trades on. Scenario 89
+  tests it with two engines holding different identifier secrets.
 - **A limit on how long the venue recovers by itself.** While no matching engine can trade, the
   leading sequencer adds to the time it has had none how long the catch-up under way will still take,
   from how fast the reading thread is sending it. When the two together pass

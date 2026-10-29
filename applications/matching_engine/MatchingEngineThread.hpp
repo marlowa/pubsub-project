@@ -389,6 +389,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         /// Which connections the report has been sent on; it is kept until it has been sent on each.
         bool sent_to_primary{false};
         bool sent_to_secondary{false};
+        /// For a report kept while following: whether the leader's report of the same command has been compared with it.
+        bool compared{false};
     };
     std::vector<HeldReport> held_reports_;
 
@@ -411,6 +413,21 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Passing this many means the leading engine has had no report written for that many commands.
     static constexpr size_t max_kept_reports_ = 100000;
     bool kept_reports_overflowed_{false};
+    // The first command whose reports this instance keeps: the one after the position its follow request named. A
+    // leader's report of an earlier command has nothing kept to be compared with.
+    int64_t keeping_from_{0};
+    // The number of the last report record compared with this instance's kept reports. An answer to a request made again
+    // starts after the last command applied, so it sends again the report records of that command that come after it in
+    // the WAL; one numbered at or below this has been accounted for already.
+    int64_t last_report_record_accounted_{0};
+    // The highest command a report of has been compared with this instance's, so that a report of an earlier command,
+    // written again into the WAL by a sequencer that took the lead, is recognised as one accounted for already.
+    int64_t highest_command_compared_{0};
+    // Whether this instance has found, while following, that it cannot be trusted to lead (refuse_to_lead), and how
+    // many differences from the leader's reports it has found.
+    bool refused_to_lead_{false};
+    int64_t report_differences_{0};
+    pubsub_itc_fw::CounterHandle follower_report_differences_counter_;
     // Whether reports are being held because there is no connection to a sequencer to send them on
     // (docs/bug_list.md, BUG-0120). Logged when it starts, and cleared when they are sent.
     bool waiting_for_report_connection_{false};
@@ -583,8 +600,18 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     /// Keeps @p report, of command @p seq_no for @p session, until the WAL holds the leader's reports of that command.
     void keep_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t seq_no, const fix_common::SessionIdentity& session);
 
-    /// A report record answering command @p command has arrived: the kept reports of every command before it are dropped.
-    void drop_kept_reports_before(int64_t command);
+    /// A report record answering command @p command has arrived, the leader's report as @p size bytes at @p bytes: it is
+    /// compared with this instance's kept report of the same command, and the kept reports of every command before it
+    /// are dropped, each that the leader sent no report for being a difference (docs/availability/matching_engine_lockstep.md,
+    /// section 4).
+    void account_for_leader_report(int64_t command, const uint8_t* bytes, size_t size);
+
+    /// Says that this instance's report of @p command and the leader's differ, as @p reason says.
+    void report_difference(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason);
+
+    /// From now on this instance does not lead until it is restarted, and its region is marked unusable so that,
+    /// restarted, it rebuilds its book from the WAL (decision 3 of docs/availability/matching_engine_lockstep.md).
+    void refuse_to_lead(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason, const char* why);
 
     /// Taking the lead: sends the kept reports of every command after @p reported_through, the last command the WAL holds
     /// every report of, and drops the rest.

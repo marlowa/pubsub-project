@@ -132,6 +132,16 @@ class MappedSlotStore {
     /// the store next, which trusts no slot stamped above it.
     void publish(int64_t seq_no);
 
+    /**
+     * @brief Says that what the store holds must not be used again: the next open() throws, as for a file that is not a
+     *        store. This process may go on using it.
+     *
+     * For an owner that has found what it holds untrustworthy, such as a matching engine whose reports differ from its
+     * peer's, so that the process that opens it next rebuilds what it held from elsewhere. Written to the mapping as the
+     * records are, so it survives the death of the process, as they do.
+     */
+    void mark_unusable();
+
     /// Keep a value of the owner's in the store's header, beside the published position.
     ///
     /// Nothing here interprets it. It is for state of the owner's that belongs with the records,

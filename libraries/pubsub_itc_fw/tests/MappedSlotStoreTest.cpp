@@ -162,6 +162,18 @@ TEST_F(MappedSlotStoreTest, CloseLeavesTheStoreShutAndReopenable) {
     EXPECT_TRUE(store.is_open());
 }
 
+// A store marked unusable goes on working in the process that marked it, and is refused by the next to open it.
+TEST_F(MappedSlotStoreTest, AStoreMarkedUnusableIsRefusedWhenOpenedAgain) {
+    {
+        MappedSlotStore store;
+        ASSERT_FALSE(store.open(path_, record_size, slot_count));
+        store.mark_unusable();
+        EXPECT_NE(store.acquire(), MappedSlotStore::no_slot) << "the process that marked it goes on using it";
+    }
+    MappedSlotStore store;
+    EXPECT_THROW(static_cast<void>(store.open(path_, record_size, slot_count)), PubSubItcException);
+}
+
 TEST_F(MappedSlotStoreTest, ARecordSurvivesTheStoreBeingClosedAndOpenedAgain) {
     SlotIndex written = MappedSlotStore::no_slot;
     {

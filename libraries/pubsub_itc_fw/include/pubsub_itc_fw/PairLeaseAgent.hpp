@@ -171,6 +171,10 @@ class PairLeaseAgent {
         write_statement_if_needed();
         report_whether_this_instance_may_lead();
         Change change = Change::Nothing;
+        if (!asks_to_lead_ && participant_.state() == LeaseHolder::State::Candidate) {
+            // Asking when it was told to stop: the request is abandoned, so that a grant arriving for it finds no candidate.
+            participant_.stop(now, wait_before_asking_again());
+        }
         if (participant_.stop_if_lease_ran_out(now)) {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                        "{}: lease ran out -- neither the peer nor {} renewed it in time, so this instance stops leading (epoch={})", owner_name_,
@@ -210,7 +214,7 @@ class PairLeaseAgent {
             participant_.stop(now, wait_before_asking_again());
         }
 
-        if (participant_.may_ask_to_lead(now)) {
+        if (asks_to_lead_ && participant_.may_ask_to_lead(now)) {
             const int32_t epoch = participant_.begin_asking_to_lead();
             asked_at_ = now;
             peer_is_recording_promise_ = false;
@@ -442,6 +446,23 @@ class PairLeaseAgent {
      */
     [[nodiscard]] bool may_act_without_peer() const {
         return participant_.may_act_without_peer() && recorder_ != nullptr && recorded_statement_.same_as(participant_.statement());
+    }
+
+    /**
+     * @brief From now on this instance never asks to lead, and a request it is making is abandoned at the next tick. It
+     *        goes on answering its peer's requests, so the peer may lead.
+     *
+     * For an owner that has found it cannot be trusted to lead, such as a matching engine whose reports differ from
+     * the leader's, until its process is restarted. Not for an instance that leads: one that should stop leading lets
+     * its lease run out. Fewer instances asking cannot give two leaders, so the lease rules are unaffected.
+     */
+    void stop_asking_to_lead() {
+        asks_to_lead_ = false;
+    }
+
+    /// Whether this instance asks to lead when the rules allow it; false once stop_asking_to_lead has been called.
+    [[nodiscard]] bool asks_to_lead() const {
+        return asks_to_lead_;
     }
 
     /// Whether this instance, leading, says its peer may lead. True in a pair that makes no statements.
@@ -757,6 +778,8 @@ class PairLeaseAgent {
 
     // Whether this instance was last reported as holding a statement that it may not lead.
     bool reported_may_not_lead_{false};
+    // False once the owner has said this instance is not to lead (stop_asking_to_lead).
+    bool asks_to_lead_{true};
 
     // Whether a failure to write the record has been reported and has not since been cured.
     bool reported_write_failed_{false};

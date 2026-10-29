@@ -174,6 +174,14 @@ class OrderBook {
         store_.publish(seq_no);
     }
 
+    /**
+     * @brief Says that the region must not be used again, so that the next process to open it rebuilds the book from the
+     *        WAL. This process goes on using it.
+     */
+    void mark_unusable() {
+        store_.mark_unusable();
+    }
+
     /** @brief The sequence number this book last published. */
     [[nodiscard]] int64_t published() const {
         return store_.published();

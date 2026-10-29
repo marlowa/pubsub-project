@@ -420,6 +420,26 @@ TEST_F(PairLeaseAgentTest, TheFollowerTakesOverWhenTheLeaderIsCutOff) {
     EXPECT_EQ(agents_[1]->epoch(), 2);
 }
 
+// The same loss of the leader, with the follower told not to lead: it never asks, so no instance leads, and it goes on
+// being a voter that would grant its peer.
+TEST_F(PairLeaseAgentTest, AFollowerThatStoppedAskingToLeadDoesNotTakeOver) {
+    for (int i = 0; i < 40; ++i) {
+        step();
+    }
+    ASSERT_TRUE(agents_[0]->acting(now_));
+    agents_[1]->stop_asking_to_lead();
+    EXPECT_FALSE(agents_[1]->asks_to_lead());
+    const auto asked_before = reported(1, pubsub_itc_fw::LeaseChange::AskingToLead);
+    outboxes_[0].connected_to_peer = false;
+    outboxes_[0].connected_to_third_voter = false;
+    for (int i = 0; i < 200; ++i) {
+        step();
+    }
+    EXPECT_FALSE(agents_[0]->acting(now_));
+    EXPECT_FALSE(agents_[1]->acting(now_)) << "an instance told not to lead took over";
+    EXPECT_EQ(reported(1, pubsub_itc_fw::LeaseChange::AskingToLead), asked_before) << "it asked to lead after being told not to";
+}
+
 TEST_F(PairLeaseAgentTest, WithTheArbiterAndTheLeaderGoneTheFollowerReportsThatTheGroupHasNoLeader) {
     for (int i = 0; i < 40; ++i) {
         step();
