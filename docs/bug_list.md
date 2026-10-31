@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 215 |
-| Open | 80 (57 defects, 23 tasks) |
+| Bugs recorded | 216 |
+| Open | 81 (57 defects, 24 tasks) |
 | Closed | 135 |
-| Next id | BUG-0216 |
+| Next id | BUG-0217 |
 
 ## Open bugs by severity
 
-18 high, 49 medium, 13 low.
+18 high, 49 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -27,7 +27,7 @@
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
 | [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
-| [BUG-0193](#bug_0193) | high | task | Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs |
+| [BUG-0193](#bug_0193) | high | task | Once both matching engines apply every command, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the absence limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
@@ -93,6 +93,7 @@
 | [BUG-0185](#bug_0185) | low | defect | Scenarios 59 and 76 stop the leader the moment inject_order has sent, which can beat the leader to reading the last order |
 | [BUG-0214](#bug_0214) | low | defect | `fix_load_client.py` reports messages unreported that the venue answered, because it cancels orders the venue refused and does not count the OrderCancelReject that answers each |
 | [BUG-0215](#bug_0215) | low | defect | `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds |
+| [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 
 ---
 
@@ -189,6 +190,41 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0216: Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path {#bug_0216}
+
+| | |
+|---|---|
+| Severity | low |
+| Kind | task |
+| Found | 2026-10-31 |
+| Recorded | 2026-10-31 |
+| How | Andrew asked whether the follower matching engine slows the leading one; it does not, but the stream to it costs the sequencer's thread something |
+| Impact | Every order waits slightly longer in the sequencer, most at the 99th percentile and at higher rates |
+
+**What happens.** Both matching engines apply every committed command from the WAL
+([both_engines_apply_the_wal.md](availability/both_engines_apply_the_wal.md)). The leading engine is sent each command
+by order routing, as before, and never waits for the follower. The follower is sent every committed record, reports
+included, by the sequencer's own thread: as each record is written, the sequencer keeps a copy of it
+(`WalHandedOverFollowers::written`), and as each is committed it sends it to the follower from that copy, or reads it
+back from the WAL when there is no copy (`send_committed_records_to_follower_engines`). That is one more send for every
+record, on the thread that sequences orders.
+
+Step 5 of that design measured it with one trading-day run on each build. At 1,050 and 3,500 orders a second, the
+time for the sequencer to send an order on rose by about 2 microseconds at the median and about 15 at the 99th
+percentile; the round trip at the gateway showed no change at the median and rose by 11 to 16 microseconds at the 99th
+percentile; and the reactor's lap at the 99th percentile rose by 5 to 7 microseconds above 3,000 orders a second. One
+run of each build is one sample, and how much two runs of the same build differ was not measured, so the figures at
+the 99th percentile are not firmly established.
+
+**What is wanted.**
+
+1. Measure how much two trading-day runs of the same build differ, so that it is known whether the rise at the 99th
+   percentile is real.
+2. If it is, find where the time goes on the sequencer's thread: keeping the copy, or the send for each record.
+3. Then reduce it. One candidate is to send the follower the records committed together in one send instead of one
+   send each, since a commit usually covers several records at the rates measured; another is to move the sending to
+   a thread other than the one that sequences orders. Neither has been designed or measured.
 
 ### BUG-0215: `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds {#bug_0215}
 
@@ -3578,7 +3614,7 @@ one-time secret or proof that the requester has access to the installed host.
 The first-run route must require a one-time secret generated for the installation and available only to an
 operator with access to the host. Creating the first administrator must consume that secret and close setup.
 
-### BUG-0193: Once the matching engines run in lockstep, a command that crashes one crashes both, and nothing limits what it costs {#bug_0193}
+### BUG-0193: Once both matching engines apply every command, a command that crashes one crashes both, and nothing limits what it costs {#bug_0193}
 
 | | |
 |---|---|
@@ -3765,7 +3801,7 @@ reconciliation is taken for a promotion from follower. Whether an instance is st
 promoted depends on whether it ever followed a leader and took a book over from it, which a lapse
 during its own start does not change.
 
-**What was done.** Step 3 of [matching_engine_lockstep.md](availability/matching_engine_lockstep.md). A follower
+**What was done.** Step 3 of [both_engines_apply_the_wal.md](availability/both_engines_apply_the_wal.md). A follower
 engine applies every command from the WAL, so the book an engine takes the lead with is the one the members were told
 of, whether it is starting or being promoted. `reconciling_from_follower_`, which decided between the two, and the
 setting `open_orders_on_promotion`, which cancelled the book on promotion, are gone, and every catch-up keeps the
@@ -3806,7 +3842,7 @@ B's cancel, record 5,010, is carried out, and neither update reaches the followe
 update for record 5,100 arrives. An hour later the leader dies. The promoted engine catches up from record 5,101.
 Its book lacks A's order and still holds B's.
 
-**What was done.** Steps 1 and 2 of [matching_engine_lockstep.md](availability/matching_engine_lockstep.md). The
+**What was done.** Steps 1 and 2 of [both_engines_apply_the_wal.md](availability/both_engines_apply_the_wal.md). The
 follower's book is no longer a copy. A follower engine asks the leading sequencer to catch it up and to go on sending
 it every committed record, reports included, as the publishers are sent them; it applies every command as the leader
 does, checks that the records' numbers run on with none missing, and sends none of their reports, keeping each until
@@ -3836,7 +3872,7 @@ Both full suites, from fresh WALs, passed: 88 of 88 with the primary engine lead
 `is_primary_` says which instance the configuration names as primary, not which one leads. So the copy flows
 from the configured primary to the configured secondary and never the other way.
 
-**What was done.** Steps 1 and 2 of [matching_engine_lockstep.md](availability/matching_engine_lockstep.md). The
+**What was done.** Steps 1 and 2 of [both_engines_apply_the_wal.md](availability/both_engines_apply_the_wal.md). The
 follower's book is no longer a copy. A follower engine asks the leading sequencer to catch it up and to go on sending
 it every committed record, reports included, as the publishers are sent them; it applies every command as the leader
 does, checks that the records' numbers run on with none missing, and sends none of their reports, keeping each until
@@ -4497,7 +4533,7 @@ catching up, are `ME-EXEC-1`, `ME-EXEC-2` and so on, which the earlier engine ha
 **What is wanted.** Report identifiers that cannot repeat within the trading day, whichever engine issues
 them and however often engines restart. The design in `docs/availability/ha_library_boundary.md`, section
 9, proposes deriving them from the position in the log (the sequence number of the command and the
-report's place among that command's reports), which is also what two engines running in lockstep need.
+report's place among that command's reports), which is also what two engines that both apply every command need.
 A smaller fix would restore the counter from a durable record, but would not make two engines agree.
 
 **What was done.** Phase 7 step 3 ([deterministic_matching_engine.md](availability/deterministic_matching_engine.md),
@@ -5188,8 +5224,8 @@ failures this entry names are not independent, and each has a home of its own:
   machines of the same size it would strike both engines together, since both hold the same book; on the one
   development machine, the kernel killing one engine freed memory for the other, which separate machines would not
   do. Reserving the memory when the engine starts removes the cause.
-- **A command that reaches a defect in the matching engine** crashes both engines at the same command once they run
-  in lockstep, which phases 7 and 8 of the [recovery plan](recovery_plan.md) build. Limiting what such a command
+- **A command that reaches a defect in the matching engine** crashes both engines at the same command once both
+  apply every command, which phases 7 and 8 of the [recovery plan](recovery_plan.md) build. Limiting what such a command
   costs is [BUG-0193](#bug_0193), designed in those phases.
 - **A shared dependency or a shared mistake**, such as one disk serving both machines, or the same wrong
   configuration on both, is a matter of deployment practice and of start-up checks, and has no entry of its own.

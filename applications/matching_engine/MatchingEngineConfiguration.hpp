@@ -127,7 +127,7 @@ struct MatchingEngineConfiguration {
 
     // High availability. When ha_enabled is true the matching engine runs as one of a pair. The instance that leads is
     // sent commands by order routing and sends the reports; the other follows the WAL, applying every command and
-    // keeping its reports until the WAL holds the leader's (docs/availability/matching_engine_lockstep.md). The two are
+    // keeping its reports until the WAL holds the leader's (docs/availability/both_engines_apply_the_wal.md). The two are
     // linked by [peer], which carries the lease requests between them, their role announcements and their settings.
 
     /** @brief Whether this instance is one of a pair. Default false (a single instance). */

@@ -307,7 +307,7 @@ become one thing: the engine is served from a position, up to the last order rel
 - **An engine** asks with `WalFollowRequest`, with `wants_new_records` set. An engine that is to lead
   sets `to_lead`, and once caught up is sent commands by order routing; any other engine, starting or
   following, clears it, and once caught up is sent every record as it is committed
-  ([matching_engine_lockstep.md](matching_engine_lockstep.md), section 2).
+  ([both_engines_apply_the_wal.md](both_engines_apply_the_wal.md), section 2).
 - **A new leader that learns how far the engine got** (`EnginePosition`) serves the engine from the
   record after that, followed by new orders, instead of reading them itself.
 - **Orders that waited in the WAL** because the storage for held orders was full are no longer read back

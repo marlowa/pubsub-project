@@ -382,11 +382,11 @@ Decisions 6, 7 and 8 of the design, which step 4 needed, were taken on 25 Octobe
 **Finished when:** both engines, run on the same WAL, produce identical reports, and the high
 availability scenarios pass.
 
-### Phase 8. Run the matching engine pair in lockstep
+### Phase 8. Have both matching engines apply the WAL
 
 **Agreed** by Andrew on 24 October 2026.
 
-**Design:** [matching_engine_lockstep.md](availability/matching_engine_lockstep.md), whose five decisions Andrew
+**Design:** [both_engines_apply_the_wal.md](availability/both_engines_apply_the_wal.md), whose five decisions Andrew
 took on 28 October 2026. Its steps 1 and 2 are built: a follower engine applies every command from the WAL and keeps
 its reports until the WAL holds the leader's ([BUG-0187](bug_list.md#bug_0187) and [BUG-0188](bug_list.md#bug_0188)
 are fixed). Its step 3 is built: `BookUpdate` and `open_orders_on_promotion` are gone, and a promoted engine keeps every
@@ -474,7 +474,7 @@ which this phase's design must place in the plan.
 **Settled in the design:** the follower compares each of its reports with the leader's while the venue runs,
 so that a difference is noticed at once rather than at a promotion. When one is found, the follower says so and
 does not lead until it has been restarted and has rebuilt its book from the WAL; under principle V11 the leader
-carries on trading (decision 3 of [matching_engine_lockstep.md](availability/matching_engine_lockstep.md)).
+carries on trading (decision 3 of [both_engines_apply_the_wal.md](availability/both_engines_apply_the_wal.md)).
 
 ### Phase 9. One check against sequencing a command twice, and the gateways as clients
 

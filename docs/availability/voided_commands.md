@@ -1,7 +1,7 @@
 # Voided commands, and halting when no matching engine leads {#voided_commands}
 
 This is the second design of phase 8 of the [recovery plan](../recovery_plan.md), agreed as decision 5 of
-[matching_engine_lockstep.md](matching_engine_lockstep.md). It covers:
+[both_engines_apply_the_wal.md](both_engines_apply_the_wal.md). It covers:
 
 - [BUG-0193](../bug_list.md#bug_0193), part 2: a command that crashes both matching engines costs that command, and
   not the venue.
@@ -100,7 +100,7 @@ Where it would apply a voided command, it applies none of it, and answers it ins
 
 The rejection answers the voided command: its WAL record's `answers_seq_no` is the voided command's position. So the
 rules that tell an engine which reports the WAL already holds work unchanged
-([far_back_catch_up.md](far_back_catch_up.md), section 2; [matching_engine_lockstep.md](matching_engine_lockstep.md),
+([far_back_catch_up.md](far_back_catch_up.md), section 2; [both_engines_apply_the_wal.md](both_engines_apply_the_wal.md),
 section 3.2).
 
 When the engine reaches the `VoidCommands` record itself, it applies nothing and sends nothing: it has already acted on
@@ -153,7 +153,7 @@ unusable, so that no engine starts from it.
 
 It cannot undo the command. Its book now differs from the book every engine that knew of the void will build, and its
 reports differ from theirs. So it does what a follower does when its reports differ from the leader's (decision 3 of
-[matching_engine_lockstep.md](matching_engine_lockstep.md)): it says so at Error and by the test event
+[both_engines_apply_the_wal.md](both_engines_apply_the_wal.md)): it says so at Error and by the test event
 `FollowerCannotLead`, stops asking for a lease, and marks its open-order region unusable, so that, restarted, it rebuilds
 its book from the WAL, this time told of the void first.
 
@@ -403,7 +403,7 @@ leading first.
    gives. With the request for a void left out, the engines crash again and the supervisor gives up, so the scenario
    fails. A second scenario names the order to the leading engine only, and requires the follower to take the lead
    having applied it, and no void to be written. The cost of the two stores per command is measured with a trading-day
-   run, as in step 5 of [matching_engine_lockstep.md](matching_engine_lockstep.md).
+   run, as in step 5 of [both_engines_apply_the_wal.md](both_engines_apply_the_wal.md).
 3. **Holding orders while no engine leads (sections 5.1 and 5.2).** Orders stay held, every engine is sent records only
    up to the released position, and new orders are refused once no engine has led for `orders_held_at_most_seconds`.
    The scenarios that change the engine leader measure how long the venue held orders in each, so that the value of

@@ -3314,7 +3314,7 @@ _SCENARIOS: list[Scenario] = [
             #    reports it produced while catching up go nowhere. It applied those records and
             #    reports none of them, because it serves nobody: the leader answered those members.
             #    It keeps them only until the WAL holds the leader's, and sends them only on taking
-            #    the lead (docs/availability/matching_engine_lockstep.md, section 3). Being current
+            #    the lead (docs/availability/both_engines_apply_the_wal.md, section 3). Being current
             #    and being entitled to act are separate things, and reporting is an act -- BUG-0077.
             VerifyStep(
                 expect=expect_follows(ENGINE_LEADING_AT_START),
@@ -4170,7 +4170,7 @@ _SCENARIOS: list[Scenario] = [
     # member's session. Here the gateways are asked to wait 40 seconds before announcing their sessions on a link that
     # comes up, so the restarted primary leads inside that wait. Meanwhile the leading engine's reports are blocked and
     # 1,000 orders are sent, so that it applies them and the member is sent nothing; then it is killed, and the engine
-    # that takes the lead sends the reports it kept of those orders (docs/availability/matching_engine_lockstep.md,
+    # that takes the lead sends the reports it kept of those orders (docs/availability/both_engines_apply_the_wal.md,
     # section 3). The primary must hold each and send it when the session is announced, and the member must receive a
     # New report for every one of the 1,000. See docs/availability/reports_held_until_sessions_are_announced.md.
     #
@@ -4554,7 +4554,7 @@ _SCENARIOS: list[Scenario] = [
     # then killed, and the follower, promoted, must hold exactly the orders the member
     # was told are open: a cancel of each of them is carried out, and a cancel of each order the member was told is
     # cancelled is refused. Both engines apply the WAL themselves, so the break costs the follower nothing: it is sent
-    # every record it missed when the link is mended (docs/availability/matching_engine_lockstep.md).
+    # every record it missed when the link is mended (docs/availability/both_engines_apply_the_wal.md).
     Scenario(
         number=87,
         short_name="engine_link_break_keeps_the_book",
@@ -4573,7 +4573,7 @@ _SCENARIOS: list[Scenario] = [
 
     # 88 -- the reports a leading engine never had written are sent by the engine that takes the lead.
     #
-    # docs/availability/matching_engine_lockstep.md, section 3. A follower engine applies every command but sends none of
+    # docs/availability/both_engines_apply_the_wal.md, section 3. A follower engine applies every command but sends none of
     # their reports; it keeps them until the WAL holds the leader's. The leading engine's sends of reports to the
     # sequencers are blocked, so it applies a thousand orders whose reports never reach the WAL, and it is then killed.
     # The member has been sent nothing for those orders. The engine that takes the lead must send the reports it kept of
@@ -4595,7 +4595,7 @@ _SCENARIOS: list[Scenario] = [
 
     # 89 -- a follower whose reports differ from the leader's does not lead.
     #
-    # docs/availability/matching_engine_lockstep.md, section 4 and decision 3. The follower compares each report it kept
+    # docs/availability/both_engines_apply_the_wal.md, section 4 and decision 3. The follower compares each report it kept
     # with the leader's report of the same command when it arrives in the WAL. The secondary is given an identifier
     # secret of its own, so that the two engines give each order a different identifier and every report differs. The
     # follower must say it cannot lead, because a report differs, and stop asking for a lease; the leader must go on
@@ -7852,7 +7852,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # promoted secondary's replicated book is non-empty.
         #
         # The promoted engine followed the WAL, so its book is the one the members were told of, and it keeps every order
-        # on it: it must cancel nothing, and hold the book (docs/availability/matching_engine_lockstep.md, section 5). A
+        # on it: it must cancel nothing, and hold the book (docs/availability/both_engines_apply_the_wal.md, section 5). A
         # promotion that cancelled would tell members their orders are gone for no reason; one that resumed empty would
         # have lost the book.
         #
@@ -8853,7 +8853,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 "check, that the member was told are open -- OK")
 
         # ── Kept reports: the engine that takes the lead sends what the leader never had written ──
-        # docs/availability/matching_engine_lockstep.md, section 3. The orders are named by their ClOrdIDs, so a New report
+        # docs/availability/both_engines_apply_the_wal.md, section 3. The orders are named by their ClOrdIDs, so a New report
         # sent before the block, for an earlier order, cannot stand in for one of these.
         if scenario.assert_kept_reports_sent_on_promotion:
             log("=== Blocking the leading engine's reports, sending orders, and killing it ===")

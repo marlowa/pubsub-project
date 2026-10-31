@@ -315,7 +315,7 @@ and a half seconds in `ha_test.py` scenario 1, including the new leader's first 
 
 The follower engine follows the sequencer's log: it is sent every committed record, applies every
 command as the leader does, and keeps the reports it produces until the log holds the leader's
-([Running the matching engine pair in lockstep](matching_engine_lockstep.md)). So its book is the
+([Both matching engines apply the WAL](both_engines_apply_the_wal.md)). So its book is the
 leader's after the same record. Each engine also writes its open orders into a memory-mapped region as it accepts them
 and reads it back when it starts ([Open-order checkpoint](../durability/open_order_checkpoint.md)), so
 an engine that restarts has its own record of what it held.

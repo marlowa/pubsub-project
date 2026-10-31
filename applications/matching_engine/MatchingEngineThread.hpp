@@ -404,7 +404,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     bool held_reports_overflowed_{false};
 
     // The reports of the commands this instance has applied as a follower of the WAL, which it does not send, kept until
-    // the WAL holds the leader's reports of the same commands (docs/availability/matching_engine_lockstep.md, section 3).
+    // the WAL holds the leader's reports of the same commands (docs/availability/both_engines_apply_the_wal.md, section 3).
     // A report record answering command N means the WAL holds every report of every command before N, so the kept
     // reports of those commands are dropped when it arrives. The rest are those of the few commands the leader is still
     // answering; on taking the lead, this instance sends those of them the WAL lacks, each marked as a possible repeat.
@@ -483,7 +483,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // be told; one begun because this instance is to lead ends with it leading.
     bool reconciling_to_lead_{false};
 
-    // Following the WAL (docs/availability/matching_engine_lockstep.md, section 2). With high availability on, an engine
+    // Following the WAL (docs/availability/both_engines_apply_the_wal.md, section 2). With high availability on, an engine
     // that is not to lead asks to follow: it is sent every committed record, reports included, and applies every command
     // among them as the leader does, sending none of their reports. Whether the latest request asked to follow.
     bool follows_the_wal_{false};
@@ -602,7 +602,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     /// A report record answering command @p command has arrived, the leader's report as @p size bytes at @p bytes: it is
     /// compared with this instance's kept report of the same command, and the kept reports of every command before it
-    /// are dropped, each that the leader sent no report for being a difference (docs/availability/matching_engine_lockstep.md,
+    /// are dropped, each that the leader sent no report for being a difference (docs/availability/both_engines_apply_the_wal.md,
     /// section 4).
     void account_for_leader_report(int64_t command, const uint8_t* bytes, size_t size);
 
@@ -610,7 +610,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void report_difference(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason);
 
     /// From now on this instance does not lead until it is restarted, and its region is marked unusable so that,
-    /// restarted, it rebuilds its book from the WAL (decision 3 of docs/availability/matching_engine_lockstep.md).
+    /// restarted, it rebuilds its book from the WAL (decision 3 of docs/availability/both_engines_apply_the_wal.md).
     void refuse_to_lead(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason, const char* why);
 
     /// Taking the lead: sends the kept reports of every command after @p reported_through, the last command the WAL holds

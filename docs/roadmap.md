@@ -23,7 +23,7 @@ them, wait until it is finished.
 
 The matching engine already runs as a pair: both engines apply every command from the sequencer's log,
 leadership is by majority lease, and a new leader catches up over the last few records before it acts
-and keeps every resting order ([lockstep](availability/matching_engine_lockstep.md)). The venue has two gateways, FIX
+and keeps every resting order ([both engines apply the WAL](availability/both_engines_apply_the_wal.md)). The venue has two gateways, FIX
 and binary, each run as two instances; that is not the pool of gateways of slice 12+.
 
 See [WAL and High Availability](availability/wal_and_ha.md) for the full design behind slices 1–11.

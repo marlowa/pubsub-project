@@ -198,20 +198,20 @@ trading day and shared by both engines. Question 3 of section 13 gives the reaso
 **How it is done now.** Way B below, built in phase 8: both engines apply every committed command, the
 follower as a follower of the WAL, and only the leading engine's reports are sent on. On promotion the
 follower catches up over the few records still on their way and keeps every order
-([matching_engine_lockstep.md](matching_engine_lockstep.md)).
+([both_engines_apply_the_wal.md](both_engines_apply_the_wal.md)).
 
 **What is now known.** The engine does not match: orders rest until cancelled, and nothing is filled,
 so its book changes only by accepting, refusing and cancelling. Its report times already come from the
 WAL. The obstacles to determinism are the ones in sections 8 and 9: decisions taken by the leader alone,
-and the report counter. Both are needed anyway. So lockstep is within reach, and the three ways to run
+and the report counter. Both are needed anyway. So both engines applying every command is within reach, and the three ways to run
 the pair are:
 
 - **A. As now:** book replication, catch-up on promotion, cancel or keep. No determinism needed, but
   the replication, the reconciliation and the cancel-on-promotion policy all stay.
-- **B. Lockstep, one engine's output used:** both engines apply every committed command; only the
+- **B. Both engines apply every command, one engine's output used:** both engines apply every committed command; only the
   leading engine's reports are forwarded. Book replication goes. On promotion the follower's book is
   already exact, so there is nothing to reconcile and no reason to cancel inherited orders.
-- **C. Lockstep, both engines' output used:** both engines apply every command and both send their
+- **C. Both engines apply every command, both engines' output used:** both engines apply every command and both send their
   reports; the sequencer forwards the first copy of each report, recognised by the identifier of
   section 9, and ignores the second. Engine leadership is not needed at all, and losing an engine costs
   nothing. It doubles the reports sent to the sequencer, and every report must be identical on both,

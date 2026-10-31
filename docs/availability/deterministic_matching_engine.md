@@ -22,7 +22,7 @@ the other. If the two engines could reach different books from the same commands
 losing orders with another.
 
 Phase 7 changes only the engine and the commands it is given. Phase 8 has the follower engine apply every command
-from the WAL itself ([matching_engine_lockstep.md](matching_engine_lockstep.md)).
+from the WAL itself ([both_engines_apply_the_wal.md](both_engines_apply_the_wal.md)).
 
 **Finished when** both engines, run on the same WAL, produce identical reports, and the high availability scenarios
 pass. Section 7 says how that is checked.
@@ -241,7 +241,7 @@ cancels its book or halts on its own initiative any more. The decisions that are
   [BUG-0197](../bug_list.md#bug_0197) asks for; the rejection of the orders held before it is designed in phase 8
   ([far_back_catch_up.md](far_back_catch_up.md), section 5).
 - **Cancelling on promotion** is gone. A promoted engine followed the WAL, so it keeps every order on its book
-  ([matching_engine_lockstep.md](matching_engine_lockstep.md), section 5). The only cancel of the book is the absence
+  ([both_engines_apply_the_wal.md](both_engines_apply_the_wal.md), section 5). The only cancel of the book is the absence
   rule's, a command in the WAL like any other.
 - **A region that cannot be used (decision 8).** This is built. An engine whose region could not be used at a start
   keeps it aside, starts a new one, and asks for every record of the WAL from the first, so that the catch-up rebuilds

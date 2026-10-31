@@ -102,7 +102,7 @@ Both engines apply every command from the sequencer's log, whichever leads: the
 leader is sent commands as they are released, and the follower is sent every
 committed record and applies the commands among them, so it can take over
 holding the book the members were told of, and keeps every resting order. See
-[Running the matching engine pair in lockstep](../availability/matching_engine_lockstep.md).
+[Both matching engines apply the WAL](../availability/both_engines_apply_the_wal.md).
 
 The order book is shown as a database symbol inside each machine box.
 

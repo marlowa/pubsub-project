@@ -142,7 +142,7 @@ With high availability on, two instances run: `matching_engine` (the primary, in
   with none missing, and asks again if not. It sends no reports: it keeps each until the log holds the
   leader's report of the same command, and when it takes the lead it sends those the log lacks, each
   marked `PossResend`. See
-  [Running the matching engine pair in lockstep](../availability/matching_engine_lockstep.md).
+  [Both matching engines apply the WAL](../availability/both_engines_apply_the_wal.md).
 - **The two instances are linked** (`[peer]`, ports 11025 and 11026 in the development environment):
   the link carries the lease requests between them, their role announcements, and the check that
   their settings agree.
@@ -198,7 +198,7 @@ template of that name: it installs only `matching_engine_primary.toml` and
 
 ## See Also
 
-- [Running the matching engine pair in lockstep](../availability/matching_engine_lockstep.md) — how the follower follows the log, and what a promotion does
+- [Both matching engines apply the WAL](../availability/both_engines_apply_the_wal.md) — how the follower follows the log, and what a promotion does
 - [WAL and High Availability](../availability/wal_and_ha.md) — the sequencer pair and the log
 - [Open order checkpoint](../durability/open_order_checkpoint.md) — the book's file, and recovery from it
 - [Sequencer Application](sequencer_app.md) — the sequencer that feeds the engine and delivers its reports

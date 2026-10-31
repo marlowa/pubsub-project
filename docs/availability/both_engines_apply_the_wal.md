@@ -1,8 +1,16 @@
-# Running the matching engine pair in lockstep {#matching_engine_lockstep}
+# Both matching engines apply the WAL {#both_engines_apply_the_wal}
 
 This is the design for phase 8 of the [recovery plan](../recovery_plan.md): both matching engines apply every committed
 command from the WAL themselves, whichever one leads, and only the leading engine's execution reports are sent on to
 the members. It is way B of [ha_library_boundary.md](ha_library_boundary.md), section 10, agreed on 12 October 2026.
+
+Neither engine waits for the other. The leading engine is sent each command by the sequencer as before, and sends its
+reports to the sequencers as before; it sends the follower nothing for any command and needs no answer from it. The
+follower is sent the same committed records separately, as a reader of the WAL, and applies them in its own time. A
+follower that is slow, stopped or dead does not slow the leading engine: it only falls behind, and catches up before it
+could lead. What the follower costs the venue is the sequencer's work in sending it every record, measured in section 7,
+step 5, and recorded as [BUG-0216](../bug_list.md#bug_0216). The two engines are tied in one way only: they run the same code on the same commands, so a command that crashes
+one crashes the other, which [voided_commands.md](voided_commands.md) deals with.
 
 It fixes:
 
@@ -206,8 +214,9 @@ is for, and renaming it, to `[peer]`, is part of step 3.
    refusal to ask and the region refused once marked; each fails when the change is taken out. No scenario restarts
    a follower after a difference to see it rebuild, and none fills the kept reports to their limit. Both full suites
    passed on 29 October 2026: 89 of 89 with the primary engine leading first and 31 of 31 with the secondary first.
-5. **The cost on the sequencer's thread.** Sending every record to the follower engine adds a read back from the WAL
-   and a send for every record, on the sequencer's own thread. It is measured with the order path's latency
+5. **The cost on the sequencer's thread.** Sending every record to the follower engine adds a send for every record, on
+   the sequencer's own thread, from a copy of the record kept as it is written, or read back from the WAL when there is no
+   copy. It is measured with the order path's latency
    instruments on a trading-day run before and after, as the other changes to that thread were, and stated here.
 
    **Measured** on 29 and 31 October 2026, with one run of `profiles/trading_day.toml` on each build, the machine in

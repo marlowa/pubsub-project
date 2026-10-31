@@ -1301,7 +1301,7 @@ _DUPLICATE_CHECK = 'the duplicate check: BUG-0122, replaced in phase 9 of docs/r
 _PUBLISHERS = ('a record sent to a publisher already handed over, read back moments after it was written, once '
                'whatever the number of publishers: BUG-0171')
 _FOLLOWER_ENGINES = ('a record sent to a matching engine that follows the WAL, already handed over, read back moments after '
-                     'it was written, as for the publishers: docs/availability/matching_engine_lockstep.md, section 2.1')
+                     'it was written, as for the publishers: docs/availability/both_engines_apply_the_wal.md, section 2.1')
 _NO_ENGINE = 'with no matching engine connected, to count the orders deferred: BUG-0174'
 _DEFINITION = 'where the reader itself is declared or defined; each use of it is checked where it is used'
 

@@ -1933,7 +1933,7 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     // The book is now assembled: what the region vouched for, plus every record the sequencer held after it. Every order
     // on it is kept, whether this instance is starting or taking the lead: an engine that followed the WAL applied every
     // command the leader applied, so its book is the one the members were told of (R-0018, R-0073;
-    // docs/availability/matching_engine_lockstep.md, section 5).
+    // docs/availability/both_engines_apply_the_wal.md, section 5).
     //
     // Where the region could not be used, R-0123 decides first: the book the catch-up rebuilt is kept if the WAL
     // reached the first command of the day, and otherwise trading halts.

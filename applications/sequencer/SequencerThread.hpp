@@ -224,7 +224,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     SequencerPublisherLinks publisher_links_{*this};
     std::optional<pubsub_itc_fw::WalHandedOverFollowers> handed_over_publishers_;
     // The matching engines that follow the WAL rather than lead, once caught up: each is sent every record as it is
-    // committed, as a publisher is, and applies the commands among them (docs/availability/matching_engine_lockstep.md).
+    // committed, as a publisher is, and applies the commands among them (docs/availability/both_engines_apply_the_wal.md).
     std::optional<pubsub_itc_fw::WalHandedOverFollowers> handed_over_engines_;
 
     // The test events this thread sends, when a test started this instance (docs/availability/test_events.md).

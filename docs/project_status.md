@@ -45,7 +45,7 @@ matter first, by design area:
   agreed in [ha_in_the_library.md](availability/ha_in_the_library.md); the design of the boundary,
   [ha_library_boundary.md](availability/ha_library_boundary.md), is agreed, and phases 3 to 9 of the
   plan carry it out. Open defects
-  include a command that would crash both matching engines once they run in lockstep
+  include a command that would crash both matching engines once both apply every command
   ([BUG-0193](bug_list.md#bug_0193)), the order book growing until the machine runs out of memory
   ([BUG-0028](bug_list.md#bug_0028)), a process death on the same host handled as a machine death ([BUG-0029](bug_list.md#bug_0029)), and a
   venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).

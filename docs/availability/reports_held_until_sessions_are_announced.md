@@ -132,7 +132,7 @@ The options are in section 6, question 2.
   killed and restarted; while it is restarting, the leading engine's reports are blocked and 1,000 orders are sent,
   which it applies without the member being sent anything; then the other sequencer and the leading engine are killed.
   The restarted sequencer leads before it is told of the member's session, and the engine that takes the lead sends
-  the reports it kept of those orders ([matching_engine_lockstep.md](matching_engine_lockstep.md), section 3). It
+  the reports it kept of those orders ([both_engines_apply_the_wal.md](both_engines_apply_the_wal.md), section 3). It
   passes when the sequencer sent `ReportsHeld` and then `HeldReportsReleased` for the member's comp id, no report was
   dropped, and the member received a New report for each of the 1,000. With no wait before the announcements, nothing
   is held and it fails.

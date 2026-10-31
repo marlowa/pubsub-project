@@ -390,7 +390,7 @@ the same command, or that one of the two produced and the other did not.
 Zero in a healthy pair, because the two engines apply the same commands alike. The first
 difference makes the follower stop asking to lead and mark its open-order region unusable, so that,
 restarted, it rebuilds its book from the WAL; the count goes on rising for each later difference
-([matching_engine_lockstep.md](../availability/matching_engine_lockstep.md), section 4).
+([both_engines_apply_the_wal.md](../availability/both_engines_apply_the_wal.md), section 4).
 
 ### `order_round_trip_nanoseconds`
 
