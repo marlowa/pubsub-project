@@ -393,8 +393,9 @@ are fixed). Its step 3 is built: `BookUpdate` and `open_orders_on_promotion` are
 order ([BUG-0143](bug_list.md#bug_0143) is fixed). Its step 4 is built: a follower compares its reports with the
 leader's, and does not lead if they differ. Its step 5 measured the stream to the follower at about 2 microseconds at the
 median, and about 15 at the 99th percentile, of the sequencer's time to send an order on. Every point of the finish
-condition below is met; the second design the phase needs, for [BUG-0193](bug_list.md#bug_0193) and
-[BUG-0197](bug_list.md#bug_0197), is still to be written.
+condition below is met. The second design the phase needs, for [BUG-0193](bug_list.md#bug_0193) and
+[BUG-0197](bug_list.md#bug_0197), is [voided_commands.md](availability/voided_commands.md), whose eight decisions await
+Andrew's review.
 
 **For:** losing the leading matching engine costs a short pause and nothing else. The members' resting
 orders are still on the book afterwards.

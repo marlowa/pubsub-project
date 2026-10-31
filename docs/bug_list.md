@@ -1555,6 +1555,12 @@ Four things the event's shape has to get right:
 a venue that reopens quietly after losing orders conceals the loss, so the event that lifts a halt
 is published because a person decided it was safe, never because an engine reconnected.
 
+**Designed so far.** An operator's means of declaring and lifting a halt, the sequencer keeping whether trading is
+halted, and the gateways refusing orders while it is, are designed in
+[voided_commands.md](availability/voided_commands.md), section 6, because [BUG-0197](#bug_0197) needs them. Telling
+members who are not trading, halting one instrument, and the table of what each phase allows are not; section 6.3 of
+that design proposes where they go.
+
 Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the third state
 necessary rather than tidy. [BUG-0061](#bug_0061), since a non-HA venue has no arbiter and reaches
 these states differently. [BUG-0060](#bug_0060), for the burst of cancels a halt produces.
@@ -3601,6 +3607,9 @@ standby gives no protection against it, by design.
 3. **Make such commands rarer.** Fuzz the engine with random, well-formed commands, checking the book's invariants
    after each, and keep the gateways' strict checks of each field. Phase 7.
 
+**Design.** Part 2 is designed in [voided_commands.md](availability/voided_commands.md), section 4. Parts 1 and 3 are
+built in phase 7.
+
 **Principles.** V6: every command a gateway accepted is answered; V11: a loss of resilience is not a loss of service.
 
 ### BUG-0194: A matching engine that is connected but has stopped working looks healthy to everything that watches it {#bug_0194}
@@ -3685,7 +3694,8 @@ decision, and `trading_phases.md` leaves it open on purpose.
 **What it needs.** The technical event, steps 3 to 5 of [trading_phases.md](venue/trading_phases.md): the
 message, the table of what each phase allows, and their implementation. A way to declare and lift a halt
 ([BUG-0065](#bug_0065)). And rejecting a command through the WAL, which phases 7 and 8 of the
-[recovery plan](recovery_plan.md) build for BUG-0193. It is designed in phase 8.
+[recovery plan](recovery_plan.md) build for BUG-0193. Parts 1, 3 and 4 are designed in
+[voided_commands.md](availability/voided_commands.md), sections 5 and 6.
 
 **Built so far.** Part 2, with the limit on automatic recovery, as one rule
 ([far_back_catch_up.md](availability/far_back_catch_up.md), section 5): past

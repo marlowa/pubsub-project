@@ -325,3 +325,4 @@ reading thread sending them at the start of a catch-up, as it sends `WalFollowSt
 with decisions of its own, and it rests on this one: once both engines follow the WAL, the rejection reaches both
 alike. It also needs a way for an operator to declare and lift a halt ([BUG-0065](../bug_list.md#bug_0065)), which
 this design does not provide. Decision 5 proposes designing them in a second document, once steps 1 to 5 are built.
+That document is [voided_commands.md](voided_commands.md).
