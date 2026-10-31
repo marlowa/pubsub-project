@@ -15,7 +15,7 @@ command in the WAL does. Section 3 designs it, under the name this project alrea
 a command. A voided command is not applied. Its member is sent a rejection instead.
 
 Section 2 says how the venue behaves now. Sections 3 to 6 are the design. Section 7 says what goes and what changes.
-Section 8 is the steps and how each is known to be right. Section 9 holds the decisions it needs from Andrew.
+Section 8 is the steps and how each is known to be right. Section 9 holds its decisions, which Andrew took on 31 October 2026.
 
 ## 1. Why a later command cannot simply be applied in its place
 
@@ -411,6 +411,8 @@ own; with a list, only the sequencer's own thread and the engine do.
 
 **Recommendation: yes.**
 
+**Decided** on 31 October 2026: yes.
+
 ### Decision 2. Does an engine that died applying a command ask for it to be voided, under the conditions of section 4? (Yes or no.)
 
 Section 4. The engine records the command it is applying in its region. On restarting, it asks for the command to be
@@ -418,6 +420,8 @@ voided only if its peer has not applied it; the sequencer voids it only if it is
 report in the WAL answers it or any later command. A crash on a command the sequencer wrote is left to a person.
 
 **Recommendation: yes.**
+
+**Decided** on 31 October 2026: yes.
 
 ### Decision 3. While no engine leads, are orders kept held, so that no engine is sent an order before the leading engine is sent it? (Yes or no.)
 
@@ -428,6 +432,8 @@ leader is sent a first report, not a possible repeat.
 
 **Recommendation: yes.**
 
+**Decided** on 31 October 2026: yes.
+
 ### Decision 4. Does the sequencer stop accepting new orders once no engine has led for 5 seconds, in place of 45 seconds and 250,000 orders? (Yes or no.)
 
 Section 5.2. Five seconds is the longest normal change of engine leader worked out from the lease timings, 4.25
@@ -435,6 +441,8 @@ seconds, with a margin for the new leader's catch-up. Step 3 measures the real c
 fixed. The setting is `[recovery] orders_held_at_most_seconds`.
 
 **Recommendation: yes.**
+
+**Decided** on 31 October 2026: yes.
 
 ### Decision 5. Who sends the rejections of the orders held when trading halts? (Choose one.)
 
@@ -451,6 +459,8 @@ Section 5.4.
   made. It cannot do the same for the cancels of decision 6, because it does not hold the book.
 
 **Recommendation: A.**
+
+**Decided** on 31 October 2026: A.
 
 ### Decision 6. What does the halt for a long recovery do to the orders resting on the book? (Choose one.)
 
@@ -469,6 +479,8 @@ leads. An operator's halt (section 6.2) keeps the book whichever is chosen.
 
 **Recommendation: B.**
 
+**Decided** on 31 October 2026: B.
+
 ### Decision 7. How does an operator's request to halt or lift reach the sequencer? (Choose one.)
 
 Section 6.2.
@@ -483,9 +495,13 @@ Section 6.2.
 **Recommendation: A**, because a halt the venue cannot lift without an optional service would make the venue depend on
 it, which principle V13 rules out. A page in the admin service can be added later, sending the same request.
 
+**Decided** on 31 October 2026: A.
+
 ### Decision 8. Do the parts of BUG-0065 that section 6.3 lists stay in BUG-0065, to be designed in phase 12, with R-0023 marked partly met until then? (Yes or no.)
 
 Section 6.3. They are telling members who are not trading, halting one instrument, and the table of what each phase
 allows. None is needed for BUG-0193 or BUG-0197.
 
 **Recommendation: yes.**
+
+**Decided** on 31 October 2026: yes.
