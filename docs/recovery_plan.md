@@ -390,7 +390,11 @@ availability scenarios pass.
 took on 28 October 2026. Its steps 1 and 2 are built: a follower engine applies every command from the WAL and keeps
 its reports until the WAL holds the leader's ([BUG-0187](bug_list.md#bug_0187) and [BUG-0188](bug_list.md#bug_0188)
 are fixed). Its step 3 is built: `BookUpdate` and `open_orders_on_promotion` are gone, and a promoted engine keeps every
-order ([BUG-0143](bug_list.md#bug_0143) is fixed). The first two points of the finish condition below are met.
+order ([BUG-0143](bug_list.md#bug_0143) is fixed). Its step 4 is built: a follower compares its reports with the
+leader's, and does not lead if they differ. Its step 5 measured the stream to the follower at about 2 microseconds at the
+median, and about 15 at the 99th percentile, of the sequencer's time to send an order on. Every point of the finish
+condition below is met; the second design the phase needs, for [BUG-0193](bug_list.md#bug_0193) and
+[BUG-0197](bug_list.md#bug_0197), is still to be written.
 
 **For:** losing the leading matching engine costs a short pause and nothing else. The members' resting
 orders are still on the book afterwards.

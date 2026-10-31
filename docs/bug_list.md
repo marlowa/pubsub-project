@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 214 |
-| Open | 79 (56 defects, 23 tasks) |
+| Bugs recorded | 215 |
+| Open | 80 (57 defects, 23 tasks) |
 | Closed | 135 |
-| Next id | BUG-0215 |
+| Next id | BUG-0216 |
 
 ## Open bugs by severity
 
-18 high, 49 medium, 12 low.
+18 high, 49 medium, 13 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -92,6 +92,7 @@
 | [BUG-0179](#bug_0179) | low | defect | The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again |
 | [BUG-0185](#bug_0185) | low | defect | Scenarios 59 and 76 stop the leader the moment inject_order has sent, which can beat the leader to reading the last order |
 | [BUG-0214](#bug_0214) | low | defect | `fix_load_client.py` reports messages unreported that the venue answered, because it cancels orders the venue refused and does not count the OrderCancelReject that answers each |
+| [BUG-0215](#bug_0215) | low | defect | `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds |
 
 ---
 
@@ -188,6 +189,25 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0215: `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds {#bug_0215}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-29 |
+| Recorded | 2026-10-31 |
+| How | Measuring the cost of phase 8 with `perf_run.py --profile profiles/trading_day.toml` on the build at b46b0dd |
+| Impact | The run ends "FAIL — the matching engine did not accept every order" and exits 1 although the venue behaved as configured, so the check cannot tell a lost order from a full book |
+
+**What happens.** The profile sends 13,016,000 orders with one in ten cancelled, so about 11.7 million are left
+resting. The open-order region in `dev.toml` holds 2,000,000 (`order_book.region_capacity`), and once it is full the
+engine refuses each new order with a report ("order book region full"), as it is meant to. `perf_run.py` compares the
+leading engine's `orders_processed_total` with every order offered, so it reports 3,147,184 of 13,016,000 accepted as
+a mismatch. `trading_day_load.md` says the region bounds the book; the check does not allow for it.
+
+**What is wanted.** Either the profile keeps the resting orders within the region, with a higher cancel ratio, or the
+check counts the refusals for a full book as answered, and reports how many there were.
 
 ### BUG-0214: `fix_load_client.py` reports messages unreported that the venue answered, because it cancels orders the venue refused and does not count the OrderCancelReject that answers each {#bug_0214}
 

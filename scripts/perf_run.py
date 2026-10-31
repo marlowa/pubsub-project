@@ -89,6 +89,16 @@ FREQ             = 99      # perf sample frequency (Hz)
 BINARY_GATEWAY_HOST = "127.0.0.1"
 ORDERS_PER_BURST    = 1000
 
+# The CPUs the load client is run on (--client-cpus), as taskset takes them, or empty to leave it to the scheduler. A
+# client left to the scheduler lands on the venue's own cores now and then, which makes the 99th percentile vary from
+# run to run by more than a change to the venue does.
+CLIENT_CPUS = ""
+
+
+def client_command(command: list[str]) -> list[str]:
+    """command, run under taskset on CLIENT_CPUS when they are given."""
+    return ["taskset", "-c", CLIENT_CPUS] + command if CLIENT_CPUS else command
+
 # The binary gateway authenticates with SCRAM, so the load client needs credentials.
 # These are provisioned into credentials.toml at the start of each run.
 BINARY_LOAD_COMP_ID_PREFIX = "LOADCLIENT"
@@ -655,7 +665,7 @@ def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients
     log(f"=== Starting binary_load_client, {clients} session(s), {burst} burst(s) each "
         f"({total_orders} orders total) ===")
 
-    command = [
+    command = client_command([
         str(bin_dir / "binary_load_client"),
         "--host", BINARY_GATEWAY_HOST,
         "--port", str(port),
@@ -664,7 +674,7 @@ def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients
         "--sessions", str(clients),
         "--orders-per-burst", str(ORDERS_PER_BURST),
         "--bursts", str(burst),
-    ]
+    ])
     if rate > 0:
         command += ["--rate", str(rate)]
         log(f"  rate limited to {rate} orders/s per session "
@@ -932,7 +942,7 @@ def run_profile_phase(bin_dir: Path, output_dir: Path, phase: dict, sessions: in
         f"({per_session}/s x {sessions} sessions, {orders} orders"
         f"{', cancel ratio ' + str(phase['cancel_ratio']) if phase.get('cancel_ratio') else ''}) ---")
 
-    command = [
+    command = client_command([
         str(bin_dir / "binary_load_client"),
         "--host", BINARY_GATEWAY_HOST,
         "--port", str(port),
@@ -943,7 +953,7 @@ def run_profile_phase(bin_dir: Path, output_dir: Path, phase: dict, sessions: in
         "--bursts", str(bursts),
         "--rate", str(per_session),
         "--first-cl-ord-id", str(first_cl_ord_id),
-    ]
+    ])
     if phase.get("cancel_ratio", 0.0) > 0.0:
         command += ["--cancel-ratio", str(phase["cancel_ratio"])]
 
@@ -1281,7 +1291,15 @@ def main() -> None:
                         help="start on the write-ahead logs, open-order regions and lease records earlier runs left, instead "
                              "of clearing them first. Only for a run that means to measure a restart on that state")
 
+    parser.add_argument("--client-cpus", default="",
+                        help="the CPUs to run the load client on, as taskset -c takes them, for example 0,1. Every latency "
+                             "comparison pins the client, so that it does not land on the venue's cores")
+
     args = parser.parse_args()
+    if args.client_cpus:
+        global CLIENT_CPUS  # pylint: disable=global-statement
+        CLIENT_CPUS = args.client_cpus
+        log(f"  the load client runs on CPUs {CLIENT_CPUS}")
     if args.burst < 1:
         parser.error("--burst must be >= 1")
     if args.clients < 1:

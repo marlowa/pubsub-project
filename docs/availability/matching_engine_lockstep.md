@@ -210,6 +210,30 @@ is for, and renaming it, to `[peer]`, is part of step 3.
    and a send for every record, on the sequencer's own thread. It is measured with the order path's latency
    instruments on a trading-day run before and after, as the other changes to that thread were, and stated here.
 
+   **Measured** on 29 and 31 October 2026, with one run of `profiles/trading_day.toml` on each build, the machine in
+   measurement mode (`measurement_machine.py --on`) and the load client pinned to CPUs 0 and 1
+   (`perf_run.py --client-cpus 0,1`): before, at e1dd1c4, with no stream to the follower; after, at b46b0dd. The
+   percentiles are worked out over each phase's own start and end from Prometheus. In microseconds, before → after:
+
+   | | open auction, 3,500 orders/s | morning steady, 1,050 orders/s |
+   |---|---|---|
+   | sequencer, order out, p50 | 50.4 → 52.8 | 50.5 → 52.2 |
+   | sequencer, order out, p99 | 111 → 126 | 108 → 123 |
+   | sequencer, reactor lap, p99 | 12.0 → 17.3 | 5.0 → 4.5 |
+   | round trip at the gateway, p50 | 135.8 → 139.7 | 141.2 → 136.4 |
+   | round trip at the gateway, p99 | 233 → 244 | 224 → 240 |
+
+   So the stream to the follower costs the sequencer's thread about 2 microseconds at the median of the time to send
+   an order on, and about 15 at the 99th percentile, at these rates; the reactor's lap at the 99th percentile grows by
+   5 to 7 microseconds above 3,000 orders a second (afternoon burst 9.6 → 15.1, close 10.8 → 17.8), and not at 1,050.
+   The round trip's median moves by about 4 or 5 microseconds, up in one phase and down in the other, so no change in
+   it is shown; its 99th percentile rises by 11 to 16. The time to append to the WAL does not change. Only these two phases compare
+   cleanly: from part-way through the long sustained phase the book is full in both runs, every order is refused,
+   and the round trip, which counts accepted orders, is no longer measured ([BUG-0215](../bug_list.md#bug_0215)); the
+   largest tails of both runs, in the first and the sustained phase, fall in the histograms' top bucket in either
+   build. One run of each build is one sample, and how much two runs of the same build differ was not measured here,
+   so a difference of a few microseconds at the 99th percentile is not established by these runs alone.
+
 **Steps 1 and 2 are built.** Scenario 87 passes with either engine leading first. Scenario 88 blocks the leading
 engine's reports, kills it after a thousand orders, and requires a New report of each from the engine that takes the
 lead; with the kept reports not sent it fails. Both full suites passed on 28 October 2026: 88 of 88 with the primary
