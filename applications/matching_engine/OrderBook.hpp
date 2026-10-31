@@ -198,13 +198,35 @@ class OrderBook {
     void set_halted(TradingHalted halted) {
         halted_ = halted == TradingHalted::yes;
         if (store_.is_open()) {
-            store_.set_owner_value(halted_ ? 1 : 0);
+            store_.set_owner_value(halted_value, halted_ ? 1 : 0);
         }
     }
 
     /** @brief Whether trading is halted, as last recorded in this process or found in the region when it was opened. */
     [[nodiscard]] bool halted() const {
         return halted_;
+    }
+
+    /**
+     * @brief Records the position in the WAL of the latest VoidCommands record this engine has been told of, in the region
+     *        beside the published position.
+     *
+     * An engine is told of every void before it reaches the commands the void names, and one that learns of a void only
+     * after applying a command it names marks its region unusable. So whatever this engine was told of, up to this
+     * position, it acted on before reaching the commands, and an engine that restarts from the region knows which of the
+     * voids it is told of are new to it. See docs/availability/voided_commands.md, section 3.4. Kept in memory as well,
+     * so that a book with no region still answers voids_known_through().
+     */
+    void set_voids_known_through(int64_t void_seq_no) {
+        voids_known_through_ = void_seq_no;
+        if (store_.is_open()) {
+            store_.set_owner_value(voids_known_through_value, void_seq_no);
+        }
+    }
+
+    /** @brief As last recorded by set_voids_known_through(), in this process or found in the region when it was opened. */
+    [[nodiscard]] int64_t voids_known_through() const {
+        return voids_known_through_;
     }
 
     [[nodiscard]] size_t size() const {
@@ -301,9 +323,15 @@ class OrderBook {
     [[nodiscard]] const OrderEntry* entry_at(SlotIndex slot) const;
     [[nodiscard]] OrderEntry* entry_at(SlotIndex slot);
 
+    // Which of the region's owner values holds what: see MappedSlotStore::set_owner_value().
+    static constexpr size_t halted_value = 0;
+    static constexpr size_t voids_known_through_value = 1;
+
     pubsub_itc_fw::MappedSlotStore store_;
     // Whether trading is halted; see set_halted().
     bool halted_{false};
+    // The latest void this engine has been told of; see set_voids_known_through().
+    int64_t voids_known_through_{0};
 
     // From an order's identity to the record holding it.
     //

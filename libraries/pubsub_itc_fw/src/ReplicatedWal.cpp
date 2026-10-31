@@ -49,8 +49,8 @@ int64_t ReplicatedWal::open(Clock::time_point now) {
     int64_t first_after_gap = 0;
     const int64_t recovered_seq = wal_.open(
         configuration_.wal_directory, configuration_.wal_segment_size,
-        [this, &expected, &last_before_gap, &first_after_gap](int64_t seq_no, int16_t /*pdu_id*/, const uint8_t* /*payload*/, size_t /*payload_size*/,
-                                                              int64_t /*wall_time_ns*/, int32_t leader_epoch) {
+        [this, &expected, &last_before_gap, &first_after_gap](int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size, int64_t wall_time_ns,
+                                                              int32_t leader_epoch) {
             if (last_before_gap >= 0) {
                 return;
             }
@@ -60,6 +60,7 @@ int64_t ReplicatedWal::open(Clock::time_point now) {
                 return;
             }
             log_epochs_.note_record(seq_no, leader_epoch);
+            events_.read_at_open(seq_no, WalEntryContents{wall_time_ns, leader_epoch, pdu_id, payload, payload_size});
             ++expected;
         },
         WalOpenMode{WalOpenMode::IgnoreSnapshot});

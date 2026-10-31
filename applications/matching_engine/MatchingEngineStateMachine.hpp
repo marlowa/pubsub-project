@@ -19,6 +19,7 @@
 #include "OrderEntry.hpp"
 #include "ReportIdentifiers.hpp"
 #include "SessionIdentity.hpp"
+#include "VoidedCommandList.hpp"
 
 namespace matching_engine {
 
@@ -237,6 +238,55 @@ class MatchingEngineStateMachine {
     TechnicalEventApplied apply_technical_event(const pubsub_itc_fw_app::TechnicalEventView& view, int64_t sequence_number, int32_t trading_date,
                                                 CommandSource source);
 
+    /// What learning of a void meant for this engine. See learn_void.
+    enum class VoidLearned {
+        already_known,       ///< it was in the list already, or an earlier process with this region was told of it
+        before_its_commands, ///< new, and this engine has applied none of the commands it names
+        after_applying_some  ///< new, and this engine has applied commands at or beyond the first it names
+    };
+
+    /**
+     * @brief Adds a void to the ones this engine knows of, so that it answers each command the void names with a
+     * rejection instead of applying it (docs/availability/voided_commands.md, section 3).
+     *
+     * The leading sequencer sends every engine the voids in its WAL before each catch-up and whenever it writes one, so an
+     * engine is told of a void before it reaches the commands the void names. If it has already applied a command at or
+     * beyond the first it names, it cannot undo it: its book now differs from the one every engine told in time builds,
+     * and the result says so, for the caller to stop this engine leading (section 3.4). The position of the latest void
+     * this engine is told of is recorded in the region, so that an engine that restarts from the region can tell a void
+     * it acted on before it died from one that is new to it.
+     *
+     * @param[in] voided The void.
+     * @return What it meant for this engine.
+     */
+    VoidLearned learn_void(const fix_common::VoidedRange& voided);
+
+    /// What applying a VoidCommands record did.
+    struct VoidCommandsApplied {
+        bool applied{false};          ///< false when the record was not applied: one a catch-up delivers again, or out of sequence
+        bool learned_too_late{false}; ///< true when this engine was not told of the void before it reached the commands it names
+    };
+
+    /**
+     * @brief Applies a VoidCommands record from the WAL.
+     *
+     * It changes nothing and answers nothing: an engine told of the void in time has already answered each command it
+     * names. It checks that this engine was told in time; one that was not has applied the commands, and the result says
+     * so, as learn_void does. The book is published to the record's sequence number. A record at or below the highest
+     * acted on is not applied, as for CancelBook.
+     *
+     * @param[in] view            The record's command.
+     * @param[in] sequence_number Its sequence number.
+     * @param[in] source          Whether it is applied live or during a catch-up.
+     * @return What it did.
+     */
+    VoidCommandsApplied apply_void_commands(const pubsub_itc_fw_app::VoidCommandsView& view, int64_t sequence_number, CommandSource source);
+
+    /// The voids this engine has been told of.
+    [[nodiscard]] const fix_common::VoidedCommandList& voids() const {
+        return voids_;
+    }
+
     /// Whether trading is halted. Kept in the region with the orders, so it is as the commands left it.
     [[nodiscard]] bool halted() const {
         return book_.halted();
@@ -256,6 +306,12 @@ class MatchingEngineStateMachine {
     }
 
   private:
+    // Answers a new order or a cancel that a void names, with a rejection saying why, in place of applying it.
+    void refuse_voided_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
+                             const fix_common::SessionIdentity& session, const fix_common::VoidedRange& voided, ReportIsRepeat repeat);
+    void refuse_voided_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
+                              const fix_common::SessionIdentity& session, const fix_common::VoidedRange& voided, ReportIsRepeat repeat);
+
     // Halts trading, without answering, for a command whose sequence number an identifier cannot hold.
     void refuse_to_name(int64_t sequence_number);
 
@@ -391,6 +447,9 @@ class MatchingEngineStateMachine {
     // The highest sequence number of any command applied, live or by a catch-up, or the position a completed catch-up
     // brought the book to, whichever is higher. See sequence_goes_backwards() and applied_before().
     int64_t highest_applied_seq_no_{0};
+
+    // The voids this engine has been told of, by learn_void or by meeting a VoidCommands record.
+    fix_common::VoidedCommandList voids_;
 
     // What the command being applied has done so far: how many reports it has sent, and whether it has changed the book.
     // after_failure reads them to decide whether a failure can still be answered with a rejection.

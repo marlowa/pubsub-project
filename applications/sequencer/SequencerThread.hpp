@@ -49,6 +49,8 @@
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
+#include "VoidFromWal.hpp"
+#include "VoidedCommandList.hpp"
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
 
 namespace sequencer {
@@ -286,6 +288,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         void written_as_follower(int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry) override;
         void discarded_after(int64_t seq_no) override;
         void granted_lease_to_peer(std::chrono::steady_clock::time_point at) override;
+        void read_at_open(int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry) override;
 
       private:
         SequencerThread& owner_;
@@ -722,6 +725,30 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     [[nodiscard]] int32_t trading_date_for(int64_t wall_time_ns);
     // Learns the trading date from a command in the WAL, if it carries one.
     void note_trading_date(const pubsub_itc_fw_app::WalRecordView& view);
+
+    // The voids in this instance's WAL: the commands that a later VoidCommands record says are answered with a rejection
+    // instead of being applied (docs/availability/voided_commands.md, section 3.3). Kept from the WAL in three ways:
+    // read as the replicated WAL opens, noted as this instance writes a void as leader, and noted as it writes its
+    // leader's record of one as follower. Only voids whose records are committed are sent to an engine, because one that
+    // is not may yet be lost with the leader that wrote it, and an engine told of it would void commands that every other
+    // engine applies.
+    fix_common::VoidedCommandList voids_;
+    // The position of a void written as leader and not yet sent to the engines, which are sent the list once its record
+    // is committed; zero when there is none.
+    int64_t void_awaiting_commit_{0};
+    // Keeps a void found by void_from_wal or void_from_command in the record at seq_no. @return true when it was a void
+    // not already held.
+    bool note_void(int64_t seq_no, VoidFromWal found, const fix_common::VoidedRange& voided);
+    // Scratch space for decoding a void's command, apart from decode_arena_buffer(), which may hold the envelope that
+    // the command's bytes are read from. A command of the sequencer's own is at most HeldOrder::own_payload_capacity
+    // bytes, and decoding one needs no more space than that.
+    std::vector<uint8_t> void_decode_arena_ = std::vector<uint8_t>(1024);
+    // Sends one matching engine connection every void whose record is committed, if there are any.
+    void send_voided_commands(const pubsub_itc_fw::ConnectionID& engine);
+    // Sends the voids to every engine connected, once the record of the latest is committed through @p seq_no. Called
+    // before anything committed with it is released to an engine, so that every engine knows of a void before it is sent
+    // a command the void names.
+    void send_voids_committed_through(int64_t seq_no);
 
     /**
      * @brief Writes a command of this sequencer's own into the WAL and sends it to the matching engine once released, as

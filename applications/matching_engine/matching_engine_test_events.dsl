@@ -30,6 +30,8 @@ enum OrderOutcomeKind : i8 {
     CancelRefusedTooLong = 4   # a cancel was refused: its ClOrdID or OrigClOrdID is longer than the book holds
     Cancelled = 5              # a cancel was done: the order it names is off the book
     CancelRefusedUnknown = 6   # a cancel was refused: the session holds no live order with that OrigClOrdID
+    RefusedVoided = 7          # a new order was refused because a later command in the WAL voided it
+    CancelRefusedVoided = 8    # a cancel was refused because a later command in the WAL voided it
 }
 
 # ------------------------------------------------------------
@@ -214,6 +216,7 @@ enum FollowerCannotLeadReason : i8 {
     ReportNotProduced = 2  # the leader sent a report of a command that this engine did not produce
     ReportNotSent = 3      # this engine produced a report of a command that the leader did not send
     KeptReportsFull = 4    # it kept as many reports as it has room for, so it can no longer send all the WAL lacks
+    AppliedVoidedCommand = 5  # it applied a command before learning that a later command in the WAL voided it
 }
 
 message FollowerCannotLead (id=217, version=1)

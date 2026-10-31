@@ -1608,6 +1608,9 @@ void SequencerThread::SequencerReplicatedWalEvents::role_changed(pubsub_itc_fw::
 }
 
 void SequencerThread::SequencerReplicatedWalEvents::committed_through(int64_t seq_no) {
+    // First, before any command is released: a void whose record is now committed, so that every engine knows of it before
+    // it is sent a command the void names.
+    owner_.send_voids_committed_through(seq_no);
     // The orders and the reports waiting for these records may now go: the orders to the matching
     // engine, in order, and the reports to their gateways.
     owner_.release_held_orders_through(seq_no);
@@ -1618,7 +1621,7 @@ void SequencerThread::SequencerReplicatedWalEvents::committed_through(int64_t se
     owner_.send_committed_records_to_publishers(seq_no);
 }
 
-void SequencerThread::SequencerReplicatedWalEvents::written_as_follower(int64_t /*seq_no*/, const pubsub_itc_fw::WalEntryContents& entry) {
+void SequencerThread::SequencerReplicatedWalEvents::written_as_follower(int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry) {
     // Noted as it is written, as the leader notes the records it writes: the command it holds, so that
     // a command sent again after a change of leader is checked against it, and the position up to which
     // the leader had forwarded the engine's reports, so that the kept copies of those reports can be
@@ -1638,11 +1641,75 @@ void SequencerThread::SequencerReplicatedWalEvents::written_as_follower(int64_t 
     owner_.note_logged_command(view);
     owner_.note_trading_date(view);
     owner_.note_forwarded_sample(entry.wall_time_ns, view);
+    fix_common::VoidedRange voided{};
+    const VoidFromWal found = void_from_command(seq_no, view.pdu_id, view.payload.data, view.payload.size, owner_.void_decode_arena_, voided);
+    static_cast<void>(owner_.note_void(seq_no, found, voided));
 }
 
-void SequencerThread::SequencerReplicatedWalEvents::discarded_after(int64_t /*seq_no*/) {
+void SequencerThread::SequencerReplicatedWalEvents::discarded_after(int64_t seq_no) {
     // Identifiers of the discarded records stay in the record of identifiers; a command that matches one
     // of them is checked against the log exactly, and not found, so it is sequenced as new.
+    //
+    // A void whose record is discarded is no longer in the WAL. Its record was never committed, so no engine was told
+    // of it.
+    owner_.voids_.discard_after(seq_no);
+}
+
+void SequencerThread::SequencerReplicatedWalEvents::read_at_open(int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry) {
+    // The voids in the WAL, read here rather than by a read of the WAL of the sequencer's own, so that the list is
+    // complete before this instance serves any engine.
+    fix_common::VoidedRange voided{};
+    static_cast<void>(owner_.note_void(seq_no, void_from_wal(seq_no, entry, owner_.decode_arena_buffer(), voided), voided));
+}
+
+bool SequencerThread::note_void(int64_t seq_no, VoidFromWal found, const fix_common::VoidedRange& voided) {
+    if (found == VoidFromWal::NotDecodable) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: the record at seq={} did not decode -- if it holds a void, it is not kept",
+                   seq_no);
+        return false;
+    }
+    if (found != VoidFromWal::Void || !voids_.add(voided)) {
+        return false;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "SequencerThread: the WAL holds a void at seq={} of the {}commands from seq={} to seq={} ({}); {} void(s) in all", seq_no,
+               voided.new_orders_only ? "new orders among the " : "", voided.first_seq_no, voided.last_seq_no, pubsub_itc_fw_app::to_string(voided.reason),
+               voids_.size());
+    return true;
+}
+
+void SequencerThread::send_voided_commands(const pubsub_itc_fw::ConnectionID& engine) {
+    if (voids_.empty() || !engine.is_valid() || !replicated_wal_.has_value()) {
+        return;
+    }
+    const int64_t committed = replicated_wal_->committed_through();
+    // A day has few voids, and this is sent once for each catch-up, so the list is built here rather than kept.
+    std::vector<pubsub_itc_fw_app::VoidedCommand> committed_voids;
+    for (const fix_common::VoidedRange& voided : voids_.voids()) {
+        if (voided.void_seq_no <= committed) {
+            committed_voids.push_back(
+                pubsub_itc_fw_app::VoidedCommand{voided.void_seq_no, voided.first_seq_no, voided.last_seq_no, voided.new_orders_only, voided.reason});
+        }
+    }
+    if (committed_voids.empty()) {
+        return;
+    }
+    pubsub_itc_fw_app::VoidedCommands message{};
+    message.voids = pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::VoidedCommand>{committed_voids.data(), committed_voids.size()};
+    send_pdu(engine, pubsub_itc_fw_app::VoidedCommands::message_pdu_id, 0, message);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: sent matching engine connection {} the {} void(s) in the WAL",
+               engine.get_value(), committed_voids.size());
+}
+
+void SequencerThread::send_voids_committed_through(int64_t seq_no) {
+    if (void_awaiting_commit_ == 0 || seq_no < void_awaiting_commit_) {
+        return;
+    }
+    void_awaiting_commit_ = 0;
+    send_voided_commands(engine_routing_.active());
+    if (engine_routing_.standby() != engine_routing_.active()) {
+        send_voided_commands(engine_routing_.standby());
+    }
 }
 
 void SequencerThread::SequencerReplicatedWalEvents::granted_lease_to_peer(std::chrono::steady_clock::time_point at) {
@@ -2197,6 +2264,11 @@ void SequencerThread::write_own_command(int16_t inner_pdu_id, const uint8_t* byt
     stamp_reports_forwarded_through(envelope);
     append_envelope_to_wal(envelope);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: wrote command inner_pdu_id={} at seq={}", inner_pdu_id, seq);
+    fix_common::VoidedRange voided{};
+    if (note_void(seq, void_from_command(seq, inner_pdu_id, bytes, size, void_decode_arena_, voided), voided)) {
+        // The engines are sent it once its record is committed: see send_voids_committed_through.
+        void_awaiting_commit_ = seq;
+    }
 
     // Sent to the engine as an order is, once committed, and never ahead of an order already waiting.
     if (replicated_wal_->waits_for_follower() && (held_orders_.full() || first_unheld_seq_ != 0)) {
@@ -3918,6 +3990,11 @@ void SequencerThread::handle_wal_follow_request(const pubsub_itc_fw::ConnectionI
                                                  engine_converter, 0);
         return;
     }
+
+    // Every void, before the reading thread is asked to start: this thread and the reading thread send through the
+    // reactor's one queue of commands, so the engine is sent the list before WalFollowStarted and before any record the
+    // list names (docs/availability/voided_commands.md, section 3.3).
+    send_voided_commands(conn_id);
 
     // Only orders already released to the engine: one still waiting for the follower's
     // acknowledgement, or for a voter's confirmation, is sent live when it is released, and sending it

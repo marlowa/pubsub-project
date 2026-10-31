@@ -26,7 +26,9 @@
  * that command's reports, and keys derived from the secret in --secret-file and the trading date the command carries.
  * That is what the engine does, so given the engines' secret it names every report as the engine did, whichever
  * engine led and however often it restarted (docs/availability/deterministic_matching_engine.md, sections 3 and 7.2).
- * A CancelBook or a TechnicalEvent command is applied as the engine applies it. A report the engine produced by a
+ * A CancelBook, a TechnicalEvent or a VoidCommands command is applied as the engine applies it. Every VoidCommands record
+ * is read first, in a pass of its own, because an engine is told of each void before it reaches the commands the void
+ * names (docs/availability/voided_commands.md, section 3.3). A report the engine produced by a
  * decision of its own, not by a command in the WAL, has no command to replay: the cancel of every order when the
  * engine's region could not be used and the sequencer's record named every order (R-0123).
  *
@@ -315,6 +317,28 @@ int main(int argc, char** argv) {
         std::vector<uint8_t> arena_buffer(1U << 20);
 
         try {
+            // The voids first, as the leading sequencer tells an engine of them before its catch-up.
+            static_cast<void>(
+                pubsub_itc_fw::WalReader::replay(wal_directory, pubsub_itc_fw::WalPosition{}, [&](int64_t record_id, const void* payload, size_t size) {
+                    const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
+                    if (!contents.has_value() || contents->pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
+                        return;
+                    }
+                    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+                    size_t arena_bytes_needed = 0;
+                    size_t bytes_consumed = 0;
+                    pubsub_itc_fw_app::WalRecordView envelope{};
+                    if (!pubsub_itc_fw_app::decode(envelope, contents->bytes, contents->size, bytes_consumed, arena, arena_bytes_needed) ||
+                        envelope.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id)) {
+                        return;
+                    }
+                    pubsub_itc_fw_app::VoidCommandsView command{};
+                    if (!pubsub_itc_fw_app::decode(command, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+                        return;
+                    }
+                    static_cast<void>(machine.learn_void(
+                        fix_common::VoidedRange{record_id, command.first_seq_no, command.last_seq_no, command.new_orders_only, command.reason}));
+                }));
             static_cast<void>(
                 pubsub_itc_fw::WalReader::replay(wal_directory, pubsub_itc_fw::WalPosition{}, [&](int64_t record_id, const void* payload, size_t size) {
                     const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
@@ -350,6 +374,14 @@ int main(int argc, char** argv) {
                         ++commands;
                         static_cast<void>(
                             machine.apply_technical_event(event, record_id, envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
+                    } else if (envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id)) {
+                        pubsub_itc_fw_app::VoidCommandsView command{};
+                        if (!pubsub_itc_fw_app::decode(command, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+                            ++undecodable;
+                            return;
+                        }
+                        ++commands;
+                        static_cast<void>(machine.apply_void_commands(command, record_id, CommandSource::live));
                     } else if (inner == pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) {
                         pubsub_itc_fw_app::NewOrderSingleView order{};
                         if (!pubsub_itc_fw_app::decode(order, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {

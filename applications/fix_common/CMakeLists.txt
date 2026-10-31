@@ -7,11 +7,16 @@ add_executable(fix_common_tests
         tests/SessionThrottlesTest.cpp
         tests/ThrottleHeapUseTest.cpp
         tests/UnansweredCommandStoreTest.cpp
+        tests/VoidedCommandListTest.cpp
 )
 
 target_include_directories(fix_common_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${FIX_DSL_INCLUDE_DIR}
 )
+
+# VoidedCommandList.hpp uses the application's copy of the messages in leader_follower.dsl.
+add_dependencies(fix_common_tests leader_follower_generated)
 
 target_link_libraries(fix_common_tests PRIVATE
         pubsub_itc_fw

@@ -5,6 +5,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <string>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -19,7 +20,7 @@ namespace pubsub_itc_fw {
 
 namespace {
 constexpr uint32_t store_magic = 0x534C4F54u; // "SLOT"
-constexpr uint32_t store_version = 4;
+constexpr uint32_t store_version = 5;
 constexpr uint32_t slot_free = 0;
 constexpr uint32_t slot_live = 1;
 constexpr size_t page_size = 4096;
@@ -39,9 +40,9 @@ struct MappedSlotStore::Header {
     std::atomic<uint32_t> free_head;
     // What the owner's records mean, as the owner numbers it. See open().
     uint32_t payload_format;
-    // A value the owner keeps beside the published position, which this class does not
+    // Values the owner keeps beside the published position, which this class does not
     // interpret. See set_owner_value().
-    std::atomic<int64_t> owner_value;
+    std::atomic<int64_t> owner_values[owner_value_count];
 };
 
 struct MappedSlotStore::SlotHeader {
@@ -146,7 +147,9 @@ bool MappedSlotStore::open(const std::string& path, uint32_t payload_size, SlotI
     hdr->slot_count = slot_count;
     hdr->published.store(0, std::memory_order_relaxed);
     hdr->payload_format = payload_format;
-    hdr->owner_value.store(0, std::memory_order_relaxed);
+    for (std::atomic<int64_t>& value : hdr->owner_values) {
+        value.store(0, std::memory_order_relaxed);
+    }
     for (SlotIndex i = 0; i < slot_count; ++i) {
         SlotHeader* s = slot(i);
         s->state.store(slot_free, std::memory_order_relaxed);
@@ -240,12 +243,20 @@ void MappedSlotStore::release(SlotIndex index) {
     hdr->free_head.store(index, std::memory_order_relaxed);
 }
 
-void MappedSlotStore::set_owner_value(int64_t value) {
-    header()->owner_value.store(value, std::memory_order_relaxed);
+void MappedSlotStore::set_owner_value(size_t index, int64_t value) {
+    if (index >= owner_value_count) {
+        throw PreconditionAssertion("MappedSlotStore::set_owner_value: index " + std::to_string(index) + " is not below " + std::to_string(owner_value_count),
+                                    __FILE__, __LINE__);
+    }
+    header()->owner_values[index].store(value, std::memory_order_relaxed);
 }
 
-int64_t MappedSlotStore::owner_value() const {
-    return header()->owner_value.load(std::memory_order_relaxed);
+int64_t MappedSlotStore::owner_value(size_t index) const {
+    if (index >= owner_value_count) {
+        throw PreconditionAssertion("MappedSlotStore::owner_value: index " + std::to_string(index) + " is not below " + std::to_string(owner_value_count),
+                                    __FILE__, __LINE__);
+    }
+    return header()->owner_values[index].load(std::memory_order_relaxed);
 }
 
 void MappedSlotStore::mark_unusable() {

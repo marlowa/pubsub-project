@@ -219,6 +219,13 @@ void MatchingEngineStateMachine::apply_new_order_unguarded(const pubsub_itc_fw_a
         publish_after_refusal(sequence_number, source);
         return;
     }
+    // A later command in the WAL voided this one. Every engine is told of a void before it reaches the commands it names,
+    // so every engine answers this one alike, and none applies it (docs/availability/voided_commands.md, section 3.2).
+    if (const fix_common::VoidedRange* voided = voids_.voiding(sequence_number, fix_common::VoidedKind::new_order); voided != nullptr) {
+        refuse_voided_order(view, sequence_number, transact_time, session, *voided, repeat);
+        publish_after_refusal(sequence_number, source);
+        return;
+    }
     if (!OrderKey::fits(view.cl_ord_id)) {
         refuse_over_long_order(view, sequence_number, transact_time, session, repeat);
         publish_after_refusal(sequence_number, source);
@@ -476,6 +483,13 @@ void MatchingEngineStateMachine::apply_cancel_unguarded(const pubsub_itc_fw_app:
         publish_after_refusal(sequence_number, source);
         return;
     }
+    // As for a new order. A void of new orders only leaves a cancel to be applied: applied late, it still does what its
+    // member asked.
+    if (const fix_common::VoidedRange* voided = voids_.voiding(sequence_number, fix_common::VoidedKind::cancel); voided != nullptr) {
+        refuse_voided_cancel(view, sequence_number, transact_time, session, *voided, repeat);
+        publish_after_refusal(sequence_number, source);
+        return;
+    }
     if (!OrderKey::fits(view.cl_ord_id) || !OrderKey::fits(view.orig_cl_ord_id)) {
         refuse_over_long_cancel(view, sequence_number, transact_time, session, repeat);
         publish_after_refusal(sequence_number, source);
@@ -659,6 +673,147 @@ void MatchingEngineStateMachine::refuse_over_long_cancel(const pubsub_itc_fw_app
     er.has_text = true;
     er.text = std::string_view(text_buf.data(), std::min(static_cast<size_t>(text_written.size), text_buf.size()));
     send_report(er, sequence_number, session, repeat);
+}
+
+namespace {
+
+// The reason a member is given for a command that was voided, which is all it can be told of why.
+std::string_view voided_order_text(pubsub_itc_fw_app::VoidReason reason) {
+    return reason == pubsub_itc_fw_app::VoidReason::HeldWhenTradingHalted ? "Trading halted while the order was waiting to be matched"
+                                                                          : "Venue could not process the order: the matching engines stopped while applying it";
+}
+
+std::string_view voided_cancel_text(pubsub_itc_fw_app::VoidReason reason) {
+    return reason == pubsub_itc_fw_app::VoidReason::HeldWhenTradingHalted
+               ? "Trading halted while the cancel was waiting to be applied. The order is unchanged"
+               : "Venue could not process the cancel: the matching engines stopped while applying it. The order is unchanged";
+}
+
+} // namespaces
+
+void MatchingEngineStateMachine::refuse_voided_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
+                                                     const fix_common::SessionIdentity& session, const fix_common::VoidedRange& voided, ReportIsRepeat repeat) {
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+               "MatchingEngineStateMachine: refusing NOS seq={} ClOrdID={} (session comp_id='{}') -- voided by the command at seq={} ({}){}", sequence_number,
+               view.cl_ord_id, session.comp_id_view(), voided.void_seq_no, pubsub_itc_fw_app::to_string(voided.reason),
+               repeat == ReportIsRepeat::yes ? " -- during catch-up, reported as a possible repeat" : "");
+    outputs_.order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::RefusedVoided, repeat, sequence_number, {});
+
+    ReportIdentifiers::Buffer exec_id_buf{};
+    pubsub_itc_fw_app::ExecutionReport er{};
+    er.order_id = "NONE";
+    er.exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, 0);
+    er.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
+    er.ord_status = pubsub_itc_fw_app::OrdStatus::Rejected;
+    er.symbol = view.symbol;
+    er.side = view.side;
+    er.leaves_qty = "0";
+    er.cum_qty = "0";
+    er.avg_px = "0.00";
+    er.transact_time = transact_time;
+    er.has_cl_ord_id = true;
+    er.cl_ord_id = view.cl_ord_id;
+    er.has_order_qty = true;
+    er.order_qty = view.order_qty;
+    er.has_ord_rej_reason = true;
+    // Closed to business when trading halted while the order waited, as for an order refused while halted; otherwise
+    // nothing is wrong with the order or the member, and the text says what is.
+    er.ord_rej_reason = voided.reason == pubsub_itc_fw_app::VoidReason::HeldWhenTradingHalted ? pubsub_itc_fw_app::OrdRejReason::ExchangeClosed
+                                                                                              : pubsub_itc_fw_app::OrdRejReason::Other;
+    er.has_text = true;
+    er.text = voided_order_text(voided.reason);
+    send_report(er, sequence_number, session, repeat);
+}
+
+void MatchingEngineStateMachine::refuse_voided_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
+                                                      const fix_common::SessionIdentity& session, const fix_common::VoidedRange& voided,
+                                                      ReportIsRepeat repeat) {
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+               "MatchingEngineStateMachine: refusing OCR seq={} OrigClOrdID={} (session comp_id='{}') -- voided by the command at seq={} ({}){}",
+               sequence_number, view.orig_cl_ord_id, session.comp_id_view(), voided.void_seq_no, pubsub_itc_fw_app::to_string(voided.reason),
+               repeat == ReportIsRepeat::yes ? " -- during catch-up, reported as a possible repeat" : "");
+    outputs_.order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::CancelRefusedVoided, repeat, sequence_number, view.orig_cl_ord_id);
+
+    // The member is told whether the order it named is still open: a refused cancel carries the order's status as the
+    // book holds it, and the order's identifier when it is open.
+    const OrderEntry* found = OrderKey::fits(view.orig_cl_ord_id) ? book_.find(OrderKey::make(session, view.orig_cl_ord_id)) : nullptr;
+    ReportIdentifiers::Buffer exec_id_buf{};
+    ReportIdentifiers::Buffer order_id_buf{};
+    pubsub_itc_fw_app::ExecutionReport er{};
+    er.order_id = found != nullptr ? identifiers_.order_id(order_id_buf, found->placed_at_seq_no) : std::string_view("NONE");
+    er.exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, 0);
+    er.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
+    er.ord_status = found != nullptr ? pubsub_itc_fw_app::OrdStatus::New : pubsub_itc_fw_app::OrdStatus::Rejected;
+    er.symbol = view.symbol;
+    er.side = view.side;
+    er.leaves_qty = found != nullptr ? found->get_order_qty() : std::string_view("0");
+    er.cum_qty = "0";
+    er.avg_px = "0.00";
+    er.transact_time = transact_time;
+    er.has_cl_ord_id = true;
+    er.cl_ord_id = view.cl_ord_id;
+    // Carried so the gateways send the report to the member as an OrderCancelReject.
+    er.has_orig_cl_ord_id = true;
+    er.orig_cl_ord_id = view.orig_cl_ord_id;
+    er.has_order_qty = view.has_order_qty;
+    er.order_qty = view.order_qty;
+    er.has_ord_rej_reason = true;
+    er.ord_rej_reason = found != nullptr ? pubsub_itc_fw_app::OrdRejReason::Other : pubsub_itc_fw_app::OrdRejReason::UnknownOrder;
+    er.has_text = true;
+    er.text = voided_cancel_text(voided.reason);
+    send_report(er, sequence_number, session, repeat);
+}
+
+MatchingEngineStateMachine::VoidLearned MatchingEngineStateMachine::learn_void(const fix_common::VoidedRange& voided) {
+    if (!voids_.add(voided)) {
+        return VoidLearned::already_known;
+    }
+    // A void at or below the position the region records was told to an earlier process with this region, which acted on
+    // it before reaching the commands it names: one that learned of it too late marked the region unusable, and no engine
+    // starts from a region marked so.
+    if (voided.void_seq_no <= book_.voids_known_through()) {
+        return VoidLearned::already_known;
+    }
+    book_.set_voids_known_through(voided.void_seq_no);
+    if (voided.first_seq_no <= highest_applied_seq_no_) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineStateMachine: told of the void at seq={} of the commands from seq={} to seq={} ({}) after applying commands up to seq={} "
+                   "-- any of them it applied cannot be undone, so this engine's book may differ from the one every engine told in time holds",
+                   voided.void_seq_no, voided.first_seq_no, voided.last_seq_no, pubsub_itc_fw_app::to_string(voided.reason), highest_applied_seq_no_);
+        return VoidLearned::after_applying_some;
+    }
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+               "MatchingEngineStateMachine: told of the void at seq={} of the {}commands from seq={} to seq={} ({}) -- each is answered with a rejection "
+               "instead of being applied",
+               voided.void_seq_no, voided.new_orders_only ? "new orders among the " : "", voided.first_seq_no, voided.last_seq_no,
+               pubsub_itc_fw_app::to_string(voided.reason));
+    return VoidLearned::before_its_commands;
+}
+
+MatchingEngineStateMachine::VoidCommandsApplied MatchingEngineStateMachine::apply_void_commands(const pubsub_itc_fw_app::VoidCommandsView& view,
+                                                                                                int64_t sequence_number, CommandSource source) {
+    VoidCommandsApplied result;
+    const bool live = source == CommandSource::live;
+    if (!live && applied_before(sequence_number)) {
+        return result;
+    }
+    if (live && sequence_goes_backwards(sequence_number)) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineStateMachine: VoidCommands seq={} is at or below the highest command acted on -- not applied, because the WAL this "
+                   "engine acted on and the one now sending disagree",
+                   sequence_number);
+        return result;
+    }
+    result.applied = true;
+    // Known already when it was told of it in time, as every engine is. One not told before reaching the commands has
+    // applied them: learn_void finds that, because the commands it names all come before this record.
+    if (voids_.at(sequence_number) == nullptr) {
+        const VoidLearned learned =
+            learn_void(fix_common::VoidedRange{sequence_number, view.first_seq_no, view.last_seq_no, view.new_orders_only, view.reason});
+        result.learned_too_late = learned == VoidLearned::after_applying_some;
+    }
+    book_.publish(sequence_number);
+    return result;
 }
 
 bool MatchingEngineStateMachine::applied_before(int64_t sequence_number) {

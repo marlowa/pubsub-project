@@ -25,6 +25,7 @@ target_sources(sequencer PRIVATE
         SequencerConfigurationLoader.hpp
         SequencerThread.hpp
         Sequencer.hpp
+        VoidFromWal.hpp
 )
 
 install(TARGETS sequencer
@@ -91,6 +92,7 @@ add_executable(sequencer_tests
         tests/LogTailIndexTest.cpp
         tests/WalRecordEncodingTest.cpp
         tests/FullyReportedThroughTest.cpp
+        tests/VoidFromWalTest.cpp
         SequencerConfigurationLoader.cpp
 )
 

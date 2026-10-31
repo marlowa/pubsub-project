@@ -147,6 +147,14 @@ struct Events : public ReplicatedWalEventsInterface {
         discarded_after_seq_nos.push_back(seq_no);
     }
     void granted_lease_to_peer(Clock::time_point /*at*/) override {}
+    void read_at_open(int64_t seq_no, const WalEntryContents& entry) override {
+        read_at_open_seq_nos.push_back(seq_no);
+        read_at_open_bytes.emplace_back(entry.bytes, entry.bytes + entry.size);
+    }
+
+    // Each record open() read, and its bytes.
+    std::vector<int64_t> read_at_open_seq_nos;
+    std::vector<std::vector<uint8_t>> read_at_open_bytes;
 };
 
 // Promises kept in memory, as a disk would keep them across a process restart, written at once.
@@ -526,6 +534,21 @@ TEST(ReplicatedWalTest, AnInstanceRunningAloneLeadsAtOnceAndCommitsEachRecordOnc
     EXPECT_EQ(seq_no, 1);
     EXPECT_EQ(pair.events_[0].committed, 1);
     EXPECT_EQ(pair.wals_[0]->next_seq_no(), 2);
+}
+
+TEST(ReplicatedWalTest, OpeningTheWalShowsTheApplicationEveryRecordItHoldsInOrder) {
+    Pair pair("replicated_wal_read_at_open");
+    pair.start(0, /*ha_enabled=*/false);
+    EXPECT_TRUE(pair.events_[0].read_at_open_seq_nos.empty()) << "a new WAL holds no record";
+    for (uint8_t marker = 10; marker < 40; marker += 10) {
+        static_cast<void>(pair.append(0, marker));
+    }
+    pair.crash(0);
+    pair.start(0, /*ha_enabled=*/false);
+
+    EXPECT_EQ(pair.events_[0].read_at_open_seq_nos, (std::vector<int64_t>{1, 2, 3}));
+    ASSERT_EQ(pair.events_[0].read_at_open_bytes.size(), 3U);
+    EXPECT_EQ(pair.events_[0].read_at_open_bytes[1], (std::vector<uint8_t>{20, 21, 22})) << "the application is shown each record's own bytes";
 }
 
 namespace {

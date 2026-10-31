@@ -806,3 +806,58 @@ message HaltRequest (id=154, version=1)
     i32 epoch                       # the epoch it leads in
     TechnicalEventReason reason
 end
+
+# Why commands were voided.
+enum VoidReason : i8 {
+    EngineDiedApplying = 1      # the matching engines died applying the command, and no engine applied it and went on
+    HeldWhenTradingHalted = 2   # the order was waiting for a matching engine to lead when trading halted
+}
+
+# ------------------------------------------------------------
+#  156 -- VoidCommands
+#  A command in the WAL, carried as the payload of a WalRecord
+#  envelope like a new order or a cancel, and written only by the
+#  leading sequencer. The commands from first_seq_no to
+#  last_seq_no, both included, all before this record, are not
+#  applied: each is answered with a rejection instead. With
+#  new_orders_only, only the new orders among them are, and every
+#  other command in the range is applied as usual. A command the
+#  sequencer wrote itself is never voided.
+#
+#  An engine reaches the commands before it reaches this record,
+#  so it is told of every void beforehand, by VoidedCommands. See
+#  docs/availability/voided_commands.md.
+# ------------------------------------------------------------
+message VoidCommands (id=156, version=1)
+    i64 first_seq_no
+    i64 last_seq_no
+    bool new_orders_only
+    VoidReason reason
+end
+
+# ------------------------------------------------------------
+#  158 -- VoidedCommand
+#  One void, as VoidedCommands carries it. Nested only, and never
+#  sent on its own. It has an id of its own because no two messages
+#  in a file may share one, and SeqNumRange already has 0.
+# ------------------------------------------------------------
+message VoidedCommand (id=158, version=1)
+    i64 void_seq_no      # the position of the VoidCommands record
+    i64 first_seq_no
+    i64 last_seq_no
+    bool new_orders_only
+    VoidReason reason
+end
+
+# ------------------------------------------------------------
+#  157 -- VoidedCommands
+#  Sent by the leading sequencer to a matching engine: every void
+#  in its WAL, at the start of every catch-up before WalFollowStarted,
+#  and to every engine connected to it whenever it writes a new one.
+#  An engine learns of each void this way before it reaches the
+#  commands the void names. See docs/availability/voided_commands.md,
+#  section 3.3.
+# ------------------------------------------------------------
+message VoidedCommands (id=157, version=1)
+    list<VoidedCommand> voids
+end

@@ -669,6 +669,12 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
                                    CommandSource source);
     // Applies a TechnicalEvent command, and tells the test of a halt it set.
     void apply_technical_event_command(const pubsub_itc_fw_app::TechnicalEventView& event, int64_t sequence_number, int32_t trading_date, CommandSource source);
+    // The leading sequencer sent the voids in its WAL (VoidedCommands): each is added to those the state machine knows
+    // of, and one learned of after applying a command it names stops this instance leading
+    // (docs/availability/voided_commands.md, section 3.4).
+    void handle_voided_commands(const pubsub_itc_fw::EventMessage& message);
+    // Applies a VoidCommands command, and stops this instance leading if it was not told of the void in time.
+    void apply_void_commands_command(const pubsub_itc_fw_app::VoidCommandsView& command, int64_t sequence_number, CommandSource source);
     // Tells the test that this instance resumed as leader, and with how many orders.
     void report_resumed_as_leader();
 

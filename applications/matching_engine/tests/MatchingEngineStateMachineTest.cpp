@@ -920,6 +920,128 @@ TEST_F(MatchingEngineStateMachineTest, AnOrderHasTheSameOrderIdLiveAndFromACatch
 
 // ---- the same commands, the same results --------------------------------------------------
 
+// ---- voided commands --------------------------------------------------------------------
+
+fix_common::VoidedRange voiding(int64_t void_seq_no, int64_t first, int64_t last, bool new_orders_only,
+                                pubsub_itc_fw_app::VoidReason reason = pubsub_itc_fw_app::VoidReason::EngineDiedApplying) {
+    return fix_common::VoidedRange{void_seq_no, first, last, new_orders_only, reason};
+}
+
+pubsub_itc_fw_app::VoidCommandsView void_commands(int64_t first, int64_t last, bool new_orders_only) {
+    pubsub_itc_fw_app::VoidCommandsView view{};
+    view.first_seq_no = first;
+    view.last_seq_no = last;
+    view.new_orders_only = new_orders_only;
+    view.reason = pubsub_itc_fw_app::VoidReason::EngineDiedApplying;
+    return view;
+}
+
+// A void the engine was told of before it reached the order: the order is answered with a rejection and never placed.
+TEST_F(MatchingEngineStateMachineTest, AVoidedNewOrderIsRejectedAndNotPlaced) {
+    EXPECT_EQ(machine_.learn_void(voiding(9, 2, 2, false)), MatchingEngineStateMachine::VoidLearned::before_its_commands);
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-2"), 2, taken_at, trading_day, member, CommandSource::live);
+
+    ASSERT_EQ(outputs_.reports.size(), 2U);
+    const RecordedReport& refusal = outputs_.reports[1];
+    EXPECT_EQ(refusal.exec_type, pubsub_itc_fw_app::ExecType::Rejected);
+    EXPECT_EQ(refusal.cl_ord_id, "ORD-2");
+    EXPECT_EQ(refusal.exec_id, exec_id_of(2, 0)) << "named from the voided order's own position, so every engine names it alike";
+    EXPECT_EQ(refusal.sequence_number, 2) << "the rejection answers the voided command";
+    EXPECT_EQ(refusal.ord_rej_reason, pubsub_itc_fw_app::OrdRejReason::Other);
+    EXPECT_EQ(refusal.text, "Venue could not process the order: the matching engines stopped while applying it");
+    EXPECT_FALSE(book_.contains(OrderKey::make(member, "ORD-2")));
+    EXPECT_EQ(outputs_.outcomes.back().outcome, pubsub_itc_fw_app::OrderOutcomeKind::RefusedVoided);
+    EXPECT_EQ(outputs_.accepted, 1);
+}
+
+// An order held when trading halted is refused as closed to business, as an order is while trading is halted.
+TEST_F(MatchingEngineStateMachineTest, AnOrderVoidedBecauseTradingHaltedIsRefusedAsClosed) {
+    static_cast<void>(machine_.learn_void(voiding(9, 1, 3, true, pubsub_itc_fw_app::VoidReason::HeldWhenTradingHalted)));
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+
+    ASSERT_EQ(outputs_.reports.size(), 1U);
+    EXPECT_EQ(outputs_.reports[0].ord_rej_reason, pubsub_itc_fw_app::OrdRejReason::ExchangeClosed);
+    EXPECT_EQ(outputs_.reports[0].text, "Trading halted while the order was waiting to be matched");
+}
+
+// A voided cancel is refused, telling the member that the order it named is still open.
+TEST_F(MatchingEngineStateMachineTest, AVoidedCancelIsRefusedAndTheOrderStaysOpen) {
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+    static_cast<void>(machine_.learn_void(voiding(9, 2, 2, false)));
+    machine_.apply_cancel(cancel_of("ORD-1", "CXL-1"), 2, taken_at, trading_day, member, CommandSource::live);
+
+    ASSERT_EQ(outputs_.reports.size(), 2U);
+    const RecordedReport& refusal = outputs_.reports[1];
+    EXPECT_EQ(refusal.exec_type, pubsub_itc_fw_app::ExecType::Rejected);
+    EXPECT_EQ(refusal.orig_cl_ord_id, "ORD-1") << "carried, so that the gateways send it as an OrderCancelReject";
+    EXPECT_EQ(refusal.ord_status, pubsub_itc_fw_app::OrdStatus::New) << "the order it named is still open";
+    EXPECT_EQ(refusal.order_id, order_id_of(1));
+    EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-1")));
+    EXPECT_EQ(outputs_.outcomes.back().outcome, pubsub_itc_fw_app::OrderOutcomeKind::CancelRefusedVoided);
+}
+
+// A void of new orders only leaves a cancel among them to be carried out: applied late, it still does what was asked.
+TEST_F(MatchingEngineStateMachineTest, AVoidOfNewOrdersOnlyCarriesOutTheCancelsAmongThem) {
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+    static_cast<void>(machine_.learn_void(voiding(9, 2, 3, true, pubsub_itc_fw_app::VoidReason::HeldWhenTradingHalted)));
+    machine_.apply_cancel(cancel_of("ORD-1", "CXL-1"), 2, taken_at, trading_day, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-2"), 3, taken_at, trading_day, member, CommandSource::live);
+
+    ASSERT_EQ(outputs_.reports.size(), 3U);
+    EXPECT_EQ(outputs_.reports[1].exec_type, pubsub_itc_fw_app::ExecType::Canceled);
+    EXPECT_EQ(outputs_.reports[2].exec_type, pubsub_itc_fw_app::ExecType::Rejected);
+}
+
+// Told of a void after applying a command it names, an engine cannot undo it, and says so.
+TEST_F(MatchingEngineStateMachineTest, AVoidLearnedAfterApplyingACommandItNamesIsSaidToBeLearnedTooLate) {
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-2"), 2, taken_at, trading_day, member, CommandSource::live);
+
+    EXPECT_EQ(machine_.learn_void(voiding(9, 2, 2, false)), MatchingEngineStateMachine::VoidLearned::after_applying_some);
+    EXPECT_EQ(machine_.learn_void(voiding(9, 2, 2, false)), MatchingEngineStateMachine::VoidLearned::already_known);
+    EXPECT_EQ(machine_.learn_void(voiding(12, 3, 4, false)), MatchingEngineStateMachine::VoidLearned::before_its_commands);
+    EXPECT_EQ(book_.voids_known_through(), 12) << "the latest void it was told of is kept in the region";
+}
+
+// The VoidCommands record changes nothing for an engine told in time, and is found to be news by one that was not.
+TEST_F(MatchingEngineStateMachineTest, TheVoidCommandsRecordSaysWhetherTheEngineWasToldInTime) {
+    static_cast<void>(machine_.learn_void(voiding(3, 1, 1, false)));
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-2"), 2, taken_at, trading_day, member, CommandSource::live);
+    outputs_.reports.clear();
+
+    const MatchingEngineStateMachine::VoidCommandsApplied in_time = machine_.apply_void_commands(void_commands(1, 1, false), 3, CommandSource::live);
+    EXPECT_TRUE(in_time.applied);
+    EXPECT_FALSE(in_time.learned_too_late);
+    EXPECT_TRUE(outputs_.reports.empty()) << "the record itself answers nothing";
+    EXPECT_EQ(book_.published(), 3);
+
+    const MatchingEngineStateMachine::VoidCommandsApplied too_late = machine_.apply_void_commands(void_commands(2, 2, false), 4, CommandSource::live);
+    EXPECT_TRUE(too_late.applied);
+    EXPECT_TRUE(too_late.learned_too_late) << "ORD-2 was applied before the engine learned of its void";
+}
+
+// An engine restarting from its region knows which voids an earlier process with the region was told of, so a void it
+// acted on before it died is not taken for one learned too late.
+TEST_F(MatchingEngineStateMachineTest, AVoidAnEarlierProcessWasToldOfIsNotNewToTheNext) {
+    static_cast<void>(machine_.learn_void(voiding(9, 2, 2, false)));
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-2"), 2, taken_at, trading_day, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-3"), 3, taken_at, trading_day, member, CommandSource::live);
+    const std::string region = dir_ + "/open_orders.region";
+
+    OrderBook reopened;
+    reopened.open(region, region_capacity, map_capacity);
+    static_cast<void>(reopened.recover());
+    RecordingOutputs second_outputs;
+    MatchingEngineStateMachine restarted{reopened, second_identifiers_, second_outputs, logger_};
+    restarted.note_caught_up_to(reopened.published());
+
+    EXPECT_EQ(restarted.learn_void(voiding(9, 2, 2, false)), MatchingEngineStateMachine::VoidLearned::already_known);
+    EXPECT_EQ(restarted.learn_void(voiding(11, 3, 3, false)), MatchingEngineStateMachine::VoidLearned::after_applying_some);
+}
+
 // Two state machines given the same commands produce the same reports. Phase 7 depends on this holding
 // for every command, across restarts and changes of leader; here it is checked for the simplest case,
 // one sequence of commands applied live to two fresh books.

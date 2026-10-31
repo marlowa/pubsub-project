@@ -425,6 +425,11 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         release_pdu_payload(message);
         return;
     }
+    if (pdu_id == pubsub_itc_fw_app::VoidedCommands::message_pdu_id) {
+        handle_voided_commands(message);
+        release_pdu_payload(message);
+        return;
+    }
 
     if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported sequenced PDU id {} -- dropping", pdu_id);
@@ -461,12 +466,14 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
     }
 
     const int16_t inner_pdu_id = envelope.pdu_id;
-    // A CancelBook or a TechnicalEvent command is gated as an order is: it changes the book or whether trading is halted,
-    // so it is applied live only by the instance that leads, and by a follower as it follows the WAL.
+    // A CancelBook, a TechnicalEvent or a VoidCommands command is gated as an order is: it changes the book, whether
+    // trading is halted, or which commands are applied, so it is applied live only by the instance that leads, and by a
+    // follower as it follows the WAL.
     const bool is_order_pdu = (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) ||
                               (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) ||
                               (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id)) ||
-                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id));
+                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) ||
+                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id));
 
     // ---- Order PDU gating by HA state -------------------------------------
     if (is_order_pdu && ha_role_state_ == MeRole::Follower && !following_the_wal()) {
@@ -551,6 +558,16 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         }
         const CommandSource source = command_source_for(message.seq_no());
         apply_technical_event_command(view, message.seq_no(), envelope.has_trading_date ? envelope.trading_date : 0, source);
+
+    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id)) {
+        pubsub_itc_fw_app::VoidCommandsView view{};
+        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode VoidCommands -- dropping");
+            release_pdu_payload(message);
+            return;
+        }
+        const CommandSource source = command_source_for(message.seq_no());
+        apply_void_commands_command(view, message.seq_no(), source);
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         // A report record: the engine produces reports and applies none. One that follows the WAL is sent every record,
@@ -1502,6 +1519,9 @@ void MatchingEngineThread::recover_open_orders(bool region_existed) {
     // everything the sequencer holds after that has still to be applied -- which is the
     // existing reconciliation path, asked to start here instead of at zero.
     last_replicated_seq_no_ = found.published;
+    // Everything at or below it has been applied, so that a void this engine is told of before its catch-up is judged
+    // against the commands it applied before it stopped (MatchingEngineStateMachine::learn_void).
+    state_machine_.note_caught_up_to(found.published);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: recovered {} open order(s) from the region at seq_no={} in {} ms ({} unfinished record(s) discarded)", found.orders,
@@ -2075,6 +2095,34 @@ void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app
                        "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
     } else {
         halt_reason_.reset();
+    }
+}
+
+void MatchingEngineThread::handle_voided_commands(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::VoidedCommandsView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: failed to decode VoidedCommands -- dropping");
+        return;
+    }
+    for (const pubsub_itc_fw_app::VoidedCommandView& voided : view.voids) {
+        const MatchingEngineStateMachine::VoidLearned learned = state_machine_.learn_void(
+            fix_common::VoidedRange{voided.void_seq_no, voided.first_seq_no, voided.last_seq_no, voided.new_orders_only, voided.reason});
+        if (learned == MatchingEngineStateMachine::VoidLearned::after_applying_some) {
+            refuse_to_lead(voided.void_seq_no, pubsub_itc_fw_app::FollowerCannotLeadReason::AppliedVoidedCommand,
+                           "it applied a command before it was told that a later command in the WAL voided it");
+        }
+    }
+}
+
+void MatchingEngineThread::apply_void_commands_command(const pubsub_itc_fw_app::VoidCommandsView& command, int64_t sequence_number, CommandSource source) {
+    const MatchingEngineStateMachine::VoidCommandsApplied result = state_machine_.apply_void_commands(command, sequence_number, source);
+    if (result.learned_too_late) {
+        refuse_to_lead(sequence_number, pubsub_itc_fw_app::FollowerCannotLeadReason::AppliedVoidedCommand,
+                       "it reached a void without having been told of it, after applying the commands it names");
     }
 }
 

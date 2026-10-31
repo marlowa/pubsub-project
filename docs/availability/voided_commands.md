@@ -122,24 +122,34 @@ It sends the whole list to an engine in a new message, `VoidedCommands`:
 - **at the start of every catch-up**, from its own thread before it hands the request to the reading thread, so that
   the list reaches the engine before `WalFollowStarted` and before the first record. This covers every engine that
   starts, restarts, rebuilds its book, asks again after a break, or is promoted;
-- **to every engine connected to it, whenever it writes a new void**, so that an engine already following the WAL, or
-  in the middle of a catch-up, learns of it at once.
+- **to every engine connected to it, once the record of a new void is committed**, before anything committed with it is
+  released to an engine, so that an engine already following the WAL, or in the middle of a catch-up, learns of it
+  before it is sent any command the void names.
 
-A day has few voids, so the list is small; the engine holds it in memory and does not record it anywhere, because it is
-sent the list again on every catch-up. A sequencer that does not lead sends nothing, as for every other answer to an
-engine.
+The list it sends holds only the voids whose records are committed. A record that is not committed may yet be lost with
+the leader that wrote it, and an engine told of a void that the WAL then does not hold would reject commands that every
+other engine applies.
+
+A day has few voids, so the list is small, and the engine holds it in memory. It is sent the list again on every
+catch-up, so it does not record the list itself, only the position of the latest void it has been told of, in its
+open-order region beside the published position. An engine that restarts from its region needs that position to tell
+a void an earlier process with the region was told of, and acted on before reaching the commands it names, from one
+that is new to it (section 3.4). A sequencer that does not lead sends nothing, as for every other answer to an engine.
 
 Programs that apply the WAL themselves read every `VoidCommands` record first, and then apply the WAL: `wal_replay_check`,
 and the run of both engines on a copy of each scenario's WAL in `ha_test.py` (`run_engines_on_the_wal`), which is sent
-the list by the sequencer the test starts. The matching engine publisher carries the `VoidCommands` record on the orders
-topic with the other commands, so that a subscriber can tell that an order was voided; the rejection travels on the
-execution reports topic like any report.
+the list by the sequencer the test starts. The matching engine publisher's topics carry members' orders and cancels and
+the execution reports, and none of the commands the sequencer writes itself, so a subscriber sees a voided order on the
+orders topic and its rejection on the execution reports topic, as for any order the venue rejects.
 
 ### 3.4 An engine that applied a command before it was voided
 
 An engine can have applied a command before the void naming it was written. It learns this when a `VoidedCommands`
-list arrives naming a command at or below the highest it has applied, or when it reaches the `VoidCommands` record and
-finds it applied a command in the range.
+list arrives with a void new to it whose first command is at or below the highest it has applied, or when it reaches a
+`VoidCommands` record it was never told of. A void is new to the engine unless it is already in the engine's list, or
+its record is at or below the position of the latest void recorded in the engine's region: an earlier process with the
+region was told of that void, and either acted on it before reaching its commands or, told too late, marked the region
+unusable, so that no engine starts from it.
 
 It cannot undo the command. Its book now differs from the book every engine that knew of the void will build, and its
 reports differ from theirs. So it does what a follower does when its reports differ from the leader's (decision 3 of
@@ -149,7 +159,7 @@ its book from the WAL, this time told of the void first.
 
 Sections 4.3 and 5.1 are written so that the engine that leads is never in this position: a command the leading engine
 has gone past is answered by reports in the WAL, which stops the sequencer voiding it, and no engine is sent a held
-order before the leading engine is. Step 1 tests both conditions.
+order before the leading engine is. Steps 2 and 3 test those conditions.
 
 ## 4. A command that crashes both engines (BUG-0193, part 2)
 
@@ -352,9 +362,10 @@ that R-0023 is marked partly met until then.
   reported live, as first reports, by the engine that takes the lead;
 - scenarios 85 and 86, of the halt for a long recovery, require the orders held before the halt to be rejected, and,
   with decision 6 B, the open orders to be cancelled;
-- the open-order region's header holds the command being applied (section 4.1), so the region's format number,
-  `OrderBook::record_format`, is raised, and a region written by an earlier build is refused and the book rebuilt from
-  the WAL, as for any change of format;
+- the open-order region's header holds four values of the engine's own instead of one: whether trading is halted, the
+  position of the latest void the engine has been told of (section 3.3), and, from step 2, the command being applied
+  (section 4.1). The region's format number, `store_version` in `MappedSlotStore.cpp`, is raised, so a region written by
+  an earlier build is refused and the book rebuilt from the WAL, as for any change of format;
 - `trading_phases.md`, which says nothing writes a `TechnicalEvent` and the gateways do not act on one, is brought up to
   date.
 
@@ -369,6 +380,21 @@ leading first.
    fail by applying the command instead; an engine that applied a command before learning of its void refuses to lead
    and marks its region unusable, made to fail by leaving the check out. A unit test that the sequencer's list rebuilt
    from a WAL holding voids equals the list it kept while writing them. Nothing writes a void yet except the tests.
+
+   **Built.** `VoidCommands`, `VoidedCommand` and `VoidedCommands` are in `leader_follower.dsl` (156 to 158), and the list
+   is `fix_common::VoidedCommandList`. The sequencer keeps it as section 3.3 says: the replicated WAL shows the
+   application every record as it reads the whole WAL on opening (`ReplicatedWalEventsInterface::read_at_open`), and
+   the sequencer finds the voids in those records, in the records it writes as leader and in those it writes as
+   follower, with one function (`void_from_wal`, `void_from_command`). It sends the voids whose records are committed
+   to an engine before handing a catch-up to the reading thread, and to both engines when a new void's record is
+   committed, before anything committed with it is released. The engine rejects a voided new order or cancel in
+   `MatchingEngineStateMachine`, keeps the position of the latest void it has been told of in its region
+   (`MappedSlotStore` now keeps four values of the owner's), and refuses to lead, with `FollowerCannotLead` and the
+   reason `AppliedVoidedCommand`, if it learns of a void too late. `wal_replay_check` reads the voids first. Unit tests:
+   five of the list, four of the sequencer's decoding, seven of the state machine, three of the region's values and one
+   of the replicated WAL's reading at opening; each was made to fail by taking out what it tests. Nothing writes a void
+   yet. Both full suites passed on 31 October 2026: 89 of 89 with the primary engine leading first and 31 of 31 with the
+   secondary first.
 2. **Voiding a command that crashed both engines (section 4).** A way to crash an engine on a chosen command, which
    exists only for the tests: the engine aborts when it applies a new order whose ClOrdID a test names in the engine's
    `[test_events]` section, which only a test writes. A new scenario names an order to both engines, places orders before

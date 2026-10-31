@@ -117,6 +117,11 @@ class ReplicatedWalEventsInterface {
     /// This instance has granted its peer a lease, so the peer leads until at least a lease period after
     /// @p at.
     virtual void granted_lease_to_peer(std::chrono::steady_clock::time_point at) = 0;
+
+    /// While open() reads the whole WAL: the record numbered @p seq_no, which the WAL held when it was opened. Called
+    /// for each record in order, up to any gap, so that the application can keep what it needs from the records
+    /// without reading the WAL again. @p entry is valid only during the call.
+    virtual void read_at_open(int64_t seq_no, const WalEntryContents& entry) = 0;
 };
 
 /**

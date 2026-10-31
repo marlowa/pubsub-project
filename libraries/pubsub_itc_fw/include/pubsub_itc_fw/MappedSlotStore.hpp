@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -142,21 +143,27 @@ class MappedSlotStore {
      */
     void mark_unusable();
 
+    /// How many values of the owner's the store's header keeps. See set_owner_value().
+    static constexpr size_t owner_value_count = 4;
+
     /// Keep a value of the owner's in the store's header, beside the published position.
     ///
     /// Nothing here interprets it. It is for state of the owner's that belongs with the records,
-    /// so that the next process to open the store finds it as it was left. Set it before
-    /// publishing the position it belongs with: the store keeps writes in the order they were
-    /// made, so whoever opens it after a death between the two finds the value set and the
-    /// position not yet published, and produces the change again. A new store holds zero.
-    void set_owner_value(int64_t value);
+    /// so that the next process to open the store finds it as it was left. The header keeps
+    /// owner_value_count of them, numbered from zero, each the owner's to give a meaning to. Set one
+    /// before publishing the position it belongs with: the store keeps writes in the order they
+    /// were made, so whoever opens it after a death between the two finds the value set and the
+    /// position not yet published, and produces the change again. A new store holds zero in each.
+    /// An @p index not below owner_value_count is refused with a PreconditionAssertion.
+    void set_owner_value(size_t index, int64_t value);
 
     // ---- reading, after opening an existing store ---------------------------------
 
     [[nodiscard]] int64_t published() const;
 
-    /// The value last given to set_owner_value(), or zero if it never was.
-    [[nodiscard]] int64_t owner_value() const;
+    /// The value last given to set_owner_value() for @p index, or zero if none ever was. An @p index not
+    /// below owner_value_count is refused with a PreconditionAssertion.
+    [[nodiscard]] int64_t owner_value(size_t index) const;
     [[nodiscard]] bool is_live(SlotIndex slot) const;
     [[nodiscard]] int64_t slot_seq_no(SlotIndex slot) const;
 
