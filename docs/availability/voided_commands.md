@@ -550,7 +550,27 @@ leading first.
    lease period for an answer before asking again, at 08:45:02.18, when the arbiter granted the lease at once; its
    catch-up took 2 milliseconds. So about 1.7 seconds of the gap is the engine waiting a lease period after a request
    no voter answered, not the dead engine's lease. With the secondary engine leading first, the same failover held
-   orders for 3.0 seconds. Whether the limit stays at 5 seconds is put to Andrew with these figures.
+   orders for 3.0 seconds. Decision 4 says what follows from these figures.
+
+   **Measured again, with an instance waiting to lead asking every renewal interval.** Both full suites passed on
+   1 November 2026 with that change: 93 of 93 with the primary engine leading first, and 35 of 35 with the secondary
+   first. Each time an engine took orders again after one had led, in milliseconds:
+
+   | | primary engine leading first | secondary engine leading first |
+   |---|---|---|
+   | the leading engine dies and the other leads (scenario 16) | 2,435 | 2,952 |
+   | other single failovers (scenarios 21, 24, 25, 32, 34, 86) | 2,046 to 2,830 | 2,118 to 2,975 |
+   | an engine restarted and promoted a second time (scenarios 78 and 79) | 2,037 to 2,970 | 2,981 |
+   | the only engine killed and restarted while an arbiter dies too (scenario 11) | 4,517 | not run |
+   | both engines dead, then one restarted (the second hold in scenarios 34 and 55) | 4,776 and 5,280 | 2,386 and 6,286 |
+
+   So an ordinary change of engine leader now holds orders for at most 3.0 seconds whichever engine leads first, 2
+   seconds inside the limit, and the 1.7 seconds the engine spent waiting a lease period after an unanswered request are
+   gone: with the primary engine leading first, scenario 16 holds orders for 2.4 seconds where it held them for 4.8. The
+   holds longer than 4 seconds are not changes of leader between two running engines. In scenario 11 the venue has a
+   single engine, which is killed and started again. In the second hold of scenarios 34 and 55 the scenario kills both
+   engines and starts one again about two seconds later, so the hold includes that wait and the new process's start; a
+   venue with no engine running is the case the limit is there to refuse orders in.
 4. **Voiding the held orders at the halt (section 5.3).** Scenarios 85 and 86 require the held new orders to be rejected,
    the held cancels to be carried out, and, with decision 6 B, every open order to be cancelled with a report; made to
    fail by leaving out the `VoidCommands`, when the held orders rest on the book instead. The absence rule goes.
@@ -616,7 +636,8 @@ About 1.7 seconds of the ordinary case is the engine that is to lead waiting a w
 lead that no voter answered, because the voters' promise to the dead engine still stood. Three ways were put: keep 5
 seconds; raise it; or keep 5 seconds and have an instance waiting to lead ask again every renewal interval instead of
 every lease period. **Decided** on 1 November 2026: the third. The change is to the lease code in the library, so it
-applies to every pair, and the changes of leader are measured again once it is made.
+applies to every pair. Measured again with it (section 8, step 3), an ordinary change of engine leader holds orders for
+at most 3.0 seconds, whichever engine leads first, so the limit stays at 5 seconds.
 
 ### Decision 5. Who sends the rejections of the orders held when trading halts? (Choose one.)
 

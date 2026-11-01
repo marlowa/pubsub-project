@@ -37,7 +37,10 @@ namespace pubsub_itc_fw {
  *
  *   - It asks both other voters to let this instance lead whenever the rules allow it to ask.
  *   - While leading it asks both to renew, every renewal interval.
- *   - It gives up a request to lead that has gone unanswered for a lease period, and waits a random
+ *   - While asking to lead it sends the request again every renewal interval, at the same epoch, so
+ *     that a voter able to grant only after a refusal (its promise to a dead leader has run out, or the
+ *     promise of its vote is now on disk) is asked again within a renewal interval of that.
+ *   - It gives up a request to lead that has gone ungranted for a lease period, and waits a random
  *     time before asking again, so that the two instances do not keep asking at the same moment.
  *   - It answers the peer's requests.
  *   - It says when this instance starts leading, stops leading, or agrees that its peer leads, so
@@ -188,13 +191,16 @@ class PairLeaseAgent {
             ask_voters(participant_.epoch(), now);
         }
 
-        if (participant_.state() == LeaseHolder::State::Candidate && peer_is_recording_promise_ && now - last_renewal_ >= timing_.renewal_interval) {
-            // The peer refused only because the promise of its vote was not yet on disk. It will grant
-            // once it is, so this instance asks again now rather than waiting out the lease period.
-            peer_is_recording_promise_ = false;
+        if (participant_.state() == LeaseHolder::State::Candidate && now - last_renewal_ >= timing_.renewal_interval) {
+            // No voter has granted the request yet, so it is sent again every renewal interval, at the same epoch, until
+            // one does or a lease period has passed. A voter that refused because the promise of its vote was not yet on
+            // disk, or because its vote was promised to a leader that has since died, grants it as soon as it may, and
+            // this instance then leads within a renewal interval of that rather than after waiting out the lease period
+            // (docs/availability/voided_commands.md, decision 4). Asking again does not make this instance ask for
+            // longer: it gives up a lease period after it first asked.
             last_renewal_ = now;
-            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "{}: asking again to lead at epoch {}, now that the peer has had time to record its promise",
-                       owner_name_, participant_.epoch());
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "{}: no voter has granted the request to lead at epoch {} yet -- asking again", owner_name_,
+                       participant_.epoch());
             ask_voters(participant_.epoch(), now);
         }
 
@@ -217,7 +223,6 @@ class PairLeaseAgent {
         if (asks_to_lead_ && participant_.may_ask_to_lead(now)) {
             const int32_t epoch = participant_.begin_asking_to_lead();
             asked_at_ = now;
-            peer_is_recording_promise_ = false;
             peer_refused_promised_elsewhere_ = false;
             third_voter_refused_promised_elsewhere_ = false;
             last_renewal_ = now;
@@ -305,7 +310,6 @@ class PairLeaseAgent {
             return Change::Nothing;
         }
         reported_no_leader_ = false;
-        peer_is_recording_promise_ = false;
         resuming_lead_until_ = Clock::time_point{};
         record_leading();
         if (participant_.statement().leader_id != 0) {
@@ -329,9 +333,6 @@ class PairLeaseAgent {
                                     Clock::time_point now) {
         const bool was_leading = participant_.state() == LeaseHolder::State::Leading;
         const int32_t epoch_before = participant_.epoch();
-        if (reason == pubsub_itc_fw::LeaseRefusalReason::recording_promise && voter_id == peer_id_ && participant_.state() == LeaseHolder::State::Candidate) {
-            peer_is_recording_promise_ = true;
-        }
         // An instance resuming the lead it recorded asks again above a newer epoch at once, rather than
         // after the usual random wait. The wait keeps two candidates from colliding again, and there is
         // no second candidate: both other voters promised their votes to this instance. It matters to an
@@ -760,10 +761,6 @@ class PairLeaseAgent {
     int64_t wanted_to_{0};
     Clock::time_point wanted_until_{};
 
-    // Whether the peer refused this instance's request to lead only because it was still writing the
-    // promise of its vote to disk. While asking to lead, this instance then asks again at the next
-    // renewal interval instead of waiting out the lease period.
-    bool peer_is_recording_promise_{false};
     // Whether the peer and the third voter have each refused the present request to lead because their votes are
     // promised elsewhere (on_refusal). Cleared when a request to lead begins.
     bool peer_refused_promised_elsewhere_{false};

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the major version is `0`, the public API is not yet considered stable and may
 change in any release.
 
+## [Unreleased]
+
+### Changed
+
+- **An instance asking to lead sends its request again every renewal interval** until a voter grants it,
+  instead of waiting out a whole lease period after a refusal; it still gives the request up a lease period
+  after it first sent it. A voter whose promise to a dead leader runs out is therefore asked again within a
+  second. With the primary matching engine leading first, an ordinary change of engine leader holds orders
+  for about 2.4 seconds instead of 4.8, and in both full runs of the scenarios no change of leader between
+  two running engines holds them for more than 3.0 seconds, so the 5 second limit on holding orders stays.
+  The TLA+ model `MajorityLeaseHA` allows the repeated request (`CandidateResends`), and TLC finds no state
+  with two leaders.
+
+### Fixed
+
+- `scripts/tla_trace_pages.py` runs TLC with `-fp 0`, because with some randomly chosen fingerprint
+  functions TLC 2.19 fails while printing two of the liveness traces.
+
 ## [0.5.0] - 2026-11-01
 
 New features are frozen while the design is restored, phase by phase, under `docs/recovery_plan.md`.

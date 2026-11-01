@@ -272,8 +272,7 @@ settles it: the application thread never writes and syncs a promise record itsel
   `recording_promise`, meaning "ask me again shortly". When the write has finished, the next request
   is granted. Refusing is always safe: a vote not given cannot help make two leaders.
 - **The candidate, on that refusal,** asks again at its next renewal interval (one second by default),
-  rather than waiting out a whole lease period (three seconds by default) as it does after other
-  refusals.
+  as it does after any refusal, rather than waiting out a whole lease period (three seconds by default).
 - **The record that this instance leads** is written in the background only. It is not needed for
   safety. Without it, an instance restarted within the lease period waits one lease period before
   asking to lead again, instead of asking at once. This is the behaviour the code already describes for

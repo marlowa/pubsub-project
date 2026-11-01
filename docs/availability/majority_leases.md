@@ -96,8 +96,8 @@ vote of just one other voter: either its peer or the third voter.
    background, so in normal operation it is on disk seconds before it is needed. When the record on disk does not
    cover a promise the instance is about to make -- when it first promises its vote to an instance, or when a write
    has not finished in those five seconds -- it refuses the request with the reason `recording_promise` and starts
-   the write that covers it. The candidate asks again at its next renewal interval, rather than waiting out the lease
-   period as it does after other refusals, and is granted once the write has finished. A sync that takes seconds
+   the write that covers it. The candidate asks again at its next renewal interval, as it does after any refusal
+   (rule 10), and is granted once the write has finished. A sync that takes seconds
    therefore never stops an instance answering lease requests ([BUG-0107](../bug_list.md#bug_0107)), and costs only
    the grants it delays. A write whose outcome takes half a second or more to arrive is logged with how long it took.
 
@@ -127,6 +127,17 @@ vote of just one other voter: either its peer or the third voter.
 10. **An instance whose request to lead fails waits before asking again.** In the implementation this wait should vary
     from one attempt to the next, which is the usual way of making repeated collisions unlikely; rule 9 is what
     guarantees they end.
+
+    A request fails when no voter has granted it a lease period after it was first sent. Until then the instance sends
+    it again every renewal interval, at the same epoch. A voter that refused because its vote was promised to a leader
+    that has since died grants as soon as that promise runs out, so the instance leads within a renewal interval of
+    that moment instead of waiting out the rest of the lease period before asking again. With the primary matching
+    engine leading first, the time orders are held when it dies and the secondary takes over is 2.4 seconds, where
+    without the repeated request it is 4.8 ([voided_commands.md](voided_commands.md), section 8, step 3). Sending the
+    request again is safe because it is the same request at the same epoch, and a voter applies the same rules to it as
+    to the first copy: the TLA+ model's `ResendRequest` action, enabled by the constant `CandidateResends`, lets a
+    candidate send it again at any time, and TLC finds no state with two leaders ([findings.md](tla/findings.md),
+    section 11).
 
     An instance that, on one request, is refused by both other voters because each has promised its vote elsewhere
     -- its peer because it holds its own vote, and the third voter because it has promised it to the peer -- has
@@ -285,7 +296,8 @@ nothing has failed.
 
 - The rules are in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/`: `LeaseVoter.hpp` (rules 1, 6 and 7), `LeaseHolder.hpp` (rule 2),
   `LeaseParticipant.hpp` (rules 4, 5, 9 and 10), and `PairLeaseAgent.hpp`, which drives them for an instance: asking,
-  renewing, giving up a request that goes unanswered, answering the peer, and reporting what changed. `LeaseTiming.hpp`
+  renewing, asking again every renewal interval while a request is not granted, giving up a request no voter grants
+  within a lease period, answering the peer, and reporting what changed. `LeaseTiming.hpp`
   reads and checks the timings.
 - The sequencer, the matching engine, the matching engine publisher and the arbiter each own a `PairLeaseAgent`, and
   supply only the connections it sends on. An instance that stops leading stops acting at once.

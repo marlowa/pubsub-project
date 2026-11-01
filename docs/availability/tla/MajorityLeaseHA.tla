@@ -1,12 +1,13 @@
 --------------------------- MODULE MajorityLeaseHA ---------------------------
 (***************************************************************************)
-(* A specification of a proposed design for deciding which of two          *)
+(* A specification of the design for deciding which of two                 *)
 (* instances leads, in which an instance may lead only while a majority of *)
 (* three voters has granted it a lease that has not yet run out. The       *)
 (* design is described in docs/availability/majority_leases.md.            *)
 (*                                                                         *)
-(* This is a design, not a model of the code. The code today is modelled   *)
-(* by SequencerPairHA.tla and ArbiterPoolHA.tla.                           *)
+(* This is the design, not a model of the code; the library implements     *)
+(* it in PairLeaseAgent.hpp. SequencerPairHA.tla and ArbiterPoolHA.tla     *)
+(* model the code at commit 42d29e9.                                       *)
 (*                                                                         *)
 (* The same design serves two places in the venue, so one specification    *)
 (* covers both:                                                            *)
@@ -98,6 +99,10 @@ CONSTANTS
     PeerVotes,             \* an instance votes for its peer at all; FALSE leaves the third
                            \* voter as the only voter other than the instance itself
     CandidateYields,       \* rule 9
+    \* TRUE: a candidate sends its request to lead again, at the epoch it asks in, until a
+    \* voter grants it or it gives up, at most once in each tick, as the code does every
+    \* renewal interval (docs/availability/voided_commands.md, decision 4).
+    CandidateResends,
     \* TRUE adds degraded self-promotion: an instance asking to lead that receives no grant
     \* may lead on its own vote alone. It is not part of the design.
     DegradedPromotion
@@ -247,6 +252,18 @@ SendRenewal(s, v) ==
     /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, backoff, alone, link,
                    crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
 
+(* A candidate sends its request again to voter v, at most once in each   *)
+(* tick: a voter that refused it, because its vote was promised to a leader *)
+(* that has since died, may grant it now.                                    *)
+ResendRequest(s, v) ==
+    /\ CandidateResends
+    /\ up[s] /\ role[s] = "candidate" /\ v \in Others(s) /\ LinkUp(s, v)
+    /\ ~sent[s][v]
+    /\ sent' = [sent EXCEPT ![s][v] = TRUE]
+    /\ msgs' = msgs \cup {Req(s, v, candEpoch[s])}
+    /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, backoff, alone, link,
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
+
 (* A request reaches voter v, which grants or refuses it. An instance that *)
 (* grants its peer a lease becomes, or stays, its follower.                 *)
 ReceiveReq(m) ==
@@ -390,7 +407,7 @@ LinkRecovers(l) ==
 Next ==
     \/ \E s \in Cand : StartCandidacy(s) \/ AbandonCandidacy(s) \/ PromoteAlone(s)
                        \/ LeaseRunsOut(s)
-    \/ \E s \in Cand, v \in Voters : SendRenewal(s, v)
+    \/ \E s \in Cand, v \in Voters : SendRenewal(s, v) \/ ResendRequest(s, v)
     \/ \E m \in msgs : ReceiveReq(m) \/ ReceiveAck(m) \/ ReceiveNack(m) \/ DropToDown(m)
     \/ Tick
     \/ \E v \in Voters : Crash(v) \/ Restart(v)

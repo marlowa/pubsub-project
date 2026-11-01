@@ -264,8 +264,12 @@ def run_tlc(java: str, jar: Path, example: Counterexample) -> str:
         shutil.copy(_TLA_DIR / f'{spec}.tla', work_dir)
         (work_dir / f'{spec}.cfg').write_text(make_config(base, example))
         # One worker, so that the reported counterexample is the same on every run. -metadir keeps
-        # TLC's state files inside the scratch directory.
-        command = [java, '-XX:+UseParallelGC', '-cp', str(jar), 'tlc2.TLC', '-deadlock', '-workers', '1',
+        # TLC's state files inside the scratch directory. -fp 0 fixes the fingerprint function, which TLC
+        # otherwise picks at random on each run: with CandidateResends on, TLC 2.19 finds lease-6 and
+        # lease-7 broken with every fingerprint function, but with some of them, 15 of 44 tried, it then
+        # throws an EOFException or IOException reading its own state graph back while printing the
+        # trace, so the script failed on about one run in four. With function 0 it prints every trace.
+        command = [java, '-XX:+UseParallelGC', '-cp', str(jar), 'tlc2.TLC', '-deadlock', '-workers', '1', '-fp', '0',
                    '-metadir', str(work_dir / 'states'), '-config', f'{spec}.cfg', f'{spec}.tla']
         try:
             result = subprocess.run(command, cwd=work_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -496,6 +500,11 @@ def caption(previous: Optional[dict], state: dict, no_peer_votes: bool) -> str:
         return f'The link {arg} {"fails" if action == "LinkFails" else "recovers"}.'
     if action == 'SendRenewal':
         return 'The leader asks for its lease to be renewed.'
+    if action == 'ResendRequest':
+        asking = [instance for instance in (1, 2) if state['sent'][instance - 1] != previous['sent'][instance - 1]]
+        who = _NAMES[asking[0]] if asking else 'The instance asking to lead'
+        return (f'{who} has not yet been granted a second vote, so it sends its request to lead again, at the same '
+                f'epoch, to a voter that may now be free to grant it.')
     # TLC names every message arrival after the whole next-state relation, so it is worked out from the
     # messages in flight.
     return _describe_arrival(previous, state, no_peer_votes)

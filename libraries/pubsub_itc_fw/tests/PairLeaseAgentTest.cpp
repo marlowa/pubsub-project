@@ -990,8 +990,8 @@ TEST_F(PairLeaseAgentTest, APromiseNotYetOnDiskIsRefusedAndGrantedOnceTheSlowWri
     EXPECT_GT(kept_[1].until, now_ + timing_.period);
 }
 
-// A candidate the peer refuses with recording_promise asks the peer again at its next renewal interval,
-// rather than after the lease period it waits after any other refusal.
+// A candidate the peer refuses with recording_promise asks the peer again at its next renewal interval, rather than
+// waiting out the lease period.
 TEST_F(PairLeaseAgentTest, ACandidateAsksAgainAtTheNextRenewalIntervalAfterRecordingPromise) {
     for (int i = 0; i < 200 && outboxes_[0].to_peer.empty(); ++i) {
         now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
@@ -1011,9 +1011,10 @@ TEST_F(PairLeaseAgentTest, ACandidateAsksAgainAtTheNextRenewalIntervalAfterRecor
     EXPECT_EQ(outboxes_[0].to_peer.front().epoch, request.epoch);
 }
 
-// The control for the test above: after any other refusal the candidate does not ask again within the
-// renewal interval, so the test above does see the quicker retry.
-TEST_F(PairLeaseAgentTest, ACandidateRefusedForAnyOtherReasonDoesNotAskAgainAtTheNextRenewalInterval) {
+// A candidate whose request one voter refused because its vote is promised elsewhere, as an arbiter's is promised to a
+// leader that has just died, asks again at its next renewal interval too, so that it leads within a renewal interval of
+// that promise running out (docs/availability/voided_commands.md, decision 4).
+TEST_F(PairLeaseAgentTest, ACandidateRefusedBecauseAVoteIsPromisedElsewhereAsksAgainAtTheNextRenewalInterval) {
     for (int i = 0; i < 200 && outboxes_[0].to_peer.empty(); ++i) {
         now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
         record(0, agents_[0]->on_tick(now_));
@@ -1023,11 +1024,33 @@ TEST_F(PairLeaseAgentTest, ACandidateRefusedForAnyOtherReasonDoesNotAskAgainAtTh
     const Clock::time_point asked_at = now_;
     outboxes_[0] = Outbox{};
     record(0, agents_[0]->on_refusal(request_peer_id, request.epoch, request.request_id, pubsub_itc_fw::LeaseRefusalReason::promised_elsewhere, now_));
-    while (now_ < asked_at + timing_.renewal_interval * 2) {
+    while (outboxes_[0].to_peer.empty() && now_ < asked_at + timing_.period) {
         now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
         record(0, agents_[0]->on_tick(now_));
     }
-    EXPECT_TRUE(outboxes_[0].to_peer.empty()) << "the candidate asked again within two renewal intervals after an ordinary refusal";
+    ASSERT_EQ(outboxes_[0].to_peer.size(), 1U) << "the candidate did not ask again within the lease period";
+    EXPECT_EQ(now_ - asked_at, timing_.renewal_interval) << "the candidate did not ask again at its next renewal interval";
+    EXPECT_EQ(outboxes_[0].to_peer.front().epoch, request.epoch);
+}
+
+// Asking again does not make the candidate ask for longer: a lease period after it first asked, with no grant, it gives
+// up the request, as it does without asking again.
+TEST_F(PairLeaseAgentTest, ACandidateAskingAgainStillGivesUpALeasePeriodAfterItFirstAsked) {
+    for (int i = 0; i < 200 && outboxes_[0].to_peer.empty(); ++i) {
+        now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
+        record(0, agents_[0]->on_tick(now_));
+    }
+    ASSERT_EQ(outboxes_[0].to_peer.size(), 1U) << "the primary never asked to lead";
+    const Clock::time_point asked_at = now_;
+    while (now_ < asked_at + timing_.period) {
+        now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
+        record(0, agents_[0]->on_tick(now_));
+    }
+    EXPECT_EQ(reported(0, pubsub_itc_fw::LeaseChange::NoLeader), 0) << "the candidate gave up before a lease period had passed";
+    EXPECT_EQ(outboxes_[0].to_peer.size(), 4U) << "the candidate did not ask once and then again at each of three renewal intervals";
+    now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
+    record(0, agents_[0]->on_tick(now_));
+    EXPECT_EQ(reported(0, pubsub_itc_fw::LeaseChange::NoLeader), 1) << "the candidate did not give up a lease period after it first asked";
 }
 
 // While the store takes two seconds to write, starting a write, reading its outcome, and trying to start a
