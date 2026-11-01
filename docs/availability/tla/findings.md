@@ -792,11 +792,65 @@ The counterexamples in 11.4 and 11.5 are reproduced on every install by `scripts
 which also writes a web page that steps through them. The install fails if any of them stops breaking
 its property. Each is rerun with the smallest failure budget that produces it, which is smaller than the
 budgets in the tables above. The script's list of counterexamples gives the exact settings of each. It
-runs TLC with a fixed fingerprint function, `-fp 0`: with `CandidateResends = TRUE`, TLC 2.19 finds
-`lease-6` and `lease-7` broken whichever function it uses, but with some of them, 15 of 44 tried, it
-then fails with an `EOFException` or `IOException` reading its own state graph back while printing the
-trace.
+runs TLC with a fixed fingerprint function, `-fp 0`, because TLC 2.19 can fail while printing a liveness
+counterexample; section 11.8 explains why, and why a fixed function avoids it.
 `docs/orientation/building.md` describes the step and what it needs.
+
+### 11.8 TLC can fail while printing a liveness counterexample
+
+**What happens.** With `CandidateResends = TRUE`, TLC 2.19 finds `lease-6` and `lease-7` broken, as it should, and then
+sometimes stops while printing the counterexample. It reports `java.io.EOFException`, thrown in `GraphNode.read`,
+`java.io.IOException: Read past end of file`, or a `java.util.concurrent.ExecutionException` wrapping one of these. The
+property is still reported broken; only the trace is lost. Without the trace, `scripts/tla_trace_pages.py` cannot write
+the counterexample's page, so the install fails.
+
+**The cause.** This is a race between two threads inside TLC, not a property of the model. It was found by reading the
+compiled classes of TLC 2.19 in `tla2tools.jar` with `javap`; TLC was not instrumented, so the explanation below is read
+from its code and agrees with the measurements, rather than being observed directly.
+
+- `LiveWorker.printTrace` prints a liveness counterexample in two parts at the same time. It gives the first part, the
+  path from an initial state to the start of the cycle, to a second thread, which calls `AbstractDiskGraph.getPath`.
+  Its own thread meanwhile finds the cycle, in `dfsPostFix` and `bfsPostFix`. The second thread exists whatever
+  `-workers` says, so running TLC with one worker does not prevent it.
+- Both parts fetch nodes of the behaviour graph with `AbstractDiskGraph.getNode`. It looks first in an array of 65,536
+  nodes held in memory, at the slot given by the node's fingerprint plus its tableau index, modulo 65,536. Only when
+  that slot holds a different node does it read the node from the graph's file, in `getNodeFromDisk`, which moves the
+  file's position to the node and then reads it.
+- Both threads read through the same `BufferedRandomAccessFile`, and neither takes a lock. When both read the file at
+  once, one thread can move the position the other is about to read from, so the other reads from the wrong place or
+  past the end of the file. That is exactly where the exceptions above are thrown.
+
+**Why the fingerprint function decides how often it happens.** These graphs have a few hundred nodes, so most fit in
+the 65,536 slots without sharing one, and the file is read only for the few that do. Which nodes share a slot depends
+on their fingerprints, and so on the fingerprint function, which TLC chooses at random on each run unless `-fp` names
+one. Whether the two threads then read the file at the same moment depends on timing, so the same function, and even
+the same function with the same `-seed`, fails on some runs and not others. Measured on 1 November 2026, each run the
+same counterexample as the script runs:
+
+| Counterexample | Fingerprint function | Runs | Failed |
+|---|---|---|---|
+| `lease-7-no-peer-vote` | 0 | 100 | 0 |
+| `lease-6-no-yield-livelock` | 0 | 100 | 0 |
+| `lease-7-no-peer-vote` | 129 | 40 | 27 |
+| `lease-7-no-peer-vote` | 13 | 4 | 3 |
+| `lease-7-no-peer-vote` | 13, with the seed held fixed (two seeds, five runs each) | 10 | 8 |
+| `lease-7-no-peer-vote` | chosen at random by TLC | 40 | 9 |
+| `lease-6-no-yield-livelock` | chosen at random by TLC | 40 | 2 |
+
+With `CandidateResends = FALSE` no failure was seen, in 44 runs of each counterexample with 44 different functions; the
+model then has fewer states, and so a different graph.
+
+**How it is avoided, and the limit of that.** `scripts/tla_trace_pages.py` runs TLC with `-fp 0`. Under function 0 no
+run has failed. That lowers the chance of the race to nothing measurable for these graphs; it does not remove the race.
+A change to the model changes its states and their fingerprints, and can put two nodes the trace needs into one slot
+under function 0 too. The script therefore checks for it: when TLC reports the expected property broken and then
+reports an unexpected exception, the script stops with a message naming this section, rather than one saying that TLC
+printed no states. The remedy is then to choose another fixed function. Whether a TLC release later than 2.19 still
+prints a counterexample on two threads through one file has not been checked.
+
+The two threads and the shared file are in TLC's liveness checker, which prints only liveness counterexamples. No
+safety counterexample has failed to print, and the five the script compares with the committed copies are unchanged
+under `-fp 0`.
 
 ## 12. Rule 11: a follower that is behind must not lead
 

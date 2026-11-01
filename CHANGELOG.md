@@ -22,8 +22,10 @@ change in any release.
 
 ### Fixed
 
-- `scripts/tla_trace_pages.py` runs TLC with `-fp 0`, because with some randomly chosen fingerprint
-  functions TLC 2.19 fails while printing two of the liveness traces.
+- `scripts/tla_trace_pages.py` failed on about one run in four, because TLC 2.19 prints a liveness
+  counterexample on two threads that read one file with no lock, and with some fingerprint functions
+  the race makes it fail while printing the trace. The script runs TLC with `-fp 0`, under which no run
+  has failed in 200, and stops with a message naming the race if it ever does (BUG-0220).
 
 ## [0.5.0] - 2026-11-01
 

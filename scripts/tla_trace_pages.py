@@ -265,10 +265,12 @@ def run_tlc(java: str, jar: Path, example: Counterexample) -> str:
         (work_dir / f'{spec}.cfg').write_text(make_config(base, example))
         # One worker, so that the reported counterexample is the same on every run. -metadir keeps
         # TLC's state files inside the scratch directory. -fp 0 fixes the fingerprint function, which TLC
-        # otherwise picks at random on each run: with CandidateResends on, TLC 2.19 finds lease-6 and
-        # lease-7 broken with every fingerprint function, but with some of them, 15 of 44 tried, it then
-        # throws an EOFException or IOException reading its own state graph back while printing the
-        # trace, so the script failed on about one run in four. With function 0 it prints every trace.
+        # otherwise picks at random on each run. TLC 2.19 prints a liveness counterexample on two threads
+        # that read its behaviour graph through one file with no lock, and it reads that file only for a
+        # node whose slot in its in-memory cache another node has taken. Which nodes share a slot depends
+        # on the fingerprint function. With function 0 no run of lease-6 or lease-7 has failed, in 200;
+        # with a function chosen at random, 9 of 40 runs of lease-7 failed. findings.md, section 11.8,
+        # gives the evidence, and check_broken reports such a failure for what it is.
         command = [java, '-XX:+UseParallelGC', '-cp', str(jar), 'tlc2.TLC', '-deadlock', '-workers', '1', '-fp', '0',
                    '-metadir', str(work_dir / 'states'), '-config', f'{spec}.cfg', f'{spec}.tla']
         try:
@@ -306,6 +308,12 @@ def violation_text(example: Counterexample, output: str) -> str:
 def check_broken(example: Counterexample, output: str) -> None:
     """Fail unless TLC reported the expected property broken."""
     broken = broken_property(example, output)
+    if broken == example.broken and 'TLC threw an unexpected exception' in output:
+        raise TraceError(f'{example.name}: TLC found {example.broken} broken, as expected, but then failed while printing '
+                         f'the counterexample. This is a race in TLC itself, between the two threads that print a '
+                         f'liveness counterexample, described in docs/availability/tla/findings.md, section 11.8. '
+                         f'Change the fingerprint function given to TLC with -fp in run_tlc to one under which every '
+                         f'counterexample prints, and run again.')
     if broken == example.broken:
         return
     if 'No error has been found' in output:

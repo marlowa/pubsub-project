@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 219 |
+| Bugs recorded | 220 |
 | Open | 80 (56 defects, 24 tasks) |
-| Closed | 139 |
-| Next id | BUG-0220 |
+| Closed | 140 |
+| Next id | BUG-0221 |
 
 ## Open bugs by severity
 
@@ -3811,6 +3811,35 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0220: `tla_trace_pages.py` failed on about one run in four, because TLC 2.19 can fail while printing a liveness counterexample {#bug_0220}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-01 |
+| Recorded | 2026-11-01 |
+| Fixed | 2026-11-01 -- the script runs TLC with a fixed fingerprint function, `-fp 0`, under which no run has failed in 200, and says plainly when TLC fails this way |
+| How | Running the script after adding `CandidateResends` to `MajorityLeaseHA.tla` |
+| Impact | The install, which runs the script, failed at random. No result of the model was wrong: TLC reported the property broken each time, and lost only the trace |
+
+**What happens.** With `CandidateResends = TRUE`, TLC finds the counterexamples `lease-6-no-yield-livelock` and
+`lease-7-no-peer-vote` broken, as it should, and then sometimes stops while printing the trace, with an
+`EOFException` in `GraphNode.read`, an `IOException` saying it read past the end of a file, or an
+`ExecutionException` wrapping one of them. Without the trace the script cannot write the counterexample's page.
+
+**The cause** is a race between two threads in TLC itself. TLC prints a liveness counterexample on two threads at once,
+and both read nodes of the behaviour graph through one file with no lock, so one thread's seek can move the position
+the other is reading from. TLC reads that file only for a node whose slot in its in-memory cache another node has
+taken, and which nodes share a slot depends on the fingerprint function, which TLC otherwise chooses at random on each
+run. So some functions fail often (129: 27 of 40 runs) and others never have (0: none of 200), and the same function
+fails on some runs and not others. [findings.md, section 11.8](availability/tla/findings.md) gives the evidence, read
+from TLC's compiled code with `javap`, and the measurements.
+
+**Why the fix is only partial.** A fixed function makes the race unlikely for these graphs; it does not remove it. A
+change to the model can make function 0 fail too. The script then stops with a message naming the race and saying to
+choose another function, instead of one saying that TLC printed no states. Made to fail on purpose: with `-fp 129` in
+place of `-fp 0`, the script stops with that message.
 
 ### BUG-0219: Five scripts need TOML support to answer `--help`, so the build stops on Python 3.8 before compiling anything, and the RHEL8 compiler is never reached {#bug_0219}
 
