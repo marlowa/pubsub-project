@@ -33,7 +33,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 80 open entries, 18 of them high severity. The ones most likely to
+The [bug list](bug_list.md) holds 81 open entries, 18 of them high severity. The ones most likely to
 matter first, by design area:
 
 - **The specification is mostly untested.** 31 of 151 requirements are verified by a scenario

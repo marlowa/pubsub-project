@@ -224,7 +224,7 @@ under way: its first design is built, and the first three of the five steps of i
 
 ### Fixed
 
-Eighty bugs are closed since 0.4.0, and 127 recorded; `docs/bug_list.md` describes each. Among them:
+Eighty bugs are closed since 0.4.0, and 128 recorded; `docs/bug_list.md` describes each. Among them:
 
 - **A matching engine whose lease ran out and was at once granted another stayed a follower while it led**
   (BUG-0218): it took the answer to its request to lead as the end of following, and acted on no order the
@@ -344,7 +344,7 @@ Eighty bugs are closed since 0.4.0, and 127 recorded; `docs/bug_list.md` describ
 
 ### Known limitations
 
-- **80 bugs are open, 18 of them high severity**; `docs/bug_list.md` lists them.
+- **81 bugs are open, 18 of them high severity**; `docs/bug_list.md` lists them.
 
 ## [0.4.0] - 2026-09-14
 

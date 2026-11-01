@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 218 |
-| Open | 80 (56 defects, 24 tasks) |
+| Bugs recorded | 219 |
+| Open | 81 (57 defects, 24 tasks) |
 | Closed | 138 |
-| Next id | BUG-0219 |
+| Next id | BUG-0220 |
 
 ## Open bugs by severity
 
-18 high, 48 medium, 14 low.
+18 high, 49 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -79,6 +79,7 @@
 | [BUG-0209](#bug_0209) | medium | task | No scenario reaches the halt when a matching engine cannot account for the orders the venue holds |
 | [BUG-0210](#bug_0210) | medium | defect | A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again |
 | [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
+| [BUG-0219](#bug_0219) | medium | defect | Five scripts need TOML support to answer `--help`, so the build stops on Python 3.8 before compiling anything, and the RHEL8 compiler is never reached |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -189,6 +190,34 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0219: Five scripts need TOML support to answer `--help`, so the build stops on Python 3.8 before compiling anything, and the RHEL8 compiler is never reached {#bug_0219}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-14 |
+| Recorded | 2026-11-01 |
+| How | `release_check.py`'s `rocky` stage, for release 0.5.0, as for release 0.4.0, whose release notes describe the failure; no entry was made in this list then |
+| Impact | The venue is not built or tested with gcc 8.5, the compiler of the RHEL8 target, by any release check. Whether the code compiles with it is unknown |
+
+**What happens.** `build.py` runs every top-level script with `--help` under `python3 -S`, which leaves out
+site-packages, so that a script importing a third-party module at module scope fails the build (the reason is under
+[BUG-0044](#bug_0044)). `cpu_audit.py`, `deploy.py`, `devenv.py`, `perf_run.py` and `release.py` import `tomllib` at
+module scope, falling back to the `tomli` package, and exit with "Python 3.11+ or the 'tomli' package is required to
+parse TOML" when neither can be imported. `callgrind_run.py` imports `perf_run` and `devenv`, and fails the same way.
+`tomllib` is part of the standard library from Python 3.11. The Rocky 8 container's Python is 3.8, so `tomli` is
+needed there, and under `python3 -S` it cannot be found even if installed. The build stops at this check, before it
+compiles anything.
+
+The RHEL8 target's own Python is 3.12, which has `tomllib`, so the scripts run there; it is the build in the container,
+the only build with gcc 8.5, that stops.
+
+**What is wanted.** Each of the five scripts imports `tomllib` (or `tomli`) where it first reads a TOML file, not at
+module scope, as the `plot_*.py` scripts do with their plotting modules. Then the `rocky` stage is run to the end, and
+whatever gcc 8.5 then reports is recorded.
+
+**Principles.** None directly; the RHEL8 target is the platform the venue is built for.
 
 ### BUG-0216: Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path {#bug_0216}
 
@@ -3585,8 +3614,26 @@ had delivered when it was paused ("connection 0 delivered PDUs while paused"). T
 change being built touched nothing in the reactor or in how a connection is paused, and the test had passed in every
 earlier run of the developer loop that day.
 
+**Seen again, 1 November 2026.** The `coverage` stage of the release check for 0.5.0 failed at
+`PauseReadingIntegrationTest.APausedInboundConnectionDeliversNothingUntilItIsResumed`. Run ten times each, the suite's
+tests failed in four runs of the coverage build and in none of the ordinary build, with the machine's load about 1.5:
+three times at line 392 (about 27,700 PDUs counted 200 ms after the pause, and about 139,000 counted 800 ms later), and
+once at line 453 in `OtherConnectionsAndTimersAreServedWhileOneIsPaused` (27,102 then 53,467), where the receiver's
+timer also fired only 3 times where more than 50 were expected. The coverage build's code runs several times slower,
+which points at timing.
+
+In both tests the receiver sets `paused_now` on its own thread as soon as it calls `pause_reading`, which only queues a
+command for the reactor. Until the reactor acts on that command it goes on reading the connection, and every PDU it
+reads is queued for the receiver, which counts it when it handles it. So the count can go on rising after `paused_now`
+for as long as the reactor takes to act on the command and the receiver takes to work through what was queued; the
+tests allow 200 ms for both. That would be a fault in the tests, not in the reactor, but it is not yet shown: the
+timer firing 3 times in place of 50 says the receiver's thread was busy for most of a second, which fits it working
+through a long queue, and does not rule out the reactor reading a paused connection.
+
 **What is wanted.** The cause found: whether the reactor reads a paused connection, for instance data already read
 into a buffer before the pause took effect, or whether the test samples the count before the pause has taken effect.
+A test event or counter from the reactor saying when it stopped watching the connection, and how many PDUs it had read
+from it by then, would tell the two apart.
 
 **Principles.** None directly; the reactor's pausing of a connection is what the gateways rely on to hold back a member.
 
