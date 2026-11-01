@@ -22,3 +22,18 @@ message EngineSettings(id=601)
     # report differently.
     i64             identifier_secret_fingerprint
 end
+
+# Sent by an engine that finds, on starting, that it died applying a command: what is the highest command the peer has
+# applied? If the peer has applied it, or a later one, the command did not cause the death, because the two engines apply
+# the same commands in the same way and the peer survived it (docs/availability/voided_commands.md, section 4.2).
+message AppliedThroughQuery(id=602)
+    i64             instance_id
+end
+
+# The answer to AppliedThroughQuery.
+message AppliedThrough(id=603)
+    i64             instance_id
+    # The highest command the engine has applied, live or by a catch-up, or the position its open-order region or a
+    # completed catch-up brought its book to, whichever is higher.
+    i64             highest_applied
+end

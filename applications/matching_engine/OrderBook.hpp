@@ -229,6 +229,26 @@ class OrderBook {
         return voids_known_through_;
     }
 
+    /**
+     * @brief Records in the region the position in the WAL of the command the engine is about to apply, or zero once it
+     *        has finished applying it and sent its reports.
+     *
+     * The region outlives the process, so an engine that starts and finds a position here other than zero knows that the
+     * process before it died applying that command, and can ask whether the command is what killed it
+     * (docs/availability/voided_commands.md, section 4.1). One store to the region's header, which is already mapped.
+     * Does nothing when the book has no region.
+     */
+    void set_applying(int64_t seq_no) {
+        if (store_.is_open()) {
+            store_.set_owner_value(applying_value, seq_no);
+        }
+    }
+
+    /** @brief The position set_applying() last recorded, as the region held it when it was opened: zero for a new region. */
+    [[nodiscard]] int64_t applying_when_opened() const {
+        return applying_when_opened_;
+    }
+
     [[nodiscard]] size_t size() const {
         return index_.size();
     }
@@ -326,12 +346,15 @@ class OrderBook {
     // Which of the region's owner values holds what: see MappedSlotStore::set_owner_value().
     static constexpr size_t halted_value = 0;
     static constexpr size_t voids_known_through_value = 1;
+    static constexpr size_t applying_value = 2;
 
     pubsub_itc_fw::MappedSlotStore store_;
     // Whether trading is halted; see set_halted().
     bool halted_{false};
     // The latest void this engine has been told of; see set_voids_known_through().
     int64_t voids_known_through_{0};
+    // The command the region recorded as being applied when it was opened; see set_applying().
+    int64_t applying_when_opened_{0};
 
     // From an order's identity to the record holding it.
     //

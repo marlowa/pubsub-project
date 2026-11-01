@@ -10,6 +10,7 @@
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
 
+#include <fix_orders.hpp>
 #include <leader_follower.hpp>
 
 #include "VoidedCommandList.hpp"
@@ -81,6 +82,37 @@ enum class VoidFromWal : int8_t {
     }
     // The command's bytes point into the record, not into the arena, so the arena may be used again to decode them.
     return void_from_command(seq_no, envelope.pdu_id, envelope.payload.data, envelope.payload.size, arena, voided);
+}
+
+/// What command_in_record found a record to hold.
+enum class CommandInRecord : int8_t {
+    MembersCommand, ///< A member's new order or cancel: one a void may name.
+    OtherRecord,    ///< Anything else, a command the sequencer wrote itself or a report for instance: never voided.
+    NotDecodable    ///< It did not decode.
+};
+
+/**
+ * @brief Whether a record read from the WAL holds a member's new order or cancel, which are the only commands a void may
+ *        name (docs/availability/voided_commands.md, section 4.3).
+ *
+ * @param[in] entry The record as stored in the WAL: a WalRecord envelope.
+ * @param[in] arena Scratch space for decoding.
+ * @return What the record holds. A record that is not an envelope holds no member's command.
+ */
+[[nodiscard]] inline CommandInRecord command_in_record(const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& arena) {
+    if (entry.pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
+        return CommandInRecord::OtherRecord;
+    }
+    pubsub_itc_fw::BumpAllocator allocator(arena.data(), arena.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::WalRecordView envelope{};
+    if (!pubsub_itc_fw_app::decode(envelope, entry.bytes, entry.size, bytes_consumed, allocator, arena_bytes_needed)) {
+        return CommandInRecord::NotDecodable;
+    }
+    const bool members = envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) ||
+                         envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest);
+    return members ? CommandInRecord::MembersCommand : CommandInRecord::OtherRecord;
 }
 
 } // namespaces

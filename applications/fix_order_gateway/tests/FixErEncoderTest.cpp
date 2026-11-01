@@ -189,6 +189,42 @@ TEST(FixErEncoderTest, AnOrderWithNoExpiryEmitsNoExpiryField) {
     EXPECT_TRUE(reader.find(tag::TimeInForce).empty());
 }
 
+// A rejected order carries the matching engine's text, which is the only place a member learns why when the reason
+// code is Other; and a report with no text has no Text field.
+TEST(FixErEncoderTest, ARejectedOrderCarriesTheEnginesText) {
+    pubsub_itc_fw_app::ExecutionReportView view{};
+    view.order_id = "NONE";
+    view.exec_id = "ME-EXEC-4";
+    view.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
+    view.ord_status = pubsub_itc_fw_app::OrdStatus::Rejected;
+    view.symbol = "AAPL";
+    view.side = static_cast<pubsub_itc_fw_app::Side>('1');
+    view.leaves_qty = "0";
+    view.cum_qty = "0";
+    view.has_cl_ord_id = true;
+    view.cl_ord_id = "ORDER-4";
+    view.has_ord_rej_reason = true;
+    view.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
+    view.has_text = true;
+    view.text = "Venue could not process the order";
+
+    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    char buffer[fix_order_gateway::execution_report_initial_buffer_size];
+    const std::string_view wire = encode_execution_report(view, "GATEWAY", "CLIENT", 5, clock, buffer, sizeof(buffer));
+    ASSERT_FALSE(wire.empty());
+    fix_codec::FixMessageReader reader(wire);
+    ASSERT_TRUE(reader.is_valid()) << wire;
+    EXPECT_EQ(reader.find(tag::Text).as_string_view(), "Venue could not process the order");
+
+    view.has_text = false;
+    view.text = {};
+    char second_buffer[fix_order_gateway::execution_report_initial_buffer_size];
+    const std::string_view without = encode_execution_report(view, "GATEWAY", "CLIENT", 6, clock, second_buffer, sizeof(second_buffer));
+    fix_codec::FixMessageReader second_reader(without);
+    ASSERT_TRUE(second_reader.is_valid()) << without;
+    EXPECT_TRUE(second_reader.find(tag::Text).empty());
+}
+
 // A refused request to cancel must reach a FIX member as an OrderCancelReject, never as a
 // rejected ExecutionReport, which in FIX says the order itself was rejected (R-0151, BUG-0099).
 // The matching engine refuses a cancel for an order it does not hold with a rejected report that

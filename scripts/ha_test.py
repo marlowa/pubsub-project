@@ -1066,6 +1066,16 @@ class Scenario(NamedTuple):
     # order different identifiers and their reports differ; the scenario requires the follower to find the difference,
     # say it cannot lead, and the leader to go on trading. See run_scenario's "reports that differ" block.
     assert_follower_finds_reports_differ: bool = False
+    # When True, both matching engines are started to die applying the new order _DIE_APPLYING_CL_ORD_ID, every time they
+    # apply it, and are supervised; the scenario places orders before and after it, and requires each engine to die once,
+    # be restarted, find its peer has not applied the order, and have it voided, so that the order is rejected to the
+    # member, saying the engines stopped applying it, and every other order is answered as usual. See run_scenario's
+    # "a command that kills the matching engines" block, and docs/availability/voided_commands.md, section 4.
+    assert_crashing_command_voided: bool = False
+    # When True, only the matching engine leading at the start is started to die applying _DIE_APPLYING_CL_ORD_ID, and only
+    # once; the scenario requires it to be restarted, find that its peer applied the order, ask for no void, and the order
+    # to be accepted. See the same block.
+    assert_engine_death_not_voided: bool = False
     # When True, damage the matching engine's open-order region before restarting it, and
     # assert that the engine refuses it, keeps it aside, rebuilds its book from the WAL, which
     # reaches the first command of the day, and carries on with every order, cancelling nothing
@@ -4614,6 +4624,53 @@ _SCENARIOS: list[Scenario] = [
         orders_during_override=0,
         steps=[],
     ),
+
+    # 90 -- a command that kills both matching engines is voided, and the venue goes on.
+    #
+    # docs/availability/voided_commands.md, section 4. Both engines apply every command, so a command that reaches a
+    # defect in one reaches it in both. Both are started to die whenever they apply one named order. Each records in its
+    # region the command it is applying, so each, restarted by its supervisor, knows it died applying the order; its peer
+    # has not applied it either, so it asks the leading sequencer to void it. The order must be rejected to the member,
+    # saying the matching engines stopped applying it, the orders before and after it answered as usual, and each engine
+    # restarted once. Without the void, each restarted engine applies the order again and dies again, and the order and
+    # every one after it go unanswered.
+    Scenario(
+        number=90,
+        short_name="command_that_kills_both_engines_is_voided",
+        description="A command that kills both matching engines is voided, rejected to its member, and the venue goes on",
+        expected_outcome=(
+            "both engines die applying the named order and are restarted once; each finds its peer has not applied it and "
+            "asks for it to be voided; the member is sent a rejection of it, and every order before and after it is accepted"
+        ),
+        me_ha=True,
+        supervised=("matching_engine_primary", "matching_engine_secondary"),
+        assert_crashing_command_voided=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 91 -- an engine that dies applying a command its peer applied asks for no void.
+    #
+    # docs/availability/voided_commands.md, section 4.2. Only the engine leading at the start dies applying the named
+    # order, and only once, as an engine killed for some reason other than the command would. The follower applies the
+    # order and lives. The engine that died, restarted, asks its peer, which has applied the order, so it asks for no void
+    # and applies the order. The order must be accepted.
+    Scenario(
+        number=91,
+        short_name="engine_death_on_a_command_its_peer_applied",
+        description="An engine that died applying a command its peer applied asks for no void, and the order is accepted",
+        expected_outcome=(
+            "the leading engine dies applying the named order and is restarted once; it finds its peer applied the order "
+            "and asks for no void; the member is told the order is accepted, and every order before and after it too"
+        ),
+        me_ha=True,
+        supervised=("matching_engine_primary", "matching_engine_secondary"),
+        assert_engine_death_not_voided=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -5757,18 +5814,26 @@ _REPORT_ORDERS_NOW: tuple = _REPORT_ORDERS_OF
 # How long the gateways of the scenario being run wait before announcing their sessions on a sequencer link that has
 # come up; set from the scenario before anything is started.
 _ANNOUNCEMENT_DELAY_MS_NOW: int = 0
+# The ClOrdID of the order that scenarios 90 and 91 have matching engines die applying.
+_DIE_APPLYING_CL_ORD_ID = "die-applying-1"
+# The matching engines of the scenario being run that are to die applying an order, each with the order's ClOrdID and
+# whether it dies only once ([test_events] die_applying_cl_ord_id and die_applying_once); set from the scenario before
+# anything is started, and emptied before the engines are run on the WAL afterwards.
+_DIE_APPLYING_NOW: dict[str, tuple[str, bool]] = {}
 
 # The components that send test events so far. Others are added as their checks move onto test events.
 _TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter", "fix_order_gateway", "binary_order_gateway")
 
 
 def config_with_test_events(config: Path, listener: TestEventListener, name: str, report_orders_of: tuple = (),
-                            comp_ids_without_session: tuple = (), delay_session_announcements_ms: int = 0) -> Path:
+                            comp_ids_without_session: tuple = (), delay_session_announcements_ms: int = 0,
+                            die_applying: tuple[str, bool] | None = None) -> Path:
     """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
     knows the component by, which its threads give when they introduce themselves. report_orders_of lists the comp ids
     whose orders a matching engine reports the outcome of. comp_ids_without_session lists the comp ids whose reports a
     sequencer is to expect to reach no session. delay_session_announcements_ms is how long a gateway waits before it
-    announces its sessions on a sequencer link that has come up.
+    announces its sessions on a sequencer link that has come up. die_applying, for a matching engine, is the ClOrdID of a
+    new order it dies applying, and whether it dies only once.
 
     Written beside the original, so that the paths in it still resolve, and used instead of it. Named after the
     component, not the original file, because two components can be started from one file."""
@@ -5782,6 +5847,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
         text += "comp_ids_without_session = [" + ", ".join(f'"{comp_id}"' for comp_id in comp_ids_without_session) + "]\n"
     if delay_session_announcements_ms > 0:
         text += f"delay_session_announcements_ms = {delay_session_announcements_ms}\n"
+    if die_applying is not None:
+        text += f"die_applying_cl_ord_id = \"{die_applying[0]}\"\ndie_applying_once = {'true' if die_applying[1] else 'false'}\n"
     copy = config.with_name(f"{name}_test_events.toml")
     copy.write_text(text)
     return copy
@@ -5811,7 +5878,8 @@ def launch_app(name: str, bin_name: str, config: Path,
         # expected to reach no session.
         config = config_with_test_events(config, _TEST_EVENTS, name, _REPORT_ORDERS_NOW if bin_name == "matching_engine" else (),
                                          _COMP_IDS_WITHOUT_SESSION if bin_name == "sequencer" else (),
-                                         _ANNOUNCEMENT_DELAY_MS_NOW if bin_name in ("fix_order_gateway", "binary_order_gateway") else 0)
+                                         _ANNOUNCEMENT_DELAY_MS_NOW if bin_name in ("fix_order_gateway", "binary_order_gateway") else 0,
+                                         _DIE_APPLYING_NOW.get(name) if bin_name == "matching_engine" else None)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -7272,9 +7340,19 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 log(f"  matching_engine_publisher_{which}: emptied its write-ahead log in {publisher_wal} ({len(removed)} file(s))")
 
         # ── Phase 1: start all processes ──────────────────────────────────────
-        global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW  # pylint: disable=global-statement
+        global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW, _DIE_APPLYING_NOW  # pylint: disable=global-statement
         _INSTALL_PREFIX = prefix
         _ANNOUNCEMENT_DELAY_MS_NOW = scenario.delay_session_announcements_ms
+        # The engine that leads at the start is the one started first, which must lead before the other starts, and
+        # otherwise the primary.
+        dies_first = engine_first or "matching_engine_primary"
+        dies_second = "matching_engine_secondary" if dies_first == "matching_engine_primary" else "matching_engine_primary"
+        if scenario.assert_crashing_command_voided:
+            _DIE_APPLYING_NOW = {dies_first: (_DIE_APPLYING_CL_ORD_ID, False), dies_second: (_DIE_APPLYING_CL_ORD_ID, False)}
+        elif scenario.assert_engine_death_not_voided:
+            _DIE_APPLYING_NOW = {dies_first: (_DIE_APPLYING_CL_ORD_ID, True)}
+        else:
+            _DIE_APPLYING_NOW = {}
         # Until phase 2 has seen which matching engine leads, the primary is taken to.
         _ENGINES_AT_START.update({ENGINE_LEADING_AT_START: "matching_engine_primary", ENGINE_FOLLOWING_AT_START: "matching_engine_secondary"})
         # The member's orders are reported by the engine only in the scenarios whose checks no member can make: that an
@@ -7864,7 +7942,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
                 and not scenario.assert_deferred_answered and not scenario.expects_no_new_leader
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
-                and not scenario.assert_follower_finds_reports_differ):
+                and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
+                and not scenario.assert_engine_death_not_voided):
             # The promotion has already been observed by the time this runs, so this confirms an absence: the engine is
             # asked for a checkpoint first, and a cancel it sent cannot still be on its way.
             promoted_engine = resolved(ENGINE_FOLLOWING_AT_START)
@@ -8904,6 +8983,97 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"reports that differ: {follower} led although it found its reports differ from the leader's")
             log(f"  reports that differ: {follower} found its report of command {refused.command} differs from the leader's, and said it "
                 "cannot lead -- OK")
+
+        # ── A command that kills the matching engines (docs/availability/voided_commands.md, section 4) ──
+        if scenario.assert_crashing_command_voided or scenario.assert_engine_death_not_voided:
+            what = "a command that kills the matching engines" if scenario.assert_crashing_command_voided else "one engine's death on a command"
+            log(f"=== {what.capitalize()} ===")
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            dying = list(_DIE_APPLYING_NOW)
+            engines = ("matching_engine_primary", "matching_engine_secondary")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die(f"{what}: the raw client could not log on")
+
+            def report_answering(cl_ord_id: str, timeout: float) -> dict[int, str] | None:
+                """The ExecutionReport that answers cl_ord_id, or None if none comes."""
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    reply = member.receive_until("8", timeout=min(1.0, max(0.01, deadline - time.monotonic())))
+                    if reply is not None and reply.get(11) == cl_ord_id:
+                        return reply
+                return None
+
+            def place_accepted(cl_ord_id: str, timeout: float) -> None:
+                member.new_order_single(cl_ord_id)
+                reply = report_answering(cl_ord_id, timeout)
+                if reply is None or reply.get(39) != "0":
+                    die(f"{what}: order {cl_ord_id} was not accepted ({reply})")
+
+            def restarts_of(engine: str) -> int:
+                """How many times the engine's supervisor has restarted it (scripts/launch.py's state file)."""
+                state = run_dir / f"{engine}.launcher.state"
+                for line in state.read_text().splitlines() if state.is_file() else []:
+                    if line.startswith("restarts="):
+                        return int(line.split("=", 1)[1])
+                die(f"{what}: {engine} is not supervised: no restart count in {state}")
+                return 0
+
+            for cl_ord_id in ("die-before-1", "die-before-2", "die-before-3"):
+                place_accepted(cl_ord_id, _RAW_REPLY_TIMEOUT)
+            # Long enough for the follower to apply them too.
+            time.sleep(1.0)
+            restarts_before = {engine: restarts_of(engine) for engine in engines}
+            kill_mark = _TEST_EVENTS.mark()
+            log(f"  placing {_DIE_APPLYING_CL_ORD_ID}, which {' and '.join(dying)} die applying")
+            member.new_order_single(_DIE_APPLYING_CL_ORD_ID)
+
+            # Each engine named dies, is restarted, and says what it found; long enough for a restart, the wait for the peer
+            # (a lease period), and the void.
+            outcomes = {}
+            for engine in dying:
+                found = engine_event(engine, "DiedApplying", kill_mark, 90.0)
+                if found is None:
+                    die(f"{what}: {engine} never said, after it was started again, that it died applying {_DIE_APPLYING_CL_ORD_ID}: it did not "
+                        "die, was not restarted, or did not find the command in its region")
+                outcomes[engine] = found.outcome
+                log(f"  {engine} died applying command seq={found.command} and, restarted, found: {found.outcome}")
+            reply = report_answering(_DIE_APPLYING_CL_ORD_ID, 60.0)
+            if scenario.assert_crashing_command_voided:
+                if engine_events.DiedApplyingOutcome.Voided not in outcomes.values():
+                    die(f"{what}: neither engine had the order voided ({outcomes})")
+                if any(outcome == engine_events.DiedApplyingOutcome.Declined for outcome in outcomes.values()):
+                    die(f"{what}: the leading sequencer declined to void the order ({outcomes})")
+                if reply is None or reply.get(39) != "8" or "matching engines stopped" not in reply.get(58, ""):
+                    die(f"{what}: the member was not sent a rejection of {_DIE_APPLYING_CL_ORD_ID} saying the matching engines stopped "
+                        f"applying it ({reply})")
+                log(f"  {_DIE_APPLYING_CL_ORD_ID} was rejected to the member: {reply.get(58)} -- OK")
+            else:
+                if outcomes != {dying[0]: engine_events.DiedApplyingOutcome.PeerAppliedIt}:
+                    die(f"{what}: {dying[0]} did not find that its peer applied the order ({outcomes})")
+                if reply is None or reply.get(39) != "0":
+                    die(f"{what}: the member was not told {_DIE_APPLYING_CL_ORD_ID} is accepted ({reply})")
+                log(f"  {_DIE_APPLYING_CL_ORD_ID} was accepted, and no void was asked for -- OK")
+            for cl_ord_id in ("die-after-1", "die-after-2", "die-after-3"):
+                place_accepted(cl_ord_id, 30.0)
+            member.close()
+            for engine in engines:
+                restarted = restarts_of(engine) - restarts_before[engine]
+                expected = 1 if engine in dying else 0
+                if restarted != expected:
+                    die(f"{what}: {engine} was restarted {restarted} time(s), not {expected}")
+            log(f"  {what}: {' and '.join(dying)} each restarted once, and the orders before and after were accepted -- OK")
 
         if scenario.assert_order_refusal:
             log("=== Refusing orders the venue cannot process ===")
@@ -11566,7 +11736,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("Restoring the test comp id to unpinned ...")
             unprovision_gateway_pinning(FIX8_COMP_ID)
 
-    # Once every process has stopped, so that nothing is written to the WAL while it is read.
+    # Once every process has stopped, so that nothing is written to the WAL while it is read. The engines run on the WAL
+    # are not to die applying any order.
+    _DIE_APPLYING_NOW = {}
     if result_pass:
         try:
             replayed = run_wal_replay_check(prefix, launched_configs)

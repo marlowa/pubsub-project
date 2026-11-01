@@ -53,6 +53,19 @@ struct TestEventsConfiguration {
     /// docs/availability/reports_held_until_sessions_are_announced.md.
     int32_t delay_session_announcements_ms{0};
 
+    /// The ClOrdID of a new order the matching engine dies applying, from the optional `die_applying_cl_ord_id` key;
+    /// empty, for none, when it is absent. Read by the matching engine, which aborts where it would apply a new order
+    /// with this ClOrdID, after recording in its open-order region that it is applying it, unless the order is voided or
+    /// applied already. It lets a test give the engines a command that crashes them; see
+    /// docs/availability/voided_commands.md, section 4.
+    std::string die_applying_cl_ord_id;
+
+    /// Whether the matching engine dies applying that order only once, from the optional `die_applying_once` key; false
+    /// when it is absent. When true, an engine whose region records that it died applying the order applies it the next
+    /// time, as an engine that died for some reason other than the command would. When false, it dies every time, as an
+    /// engine does on a command that reaches a defect in it.
+    bool die_applying_once{false};
+
     /// Whether reports for @p comp_id are expected to reach no member's session.
     [[nodiscard]] bool expects_no_session_for(std::string_view comp_id) const {
         for (const auto& listed : comp_ids_without_session) {
@@ -88,7 +101,8 @@ struct TestEventsConfiguration {
  * The section is optional as a whole, and absent means no test events. Once present, host, port and component are
  * required: a half-filled section is a mistake in the test, and guessing the missing part would hide it.
  * `report_orders_of` is optional, and only an application that reports the outcome of orders reads it. So are
- * `comp_ids_without_session`, read by the sequencer, and `delay_session_announcements_ms`, read by the gateways.
+ * `comp_ids_without_session`, read by the sequencer, `delay_session_announcements_ms`, read by the gateways, and
+ * `die_applying_cl_ord_id` and `die_applying_once`, read by the matching engine.
  */
 class TestEventsConfigurationLoader {
   public:
@@ -126,6 +140,12 @@ class TestEventsConfigurationLoader {
                 throw ConfigurationException(
                     fmt::format("test_events.delay_session_announcements_ms must not be negative, got {}", configuration.delay_session_announcements_ms));
             }
+        }
+        if (toml.has_key("test_events.die_applying_cl_ord_id")) {
+            toml.get_required_except("test_events.die_applying_cl_ord_id", configuration.die_applying_cl_ord_id);
+        }
+        if (toml.has_key("test_events.die_applying_once")) {
+            toml.get_required_except("test_events.die_applying_once", configuration.die_applying_once);
         }
         return configuration;
     }

@@ -596,6 +596,21 @@ TEST_F(MatchingEngineStateMachineTest, TheHaltIsFoundInTheRegionByTheNextProcess
     EXPECT_EQ(reopened.published(), 2);
 }
 
+// The command being applied is kept in the region, so that the next process to open it knows the one before died applying
+// it (docs/availability/voided_commands.md, section 4.1); and zero there means it was not applying one.
+TEST_F(MatchingEngineStateMachineTest, TheCommandBeingAppliedIsFoundInTheRegionByTheNextProcessToOpenIt) {
+    book_.set_applying(7);
+    {
+        OrderBook reopened;
+        ASSERT_TRUE(reopened.open(dir_ + "/open_orders.region", region_capacity, map_capacity));
+        EXPECT_EQ(reopened.applying_when_opened(), 7);
+    }
+    book_.set_applying(0);
+    OrderBook reopened;
+    ASSERT_TRUE(reopened.open(dir_ + "/open_orders.region", region_capacity, map_capacity));
+    EXPECT_EQ(reopened.applying_when_opened(), 0);
+}
+
 pubsub_itc_fw_app::TechnicalEventView technical_event(bool halted, int32_t day) {
     pubsub_itc_fw_app::TechnicalEventView view{};
     view.phase = pubsub_itc_fw_app::TradingPhase::Open;

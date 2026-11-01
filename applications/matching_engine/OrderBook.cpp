@@ -27,6 +27,7 @@ bool OrderBook::open(const std::string& region_path, SlotIndex region_capacity, 
     const bool existed = store_.open(region_path, static_cast<uint32_t>(sizeof(OrderEntry)), region_capacity, record_format);
     halted_ = store_.owner_value(halted_value) != 0;
     voids_known_through_ = store_.owner_value(voids_known_through_value);
+    applying_when_opened_ = store_.owner_value(applying_value);
     index_.reserve(map_capacity);
     return existed;
 }

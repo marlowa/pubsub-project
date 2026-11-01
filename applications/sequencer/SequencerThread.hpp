@@ -769,6 +769,35 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void write_recovery_halt(int64_t now_ns);
     // A matching engine about to lead that cannot account for the orders the venue holds, asking for trading to be halted.
     void handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+
+    // A matching engine that died applying a command, and whose peer has not applied it, asking for it to be voided
+    // (docs/availability/voided_commands.md, section 4.3). Only the leader acts: it writes a VoidCommands command naming
+    // the command, if that is safe, answers with the voids if the command is voided already, and otherwise answers
+    // VoidDeclined.
+    void handle_void_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    // Answers a VoidRequest on @p conn_id with VoidDeclined, saying why at Error.
+    void decline_void(const pubsub_itc_fw::ConnectionID& conn_id, int64_t instance_id, int64_t seq_no, pubsub_itc_fw_app::VoidDeclinedReason reason,
+                      const char* why);
+    // What the WAL holds at @p seq_no: a member's command, something else, or nothing (@p found false). Reads the WAL on
+    // this thread, from the start of the segment holding the record; done only for a VoidRequest, which comes after an
+    // engine has died.
+    [[nodiscard]] CommandInRecord command_in_wal_at(int64_t seq_no, bool& found);
+
+    // The highest command that any report in this instance's WAL answers, kept as the voids are: read as the replicated
+    // WAL opens, and noted as each report record is written, as leader or as follower. A report answering a command means
+    // an engine applied it and went on, and perhaps that its member was told what it did, so no command at or below this
+    // is voided. Records discarded from the WAL do not lower it: a figure too high only declines a void that could have
+    // been written, which costs the rest of the day but never voids a command an engine went past.
+    int64_t highest_command_answered_{0};
+    // Notes a record's envelope, if it is a report answering a command.
+    void note_report_answers(const pubsub_itc_fw_app::WalRecordView& view);
+
+    // The matching engine instance that last announced that it leads, and the connection it announced it on, while that
+    // connection is up; 0 and none otherwise. EngineOrderRouting remembers the last leader after its process dies, so
+    // that orders go to it again when it reconnects; this does not, because a void must not be refused on the strength
+    // of an engine that has died. Cleared when that instance announces that it follows, or the connection is lost.
+    int64_t leading_engine_instance_{0};
+    pubsub_itc_fw::ConnectionID leading_engine_announced_on_{};
     // Adds an identifier to the record, reporting once if it is full.
     void record_identifier(uint64_t id);
 

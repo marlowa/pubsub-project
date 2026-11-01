@@ -171,23 +171,32 @@ reports. Each is one store to memory the engine has already mapped, in the same 
 cost is measured in step 2.
 
 The region survives the process dying, because it is a file mapped into memory and the operating system keeps what was
-written to it. So an engine that starts and finds a number other than zero in its region knows it died applying that
-command. An engine that starts with a region that cannot be used, and rebuilds its book from the WAL, has no such
-number, and asks for no void.
+written to it. So an engine that starts and finds a number in its region above the published position knows it died
+applying that command. A number at or below the published position means the engine applied the command and
+published it, and died before writing zero: it is not applied again, so nothing is asked. An engine that starts with a
+region that cannot be used, and rebuilds its book from the WAL, has no such number, and asks for no void.
+
+The number is in owner value 2 of the region's header (`OrderBook::set_applying`, `OrderBook::applying_when_opened`).
+The engine writes it in `MatchingEngineThread::apply_command`, around every command it applies.
 
 ### 4.2 It asks for the command to be voided, if no other engine has applied it
 
 An engine that finds it died applying command N:
 
-1. **Asks its peer**, over the link between the two engines (`[peer]`), for the highest command the peer has applied,
-   and waits for the answer for at most a lease period. If the peer has applied N or later, N did not cause the crash,
+1. **Asks its peer**, over the link between the two engines (`[peer]`), for the highest command the peer has applied
+   (`AppliedThroughQuery` and `AppliedThrough`), and waits for the answer for at most a lease period. An engine with
+   high availability off has no peer, and goes straight to step 2. If the peer has applied N or later, N did not cause the crash,
    because the two engines are deterministic and the peer survived it: the engine asks for nothing, catches up as
    usual and applies N.
 2. **Otherwise asks the leading sequencer** to void N, with a new message, `VoidRequest`, sent to each sequencer it has
    an order connection to, as `HaltRequest` is. It asks again every second until a `VoidedCommands` list naming N
    arrives, or a sequencer declines.
-3. **Then asks to be caught up** as usual. The `VoidedCommands` list that starts the catch-up names N, so the engine
+3. **Then asks to be caught up** as usual. Until then it asks for no catch-up, because the catch-up would apply N
+   before the engine knows whether N is voided. The `VoidedCommands` list that starts the catch-up names N, so the engine
    rejects N where it would have applied it.
+
+The engine tells a test which way the question was settled by the test event `DiedApplying`: the peer had applied the
+command, the command was voided, or the void was declined.
 
 Both engines usually crash on the same command, so both usually ask. The first request writes the void; the second
 finds N already voided and is answered with the list.
@@ -203,9 +212,20 @@ The leading sequencer writes `VoidCommands` for N only if all of these hold:
 - **The WAL holds no report answering N or any later command.** Such a report means an engine applied N and went on,
   and perhaps that a member has been told what N did. The sequencer keeps the highest command any report in its WAL
   answers, as each report record is written, so this is one comparison.
-- **N is not voided already.**
+- **No other engine leads.** An engine that leads has caught up past N, so it applied N and lived. Its reports of N
+  may not be in the WAL yet: an engine that took the lead from following sends the reports it kept only as it takes
+  the lead. The sequencer counts an engine as leading from the moment it announces that it leads until it announces
+  that it follows or the connection it announced on is lost, so that an engine that has died does not count.
+- **The WAL holds N.**
+- **N is not voided already.** If it is, the engine is sent the voids instead, which name N once its record is
+  committed.
 
 Otherwise it declines, with a new message `VoidDeclined` that says which condition failed, and the engine applies N.
+
+To find whether N is a member's command, the sequencer reads N's record from its WAL, on its own thread, from the start
+of the segment that holds it. This is the one read of the WAL that step 2 adds to the thread that sequences orders. It
+is permitted, as `check_standards.py` records, because it is done only for a void request, which comes after an engine
+has died, and only once the sequencer has found that no other engine leads, so while no engine is trading.
 If N crashes it again, that is the engine's second interruption, its supervisor stops restarting it (V14), and the
 venue halts by the limit on automatic recovery for a person to deal with. A command that crashes both engines then
 costs the venue the rest of the day, as it does now, but only where voiding it could be wrong.
@@ -402,8 +422,74 @@ leading first.
    the engines died applying it, every other order is answered as usual, and both engines then give the reports a replay
    gives. With the request for a void left out, the engines crash again and the supervisor gives up, so the scenario
    fails. A second scenario names the order to the leading engine only, and requires the follower to take the lead
-   having applied it, and no void to be written. The cost of the two stores per command is measured with a trading-day
-   run, as in step 5 of [both_engines_apply_the_wal.md](both_engines_apply_the_wal.md).
+   having applied it, and no void to be written.
+
+   **As built.** The crash is two keys in the engine's `[test_events]` section: `die_applying_cl_ord_id`, the order it
+   dies applying, and `die_applying_once`. With `die_applying_once`, an engine whose region records that it died
+   applying the order applies it the next time, as an engine killed for some other reason would; without it, the engine
+   dies every time, as it would on a command that reaches a defect. The engine does not die on the order when the order
+   is voided or applied already.
+
+   Scenario 90 names the order to both engines, dying every time, and places three orders before it and three after. It
+   requires each engine to say it died applying the order, at least one to have had it voided and neither to have been
+   declined, the member to be sent a rejection of it saying the matching engines stopped applying it, the orders before
+   and after to be accepted, and each engine to have been restarted exactly once. The harness starts its supervisors
+   with no limit on interruptions, so with the request for a void left out the engines die and are restarted again and
+   again rather than being given up on; the scenario fails either way, because the order and those after it go
+   unanswered. The end of every scenario runs both engines on a copy of the WAL and compares their reports with the
+   ones the scenario's engines gave.
+
+   Scenario 91 names the order to the engine leading at the start, dying once. It requires that engine to find that its
+   peer applied the order, the order to be accepted, and the orders after it too, with that engine restarted once and
+   the other not at all. Which engine leads afterwards is whichever the leases settle on: a supervised restart can come
+   back before the follower takes the lead, as scenario 26 shows, and the engine that died then catches up and applies
+   the order itself.
+
+   Each scenario was made to fail on 31 October 2026. With the engine asking nothing after it restarts, scenario 90
+   fails: in the 90 seconds it waits, the secondary engine died applying the order 25 times and was restarted each time,
+   and the order was never answered. With the engine asking the peer but never sending the request for a void, it fails
+   too: each engine waits, asking to be caught up by nobody. With the engine ignoring its peer's answer and always asking
+   for a void, scenario 91 fails: the order, which the follower had applied, was voided. The sequencer's own conditions
+   did not stop that void, because the follower had not yet taken the lead, so the question to the peer is what keeps a
+   command one engine applied from being voided; without it, the follower would learn of the void too late, and refuse
+   to lead (section 3.4).
+
+   The full suites pass: 33 of 33 with the secondary engine leading first, and with the primary first 87 of 91 in one
+   run, the other four (scenarios 1, 23, 28 and 68) passing when run again. In each of those four, writing a lease
+   promise record took several seconds while another program was writing heavily to the same disk, and leases ran out
+   with nothing wrong ([BUG-0167](../bug_list.md#bug_0167)); none of them reached the code this step adds.
+
+   **Measured** on 31 October and 1 November 2026, as in step 5 of
+   [both_engines_apply_the_wal.md](both_engines_apply_the_wal.md): one run of `profiles/trading_day.toml` on this build
+   and one at b46b0dd, before step 1, each with the machine in measurement mode and the load client pinned to CPUs 0 and
+   1. The secondary engine led in both ([BUG-0151](../bug_list.md#bug_0151)), and its figures are the ones given. The
+   difference therefore covers step 1's check of each command against the voids as well as the two stores. In
+   microseconds, before → after:
+
+   | | open auction, 3,500 orders/s | sustained elevated, 1,925 orders/s |
+   |---|---|---|
+   | engine, order in, p50 | 83.3 → 82.8 | 81.5 → 80.7 |
+   | engine, report out, p50 | 87.9 → 87.5 | 91.0 → 91.1 |
+   | engine, order in, p99 | 169 → 169 | 207 → 183 |
+   | engine, report out, p99 | 173 → 173 | 198 → 187 |
+   | round trip at the gateway, p50 | 139.7 → 140.4 | 141.9 → 144.4 |
+   | round trip at the gateway, p99 | 244 → 244 | 401 → 309 |
+
+   Both engine figures are counted from the moment the gateway read the order, so the difference between them is the
+   engine's own work on a new order, up to its acknowledgement being handed to the reactor: 4.6 → 4.7 microseconds at
+   the median in the open auction, and 9.5 → 10.4 in the sustained phase. So the two stores and the check cost the
+   engine less than a microsecond at the median, and no rise at the 99th percentile is shown. One run of each build is
+   one sample, so a difference below a microsecond is not established by these runs. The figures for the sustained
+   phase cover the part of it before the book is full, which in both runs is the same 3,147,184 orders
+   ([BUG-0215](../bug_list.md#bug_0215)). The other phases do not compare cleanly: in the later run the disk was slow
+   to complete writes during the morning steady phase and the afternoon burst, and those phases' 99th percentiles fall
+   in the histograms' top bucket.
+
+   The leading engine's reactor lap at the median is 34 to 41 microseconds in every phase of the later run, against 28
+   to 32 in the earlier. The lap is the time between one look for work by the engine's reactor thread and the next, and
+   that reactor sleeps whenever it has nothing to do, so the lap includes the time it sleeps; the engine's work on a
+   command is done on another thread, and is not in it. The lap was 38 in the first 20 minutes of a third run, at
+   e1dd1c4, a build before both, so runs of builds without this change differ by as much.
 3. **Holding orders while no engine leads (sections 5.1 and 5.2).** Orders stay held, every engine is sent records only
    up to the released position, and new orders are refused once no engine has led for `orders_held_at_most_seconds`.
    The scenarios that change the engine leader measure how long the venue held orders in each, so that the value of

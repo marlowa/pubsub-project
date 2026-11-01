@@ -223,3 +223,19 @@ message FollowerCannotLead (id=217, version=1)
     i64 command                    # the command whose reports differ, or the last kept when full
     FollowerCannotLeadReason reason
 end
+
+# ------------------------------------------------------------
+#  What an engine that found, on starting, that it died applying a
+#  command did about it (docs/availability/voided_commands.md,
+#  section 4).
+# ------------------------------------------------------------
+enum DiedApplyingOutcome : i8 {
+    PeerAppliedIt = 1      # its peer had applied the command or a later one, so it asked for no void and applies the command
+    Voided = 2             # it asked the leading sequencer to void the command, and was told of the void
+    Declined = 3           # it asked the leading sequencer to void the command, and was told no: it applies the command
+}
+
+message DiedApplying (id=218, version=1)
+    i64                 command        # the command it died applying
+    DiedApplyingOutcome outcome
+end

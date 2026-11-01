@@ -124,3 +124,21 @@ TEST(VoidFromWalTest, TheListRebuiltFromTheWalIsTheListKeptWhileWritingIt) {
         EXPECT_EQ(from_wal.reason, from_writing.reason) << "void " << index;
     }
 }
+
+// Only a member's new order or cancel may be voided: a command the sequencer wrote itself, or a report, may not.
+TEST(VoidFromWalTest, OnlyAMembersNewOrderOrCancelIsAMembersCommand) {
+    std::vector<uint8_t> arena(64 * 1024);
+    const std::vector<uint8_t> command(20, 0x41);
+    const auto kind_of = [&](int16_t inner_pdu_id) {
+        const std::vector<uint8_t> record = envelope_of(5, inner_pdu_id, command);
+        return sequencer::command_in_record(contents_of(record), arena);
+    };
+    EXPECT_EQ(kind_of(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)), sequencer::CommandInRecord::MembersCommand);
+    EXPECT_EQ(kind_of(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)), sequencer::CommandInRecord::MembersCommand);
+    EXPECT_EQ(kind_of(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)), sequencer::CommandInRecord::OtherRecord);
+    EXPECT_EQ(kind_of(static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id)), sequencer::CommandInRecord::OtherRecord);
+    EXPECT_EQ(kind_of(static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)), sequencer::CommandInRecord::OtherRecord);
+    EXPECT_EQ(kind_of(void_pdu_id), sequencer::CommandInRecord::OtherRecord);
+    const std::vector<uint8_t> garbage = {1, 2, 3};
+    EXPECT_EQ(sequencer::command_in_record(contents_of(garbage), arena), sequencer::CommandInRecord::NotDecodable);
+}

@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include <fmt/format.h>
@@ -231,6 +232,8 @@ void MatchingEngineThread::on_app_ready_event() {
         connect_to_service("arbiter_primary");
         connect_to_service("arbiter_secondary");
     }
+
+    begin_died_applying_question();
 }
 
 void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
@@ -265,6 +268,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         outbound_peer_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: connection {} to the peer engine established", id.get_value());
         send_engine_settings();
+        ask_peer_whether_applied();
         // Tell the peer what this instance is as soon as there is a link to tell it
         // on. An instance that has just restarted is sitting in Unknown waiting for
         // arbitration, and a leader saying so here lets it settle immediately rather
@@ -280,6 +284,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // The peer's dial to us, which carries the same as ours.
         inbound_peer_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: connection {} from the peer engine established", id.get_value());
+        ask_peer_whether_applied();
         // Tell the peer what this instance is as soon as there is a link to tell it
         // on. An instance that has just restarted is sitting in Unknown waiting for
         // arbitration, and a leader saying so here lets it settle immediately rather
@@ -289,6 +294,9 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // An inbound order connection from a sequencer, alike for either configured role.
         sequencer_order_conn_ids_.insert(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} established", id.get_value());
+        if (died_applying_question_ == DiedApplyingQuestion::asking_sequencers) {
+            send_void_request();
+        }
         if (ha_role_state_ == MeRole::Reconciling) {
             // Either reconciliation was begun before any sequencer had dialled in, so the request
             // could not be sent, and sending it now is what keeps that from stranding the venue
@@ -430,6 +438,21 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         release_pdu_payload(message);
         return;
     }
+    if (pdu_id == pubsub_itc_fw_app::VoidDeclined::message_pdu_id) {
+        handle_void_declined(message);
+        release_pdu_payload(message);
+        return;
+    }
+    if (pdu_id == pubsub_itc_fw_app::AppliedThroughQuery::message_pdu_id) {
+        handle_applied_through_query(message);
+        release_pdu_payload(message);
+        return;
+    }
+    if (pdu_id == pubsub_itc_fw_app::AppliedThrough::message_pdu_id) {
+        handle_applied_through(message);
+        release_pdu_payload(message);
+        return;
+    }
 
     if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported sequenced PDU id {} -- dropping", pdu_id);
@@ -503,72 +526,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         return;
     }
 
-    if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
-        pubsub_itc_fw_app::NewOrderSingleView view{};
-        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode NewOrderSingle -- dropping");
-            release_pdu_payload(message);
-            return;
-        }
-        // Before the matching work rather than after it, so the stage this closes is the
-        // journey to here and the stage it opens is what this component does. New orders
-        // only, which is the same set of orders the round trip is measured over; a cancel
-        // arriving here is a different journey and belongs to no round trip.
-        order_path_metrics::observe_checkpoint(order_in_elapsed_histogram_, envelope.has_gateway_ingress_ns, envelope.gateway_ingress_ns,
-                                               config_.wall_clock->now_ns());
-
-        // Remembered for as long as this one order is being handled. Any acknowledgement the
-        // matching engine produces from here until this message is finished with was caused
-        // by this order, which is how send_er_to_sequencer can time the acknowledgement
-        // leaving without the state machine having to carry the value.
-        has_current_order_ingress_ns_ = envelope.has_gateway_ingress_ns;
-        current_order_ingress_ns_ = envelope.gateway_ingress_ns;
-
-        const CommandSource source = command_source_for(message.seq_no());
-        state_machine_.apply_new_order(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
-                                       session_identity_from(envelope), source);
-
-    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
-        pubsub_itc_fw_app::OrderCancelRequestView view{};
-        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode OrderCancelRequest -- dropping");
-            release_pdu_payload(message);
-            return;
-        }
-        const CommandSource source = command_source_for(message.seq_no());
-        state_machine_.apply_cancel(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
-                                    session_identity_from(envelope), source);
-
-    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id)) {
-        pubsub_itc_fw_app::CancelBookView view{};
-        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode CancelBook -- dropping");
-            release_pdu_payload(message);
-            return;
-        }
-        const CommandSource source = command_source_for(message.seq_no());
-        apply_cancel_book_command(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0, source);
-
-    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) {
-        pubsub_itc_fw_app::TechnicalEventView view{};
-        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode TechnicalEvent -- dropping");
-            release_pdu_payload(message);
-            return;
-        }
-        const CommandSource source = command_source_for(message.seq_no());
-        apply_technical_event_command(view, message.seq_no(), envelope.has_trading_date ? envelope.trading_date : 0, source);
-
-    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id)) {
-        pubsub_itc_fw_app::VoidCommandsView view{};
-        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode VoidCommands -- dropping");
-            release_pdu_payload(message);
-            return;
-        }
-        const CommandSource source = command_source_for(message.seq_no());
-        apply_void_commands_command(view, message.seq_no(), source);
-
+    if (is_order_pdu) {
+        apply_command(message, envelope, arena);
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         // A report record: the engine produces reports and applies none. One that follows the WAL is sent every record,
         // so during its catch-up a report record is one of the records sent, and is counted as arrived (R-0101).
@@ -588,6 +547,100 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
     }
 
     release_pdu_payload(message);
+}
+
+void MatchingEngineThread::apply_command(const pubsub_itc_fw::EventMessage& message, const pubsub_itc_fw_app::WalRecordView& envelope,
+                                         pubsub_itc_fw::BumpAllocator& arena) {
+    const int16_t inner_pdu_id = envelope.pdu_id;
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    // Recorded before anything is applied, and cleared only after the command's reports are sent, so that a process that
+    // dies anywhere in between leaves the command in the region for the next one to find (died_applying_).
+    order_book_.set_applying(message.seq_no());
+
+    if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
+        pubsub_itc_fw_app::NewOrderSingleView view{};
+        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode NewOrderSingle -- dropping");
+        } else {
+            // Before the matching work rather than after it, so the stage this closes is the
+            // journey to here and the stage it opens is what this component does. New orders
+            // only, which is the same set of orders the round trip is measured over; a cancel
+            // arriving here is a different journey and belongs to no round trip.
+            order_path_metrics::observe_checkpoint(order_in_elapsed_histogram_, envelope.has_gateway_ingress_ns, envelope.gateway_ingress_ns,
+                                                   config_.wall_clock->now_ns());
+
+            // Remembered for as long as this one order is being handled. Any acknowledgement the
+            // matching engine produces from here until this message is finished with was caused
+            // by this order, which is how send_er_to_sequencer can time the acknowledgement
+            // leaving without the state machine having to carry the value.
+            has_current_order_ingress_ns_ = envelope.has_gateway_ingress_ns;
+            current_order_ingress_ns_ = envelope.gateway_ingress_ns;
+
+            const CommandSource source = command_source_for(message.seq_no());
+            die_if_named(view, message.seq_no());
+            state_machine_.apply_new_order(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
+                                           session_identity_from(envelope), source);
+        }
+
+    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
+        pubsub_itc_fw_app::OrderCancelRequestView view{};
+        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode OrderCancelRequest -- dropping");
+        } else {
+            const CommandSource source = command_source_for(message.seq_no());
+            state_machine_.apply_cancel(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
+                                        session_identity_from(envelope), source);
+        }
+
+    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id)) {
+        pubsub_itc_fw_app::CancelBookView view{};
+        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode CancelBook -- dropping");
+        } else {
+            const CommandSource source = command_source_for(message.seq_no());
+            apply_cancel_book_command(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0, source);
+        }
+
+    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) {
+        pubsub_itc_fw_app::TechnicalEventView view{};
+        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode TechnicalEvent -- dropping");
+        } else {
+            const CommandSource source = command_source_for(message.seq_no());
+            apply_technical_event_command(view, message.seq_no(), envelope.has_trading_date ? envelope.trading_date : 0, source);
+        }
+
+    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id)) {
+        pubsub_itc_fw_app::VoidCommandsView view{};
+        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode VoidCommands -- dropping");
+        } else {
+            const CommandSource source = command_source_for(message.seq_no());
+            apply_void_commands_command(view, message.seq_no(), source);
+        }
+    }
+
+    order_book_.set_applying(0);
+}
+
+void MatchingEngineThread::die_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number) {
+    const std::string& named = config_.test_events.die_applying_cl_ord_id;
+    if (named.empty() || view.cl_ord_id != named) {
+        return;
+    }
+    // A command applied already is passed over, and a voided one is rejected, so neither would reach what kills it.
+    if (sequence_number <= state_machine_.highest_applied() || state_machine_.voids().voiding(sequence_number, fix_common::VoidedKind::new_order) != nullptr) {
+        return;
+    }
+    if (config_.test_events.die_applying_once && died_applying_ == sequence_number) {
+        return;
+    }
+    // Written straight to the standard error: the Quill log is written by a thread of its own, which the abort stops.
+    fmt::print(stderr, "MatchingEngineThread: dying applying the new order {} at seq={}, as [test_events] die_applying_cl_ord_id says\n", named,
+               sequence_number);
+    std::fflush(stderr);
+    std::abort();
 }
 
 CommandSource MatchingEngineThread::command_source_for(int64_t sequence_number) {
@@ -913,6 +966,9 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
             cancel_timer(reconciliation_timer_id_);
             return;
         }
+        if (died_applying_question_ != DiedApplyingQuestion::none) {
+            return; // nothing has been asked for yet, and it is asked for once the question is settled
+        }
         ++reconciliation_attempts_;
         if (sequencer_order_conn_ids_.empty()) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -935,6 +991,22 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
                    "says when it leads; this is for when that message, or the answer, did not come",
                    reconciliation_attempts_);
         send_follow_request();
+        return;
+    }
+
+    if (id == peer_answer_timer_id_) {
+        peer_answer_timer_id_ = pubsub_itc_fw::TimerID{};
+        if (died_applying_question_ == DiedApplyingQuestion::asking_peer) {
+            ask_for_void("the peer engine did not say within a lease period which commands it has applied");
+        }
+        return;
+    }
+
+    if (id == void_request_timer_id_) {
+        // A request lost to a change of sequencer leader, or made before any sequencer led, is asked for again.
+        if (died_applying_question_ == DiedApplyingQuestion::asking_sequencers) {
+            send_void_request();
+        }
         return;
     }
 
@@ -1135,6 +1207,9 @@ void MatchingEngineThread::report_present_state() {
     }
     if (peer_settings_known_ && peer_settings_differ_) {
         report_settings_differ_from_peer();
+    }
+    if (died_applying_outcome_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::DiedApplying::message_pdu_id, pubsub_itc_fw_app::DiedApplying{died_applying_, *died_applying_outcome_});
     }
     if (ha_role_state_ == MeRole::Reconciling) {
         report_catch_up(pubsub_itc_fw_app::CatchUpStage::Started, last_replicated_seq_no_, 0);
@@ -1527,6 +1602,23 @@ void MatchingEngineThread::recover_open_orders(bool region_existed) {
                "MatchingEngineThread: recovered {} open order(s) from the region at seq_no={} in {} ms ({} unfinished record(s) discarded)", found.orders,
                found.published, elapsed_ms, found.discarded);
 
+    // A command recorded as being applied, above the published position, is one the process before this one died
+    // applying. One at or below it was applied and published, and the process died before recording that it had finished:
+    // it is not applied again, so there is nothing to ask.
+    const int64_t applying = order_book_.applying_when_opened();
+    if (applying > found.published) {
+        died_applying_ = applying;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: the process before this one died applying command seq={} -- asking whether the peer engine applied it, and if "
+                   "not, for it to be voided, before catching up (docs/availability/voided_commands.md, section 4)",
+                   applying);
+    } else if (applying != 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineThread: the process before this one died after applying command seq={} and publishing it, before recording that it had "
+                   "finished -- the command is not applied again, so nothing is asked",
+                   applying);
+    }
+
     if (order_book_.halted()) {
         // Set by a command the engine applied before it stopped, and kept in the region with the orders.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
@@ -1616,6 +1708,15 @@ pubsub_itc_fw::WalFollowRequest MatchingEngineThread::follow_request(const std::
 }
 
 void MatchingEngineThread::send_follow_request() {
+    if (died_applying_question_ != DiedApplyingQuestion::none) {
+        // The catch-up would apply the command the process before this one died applying, before this instance knows
+        // whether it is voided. It is asked for once that is settled (settle_died_applying).
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: not asking to be caught up yet -- waiting to learn whether command seq={}, which the process before this one died "
+                   "applying, is voided",
+                   died_applying_);
+        return;
+    }
     if (sequencer_order_conn_ids_.empty()) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: cannot ask to be caught up -- no sequencer order connection");
         return;
@@ -2116,6 +2217,14 @@ void MatchingEngineThread::handle_voided_commands(const pubsub_itc_fw::EventMess
                            "it applied a command before it was told that a later command in the WAL voided it");
         }
     }
+    if (died_applying_question_ == DiedApplyingQuestion::asking_sequencers &&
+        state_machine_.voids().voiding(died_applying_, fix_common::VoidedKind::cancel) != nullptr) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: command seq={}, which the process before this one died applying, is voided -- it is answered with a rejection, "
+                   "and this instance asks to be caught up",
+                   died_applying_);
+        settle_died_applying(pubsub_itc_fw_app::DiedApplyingOutcome::Voided);
+    }
 }
 
 void MatchingEngineThread::apply_void_commands_command(const pubsub_itc_fw_app::VoidCommandsView& command, int64_t sequence_number, CommandSource source) {
@@ -2123,6 +2232,143 @@ void MatchingEngineThread::apply_void_commands_command(const pubsub_itc_fw_app::
     if (result.learned_too_late) {
         refuse_to_lead(sequence_number, pubsub_itc_fw_app::FollowerCannotLeadReason::AppliedVoidedCommand,
                        "it reached a void without having been told of it, after applying the commands it names");
+    }
+}
+
+void MatchingEngineThread::begin_died_applying_question() {
+    if (died_applying_ == 0) {
+        return;
+    }
+    if (!ha_enabled_) {
+        ask_for_void("high availability is off, so there is no peer engine to ask");
+        return;
+    }
+    died_applying_question_ = DiedApplyingQuestion::asking_peer;
+    peer_answer_timer_id_ = start_one_off_timer(config_.lease.period);
+    ask_peer_whether_applied();
+}
+
+void MatchingEngineThread::ask_peer_whether_applied() {
+    if (died_applying_question_ != DiedApplyingQuestion::asking_peer || peer_asked_whether_applied_) {
+        return;
+    }
+    const pubsub_itc_fw::ConnectionID peer = outbound_peer_conn_id_.is_valid() ? outbound_peer_conn_id_ : inbound_peer_conn_id_;
+    if (!peer.is_valid()) {
+        return; // asked when a connection to the peer is made
+    }
+    send_pdu(peer, pubsub_itc_fw_app::AppliedThroughQuery::message_pdu_id, 0,
+             pubsub_itc_fw_app::AppliedThroughQuery{static_cast<int64_t>(config_.instance_id)});
+    peer_asked_whether_applied_ = true;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: asked the peer engine on connection {} which commands it has applied, to learn whether command seq={} is what killed "
+               "the process before this one",
+               peer.get_value(), died_applying_);
+}
+
+void MatchingEngineThread::handle_applied_through_query(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::AppliedThroughQueryView query{};
+    if (!pubsub_itc_fw_app::decode(query, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode AppliedThroughQuery -- dropping");
+        return;
+    }
+    const pubsub_itc_fw_app::AppliedThrough answer{static_cast<int64_t>(config_.instance_id), state_machine_.highest_applied()};
+    send_pdu(message.connection_id(), pubsub_itc_fw_app::AppliedThrough::message_pdu_id, 0, answer);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: the peer engine, instance {}, asked which commands this one has applied -- told it through seq={}", query.instance_id,
+               answer.highest_applied);
+}
+
+void MatchingEngineThread::handle_applied_through(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::AppliedThroughView answer{};
+    if (!pubsub_itc_fw_app::decode(answer, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode AppliedThrough -- dropping");
+        return;
+    }
+    if (died_applying_question_ != DiedApplyingQuestion::asking_peer) {
+        return; // the lease period ran out first, and the sequencers have been asked
+    }
+    if (answer.highest_applied < died_applying_) {
+        ask_for_void(answer.highest_applied == died_applying_ - 1 ? "the peer engine has applied every command before it and not it"
+                                                                  : "the peer engine has not applied it");
+        return;
+    }
+    // The two engines apply the same commands in the same way, so the command did not kill the process before this one:
+    // the peer applied it and lived.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "MatchingEngineThread: the peer engine has applied through seq={}, including command seq={}, which the process before this one died "
+               "applying -- so the command did not cause the death, and it is applied as usual",
+               answer.highest_applied, died_applying_);
+    settle_died_applying(pubsub_itc_fw_app::DiedApplyingOutcome::PeerAppliedIt);
+}
+
+void MatchingEngineThread::ask_for_void(const char* why) {
+    died_applying_question_ = DiedApplyingQuestion::asking_sequencers;
+    if (peer_answer_timer_id_.is_valid()) {
+        cancel_timer(peer_answer_timer_id_);
+        peer_answer_timer_id_ = pubsub_itc_fw::TimerID{};
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "MatchingEngineThread: asking the leading sequencer to void command seq={}, which the process before this one died applying, because {} "
+               "(docs/availability/voided_commands.md, section 4.2)",
+               died_applying_, why);
+    send_void_request();
+    void_request_timer_id_ = start_recurring_timer(void_request_interval);
+}
+
+void MatchingEngineThread::send_void_request() {
+    pubsub_itc_fw_app::VoidRequest request{};
+    request.instance_id = static_cast<int64_t>(config_.instance_id);
+    request.epoch = epoch_;
+    request.seq_no = died_applying_;
+    // To every sequencer order connection, as a halt request is: only the leading sequencer acts on it.
+    for (const auto& conn_id : sequencer_order_conn_ids_) {
+        send_pdu(conn_id, pubsub_itc_fw_app::VoidRequest::message_pdu_id, 0, request);
+    }
+}
+
+void MatchingEngineThread::handle_void_declined(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::VoidDeclinedView declined{};
+    if (!pubsub_itc_fw_app::decode(declined, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode VoidDeclined -- dropping");
+        return;
+    }
+    if (died_applying_question_ != DiedApplyingQuestion::asking_sequencers || declined.seq_no != died_applying_) {
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "MatchingEngineThread: the leading sequencer will not void command seq={}, which the process before this one died applying ({}) -- it is "
+               "applied as usual, and if it kills this process too, the supervisor does not restart it again",
+               died_applying_, pubsub_itc_fw_app::to_string(declined.reason));
+    settle_died_applying(pubsub_itc_fw_app::DiedApplyingOutcome::Declined);
+}
+
+void MatchingEngineThread::settle_died_applying(pubsub_itc_fw_app::DiedApplyingOutcome outcome) {
+    died_applying_question_ = DiedApplyingQuestion::none;
+    died_applying_outcome_ = outcome;
+    for (pubsub_itc_fw::TimerID* timer : {&peer_answer_timer_id_, &void_request_timer_id_}) {
+        if (timer->is_valid()) {
+            cancel_timer(*timer);
+            *timer = pubsub_itc_fw::TimerID{};
+        }
+    }
+    if (test_events_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::DiedApplying::message_pdu_id, pubsub_itc_fw_app::DiedApplying{died_applying_, outcome});
+    }
+    // A catch-up begun while the question was open asked for nothing; it is asked for now.
+    if (ha_role_state_ == MeRole::Reconciling && !follow_request_sent_ && !sequencer_order_conn_ids_.empty()) {
+        send_follow_request();
     }
 }
 

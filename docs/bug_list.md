@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 216 |
+| Bugs recorded | 217 |
 | Open | 81 (57 defects, 24 tasks) |
-| Closed | 135 |
-| Next id | BUG-0217 |
+| Closed | 136 |
+| Next id | BUG-0218 |
 
 ## Open bugs by severity
 
@@ -471,6 +471,28 @@ suggested. The fill run again at once passed, but even then the disk was over 90
 from about 100 seconds into the fill, against none in the passing fill of 17 October. Of the seven such fills run
 on 17 and 18 October, three failed this way.
 
+**31 October 2026.** In a full run of the 91 scenarios, four failed this way: scenarios 1, 23 and 68, in which no
+voter granted the matching engine a lease within the 15 seconds the scenario allows, and scenario 28, in which
+the secondary arbiter became active. In each, the arbiters lost their own leases, and promise writes took
+several seconds; the longest in each scenario were 5,462, 3,921, 7,283 and 5,519 milliseconds. All four passed
+when run again at once, one after another, and a full run of the 89 scenarios that existed earlier the same
+afternoon passed every one. A file-sharing client had started at 17:00:08, downloading to another partition
+of the same disk. The disk was not recorded during the scenarios, but at 21:45, measured from `/proc` and
+`iostat` with the venue stopped, that client was writing about 8 MB a second and the disk was busy 51 per
+cent of the time. A trading-day run made between 19:49 and 21:44, with the client still downloading, had
+promise writes of over 500 milliseconds throughout its two hours, up to 6,324 milliseconds; the sequencers
+changed leader more than twenty times, and the run measured nothing usable.
+
+**The same run repeated, 31 October and 1 November 2026, with the file-sharing client stopped**, and the disk
+recorded by `iostat` every 10 seconds. Promise writes still took over 500 milliseconds, the longest 3,817, in
+short spells about every 11 to 14 minutes: at 22:40, 22:55, 23:06, 23:17, 23:28, 23:42, 23:54, 00:05 and 00:19.
+The web browser was closed at 23:03, and the spells went on after it. No instance changed leader. In the 43
+samples in which the disk was more than 15 per cent busy, it was given about the same work as in the other 407,
+about 5.5 MB a second in 15 writes a second, but each write waited 172 milliseconds on average, against 4.6.
+The sequencer created WAL segments at a steady 24 or 25 a minute throughout, slow spells included. So, as on 17
+October, for minutes at a time the disk takes far longer to complete the same writes, with nothing else known
+to be writing to it.
+
 **What is not known.** Whether the time is spent waiting for the disk to make the record durable (`fsync`)
 or behind other writes queued for the same disk, such as the WALs and the Quill logs; and how a disk of the
 kind a production machine would have compares.
@@ -577,6 +599,16 @@ which different ones did.
 instance holding a record that it led asks to lead at once, without waiting a lease period, so the
 instance that led last could lead again. Whether that is what made the secondary lead in the one start
 of nine has not been checked.
+
+**Which engine led in the trading-day runs, 29 and 31 October 2026.** In each of the three runs of
+`profiles/trading_day.toml` made on those days, `perf_run.py` clearing every lease promise record
+first, the secondary matching engine led: only its report-out histogram
+(`order_path_elapsed_nanoseconds`, scope `er_out`) counted anything, and the primary's counted
+nothing. The secondary's reactor lap was between 27 and 38 microseconds at the median in each, against
+1.8 for the sequencers, which is what a reactor that sleeps between orders would show. So
+every trading-day figure from those runs was measured on the order path through the engine that
+does not keep looking for work. The before-and-after comparison in phase 8 step 5 is not affected,
+because the same engine led on both sides of it.
 
 ### BUG-0149: `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment {#bug_0149}
 
@@ -3771,6 +3803,25 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0217: The FIX gateway left the matching engine's text out of every execution report, so a member sent a rejection was not told why {#bug_0217}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-31 |
+| Recorded | 2026-10-31 |
+| Fixed | 2026-10-31 -- `encode_execution_report` writes Text (58) when the report carries a text |
+| How | `ha_test.py` scenario 90, on its first run: the member was sent the rejection of the voided order, with OrdRejReason 99 (Other) and no Text. The engine's log showed it had refused the order with its text. Logs kept in `tmp/ha_test_failures/20261031-164452-scenario-90-command_that_kills_both_engines_is_voided` |
+| Impact | A member of the FIX gateway sent a rejected order learned only the reason code. For every refusal for a reason of the venue's own the code is Other, so it learned nothing: not that the order book region was full, that the venue could not process the order, or that the matching engines stopped applying it. Members of the binary gateway, which passes the engine's report on as it arrives, were told |
+
+**What happened.** The matching engine sets the text on each rejection it makes (`MatchingEngineStateMachine`), and
+the FIX gateway turns each report into a FIX message in `FixErEncoder.cpp`. Its `encode_order_cancel_reject` wrote
+Text (58), but `encode_execution_report`, which every other report goes through, never did.
+
+**The fix.** `encode_execution_report` writes Text after LeavesQty when the report has one that is not empty, as
+`encode_order_cancel_reject` does. `FixErEncoderTest.ARejectedOrderCarriesTheEnginesText` checks a rejection carries
+it and a report with none has no Text field; it fails with the fix taken out.
 
 ### BUG-0143: A matching engine whose lease ran out while it was starting was then treated as promoted, and cancelled every order it recovered {#bug_0143}
 

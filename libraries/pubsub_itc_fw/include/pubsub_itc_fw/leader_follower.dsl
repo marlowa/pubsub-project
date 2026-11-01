@@ -861,3 +861,39 @@ end
 message VoidedCommands (id=157, version=1)
     list<VoidedCommand> voids
 end
+
+# ------------------------------------------------------------
+#  159 -- VoidRequest
+#  Sent by a matching engine that finds, on starting, that it died
+#  applying a command, and whose peer has not applied it, to each
+#  sequencer it has an order connection to. The leading sequencer
+#  writes a VoidCommands command voiding it, if that is safe, or
+#  answers VoidDeclined; a sequencer that does not lead ignores it.
+#  The engine asks again every second until it is sent a
+#  VoidedCommands list that voids the command, or VoidDeclined. See
+#  docs/availability/voided_commands.md, section 4.
+# ------------------------------------------------------------
+message VoidRequest (id=159, version=1)
+    i64 instance_id                 # the engine asking, for the Quill log, and to tell it from another engine that leads
+    i32 epoch                       # its epoch, for the Quill log
+    i64 seq_no                      # the command it died applying
+end
+
+# Why the leading sequencer did not void a command a matching engine asked it to.
+enum VoidDeclinedReason : i8 {
+    NotAMembersCommand = 1      # the command is not a member's new order or cancel: one the sequencer wrote itself is never voided
+    AnsweredAlready = 2         # the WAL holds a report answering it or a later command, so an engine applied it and went on
+    AnotherEngineLeads = 3      # the other engine leads, so it has applied the command, and its reports of it are on their way
+    NotInWal = 4                # the WAL does not hold the command
+}
+
+# ------------------------------------------------------------
+#  160 -- VoidDeclined
+#  The leading sequencer's answer to a VoidRequest it will not act
+#  on. The engine then applies the command as usual. See
+#  docs/availability/voided_commands.md, section 4.3.
+# ------------------------------------------------------------
+message VoidDeclined (id=160, version=1)
+    i64 seq_no                      # the command the request named
+    VoidDeclinedReason reason
+end

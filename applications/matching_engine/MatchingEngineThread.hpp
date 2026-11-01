@@ -714,6 +714,54 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Asks every sequencer for a TechnicalEvent halting trading because this instance cannot account for the book; the
     // leading one writes it. Asked again every halt_request_interval until trading is halted.
     void request_halt();
+
+    // Applies one command from the WAL: a new order, a cancel, a CancelBook, a TechnicalEvent or a VoidCommands. Records in
+    // the region that the command is being applied before it applies it, and that none is once it has applied it and
+    // sent its reports, so that a process that dies applying it is known to have done so (died_applying_).
+    void apply_command(const pubsub_itc_fw::EventMessage& message, const pubsub_itc_fw_app::WalRecordView& envelope, pubsub_itc_fw::BumpAllocator& arena);
+
+    // Aborts the process if a test named this order's ClOrdID in [test_events] die_applying_cl_ord_id, and the order is
+    // about to be applied rather than voided or passed over (docs/availability/voided_commands.md, section 8, step 2).
+    void die_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number);
+
+    // ---- A command the process before this one died applying (docs/availability/voided_commands.md, section 4) ----
+
+    // Where this instance has got to in deciding whether to ask for the command it died applying to be voided. Until the
+    // question is settled it asks to be caught up by nobody, because the catch-up would apply the command again.
+    enum class DiedApplyingQuestion {
+        none,             ///< it did not die applying a command, or the question is settled
+        asking_peer,      ///< waiting, for at most a lease period, for its peer to say the highest command it has applied
+        asking_sequencers ///< asking the leading sequencer, every second, to void the command
+    };
+    DiedApplyingQuestion died_applying_question_{DiedApplyingQuestion::none};
+    // The command the region recorded as being applied when this process found it, if the process before died applying
+    // it; zero otherwise.
+    int64_t died_applying_{0};
+    // How the question was settled, kept for the test, which may connect after it was (report_present_state).
+    std::optional<pubsub_itc_fw_app::DiedApplyingOutcome> died_applying_outcome_;
+    // Whether the peer has been asked, which is done once, on the first connection to it.
+    bool peer_asked_whether_applied_{false};
+    pubsub_itc_fw::TimerID peer_answer_timer_id_{};
+    pubsub_itc_fw::TimerID void_request_timer_id_{};
+    static constexpr std::chrono::seconds void_request_interval{1};
+
+    // Begins the question, when the application is ready: asks the peer, or, with high availability off, the sequencers.
+    void begin_died_applying_question();
+    // Asks the peer for the highest command it has applied, on whichever connection to it is up, if there is one and it
+    // has not been asked yet.
+    void ask_peer_whether_applied();
+    // The peer asks for the highest command this instance has applied (AppliedThroughQuery): it is told.
+    void handle_applied_through_query(const pubsub_itc_fw::EventMessage& message);
+    // The peer's answer (AppliedThrough).
+    void handle_applied_through(const pubsub_itc_fw::EventMessage& message);
+    // Stops waiting for the peer, and asks the sequencers to void the command.
+    void ask_for_void(const char* why);
+    // Sends VoidRequest on every sequencer order connection; only the leading sequencer acts on it.
+    void send_void_request();
+    // The leading sequencer will not void the command (VoidDeclined).
+    void handle_void_declined(const pubsub_itc_fw::EventMessage& message);
+    // Settles the question, says so, and asks to be caught up if a catch-up was waiting for it.
+    void settle_died_applying(pubsub_itc_fw_app::DiedApplyingOutcome outcome);
 };
 
 } // namespaces

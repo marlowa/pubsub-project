@@ -32,6 +32,7 @@
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/WalCursor.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 
 namespace sequencer {
@@ -446,6 +447,16 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
         return;
     }
     forget_command_connection(id);
+    if (leading_engine_announced_on_.is_valid() && id == leading_engine_announced_on_) {
+        // The engine that said it leads has gone, or at least the connection it said so on has: it is no longer taken to
+        // lead when a void is asked for.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: the connection matching engine instance {} announced that it leads on is lost -- it is not taken to lead until it says "
+                   "so again",
+                   leading_engine_instance_);
+        leading_engine_instance_ = 0;
+        leading_engine_announced_on_ = pubsub_itc_fw::ConnectionID{};
+    }
     // A gateway whose link was lost may hold sessions this instance has not been told of by the time it comes up again.
     for (auto& [gateway, announcement] : gateway_announcements_) {
         if (announcement.announced && announcement.link == id) {
@@ -574,6 +585,12 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
     if (message.pdu_id() == pubsub_itc_fw_app::HaltRequest::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
         handle_halt_request(conn_id, message);
+        release_pdu_payload(message);
+        return;
+    }
+
+    if (message.pdu_id() == pubsub_itc_fw_app::VoidRequest::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
+        handle_void_request(conn_id, message);
         release_pdu_payload(message);
         return;
     }
@@ -1035,6 +1052,9 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     stamp_reports_forwarded_through(envelope);
 
     append_envelope_to_wal(envelope);
+    if (envelope.has_answers_seq_no) {
+        highest_command_answered_ = std::max(highest_command_answered_, envelope.answers_seq_no);
+    }
 
     // Which WalAck releases this ER to the gateway.
     //
@@ -1641,6 +1661,7 @@ void SequencerThread::SequencerReplicatedWalEvents::written_as_follower(int64_t 
     owner_.note_logged_command(view);
     owner_.note_trading_date(view);
     owner_.note_forwarded_sample(entry.wall_time_ns, view);
+    owner_.note_report_answers(view);
     fix_common::VoidedRange voided{};
     const VoidFromWal found = void_from_command(seq_no, view.pdu_id, view.payload.data, view.payload.size, owner_.void_decode_arena_, voided);
     static_cast<void>(owner_.note_void(seq_no, found, voided));
@@ -1656,10 +1677,31 @@ void SequencerThread::SequencerReplicatedWalEvents::discarded_after(int64_t seq_
 }
 
 void SequencerThread::SequencerReplicatedWalEvents::read_at_open(int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry) {
-    // The voids in the WAL, read here rather than by a read of the WAL of the sequencer's own, so that the list is
-    // complete before this instance serves any engine.
+    // The voids in the WAL, and the highest command a report answers, read here rather than by a read of the WAL of the
+    // sequencer's own, so that both are complete before this instance serves any engine. The envelope is decoded once
+    // for both, since this is done for every record the WAL holds.
+    if (entry.pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
+        return;
+    }
+    auto& arena_buf = owner_.decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::WalRecordView view{};
     fix_common::VoidedRange voided{};
-    static_cast<void>(owner_.note_void(seq_no, void_from_wal(seq_no, entry, owner_.decode_arena_buffer(), voided), voided));
+    if (!pubsub_itc_fw_app::decode(view, entry.bytes, entry.size, bytes_consumed, arena, arena_bytes_needed)) {
+        static_cast<void>(owner_.note_void(seq_no, VoidFromWal::NotDecodable, voided));
+        return;
+    }
+    owner_.note_report_answers(view);
+    const VoidFromWal found = void_from_command(seq_no, view.pdu_id, view.payload.data, view.payload.size, owner_.void_decode_arena_, voided);
+    static_cast<void>(owner_.note_void(seq_no, found, voided));
+}
+
+void SequencerThread::note_report_answers(const pubsub_itc_fw_app::WalRecordView& view) {
+    if (view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport) && view.has_answers_seq_no) {
+        highest_command_answered_ = std::max(highest_command_answered_, view.answers_seq_no);
+    }
 }
 
 bool SequencerThread::note_void(int64_t seq_no, VoidFromWal found, const fix_common::VoidedRange& voided) {
@@ -2243,6 +2285,112 @@ void SequencerThread::handle_halt_request(const pubsub_itc_fw::ConnectionID& con
                "halts trading on trading day {} ({}); a person must lift it (R-0123, R-0023)",
                request.instance_id, request.epoch, event.trading_day, pubsub_itc_fw_app::to_string(request.reason));
     write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id), bytes.data(), bytes_written);
+}
+
+void SequencerThread::handle_void_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::VoidRequestView request{};
+    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode VoidRequest -- dropping");
+        return;
+    }
+    const int64_t instance_id = request.instance_id;
+    const int64_t seq_no = request.seq_no;
+    // Only the leader writes commands. The engine asks again every second until it is answered.
+    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: VoidRequest for command seq={} from matching engine instance {} -- not acted on: this instance does not lead", seq_no,
+                   instance_id);
+        return;
+    }
+    // Both engines usually die on the same command, so both ask. The first request writes the void; the second is sent
+    // the voids, which name the command once its record is committed, and is asked again until then.
+    if (voids_.voiding(seq_no, fix_common::VoidedKind::cancel) != nullptr) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: VoidRequest for command seq={} from matching engine instance {} -- voided already; sending the voids", seq_no,
+                   instance_id);
+        send_voided_commands(conn_id);
+        return;
+    }
+    // An engine that leads has caught up past the command, so it applied it, and its reports of it may not be in the WAL
+    // yet: one that took the lead from following sends the reports it kept only as it takes the lead.
+    if (leading_engine_announced_on_.is_valid() && leading_engine_instance_ != instance_id) {
+        decline_void(conn_id, instance_id, seq_no, pubsub_itc_fw_app::VoidDeclinedReason::AnotherEngineLeads,
+                     "the other matching engine leads, so it applied the command and lived");
+        return;
+    }
+    if (seq_no <= highest_command_answered_) {
+        decline_void(conn_id, instance_id, seq_no, pubsub_itc_fw_app::VoidDeclinedReason::AnsweredAlready,
+                     "the WAL holds a report answering it or a later command, so an engine applied it and went on, and its member may have been told");
+        return;
+    }
+    bool found = false;
+    const CommandInRecord command = command_in_wal_at(seq_no, found);
+    if (!found) {
+        decline_void(conn_id, instance_id, seq_no, pubsub_itc_fw_app::VoidDeclinedReason::NotInWal, "the WAL does not hold it");
+        return;
+    }
+    if (command != CommandInRecord::MembersCommand) {
+        // A command the sequencer wrote itself is not voided: that would leave open orders the venue meant to cancel, or
+        // trading open that it meant to halt, and no member could be told why. A person deals with a crash on one.
+        decline_void(conn_id, instance_id, seq_no, pubsub_itc_fw_app::VoidDeclinedReason::NotAMembersCommand,
+                     command == CommandInRecord::NotDecodable ? "its record did not decode" : "it is not a member's new order or cancel");
+        return;
+    }
+    const pubsub_itc_fw_app::VoidCommands void_command{seq_no, seq_no, false, pubsub_itc_fw_app::VoidReason::EngineDiedApplying};
+    // Measured, then encoded into a buffer of the size measured.
+    size_t bytes_written = 0;
+    size_t bytes_needed = 0;
+    static_cast<void>(pubsub_itc_fw_app::encode(void_command, nullptr, 0, bytes_written, bytes_needed));
+    std::vector<uint8_t> bytes(bytes_needed);
+    if (!pubsub_itc_fw_app::encode(void_command, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a VoidCommands needs {} bytes and could not be encoded", bytes_needed);
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "SequencerThread: matching engine instance {} died applying command seq={}, and no engine applied it and went on -- writing a VoidCommands "
+               "command voiding it, so that every engine rejects it to its member instead of applying it (docs/availability/voided_commands.md, section 4)",
+               instance_id, seq_no);
+    write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id), bytes.data(), bytes_written);
+}
+
+void SequencerThread::decline_void(const pubsub_itc_fw::ConnectionID& conn_id, int64_t instance_id, int64_t seq_no,
+                                   pubsub_itc_fw_app::VoidDeclinedReason reason, const char* why) {
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "SequencerThread: matching engine instance {} died applying command seq={} and asked for it to be voided -- declined, because {} ({})",
+               instance_id, seq_no, why, pubsub_itc_fw_app::to_string(reason));
+    send_pdu(conn_id, pubsub_itc_fw_app::VoidDeclined::message_pdu_id, 0, pubsub_itc_fw_app::VoidDeclined{seq_no, reason});
+}
+
+CommandInRecord SequencerThread::command_in_wal_at(int64_t seq_no, bool& found) {
+    found = false;
+    if (seq_no <= 0 || seq_no > replicated_wal_->last_seq_no()) {
+        return CommandInRecord::OtherRecord;
+    }
+    try {
+        pubsub_itc_fw::WalCursor cursor;
+        cursor.open(config_.wal_directory, replicated_wal_->wal().scan_start_for(seq_no));
+        int64_t record_id = 0;
+        const uint8_t* payload = nullptr;
+        size_t size = 0;
+        while (cursor.read_next(record_id, payload, size)) {
+            if (record_id < seq_no) {
+                continue;
+            }
+            if (record_id > seq_no) {
+                break;
+            }
+            found = true;
+            const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
+            return contents.has_value() ? command_in_record(*contents, decode_arena_buffer()) : CommandInRecord::NotDecodable;
+        }
+    } catch (const std::exception& error) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: reading the WAL for command seq={} failed: {}", seq_no, error.what());
+    }
+    return CommandInRecord::OtherRecord;
 }
 
 void SequencerThread::write_own_command(int16_t inner_pdu_id, const uint8_t* bytes, size_t size) {
@@ -3917,7 +4065,17 @@ void SequencerThread::handle_role_announcement(const pubsub_itc_fw::ConnectionID
     // The announcement arrives on the announcing instance's ER connection, which is not the socket
     // orders travel on; EngineOrderRouting maps the instance to this sequencer's own order connection.
     const int32_t accepted_epoch = engine_routing_.announced_epoch();
-    switch (engine_routing_.announced(announcement.instance_id, announcement.current_role, announcement.epoch)) {
+    const EngineOrderRouting::AnnouncementOutcome outcome = engine_routing_.announced(announcement.instance_id, announcement.current_role, announcement.epoch);
+    if (outcome != EngineOrderRouting::AnnouncementOutcome::RefusedAsBehind) {
+        if (announcement.current_role == pubsub_itc_fw_app::Role::leader) {
+            leading_engine_instance_ = announcement.instance_id;
+            leading_engine_announced_on_ = conn_id;
+        } else if (announcement.instance_id == leading_engine_instance_) {
+            leading_engine_instance_ = 0;
+            leading_engine_announced_on_ = pubsub_itc_fw::ConnectionID{};
+        }
+    }
+    switch (outcome) {
         case EngineOrderRouting::AnnouncementOutcome::RefusedAsBehind:
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: RoleAnnouncement from instance {} on connection {} quotes epoch {}, behind the {} already accepted -- refusing",

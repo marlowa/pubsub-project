@@ -150,6 +150,11 @@ std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionRepor
     }
     writer.push_back_field(Tag::CumQty, view.cum_qty);
     writer.push_back_field(Tag::LeavesQty, view.leaves_qty);
+    // Why the order was refused, or anything else the matching engine has to say about it. Without it a member sent a
+    // rejection learns only the OrdRejReason code, which for a refusal for some reason of the venue's own is Other.
+    if (view.has_text && !view.text.empty()) {
+        writer.push_back_field(Tag::Text, view.text);
+    }
 
     // Repeating groups the matching engine echoed onto the ER (NoUnderlyings, NoPartyIDs
     // with nested NoPartySubIDs). Emitted after the flat fields; each instance leads with

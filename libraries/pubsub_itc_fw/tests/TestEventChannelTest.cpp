@@ -290,6 +290,19 @@ TEST(TestEventsConfigurationTest, ANegativeDelayBeforeAnnouncingSessionsIsRefuse
     EXPECT_THROW(loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"g\"\ndelay_session_announcements_ms = -1\n"), ConfigurationException);
 }
 
+TEST(TestEventsConfigurationTest, WithoutTheirKeysTheMatchingEngineDiesApplyingNoOrder) {
+    const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"matching_engine_primary\"\n");
+    EXPECT_TRUE(configuration.die_applying_cl_ord_id.empty());
+    EXPECT_FALSE(configuration.die_applying_once);
+}
+
+TEST(TestEventsConfigurationTest, TheOrderTheMatchingEngineDiesApplyingIsRead) {
+    const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"matching_engine_primary\"\n"
+                                      "die_applying_cl_ord_id = \"DIE-1\"\ndie_applying_once = true\n");
+    EXPECT_EQ(configuration.die_applying_cl_ord_id, "DIE-1");
+    EXPECT_TRUE(configuration.die_applying_once);
+}
+
 TEST(TestEventsConfigurationTest, AnEmptyComponentIsRefused) {
     EXPECT_THROW(loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"\"\n"), ConfigurationException);
 }
