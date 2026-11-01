@@ -43,7 +43,7 @@
 > alone, every decision is a command in the WAL, and both engines run on the same WAL give the reports a replay gives
 > ([deterministic_matching_engine.md](availability/deterministic_matching_engine.md)); a catch-up from far back sends
 > no report the WAL already holds ([far_back_catch_up.md](availability/far_back_catch_up.md)). Andrew closed it on
-> 27 October 2026. Phase 8 is next.
+> 27 October 2026. Phase 8 is under way.
 
 ## In one page
 
@@ -395,7 +395,10 @@ leader's, and does not lead if they differ. Its step 5 measured the stream to th
 median, and about 15 at the 99th percentile, of the sequencer's time to send an order on. Every point of the finish
 condition below is met. The second design the phase needs, for [BUG-0193](bug_list.md#bug_0193) and
 [BUG-0197](bug_list.md#bug_0197), is [voided_commands.md](availability/voided_commands.md), whose eight decisions Andrew
-took on 31 October 2026. Its step 1, the void, is built.
+took on 31 October 2026. Its steps 1 to 3 are built: the void; voiding a command that crashed both engines
+([BUG-0193](bug_list.md#bug_0193) remains open for what it costs); and holding orders while no engine leads, sent to no
+engine, and refusing new ones after five seconds. Steps 4 and 5, voiding the held orders at a halt and the operator's
+halt and lift, remain.
 
 **For:** losing the leading matching engine costs a short pause and nothing else. The members' resting
 orders are still on the book afterwards.

@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the major version is `0`, the public API is not yet considered stable and may
 change in any release.
 
-## [Unreleased]
+## [0.5.0] - 2026-11-01
 
-Development continues after 0.4.0. New features are frozen while the design is restored, phase by
-phase, under `docs/recovery_plan.md`; phases 1 to 7 of that plan are finished. The entries below
-describe the venue as it now is.
+New features are frozen while the design is restored, phase by phase, under `docs/recovery_plan.md`.
+Phases 1 to 7 of that plan are finished, and phase 8, in which both matching engines apply the WAL, is
+under way: its first design is built, and the first three of the five steps of its second design,
+`docs/availability/voided_commands.md`, are built. The entries below describe the venue as it now is.
+`docs/history/releases/v0.5.0.md` gives the highlights and what to change when upgrading.
 
 ### Added
 
@@ -222,7 +224,7 @@ describe the venue as it now is.
 
 ### Fixed
 
-Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among them:
+Eighty bugs are closed since 0.4.0, and 127 recorded; `docs/bug_list.md` describes each. Among them:
 
 - **A matching engine whose lease ran out and was at once granted another stayed a follower while it led**
   (BUG-0218): it took the answer to its request to lead as the end of following, and acted on no order the
@@ -342,7 +344,7 @@ Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among
 
 ### Known limitations
 
-- **79 bugs are open, 18 of them high severity**; `docs/bug_list.md` lists them.
+- **80 bugs are open, 18 of them high severity**; `docs/bug_list.md` lists them.
 
 ## [0.4.0] - 2026-09-14
 

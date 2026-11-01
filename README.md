@@ -1,10 +1,10 @@
 # pubsub_itc_fw
 
-![version](https://img.shields.io/badge/version-v0.4.0-orange)
+![version](https://img.shields.io/badge/version-v0.5.0-orange)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
-**Current version:** v0.4.0 — see [CHANGELOG.md](CHANGELOG.md). Development continues: new features are frozen while the design is restored, phase by phase, under [the plan for restoring the design](docs/recovery_plan.md). [docs/project_status.md](docs/project_status.md) says what works, what is known to be wrong, and where to start.
+**Current version:** v0.5.0 — see [CHANGELOG.md](CHANGELOG.md). Development continues: new features are frozen while the design is restored, phase by phase, under [the plan for restoring the design](docs/recovery_plan.md). [docs/project_status.md](docs/project_status.md) says what works, what is known to be wrong, and where to start.
 
 ---
 
