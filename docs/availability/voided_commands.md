@@ -528,7 +528,8 @@ leading first.
    primary first. Of the two that failed, scenario 59 is [BUG-0185](../bug_list.md#bug_0185), and scenario 6 found
    [BUG-0218](../bug_list.md#bug_0218), in the matching engine, which the sequencer's behaviour here does not touch:
    an engine whose lease ran out and was granted again within milliseconds took the answer to its request to lead as
-   the end of following. Both passed when run again.
+   the end of following. Both passed when run again. With BUG-0218 fixed, and scenario 93 added to reproduce it, both
+   full suites pass: 93 of 93 with the primary engine leading first, and 35 of 35 with the secondary first.
 
    **Measured: how long orders are held in a change of engine leader.** In the same runs, each time an engine took
    orders again after one had led, in milliseconds:
@@ -608,6 +609,14 @@ fixed. The setting is `[recovery] orders_held_at_most_seconds`.
 **Recommendation: yes.**
 
 **Decided** on 31 October 2026: yes.
+
+**The measurement, and what follows from it.** Step 3 measured an ordinary change of engine leader at up to 4.9
+seconds, and up to 6.3 seconds when an arbiter dies too or an engine is promoted a second time (section 8, step 3).
+About 1.7 seconds of the ordinary case is the engine that is to lead waiting a whole lease period after a request to
+lead that no voter answered, because the voters' promise to the dead engine still stood. Three ways were put: keep 5
+seconds; raise it; or keep 5 seconds and have an instance waiting to lead ask again every renewal interval instead of
+every lease period. **Decided** on 1 November 2026: the third. The change is to the lease code in the library, so it
+applies to every pair, and the changes of leader are measured again once it is made.
 
 ### Decision 5. Who sends the rejections of the orders held when trading halts? (Choose one.)
 

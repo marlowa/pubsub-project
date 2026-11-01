@@ -320,7 +320,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
             // Becoming current, not taking the role: who may act is the arbiter's to say, and
             // an instance that promoted itself on the strength of having caught up would be
             // deciding that for itself.
-            reconciling_to_lead_ = false;
+            catch_up_purpose_ = CatchUpPurpose::BecomeCurrent;
             begin_reconciliation();
         }
     }
@@ -581,6 +581,7 @@ void MatchingEngineThread::apply_command(const pubsub_itc_fw::EventMessage& mess
             die_if_named(view, message.seq_no());
             state_machine_.apply_new_order(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
                                            session_identity_from(envelope), source);
+            lose_and_regain_lease_if_named(view);
         }
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
@@ -643,6 +644,17 @@ void MatchingEngineThread::die_if_named(const pubsub_itc_fw_app::NewOrderSingleV
     std::abort();
 }
 
+void MatchingEngineThread::lose_and_regain_lease_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view) {
+    const std::string& named = config_.test_events.lose_and_regain_lease_after_cl_ord_id;
+    if (named.empty() || view.cl_ord_id != named || lost_and_regained_lease_ || !ha_enabled_ || ha_role_state_ != MeRole::Leader) {
+        return;
+    }
+    lost_and_regained_lease_ = true;
+    // From a timer rather than here, so that the order is finished with first, as it is when a lease runs out between
+    // two orders.
+    lose_and_regain_lease_timer_id_ = start_one_off_timer(std::chrono::milliseconds{1});
+}
+
 CommandSource MatchingEngineThread::command_source_for(int64_t sequence_number) {
     current_command_follows_ = keeps_its_reports();
     if (following_the_wal()) {
@@ -701,7 +713,7 @@ bool MatchingEngineThread::holding_reports_until_entitled() const {
     // Only a catch-up done at startup. A promotion's catch-up is a different case: that instance
     // has been told it will lead, and its reports go out as they are produced. With high
     // availability off there is no peer to defer to and nothing to wait for.
-    return ha_enabled_ && ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead_;
+    return ha_enabled_ && ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead();
 }
 
 void MatchingEngineThread::release_held_reports() {
@@ -961,6 +973,17 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         return;
     }
 
+    if (id == lose_and_regain_lease_timer_id_) {
+        // What the lease agent reports when the lease runs out and the peer grants another before the request to follow
+        // is answered, one after the other, as on the death of both arbiters (BUG-0218).
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "MatchingEngineThread: acting as if the lease ran out and was at once granted again, as [test_events] "
+                       "lose_and_regain_lease_after_cl_ord_id says");
+        act_on(pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading);
+        act_on(pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader);
+        return;
+    }
+
     if (id == reconciliation_timer_id_) {
         if (ha_role_state_ != MeRole::Reconciling) {
             cancel_timer(reconciliation_timer_id_);
@@ -1108,7 +1131,9 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
         case pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading:
             // Stops matching at once, whatever it was doing, and tells the sequencers so they stop
             // routing orders here.
-            reconciling_to_lead_ = false;
+            if (catch_up_purpose_ == CatchUpPurpose::Lead) {
+                catch_up_purpose_ = CatchUpPurpose::BecomeCurrent;
+            }
             if (halt_awaited_) {
                 halt_awaited_ = false;
                 cancel_timer(halt_request_timer_id_);
@@ -1117,7 +1142,7 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
             enter_follower_state();
             break;
         case pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads:
-            if (ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead_) {
+            if (ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead()) {
                 // Catching up at startup: follow once the catch-up ends.
                 peer_leader_heard_while_reconciling_ = true;
                 peer_leader_instance_id_ = peer_instance_id();
@@ -1483,8 +1508,7 @@ void MatchingEngineThread::follow_the_wal_again(const char* why) {
                "MatchingEngineThread: following the WAL -- {}, so asking to be caught up again from the last command applied, {}, and to go on following", why,
                state_machine_.highest_applied());
     role_when_following_again_ = ha_role_state_ == MeRole::Leader ? MeRole::Follower : ha_role_state_;
-    following_again_ = true;
-    reconciling_to_lead_ = false;
+    catch_up_purpose_ = CatchUpPurpose::FollowAgain;
     next_followed_seq_no_ = 0;
     begin_reconciliation();
 }
@@ -1637,8 +1661,9 @@ void MatchingEngineThread::become_leader_when_current() {
     // the first sequencer connected, and has waited since to learn its role, was current only at
     // that moment: a sequencer sends orders only to the engine that leads, so every order accepted
     // while it waited reached it only through the WAL. Leading without catching up would lose
-    // each of them, and tell no member (BUG-0198).
-    reconciling_to_lead_ = true;
+    // each of them, and tell no member (BUG-0198). A catch-up to follow again that is under way is replaced: its answer is
+    // not waited for (BUG-0218).
+    catch_up_purpose_ = CatchUpPurpose::Lead;
     begin_reconciliation();
 }
 
@@ -1703,7 +1728,7 @@ pubsub_itc_fw::WalFollowRequest MatchingEngineThread::follow_request(const std::
     // with high availability on, follows the WAL and is sent every record as it is committed. A single engine, with high
     // availability off, is the one that acts, so it asks as one that is to lead.
     request.wants_new_records = true;
-    request.to_lead = reconciling_to_lead_ || !ha_enabled_;
+    request.to_lead = reconciling_to_lead() || !ha_enabled_;
     return request;
 }
 
@@ -1737,7 +1762,7 @@ void MatchingEngineThread::send_follow_request() {
         send_pdu(conn_id, pubsub_itc_fw::WalFollowRequest::message_pdu_id, 0, request);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: asked on connection {} to be caught up (request {}, last_seq_no={}, {})", conn_id.get_value(), request.request_number,
-                   request.last_seq_no, reconciling_to_lead_ ? "asking to lead" : "starting, not asking to lead");
+                   request.last_seq_no, reconciling_to_lead() ? "asking to lead" : "starting, not asking to lead");
     }
     follow_request_sent_ = true;
 }
@@ -1765,7 +1790,7 @@ void MatchingEngineThread::ask_on_new_sequencer_connection(const pubsub_itc_fw::
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: asked on new connection {} to be caught up (request {}, last_seq_no={}, {}), leaving the catch-up asked for on the "
                "others to finish",
-               id.get_value(), request.request_number, request.last_seq_no, reconciling_to_lead_ ? "asking to lead" : "starting, not asking to lead");
+               id.get_value(), request.request_number, request.last_seq_no, reconciling_to_lead() ? "asking to lead" : "starting, not asking to lead");
 }
 
 void MatchingEngineThread::handle_follow_declined(const pubsub_itc_fw::EventMessage& message) {
@@ -1949,7 +1974,7 @@ void MatchingEngineThread::handle_follow_started(const pubsub_itc_fw::EventMessa
     if (follows_the_wal_ && kept_reports_.empty()) {
         keeping_from_ = started.after_seq_no + 1;
     }
-    if (reconciling_to_lead_) {
+    if (reconciling_to_lead()) {
         send_kept_reports_after(reports_in_wal_through_);
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -2019,8 +2044,8 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     last_catch_up_records_sent_ = ack.records_sent;
     report_catch_up(pubsub_itc_fw_app::CatchUpStage::Completed, ack.last_seq_no, ack.records_sent);
 
-    if (following_again_) {
-        following_again_ = false;
+    if (catch_up_purpose_ == CatchUpPurpose::FollowAgain) {
+        catch_up_purpose_ = CatchUpPurpose::BecomeCurrent;
         has_reconciled_ = true;
         has_position_ = true;
         ha_role_state_ = role_when_following_again_;
@@ -2052,7 +2077,7 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     has_position_ = true;
     ha_role_state_ = MeRole::Unknown; // clear reconciling
 
-    if (!reconciling_to_lead_) {
+    if (!reconciling_to_lead()) {
         if (follows_the_wal_) {
             next_followed_seq_no_ = ack.last_seq_no + 1;
         }
@@ -2111,7 +2136,7 @@ void MatchingEngineThread::account_for_unusable_region(const pubsub_itc_fw::WalF
     // Orders taken before the WAL's first record cannot be named, so this book is not the venue's. Cancelling the orders
     // it can name would leave every other one unmentioned, which is the silence R-0020 exists to prevent, reached while
     // appearing to have dealt with it; so nothing is cancelled.
-    if (ha_enabled_ && !reconciling_to_lead_) {
+    if (ha_enabled_ && !reconciling_to_lead()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                    "MatchingEngineThread: the order book region could not be used, and the WAL starts at seq_no={}, so the orders taken before it cannot be "
                    "named -- this instance follows, so the engine that leads goes on trading; if this instance is to lead, it halts trading first (R-0123)",

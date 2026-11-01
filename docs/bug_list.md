@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 218 |
-| Open | 81 (57 defects, 24 tasks) |
-| Closed | 137 |
+| Open | 80 (56 defects, 24 tasks) |
+| Closed | 138 |
 | Next id | BUG-0219 |
 
 ## Open bugs by severity
 
-19 high, 48 medium, 14 low.
+18 high, 48 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -31,7 +31,6 @@
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered, instead of halting and saying so |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the absence limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
-| [BUG-0218](#bug_0218) | high | defect | A matching engine that loses its lease and is granted another at once takes the answer to its request to lead as the end of following, and stays a follower while it leads |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -190,33 +189,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0218: A matching engine that loses its lease and is granted another at once takes the answer to its request to lead as the end of following, and stays a follower while it leads {#bug_0218}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-11-01 |
-| Recorded | 2026-11-01 |
-| How | `ha_test.py` scenario 6, death of both arbiters, in a full run of the scenarios: the 1,000 orders sent after the arbiters died were never answered. Logs kept in `tmp/ha_test_failures/20261101-073305-scenario-6-both_arbiters_dead` |
-| Impact | The engine holds the lease and the sequencer sends it orders, but it takes itself to be a follower and acts on none of them. No member's order is answered until the engine loses its lease again |
-
-**What happens.** In scenario 6 the primary matching engine led, and the arbiters were killed. At 07:32:34.086 its
-lease ran out, because neither the arbiter nor its peer had renewed it. It became a follower, and
-`MatchingEngineThread::follow_the_wal_again` asked to be caught up to follow (request 4), setting `following_again_`.
-At 07:32:34.086 the peer granted it a lease at a new epoch, and `become_leader_when_current` asked to be caught up to
-lead (request 5), setting `reconciling_to_lead_` but leaving `following_again_` set. The leading sequencer answered
-request 5, routed orders to the engine, and said an engine takes orders again. The engine logged "taking the lead",
-and then, when the answer ended, `handle_caught_up` took the branch for following again, because `following_again_`
-was still set: it logged "caught up again at seq_no=42000 ... following the WAL from record 42001, as FOLLOWER", and
-ignored the orders the sequencer then sent it.
-
-**What is wanted.** Asking to lead replaces a catch-up to follow that is under way: `become_leader_when_current`
-clears `following_again_`, and a scenario, or a test of the engine's thread, makes a lease run out and be granted again
-before the first answer ends. It needs the lease lost and granted again within milliseconds, so the full runs of the
-scenarios meet it rarely.
-
-**Principles.** V6: every command a gateway accepted is answered.
 
 ### BUG-0216: Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path {#bug_0216}
 
@@ -3817,6 +3789,45 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0218: A matching engine that loses its lease and is granted another at once takes the answer to its request to lead as the end of following, and stays a follower while it leads {#bug_0218}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-11-01 |
+| Recorded | 2026-11-01 |
+| Fixed | 2026-11-01 -- the engine keeps one purpose for its catch-up, and asking to lead replaces a catch-up to follow again |
+| How | `ha_test.py` scenario 6, death of both arbiters, in a full run of the scenarios: the 1,000 orders sent after the arbiters died were never answered. Logs kept in `tmp/ha_test_failures/20261101-073305-scenario-6-both_arbiters_dead` |
+| Impact | The engine holds the lease and the sequencer sends it orders, but it takes itself to be a follower and acts on none of them. No member's order is answered until the engine loses its lease again |
+
+**What happens.** In scenario 6 the primary matching engine led, and the arbiters were killed. At 07:32:34.086 its
+lease ran out, because neither the arbiter nor its peer had renewed it. It became a follower, and
+`MatchingEngineThread::follow_the_wal_again` asked to be caught up to follow (request 4), setting `following_again_`.
+At 07:32:34.086 the peer granted it a lease at a new epoch, and `become_leader_when_current` asked to be caught up to
+lead (request 5), setting `reconciling_to_lead_` but leaving `following_again_` set. The leading sequencer answered
+request 5, routed orders to the engine, and said an engine takes orders again. The engine logged "taking the lead",
+and then, when the answer ended, `handle_caught_up` took the branch for following again, because `following_again_`
+was still set: it logged "caught up again at seq_no=42000 ... following the WAL from record 42001, as FOLLOWER", and
+ignored the orders the sequencer then sent it.
+
+**What is wanted.** Asking to lead replaces a catch-up to follow that is under way: `become_leader_when_current`
+clears `following_again_`, and a scenario, or a test of the engine's thread, makes a lease run out and be granted again
+before the first answer ends. It needs the lease lost and granted again within milliseconds, so the full runs of the
+scenarios meet it rarely.
+
+**The fix.** `MatchingEngineThread` holds what its present catch-up is for in one value, `catch_up_purpose_`
+(`CatchUpPurpose::BecomeCurrent`, `Lead` or `FollowAgain`), in place of the two flags `reconciling_to_lead_` and
+`following_again_`. `become_leader_when_current` sets it to `Lead`, so a request to lead replaces a catch-up to follow
+again that is under way, and `handle_caught_up` takes the branch the latest request asked for.
+
+A test hook makes the case happen on demand: `[test_events] lose_and_regain_lease_after_cl_ord_id` names an order, and
+just after the leading engine applies it the engine acts as if its lease ran out and was at once granted again.
+`ha_test.py` scenario 93, `lease_lost_and_regained_at_once`, uses it, and requires every order sent afterwards to be
+answered. With the two flags put back the scenario fails, and with the fix it passes, in both full runs of the
+scenarios, primary engine first and secondary engine first.
+
+**Principles.** V6: every command a gateway accepted is answered.
 
 ### BUG-0174: With high availability on and no matching engine connected, the leading sequencer reads its WAL on its own thread to count the orders that are deferred {#bug_0174}
 

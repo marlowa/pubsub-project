@@ -477,11 +477,20 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // has taken since the last reclaim rather than the few it missed.
     bool has_position_{false};
 
-    // Whether this catch-up is part of taking the role, or only part of becoming current.
+    // What the present catch-up is for: becoming current, taking the role, or following again.
     // Being current and being entitled to act are separate things, and only the lease rules say
     // who acts. A catch-up done at startup ends with the instance current and still waiting to
-    // be told; one begun because this instance is to lead ends with it leading.
-    bool reconciling_to_lead_{false};
+    // be told; one begun because this instance is to lead ends with it leading; one begun by an
+    // instance already following, after it found a record missing, lost its sequencer, or stopped
+    // leading, ends with it following again, in the role it had. One value, not a flag for each,
+    // because a later request replaces an earlier one: an instance that began following again and
+    // was then granted a lease asks to lead, and the answer it waits for is the one to lead
+    // (BUG-0218).
+    enum class CatchUpPurpose : int8_t { BecomeCurrent, Lead, FollowAgain };
+    CatchUpPurpose catch_up_purpose_{CatchUpPurpose::BecomeCurrent};
+    [[nodiscard]] bool reconciling_to_lead() const {
+        return catch_up_purpose_ == CatchUpPurpose::Lead;
+    }
 
     // Following the WAL (docs/availability/both_engines_apply_the_wal.md, section 2). With high availability on, an engine
     // that is not to lead asks to follow: it is sent every committed record, reports included, and applies every command
@@ -495,9 +504,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     bool current_command_follows_{false};
     // How many reports were not sent because their commands were applied while following, for the Quill log.
     int64_t followed_reports_withheld_{0};
-    // Whether the present catch-up was asked for by an instance already following, after it found a record missing, lost
-    // its sequencer, or was told the leading sequencer changed; and the role it goes back to when the catch-up ends.
-    bool following_again_{false};
+    // For a catch-up to follow again: the role the instance goes back to when it ends.
     MeRole role_when_following_again_{MeRole::Unknown};
 
     // That this instance granted its peer a lease while it was still catching up at startup, and
@@ -723,6 +730,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Aborts the process if a test named this order's ClOrdID in [test_events] die_applying_cl_ord_id, and the order is
     // about to be applied rather than voided or passed over (docs/availability/voided_commands.md, section 8, step 2).
     void die_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number);
+
+    // If a test named this order's ClOrdID in [test_events] lose_and_regain_lease_after_cl_ord_id, and this instance
+    // leads, starts lose_and_regain_lease_timer_id_, once in the life of the process, so that just after the order is
+    // applied the instance acts as if its lease ran out and was at once granted again (BUG-0218).
+    void lose_and_regain_lease_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view);
+    bool lost_and_regained_lease_{false};
+    pubsub_itc_fw::TimerID lose_and_regain_lease_timer_id_{};
 
     // ---- A command the process before this one died applying (docs/availability/voided_commands.md, section 4) ----
 

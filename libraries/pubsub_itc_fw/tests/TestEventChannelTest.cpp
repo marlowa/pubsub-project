@@ -294,6 +294,13 @@ TEST(TestEventsConfigurationTest, WithoutTheirKeysTheMatchingEngineDiesApplyingN
     const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"matching_engine_primary\"\n");
     EXPECT_TRUE(configuration.die_applying_cl_ord_id.empty());
     EXPECT_FALSE(configuration.die_applying_once);
+    EXPECT_TRUE(configuration.lose_and_regain_lease_after_cl_ord_id.empty());
+}
+
+TEST(TestEventsConfigurationTest, TheOrderAfterWhichTheMatchingEngineLosesAndRegainsItsLeaseIsRead) {
+    const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"matching_engine_primary\"\n"
+                                      "lose_and_regain_lease_after_cl_ord_id = \"BOUNCE-1\"\n");
+    EXPECT_EQ(configuration.lose_and_regain_lease_after_cl_ord_id, "BOUNCE-1");
 }
 
 TEST(TestEventsConfigurationTest, TheOrderTheMatchingEngineDiesApplyingIsRead) {

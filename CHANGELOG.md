@@ -118,6 +118,20 @@ describe the venue as it now is.
   recovers. Nothing is cancelled, and a person must lift the halt. This is the halt BUG-0197 asks
   for; scenarios 85 and 86 test it (`docs/availability/far_back_catch_up.md`, section 5).
 
+- **A command can be voided by a later command in the WAL.** `VoidCommands` names commands no engine is to
+  apply; an engine rejects a voided new order to its member and answers a voided cancel with the order's status.
+  Every engine is told of each void before it reaches the command it names, and an engine that applied a command
+  before learning of its void refuses to lead and marks its region unusable. The sequencer keeps the list from its
+  WAL, and `wal_replay_check` reads the voids first (`docs/availability/voided_commands.md`, step 1).
+- **A command that crashes both matching engines is voided, and the venue goes on.** An engine records in its
+  region the command it is applying; one that finds, restarted, that it died applying a command asks its peer
+  whether it applied it, and, if not, asks the leading sequencer to void it. The member is sent a rejection saying
+  the matching engines stopped applying the order, and every other order is answered as usual. Scenario 90 tests
+  it, and scenario 91 an engine that died on a command its peer applied, which is not voided (step 2; BUG-0193,
+  part 2).
+- **Scenario 93** makes the leading matching engine act as if its lease ran out and was at once granted again,
+  with the new `[test_events] lose_and_regain_lease_after_cl_ord_id`, and requires it to lead again.
+
 ### Changed
 
 - **While no matching engine leads, orders are held, and refused after five seconds.** The leading
@@ -210,6 +224,11 @@ describe the venue as it now is.
 
 Fifty-four bugs are closed since 0.4.0; `docs/bug_list.md` describes each. Among them:
 
+- **A matching engine whose lease ran out and was at once granted another stayed a follower while it led**
+  (BUG-0218): it took the answer to its request to lead as the end of following, and acted on no order the
+  sequencer sent it. What a catch-up is for is now one value, so asking to lead replaces following again.
+- **The FIX gateway left the matching engine's text out of every execution report** (BUG-0217), so a member
+  sent a rejection was told only the reason code.
 - **Orders sent while the sequencers changed leader were lost without a reply** (BUG-0103), and an
   order in the new leader's WAL that the matching engine never received was never applied
   (BUG-0115).

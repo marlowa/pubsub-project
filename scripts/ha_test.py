@@ -1103,6 +1103,10 @@ class Scenario(NamedTuple):
     # once; the scenario requires it to be restarted, find that its peer applied the order, ask for no void, and the order
     # to be accepted. See the same block.
     assert_engine_death_not_voided: bool = False
+    # When True, the matching engine leading at the start acts as if its lease ran out and was at once granted again, just
+    # after it applies a named order ([test_events] lose_and_regain_lease_after_cl_ord_id), and the orders placed after it
+    # must be accepted: the engine must lead again, not stay a follower (BUG-0218).
+    assert_lease_lost_and_regained: bool = False
     # When True, damage the matching engine's open-order region before restarting it, and
     # assert that the engine refuses it, keeps it aside, rebuilds its book from the WAL, which
     # reaches the first command of the day, and carries on with every order, cancelling nothing
@@ -4699,6 +4703,29 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 93 -- an engine whose lease runs out and is at once granted again leads again.
+    #
+    # BUG-0218. When both arbiters die, the leading engine's lease can run out and its peer grant it another within
+    # milliseconds. The engine stops leading and asks to be caught up to follow, and then, granted the lease, asks to be
+    # caught up to lead. The answer it waits for is the one to lead. Before the fix it took that answer as the end of
+    # following, stayed a follower while holding the lease, and acted on no order the sequencer sent it. That needs the
+    # timing to fall just so, which a full run meets rarely, so here the engine is made to act out the two changes one after
+    # the other, just after it applies a named order, and the orders placed after it must be accepted.
+    Scenario(
+        number=93,
+        short_name="lease_lost_and_regained_at_once",
+        description="A matching engine whose lease runs out and is at once granted again leads again",
+        expected_outcome=(
+            "the leading engine stops leading and leads again, just after the named order; every order placed after it is "
+            "accepted"
+        ),
+        me_ha=True,
+        assert_lease_lost_and_regained=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 92 -- orders are held while no engine leads, for as long as a change of engine leader takes, and refused after that.
     #
     # docs/availability/voided_commands.md, sections 5.1 and 5.2. Both engines are taken away. Several orders are placed
@@ -5871,6 +5898,10 @@ _DIE_APPLYING_CL_ORD_ID = "die-applying-1"
 # whether it dies only once ([test_events] die_applying_cl_ord_id and die_applying_once); set from the scenario before
 # anything is started, and emptied before the engines are run on the WAL afterwards.
 _DIE_APPLYING_NOW: dict[str, tuple[str, bool]] = {}
+# The ClOrdID after which scenario 93 has the leading matching engine act as if its lease ran out and was at once granted
+# again, and the engines of the scenario being run that are to do so ([test_events] lose_and_regain_lease_after_cl_ord_id).
+_LEASE_LOST_AND_REGAINED_CL_ORD_ID = "lease-bounce-1"
+_LEASE_LOST_AND_REGAINED_NOW: dict[str, str] = {}
 
 # The components that send test events so far. Others are added as their checks move onto test events.
 _TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter", "fix_order_gateway", "binary_order_gateway")
@@ -5878,13 +5909,14 @@ _TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter", "fix_order_
 
 def config_with_test_events(config: Path, listener: TestEventListener, name: str, report_orders_of: tuple = (),
                             comp_ids_without_session: tuple = (), delay_session_announcements_ms: int = 0,
-                            die_applying: tuple[str, bool] | None = None) -> Path:
+                            die_applying: tuple[str, bool] | None = None, lose_and_regain_lease_after: str | None = None) -> Path:
     """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
     knows the component by, which its threads give when they introduce themselves. report_orders_of lists the comp ids
     whose orders a matching engine reports the outcome of. comp_ids_without_session lists the comp ids whose reports a
     sequencer is to expect to reach no session. delay_session_announcements_ms is how long a gateway waits before it
     announces its sessions on a sequencer link that has come up. die_applying, for a matching engine, is the ClOrdID of a
-    new order it dies applying, and whether it dies only once.
+    new order it dies applying, and whether it dies only once. lose_and_regain_lease_after, for a matching engine, is the
+    ClOrdID of a new order after which it acts as if its lease ran out and was at once granted again.
 
     Written beside the original, so that the paths in it still resolve, and used instead of it. Named after the
     component, not the original file, because two components can be started from one file."""
@@ -5900,6 +5932,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
         text += f"delay_session_announcements_ms = {delay_session_announcements_ms}\n"
     if die_applying is not None:
         text += f"die_applying_cl_ord_id = \"{die_applying[0]}\"\ndie_applying_once = {'true' if die_applying[1] else 'false'}\n"
+    if lose_and_regain_lease_after is not None:
+        text += f"lose_and_regain_lease_after_cl_ord_id = \"{lose_and_regain_lease_after}\"\n"
     copy = config.with_name(f"{name}_test_events.toml")
     copy.write_text(text)
     return copy
@@ -5930,7 +5964,8 @@ def launch_app(name: str, bin_name: str, config: Path,
         config = config_with_test_events(config, _TEST_EVENTS, name, _REPORT_ORDERS_NOW if bin_name == "matching_engine" else (),
                                          _COMP_IDS_WITHOUT_SESSION if bin_name == "sequencer" else (),
                                          _ANNOUNCEMENT_DELAY_MS_NOW if bin_name in ("fix_order_gateway", "binary_order_gateway") else 0,
-                                         _DIE_APPLYING_NOW.get(name) if bin_name == "matching_engine" else None)
+                                         _DIE_APPLYING_NOW.get(name) if bin_name == "matching_engine" else None,
+                                         _LEASE_LOST_AND_REGAINED_NOW.get(name) if bin_name == "matching_engine" else None)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -7392,6 +7427,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         # ── Phase 1: start all processes ──────────────────────────────────────
         global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW, _DIE_APPLYING_NOW  # pylint: disable=global-statement
+        global _LEASE_LOST_AND_REGAINED_NOW  # pylint: disable=global-statement
         _INSTALL_PREFIX = prefix
         _ANNOUNCEMENT_DELAY_MS_NOW = scenario.delay_session_announcements_ms
         # The engine that leads at the start is the one started first, which must lead before the other starts, and
@@ -7404,6 +7440,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             _DIE_APPLYING_NOW = {dies_first: (_DIE_APPLYING_CL_ORD_ID, True)}
         else:
             _DIE_APPLYING_NOW = {}
+        _LEASE_LOST_AND_REGAINED_NOW = {dies_first: _LEASE_LOST_AND_REGAINED_CL_ORD_ID} if scenario.assert_lease_lost_and_regained else {}
         # Until phase 2 has seen which matching engine leads, the primary is taken to.
         _ENGINES_AT_START.update({ENGINE_LEADING_AT_START: "matching_engine_primary", ENGINE_FOLLOWING_AT_START: "matching_engine_secondary"})
         # The member's orders are reported by the engine only in the scenarios whose checks no member can make: that an
@@ -7988,7 +8025,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 and not scenario.assert_held_answered and not scenario.expects_no_new_leader
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
-                and not scenario.assert_engine_death_not_voided):
+                and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained):
             # The promotion has already been observed by the time this runs, so this confirms an absence: the engine is
             # asked for a checkpoint first, and a cancel it sent cannot still be on its way.
             promoted_engine = resolved(ENGINE_FOLLOWING_AT_START)
@@ -9044,6 +9081,57 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"reports that differ: {follower} led although it found its reports differ from the leader's")
             log(f"  reports that differ: {follower} found its report of command {refused.command} differs from the leader's, and said it "
                 "cannot lead -- OK")
+
+        # ── A lease that runs out and is at once granted again (BUG-0218) ──
+        if scenario.assert_lease_lost_and_regained:
+            what = "a lease lost and regained at once"
+            log(f"=== {what.capitalize()} ===")
+            engine = next(iter(_LEASE_LOST_AND_REGAINED_NOW))
+            library_events = _TEST_EVENTS.modules["test_events"]
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die(f"{what}: the raw client could not log on")
+
+            def accepted_answer(cl_ord_id: str, timeout: float) -> dict[int, str] | None:
+                """Places the order, and returns the report that answers it if it says the order is accepted, else None."""
+                member.new_order_single(cl_ord_id)
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    reply = member.receive_until("8", timeout=min(1.0, max(0.01, deadline - time.monotonic())))
+                    if reply is not None and reply.get(11) == cl_ord_id:
+                        return reply if reply.get(39) == "0" else None
+                return None
+
+            bounce_mark = _TEST_EVENTS.mark()
+            if accepted_answer(_LEASE_LOST_AND_REGAINED_CL_ORD_ID, _RAW_REPLY_TIMEOUT) is None:
+                member.close()
+                die(f"{what}: {_LEASE_LOST_AND_REGAINED_CL_ORD_ID} was not accepted")
+            if _TEST_EVENTS.wait_for(follows(library_events, engine), timeout=10.0, since=bounce_mark) is None:
+                member.close()
+                die(f"{what}: {engine} never said it stopped leading after {_LEASE_LOST_AND_REGAINED_CL_ORD_ID}, so the scenario tested nothing")
+            log(f"  {engine} stopped leading just after {_LEASE_LOST_AND_REGAINED_CL_ORD_ID}, and asked to lead again at once")
+            if _TEST_EVENTS.wait_for(leads(library_events, engine), timeout=15.0, since=bounce_mark) is None:
+                member.close()
+                die(f"{what}: {engine} holds the lease but never said it leads again: it took the answer to its request to lead as the end of "
+                    "following, and stays a follower (BUG-0218)")
+            log(f"  {engine} leads again -- OK")
+            for cl_ord_id in ("lease-after-1", "lease-after-2", "lease-after-3"):
+                if accepted_answer(cl_ord_id, 30.0) is None:
+                    member.close()
+                    die(f"{what}: {cl_ord_id}, placed after the engine leads again, was not accepted")
+            log("  every order placed afterwards is accepted -- OK")
+            member.close()
 
         # ── A command that kills the matching engines (docs/availability/voided_commands.md, section 4) ──
         if scenario.assert_crashing_command_voided or scenario.assert_engine_death_not_voided:
@@ -11802,6 +11890,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # Once every process has stopped, so that nothing is written to the WAL while it is read. The engines run on the WAL
     # are not to die applying any order.
     _DIE_APPLYING_NOW = {}
+    _LEASE_LOST_AND_REGAINED_NOW = {}
     if result_pass:
         try:
             replayed = run_wal_replay_check(prefix, launched_configs)

@@ -66,6 +66,14 @@ struct TestEventsConfiguration {
     /// engine does on a command that reaches a defect in it.
     bool die_applying_once{false};
 
+    /// The ClOrdID of a new order after which the matching engine acts as if its lease ran out and it was at once granted
+    /// another, from the optional `lose_and_regain_lease_after_cl_ord_id` key; empty, for none, when it is absent. Read
+    /// by the matching engine, which, leading, does so once, just after it applies a new order with this ClOrdID: it
+    /// stops leading, asks to be caught up to follow, and then asks to be caught up to lead, as it does when the arbiter
+    /// is lost and its peer grants it a lease at once. It lets a test make that happen every time rather than by chance
+    /// (BUG-0218).
+    std::string lose_and_regain_lease_after_cl_ord_id;
+
     /// Whether reports for @p comp_id are expected to reach no member's session.
     [[nodiscard]] bool expects_no_session_for(std::string_view comp_id) const {
         for (const auto& listed : comp_ids_without_session) {
@@ -102,7 +110,7 @@ struct TestEventsConfiguration {
  * required: a half-filled section is a mistake in the test, and guessing the missing part would hide it.
  * `report_orders_of` is optional, and only an application that reports the outcome of orders reads it. So are
  * `comp_ids_without_session`, read by the sequencer, `delay_session_announcements_ms`, read by the gateways, and
- * `die_applying_cl_ord_id` and `die_applying_once`, read by the matching engine.
+ * `die_applying_cl_ord_id`, `die_applying_once` and `lose_and_regain_lease_after_cl_ord_id`, read by the matching engine.
  */
 class TestEventsConfigurationLoader {
   public:
@@ -146,6 +154,9 @@ class TestEventsConfigurationLoader {
         }
         if (toml.has_key("test_events.die_applying_once")) {
             toml.get_required_except("test_events.die_applying_once", configuration.die_applying_once);
+        }
+        if (toml.has_key("test_events.lose_and_regain_lease_after_cl_ord_id")) {
+            toml.get_required_except("test_events.lose_and_regain_lease_after_cl_ord_id", configuration.lose_and_regain_lease_after_cl_ord_id);
         }
         return configuration;
     }
