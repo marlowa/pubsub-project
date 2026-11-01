@@ -579,8 +579,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         size_t own_payload_size{0};
     };
 
-    // The orders held while waiting for the follower, at most SequencerConfiguration::orders_held_at_most,
-    // allocated once when the sequencer starts.
+    // The orders held, at most SequencerConfiguration::orders_held_at_most, allocated once when the sequencer
+    // starts. An order is held until its record is committed and an engine leads to send it to
+    // (docs/availability/voided_commands.md, section 5.1).
     pubsub_itc_fw::FixedCapacityRingBuffer<HeldOrder> held_orders_{config_.orders_held_at_most};
 
     // Orders numbered from here on were written to the log and replicated but not held, because the
@@ -609,19 +610,33 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::GaugeHandle running_alone_gauge_;
 
     void hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message);
-    /// Has the engine sent, in order, the orders numbered from first to through that waited in the log rather than the storage:
-    /// by the reading thread when there is an engine to send to; with none, send_logged_orders counts them as deferred.
-    void send_orders_that_waited_in_the_log(int64_t first, int64_t through);
-    /// Reads the WAL on this thread and sends the engine the orders numbered from first to through, or counts them as deferred
-    /// when no engine is connected. Used only without an engine: with one, the reading thread sends them.
-    void send_logged_orders(int64_t first, int64_t through);
-    /// The last order released to the engine: everything numbered at or below it has been sent or deferred, and nothing above it.
+    /// Has the reading thread send the leading engine, in order, the orders numbered from @p first that waited in the log
+    /// rather than the storage.
+    void send_orders_that_waited_in_the_log(int64_t first);
+    /// The last record released to the engines: every order numbered at or below it has been sent to the leading engine,
+    /// and every record at or below it is committed. An engine is sent nothing above it.
     [[nodiscard]] int64_t released_through() const;
+
+    /**
+     * @brief Whether an engine leads that orders can be sent to: the order connection goes to an engine that neither
+     *        follows the WAL nor is being caught up.
+     *
+     * While none can, every order stays held, so that no engine applies an order before the engine that leads is sent
+     * it (docs/availability/voided_commands.md, section 5.1).
+     */
+    [[nodiscard]] bool an_engine_takes_orders() const;
+    /// Whether the storage for held orders is full of orders the follower sequencer has not acknowledged, so that it is
+    /// too far behind; orders held because no engine leads are committed, and say nothing about the follower.
+    [[nodiscard]] bool held_orders_wait_on_the_follower() const;
     /// Pauses reading from the gateways while too many orders wait, and resumes it when they have drained.
     void pause_or_resume_order_reading();
     void send_held_order_to_matching_engine(const HeldOrder& held);
+    /// Sends the leading engine every held order whose record is committed through @p acknowledged_seq_no, and then sends
+    /// the engines that follow the WAL every record up to the position released.
     void release_held_orders_through(int64_t acknowledged_seq_no);
-    void release_all_held_orders();
+    /// The first half of release_held_orders_through: sends the leading engine the held orders, and nothing to the engines
+    /// that follow the WAL.
+    void release_held_orders_to_the_leading_engine(int64_t acknowledged_seq_no);
     void discard_held_orders();
     /// Forwards every waiting report whose record is committed through @p seq_no.
     void forward_pending_er_through(int64_t seq_no);
@@ -908,8 +923,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_publisher_follow_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     // Sends every publisher that has been handed over each record committed through @p seq_no.
     void send_committed_records_to_publishers(int64_t seq_no);
-    // Sends each matching engine that follows the WAL, once handed over, every record committed through @p seq_no.
-    void send_committed_records_to_follower_engines(int64_t seq_no);
+    // Sends each matching engine that follows the WAL, once handed over, every record up to the position released, so that
+    // it applies no order before the leading engine is sent it (docs/availability/voided_commands.md, section 5.1).
+    void send_released_records_to_follower_engines();
     // Whether @p connection is a matching engine publisher's.
     [[nodiscard]] bool is_publisher_connection(const pubsub_itc_fw::ConnectionID& connection) const {
         return connection.service_name() == wal_subscriber_inbound_svc_;
@@ -1088,66 +1104,40 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     std::unordered_map<fix_common::SessionIdentity, SessionSequenceState, fix_common::SessionIdentityHash> session_sequence_state_;
 
     /**
-     * @brief How often the venue says out loud that it is deferring orders.
+     * @brief How often the venue says out loud that no matching engine leads while it holds orders.
      *
-     * It used to say so once per order, at Info, which produced 1,087,912 lines in one incident
-     * and hid the condition rather than reporting it. See BUG-0009 and
-     * docs/availability/order_acceptance.md.
+     * Once per order would bury the condition in the Quill log rather than report it (BUG-0009 and
+     * docs/availability/order_acceptance.md).
      */
-    static constexpr auto order_deferral_warning_interval = std::chrono::seconds{5};
+    static constexpr auto no_engine_warning_interval = std::chrono::seconds{5};
 
-    /// Orders deferred since the matching engine was last reachable, and when that began.
-    ///
-    /// A steady clock because this measures an interval rather than naming a moment: a wall clock
-    /// adjustment mid-outage would otherwise change how long the venue believes it has been
-    /// degraded. The same reasoning as the slab allocator's drain tripwire.
-    int64_t deferred_order_count_{0};
-    std::chrono::steady_clock::time_point deferral_began_{};
-    std::chrono::steady_clock::time_point last_deferral_warning_{};
-    bool deferring_orders_{false};
-
-    /// Records one order deferred because no matching engine is reachable, and says so at a rate
-    /// a reader can follow.
-    void note_order_deferred(int64_t seq_no);
-
-    /// Reports what the outage cost, once the venue can forward again.
-    void note_matching_engine_reachable();
+    /// While this instance leads and no matching engine takes orders (an_engine_takes_orders), when that began; empty
+    /// while one does. A steady clock, because this measures an interval: a change to the wall clock must not change how
+    /// long the venue believes it has had no engine.
+    std::optional<std::chrono::steady_clock::time_point> no_engine_since_;
+    /// The orders and cancels that arrived while no matching engine took orders, all of them held.
+    int64_t orders_held_without_an_engine_{0};
+    /// Whether an engine has taken orders since this instance began leading: false while the venue starts, so that the
+    /// time without one is told apart from a change of engine leader (EngineTakesOrdersAgain).
+    bool an_engine_took_orders_{false};
+    std::chrono::steady_clock::time_point last_no_engine_warning_{};
 
     /**
-     * @brief How long the venue defers orders before it stops accepting new ones.
+     * @brief Notes whether a matching engine takes orders, and so when none has since, and says when one does again.
      *
-     * Age is the honest measure, because what is at stake is a member's exposure and exposure
-     * is measured in time. The threshold has to clear a NORMAL failover, or the venue would
-     * refuse orders during a routine recovery that members currently survive: the
-     * matching-engine pair uses a 15-second peer heartbeat timeout, and promotion,
-     * reconnection and WAL reconciliation follow it. Three times that timeout is comfortably
-     * above a normal failover rather than level with it, and still short enough that a member
-     * is wrong about its own position for under a minute.
+     * Called wherever that can change: on each order held, when an engine connection is lost, on an engine's
+     * announcement of its role, when an engine is handed over after a catch-up, and on the engine absence timer, about
+     * once a second. Each time no engine has led for orders_held_at_most_seconds, the gateways are told to refuse new
+     * orders (refresh_order_acceptance).
      */
-    static constexpr auto order_deferral_refusal_age = std::chrono::seconds{45};
+    void note_whether_an_engine_takes_orders();
 
-    /**
-     * @brief How many orders may be deferred before the venue stops accepting, whatever the age.
-     *
-     * A backstop for the case age alone handles badly: a burst defers a great many orders in the
-     * seconds *before* the age threshold trips. Age bounds the outage in time; without this,
-     * nothing bounds it in volume. At the peak rate measured on this venue, ~34,500 orders/s, the
-     * age threshold alone would allow about 1.55 million orders to be accepted and not processed
-     * before it spoke. This caps that at roughly a sixth.
-     *
-     * At the measured trading-day rate of ~1,926 orders/s it takes over two minutes to reach, so
-     * at ordinary rates the age always speaks first, which is the intent. At peak it is reached
-     * in about seven seconds, inside a normal failover, and that is deliberate rather than an
-     * oversight: a burst is exactly when the volume the venue is taking on runs away from it.
-     *
-     * **This counts orders, not members, and the harm is per member.** A venue has a few hundred
-     * to a few thousand comp ids, not a few hundred thousand; each posts continuously and one
-     * member holds several. So this figure is a proxy -- what it really bounds is how much of any
-     * one member's position can be wrong, and the venue-wide total stands in for that because
-     * deferrals are counted globally rather than per session. A per-session count would model the
-     * harm directly and is the better answer if this proxy ever proves too blunt.
-     */
-    static constexpr int64_t order_deferral_refusal_count = 250000;
+    /// The order connection, or whether the engine on it is known to lead, may have changed: notes whether an engine takes
+    /// orders, and releases to it the orders held while none did.
+    void engine_routing_changed();
+
+    /// How long no matching engine has taken orders, zero while one does.
+    [[nodiscard]] std::chrono::steady_clock::duration time_without_an_engine() const;
 
     /**
      * @brief Whether the venue is currently telling its gateways it can take new orders.
@@ -1158,7 +1148,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     bool accepting_orders_{true};
 
     /**
-     * @brief Recomputes acceptance from the age and size of the current deferral.
+     * @brief Recomputes acceptance from how long no matching engine has led, and from whether trading is halted for a long
+     *        recovery.
      *
      * @return true if the state changed, in which case every connected gateway has been told.
      */

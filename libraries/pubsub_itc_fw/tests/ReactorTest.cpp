@@ -635,7 +635,7 @@ TEST_F(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown) {
     {
         BackoffWithYield backoff;
         auto start = MillisecondClock::now();
-        while (!bad_thread->is_running()) {
+        while (bad_thread->is_running()) {
             if (MillisecondClock::now() - start > MillisecondClock::duration{1000}) {
                 FAIL() << "Bad thread still running when should have terminated";
             }

@@ -361,12 +361,15 @@ those moments:
 1. **The leading sequencer writes every order to its log before it checks for a matching engine.**
    Writing is unconditional for the leader; only sending the order on depends on an engine being
    there.
-2. **With no engine connected, the sequencer defers sending the order** rather than dropping it, and
-   logs that it has done so. The order is already in the log.
-3. **The engine that next leads or starts is sent every deferred order while catching up**, because
-   the catch-up sends everything after the position the engine reports.
+2. **With no engine leading, the sequencer holds the order** rather than dropping it, and logs that
+   it is holding orders. The order is already in the log. No engine is sent it, not even one that
+   follows the WAL ([voided_commands.md](voided_commands.md), section 5.1).
+3. **The engine that next leads is caught up to the position released, which is before the first held
+   order, and is then sent the held orders live**, in order.
 4. **The member is answered then**: the execution report for an order sent during the gap arrives
-   late, when the engine has caught up, and the order is on the book. Nothing is silently lost.
+   late, as the first report of the order, when the engine leads, and the order is on the book.
+   Nothing is silently lost. Once no engine has led for `[recovery] orders_held_at_most_seconds`, 5
+   seconds, the gateways refuse new orders ([order_acceptance.md](order_acceptance.md)).
 
 The orders on the caught-up book are kept, as above.
 

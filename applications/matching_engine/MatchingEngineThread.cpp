@@ -313,9 +313,9 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
             //
             // An instance that already follows is excluded: it follows the WAL, and asks again itself when it needs to.
             //
-            // An order the sequencer deferred while no engine was running is in the venue's
-            // record and in no engine's book, so this ask is the only thing that recovers it.
-            // See BUG-0064 and the surviving half of BUG-0009.
+            // An order in the venue's WAL that no engine has applied, such as one a sequencer
+            // wrote and then died before sending on, is in no engine's book, so this ask is the
+            // only thing that recovers it. See BUG-0064.
             //
             // Becoming current, not taking the role: who may act is the arbiter's to say, and
             // an instance that promoted itself on the strength of having caught up would be

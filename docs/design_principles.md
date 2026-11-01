@@ -803,8 +803,8 @@ restarting it, and the venue treats it as a loss of service, not as two recoveri
 
 **Why.** A leader that dies and is restarted within its lease period keeps the lead, so the pair never
 changes leader, and members get a silent gap each time: orders are accepted and not answered, and
-cancels cannot get through. The gaps never reach the 45 seconds of continuous outage after which the
-venue stops accepting, so nothing is said. One interruption is a fault; two are a pattern. Giving up
+cancels cannot get through. The gaps never reach the 5 seconds without a leading matching engine after
+which the venue stops accepting, so nothing is said. One interruption is a fault; two are a pattern. Giving up
 at the second leaves the instance absent for longer than a lease period, so its follower takes over
 under the lease rules (V3).
 

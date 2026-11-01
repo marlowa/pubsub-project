@@ -431,13 +431,20 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         }
     }
 
-    // Report the end of an outage when the engine comes BACK, not when the next order happens to
-    // arrive. The first version noticed recovery only on the forward path, so a venue that
-    // recovered while nothing was trading never said so -- the operator was left with the last
-    // warning and silence, which is the shape of the defect this is fixing.
-    if (engine_routing_.active().is_valid()) {
-        note_matching_engine_reachable();
+    // An engine connection that opens may be to an engine that already announced that it leads.
+    if (engine_routing_.is_engine_connection(id)) {
+        engine_routing_changed();
     }
+}
+
+void SequencerThread::engine_routing_changed() {
+    // Said when an engine takes orders again, not when the next order happens to arrive, so that a
+    // venue that recovers while nothing is trading says so; and the orders held meanwhile go to it.
+    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value()) {
+        return;
+    }
+    note_whether_an_engine_takes_orders();
+    release_orders_that_waited_for_the_engine();
 }
 
 void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
@@ -449,13 +456,16 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
     forget_command_connection(id);
     if (leading_engine_announced_on_.is_valid() && id == leading_engine_announced_on_) {
         // The engine that said it leads has gone, or at least the connection it said so on has: it is no longer taken to
-        // lead when a void is asked for.
+        // lead when a void is asked for, and is sent no orders until it is caught up to lead or says so again, so that a
+        // restarted process is not sent orders on its predecessor's word (docs/availability/voided_commands.md, 5.1).
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: the connection matching engine instance {} announced that it leads on is lost -- it is not taken to lead until it says "
                    "so again",
                    leading_engine_instance_);
+        engine_routing_.leader_announcement_lost(leading_engine_instance_);
         leading_engine_instance_ = 0;
         leading_engine_announced_on_ = pubsub_itc_fw::ConnectionID{};
+        note_whether_an_engine_takes_orders();
     }
     // A gateway whose link was lost may hold sessions this instance has not been told of by the time it comes up again.
     for (auto& [gateway, announcement] : gateway_announcements_) {
@@ -486,6 +496,7 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
         }
         const bool carried_orders = engine_routing_.active() == id;
         engine_routing_.lost(id);
+        note_whether_an_engine_takes_orders();
         if (carried_orders) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: matching engine order connection {} lost: {} -- the other engine may promote and reconnect", id.get_value(), reason);
@@ -825,16 +836,22 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // acknowledged it, with a follower connected and keeping up, so that the engine never acts on an
         // order the follower does not hold (docs/availability/change_of_sequencer_leader.md, part 4.2); or,
         // with no follower keeping up, once a voter has confirmed that the follower may not lead (rule 11,
-        // docs/availability/a_follower_behind_does_not_lead.md); or at once with HA off. It never goes
+        // docs/availability/a_follower_behind_does_not_lead.md); or at once with HA off. It goes only to an
+        // engine that leads, and while none does it stays held, so that no engine applies it before the
+        // engine that leads is sent it (docs/availability/voided_commands.md, section 5.1). It never goes
         // ahead of an order already waiting. Until then it waits, in the storage for held orders, or in
-        // the log once that is full, in which case the follower is too far behind and the leader runs as
-        // if alone.
-        if (replicated_wal_->waits_for_follower() && (held_orders_.full() || first_unheld_seq_ != 0)) {
+        // the log once that is full; if the storage is full of orders the follower has not acknowledged,
+        // the follower is too far behind and the leader runs as if alone.
+        if (held_orders_wait_on_the_follower()) {
             replicated_wal_->follower_too_far_behind("its storage for orders waiting on the follower is full", std::chrono::steady_clock::now());
         }
 
         hold_until_acknowledged(envelope, message);
         release_held_orders_through(replicated_wal_->committed_through());
+        note_whether_an_engine_takes_orders();
+        if (no_engine_since_.has_value()) {
+            ++orders_held_without_an_engine_;
+        }
         return; // The payload is released when the held order is sent on, or at once if it waits in the log.
 
     } else if (is_er_pdu) {
@@ -1084,7 +1101,7 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     // earlier, and that order's WalAck came and was consumed at the time -- so gating on it
     // waits for an acknowledgement that is in the past and never comes again. Every report
     // a matching engine sends out of a catch-up is such a report, which is what the mark on
-    // the envelope says. Without this the deferred order that catch-up exists to answer is
+    // the envelope says. Without this an order no engine had applied, which the catch-up exists to answer, is
     // applied, reported, and then parked in pending_er_ -- answered everywhere except at
     // the member.
     const bool gate_on_own_record = (er_seq_no == 0) || possible_repeat;
@@ -1512,7 +1529,7 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
         //
         // Tell the gateways where this venue now stands on accepting orders. They may be holding
         // what the previous leader last said, which was true of a process that is no longer
-        // running. This instance has deferred nothing, so it accepts -- but that has to be said
+        // running. This instance has held nothing for want of an engine yet, so it accepts -- but that has to be said
         // rather than assumed, because silence here leaves a refusal in place that nothing will
         // ever lift.
         broadcast_order_acceptance();
@@ -1545,15 +1562,14 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
         discard_held_orders();
         first_unheld_seq_ = 0;
         pause_or_resume_order_reading();
-        // A follower forwards nothing to a matching engine, so it defers nothing. Clearing the
-        // bookkeeping matters for what happens if this instance leads AGAIN: a deferral begun in
-        // a previous leadership would otherwise still be open, because the recovery that would
-        // have closed it happened while this instance was not the one watching for it. It would
-        // then be re-promoted already refusing orders, with an age measured from an outage that
-        // ended long ago, and nothing would lift it unless a matching engine happened to
-        // reconnect afterwards.
-        deferring_orders_ = false;
-        deferred_order_count_ = 0;
+        // A follower forwards nothing to a matching engine, so it holds nothing for one. Clearing the
+        // bookkeeping matters for what happens if this instance leads AGAIN: a time without an engine
+        // begun in a previous leadership would otherwise still be open, because the recovery that would
+        // have closed it happened while this instance was not the one watching for it. It would then be
+        // promoted already refusing orders, with a time measured from an outage that ended long ago.
+        no_engine_since_.reset();
+        orders_held_without_an_engine_ = 0;
+        an_engine_took_orders_ = false;
         accepting_orders_ = true;
     }
 }
@@ -1633,11 +1649,11 @@ void SequencerThread::SequencerReplicatedWalEvents::committed_through(int64_t se
     owner_.send_voids_committed_through(seq_no);
     // The orders and the reports waiting for these records may now go: the orders to the matching
     // engine, in order, and the reports to their gateways.
-    owner_.release_held_orders_through(seq_no);
+    owner_.release_held_orders_to_the_leading_engine(seq_no);
     owner_.forward_pending_er_through(seq_no);
-    // Last, after the order path's own work: the matching engines that follow the WAL and the publishers are sent the
-    // records just committed.
-    owner_.send_committed_records_to_follower_engines(seq_no);
+    // Last, after the order path's own work: the matching engines that follow the WAL are sent the records released, and
+    // the publishers the records just committed.
+    owner_.send_released_records_to_follower_engines();
     owner_.send_committed_records_to_publishers(seq_no);
 }
 
@@ -1991,21 +2007,10 @@ void SequencerThread::hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord
 }
 
 void SequencerThread::send_held_order_to_matching_engine(const HeldOrder& held) {
+    // Called only while an engine takes orders (an_engine_takes_orders).
     if (wal_follower_service_.has_value() && wal_follower_service_->is_being_caught_up(engine_routing_.active())) {
-        // The reading thread is catching the engine up, and sends it this order: it is released, so at or
-        // below the limit the reading thread serves up to.
-        return;
-    }
-    if (!engine_routing_.active().is_valid()) {
-        // Recovered by the catch-up whichever engine acts next performs before it acts, exactly as
-        // an order deferred on arrival is.
-        note_order_deferred(held.envelope.seq_no);
-        return;
-    }
-    note_matching_engine_reachable();
-    if (routed_engine_follows_the_wal()) {
-        // It follows the WAL, and is sent this command as a follower once it is committed: sending it here as well would
-        // have it applied twice.
+        // The reading thread is sending the engine orders that waited in the log, and sends it this order too: it is
+        // released, so at or below the limit the reading thread serves up to.
         return;
     }
     if (held.own_payload_size > 0) {
@@ -2025,9 +2030,18 @@ void SequencerThread::send_held_order_to_matching_engine(const HeldOrder& held) 
 }
 
 void SequencerThread::release_held_orders_through(int64_t acknowledged_seq_no) {
+    release_held_orders_to_the_leading_engine(acknowledged_seq_no);
+    send_released_records_to_follower_engines();
+}
+
+void SequencerThread::release_held_orders_to_the_leading_engine(int64_t acknowledged_seq_no) {
     // A new leader sends nothing new until the engine has been sent the orders it lacks, or the
-    // engine would act on a later order before an earlier one.
-    if (awaiting_engine_position_) {
+    // engine would act on a later order before an earlier one. While no engine leads, nothing is
+    // released, so that no engine applies an order before the engine that leads is sent it
+    // (docs/availability/voided_commands.md, section 5.1).
+    if (awaiting_engine_position_ || !an_engine_takes_orders()) {
+        // The released position can still move, up to the first order held, as reports are committed.
+        publish_released_position();
         pause_or_resume_order_reading();
         return;
     }
@@ -2041,85 +2055,27 @@ void SequencerThread::release_held_orders_through(int64_t acknowledged_seq_no) {
     }
     // Every held order is numbered below the first that waits in the log, so these follow them.
     if (first_unheld_seq_ != 0 && first_unheld_seq_ <= acknowledged_seq_no) {
-        send_orders_that_waited_in_the_log(first_unheld_seq_, acknowledged_seq_no);
+        send_orders_that_waited_in_the_log(first_unheld_seq_);
         first_unheld_seq_ = acknowledged_seq_no >= replicated_wal_->last_seq_no() ? 0 : acknowledged_seq_no + 1;
     }
     publish_released_position();
     pause_or_resume_order_reading();
 }
 
-void SequencerThread::release_all_held_orders() {
-    release_held_orders_through(replicated_wal_->last_seq_no());
-}
-
-void SequencerThread::send_orders_that_waited_in_the_log(int64_t first, int64_t through) {
-    // With a reading thread and an engine to send to, the reading thread serves the engine from the first
-    // of them, and this thread reads nothing. Every order sent from the storage is numbered below the
-    // first, and is queued already. Once released, each later order is at or below the limit the reading
-    // thread serves up to, so it sends those too, until the engine is handed over. An engine already being
-    // served needs nothing more: its limit rises as orders are released.
+void SequencerThread::send_orders_that_waited_in_the_log(int64_t first) {
+    // The reading thread serves the engine from the first of them, and this thread reads nothing. Every
+    // order sent from the storage is numbered below the first, and is queued already. Once released, each
+    // later order is at or below the limit the reading thread serves up to, so it sends those too, until
+    // the engine is handed over. An engine already being served needs nothing more: its limit rises as
+    // orders are released.
     const pubsub_itc_fw::ConnectionID engine = engine_routing_.active();
-    if (routed_engine_follows_the_wal()) {
-        return; // it is sent them as a follower of the WAL
+    if (!wal_follower_service_->is_being_caught_up(engine)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: orders from {} waited in the log -- the reading thread sends them to the matching engine on connection {}", first,
+                   engine.get_value());
+        report(pubsub_itc_fw_app::EngineServedFromWal{engine.get_value(), first - 1});
+        serve_engine(engine, first - 1, EngineServing{});
     }
-    if (wal_follower_service_.has_value() && engine.is_valid()) {
-        if (!wal_follower_service_->is_being_caught_up(engine)) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: orders from {} waited in the log -- the reading thread sends them to the matching engine on connection {}", first,
-                       engine.get_value());
-            report(pubsub_itc_fw_app::EngineServedFromWal{engine.get_value(), first - 1});
-            serve_engine(engine, first - 1, EngineServing{});
-        }
-        return;
-    }
-    // With no engine, they are counted as deferred.
-    send_logged_orders(first, through);
-}
-
-void SequencerThread::send_logged_orders(int64_t first, int64_t through) {
-    const pubsub_itc_fw::ConnectionID engine = engine_routing_.active();
-    if (wal_follower_service_.has_value() && wal_follower_service_->is_being_caught_up(engine)) {
-        // The reading thread is catching the engine up, and sends it these orders, as it does one sent from
-        // the storage.
-        return;
-    }
-    int64_t sent = 0;
-    [[maybe_unused]] const auto end_position =
-        pubsub_itc_fw::WalReader::replay(config_.wal_directory, replicated_wal_->wal().scan_start_for(first),
-                                         [this, &engine, first, through, &sent](int64_t record_id, const void* payload, size_t size) {
-                                             const std::optional<pubsub_itc_fw::WalEntryContents> contents =
-                                                 pubsub_itc_fw::read_wal_entry_contents(payload, size);
-                                             if (record_id < first || record_id > through || !contents.has_value() || contents->size == 0) {
-                                                 return;
-                                             }
-                                             const int64_t wall_time_ns = contents->wall_time_ns;
-                                             const int16_t pdu_id = contents->pdu_id;
-                                             const uint8_t* record = contents->bytes;
-                                             if (engine.is_valid()) {
-                                                 if (stream_wal_record_to_me(engine, record_id, pdu_id, record, contents->size, wall_time_ns)) {
-                                                     ++sent;
-                                                 }
-                                                 return;
-                                             }
-                                             // No engine: an order is deferred, as one sent from the storage would be, and recovered
-                                             // by the catch-up whichever engine acts next performs.
-                                             auto& arena_buf = decode_arena_buffer();
-                                             pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-                                             size_t arena_bytes_needed = 0;
-                                             size_t bytes_consumed = 0;
-                                             pubsub_itc_fw_app::WalRecordView view{};
-                                             if (pdu_id == pubsub_itc_fw_app::WalRecord::message_pdu_id &&
-                                                 pubsub_itc_fw_app::decode(view, record, contents->size, bytes_consumed, arena, arena_bytes_needed) &&
-                                                 (view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) ||
-                                                  view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest))) {
-                                                 note_order_deferred(record_id);
-                                             }
-                                         });
-    if (engine.is_valid()) {
-        note_matching_engine_reachable();
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: sent {} order(s) numbered {} to {} to the matching engine from the log", sent,
-               first, through);
 }
 
 void SequencerThread::start_building_record_of_identifiers() {
@@ -2181,9 +2137,13 @@ void SequencerThread::check_engine_absence() {
     if (recovery_limit_.halt_due(now_ns, engine_absence_.absence_began_ns(), leads, wal_holds_records, engine_catch_up_progress_)) {
         write_recovery_halt(now_ns);
     }
-    if (engine_routed && recovery_limit_passed_) {
-        // An engine trades again. It applied the halt in its catch-up, so it refuses new orders as halted, and carries out
-        // cancels; the gateways go back to passing orders on, and each is answered by the engine.
+    // Whether an engine takes orders, and how long none has: once none has for orders_held_at_most_seconds, the gateways
+    // are told to refuse new orders, whether or not any order arrives meanwhile.
+    note_whether_an_engine_takes_orders();
+    if (an_engine_takes_orders() && recovery_limit_passed_) {
+        // An engine trades again. It is sent the halt, which was held with the orders before it, ahead of any order sent
+        // from here on, so it refuses new orders as halted and carries out cancels; the gateways go back to passing
+        // orders on, and each is answered by the engine.
         recovery_limit_passed_ = false;
         refresh_order_acceptance();
     }
@@ -2418,8 +2378,9 @@ void SequencerThread::write_own_command(int16_t inner_pdu_id, const uint8_t* byt
         void_awaiting_commit_ = seq;
     }
 
-    // Sent to the engine as an order is, once committed, and never ahead of an order already waiting.
-    if (replicated_wal_->waits_for_follower() && (held_orders_.full() || first_unheld_seq_ != 0)) {
+    // Sent to the engine as an order is, once committed and while an engine leads, and never ahead of an order already
+    // waiting.
+    if (held_orders_wait_on_the_follower()) {
         replicated_wal_->follower_too_far_behind("its storage for orders waiting on the follower is full", std::chrono::steady_clock::now());
     }
     HeldOrder held{envelope, pubsub_itc_fw::SlabHandle{}, nullptr, std::chrono::steady_clock::now()};
@@ -2700,12 +2661,14 @@ void SequencerThread::handle_engine_position(const pubsub_itc_fw::EventMessage& 
                    "SequencerThread: the matching engine has acted on orders through {} -- sending it the orders this log holds from {} to {}, which it "
                    "never received",
                    view.highest_applied, view.highest_applied + 1, held_at_takeover_);
-        if (wal_follower_service_.has_value() && engine_routing_.active().is_valid()) {
+        if (an_engine_takes_orders()) {
             // The reading thread sends them, followed by the orders that waited for the engine's answer,
             // which are released below and are at or below the limit it serves up to.
             serve_engine(engine_routing_.active(), view.highest_applied, EngineServing{});
         } else {
-            send_logged_orders(view.highest_applied + 1, held_at_takeover_);
+            // The engine that next leads is caught up through them before it leads.
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                           "SequencerThread: no matching engine leads now -- the one that next leads is caught up through them first");
         }
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -2734,13 +2697,38 @@ void SequencerThread::publish_released_position() {
 }
 
 int64_t SequencerThread::released_through() const {
+    if (!replicated_wal_.has_value()) {
+        return 0;
+    }
+    // Never past the last record committed: an engine that follows the WAL is sent the execution reports
+    // the WAL holds as well as the commands, and a report is not held as an order is.
+    const int64_t committed = replicated_wal_->committed_through();
     if (!held_orders_.empty()) {
-        return held_orders_.front().envelope.seq_no - 1;
+        return std::min(committed, held_orders_.front().envelope.seq_no - 1);
     }
     if (first_unheld_seq_ != 0) {
-        return first_unheld_seq_ - 1;
+        return std::min(committed, first_unheld_seq_ - 1);
     }
-    return replicated_wal_.has_value() ? replicated_wal_->last_seq_no() : 0;
+    return std::min(committed, replicated_wal_->last_seq_no());
+}
+
+bool SequencerThread::an_engine_takes_orders() const {
+    if (!engine_routing_.active_is_known_to_lead() || routed_engine_follows_the_wal()) {
+        return false;
+    }
+    // An engine being caught up to lead is sent the held orders live once it has been handed over, so that its reports
+    // of them are first reports and not possible repeats. One being sent orders that waited in the log already leads.
+    const auto serving = engine_servings_.find(engine_routing_.active().get_value());
+    return serving == engine_servings_.end() || !serving->second.answers_catch_up_request;
+}
+
+bool SequencerThread::held_orders_wait_on_the_follower() const {
+    if (!replicated_wal_->waits_for_follower() || (!held_orders_.full() && first_unheld_seq_ == 0)) {
+        return false;
+    }
+    // The oldest order waiting: if its record is committed, the storage is full of orders held because no engine leads.
+    const int64_t oldest = held_orders_.empty() ? first_unheld_seq_ : held_orders_.front().envelope.seq_no;
+    return oldest > replicated_wal_->committed_through();
 }
 
 void SequencerThread::pause_or_resume_order_reading() {
@@ -2922,74 +2910,72 @@ const fix_common::SessionDestination* SequencerThread::session_destination(const
     return it == session_destinations_.end() ? nullptr : &it->second;
 }
 
-void SequencerThread::note_order_deferred(int64_t seq_no) {
+void SequencerThread::note_whether_an_engine_takes_orders() {
+    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value()) {
+        return;
+    }
+    const bool takes_orders = an_engine_takes_orders();
+    if (takes_orders && !no_engine_since_.has_value()) {
+        an_engine_took_orders_ = true;
+        return; // the usual case, on every order
+    }
     const auto now = std::chrono::steady_clock::now();
-    ++deferred_order_count_;
-
-    if (!deferring_orders_) {
-        deferring_orders_ = true;
-        deferral_began_ = now;
-        last_deferral_warning_ = now;
+    if (!takes_orders) {
+        if (!no_engine_since_.has_value()) {
+            no_engine_since_ = now;
+            orders_held_without_an_engine_ = 0;
+            last_no_engine_warning_ = now;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: no matching engine takes orders -- every order and cancel is held, in the WAL, until one leads, and is then "
+                       "released to it. After {}s without one, the gateways are told to refuse new orders",
+                       config_.orders_held_at_most_seconds);
+            return;
+        }
+        // Evaluated each time, because the limit must take effect when it is passed, not at the next warning. Only the
+        // warning is limited in how often it is given.
+        const bool changed = refresh_order_acceptance();
+        if (now - last_no_engine_warning_ < no_engine_warning_interval) {
+            return;
+        }
+        last_no_engine_warning_ = now;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: no matching engine reachable -- orders are being accepted and deferred, starting at seq={}. They are WAL-committed and "
-                   "recovered on promotion, but every member that placed one believes it is live and cannot cancel it",
-                   seq_no);
-        refresh_order_acceptance();
+                   "SequencerThread: still no matching engine takes orders after {}s -- {} order(s) and cancel(s) held so far",
+                   std::chrono::duration_cast<std::chrono::seconds>(time_without_an_engine()).count(), orders_held_without_an_engine_);
+        // Said again on the same interval while the venue is not accepting, so that a gateway that missed the change, or
+        // connected without one since, is told.
+        if (!changed && !accepting_orders_) {
+            broadcast_order_acceptance();
+        }
         return;
     }
-
-    if (now - last_deferral_warning_ < order_deferral_warning_interval) {
-        // Acceptance is still evaluated on every deferred order, because a threshold crossed
-        // between two warnings must take effect when it is crossed rather than at the next
-        // warning. Only the log is rate-limited; the decision is not.
-        refresh_order_acceptance();
+    if (!no_engine_since_.has_value()) {
         return;
     }
-    last_deferral_warning_ = now;
-    const auto degraded_for = std::chrono::duration_cast<std::chrono::seconds>(now - deferral_began_);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-               "SequencerThread: still no matching engine after {}s -- {} order(s) deferred so far, latest seq={}. Members are being told these orders are "
-               "live",
-               degraded_for.count(), deferred_order_count_, seq_no);
-
-    // Repeat the state on the same interval while the venue is not accepting, so a gateway
-    // that missed the transition -- or reconnected without one happening since -- converges on
-    // the truth rather than sitting on a stale "fine".
-    if (!refresh_order_acceptance() && !accepting_orders_) {
-        broadcast_order_acceptance();
-    }
-}
-
-void SequencerThread::note_matching_engine_reachable() {
-    if (!deferring_orders_) {
-        return;
-    }
-    const auto degraded_for = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - deferral_began_);
+    const auto without = std::chrono::duration_cast<std::chrono::milliseconds>(time_without_an_engine());
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: a matching engine is reachable again after {}s -- {} order(s) were deferred and are sent to it by the catch-up it performs "
-               "before it acts",
-               degraded_for.count(), deferred_order_count_);
-    deferring_orders_ = false;
-    deferred_order_count_ = 0;
-
-    // Resuming is automatic, and deliberately so. Requiring an operator to re-enable
-    // acceptance was considered and rejected: BUG-0009 is precisely a case where nobody was
-    // watching, and a design whose recovery depends on the watching that has already failed
-    // is not safer. See docs/availability/order_acceptance.md.
+               "SequencerThread: a matching engine takes orders again after {} ms without one -- the {} order(s) and cancel(s) held meanwhile are "
+               "released to it",
+               without.count(), orders_held_without_an_engine_);
+    report(pubsub_itc_fw_app::EngineTakesOrdersAgain{without.count(), orders_held_without_an_engine_, an_engine_took_orders_});
+    an_engine_took_orders_ = true;
+    no_engine_since_.reset();
+    orders_held_without_an_engine_ = 0;
+    // Accepting again is automatic, and deliberately so. Requiring an operator to re-enable acceptance
+    // was considered and rejected: BUG-0009 is precisely a case where nobody was watching, and a design
+    // whose recovery depends on the watching that has already failed is not safer. See
+    // docs/availability/order_acceptance.md.
     refresh_order_acceptance();
 }
 
+std::chrono::steady_clock::duration SequencerThread::time_without_an_engine() const {
+    return no_engine_since_.has_value() ? std::chrono::steady_clock::now() - *no_engine_since_ : std::chrono::steady_clock::duration::zero();
+}
+
 bool SequencerThread::refresh_order_acceptance() {
-    // Evaluated where it is needed rather than on a timer. The two things that consume this
-    // state are an order arriving, which is exactly when refusing matters, and a gateway
-    // connecting, which must not be left assuming the venue is fine. A venue with no traffic
-    // has nothing to refuse, so there is nothing for a timer to discover.
-    bool accepting = true;
-    std::chrono::seconds degraded_for{0};
-    if (deferring_orders_) {
-        degraded_for = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - deferral_began_);
-        accepting = degraded_for < order_deferral_refusal_age && deferred_order_count_ < order_deferral_refusal_count;
-    }
+    // Evaluated where it is needed rather than on a timer of its own: when an order arrives, when a
+    // gateway connects, and on the engine absence timer, about once a second, while no engine takes
+    // orders.
+    bool accepting = time_without_an_engine() < std::chrono::seconds{config_.orders_held_at_most_seconds};
     // Trading is halted because no engine could be trading within the longest recovery the venue does by itself.
     if (recovery_limit_passed_) {
         accepting = false;
@@ -3002,17 +2988,15 @@ bool SequencerThread::refresh_order_acceptance() {
     if (accepting) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "SequencerThread: accepting orders again -- gateways told the venue can process what they are given");
+    } else if (recovery_limit_passed_) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: no longer accepting orders -- no matching engine could be trading within the longest recovery the venue does "
+                       "by itself");
     } else {
-        // Name which threshold spoke. An operator reading this wants to know whether the venue
-        // stopped because an outage ran long or because a burst filled it, and those call for
-        // different responses.
-        const char* const because = recovery_limit_passed_ ? "no matching engine could be trading within the longest recovery the venue does by itself"
-                                    : degraded_for >= order_deferral_refusal_age ? "the outage has run longer than a failover plausibly takes"
-                                                                                 : "more orders are deferred than a member should be left wrong about";
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: no longer accepting orders -- {} ({} order(s) deferred over {}s, thresholds {}s / {}). Deferred orders are still "
-                   "WAL-committed and recovered on promotion; what stops is taking on new ones the venue cannot act upon",
-                   because, deferred_order_count_, degraded_for.count(), order_deferral_refusal_age.count(), order_deferral_refusal_count);
+                   "SequencerThread: no longer accepting orders -- no matching engine has led for {}s, the longest orders are held ({} order(s) and "
+                   "cancel(s) held). The orders held stay held, and are released to the engine that next leads; what stops is taking on new ones",
+                   std::chrono::duration_cast<std::chrono::seconds>(time_without_an_engine()).count(), orders_held_without_an_engine_);
     }
     broadcast_order_acceptance();
     return true;
@@ -3020,7 +3004,7 @@ bool SequencerThread::refresh_order_acceptance() {
 
 void SequencerThread::send_order_acceptance(const pubsub_itc_fw::ConnectionID& conn_id) {
     // Only the leader has an opinion worth sending. A follower forwards nothing to a matching
-    // engine, so it never defers and its state is permanently "accepting" -- and the gateway
+    // engine, so it holds nothing for one and its state is permanently "accepting" -- and the gateway
     // holds a connection to BOTH sequencers and cannot tell which of them leads.
     //
     // Measured before this guard existed: a gateway restarted during an outage was correctly
@@ -3033,10 +3017,8 @@ void SequencerThread::send_order_acceptance(const pubsub_itc_fw::ConnectionID& c
 
     pubsub_itc_fw_app::OrderAcceptance state{};
     state.accepting = accepting_orders_;
-    state.deferred_order_count = deferring_orders_ ? deferred_order_count_ : 0;
-    state.degraded_for_seconds =
-        deferring_orders_ ? static_cast<int32_t>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - deferral_began_).count())
-                          : 0;
+    state.held_order_count = no_engine_since_.has_value() ? orders_held_without_an_engine_ : 0;
+    state.no_engine_for_seconds = static_cast<int32_t>(std::chrono::duration_cast<std::chrono::seconds>(time_without_an_engine()).count());
     state.reason = accepting_orders_        ? pubsub_itc_fw_app::OrderAcceptanceReason::Accepting
                    : recovery_limit_passed_ ? pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong
                                             : pubsub_itc_fw_app::OrderAcceptanceReason::NoMatchingEngine;
@@ -4016,11 +3998,11 @@ void SequencerThread::handle_publisher_follow_request(const pubsub_itc_fw::Conne
     wal_follower_service_->on_follow_request(conn_id, view, leading, pubsub_itc_fw::FollowerLimit::LastCommitted, publisher_converter, 0);
 }
 
-void SequencerThread::send_committed_records_to_follower_engines(int64_t seq_no) {
+void SequencerThread::send_released_records_to_follower_engines() {
     if (!handed_over_engines_.has_value() || handed_over_engines_->empty()) {
         return;
     }
-    for (const auto& [engine, damaged_seq_no] : handed_over_engines_->send_to_all(seq_no)) {
+    for (const auto& [engine, damaged_seq_no] : handed_over_engines_->send_to_all(released_through())) {
         report_follower_cannot_be_served(engine, damaged_seq_no, "a matching engine that follows the WAL");
     }
 }
@@ -4107,10 +4089,11 @@ void SequencerThread::handle_role_announcement(const pubsub_itc_fw::ConnectionID
         case EngineOrderRouting::AnnouncementOutcome::FollowerWithdrawnNoLeader:
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: matching engine instance {} on connection {} is a follower at epoch {} -- withdrawn from order routing, and this "
-                       "sequencer knows of no leader to hand it to. Orders are deferred until an engine leads or asks to catch up",
+                       "sequencer knows of no leader to hand it to. Orders are held until an engine leads",
                        announcement.instance_id, conn_id.get_value(), announcement.epoch);
             break;
     }
+    engine_routing_changed();
 }
 
 void SequencerThread::handle_wal_follow_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -4192,12 +4175,11 @@ void SequencerThread::handle_wal_follow_request(const pubsub_itc_fw::ConnectionI
                    "SequencerThread: WalFollowRequest from connection {} carries no position -- the engine holds nothing and is placed at head={} without "
                    "catch-up. Any order taken and not yet applied is not recovered by this instance",
                    conn_id.get_value(), wal_head);
-        // With a reading thread, through it, so that the start of the answer reaches the engine after anything it was
-        // still sending this connection: it sends the engine only the orders released after the head.
         // Through the reading thread, so that the start of the answer reaches the engine after anything it was still
-        // sending this connection: it sends the engine only the orders released after the head. Order routing is left
-        // where it is, as for an engine that is starting: placing an engine that holds nothing is not a promotion.
-        serving.asking_to_lead = false;
+        // sending this connection: it sends the engine only the orders released after the head. An engine that asked to
+        // lead, which it does only holding a lease, or always with high availability off, is then sent orders, and the
+        // orders held while no engine led go to it (docs/availability/voided_commands.md, section 5.1); one that is
+        // starting leaves order routing where it is.
         serve_engine(conn_id, wal_head, serving);
         return;
     }
@@ -4214,13 +4196,13 @@ void SequencerThread::handle_wal_follow_request(const pubsub_itc_fw::ConnectionI
 void SequencerThread::serve_engine(const pubsub_itc_fw::ConnectionID& engine, int64_t after_seq_no, EngineServing serving) {
     publish_released_position();
     engine_servings_[engine.get_value()] = serving;
-    // An engine that is to lead is sent the commands released to it, as order routing sends them. One that follows the
-    // WAL is sent every committed record, reports included, as a publisher is, so that it can tell that none is missing
-    // and which reports the WAL holds.
-    const pubsub_itc_fw::FollowerLimit limit =
-        serving.follows_the_wal ? pubsub_itc_fw::FollowerLimit::LastCommitted : pubsub_itc_fw::FollowerLimit::LastReleased;
+    // Every engine is served up to the last record released, so that none applies an order before the engine that leads
+    // is sent it (docs/availability/voided_commands.md, section 5.1). An engine that is to lead is sent the commands, as
+    // order routing sends them. One that follows the WAL is sent every record, reports included, as a publisher is, so
+    // that it can tell that none is missing and which reports the WAL holds.
     const int converter = serving.follows_the_wal ? publisher_converter : engine_converter;
-    wal_follower_service_->serve(engine, after_seq_no, limit, converter, pubsub_itc_fw::CaughtUpMessage::DoNotSend, serving.started);
+    wal_follower_service_->serve(engine, after_seq_no, pubsub_itc_fw::FollowerLimit::LastReleased, converter, pubsub_itc_fw::CaughtUpMessage::DoNotSend,
+                                 serving.started);
 }
 
 void SequencerThread::engine_handed_over(const pubsub_itc_fw::ConnectionID& engine, int64_t through, int64_t records_sent, pubsub_itc_fw::WalPosition resume_at,
@@ -4276,6 +4258,8 @@ void SequencerThread::engine_handed_over(const pubsub_itc_fw::ConnectionID& engi
     engine_routing_.caught_up_to_lead(engine);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: ME order connection promoted to {} -- sequenced orders now route to the caught-up ME", engine.get_value());
+    // The orders held while it was caught up go to it now, live (docs/availability/voided_commands.md, section 5.1).
+    engine_routing_changed();
 }
 
 bool SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload,

@@ -81,6 +81,9 @@ send_every_report = false
 # sequencer halts trading, tells the gateways to refuse orders with the reason, and leaves a person
 # to decide when trading resumes. See docs/availability/far_back_catch_up.md, section 5.
 automatic_recovery_limit_seconds = ${shared_automatic_recovery_limit_seconds}
+# The longest orders are held while no matching engine leads; after that the gateways are told to
+# refuse new orders until one leads. See docs/availability/voided_commands.md, section 5.2.
+orders_held_at_most_seconds = ${shared_orders_held_at_most_seconds}
 
 [ha]
 ha_enabled                  = ${ha_enabled}

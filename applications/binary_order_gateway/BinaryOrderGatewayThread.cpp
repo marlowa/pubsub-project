@@ -917,9 +917,9 @@ void BinaryOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::Even
     // Warning rather than Error, as in the FIX gateway: nothing is lost, and refusing is the
     // correct response to the condition.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-               "BinaryOrderGatewayThread: the venue is no longer accepting orders -- {} order(s) deferred over {}s. New orders and cancels are refused "
-               "until it is",
-               view.deferred_order_count, view.degraded_for_seconds);
+               "BinaryOrderGatewayThread: the venue is no longer accepting orders -- no matching engine has led for {}s, and {} order(s) and cancel(s) "
+               "are held until one does. New orders and cancels are refused until it is",
+               view.no_engine_for_seconds, view.held_order_count);
 }
 
 bool BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, const uint8_t* payload, size_t size, const BinarySession& session,

@@ -267,6 +267,16 @@ struct SequencerConfiguration {
      */
     int32_t automatic_recovery_limit_seconds{10};
 
+    /**
+     * @brief The longest orders are held while no matching engine leads. `[recovery] orders_held_at_most_seconds`.
+     *
+     * While no engine leads, the leading sequencer holds every order it writes, and releases them to the engine that
+     * next leads. Once no engine has led for this long, it tells the gateways to refuse new orders until one leads; the
+     * orders already held stay held. Both instances of the pair must have the same figure
+     * (docs/availability/voided_commands.md, section 5.2).
+     */
+    int32_t orders_held_at_most_seconds{5};
+
     // External WAL subscriber listener (MEP primary and secondary connect here)
 
     /** @brief Host address on which the external WAL subscriber listener binds. */

@@ -83,10 +83,10 @@ failover rather than an outage. A leader that dies and is restarted within the l
 the lead, so the pair does not fail over, and the venue has a hole for as long as the restart takes.
 
 **What a member experiences in one.** An order sent into the hole is accepted, sequenced and
-deferred: no execution report, and the member holds something it believes is live that no book
+held: no execution report, and the member holds something it believes is live that no book
 holds. A cancel takes the same path, so an order already placed cannot be withdrawn. And nothing
-is said -- the venue only stops accepting after 45 seconds of *continuous* outage, which a flap
-never reaches because the clock restarts on every reconnect. So the member gets repeated silent
+is said -- the venue only stops accepting after 5 seconds *continuously* without a leading engine,
+which a flap never reaches because the clock restarts each time an engine leads. So the member gets repeated silent
 windows in which it can neither place nor withdraw, and no signal that anything is wrong.
 
 **Two uncovered interruptions and the instance is fatal.** One is a fault; two is a pattern. The

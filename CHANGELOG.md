@@ -120,6 +120,16 @@ describe the venue as it now is.
 
 ### Changed
 
+- **While no matching engine leads, orders are held, and refused after five seconds.** The leading
+  sequencer holds every order and cancel it writes while no engine leads, and sends them to no engine,
+  not even one that follows the WAL: every engine is sent records only up to the position released. The
+  engine that next leads is caught up to that position and then sent the held orders live, so each
+  member is sent a first report, not one marked as a possible repeat. Once no engine has led for
+  `[recovery] orders_held_at_most_seconds`, 5 seconds, declared once in each environment, the gateways are
+  told to refuse new orders until one leads; this replaces the 45-second and 250,000-order limits.
+  `OrderAcceptance` now carries the count of orders held and how long no engine has led. Scenario 92
+  tests it, and every scenario reports how long it held orders while no engine led
+  (`docs/availability/voided_commands.md`, sections 5.1 and 5.2; BUG-0174 fixed).
 - **Both matching engines are run on each scenario's WAL**, step 6 of phase 7: after the replay check,
   `ha_test.py` runs each engine in turn on a copy of the WAL, catching up from an empty book, and
   `wal_replay_check --engine-reports-after --engine-runs` requires every report each sends to be the

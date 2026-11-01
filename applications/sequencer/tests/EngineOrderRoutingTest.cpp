@@ -96,4 +96,63 @@ TEST(EngineOrderRoutingTest, ALostConnectionIsForgottenAndCarriesNothing) {
     EXPECT_EQ(routing.standby(), connection_6);
 }
 
+// The primary's connection carries orders when nothing else does, and an engine that asks to be brought up to date while
+// this sequencer follows is routed to, but neither is known to lead, so neither is sent orders: they are held until an
+// engine is (docs/availability/voided_commands.md, section 5.1).
+TEST(EngineOrderRoutingTest, OnlyAnEngineThatAnnouncedOrWasCaughtUpToLeadIsKnownToLead) {
+    EngineOrderRouting routing;
+    EXPECT_FALSE(routing.active_is_known_to_lead());
+    routing.connected(primary, connection_5, claim);
+    ASSERT_EQ(routing.active(), connection_5);
+    EXPECT_FALSE(routing.active_is_known_to_lead()) << "a primary that has only connected is not known to lead";
+
+    routing.caught_up_to_lead(connection_5);
+    EXPECT_TRUE(routing.active_is_known_to_lead());
+
+    routing.connected(secondary, connection_6, do_not_claim);
+    routing.asked_to_catch_up_while_following(connection_6);
+    ASSERT_EQ(routing.active(), connection_6);
+    EXPECT_FALSE(routing.active_is_known_to_lead()) << "an engine asking to be brought up to date is not yet leading";
+
+    EXPECT_EQ(routing.announced(secondary, Role::leader, 3), Outcome::AlreadyRoutedToLeader);
+    EXPECT_TRUE(routing.active_is_known_to_lead());
+
+    EXPECT_EQ(routing.announced(secondary, Role::follower, 4), Outcome::FollowerWithdrawnNoLeader);
+    EXPECT_FALSE(routing.active_is_known_to_lead());
+
+    EXPECT_EQ(routing.announced(primary, Role::leader, 5), Outcome::RoutedToLeader);
+    EXPECT_TRUE(routing.active_is_known_to_lead());
+    routing.lost(connection_5);
+    EXPECT_FALSE(routing.active_is_known_to_lead()) << "a lost connection carries nothing";
+}
+
+// An engine that led is killed: the connection it announced on is lost, and so is its order connection. Restarted, it
+// opens a new order connection, which must not be taken to lead on the dead process's announcement: sent orders live at
+// once, it would be sent them again in the catch-up it then asks for, marked as possible repeats.
+TEST(EngineOrderRoutingTest, AnAnnouncementWhoseConnectionIsLostIsForgotten) {
+    EngineOrderRouting routing;
+    routing.connected(primary, connection_5, claim);
+    EXPECT_EQ(routing.announced(primary, Role::leader, 3), Outcome::AlreadyRoutedToLeader);
+    ASSERT_TRUE(routing.active_is_known_to_lead());
+
+    routing.leader_announcement_lost(primary);
+    EXPECT_FALSE(routing.active_is_known_to_lead()) << "the process that announced may be dead";
+    EXPECT_EQ(routing.active(), connection_5) << "orders stay routed where they were";
+    routing.lost(connection_5);
+
+    routing.connected(primary, connection_7, claim);
+    EXPECT_EQ(routing.active(), connection_7);
+    EXPECT_FALSE(routing.active_is_known_to_lead()) << "a restarted process is taken to lead on its predecessor's announcement";
+    routing.caught_up_to_lead(connection_7);
+    EXPECT_TRUE(routing.active_is_known_to_lead());
+}
+
+// An engine that announced it leads before its order connection opened is known to lead once it opens.
+TEST(EngineOrderRoutingTest, AnEngineThatAnnouncedBeforeItsConnectionOpenedIsKnownToLead) {
+    EngineOrderRouting routing;
+    EXPECT_EQ(routing.announced(secondary, Role::leader, 9), Outcome::NoOrderConnection);
+    routing.connected(secondary, connection_7, do_not_claim);
+    EXPECT_TRUE(routing.active_is_known_to_lead());
+}
+
 } // un-named namespace

@@ -328,24 +328,25 @@ _RAW_LOGON_TIMEOUT            = 15.0
 _RAW_REPLY_TIMEOUT            = 10.0
 _RAW_SILENCE_TIMEOUT          = 2.0
 
-# Scenario 42. The venue stops accepting when a deferral outlives order_deferral_refusal_age in
-# SequencerThread.hpp, currently 45s. This is NOT a copy of that constant to assert against: the
-# scenario asserts that refusal happens within the deadline and did not happen on the first order,
-# which holds whatever the threshold is set to. The deadline is generous for that reason -- a
-# tighter one would turn a change to the venue's policy into a mysterious test failure.
+# Scenarios 42 and 92. The venue stops accepting once no matching engine has led for [recovery]
+# orders_held_at_most_seconds, 5 s in every environment. This is NOT a copy of that figure to
+# assert against: the scenarios assert that refusal happens within the deadline and did not happen
+# on the first order, which holds whatever the figure is set to. The deadline is generous for that
+# reason -- a tighter one would turn a change to the venue's policy into a mysterious test failure.
 _REFUSAL_DEADLINE             = 120.0
-# How often an order is offered while waiting for the venue to start refusing. Acceptance is
-# re-evaluated when an order arrives, so something has to keep arriving or nothing decides.
+# How often an order is offered while waiting for the venue to start refusing.
 _REFUSAL_PROBE_INTERVAL       = 5.0
-# How long an order is watched for an answer before it is taken as deferred. A deferred order gets
-# no ExecutionReport at all -- the report is the matching engine's to send and there is none -- so
+# How long an order is watched for an answer before it is taken as held. A held order gets no
+# ExecutionReport at all -- the report is the matching engine's to send and there is none -- so
 # this is a silence window, and it only has to outlast the round trip a real answer would take.
-_REFUSAL_DEFERRED_SILENCE     = 3.0
-# How long a member may wait for the answer to an order the venue deferred, measured from the
-# engine reporting itself ready. It covers arbitration, the catch-up itself and the report's
-# trip back through the sequencer and the gateway, so it is generous: what is being asserted is
-# that the answer comes at all.
-_DEFERRED_ANSWER_TIMEOUT      = 45.0
+_REFUSAL_HELD_SILENCE         = 3.0
+# How long a member may wait for the answer to an order the venue held, measured from the engine
+# reporting itself ready. It covers arbitration, the catch-up itself and the report's trip back
+# through the sequencer and the gateway, so it is generous: what is being asserted is that the
+# answer comes at all.
+_HELD_ANSWER_TIMEOUT          = 45.0
+# Scenario 92: how many orders are placed while no engine leads and before the venue refuses them.
+_HELD_ORDERS_PLACED           = 3
 # Long enough for at least two of the gateway's five-second progress lines to land, so "it kept
 # reporting" is a claim about a sequence rather than about one line that happened to be there.
 _REFUSAL_QUIET_WATCH          = 12.0
@@ -610,6 +611,32 @@ def log_session_announcement_margins() -> None:
         margin = first_led.arrived - first_announced.arrived
         when = "before" if margin >= 0 else "AFTER"
         log(f"  {sequencer}: told comp_id='{FIX8_COMP_ID}' is still connected {abs(margin):.1f}s {when} it took the lead")
+
+
+def log_orders_held_without_an_engine() -> list[int]:
+    """
+    For each time in this scenario that the leading sequencer had no matching engine to send orders to and then had one
+    again, log how long that was, how many orders arrived meanwhile, which it held, and whether an engine had led before
+    or the venue was starting (EngineTakesOrdersAgain). It is
+    measured, not checked, so that the limit on how long orders are held, [recovery] orders_held_at_most_seconds, can be
+    compared with the changes of engine leader the scenarios make (docs/availability/voided_commands.md, section 5.2).
+    Returns the times in milliseconds after an engine had led.
+    """
+    # Every event each sequencer has sent so far is read first: the event comes on a connection of its own, and may still
+    # be on its way when the member's report that followed it has arrived.
+    for sequencer in ("sequencer_primary", "sequencer_secondary", "sequencer"):
+        if not _TEST_EVENTS.settle(sequencer):
+            die(f"{sequencer} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]})")
+    again = message_of(_TEST_EVENTS.modules["sequencer_test_events"].EngineTakesOrdersAgain)
+    times: list[int] = []
+    for event in _TEST_EVENTS.events:
+        if again(event):
+            if event.message.an_engine_led_before:
+                times.append(event.message.without_an_engine_milliseconds)
+            when = "after an engine led" if event.message.an_engine_led_before else "before any engine led, as the venue started"
+            log(f"  orders held without a matching engine: {event.message.without_an_engine_milliseconds} ms, {when}, by {event.component}, "
+                f"{event.message.orders_held} order(s) and cancel(s) held")
+    return times
 
 
 def _condition_met(condition: Condition, since: int) -> bool:
@@ -1262,9 +1289,14 @@ class Scenario(NamedTuple):
     # them again when it replays them after a restart, without stopping its catch-up. BUG-0101.
     assert_engine_identifier_refusal: bool = False
     # When True, take every matching engine away, place an order that the sequencer therefore
-    # defers, start one engine COLD, and assert the member is answered for it. See
-    # run_scenario's "deferred orders" block, BUG-0064 and the surviving half of BUG-0009.
-    assert_deferred_answered: bool = False
+    # holds, start one engine, and assert the member is answered for it with a first report. See
+    # run_scenario's "held orders" block, BUG-0064 and docs/availability/voided_commands.md, section 5.1.
+    assert_held_answered: bool = False
+    # With assert_held_answered: place several orders while no engine leads, then go on placing orders until the gateway
+    # refuses one, which it must once no engine has led for [recovery] orders_held_at_most_seconds; and require that every
+    # order placed before that is answered by the engine that next leads, and none placed after it
+    # (docs/availability/voided_commands.md, section 5.2).
+    assert_held_then_refused: bool = False
     # When True, require the matching engine that leads at the end, matching_engine_primary, to report resuming as leader
     # once it has caught up, holding exactly as many orders as the member was told are open. See run_scenario's "an
     # engine that waited catches up before it leads" block, BUG-0198 and BUG-0199.
@@ -3176,11 +3208,11 @@ _SCENARIOS: list[Scenario] = [
 
     # 42 -- the venue refuses what it cannot process, and starts again on its own.
     #
-    # The matching engine is killed and NOT restarted, which is the case the deferral policy was
-    # never written for. Deferring is right for a failover: the order is in the WAL and a promoted
-    # engine replays it. It is wrong when there is no engine to promote, and the venue could not
-    # tell the two apart -- it deferred 1,087,912 orders across seven minutes, acknowledged every
-    # one of them, and reported dropped=0 throughout.
+    # The matching engine is killed and NOT restarted. Holding an order is right for a failover:
+    # the order is in the WAL and is released to the engine that takes the lead. It is wrong when
+    # there is no engine to take the lead, and the venue cannot tell the two apart except by how
+    # long it has been without one: BUG-0009 is a venue that took 1,087,912 orders across seven
+    # minutes with no engine, and reported dropped=0 throughout.
     #
     # What makes this scenario worth having is that the OLD behaviour passes every obvious check.
     # The session is up, orders are acknowledged, nothing is dropped, no error is logged above
@@ -3211,38 +3243,33 @@ _SCENARIOS: list[Scenario] = [
 
     # 53 -- an order the venue took while it had no matching engine at all.
     #
-    # This is the measurement BUG-0064 was found by, turned into a scenario. Both engines are
-    # taken away, an order is placed, and the sequencer does what it is designed to do: commits
-    # it to the write-ahead log and defers forwarding it, because there is nothing to forward
-    # it to. The member is told nothing, which is correct so far -- an engine is expected back.
+    # BUG-0064, as a scenario. Both engines are taken away, an order is placed, and the sequencer
+    # writes it to the WAL and holds it, because no engine leads to send it to. The member is told
+    # nothing, which is correct so far -- an engine is expected back.
     #
-    # Then one engine starts COLD, and that is the case the venue got wrong. A promoted
-    # follower reports where its replica reached and is sent everything after it, so a routine
-    # failover recovers the deferred order and always did. An engine that starts from nothing
-    # used to skip the catch-up entirely, on the reasoning that it had no predecessor to take
-    # over from -- and the order sat in the log, never applied, never answered, while the
-    # sequencer logged that it had been recovered.
+    # Then one engine starts from its own region. It is caught up to the position the sequencer
+    # released, which is before the held order, and the held order is then sent to it live
+    # (docs/availability/voided_commands.md, section 5.1).
     #
     # What makes this worth asserting from the CLIENT's own messages rather than from a log is
-    # that the failure is silence. Every venue-side line looks healthy: the order is
-    # WAL-committed, the engine starts, the sequencer reports recovery. Only the member can see
-    # that nothing ever came back.
+    # that the failure is silence. Every venue-side line looks healthy: the order is in the WAL,
+    # the engine starts, the sequencer reports recovery. Only the member can see that nothing ever
+    # came back.
     #
-    # The report must also be marked PossResend. The engine cannot tell a record some earlier
-    # engine already reported from one no engine ever saw, so it reports every record in the
-    # catch-up and marks them all; the mark is what lets a member that already had the report
-    # discard it instead of reading a second event. Asserting the mark is asserting that the
-    # venue told the truth about what it was doing -- R-0122.
+    # The report must NOT be marked PossResend. No engine applied the order before, and the engine
+    # applies it live, so its report is the first report of it. Every report sent out of a catch-up
+    # is marked (R-0122); this one is not sent out of a catch-up, and a mark would tell the member
+    # it may already have had a report it never had.
     Scenario(
         number=53,
-        short_name="deferred_orders_are_answered",
-        description="An order taken while no matching engine exists is answered when one starts cold",
+        short_name="held_orders_are_answered",
+        description="An order taken while no matching engine exists is answered, as a first report, when one starts",
         expected_outcome=(
-            "the order is deferred and unanswered while no engine exists; once one starts the "
-            "member receives its execution report, marked PossResend, and the order stays open"
+            "the order is held and unanswered while no engine exists; once one starts and leads the "
+            "member receives its execution report, not marked PossResend, and the order stays open"
         ),
         me_ha=True,
-        assert_deferred_answered=True,
+        assert_held_answered=True,
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -4667,6 +4694,30 @@ _SCENARIOS: list[Scenario] = [
         me_ha=True,
         supervised=("matching_engine_primary", "matching_engine_secondary"),
         assert_engine_death_not_voided=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 92 -- orders are held while no engine leads, for as long as a change of engine leader takes, and refused after that.
+    #
+    # docs/availability/voided_commands.md, sections 5.1 and 5.2. Both engines are taken away. Several orders are placed
+    # at once, and are held: no engine leads to send them to, and none is sent them, so the member is told nothing. Orders
+    # go on being placed until the gateway refuses one, which it must once no engine has led for [recovery]
+    # orders_held_at_most_seconds. Then one engine starts and leads. Every order placed before the refusal must be
+    # answered by it, each with a first report, not marked PossResend, because no engine applied any of them before; and
+    # none refused must be answered by it, because the gateway never passed them on.
+    Scenario(
+        number=92,
+        short_name="orders_held_then_refused_without_an_engine",
+        description="Orders are held while no matching engine leads, and refused once none has led for the limit",
+        expected_outcome=(
+            "the orders placed while no engine leads are held and unanswered; once none has led for the limit the gateway "
+            "refuses new orders; the engine that then leads answers every held order with a first report, and no refused one"
+        ),
+        me_ha=True,
+        assert_held_answered=True,
+        assert_held_then_refused=True,
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -7461,20 +7512,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # would spend ten seconds per scenario waiting for a process this run deliberately did not
         # launch, and print a line that reads as though something were missing.
         if scenario.ha_disabled:
-            # No arbiter is started and none is wanted. But the ten seconds spent polling for one
-            # were load-bearing by accident: they were how long the matching engine had to finish
-            # starting before the baseline burst went out. Removing that poll made the first
-            # thousand orders arrive at a sequencer with no engine connected, which deferred them
-            # -- and a cold-starting engine applies nothing it was sent while it was away
-            # (BUG-0064), so they were never processed and the scenario timed out waiting.
-            #
-            # Waiting for the engine says what was actually meant. An incidental delay that
-            # happens to be long enough is not a wait.
+            # No arbiter is started and none is wanted. The baseline burst waits for the matching
+            # engine instead: orders that reach the sequencer before an engine leads are held, and
+            # once none has led for [recovery] orders_held_at_most_seconds, the gateways refuse them.
             log("  No arbiter expected (high availability off); waiting for the matching engine ...")
             found, elapsed = await_expectation(expect_engine_reachable(me_log.stem, "matching_engine"), _ME_READY_TIMEOUT, 0)
             if not found:
                 die(f"matching engine not ready within {_ME_READY_TIMEOUT:.0f}s with high "
-                    "availability off -- orders sent now would be deferred and lost.")
+                    "availability off -- orders sent now would be held, and then refused.")
             log(f"  matching engine ready ({elapsed:.1f}s)")
         else:
             log("  Waiting for arbiter_primary to become the active arbiter ...")
@@ -7940,7 +7985,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # which nobody is expected to take the lead: there is no promotion in either, so there
         # is no book a promotion resumed with to ask about.
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
-                and not scenario.assert_deferred_answered and not scenario.expects_no_new_leader
+                and not scenario.assert_held_answered and not scenario.expects_no_new_leader
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
                 and not scenario.assert_engine_death_not_voided):
@@ -8688,8 +8733,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── The venue refuses what it cannot process ──────────────────────────
         # The matching engine is killed and not restarted. What is being tested is not that the
         # venue notices -- step 1 made it notice -- but that the noticing reaches the member.
-        if scenario.assert_deferred_answered:
-            log("=== An order taken while the venue has no matching engine at all ===")
+        if scenario.assert_held_answered:
+            log("=== Orders taken while the venue has no matching engine at all ===")
             stop_f8test(f8proc)
             f8proc = None
             time.sleep(_RAW_CLIENT_SETTLE)
@@ -8699,16 +8744,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             gateway_port = gateway_listen_port(prefix, "a")
 
-            # Both engines, because one of them would otherwise take over and the order would
-            # be recovered by a promotion -- which has always worked and is not what this asks.
+            # Both engines, because one of them would otherwise take the lead and be sent the orders
+            # at once, which is a routine failover and not what this asks.
             for engine in ("matching_engine_primary", "matching_engine_secondary"):
                 engine_proc = proc_by_name.get(engine)
                 if engine_proc is None or engine_proc.poll() is not None:
-                    die(f"deferred orders: {engine} is not running, so taking every engine away "
+                    die(f"held orders: {engine} is not running, so taking every engine away "
                         "is not what this scenario would be doing and it would prove nothing.")
                 log(f"  SIGKILL -> {engine} (PID {engine_proc.pid})")
                 engine_proc.kill()
                 engine_proc.wait()
+            engines_gone_at = time.monotonic()
             log("  the venue now has no matching engine at all")
 
             member = FixRawClient("127.0.0.1", gateway_port, FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
@@ -8716,34 +8762,66 @@ def run_scenario(scenario: Scenario, args) -> bool:
             member.logon(reset_seq_num=True)
             if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
                 member.close()
-                die("deferred orders: the raw client could not log on. A test that cannot log on "
+                die("held orders: the raw client could not log on. A test that cannot log on "
                     "looks identical to a venue that will not answer, so this is checked first.")
 
-            def deferred_report_for(cl_ord_id: str, timeout: float) -> dict[int, str] | None:
-                """The ExecutionReport for this order, or None. Matched on ClOrdID, because
-                other reports are in flight and taking the next one to arrive would read
-                whichever happened to be first."""
+            # Every report the member is sent, by the ClOrdID it answers, so that no report is read as the answer to another
+            # order, and none is missed because the test was waiting for a different one.
+            reports_by_order: dict[str, list[dict[int, str]]] = {}
+
+            def receive_reports(timeout: float, done=lambda: False) -> None:
                 deadline = time.monotonic() + timeout
-                while True:
+                while not done():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        return None
+                        return
                     report = member.receive_until("8", timeout=min(1.0, remaining))
-                    if report is not None and report.get(11) == cl_ord_id:
-                        return report
+                    if report is not None and report.get(11):
+                        reports_by_order.setdefault(report[11], []).append(report)
 
-            deferred_cl_ord_id = "deferred-answered-1"
-            member.new_order_single(deferred_cl_ord_id)
-            if deferred_report_for(deferred_cl_ord_id, _REFUSAL_DEFERRED_SILENCE) is not None:
+            held_ids = [f"held-answered-{n}" for n in range(1, (_HELD_ORDERS_PLACED if scenario.assert_held_then_refused else 1) + 1)]
+            for cl_ord_id in held_ids:
+                member.new_order_single(cl_ord_id)
+            receive_reports(_REFUSAL_HELD_SILENCE)
+            answered = [cl_ord_id for cl_ord_id in held_ids if cl_ord_id in reports_by_order]
+            if answered:
                 member.close()
-                die("deferred orders: the order was answered while no matching engine existed. "
-                    "Only an engine sends that report, so either one is still alive and this "
-                    "scenario is testing nothing, or the answer came from somewhere it must not.")
-            log("  the order is deferred and the member is told nothing -- correct so far")
+                die(f"held orders: {', '.join(answered)} answered while no matching engine existed, with "
+                    f"{[r.get(39) for cl_ord_id in answered for r in reports_by_order[cl_ord_id]]}. Only an engine, or a "
+                    "gateway refusing, sends that report, and neither should yet: either an engine is still alive and this "
+                    "scenario is testing nothing, or the venue refused before the limit on holding orders.")
+            log(f"  {len(held_ids)} order(s) placed; each is held and the member is told nothing -- correct so far")
 
-            # Cold: this instance was killed, so it starts from its own region and has no
-            # predecessor to take over from. That is the case that used to skip the catch-up.
-            log("  starting matching_engine_primary from nothing")
+            # Orders go on being placed until the gateway refuses one. Each that is not answered is held, and must be
+            # answered by the engine that next leads, like the first ones.
+            refused_ids: list[str] = []
+            if scenario.assert_held_then_refused:
+                probe = 0
+                while True:
+                    probe += 1
+                    cl_ord_id = f"held-probe-{probe}"
+                    member.new_order_single(cl_ord_id)
+                    receive_reports(_REFUSAL_HELD_SILENCE, lambda wanted=cl_ord_id: wanted in reports_by_order)
+                    answers = reports_by_order.get(cl_ord_id)
+                    if answers:
+                        if answers[0].get(39) != "8" or not answers[0].get(58):
+                            die(f"held orders: probe {probe} was answered with OrdStatus={answers[0].get(39)} "
+                                f"Text='{answers[0].get(58, '')}', while no matching engine existed. The only answer the "
+                                "venue can give then is the gateway's rejection, saying why.")
+                        refused_ids.append(cl_ord_id)
+                        break
+                    held_ids.append(cl_ord_id)
+                    if time.monotonic() - engines_gone_at >= _REFUSAL_DEADLINE:
+                        member.close()
+                        die(f"held orders: no order was refused in {_REFUSAL_DEADLINE:.0f}s without a matching engine. The "
+                            "venue is to refuse new orders once no engine has led for [recovery] orders_held_at_most_seconds.")
+                    time.sleep(_REFUSAL_PROBE_INTERVAL)
+                log(f"  the gateway refuses new orders {time.monotonic() - engines_gone_at:.1f}s after the engines were killed, "
+                    f"Text='{reports_by_order[refused_ids[0]][0].get(58)}'; {len(held_ids)} order(s) are held -- OK")
+
+            # This instance was killed, so it starts from its own region; it is caught up to the position the sequencer
+            # released, which is before the first held order, and is then sent the held orders live.
+            log("  starting matching_engine_primary")
             do_restart_step(
                 RestartStep(
                     proc_name="matching_engine_primary",
@@ -8756,63 +8834,46 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix),
             )
 
-            # Everything the member is handed for this order, not merely the first thing. The
-            # venue may legitimately say more than one thing about it -- accepted out of the
-            # catch-up, and then whatever the promotion policy does with the book it inherited
-            # -- and a test that read one report would be blind to which.
-            answers: list[dict[int, str]] = []
-            answer_deadline = time.monotonic() + _DEFERRED_ANSWER_TIMEOUT
-            while time.monotonic() < answer_deadline:
-                remaining = answer_deadline - time.monotonic()
-                report = member.receive_until("8", timeout=min(1.0, remaining))
-                if report is not None and report.get(11) == deferred_cl_ord_id:
-                    answers.append(report)
-                    # Accepted then cancelled is the whole story under the cancel policy, and
-                    # accepted alone is the whole story under keep. Either way a terminal
-                    # status ends it and there is nothing further to wait for.
-                    if report.get(39) in ("4", "8"):
-                        break
+            # Everything the member is handed for each order, not merely the first thing. A terminal status ends an
+            # order's story; accepted alone is the whole story for an engine that started rather than took over a book.
+            receive_reports(_HELD_ANSWER_TIMEOUT,
+                            lambda: all(any(r.get(39) == "0" for r in reports_by_order.get(cl_ord_id, [])) for cl_ord_id in held_ids))
+            for cl_ord_id in held_ids + refused_ids:
+                for answer in reports_by_order.get(cl_ord_id, []):
+                    log(f"    {cl_ord_id}: OrdStatus={answer.get(39)} ExecType={answer.get(150)} "
+                        f"PossResend={answer.get(97, 'absent')} OrderID={answer.get(37)}")
 
-            if not answers:
-                member.close()
-                die("deferred orders: the venue took this order, committed it to the log, and "
-                    "never answered it -- the engine started and applied nothing. This is "
-                    "BUG-0064 and the surviving half of BUG-0009: an order the venue accepted "
-                    "and cannot account for, which the member cannot cancel because cancelling "
-                    "needs the same engine.")
+            for cl_ord_id in held_ids:
+                answers = reports_by_order.get(cl_ord_id, [])
+                if not answers:
+                    member.close()
+                    die(f"held orders: the venue took {cl_ord_id}, wrote it to the WAL, and never answered it -- the engine "
+                        "started and leads, and was never sent it. This is BUG-0064: an order the venue accepted and cannot "
+                        "account for, which the member cannot cancel because cancelling needs the same engine.")
+                accepted = [a for a in answers if a.get(39) == "0"]
+                if not accepted:
+                    member.close()
+                    die(f"held orders: the member was answered for {cl_ord_id} but never told it was accepted. A member that "
+                        "is only ever told about the end of an order it was never told the venue had cannot reconcile its day.")
+                if any(a.get(97) == "Y" for a in answers):
+                    member.close()
+                    die(f"held orders: a report of {cl_ord_id} is marked PossResend. No engine applied the order before the "
+                        "engine that leads was sent it, live, so its report is the first: a mark tells the member it may "
+                        "already have had a report it never had (docs/availability/voided_commands.md, section 5.1).")
+                # This instance started rather than taking over a book from a peer, so it keeps what it holds (R-0018).
+                if answers[-1].get(39) != "0":
+                    member.close()
+                    die(f"held orders: the member's last word on {cl_ord_id} was OrdStatus={answers[-1].get(39)}. The engine "
+                        "started rather than taking over its peer's book, so the order stays open (R-0018).")
+            log("  every held order is accepted, with a first report, not marked PossResend, and stays open -- OK")
 
-            for answer in answers:
-                log(f"    report: OrdStatus={answer.get(39)} ExecType={answer.get(150)} "
-                    f"PossResend={answer.get(97, 'absent')} OrderID={answer.get(37)}")
-
-            # The catch-up's own report: the engine applying a record it was sent and saying so.
-            # This is the one that did not exist before, and the one the member needs -- nothing
-            # else in the venue ever told it this order was taken.
-            accepted = [a for a in answers if a.get(39) == "0"]
-            if not accepted:
-                member.close()
-                die("deferred orders: the member was answered but never told the order was "
-                    "accepted. The engine applied the record from the catch-up, so it holds the "
-                    "order; a member that is only ever told about the end of an order it was "
-                    "never told the venue had cannot reconcile its day.")
-            if accepted[0].get(97) != "Y":
-                member.close()
-                die("deferred orders: the acceptance arrived without PossResend. The engine "
-                    "cannot tell this record from one an earlier engine already reported, so "
-                    "every report it sends out of a catch-up must say so -- unmarked, a report "
-                    "the member already had reads as a second event (R-0122).")
-            log("  the member is told the order was accepted, marked PossResend -- OK")
-
-            # And the order is still open: this instance started, and what it holds it read from
-            # its own region and caught up on top of, which it keeps (R-0018).
-            if answers[-1].get(39) != "0":
-                member.close()
-                die("deferred orders: the member's last word on this order was OrdStatus="
-                    f"{answers[-1].get(39)}. The engine started rather than being promoted, so "
-                    "the order it recovered stays open (R-0018): the promotion policy is about "
-                    "a book taken over from a peer and this instance took over from nobody.")
-            log("  and the order is still open, because this engine started rather than being "
-                "promoted -- OK")
+            for cl_ord_id in refused_ids:
+                if len(reports_by_order[cl_ord_id]) != 1:
+                    member.close()
+                    die(f"held orders: {cl_ord_id}, which the gateway refused, was answered again: "
+                        f"{[(r.get(39), r.get(58)) for r in reports_by_order[cl_ord_id]]}. The gateway never passed it on.")
+            if refused_ids:
+                log("  the refused order is not answered again -- OK")
             member.close()
 
         # ── The follower's copy of the book across a break in the link between the engines ──
@@ -9106,8 +9167,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 """Wait for the ExecutionReport belonging to this order, or None.
 
                 Matched on ClOrdID rather than taking the first report to arrive, because the
-                orders deferred earlier are still in the WAL: the moment an engine comes back it
-                replays them and their reports land in the middle of this conversation. A test
+                orders held earlier are released to the engine the moment one leads again, and
+                their reports land in the middle of this conversation. A test
                 that took the next report would read one of those and conclude whatever it liked.
                 """
                 deadline = time.monotonic() + timeout
@@ -9125,7 +9186,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 member.new_order_single(cl_ord_id)
                 return report_for(cl_ord_id, timeout)
 
-            # 1. While a failover is still plausible the order is DEFERRED, and the member is told
+            # 1. While a failover is still plausible the order is HELD, and the member is told
             #    nothing at all.
             #
             #    Not "acknowledged": measured on 2026-08-28, a NewOrderSingle placed with no
@@ -9138,13 +9199,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
             #    This half also guards the opposite defect. A venue that refused from the first
             #    order would pass a refusal-only test while rejecting orders during every routine
             #    failover, which members survive today. That would be a regression dressed as a fix.
-            if send_and_wait("refuse-early", _REFUSAL_DEFERRED_SILENCE) is not None:
-                die("order refusal: the first order after the engine died was answered. Deferring "
-                    "is the RIGHT behaviour for the first seconds -- a promoted engine replays the "
-                    "WAL and picks the order up -- so an immediate answer means either the venue "
+            if send_and_wait("refuse-early", _REFUSAL_HELD_SILENCE) is not None:
+                die("order refusal: the first order after the engine died was answered. Holding "
+                    "is the RIGHT behaviour for the first seconds -- it is released to the engine "
+                    "that takes the lead -- so an immediate answer means either the venue "
                     "refused far too eagerly, or an engine is still alive and this scenario is "
                     "testing nothing.")
-            log("  order refusal: the first order is deferred and the member is told nothing -- OK")
+            log("  order refusal: the first order is held and the member is told nothing -- OK")
 
             # 2. Refused once the outage has outlived any failover.
             deadline = time.monotonic() + _REFUSAL_DEADLINE
@@ -9154,7 +9215,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             while True:
                 probe += 1
                 cl_ord_id = f"refuse-probe-{probe}"
-                report = send_and_wait(cl_ord_id, _REFUSAL_DEFERRED_SILENCE)
+                report = send_and_wait(cl_ord_id, _REFUSAL_HELD_SILENCE)
                 if report is not None:
                     if report.get(39) != "8":
                         die(f"order refusal: probe {probe} was answered with OrdStatus="
@@ -9242,8 +9303,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "after orders were demonstrably refused. The count an operator would watch "
                     "does not reflect what the members were told.")
             if latest.awaiting < 1:
-                die("order refusal: awaiting=0 while orders deferred before the refusal began are "
-                    "still unprocessed. Deferred and refused are different states and the report "
+                die("order refusal: awaiting=0 while orders held before the refusal began are "
+                    "still unprocessed. Held and refused are different states and the report "
                     "must not fold them together -- only one of them is somebody's problem later.")
             log(f"  order refusal: {len(quiet_reports)} progress reports while nothing progressed, "
                 f"awaiting={latest.awaiting} refused={latest.refused} refused_cancels={latest.refused_cancels} -- OK")
@@ -9279,7 +9340,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # which the gateway must turn into an OrderCancelReject with CxlRejReason 1, Unknown
             # order (R-0151, BUG-0099).
             member.order_cancel_request("unknown-cancel", "never-placed")
-            # Reports for the orders deferred earlier arrive now that an engine is running again,
+            # Reports for the orders held earlier arrive now that an engine leads again,
             # so the reply is recognised by the ClOrdID it answers, not by being the first to come.
             reply = None
             reply_deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
@@ -11714,6 +11775,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # a log that holds records twice, or out of order, whatever the member saw. Every later
         # scenario then starts from that log, so it is a failure of this one (BUG-0147).
         check_write_ahead_logs_in_order(prefix)
+
+        log_orders_held_without_an_engine()
 
         result_pass = True
         log("")

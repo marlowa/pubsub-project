@@ -625,7 +625,9 @@ permits, and gives its reason:
   ([BUG-0174](../bug_list.md#bug_0174)), which listing the reads found.
 
 An entry that no longer matches any read is reported too, so that the table cannot go on permitting a read
-that has been removed.
+that has been removed. The last of these reads no longer exists, and neither does its entry: while no matching
+engine leads, the sequencer holds every order and reads nothing back
+([voided_commands.md](voided_commands.md), section 5.1), and `send_logged_orders` is gone.
 
 **How it was checked.** With the table complete the check passes. It was made to fail on purpose by adding,
 one at a time, a use of `WalCursor`, a call of `send_logged_orders`, a call of the publishers' `send_to_all`

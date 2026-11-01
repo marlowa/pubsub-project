@@ -12,8 +12,10 @@
 #  None is sent for each order: each says that the sequencer's way of
 #  handling orders changed.
 #
-#  Message ids 180 to 189 and 210 to 219 are the sequencer's, within the
-#  range 170 to 229 set aside for applications' test events.
+#  Message ids 180 to 189, 210 to 215 and 219 are the sequencer's, within
+#  the range 170 to 229 set aside for applications' test events; 216 to
+#  218 are the matching engine's. No two files may use the same id: the
+#  listener refuses to start if they do.
 # ============================================================
 
 # ------------------------------------------------------------
@@ -204,4 +206,18 @@ message ReportsSentToGateway (id=215, version=1)
     i16 gateway_instance
     i64 sent                # how many held reports were sent
     i64 dropped             # how many were dropped while held, for want of room
+end
+
+# ------------------------------------------------------------
+#  219 -- EngineTakesOrdersAgain
+#  While the sequencer led, no matching engine took orders for a time,
+#  and now one does: the orders held meanwhile are released to it. The
+#  time is from when the sequencer found that no engine took orders to
+#  when one was caught up to lead or announced that it leads
+#  (docs/availability/voided_commands.md, section 5.2).
+# ------------------------------------------------------------
+message EngineTakesOrdersAgain (id=219, version=1)
+    i64 without_an_engine_milliseconds   # how long no engine took orders
+    i64 orders_held                      # the orders and cancels that arrived meanwhile, all of them held
+    bool an_engine_led_before            # false when no engine had taken orders since this sequencer began leading, as when the venue starts
 end

@@ -168,11 +168,11 @@ member may cancel an order during `eod` must be settled with that in mind.
 
 ### The control-plane path already exists in the right shape
 
-`OrderAcceptance` (127) carries `accepting`, `deferred_order_count` and `degraded_for_seconds` from
+`OrderAcceptance` (127) carries `accepting`, `held_order_count` and `no_engine_for_seconds` from
 the sequencer to every gateway, and a gateway refuses on it with a member-visible rejection
 carrying a reason string. What it cannot express is *why*: a bare boolean cannot distinguish
 
-- degraded and deferring, from
+- no matching engine leading, with orders held, from
 - halted, which a person must lift, from
 - closed, because it is after hours.
 

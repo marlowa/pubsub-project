@@ -218,6 +218,11 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
             throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: recovery.automatic_recovery_limit_seconds must be >= 1, got " +
                                                         std::to_string(config.automatic_recovery_limit_seconds));
         }
+        toml.get_required_except("recovery.orders_held_at_most_seconds", config.orders_held_at_most_seconds);
+        if (config.orders_held_at_most_seconds < 1) {
+            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: recovery.orders_held_at_most_seconds must be >= 1, got " +
+                                                        std::to_string(config.orders_held_at_most_seconds));
+        }
         if (config.absence_limit_seconds < 1) {
             throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: absence.absence_limit_seconds must be >= 1, got " +
                                                         std::to_string(config.absence_limit_seconds));

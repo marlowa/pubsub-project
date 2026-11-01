@@ -192,8 +192,8 @@ thread, reading and sending every record in one go (`engine_catch_up_from_wal`, 
 through the library, as it does with high availability on. With high availability off the reading thread serves an
 engine up to the last order released and a publisher up to the last record committed, which with no follower is every
 record as it is written. `engine_catch_up_from_wal` goes, and so does the path that caught a publisher up on the
-sequencer's thread; `send_logged_orders` stays only to count the orders deferred while no engine is connected, which
-sends nothing. The build's check that no new code reads the
+sequencer's thread. `send_logged_orders` goes too: while no engine leads, the sequencer holds every order and reads
+nothing back ([voided_commands.md](voided_commands.md), section 5.1). The build's check that no new code reads the
 WAL on the sequencer's thread (step 5 of phase 5) covers them.
 
 ## 5. The limit on automatic recovery

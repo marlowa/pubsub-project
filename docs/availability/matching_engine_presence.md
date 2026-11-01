@@ -10,11 +10,15 @@ before it is built:
   each leader made about whether its peer may lead. It does not record each instance as it registers
   or drop it on disconnect, the log line quoted below no longer exists, and nor does `started_at_`.
   The nearest fact an arbiter now holds is whether any instance of a group holds a lease it granted.
-- **The deferred orders this design worried about are recovered.** A matching engine that starts
-  cold catches up from the sequencer's log before it acts, like a promoted one, so an order deferred
-  while no engine ran is applied and reported to the member ([BUG-0064](../bug_list.md#bug_0064)
-  and [BUG-0009](../bug_list.md#bug_0009), both fixed).
-- **With high availability off, the sequencer leads at once**, so the age threshold of
+- **The orders this design worried about are answered.** While no engine leads, the sequencer holds
+  every order, and the engine that next leads is caught up and then sent them live, so each is applied
+  and reported to the member ([BUG-0064](../bug_list.md#bug_0064) and
+  [BUG-0009](../bug_list.md#bug_0009), both fixed; [voided_commands.md](voided_commands.md), section 5.1).
+- **The threshold is 5 seconds, not 45.** [Order acceptance](order_acceptance.md) refuses new orders once
+  no engine has led for `[recovery] orders_held_at_most_seconds`, worked out from the lease timings as the
+  longest normal change of engine leader. So the cost below of waiting when no engine is coming back is
+  smaller; the race with a promotion that is about to finish remains.
+- **With high availability off, the sequencer leads at once**, so the limit of
   [order acceptance](order_acceptance.md) does run in that configuration.
 
 The sections below are the design as written; where a statement about the code no longer holds, it
@@ -34,7 +38,7 @@ at eleven in the morning has members holding orders it has taken.
 ## Why a timeout is the wrong instrument
 
 The venue already has one — [Refusing orders the venue cannot process](order_acceptance.md) stops
-accepting after a deferral outlives 45 seconds. That threshold exists for a single reason: **the
+accepting after a deferral outlives 45 seconds *(now 5: see the status above)*. That threshold exists for a single reason: **the
 sequencer cannot tell a failover in progress from a matching engine service that no longer
 exists.** Unable to distinguish them, it waits long enough for the first and calls it a policy.
 

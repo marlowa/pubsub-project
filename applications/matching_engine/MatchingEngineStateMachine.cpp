@@ -192,8 +192,9 @@ void MatchingEngineStateMachine::apply_new_order_unguarded(const pubsub_itc_fw_a
     // not counted as processed.
     //
     // A catch-up reports every order it applies. Most of these records were reported by the engine that served them,
-    // but an order the sequencer deferred while no engine was running was never sent to any engine, so nothing ever
-    // reported it: staying silent would leave it resting on the book with its member never told it exists (BUG-0064).
+    // but some were never sent to any engine, such as an order a sequencer wrote to the WAL and then died before sending
+    // on, when no engine led after it: nothing ever reported it, and staying silent would leave it resting on the book
+    // with its member never told it exists (BUG-0064).
     //
     // An order arriving live while no connection for reports is up is acted on all the same: it is in the sequencer's
     // WAL, and the book must agree with the WAL. Its reports are held by MatchingEngineThread until a connection is
@@ -460,8 +461,8 @@ void MatchingEngineStateMachine::apply_new_order_unguarded(const pubsub_itc_fw_a
 void MatchingEngineStateMachine::apply_cancel_unguarded(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
                                                         int32_t trading_date, const fix_common::SessionIdentity& session, CommandSource source) {
     // One path, whichever way the cancel arrives, for the reasons apply_new_order gives, with the same differences. A
-    // cancel the sequencer deferred was never sent to any engine either, so its member is still holding an order it
-    // believes is live, and a catch-up reports it. Acted on even with no connection for reports up, as an order is.
+    // cancel may have been sent to no engine either, so its member is still holding an order it believes is live, and a
+    // catch-up reports it. Acted on even with no connection for reports up, as an order is.
     const bool live = source == CommandSource::live;
     const ReportIsRepeat repeat = live ? ReportIsRepeat::no : ReportIsRepeat::yes;
 

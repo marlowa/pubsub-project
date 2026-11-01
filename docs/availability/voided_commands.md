@@ -497,6 +497,59 @@ leading first.
    places orders, and requires those placed within the limit to be held and answered once an engine leads, each as a
    first report, and those placed after it to be refused by the gateway. Made to fail by restoring the release of
    orders while no engine leads: the follower engine then applies the held orders before any engine leads.
+
+   **As built.** `SequencerThread` sends an order to an engine only while one takes orders (`an_engine_takes_orders`):
+   the order connection goes to an engine known to lead, which announced that it leads or was caught up in order to
+   lead, and which neither follows the WAL nor is being caught up. `EngineOrderRouting` keeps whether the engine on the
+   order connection is known to lead. An engine that has only connected is not, and nor is one whose announcement was
+   made on a connection since lost, so that a restarted engine is not sent orders on the word of the process before it.
+   While no engine takes orders, nothing is released, and every engine, including one that follows the WAL, is sent
+   records only up to the released position, which is never past the last record committed, because an engine that
+   follows the WAL is also sent the execution reports, and a report is not held. An engine that has no open-order region
+   and asks to lead, as a single engine with high availability off does, is placed at the head of the WAL and then taken
+   to lead. The time without an engine is counted from when the sequencer finds none takes orders, and is checked on
+   each order held and on the engine absence timer, about once a second; once it reaches
+   `[recovery] orders_held_at_most_seconds`, the gateways are told to refuse new orders, with `OrderAcceptance`, which
+   now carries the count of orders held and how long no engine has led. When an engine takes orders again, the
+   sequencer says how long none did, and sends the test event `EngineTakesOrdersAgain`, which also says whether an
+   engine had led before or the venue was starting; `ha_test.py` logs each at the end of every scenario. Reading the WAL
+   on the sequencer's thread to count the orders deferred is gone ([BUG-0174](../bug_list.md#bug_0174)).
+
+   Scenario 92 kills both engines and places three orders, then goes on placing them until the gateway refuses one,
+   which in its runs was the first placed after the limit, 11 seconds after the engines died, since it places one every
+   8 seconds. The engine that then leads answers every held order with a first report, and the refused one is not
+   answered again. Scenario 53 now requires its held order's report not to be marked as a possible repeat, and in scenario
+   42 orders are refused 8 seconds after the engine died. Scenario 92 was made to fail on 1 November 2026 by
+   releasing orders while no engine leads: every held order was then answered from the catch-up, marked as a possible
+   repeat. Unit tests of `EngineOrderRouting` require an engine that has only connected, and one whose announcement's
+   connection was lost, not to be known to lead; each fails with its rule taken out.
+
+   The full suites passed on 1 November 2026: 34 of 34 with the secondary engine leading first, and 90 of 92 with the
+   primary first. Of the two that failed, scenario 59 is [BUG-0185](../bug_list.md#bug_0185), and scenario 6 found
+   [BUG-0218](../bug_list.md#bug_0218), in the matching engine, which the sequencer's behaviour here does not touch:
+   an engine whose lease ran out and was granted again within milliseconds took the answer to its request to lead as
+   the end of following. Both passed when run again.
+
+   **Measured: how long orders are held in a change of engine leader.** In the same runs, each time an engine took
+   orders again after one had led, in milliseconds:
+
+   | | primary engine leading first | secondary engine leading first |
+   |---|---|---|
+   | the leading engine dies and the other leads (scenario 16) | 4,863 | 2,976 |
+   | other single failovers (scenarios 21, 24, 25, 32, 34, 86) | 3,061 to 4,856 | 2,096 to 2,976 |
+   | a failover while an arbiter dies too (scenario 11) | 6,329 | not run |
+   | an engine restarted and promoted a second time (scenarios 55 and 79) | 4,332 to 6,278 | not run |
+
+   So with the primary engine leading first, an ordinary failover holds orders for up to 4.9 seconds, within 0.14 of
+   the limit, and four of the longer cases, in three scenarios, pass it, so the gateways refused new orders for up to 1.3
+   seconds in each. In scenario 16, run again with its logs kept, the 4,845 milliseconds were made up as follows. The primary
+   engine died at 08:44:57.34. The secondary asked to lead at 08:44:58.28 and again at 08:44:58.78, and was granted no
+   lease, because the arbiter's promise to the primary still stood: given at its last renewal, at most a second before
+   it died, for 3 seconds and the 250 milliseconds of drift, so until about 08:45:00.5. The secondary then waited a full
+   lease period for an answer before asking again, at 08:45:02.18, when the arbiter granted the lease at once; its
+   catch-up took 2 milliseconds. So about 1.7 seconds of the gap is the engine waiting a lease period after a request
+   no voter answered, not the dead engine's lease. With the secondary engine leading first, the same failover held
+   orders for 3.0 seconds. Whether the limit stays at 5 seconds is put to Andrew with these figures.
 4. **Voiding the held orders at the halt (section 5.3).** Scenarios 85 and 86 require the held new orders to be rejected,
    the held cancels to be carried out, and, with decision 6 B, every open order to be cancelled with a report; made to
    fail by leaving out the `VoidCommands`, when the held orders rest on the book instead. The absence rule goes.

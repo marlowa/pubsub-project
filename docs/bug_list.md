@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 217 |
+| Bugs recorded | 218 |
 | Open | 81 (57 defects, 24 tasks) |
-| Closed | 136 |
-| Next id | BUG-0218 |
+| Closed | 137 |
+| Next id | BUG-0219 |
 
 ## Open bugs by severity
 
-18 high, 49 medium, 14 low.
+19 high, 48 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -29,8 +29,9 @@
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
 | [BUG-0193](#bug_0193) | high | task | Once both matching engines apply every command, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
-| [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so |
+| [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered, instead of halting and saying so |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the absence limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
+| [BUG-0218](#bug_0218) | high | defect | A matching engine that loses its lease and is granted another at once takes the answer to its request to lead as the end of following, and stays a follower while it leads |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -72,7 +73,6 @@
 | [BUG-0167](#bug_0167) | medium | defect | A lease promise record can take longer to write than a lease period, and the leader then loses its lease |
 | [BUG-0169](#bug_0169) | medium | task | The high availability tests depend on the wording of Quill log messages; they should observe outcomes directly, or read a separate stream of named test events |
 | [BUG-0173](#bug_0173) | medium | task | No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests |
-| [BUG-0174](#bug_0174) | medium | defect | With high availability on and no matching engine connected, the leading sequencer reads its WAL on its own thread to count the orders that are deferred |
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
@@ -190,6 +190,33 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0218: A matching engine that loses its lease and is granted another at once takes the answer to its request to lead as the end of following, and stays a follower while it leads {#bug_0218}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-11-01 |
+| Recorded | 2026-11-01 |
+| How | `ha_test.py` scenario 6, death of both arbiters, in a full run of the scenarios: the 1,000 orders sent after the arbiters died were never answered. Logs kept in `tmp/ha_test_failures/20261101-073305-scenario-6-both_arbiters_dead` |
+| Impact | The engine holds the lease and the sequencer sends it orders, but it takes itself to be a follower and acts on none of them. No member's order is answered until the engine loses its lease again |
+
+**What happens.** In scenario 6 the primary matching engine led, and the arbiters were killed. At 07:32:34.086 its
+lease ran out, because neither the arbiter nor its peer had renewed it. It became a follower, and
+`MatchingEngineThread::follow_the_wal_again` asked to be caught up to follow (request 4), setting `following_again_`.
+At 07:32:34.086 the peer granted it a lease at a new epoch, and `become_leader_when_current` asked to be caught up to
+lead (request 5), setting `reconciling_to_lead_` but leaving `following_again_` set. The leading sequencer answered
+request 5, routed orders to the engine, and said an engine takes orders again. The engine logged "taking the lead",
+and then, when the answer ended, `handle_caught_up` took the branch for following again, because `following_again_`
+was still set: it logged "caught up again at seq_no=42000 ... following the WAL from record 42001, as FOLLOWER", and
+ignored the orders the sequencer then sent it.
+
+**What is wanted.** Asking to lead replaces a catch-up to follow that is under way: `become_leader_when_current`
+clears `following_again_`, and a scenario, or a test of the engine's thread, makes a lease run out and be granted again
+before the first answer ends. It needs the lease lost and granted again within milliseconds, so the full runs of the
+scenarios meet it rarely.
+
+**Principles.** V6: every command a gateway accepted is answered.
 
 ### BUG-0216: Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path {#bug_0216}
 
@@ -492,6 +519,15 @@ about 5.5 MB a second in 15 writes a second, but each write waited 172 milliseco
 The sequencer created WAL segments at a steady 24 or 25 a minute throughout, slow spells included. So, as on 17
 October, for minutes at a time the disk takes far longer to complete the same writes, with nothing else known
 to be writing to it.
+
+**1 November 2026, recorded with `iostat`.** In a full run of the scenarios, with no other program writing to the
+disk, scenario 66 failed this way: the matching engine's promise writes took 2,499 and then 5,299 milliseconds, its
+lease ran out at 07:19:14, and it stopped leading in the middle of the scenario. At 07:18:38, as the scenario started
+its venue, 125 MB a second was written to the disk for ten seconds, and from then until 07:19:58 the disk was 74 to 90
+per cent busy, with each write waiting 84 to 445 milliseconds on average, against 1 to 7 milliseconds before. The
+scenario passed when run again at once. The writes that began it are of the size the venue makes when it starts, such
+as a matching engine creating its open-order region, which writes every block of it
+([BUG-0071](#bug_0071)); which program made them was not recorded.
 
 **What is not known.** Whether the time is spent waiting for the disk to make the record durable (`fsync`)
 or behind other writes queued for the same disk, such as the WALs and the Quill logs; and how a disk of the
@@ -3434,31 +3470,6 @@ check is covered.
 
 **Principles.** V2.
 
-### BUG-0174: With high availability on and no matching engine connected, the leading sequencer reads its WAL on its own thread to count the orders that are deferred {#bug_0174}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-17 |
-| Recorded | 2026-10-17 |
-| How | Listing every read of the WAL in the sequencer for the table of permitted reads in `scripts/check_standards.py` (step 5 of phase 5) |
-| Impact | Orders that waited in the WAL, or that a new leader learns the engine never received, are read back on the thread that sequences orders when no engine is connected. The read runs from the first such order to the end of the WAL, so its length grows with everything written since, and while it runs the thread does nothing else, its lease renewals included |
-
-**What happens.** Two places send the matching engine orders from the WAL:
-`SequencerThread::send_orders_that_waited_in_the_log`, for orders that waited because the storage for held
-orders was full, and `SequencerThread::handle_engine_position`, for orders a new leader learns the engine never
-received. With a reading thread and an engine connected, the reading thread serves the engine. With no engine
-connected, both call `SequencerThread::send_logged_orders`, which reads the WAL on the sequencer's own thread
-with `WalReader::replay`, only to count each order as deferred (`note_order_deferred`). `WalReader::replay` reads
-every record from the segment holding the first order to the end of the WAL, not only up to the last order
-wanted.
-
-**What is wanted.** Nothing read on the sequencer's thread for this. The engine that connects next is caught up by
-the reading thread from its own position in any case, which recovers these orders whether or not they were counted,
-so the count could come from the positions alone, or the deferral could be noted without reading the records.
-
-**Principles.** F4.
-
 ### BUG-0175: While the disk is slow, the leading sequencer's own thread waits in the file system's journal {#bug_0175}
 
 | | |
@@ -3707,7 +3718,7 @@ a loss of resilience is not a loss of service (V11).
 **Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
 the member.
 
-### BUG-0197: While no matching engine leads, the venue holds members' orders unanswered for up to 45 seconds, instead of halting and saying so {#bug_0197}
+### BUG-0197: While no matching engine leads, the venue holds members' orders unanswered, instead of halting and saying so {#bug_0197}
 
 | | |
 |---|---|
@@ -3717,13 +3728,13 @@ the member.
 | How | Working out with Andrew what happens if the leading matching engine dies while the other is still starting, which at production size takes 8 to 17 seconds ([BUG-0028](#bug_0028)) |
 | Impact | For as long as no matching engine leads, a member is told nothing about the orders it sends: not that they are refused, not that the market is halted, not when they will be answered |
 
-**What happens now.** While no matching engine is reachable, the sequencer goes on taking orders. It writes
-each to the WAL and holds it without an answer. It refuses new orders only once the outage has lasted 45
-seconds or it holds 250,000 orders (`order_deferral_refusal_age` and `order_deferral_refusal_count`,
-constants in `SequencerThread.hpp`), or once no engine could be trading within the longest recovery the venue does by
-itself, `[recovery] automatic_recovery_limit_seconds`, 10 seconds, when it also halts trading (part 2 below). When an
-engine leads again, it catches up from the WAL and answers every order that was held, each report marked as a possible
-repeat (scenario 53). Only if no engine could match for longer than `[absence] absence_limit_seconds`, 300 seconds in
+**What happens now.** While no matching engine leads, the sequencer goes on taking orders. It writes each to
+the WAL and holds it without an answer, and sends it to no engine. It refuses new orders once no engine has led for
+`[recovery] orders_held_at_most_seconds`, 5 seconds, or once no engine could be trading within the longest recovery the
+venue does by itself, `[recovery] automatic_recovery_limit_seconds`, 10 seconds, when it also halts trading (part 2
+below). When an engine leads again, it is caught up to the position released before the first held order, and is then
+sent the held orders live, so that it answers each with a first report (scenarios 53 and 92), the halt among them if it
+was written. Only if no engine could match for longer than `[absence] absence_limit_seconds`, 300 seconds in
 production, does the sequencer write a command that cancels every open order, tells each member, and halts.
 
 The gap happens whenever both engines are unavailable at once. The case that prompted this entry: the
@@ -3769,8 +3780,11 @@ message, the table of what each phase allows, and their implementation. A way to
 ([far_back_catch_up.md](availability/far_back_catch_up.md), section 5): past
 `[recovery] automatic_recovery_limit_seconds`, while no engine can trade, the leading sequencer writes a
 `TechnicalEvent` that halts trading, with reason `RecoveryTooLong`, and the gateways refuse new orders and cancels
-saying the venue is halted while it recovers (scenarios 85 and 86). Parts 1, 3 and 4 are not built: the orders held
-before the halt are still answered only once an engine leads, and the 45-second limit remains.
+saying the venue is halted while it recovers (scenarios 85 and 86). Part 1, as sections 5.1 and 5.2 of
+[voided_commands.md](availability/voided_commands.md) design it: orders are held while no engine leads and sent to no
+engine meanwhile, and refused once none has led for 5 seconds (scenario 92). Parts 3 and 4 are not built: the orders held
+before the halt are still answered only once an engine leads, accepted rather than rejected, and nothing lifts the
+halt.
 
 **Principles.** V6: every command a gateway accepted is answered; V2: the WAL is the record.
 
@@ -3803,6 +3817,38 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0174: With high availability on and no matching engine connected, the leading sequencer reads its WAL on its own thread to count the orders that are deferred {#bug_0174}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-17 |
+| Recorded | 2026-10-17 |
+| Fixed | 2026-11-01 -- while no matching engine leads, the sequencer holds every order and reads nothing back; `send_logged_orders` is gone |
+| How | Listing every read of the WAL in the sequencer for the table of permitted reads in `scripts/check_standards.py` (step 5 of phase 5) |
+| Impact | Orders that waited in the WAL, or that a new leader learns the engine never received, are read back on the thread that sequences orders when no engine is connected. The read runs from the first such order to the end of the WAL, so its length grows with everything written since, and while it runs the thread does nothing else, its lease renewals included |
+
+**What happened.** Two places sent the matching engine orders from the WAL:
+`SequencerThread::send_orders_that_waited_in_the_log`, for orders that waited because the storage for held
+orders was full, and `SequencerThread::handle_engine_position`, for orders a new leader learns the engine never
+received. With a reading thread and an engine connected, the reading thread serves the engine. With no engine
+connected, both call `SequencerThread::send_logged_orders`, which reads the WAL on the sequencer's own thread
+with `WalReader::replay`, only to count each order as deferred (`note_order_deferred`). `WalReader::replay` reads
+every record from the segment holding the first order to the end of the WAL, not only up to the last order
+wanted.
+
+**What is wanted.** Nothing read on the sequencer's thread for this. The engine that connects next is caught up by
+the reading thread from its own position in any case, which recovers these orders whether or not they were counted,
+so the count could come from the positions alone, or the deferral could be noted without reading the records.
+
+**The fix.** Step 3 of [voided_commands.md](availability/voided_commands.md) holds every order while no engine
+leads, and releases nothing, so there is nothing to count by reading the WAL. `send_logged_orders` is removed, and with
+it the three entries `scripts/check_standards.py` permitted for it; the check reports an entry that matches no read, so
+it would say if one came back. With no engine leading, `handle_engine_position` sends nothing, and the engine that next
+leads is caught up through the orders by the reading thread.
+
+**Principles.** F4.
 
 ### BUG-0217: The FIX gateway left the matching engine's text out of every execution report, so a member sent a rejection was not told why {#bug_0217}
 
@@ -5553,7 +5599,8 @@ the reading thread reached ([following_the_wal.md](availability/following_the_wa
 mode; resends and requests for undelivered reports ([BUG-0113](#bug_0113)); the duplicate check
 ([BUG-0122](#bug_0122)); records read back for publishers already handed over, once each whatever the number
 of publishers ([BUG-0171](#bug_0171)); every catch-up with high availability off ([BUG-0172](#bug_0172)); and
-orders counted as deferred while no matching engine is connected ([BUG-0174](#bug_0174)).
+orders counted as deferred while no matching engine is connected ([BUG-0174](#bug_0174), fixed: while none
+leads, the sequencer holds every order and reads nothing back).
 
 **Principle.** F4 in `docs/design_principles.md`: an order-handling thread doing work that can wait for
 the disk.

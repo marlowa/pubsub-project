@@ -46,6 +46,12 @@ class ClaimIfNothingRoutedFlag {
  * engine's request to be brought up to date, and once it led, the venue would have no matching engine
  * while one was leading and asking (BUG-0108).
  *
+ * The active connection is not always to an engine that leads: the primary's is used when nothing else is, and an
+ * engine that asks to be brought up to date while this sequencer follows is routed to. So this class also says whether
+ * the engine on the active connection is known to lead, because it announced that it leads or was brought up to date in
+ * order to lead. The owner sends orders only to an engine known to lead, and holds them while there is none
+ * (docs/availability/voided_commands.md, section 5.1).
+ *
  * It decides; it does not log or send. The owner logs what each call reports and sends orders down
  * active(). One thread, the sequencer's, calls every member function.
  */
@@ -71,8 +77,12 @@ class EngineOrderRouting {
      */
     void connected(int64_t instance, pubsub_itc_fw::ConnectionID connection, ClaimIfNothingRoutedFlag claim) {
         connection_by_instance_[instance] = connection;
-        if (announced_leader_ == instance || (claim.is_set() && !active_.is_valid())) {
+        if (announced_leader_ == instance) {
             active_ = connection;
+            active_leads_ = true;
+        } else if (claim.is_set() && !active_.is_valid()) {
+            active_ = connection;
+            active_leads_ = false;
         }
     }
 
@@ -83,6 +93,7 @@ class EngineOrderRouting {
         }
         if (active_ == connection) {
             active_ = pubsub_itc_fw::ConnectionID{};
+            active_leads_ = false;
         }
     }
 
@@ -108,11 +119,10 @@ class EngineOrderRouting {
             return AnnouncementOutcome::NoOrderConnection;
         }
         if (leads) {
-            if (active_ == own->second) {
-                return AnnouncementOutcome::AlreadyRoutedToLeader;
-            }
+            const bool already = active_ == own->second;
             active_ = own->second;
-            return AnnouncementOutcome::RoutedToLeader;
+            active_leads_ = true;
+            return already ? AnnouncementOutcome::AlreadyRoutedToLeader : AnnouncementOutcome::RoutedToLeader;
         }
         if (active_ != own->second) {
             return AnnouncementOutcome::FollowerNotCarryingOrders;
@@ -120,10 +130,30 @@ class EngineOrderRouting {
         const auto leader = announced_leader_ != 0 ? connection_by_instance_.find(announced_leader_) : connection_by_instance_.end();
         if (leader != connection_by_instance_.end()) {
             active_ = leader->second;
+            active_leads_ = true;
             return AnnouncementOutcome::FollowerHandedToLeader;
         }
         active_ = pubsub_itc_fw::ConnectionID{};
+        active_leads_ = false;
         return AnnouncementOutcome::FollowerWithdrawnNoLeader;
+    }
+
+    /**
+     * @brief The connection on which @p instance announced that it leads is lost, so the announcement may have been made
+     *        by a process that has since died.
+     *
+     * The instance is no longer known to lead, and the active connection, if it is that instance's, carries no orders
+     * until the instance is brought up to date in order to lead or announces again. Orders stay where they are routed:
+     * the instance may be alive, with only that connection lost, and then it announces again on the next.
+     */
+    void leader_announcement_lost(int64_t instance) {
+        if (announced_leader_ == instance) {
+            announced_leader_ = 0;
+        }
+        const auto own = connection_by_instance_.find(instance);
+        if (own != connection_by_instance_.end() && active_ == own->second) {
+            active_leads_ = false;
+        }
     }
 
     /**
@@ -135,6 +165,7 @@ class EngineOrderRouting {
     void asked_to_catch_up_while_following(pubsub_itc_fw::ConnectionID connection) {
         if (is_engine_connection(connection)) {
             active_ = connection;
+            active_leads_ = false;
         }
     }
 
@@ -142,12 +173,21 @@ class EngineOrderRouting {
     void caught_up_to_lead(pubsub_itc_fw::ConnectionID connection) {
         if (is_engine_connection(connection)) {
             active_ = connection;
+            active_leads_ = true;
         }
     }
 
     /** @brief The connection orders go down, or an invalid one if they go nowhere. */
     [[nodiscard]] pubsub_itc_fw::ConnectionID active() const {
         return active_;
+    }
+
+    /**
+     * @brief Whether the engine on the active connection is known to lead: it announced that it leads, or was brought up
+     *        to date in order to lead, and has not since announced that it follows. False when there is no active connection.
+     */
+    [[nodiscard]] bool active_is_known_to_lead() const {
+        return active_.is_valid() && active_leads_;
     }
 
     /** @brief The open order connection to an engine that is not the active one, or an invalid one if there is none. */
@@ -186,6 +226,7 @@ class EngineOrderRouting {
   private:
     std::map<int64_t, pubsub_itc_fw::ConnectionID> connection_by_instance_;
     pubsub_itc_fw::ConnectionID active_{};
+    bool active_leads_{false};
     int32_t announced_epoch_{-1};
     int64_t announced_leader_{0};
 };

@@ -77,6 +77,7 @@ send_every_report = true
 
 [recovery]
 automatic_recovery_limit_seconds = 12
+orders_held_at_most_seconds = 4
 
 [logging]
 applog_level = "info"
@@ -355,6 +356,17 @@ TEST(SequencerConfigurationLoaderTest, ReadsHowLongTheVenueMayBeWithoutAMatching
     EXPECT_EQ(config.absence_limit_seconds, 7);
     EXPECT_TRUE(config.send_every_report);
     EXPECT_EQ(config.automatic_recovery_limit_seconds, 12);
+    EXPECT_EQ(config.orders_held_at_most_seconds, 4);
+}
+
+TEST(SequencerConfigurationLoaderTest, RejectsHoldingOrdersForLessThanOneSecond) {
+    std::string sections(required_sections);
+    const std::string limit = "orders_held_at_most_seconds = 4";
+    sections.replace(sections.find(limit), limit.size(), "orders_held_at_most_seconds = 0");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(SequencerConfigurationLoaderTest, RejectsAnAbsenceLimitBelowOneSecond) {

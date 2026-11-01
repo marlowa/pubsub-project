@@ -1638,8 +1638,8 @@ void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMe
         // The sequencer repeats this while the venue is degraded, so most arrivals say nothing
         // new. Logged on the change, not on the arrival -- the same rule the heartbeats follow,
         // and for the same reason: a line per arrival buries the one that matters.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "FixOrderGatewayThread: OrderAcceptance unchanged accepting={} deferred={} degraded_for={}s",
-                   view.accepting, view.deferred_order_count, view.degraded_for_seconds);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "FixOrderGatewayThread: OrderAcceptance unchanged accepting={} held={} no_engine_for={}s",
+                   view.accepting, view.held_order_count, view.no_engine_for_seconds);
         return;
     }
     venue_accepting_orders_ = view.accepting;
@@ -1658,11 +1658,11 @@ void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMe
     }
     // Warning rather than Error: nothing is lost and nothing has failed. The venue has stopped
     // taking on work it cannot do, which is the correct response to the condition, and the
-    // orders already deferred are WAL-committed.
+    // orders already held are in the WAL and go to the engine that next leads.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-               "FixOrderGatewayThread: the venue is no longer accepting orders -- {} order(s) deferred over {}s. New orders and cancels are refused "
-               "until it is",
-               view.deferred_order_count, view.degraded_for_seconds);
+               "FixOrderGatewayThread: the venue is no longer accepting orders -- no matching engine has led for {}s, and {} order(s) and cancel(s) "
+               "are held until one does. New orders and cancels are refused until it is",
+               view.no_engine_for_seconds, view.held_order_count);
 }
 
 void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventMessage& message) {

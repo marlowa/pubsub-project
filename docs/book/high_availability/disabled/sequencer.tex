@@ -26,8 +26,9 @@ component that every gateway instance talks to.
 \textbf{Where an execution report should go.} The sequencer holds the route from
 a committed order back to the session that placed it.
 
-\textbf{What it has deferred.} The sequencer holds how many orders it has taken
-that no matching engine has yet received, and how long they have been waiting.
+\textbf{What it holds while no matching engine leads.} The sequencer holds the
+orders it has taken while no matching engine leads, which it sends no engine
+until one leads, how many there are, and how long no engine has led.
 
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:disabled:sequencer:durable}
@@ -61,9 +62,9 @@ nothing removes, and the log holds a trading day of them.
   be placed, because the route it needed was not kept and is not rebuilt.
 \end{gap}
 
-What the sequencer has deferred is a count and a time. The orders themselves are
-in the log, and a restarted sequencer holds no record that any of them is still
-to be answered. It does not need one. A matching engine presents the position it
+What the sequencer holds while no engine leads is kept in memory. The orders
+themselves are in the log, and a restarted sequencer holds no record that any of
+them is still to be answered. It does not need one. A matching engine presents the position it
 has reached, and the sequencer serves everything after that position from the
 log, so which records an engine receives is determined by the position the engine
 presents rather than by anything the sequencer remembers.

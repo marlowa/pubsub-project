@@ -1290,7 +1290,6 @@ _WAL_READERS = [
     (r'\blog_tail_index_->holds\b', 'the sequencer member holding a LogTailIndex, reading segments it has not yet read'),
     (r'\bLoggedCommandIdentifiersBuilder\b', 'the sequencer class that reads every segment to build the record of command identifiers'),
     (r'\bidentifiers_builder_\.start\b', 'the sequencer member holding a LoggedCommandIdentifiersBuilder, starting its reading'),
-    (r'\bsend_logged_orders\s*\(', 'the sequencer function that reads orders back from the WAL on its own thread'),
     (r'\bcommand_in_wal_at\s*\(', 'the sequencer function that reads one record back from the WAL on its own thread'),
 ]
 _WAL_READER_RES = [re.compile(pattern) for pattern, _what in _WAL_READERS]
@@ -1303,7 +1302,6 @@ _PUBLISHERS = ('a record sent to a publisher already handed over, read back mome
                'whatever the number of publishers: BUG-0171')
 _FOLLOWER_ENGINES = ('a record sent to a matching engine that follows the WAL, already handed over, read back moments after '
                      'it was written, as for the publishers: docs/availability/both_engines_apply_the_wal.md, section 2.1')
-_NO_ENGINE = 'with no matching engine connected, to count the orders deferred: BUG-0174'
 _VOID_REQUEST = ('one record, for a request to void the command a matching engine died applying, acted on only while no other '
                  'engine leads, so while no engine is trading: docs/availability/voided_commands.md, section 4.3')
 _DEFINITION = 'where the reader itself is declared or defined; each use of it is checked where it is used'
@@ -1311,14 +1309,11 @@ _DEFINITION = 'where the reader itself is declared or defined; each use of it is
 # Each entry: (path relative to the project root, where, why), as for _PERMITTED_LOCKS.
 _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::on_initial_event', _REPLAY_MODE),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_orders_that_waited_in_the_log', _NO_ENGINE),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_engine_position', _NO_ENGINE),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_logged_orders', _NO_ENGINE),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_void_request', _VOID_REQUEST),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::command_in_wal_at', _VOID_REQUEST),
     ('applications/sequencer/SequencerThread.hpp', 'command_in_wal_at', _DEFINITION),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_committed_records_to_publishers', _PUBLISHERS),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_committed_records_to_follower_engines', _FOLLOWER_ENGINES),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_released_records_to_follower_engines', _FOLLOWER_ENGINES),
     ('applications/sequencer/SequencerThread.hpp', 'handed_over_engines_', _DEFINITION),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_undelivered_reports_request', _RESENDS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_session_replay_request', _RESENDS),
@@ -1327,7 +1322,6 @@ _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.hpp', 'handed_over_publishers_', _DEFINITION),
     ('applications/sequencer/SequencerThread.hpp', 'log_tail_index_', _DEFINITION),
     ('applications/sequencer/SequencerThread.hpp', 'identifiers_builder_', _DEFINITION),
-    ('applications/sequencer/SequencerThread.hpp', 'send_logged_orders', _DEFINITION),
     ('applications/sequencer/LogTailIndex.hpp', 'LogTailIndex', _DEFINITION),
     ('applications/sequencer/LogTailIndex.hpp', 'WalReader', _DUPLICATE_CHECK),
     ('applications/sequencer/LoggedCommandIdentifiersBuilder.hpp', 'LoggedCommandIdentifiersBuilder', _DEFINITION),

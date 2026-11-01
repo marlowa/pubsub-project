@@ -691,11 +691,13 @@ end
 #  otherwise assume the venue was fine, which is the default
 #  that caused this bug.
 #
-#  accepting=false does NOT mean orders are being lost. Deferred
-#  orders are WAL-committed and recovered on promotion. It means
-#  the venue will no longer take on new ones it cannot act upon,
-#  because a member holding an acknowledged order it cannot
-#  cancel is worse off than one whose order was refused.
+#  accepting=false does NOT mean orders are being lost. The
+#  orders held while no matching engine leads are in the WAL, and
+#  are released to the engine that next leads. It means the venue
+#  will no longer take on new ones it cannot act upon, because a
+#  member holding an order the venue has not answered is worse off
+#  than one whose order was refused
+#  (docs/availability/voided_commands.md, section 5.2).
 #
 #  The counts travel so a gateway can say something specific to
 #  a member and to a log reader, rather than only "no". They are
@@ -706,14 +708,14 @@ end
 # Why the venue is not accepting orders, sent with OrderAcceptance so that a gateway can tell the member.
 enum OrderAcceptanceReason : i8 {
     Accepting = 0          # the venue is accepting orders
-    NoMatchingEngine = 1   # no matching engine can take orders, and the outage has run long or many orders are waiting
+    NoMatchingEngine = 1   # no matching engine has led for longer than orders are held
     RecoveryTooLong = 2    # no matching engine could be trading within the longest recovery the venue does by itself; trading is halted
 }
 
 message OrderAcceptance (id=127, version=1)
     bool accepting                  # false: the venue will not take new orders it cannot process
-    i64  deferred_order_count       # orders accepted and not yet forwarded, at send time
-    i32  degraded_for_seconds       # how long the venue has been unable to forward, 0 when accepting
+    i64  held_order_count           # orders and cancels held since no matching engine led, at send time; 0 while one leads
+    i32  no_engine_for_seconds      # how long no matching engine has led, 0 while one leads
     OrderAcceptanceReason reason    # why the venue is not accepting, or Accepting when it is
     # The epoch of the leadership that sent this. A gateway that sees a higher epoch than any before
     # knows a new instance leads, and sends it again every command it is still holding unanswered

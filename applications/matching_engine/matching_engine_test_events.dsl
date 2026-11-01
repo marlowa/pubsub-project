@@ -16,8 +16,12 @@
 #  exactly once. Every other order is checked through the execution
 #  reports its member receives.
 #
-#  Message ids 170 to 229 are set aside for applications' test events;
-#  the library's take 140 to 169.
+#  Message ids 169 to 179 and 216 to 218 are the matching engine's. The
+#  range 170 to 229 is set aside for applications' test events and 140
+#  to 169 for the library's, which uses 140 to 152, so 169 is lent to
+#  the engine. The sequencer and the FIX gateway use other ids in the
+#  applications' range; no two files may use the same id, because the
+#  listener refuses to start if they do.
 # ============================================================
 
 # ------------------------------------------------------------
