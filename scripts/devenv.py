@@ -62,14 +62,6 @@ try:
 except ImportError:  # pragma: no cover -- running from a deployed release
     crash_reports = None
 
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib  # type: ignore[no-redef]
-    except ImportError:
-        sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
-
 _SCRIPT_DIR       = Path(__file__).resolve().parent
 # The tree above scripts/. Sibling scripts are reached through the script directory;
 # everything the project owns -- environments/, db/, installed/ -- hangs off here.
@@ -81,10 +73,26 @@ _SHUTDOWN_TIMEOUT = 10.0  # seconds to wait after SIGTERM before SIGKILL
 
 # ── TOML helpers ──────────────────────────────────────────────────────────────
 
+def _tomllib():
+    """Return the TOML parser: `tomllib`, from Python 3.11, or the `tomli` package on an older Python.
+
+    Imported when a TOML file is first read rather than at module scope, so that `--help` works on a
+    Python with neither, as `build.py` requires (docs/bug_list.md, BUG-0219).
+    """
+    try:
+        import tomllib  # pylint: disable=import-outside-toplevel
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]  # pylint: disable=import-outside-toplevel
+        except ModuleNotFoundError:
+            sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
+    return tomllib
+
+
 def load_env(path: Path) -> dict:
     """Load and return the environment TOML file as a nested dict."""
     with open(path, "rb") as file_handle:
-        return tomllib.load(file_handle)
+        return _tomllib().load(file_handle)
 
 
 def resolve_paths(env: dict) -> tuple[Path, Path, Path]:
@@ -413,8 +421,8 @@ def discover_scrape_targets(install_dir: Path) -> list[tuple[str, str, int]]:
     for config_path in sorted(etc_dir.rglob("*.toml")):
         try:
             with open(config_path, "rb") as file_handle:
-                data = tomllib.load(file_handle)
-        except (tomllib.TOMLDecodeError, OSError):
+                data = _tomllib().load(file_handle)
+        except (_tomllib().TOMLDecodeError, OSError):
             # credentials.toml and friends are not component configs; a file that will not
             # parse is not this function's problem to report.
             continue
@@ -629,8 +637,8 @@ def _durable_paths(env: dict, install_dir: Path, section: str, key: str) -> list
             continue
         try:
             with config_path.open("rb") as handle:
-                config = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError):
+                config = _tomllib().load(handle)
+        except (OSError, _tomllib().TOMLDecodeError):
             continue
         value = config.get(section, {}).get(key)
         if not value:
@@ -662,8 +670,8 @@ def _deployed_values(env: dict, install_dir: Path, key: str) -> list[Path]:
             continue
         try:
             with config_path.open("rb") as handle:
-                config = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError):
+                config = _tomllib().load(handle)
+        except (OSError, _tomllib().TOMLDecodeError):
             continue
         for value in values_in(config):
             raw = Path(value)

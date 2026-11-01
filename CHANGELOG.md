@@ -224,11 +224,14 @@ under way: its first design is built, and the first three of the five steps of i
 
 ### Fixed
 
-Eighty bugs are closed since 0.4.0, and 128 recorded; `docs/bug_list.md` describes each. Among them:
+Eighty-one bugs are closed since 0.4.0, and 128 recorded; `docs/bug_list.md` describes each. Among them:
 
 - **A matching engine whose lease ran out and was at once granted another stayed a follower while it led**
   (BUG-0218): it took the answer to its request to lead as the end of following, and acted on no order the
   sequencer sent it. What a catch-up is for is now one value, so asking to lead replaces following again.
+- **The build in the Rocky 8 container stopped before compiling anything** (BUG-0219): five scripts imported
+  the TOML parser at module scope, which Python 3.8 lacks, so they could not answer `--help`. They import it when
+  they first read a file, and the venue is again built and tested with gcc 8.5, the RHEL8 target's compiler.
 - **The FIX gateway left the matching engine's text out of every execution report** (BUG-0217), so a member
   sent a rejection was told only the reason code.
 - **Orders sent while the sequencers changed leader were lost without a reply** (BUG-0103), and an
@@ -344,7 +347,7 @@ Eighty bugs are closed since 0.4.0, and 128 recorded; `docs/bug_list.md` describ
 
 ### Known limitations
 
-- **81 bugs are open, 18 of them high severity**; `docs/bug_list.md` lists them.
+- **80 bugs are open, 18 of them high severity**; `docs/bug_list.md` lists them.
 
 ## [0.4.0] - 2026-09-14
 

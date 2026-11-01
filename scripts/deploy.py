@@ -30,15 +30,6 @@ Usage:
 """
 
 from __future__ import annotations
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib  # type: ignore[no-redef]
-    except ImportError:
-        import sys
-        sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
-
 import argparse
 import hashlib
 import hmac
@@ -68,9 +59,25 @@ _DEFAULT_ENV_FILE = _PROJECT_ROOT / "environments" / "dev.toml"
 
 # ── TOML helpers ──────────────────────────────────────────────────────────────
 
+def _tomllib():
+    """Return the TOML parser: `tomllib`, from Python 3.11, or the `tomli` package on an older Python.
+
+    Imported when a TOML file is first read rather than at module scope, so that `--help` works on a
+    Python with neither, as `build.py` requires (docs/bug_list.md, BUG-0219).
+    """
+    try:
+        import tomllib  # pylint: disable=import-outside-toplevel
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]  # pylint: disable=import-outside-toplevel
+        except ModuleNotFoundError:
+            sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
+    return tomllib
+
+
 def load_env(path: Path) -> dict:
     with open(path, "rb") as file_handle:
-        return tomllib.load(file_handle)
+        return _tomllib().load(file_handle)
 
 
 def flatten_toml(data: dict, prefix: str = "") -> dict[str, str]:

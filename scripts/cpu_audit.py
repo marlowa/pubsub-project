@@ -46,15 +46,6 @@ Usage:
 
 from __future__ import annotations
 
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib  # type: ignore[no-redef]
-    except ImportError:
-        import sys
-        sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
-
 import argparse
 import os
 import sys
@@ -67,6 +58,22 @@ import cpu_layout
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_ENV_FILE = _PROJECT_ROOT / "environments" / "dev.toml"
+
+
+def _tomllib():
+    """Return the TOML parser: `tomllib`, from Python 3.11, or the `tomli` package on an older Python.
+
+    Imported when a TOML file is first read rather than at module scope, so that `--help` works on a
+    Python with neither, as `build.py` requires (docs/bug_list.md, BUG-0219).
+    """
+    try:
+        import tomllib  # pylint: disable=import-outside-toplevel
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]  # pylint: disable=import-outside-toplevel
+        except ModuleNotFoundError:
+            sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
+    return tomllib
 
 
 def read_thread_affinity(pid: int, tid: int) -> list[int] | None:
@@ -347,7 +354,7 @@ def audit(layout_path: Path, run_dir: Path, args: argparse.Namespace,
     hot-path core.
     """
     with open(layout_path, "rb") as handle:  # binary: tomllib requires it
-        layout = tomllib.load(handle)
+        layout = _tomllib().load(handle)
 
     machine = layout["machine"]
     background = set(cpu_layout.parse_cpu_list(machine["background_cores"]))
@@ -646,7 +653,7 @@ def main() -> None:
     if not env_path.is_file():
         sys.exit(f"error: env file not found: {env_path}")
     with open(env_path, "rb") as handle:
-        env = tomllib.load(handle)
+        env = _tomllib().load(handle)
 
     if args.install_dir is not None:
         install_dir = args.install_dir.resolve()

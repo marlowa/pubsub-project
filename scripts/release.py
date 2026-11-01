@@ -32,15 +32,6 @@ Usage:
 """
 
 from __future__ import annotations
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib  # type: ignore[no-redef]
-    except ImportError:
-        import sys
-        sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
-
 import argparse
 import datetime
 import json
@@ -56,6 +47,22 @@ _SCRIPT_DIR       = Path(__file__).resolve().parent
 # The tree above scripts/. Sibling scripts are reached through the script directory;
 # everything the project owns -- environments/, db/, installed/ -- hangs off here.
 _PROJECT_ROOT     = _SCRIPT_DIR.parent
+
+
+def _tomllib():
+    """Return the TOML parser: `tomllib`, from Python 3.11, or the `tomli` package on an older Python.
+
+    Imported when a TOML file is first read rather than at module scope, so that `--help` works on a
+    Python with neither, as `build.py` requires (docs/bug_list.md, BUG-0219).
+    """
+    try:
+        import tomllib  # pylint: disable=import-outside-toplevel
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]  # pylint: disable=import-outside-toplevel
+        except ModuleNotFoundError:
+            sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
+    return tomllib
 
 
 def _default_install_dir() -> Path:
@@ -350,7 +357,7 @@ def main() -> None:
     if not env_path.is_file():
         sys.exit(f"error: env file not found: {env_path}")
     with open(env_path, "rb") as file_handle:
-        env = tomllib.load(file_handle)
+        env = _tomllib().load(file_handle)
 
     import build  # noqa: PLC0415  -- deferred: matches _default_install_dir() above
 

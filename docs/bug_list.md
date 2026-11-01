@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 219 |
-| Open | 81 (57 defects, 24 tasks) |
-| Closed | 138 |
+| Open | 80 (56 defects, 24 tasks) |
+| Closed | 139 |
 | Next id | BUG-0220 |
 
 ## Open bugs by severity
 
-18 high, 49 medium, 14 low.
+18 high, 48 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -79,7 +79,6 @@
 | [BUG-0209](#bug_0209) | medium | task | No scenario reaches the halt when a matching engine cannot account for the orders the venue holds |
 | [BUG-0210](#bug_0210) | medium | defect | A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again |
 | [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
-| [BUG-0219](#bug_0219) | medium | defect | Five scripts need TOML support to answer `--help`, so the build stops on Python 3.8 before compiling anything, and the RHEL8 compiler is never reached |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -190,34 +189,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0219: Five scripts need TOML support to answer `--help`, so the build stops on Python 3.8 before compiling anything, and the RHEL8 compiler is never reached {#bug_0219}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-09-14 |
-| Recorded | 2026-11-01 |
-| How | `release_check.py`'s `rocky` stage, for release 0.5.0, as for release 0.4.0, whose release notes describe the failure; no entry was made in this list then |
-| Impact | The venue is not built or tested with gcc 8.5, the compiler of the RHEL8 target, by any release check. Whether the code compiles with it is unknown |
-
-**What happens.** `build.py` runs every top-level script with `--help` under `python3 -S`, which leaves out
-site-packages, so that a script importing a third-party module at module scope fails the build (the reason is under
-[BUG-0044](#bug_0044)). `cpu_audit.py`, `deploy.py`, `devenv.py`, `perf_run.py` and `release.py` import `tomllib` at
-module scope, falling back to the `tomli` package, and exit with "Python 3.11+ or the 'tomli' package is required to
-parse TOML" when neither can be imported. `callgrind_run.py` imports `perf_run` and `devenv`, and fails the same way.
-`tomllib` is part of the standard library from Python 3.11. The Rocky 8 container's Python is 3.8, so `tomli` is
-needed there, and under `python3 -S` it cannot be found even if installed. The build stops at this check, before it
-compiles anything.
-
-The RHEL8 target's own Python is 3.12, which has `tomllib`, so the scripts run there; it is the build in the container,
-the only build with gcc 8.5, that stops.
-
-**What is wanted.** Each of the five scripts imports `tomllib` (or `tomli`) where it first reads a TOML file, not at
-module scope, as the `plot_*.py` scripts do with their plotting modules. Then the `rocky` stage is run to the end, and
-whatever gcc 8.5 then reports is recorded.
-
-**Principles.** None directly; the RHEL8 target is the platform the venue is built for.
 
 ### BUG-0216: Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path {#bug_0216}
 
@@ -3630,6 +3601,10 @@ tests allow 200 ms for both. That would be a fault in the tests, not in the reac
 timer firing 3 times in place of 50 says the receiver's thread was busy for most of a second, which fits it working
 through a long queue, and does not rule out the reactor reading a paused connection.
 
+In the Rocky 8 container, under gcc 8.5, a pause test failed in each of two runs of the build: both
+`APausedInboundConnectionDeliversNothingUntilItIsResumed` and `APausedOutboundConnectionDeliversNothingUntilItIsResumed`
+in the first, and the inbound one in the second. So the build in the container cannot complete while this is open.
+
 **What is wanted.** The cause found: whether the reactor reads a paused connection, for instance data already read
 into a buffer before the pause took effect, or whether the test samples the count before the pause has taken effect.
 A test event or counter from the reactor saying when it stopped watching the connection, and how many PDUs it had read
@@ -3836,6 +3811,45 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0219: Five scripts need TOML support to answer `--help`, so the build stops on Python 3.8 before compiling anything, and the RHEL8 compiler is never reached {#bug_0219}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-14 |
+| Recorded | 2026-11-01 |
+| Fixed | 2026-11-01 -- the five scripts import the TOML parser when they first read a file, so the build in the Rocky container goes on to compile with gcc 8.5 |
+| How | `release_check.py`'s `rocky` stage, for release 0.5.0, as for release 0.4.0, whose release notes describe the failure; no entry was made in this list then |
+| Impact | The venue is not built or tested with gcc 8.5, the compiler of the RHEL8 target, by any release check. Whether the code compiles with it is unknown |
+
+**What happens.** `build.py` runs every top-level script with `--help` under `python3 -S`, which leaves out
+site-packages, so that a script importing a third-party module at module scope fails the build (the reason is under
+[BUG-0044](#bug_0044)). `cpu_audit.py`, `deploy.py`, `devenv.py`, `perf_run.py` and `release.py` import `tomllib` at
+module scope, falling back to the `tomli` package, and exit with "Python 3.11+ or the 'tomli' package is required to
+parse TOML" when neither can be imported. `callgrind_run.py` imports `perf_run` and `devenv`, and fails the same way.
+`tomllib` is part of the standard library from Python 3.11. The Rocky 8 container's Python is 3.8, so `tomli` is
+needed there, and under `python3 -S` it cannot be found even if installed. The build stops at this check, before it
+compiles anything.
+
+The RHEL8 target's own Python is 3.12, which has `tomllib`, so the scripts run there; it is the build in the container,
+the only build with gcc 8.5, that stops.
+
+**What is wanted.** Each of the five scripts imports `tomllib` (or `tomli`) where it first reads a TOML file, not at
+module scope, as the `plot_*.py` scripts do with their plotting modules. Then the `rocky` stage is run to the end, and
+whatever gcc 8.5 then reports is recorded.
+
+**The fix.** `cpu_audit.py`, `deploy.py`, `devenv.py` and `release.py` each have a function, `_tomllib()`, that imports
+`tomllib`, or `tomli` on an older Python, when a TOML file is first read, as `perf_run.py` already did. With both
+modules made unimportable, all six scripts answer `--help`, and the four as they were exit with the error above.
+
+With the fix, the build in the Rocky container compiles everything with gcc 8.5, and every unit, codec, cryptography
+and application test passes. Of the integration tests, all pass but those of `PauseReadingIntegrationTest`, which
+failed in each of two runs in the container ([BUG-0184](#bug_0184)), and the build stops there. Run again with those
+tests left out (`GTEST_FILTER=-PauseReadingIntegrationTest.*`), the container's build, release and deploy steps all
+complete.
+
+**Principles.** None directly; the RHEL8 target is the platform the venue is built for.
 
 ### BUG-0218: A matching engine that loses its lease and is granted another at once takes the answer to its request to lead as the end of following, and stays a follower while it leads {#bug_0218}
 
