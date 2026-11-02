@@ -68,11 +68,11 @@ R-0062     active    2026-08-30  An instance already acting keeps its entitlemen
 R-0063     active    2026-08-30  Losing one arbiter, or the witness, changes nothing
 R-0064     active    2026-08-30  A generation is never issued twice, and never goes backwards
 R-0065     active    2026-08-30  An instance whose entitlement has passed has what it sends refused
-R-0066     active    2026-08-30  A member is never told of an order held on one machine only
+R-0066     active    2026-08-29  While the follower keeps up, a member is never told of an order held on one machine only
 R-0067     active    2026-08-30  Losing a machine does not lose a committed order
 R-0068     active    2026-08-30  The venue keeps trading when the acting sequencer is lost
 R-0069     active    2026-08-30  A member's session survives a failover
-R-0070     active    2026-08-30  A follower that falls behind stops the venue confirming, rather than being dropped
+R-0070     retired   2026-08-30  A follower that falls behind stops the venue confirming, rather than being dropped
 R-0071     active    2026-08-30  A sequencer that finds its own record damaged stops rather than serving from it
 R-0072     active    2026-08-30  A pair that can see each other settles leadership between themselves
 R-0073     active    2026-08-30  An open order survives a failover
@@ -158,3 +158,10 @@ R-0152     active    2026-10-02  Both gateways refuse the same commands for the 
 R-0153     active    2026-10-20  First administrator setup requires proof of installation access
 R-0154     active    2026-10-20  Members can choose TLS or plain TCP for FIX sessions
 R-0155     active    2026-10-20  The gateway does not send COMPID passwords in plaintext to the authentication service
+R-0156     active    2026-11-02  A follower that cannot keep up is treated as a lost instance
+R-0157     active    2026-11-02  A leader acts on an order its follower lacks only once a second voter has recorded that the follower may not lead
+R-0158     active    2026-11-02  The venue reports when a leader starts and stops carrying on without its follower
+R-0159     active    2026-11-02  A leader waits for its follower again once the follower has caught up
+R-0160     active    2026-11-02  Trading in the group halts if the leader is lost while carrying on without its follower
+R-0161     active    2026-11-02  An operator can let the follower lead when the old leader's machine is lost for good
+R-0162     active    2026-11-02  Members are told which of their orders were lost with the old leader's machine

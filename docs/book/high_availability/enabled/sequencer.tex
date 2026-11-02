@@ -24,16 +24,40 @@ failed disk, a stopped machine and a hung kernel each leave the venue's record o
 what it has done intact, because the venue wrote a second copy as it wrote the
 first.
 
-\textbf{The rule that makes the second machine worth running governs when a
-member is told.} An order becomes durable in two stages. The leader writes the
-order, which permits the venue to give the order to the matching engine. The
-follower then acknowledges the order, which permits the venue to give the
-resulting execution report to the gateway. A member is therefore never told about
-an order that exists on one machine only.
+\textbf{The rule that makes the second machine worth running governs when the
+venue acts on an order.} The leader writes the order to its log and sends the
+record to the follower. The leader gives the order to the matching engine only
+after the follower has acknowledged the record. Every execution report the engine
+produces therefore concerns an order that both machines hold. While the follower
+keeps up, a member is never told about an order that exists on one machine only.
 
-That ordering adds a round trip to the reporting path, and it is what gives the
-venue the property the second machine is run for. Removing the round trip to
-shorten the path would remove that property.
+That ordering adds a round trip to the path every order takes, and it is what
+gives the venue the property the second machine is run for. Removing the round
+trip to shorten the path would remove that property.
+
+\textbf{A follower that cannot keep up costs the venue its resilience, not its
+service.} A follower stops acknowledging when it has died, when its machine is
+too slow to keep up, or when the link between the two machines is down. In each
+case the leader carries on without it, as \cref{sec:ha:enabled:degraded} requires
+of a group reduced to one instance, and reports that it is doing so. When the
+follower has caught up, the leader goes back to waiting for its acknowledgements.
+
+Before the leader gives the matching engine an order the follower does not hold,
+it records a statement that the follower may not lead. The leader writes the
+statement to its own disk and sends it to the follower and to the arbiter. The
+leader acts on the order only after one of those two has recorded the statement
+and confirmed it. From then on, every combination of voters that could make the
+follower leader includes a voter that refuses to.
+
+While the leader carries on alone, a member can be told about an order that only
+the leader's machine holds. That is the price of continuing to trade. If the
+leader's process stops and is restarted, it still holds those orders, takes the
+lead again and sends the follower what it lacks. If the leader's machine is lost
+for good, the orders only that machine held are lost with it, and members may
+hold execution reports for them. The follower does not take the lead in either
+case, so trading in the group stops until the old leader returns, or until an
+operator decides to let the follower lead and the venue tells members which of
+their orders were lost.
 
 \subsubsection{How a restarted instance becomes current}
 \label{sec:ha:enabled:sequencer:recovery}
@@ -73,13 +97,16 @@ Nothing. The member sees a brief pause in responses and no break in numbering.
   \uncovered{no scenario sends orders during a failover and checks the answers}
 \end{requirement}
 
-\begin{requirement}{R-0066}{A member is never told of an order held on one machine only}
-  An execution report shall not be sent to a member until the record of the order
-  it concerns has been acknowledged by a second instance.
+\begin{requirement}{R-0066}{While the follower keeps up, a member is never told of an order held on one machine only}
+  While the second instance is keeping up, an execution report shall not be sent
+  to a member until the record of the order it concerns has been acknowledged by
+  the second instance.
   \rationale{An order that exists in one place is lost when that place is lost, so telling a
   member about such an order commits the venue to something it may not be able to
   honour. This is the property the second machine is run for, and the other
-  requirements in this section depend on it.}
+  requirements in this section depend on it. The requirement applies only while
+  the second instance keeps up, because the leader carries on without a second
+  instance that does not, under \reqref{R-0156}.}
   \uncovered{no scenario asserts that a report waits for the follower}
 \end{requirement}
 
@@ -112,16 +139,108 @@ Nothing. The member sees a brief pause in responses and no break in numbering.
   \uncovered{no scenario fails the sequencer over under a live session}
 \end{requirement}
 
-\begin{requirement}{R-0070}{A follower that falls behind stops the venue confirming, rather than being dropped}
-  Where the second instance cannot keep up, the venue shall stop sending
-  execution reports rather than continue without it.
-  \rationale{Dropping the follower to keep the reporting path moving abandons \reqref{R-0066}
-  without reporting it, at the moment that requirement matters most. Stopping the
-  reports instead leaves members seeing orders received and no reports, which a
-  member can see and recover from. A member cannot see the venue running on one
-  machine.}
-  \uncovered{no scenario makes the follower lag}
+\begin{requirement}{R-0156}{A follower that cannot keep up is treated as a lost instance}
+  Where the second instance has acknowledged nothing for 100 milliseconds while
+  records are waiting for it, or where the leader's storage for orders waiting on
+  it is full, the leader shall carry on without it, as \reqref{R-0093} requires for
+  a group that has lost an instance.
+  \rationale{A follower that is running but behind protects nothing while it is behind, in the
+  same way as a follower that has died. If the venue stopped for a slow follower
+  and carried on for a dead one, a follower that was unwell would do more harm
+  than one that had stopped. A fault in the second instance reduces the venue's
+  resilience, and the venue goes on trading.}
+  \covers{ha_test:60}
 \end{requirement}
+
+\begin{requirement}{R-0157}{A leader acts on an order its follower lacks only once a second voter has recorded that the follower may not lead}
+  Before a leader gives the matching engine an order whose record the second
+  instance has not acknowledged, the leader shall record on its own disk that the
+  second instance may not lead, and one of its other two voters shall have
+  recorded that statement and confirmed it.
+  \rationale{The follower then lacks orders that the matching engine has acted on and that
+  members may have been told of. If the follower led, it would number new orders
+  from a point below orders the engine has already applied, and those orders would
+  be missing from the venue's record of the day. The follower can become leader
+  only with a vote from the old leader or from the arbiter. The old leader refuses,
+  because the statement is on its disk. Either the arbiter has recorded the
+  statement and refuses, or the follower has recorded it and does not ask.}
+  \covers{ha_test:63, ha_test:64}
+\end{requirement}
+
+\begin{requirement}{R-0158}{The venue reports when a leader starts and stops carrying on without its follower}
+  A leader shall report when it starts to carry on without the second instance,
+  and again when it stops, saying why, in a form an operator can raise an alert on.
+  \rationale{A member cannot see that the venue is running on one machine, so nobody outside
+  the venue learns of it unless the venue says so. The time spent running on one
+  machine is the venue's exposure to losing the leader's machine, which
+  \reqref{R-0094} requires to be knowable. When the follower is connected and
+  behind, the sequencer writes a warning to its log and sets the gauge
+  \texttt{sequencer\_running\_alone} to 1, and logs again and sets the gauge to 0
+  when the follower has caught up.}
+  \covers{ha_test:60}
+\end{requirement}
+
+\begin{gap}{BUG-0221}
+  The gauge reads 0 while the leader carries on with no follower connected. The
+  sequencer logs a warning that the connection to its peer was lost, and an alert
+  on the gauge alone misses a follower that has died.
+\end{gap}
+
+\begin{requirement}{R-0159}{A leader waits for its follower again once the follower has caught up}
+  When the second instance has acknowledged every record the leader has written,
+  the leader shall again wait for its acknowledgements before acting on an order,
+  and shall then withdraw the statement that the second instance may not lead.
+  \rationale{Carrying on without the follower is a response to the follower falling behind,
+  and it ends when the follower has caught up. From that moment the protection of
+  \reqref{R-0066} is available again, and the venue takes it. The leader goes back to
+  waiting before it withdraws the statement, so that the follower is never
+  permitted to lead while it lacks an order the engine has acted on.}
+  \covers{ha_test:60, ha_test:63}
+\end{requirement}
+
+\begin{requirement}{R-0160}{Trading in the group halts if the leader is lost while carrying on without its follower}
+  Where the leader is lost while it is carrying on without the second instance,
+  the second instance shall not take the lead, and trading in the group shall
+  resume when the old leader returns.
+  \rationale{The only complete record of the orders the engine has acted on is on the old
+  leader's disk. If the follower took the lead, those orders would be lost, though
+  members may hold execution reports for them, and the follower would number new
+  orders over them. Waiting for the old leader gives the same outcome as losing a
+  leader that had no follower at all. A restarted leader reads its log, takes the
+  lead and sends the follower what it lacks.}
+  \covers{ha_test:63, ha_test:64}
+\end{requirement}
+
+\begin{requirement}{R-0161}{An operator can let the follower lead when the old leader's machine is lost for good}
+  Where the old leader's machine is lost for good while the leader was carrying
+  on without the second instance, an operator shall be able to let the second
+  instance lead, and the venue shall log at Warning what was done and why.
+  \rationale{Nothing in the venue can recover the orders that only the lost machine held, so
+  without this the group cannot trade again until that machine returns. The venue
+  cannot tell a machine that is lost for good from one that is slow to restart.
+  Only the operator knows which it is, so only the operator can accept the loss of
+  those orders.}
+  \uncovered{not built: nothing clears the statement at the arbiter and at the follower}
+\end{requirement}
+
+\begin{requirement}{R-0162}{Members are told which of their orders were lost with the old leader's machine}
+  After an operator has let the second instance lead under \reqref{R-0161}, the
+  venue shall establish which orders members were sent execution reports for that
+  the surviving instance's log does not hold, and each member affected shall be
+  told which of its orders these are.
+  \rationale{A member holding a report for an order the venue no longer has will act on that
+  report. It may hedge a fill the venue has no record of, or try to cancel an order
+  the venue does not hold. The venue cannot undo what the member was told. It can
+  tell the member what was lost, so that the member acts on accurate information.}
+  \uncovered{not built: no procedure compares what members were told with the surviving log}
+\end{requirement}
+
+\begin{gap}{BUG-0222}
+  No operator tool lets the follower lead after the old leader's machine is lost
+  for good, and no procedure tells members which of their orders were lost with
+  it. A group whose leader's machine is lost while the leader is carrying on
+  without its follower stays halted until that machine returns.
+\end{gap}
 
 \begin{requirement}{R-0100}{Waiting for a disk or for a peer does not stop a component working}
   A component shall continue to process what arrives while it is waiting for a
@@ -141,12 +260,13 @@ Nothing. The member sees a brief pause in responses and no break in numbering.
   The point at which a second instance is too far behind shall be a figure the
   venue states, expressed in what has not been acknowledged rather than in
   elapsed time alone.
-  \rationale{\reqref{R-0070} requires the venue to stop confirming rather than proceed without
-  the second instance. Neither implementing nor testing that requirement is possible
-  without knowing when the point is reached. A figure expressed only as a duration
-  moves with the rate orders arrive, so a venue under load reaches it after far
-  fewer records than a quiet venue does.}
-  \uncovered{no scenario makes a second instance lag, and no figure says when it is too far}
+  \rationale{The leader carries on without the second instance once that instance is too far
+  behind, under \reqref{R-0156}. Neither implementing nor testing that requirement is
+  possible without knowing when the point is reached. A figure expressed only as a
+  duration moves with the rate orders arrive, so a venue under load reaches it
+  after far fewer records than a quiet venue does. The sequencer's figure is 16,384
+  orders waiting on the second instance, set by \texttt{orders\_held\_at\_most}.}
+  \uncovered{no scenario fills the storage for orders waiting on the second instance}
 \end{requirement}
 
 \begin{requirement}{R-0071}{A sequencer that finds its own record damaged stops rather than serving from it}
