@@ -325,6 +325,30 @@ first and with `--secondary-engine-first`, before the next starts.
 2. **The refusal.** `CommandRefused`, and both gateways turning it into a rejection; both gateways refusing a command
    whose identity they hold unanswered (section 4.3). Unit tests in each gateway. Nothing sends `CommandRefused` yet,
    so the scenarios are unchanged.
+
+   **As built.** `CommandRefused` is message 164 in `leader_follower.dsl`, with the reason `IdentifierAlreadyUsed`. It
+   carries more than section 4.1 lists: the member's session connection id at the gateway, and the refused command
+   itself, its PDU id and its encoded bytes exactly as the envelope carried them. A gateway with high availability off
+   keeps no copies of commands, and a FIX execution report must carry the order's Symbol and Side, so a refusal that
+   named the command only by its identity could not be answered there. With the command in the message, both gateways
+   answer from it, whether or not they kept a copy, and mark their copy answered when they hold one. The position of the
+   first command is carried as its sequence number, `first_seq_no`, which the gateways write in the Quill log.
+
+   `fix_common::decode_refused_command` decodes the command a `CommandRefused` carries, for both gateways. The FIX
+   gateway builds its rejections with `make_reject_execution_report` and `make_order_cancel_reject`
+   (`FixRejections.hpp`), and the binary gateway with `make_reject_report` and `make_cancel_reject`
+   (`BinaryRejections.hpp`); both gateways' existing refusals use the same functions. A new order is rejected with
+   `OrdRejReason` 6 and a cancel refused with `CxlRejReason` 6, each with the text "ClOrdID already used today".
+
+   Each gateway's forwarding now says which refusal, if any, the member is owed (`fix_common::GatewayRefusal`): the
+   store is full, or a command with the same comp id and `ClOrdID` is already waiting for its answer. The second is
+   refused at once with the same rejection, logged at Info, and not sent. A cancel a gateway generates itself when a
+   member disconnects is sent whatever the store says, as before; its `ClOrdID` comes from the gateway's own counter.
+
+   The unit tests are `RefusedCommandTest`, `FixRejectionsTest` and `BinaryRejectionsTest`; the store's recognition
+   of a command already held is in `UnansweredCommandStoreTest`. Made to fail: with a cancel's refusal sending reason 99
+   (Other), the FIX and binary tests of a refused cancel fail; with a cancel decoded as a new order, the decoding test of
+   a cancel fails.
 3. **Every command is checked.** The leader checks every command, refuses an unmarked one already held, and answers a
    marked one as section 3.3 says. The rule about two connections and its tracking go. New scenarios:
    - a member reuses the `ClOrdID` of an order it has cancelled, and of an order that has been filled, and each is

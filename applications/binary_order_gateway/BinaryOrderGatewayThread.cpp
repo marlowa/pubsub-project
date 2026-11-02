@@ -790,11 +790,22 @@ void BinaryOrderGatewayThread::handle_new_order_single(BinarySession& session, c
         release_pdu_payload(message);
         return;
     }
-    if (!forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), message.payload(),
-                                   static_cast<size_t>(message.payload_size()), session, order.cl_ord_id)) {
-        // The store of unanswered commands is full: so many commands wait for an answer that the
-        // venue is not answering them. Refused with a reply, never dropped.
+    const fix_common::GatewayRefusal refusal =
+        forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), message.payload(),
+                                  static_cast<size_t>(message.payload_size()), session, order.cl_ord_id);
+    if (refusal == fix_common::GatewayRefusal::StoreFull) {
+        // So many commands wait for an answer that the venue is not answering them. Refused with a
+        // reply, never dropped.
         refuse_new_order(session, order, "the venue is busy: too many commands are waiting to be answered");
+    } else if (refusal == fix_common::GatewayRefusal::IdentifierHeldUnanswered) {
+        // Info: the member's mistake, which the gateway handles correctly.
+        ++orders_refused_;
+        progress_metrics_.count_order_refused();
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: connection {} comp_id='{}' NewOrderSingle ClOrdID={} refused: a command with this ClOrdID is already "
+                   "waiting for its answer",
+                   session.conn_id.get_value(), session.comp_id, order.cl_ord_id);
+        refuse_new_order(session, order, fix_common::identifier_already_used_text, pubsub_itc_fw_app::OrdRejReason::DuplicateOrder);
     }
     release_pdu_payload(message);
 }
@@ -837,9 +848,18 @@ void BinaryOrderGatewayThread::handle_order_cancel_request(BinarySession& sessio
         release_pdu_payload(message);
         return;
     }
-    if (!forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), message.payload(),
-                                   static_cast<size_t>(message.payload_size()), session, request.cl_ord_id)) {
+    const fix_common::GatewayRefusal refusal =
+        forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), message.payload(),
+                                  static_cast<size_t>(message.payload_size()), session, request.cl_ord_id);
+    if (refusal == fix_common::GatewayRefusal::StoreFull) {
         refuse_cancel(session, request, "the venue is busy: too many commands are waiting to be answered");
+    } else if (refusal == fix_common::GatewayRefusal::IdentifierHeldUnanswered) {
+        ++cancels_refused_;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused: a command with this "
+                   "ClOrdID is already waiting for its answer",
+                   session.conn_id.get_value(), session.comp_id, request.cl_ord_id, request.orig_cl_ord_id);
+        refuse_cancel(session, request, fix_common::identifier_already_used_text, pubsub_itc_fw_app::CxlRejReason::DuplicateClOrdId);
     }
     release_pdu_payload(message);
 }
@@ -945,8 +965,8 @@ void BinaryOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::Even
                view.no_engine_for_seconds, view.held_order_count);
 }
 
-bool BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, const uint8_t* payload, size_t size, const BinarySession& session,
-                                                         std::string_view cl_ord_id) {
+fix_common::GatewayRefusal BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, const uint8_t* payload, size_t size,
+                                                                               const BinarySession& session, std::string_view cl_ord_id) {
     pubsub_itc_fw_app::WalRecord envelope{};
     envelope.pdu_id = inner_pdu_id;
     envelope.payload.data = payload;
@@ -989,11 +1009,12 @@ bool BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, c
 
     // A copy is kept until a report answers the command, so that it can be sent again to a new
     // sequencer leader (docs/availability/commands_during_a_change_of_leader.md, section 3.1).
-    if (!keep_until_answered(envelope, session.comp_id, cl_ord_id)) {
-        return false;
+    const fix_common::GatewayRefusal refusal = keep_until_answered(envelope, session.comp_id, cl_ord_id);
+    if (refusal != fix_common::GatewayRefusal::None) {
+        return refusal;
     }
     forward_envelope_to_sequencers(envelope);
-    return true;
+    return fix_common::GatewayRefusal::None;
 }
 
 void BinaryOrderGatewayThread::announce_session_bound(const BinarySession& session) {
@@ -1088,11 +1109,69 @@ void BinaryOrderGatewayThread::forward_envelope_to_sequencers(const pubsub_itc_f
     }
 }
 
+void BinaryOrderGatewayThread::handle_command_refused(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+
+    pubsub_itc_fw_app::CommandRefusedView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOrderGatewayThread: failed to decode CommandRefused -- dropping");
+        return;
+    }
+
+    // The refusal answers the command, whether or not the member can still be told: the venue has decided it, and it
+    // is not sent again to a new leader.
+    if (unanswered_commands_.has_value()) {
+        static_cast<void>(unanswered_commands_->answered(view.sender_comp_id, view.cl_ord_id));
+    }
+
+    BinarySession* session = find_session_by_conn_id(view.gateway_session_conn_id);
+    if (session == nullptr || session->comp_id != view.sender_comp_id) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: the sequencer refused comp_id='{}' ClOrdID={}, whose ClOrdID was first used by record {}, but the member is "
+                   "no longer connected on connection {} -- it cannot be told",
+                   view.sender_comp_id, view.cl_ord_id, view.first_seq_no, view.gateway_session_conn_id);
+        return;
+    }
+
+    const auto [command, why_not] = fix_common::decode_refused_command(view, arena);
+    if (!command.has_value()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "BinaryOrderGatewayThread: CommandRefused for comp_id='{}' ClOrdID={}: {} -- the member is not told", view.sender_comp_id, view.cl_ord_id,
+                   why_not);
+        return;
+    }
+    if (command->kind == fix_common::RefusedCommand::Kind::NewOrder) {
+        ++orders_refused_;
+        progress_metrics_.count_order_refused();
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: connection {} comp_id='{}' NewOrderSingle ClOrdID={} refused by the sequencer: the ClOrdID was first used "
+                   "by record {}",
+                   session->conn_id.get_value(), session->comp_id, command->order.cl_ord_id, view.first_seq_no);
+        refuse_new_order(*session, command->order, fix_common::identifier_already_used_text, pubsub_itc_fw_app::OrdRejReason::DuplicateOrder);
+        return;
+    }
+    ++cancels_refused_;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "BinaryOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused by the sequencer: the ClOrdID "
+               "was first used by record {}",
+               session->conn_id.get_value(), session->comp_id, command->cancel.cl_ord_id, command->cancel.orig_cl_ord_id, view.first_seq_no);
+    refuse_cancel(*session, command->cancel, fix_common::identifier_already_used_text, pubsub_itc_fw_app::CxlRejReason::DuplicateClOrdId);
+}
+
 void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::EventMessage& message) {
     // The sequencer says whether the venue is accepting orders on the same connection it sends
     // reports on, because that is the connection it holds to every gateway.
     if (message.pdu_id() == pubsub_itc_fw_app::OrderAcceptance::message_pdu_id) {
         handle_order_acceptance(message);
+        release_pdu_payload(message);
+        return;
+    }
+    if (message.pdu_id() == pubsub_itc_fw_app::CommandRefused::message_pdu_id) {
+        handle_command_refused(message);
         release_pdu_payload(message);
         return;
     }
@@ -1258,50 +1337,22 @@ void BinaryOrderGatewayThread::refuse_new_order(BinarySession& session, const pu
     const auto order_id_written = fmt::format_to_n(order_id_buffer, sizeof(order_id_buffer), "GW-ORD-{}", session.order_id_counter++);
     const auto exec_id_written = fmt::format_to_n(exec_id_buffer, sizeof(exec_id_buffer), "GW-EXEC-{}", session.exec_id_counter++);
 
-    pubsub_itc_fw_app::ExecutionReport report{};
-    report.order_id = std::string_view(order_id_buffer, static_cast<size_t>(order_id_written.size));
-    report.exec_id = std::string_view(exec_id_buffer, static_cast<size_t>(exec_id_written.size));
-    report.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
-    report.ord_status = pubsub_itc_fw_app::OrdStatus::Rejected;
-    report.symbol = order.symbol;
-    report.side = order.side;
-    report.leaves_qty = "0";
-    report.cum_qty = "0";
-    report.avg_px = "0";
-    report.transact_time = config_.wall_clock->now_ns();
-    report.has_cl_ord_id = true;
-    report.cl_ord_id = order.cl_ord_id;
-    report.has_order_qty = true;
-    report.order_qty = order.order_qty;
-    report.has_ord_rej_reason = true;
-    report.ord_rej_reason = ord_rej_reason;
-    report.has_text = true;
-    report.text = reason;
+    const pubsub_itc_fw_app::ExecutionReport report = make_reject_report(std::string_view(order_id_buffer, static_cast<size_t>(order_id_written.size)),
+                                                                         std::string_view(exec_id_buffer, static_cast<size_t>(exec_id_written.size)), order,
+                                                                         reason, ord_rej_reason, config_.wall_clock->now_ns());
     send_pdu(session.conn_id, pubsub_itc_fw_app::ExecutionReport::message_pdu_id, 0, report);
 }
 
-void BinaryOrderGatewayThread::refuse_cancel(const BinarySession& session, const pubsub_itc_fw_app::OrderCancelRequestView& request, std::string_view reason) {
-    pubsub_itc_fw_app::OrderCancelReject reject{};
+void BinaryOrderGatewayThread::refuse_cancel(const BinarySession& session, const pubsub_itc_fw_app::OrderCancelRequestView& request, std::string_view reason,
+                                             pubsub_itc_fw_app::CxlRejReason cxl_rej_reason) {
     // FIX requires the order's OrderID. The session's record holds it for an order the matching
     // engine acknowledged; otherwise FIX's convention for an identifier not known is "NONE".
-    reject.order_id = "NONE";
+    std::string_view order_id = "NONE";
     const auto tracked = session.open_orders.find(request.orig_cl_ord_id);
     if (tracked != session.open_orders.end() && tracked->second->order_id_len > 0) {
-        reject.order_id = std::string_view(tracked->second->order_id, tracked->second->order_id_len);
+        order_id = std::string_view(tracked->second->order_id, tracked->second->order_id_len);
     }
-    reject.cl_ord_id = request.cl_ord_id;
-    reject.has_orig_cl_ord_id = true;
-    reject.orig_cl_ord_id = request.orig_cl_ord_id;
-    // New: the gateway's refusal has not touched the order. The gateway's record is not the book,
-    // so it never claims the order has gone.
-    reject.ord_status = pubsub_itc_fw_app::OrdStatus::New;
-    reject.has_transact_time = true;
-    reject.transact_time = config_.wall_clock->now_ns();
-    reject.cxl_rej_response_to = pubsub_itc_fw_app::CxlRejResponseTo::OrderCancelRequest;
-    reject.has_cxl_rej_reason = true;
-    reject.cxl_rej_reason = pubsub_itc_fw_app::CxlRejReason::Other;
-    reject.has_text = true;
-    reject.text = reason;
+    const pubsub_itc_fw_app::OrderCancelReject reject = make_cancel_reject(order_id, request, reason, cxl_rej_reason, config_.wall_clock->now_ns());
     send_pdu(session.conn_id, pubsub_itc_fw_app::OrderCancelReject::message_pdu_id, 0, reject);
 }
 
@@ -1433,9 +1484,10 @@ void BinaryOrderGatewayThread::arm_grace_timer() {
     grace_timer_active_ = true;
 }
 
-bool BinaryOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id, std::string_view cl_ord_id) {
+fix_common::GatewayRefusal BinaryOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id,
+                                                                         std::string_view cl_ord_id) {
     if (!unanswered_commands_.has_value() || comp_id.empty() || cl_ord_id.empty()) {
-        return true;
+        return fix_common::GatewayRefusal::None;
     }
     size_t bytes_written = 0;
     size_t bytes_needed = 0;
@@ -1449,9 +1501,12 @@ bool BinaryOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalR
             "BinaryOrderGatewayThread: could not encode the command ClOrdID={} to keep it -- sent without a copy, so it is not sent again after a change "
             "of sequencer leader",
             cl_ord_id);
-        return true;
+        return fix_common::GatewayRefusal::None;
     }
     const auto kept = unanswered_commands_->keep(comp_id, cl_ord_id, unanswered_encode_buffer_.data(), bytes_written);
+    if (kept == fix_common::UnansweredCommandStore::Kept::already_held) {
+        return fix_common::GatewayRefusal::IdentifierHeldUnanswered;
+    }
     if (kept == fix_common::UnansweredCommandStore::Kept::full) {
         ++refused_because_store_full_;
         if (!unanswered_store_full_) {
@@ -1461,7 +1516,7 @@ bool BinaryOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalR
                        "commands are refused until it does",
                        unanswered_commands_->unanswered());
         }
-        return false;
+        return fix_common::GatewayRefusal::StoreFull;
     }
     if (unanswered_store_full_) {
         unanswered_store_full_ = false;
@@ -1469,7 +1524,7 @@ bool BinaryOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalR
                    "BinaryOrderGatewayThread: the store of unanswered commands has room again -- {} command(s) were refused while it was full",
                    refused_because_store_full_);
     }
-    return true;
+    return fix_common::GatewayRefusal::None;
 }
 
 void BinaryOrderGatewayThread::send_unanswered_commands_again(int32_t new_epoch) {

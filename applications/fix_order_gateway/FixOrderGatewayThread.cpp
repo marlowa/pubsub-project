@@ -719,6 +719,11 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
         release_pdu_payload(message);
         return;
     }
+    if (pdu_id == pubsub_itc_fw_app::CommandRefused::message_pdu_id) {
+        handle_command_refused(message);
+        release_pdu_payload(message);
+        return;
+    }
     if (pdu_id == pubsub_itc_fw_app::SessionReplayRecord::message_pdu_id) {
         handle_session_replay_record(message);
         release_pdu_payload(message);
@@ -1608,6 +1613,64 @@ void FixOrderGatewayThread::send_waiting_replay_requests_again(int32_t new_epoch
     }
 }
 
+void FixOrderGatewayThread::handle_command_refused(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+
+    pubsub_itc_fw_app::CommandRefusedView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: failed to decode CommandRefused -- dropping");
+        return;
+    }
+
+    // The refusal answers the command, whether or not the member can still be told: the venue has decided it, and it
+    // is not sent again to a new leader.
+    if (unanswered_commands_.has_value()) {
+        static_cast<void>(unanswered_commands_->answered(view.sender_comp_id, view.cl_ord_id));
+    }
+
+    FixSession* session = find_session_by_conn_id(view.gateway_session_conn_id);
+    if (session == nullptr || session->client_comp_id != view.sender_comp_id) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: the sequencer refused comp_id='{}' ClOrdID={}, whose ClOrdID was first used by record {}, but the member is no "
+                   "longer connected on connection {} -- it cannot be told",
+                   view.sender_comp_id, view.cl_ord_id, view.first_seq_no, view.gateway_session_conn_id);
+        return;
+    }
+
+    const auto [command, why_not] = fix_common::decode_refused_command(view, arena);
+    if (!command.has_value()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixOrderGatewayThread: CommandRefused for comp_id='{}' ClOrdID={}: {} -- the member is not told", view.sender_comp_id, view.cl_ord_id,
+                   why_not);
+        return;
+    }
+    if (command->kind == fix_common::RefusedCommand::Kind::NewOrder) {
+        const pubsub_itc_fw_app::NewOrderSingleView& order = command->order;
+        ++orders_refused_;
+        progress_metrics_.count_order_refused();
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: connection {} comp_id='{}' NewOrderSingle ClOrdID={} refused by the sequencer: the ClOrdID was first used by "
+                   "record {}",
+                   session->conn_id.get_value(), session->client_comp_id, order.cl_ord_id, view.first_seq_no);
+        const char side = static_cast<char>(order.side);
+        send_reject_execution_report(*session, order.cl_ord_id, order.symbol, std::string_view(&side, 1), order.order_qty,
+                                     fix_common::identifier_already_used_text, pubsub_itc_fw_app::OrdRejReason::DuplicateOrder);
+        return;
+    }
+    const pubsub_itc_fw_app::OrderCancelRequestView& request = command->cancel;
+    ++cancels_refused_;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused by the sequencer: the ClOrdID was "
+               "first used by record {}",
+               session->conn_id.get_value(), session->client_comp_id, request.cl_ord_id, request.orig_cl_ord_id, view.first_seq_no);
+    send_order_cancel_reject(*session, request.cl_ord_id, request.orig_cl_ord_id, fix_common::identifier_already_used_text,
+                             pubsub_itc_fw_app::CxlRejReason::DuplicateClOrdId);
+}
+
 void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buffer = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
@@ -2145,13 +2208,26 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
     // ClOrdID collision problem) and its SenderCompID (for audit) travel on the
     // WalRecord envelope, not inside the DD-derived PDU. Forward the pure NOS
     // wrapped in that envelope to both sequencer instances.
-    if (!forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), nos, session.conn_id.get_value(),
-                                   session.client_comp_id, current_read_ingress_ns_, WhenStoreFull::refuse)) {
-        // The store of unanswered commands is full: so many commands wait for an answer that the
-        // venue is not answering them. Refused with a reply, never dropped.
+    const fix_common::GatewayRefusal refusal =
+        forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), nos, session.conn_id.get_value(),
+                                  session.client_comp_id, current_read_ingress_ns_, WhenStoreFull::refuse);
+    if (refusal == fix_common::GatewayRefusal::StoreFull) {
+        // So many commands wait for an answer that the venue is not answering them. Refused with a
+        // reply, never dropped.
         ++orders_refused_;
         progress_metrics_.count_order_refused();
         send_reject_execution_report(session, msg, "the venue is busy: too many commands are waiting to be answered");
+        return;
+    }
+    if (refusal == fix_common::GatewayRefusal::IdentifierHeldUnanswered) {
+        // Info: the member's mistake, which the gateway handles correctly.
+        ++orders_refused_;
+        progress_metrics_.count_order_refused();
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: connection {} comp_id='{}' NewOrderSingle ClOrdID={} refused: a command with this ClOrdID is already waiting "
+                   "for its answer",
+                   session.conn_id.get_value(), session.client_comp_id, nos.cl_ord_id);
+        send_reject_execution_report(session, msg, std::string(fix_common::identifier_already_used_text), pubsub_itc_fw_app::OrdRejReason::DuplicateOrder);
         return;
     }
 
@@ -2269,10 +2345,21 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
 
     // Connection id (cancel-ER routing) and SenderCompID (audit) ride on the
     // WalRecord envelope, not inside the PDU (same mechanism as NOS).
-    if (!forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, session.conn_id.get_value(),
-                                   session.client_comp_id, current_read_ingress_ns_, WhenStoreFull::refuse)) {
+    const fix_common::GatewayRefusal refusal =
+        forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, session.conn_id.get_value(),
+                                  session.client_comp_id, current_read_ingress_ns_, WhenStoreFull::refuse);
+    if (refusal == fix_common::GatewayRefusal::StoreFull) {
         ++cancels_refused_;
         send_order_cancel_reject(session, msg, "the venue is busy: too many commands are waiting to be answered");
+        return;
+    }
+    if (refusal == fix_common::GatewayRefusal::IdentifierHeldUnanswered) {
+        ++cancels_refused_;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused: a command with this ClOrdID is "
+                   "already waiting for its answer",
+                   session.conn_id.get_value(), session.client_comp_id, cl_ord_id, orig_cl_ord_id);
+        send_order_cancel_reject(session, msg, std::string(fix_common::identifier_already_used_text), pubsub_itc_fw_app::CxlRejReason::DuplicateClOrdId);
     }
 }
 
@@ -2306,6 +2393,13 @@ void FixOrderGatewayThread::send_fix_to_session(FixSession& session, const FixMe
 
 void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason,
                                                          pubsub_itc_fw_app::OrdRejReason ord_rej_reason) {
+    // The string_views are valid for the duration of this call; the FixMessage built from them copies each value.
+    send_reject_execution_report(session, inbound.get(Tag::ClOrdID), inbound.get(Tag::Symbol), inbound.get(Tag::Side), inbound.get(Tag::OrderQty), reason,
+                                 ord_rej_reason);
+}
+
+void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, std::string_view cl_ord_id, std::string_view symbol, std::string_view side_str,
+                                                         std::string_view order_qty, std::string_view reason, pubsub_itc_fw_app::OrdRejReason ord_rej_reason) {
     // The matching engine never sees this order, so the gateway makes its own
     // identifiers from per-session counters, with a GW- prefix, which no
     // identifier of the matching engine's has, so that the origin is plain in
@@ -2313,35 +2407,7 @@ void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, co
     const std::string order_id = "GW-ORD-" + std::to_string(session.order_id_counter++);
     const std::string exec_id = "GW-EXEC-" + std::to_string(session.exec_id_counter++);
 
-    // Echo identifying fields from the inbound message. Side and OrderQty are
-    // optional from a strict FIX standpoint on a Reject (the ME never priced
-    // it), but echoing what the client sent keeps the round-trip diagnostic
-    // and matches the format of a real ER for the same order.
-    // The string_views are valid for the duration of this call; er.set() copies
-    // each value into the outbound FixMessage map.
-    const std::string_view cl_ord_id = inbound.get(Tag::ClOrdID);
-    const std::string_view symbol = inbound.get(Tag::Symbol);
-    const std::string_view side_str = inbound.get(Tag::Side);
-    const std::string_view order_qty = inbound.get(Tag::OrderQty);
-
-    FixMessage er;
-    er.set(Tag::MsgType, MsgType::ExecutionReport);
-    er.set(Tag::OrderID, order_id);
-    er.set(Tag::ExecID, exec_id);
-    er.set(Tag::ExecType, std::string(1, '8'));  // 150 = 8 Rejected
-    er.set(Tag::OrdStatus, std::string(1, '8')); //  39 = 8 Rejected
-    er.set(Tag::ClOrdID, cl_ord_id);
-    er.set(Tag::Symbol, symbol);
-    if (!side_str.empty()) {
-        er.set(Tag::Side, side_str);
-    }
-    if (!order_qty.empty()) {
-        er.set(Tag::OrderQty, order_qty);
-        er.set(Tag::LeavesQty, std::string("0"));
-        er.set(Tag::CumQty, std::string("0"));
-    }
-    er.set(103, static_cast<int>(ord_rej_reason)); // 103 = OrdRejReason
-    er.set(Tag::Text, reason);
+    const FixMessage er = make_reject_execution_report(order_id, exec_id, cl_ord_id, symbol, side_str, order_qty, reason, ord_rej_reason);
 
     // Debug, because every caller has already logged why, at the level its reason deserves. A
     // line here at Info would log every order refused to a member over its limit, which is the
@@ -2354,10 +2420,13 @@ void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, co
     send_fix_to_session(session, er);
 }
 
-void FixOrderGatewayThread::send_order_cancel_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason) {
-    const std::string_view cl_ord_id = inbound.get(Tag::ClOrdID);
-    const std::string_view orig_cl_ord_id = inbound.get(Tag::OrigClOrdID);
+void FixOrderGatewayThread::send_order_cancel_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason,
+                                                     pubsub_itc_fw_app::CxlRejReason cxl_rej_reason) {
+    send_order_cancel_reject(session, inbound.get(Tag::ClOrdID), inbound.get(Tag::OrigClOrdID), reason, cxl_rej_reason);
+}
 
+void FixOrderGatewayThread::send_order_cancel_reject(FixSession& session, std::string_view cl_ord_id, std::string_view orig_cl_ord_id, std::string_view reason,
+                                                     pubsub_itc_fw_app::CxlRejReason cxl_rej_reason) {
     // FIX requires the order's OrderID. The session's record holds it for an order the matching
     // engine acknowledged; otherwise FIX's convention for an identifier not known is "NONE".
     std::string_view order_id = "NONE";
@@ -2366,17 +2435,7 @@ void FixOrderGatewayThread::send_order_cancel_reject(FixSession& session, const 
         order_id = std::string_view(tracked->second->order_id, tracked->second->order_id_len);
     }
 
-    FixMessage reject;
-    reject.set(Tag::MsgType, MsgType::OrderCancelReject);
-    reject.set(Tag::OrderID, order_id);
-    reject.set(Tag::ClOrdID, cl_ord_id);
-    if (!orig_cl_ord_id.empty()) {
-        reject.set(Tag::OrigClOrdID, orig_cl_ord_id);
-    }
-    reject.set(Tag::OrdStatus, std::string(1, '0'));        // 39 = 0 New: the order is open
-    reject.set(Tag::CxlRejResponseTo, std::string(1, '1')); // 434 = 1 Order cancel request
-    reject.set(Tag::CxlRejReason, 99);                      // 102 = 99 Other
-    reject.set(Tag::Text, reason);
+    const FixMessage reject = make_order_cancel_reject(order_id, cl_ord_id, orig_cl_ord_id, reason, cxl_rej_reason);
 
     // Debug, for the reason given in send_reject_execution_report.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
@@ -2633,9 +2692,10 @@ void FixOrderGatewayThread::arm_grace_timer() {
     grace_timer_active_ = true;
 }
 
-bool FixOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id, std::string_view cl_ord_id) {
+fix_common::GatewayRefusal FixOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id,
+                                                                      std::string_view cl_ord_id) {
     if (!unanswered_commands_.has_value() || comp_id.empty() || cl_ord_id.empty()) {
-        return true;
+        return fix_common::GatewayRefusal::None;
     }
     size_t bytes_written = 0;
     size_t bytes_needed = 0;
@@ -2648,9 +2708,12 @@ bool FixOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalReco
                    "FixOrderGatewayThread: could not encode the command ClOrdID={} to keep it -- sent without a copy, so it is not sent again after a change "
                    "of sequencer leader",
                    cl_ord_id);
-        return true;
+        return fix_common::GatewayRefusal::None;
     }
     const auto kept = unanswered_commands_->keep(comp_id, cl_ord_id, unanswered_encode_buffer_.data(), bytes_written);
+    if (kept == fix_common::UnansweredCommandStore::Kept::already_held) {
+        return fix_common::GatewayRefusal::IdentifierHeldUnanswered;
+    }
     if (kept == fix_common::UnansweredCommandStore::Kept::full) {
         ++refused_because_store_full_;
         if (!unanswered_store_full_) {
@@ -2660,7 +2723,7 @@ bool FixOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalReco
                        "commands are refused until it does",
                        unanswered_commands_->unanswered());
         }
-        return false;
+        return fix_common::GatewayRefusal::StoreFull;
     }
     if (unanswered_store_full_) {
         unanswered_store_full_ = false;
@@ -2668,7 +2731,7 @@ bool FixOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalReco
                    "FixOrderGatewayThread: the store of unanswered commands has room again -- {} command(s) were refused while it was full",
                    refused_because_store_full_);
     }
-    return true;
+    return fix_common::GatewayRefusal::None;
 }
 
 void FixOrderGatewayThread::send_unanswered_commands_again(int32_t new_epoch) {

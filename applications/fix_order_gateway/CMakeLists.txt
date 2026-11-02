@@ -1,6 +1,7 @@
 add_executable(fix_order_gateway
         FixCapture.cpp
         FixErEncoder.cpp
+        FixRejections.cpp
         FixOrderGatewayConfigurationLoader.cpp
         FixOrderGatewayThread.cpp
         FixParser.cpp
@@ -59,6 +60,7 @@ add_executable(fix_order_gateway_tests
         tests/FixParserTest.cpp
         tests/FixSerialiserTest.cpp
         tests/FixErEncoderTest.cpp
+        tests/FixRejectionsTest.cpp
         tests/GatewayMetricsTest.cpp
         tests/OrderPathMetricsTest.cpp
         tests/PoolMetricsReporterTest.cpp
@@ -66,6 +68,7 @@ add_executable(fix_order_gateway_tests
         FixParser.cpp
         FixSerialiser.cpp
         FixErEncoder.cpp
+        FixRejections.cpp
 )
 
 target_include_directories(fix_order_gateway_tests PRIVATE

@@ -61,8 +61,8 @@ class UnansweredCommandStore {
         // The store has no room. The caller refuses the command.
         full,
         // A command with the same comp id and ClOrdID is already held unanswered: a member resubmitting
-        // an order it had no answer for. It is not kept a second time. Sending the first copy again is
-        // enough, and the venue refuses the repeat as a duplicate.
+        // an order it had no answer for. It is not kept a second time, and the caller refuses it, because
+        // an answer to it could not be told from an answer to the first.
         already_held
     };
 

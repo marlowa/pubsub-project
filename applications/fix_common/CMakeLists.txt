@@ -3,6 +3,7 @@
 # to count allocations, and that replacement would apply to every test linked with it.
 add_executable(fix_common_tests
         tests/PacedResendTest.cpp
+        tests/RefusedCommandTest.cpp
         tests/RollingWindowThrottleTest.cpp
         tests/SessionThrottlesTest.cpp
         tests/ThrottleHeapUseTest.cpp
@@ -16,7 +17,7 @@ target_include_directories(fix_common_tests PRIVATE
 )
 
 # VoidedCommandList.hpp uses the application's copy of the messages in leader_follower.dsl.
-add_dependencies(fix_common_tests leader_follower_generated)
+add_dependencies(fix_common_tests leader_follower_generated fix_orders_generated)
 
 target_link_libraries(fix_common_tests PRIVATE
         pubsub_itc_fw

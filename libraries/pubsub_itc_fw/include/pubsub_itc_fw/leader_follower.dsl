@@ -939,3 +939,30 @@ message OperatorHaltAnswer (id=162, version=1)
     i64 technical_event_seq_no      # the position of the TechnicalEvent written, or 0 when none was
     string explanation              # the outcome in words, as the sequencer logged it
 end
+
+# Why the leading sequencer refused a member's command without writing it into the WAL.
+enum CommandRefusedReason : i8 {
+    IdentifierAlreadyUsed = 1   # the WAL already holds a command with the same comp id, protocol and ClOrdID, and this one was not marked as sent again
+}
+
+# ------------------------------------------------------------
+#  164 -- CommandRefused
+#  Sent by the leading sequencer to the gateway a member's command
+#  came from, on the connection it came by, when the sequencer
+#  refuses the command without writing it into the WAL. Nothing in
+#  the WAL, the book or the matching engines changes. The gateway
+#  answers the member with a rejection: an execution report for a
+#  new order, an order cancel reject for a cancel. The message
+#  carries the refused command as the gateway sent it, so that the
+#  gateway can answer from it whether or not it kept a copy. See
+#  docs/availability/one_check_against_sequencing_twice.md, section 4.
+# ------------------------------------------------------------
+message CommandRefused (id=164, version=1)
+    i32 gateway_session_conn_id     # the member's session at the gateway, as the command's envelope carried it
+    string sender_comp_id           # the member's comp id, as the command's envelope carried it
+    string cl_ord_id                # the command's ClOrdID, as the command's envelope carried it
+    i16 command_pdu_id              # what the command is: NewOrderSingle or OrderCancelRequest
+    bytes command                   # the command, encoded, exactly as the envelope's payload carried it
+    CommandRefusedReason reason
+    i64 first_seq_no                # the position in the WAL of the command that used the identifier first, for the Quill log
+end

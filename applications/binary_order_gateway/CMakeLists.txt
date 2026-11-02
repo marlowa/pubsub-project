@@ -95,6 +95,7 @@ install(TARGETS binary_load_client
 add_executable(binary_order_gateway_tests
         tests/BinaryCommandChecksTest.cpp
         tests/BinaryProtocolTest.cpp
+        tests/BinaryRejectionsTest.cpp
 )
 
 target_include_directories(binary_order_gateway_tests PRIVATE

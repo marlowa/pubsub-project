@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -32,12 +33,15 @@
 #include "FixCapture.hpp"
 #include "FixMessage.hpp"
 #include "FixOrderGatewayConfiguration.hpp"
+#include "FixRejections.hpp"
 #include "FixSerialiser.hpp"
 #include "FixSession.hpp"
 #include "GatewayIds.hpp"
 #include "GatewayProgressMetrics.hpp"
+#include "GatewayRefusal.hpp"
 #include "PacedResend.hpp"
 #include "PoolMetricsReporter.hpp"
+#include "RefusedCommand.hpp"
 #include "SentAgainEnvelope.hpp"
 #include "ThrottleRefusalMetrics.hpp"
 #include "ThrottledCommand.hpp"
@@ -246,6 +250,20 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
                                       pubsub_itc_fw_app::OrdRejReason ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other);
 
     /**
+     * @brief The same reject ExecutionReport, built from the order's fields rather than from a FIX message the member
+     *        sent, for an order refused after it was sent to the sequencers.
+     * @param[in,out] session The member's session. Its outbound seq num, OrderID counter and ExecID counter are advanced.
+     * @param[in] cl_ord_id The order's ClOrdID, echoed back.
+     * @param[in] symbol The order's Symbol, echoed back.
+     * @param[in] side_str The order's Side as its FIX value, echoed back; empty to leave tag 54 out.
+     * @param[in] order_qty The order's OrderQty, echoed back; empty to leave tags 38, 151 and 14 out.
+     * @param[in] reason Text for tag 58.
+     * @param[in] ord_rej_reason Value for tag 103.
+     */
+    void send_reject_execution_report(FixSession& session, std::string_view cl_ord_id, std::string_view symbol, std::string_view side_str,
+                                      std::string_view order_qty, std::string_view reason, pubsub_itc_fw_app::OrdRejReason ord_rej_reason);
+
+    /**
      * @brief Sends an OrderCancelReject (35=9) when the gateway refuses a request to cancel.
      *
      * The order the request names is still open: the gateway has not passed the request on,
@@ -258,7 +276,7 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      *   - 11, 41           (ClOrdID and OrigClOrdID, echoed from the request)
      *   - 39  = 0          (OrdStatus = New: the order is open)
      *   - 434 = 1          (CxlRejResponseTo = Order cancel request)
-     *   - 102 = 99         (CxlRejReason = Other; the reason is the gateway's, not the order's)
+     *   - 102              (CxlRejReason: 99 Other when the gateway refuses for a reason of its own, 6 when the ClOrdID is in use)
      *   - 58  = reason
      *
      * OrdStatus is New even when the order is not in the session's record. The record is not
@@ -271,8 +289,22 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] session  The originating FIX client session. Its outbound seq num is advanced.
      * @param[in] inbound  The OrderCancelRequest. String_views in it are valid for this call only.
      * @param[in] reason   Text for tag 58.
+     * @param[in] cxl_rej_reason Value for tag 102.
      */
-    void send_order_cancel_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason);
+    void send_order_cancel_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason,
+                                  pubsub_itc_fw_app::CxlRejReason cxl_rej_reason = pubsub_itc_fw_app::CxlRejReason::Other);
+
+    /**
+     * @brief The same OrderCancelReject, built from the request's identifiers rather than from a FIX message the member
+     *        sent, for a request refused after it was sent to the sequencers.
+     * @param[in,out] session The member's session. Its outbound seq num is advanced.
+     * @param[in] cl_ord_id The request's ClOrdID.
+     * @param[in] orig_cl_ord_id The OrigClOrdID of the order the request names; empty to leave tag 41 out.
+     * @param[in] reason Text for tag 58.
+     * @param[in] cxl_rej_reason Value for tag 102.
+     */
+    void send_order_cancel_reject(FixSession& session, std::string_view cl_ord_id, std::string_view orig_cl_ord_id, std::string_view reason,
+                                  pubsub_itc_fw_app::CxlRejReason cxl_rej_reason);
 
     /**
      * @brief Asks the session's throttle whether a member command of kind @p command may go on.
@@ -345,11 +377,12 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         send_without_keeping
     };
 
-    // @return False when the command was not sent because the store of unanswered commands is full,
-    //         and the caller must refuse it; true otherwise.
+    // @return The refusal the caller must send the member, if the command was not sent: the store of unanswered
+    //         commands is full, or a command with the same comp id and ClOrdID is already waiting for its answer. A
+    //         cancel this gateway generates is sent whatever the store says, and this returns GatewayRefusal::None.
     template <typename MsgT>
-    [[nodiscard]] bool forward_order_in_envelope(int16_t inner_pdu_id, const MsgT& msg, int32_t gateway_session_conn_id, std::string_view sender_comp_id,
-                                                 int64_t gateway_ingress_ns, WhenStoreFull when_full) {
+    [[nodiscard]] fix_common::GatewayRefusal forward_order_in_envelope(int16_t inner_pdu_id, const MsgT& msg, int32_t gateway_session_conn_id,
+                                                                       std::string_view sender_comp_id, int64_t gateway_ingress_ns, WhenStoreFull when_full) {
         size_t bytes_written = 0;
         size_t bytes_needed = 0;
         // Measure then fit: a zero-size out buffer makes encode report bytes_needed
@@ -366,7 +399,7 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                        "FixOrderGatewayThread: failed to encode order PDU {} ({} bytes needed) -- not forwarded", inner_pdu_id, bytes_needed);
             // Logged as the error it is. Not a reason to tell the caller the venue is busy.
-            return true;
+            return fix_common::GatewayRefusal::None;
         }
 
         pubsub_itc_fw_app::WalRecord envelope{};
@@ -415,17 +448,17 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
         // A copy is kept until a report answers the command, so that it can be sent again to a new
         // sequencer leader (docs/availability/commands_during_a_change_of_leader.md, section 3.1).
-        if (!keep_until_answered(envelope, sender_comp_id, msg.cl_ord_id) && when_full == WhenStoreFull::refuse) {
-            return false;
+        const fix_common::GatewayRefusal refusal = keep_until_answered(envelope, sender_comp_id, msg.cl_ord_id);
+        if (refusal != fix_common::GatewayRefusal::None && when_full == WhenStoreFull::refuse) {
+            return refusal;
         }
         forward_pdu_to_sequencers(pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope);
-        return true;
+        return fix_common::GatewayRefusal::None;
     }
 
-    // Keeps a copy of a command's envelope until it is answered. Returns false only when the store is
-    // full; true when the copy was kept, when the command is already held unanswered, and when the
-    // store is not in use because high availability is off.
-    bool keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id, std::string_view cl_ord_id);
+    // Keeps a copy of a command's envelope until it is answered. Returns GatewayRefusal::None when the copy was kept,
+    // and when the store is not in use because high availability is off; otherwise why it could not be kept.
+    fix_common::GatewayRefusal keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id, std::string_view cl_ord_id);
     // Sends again, marked as sent again, every command still unanswered: a new sequencer leads.
     void send_unanswered_commands_again(int32_t new_epoch);
 
@@ -596,6 +629,9 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      * Repeated while the venue is degraded, so it arrives far more often than it changes.
      */
     void handle_order_acceptance(const pubsub_itc_fw::EventMessage& message);
+    // The leading sequencer refused a member's command without writing it into the WAL (CommandRefused): the member
+    // is answered with a rejection, and the gateway's copy of the command is marked answered.
+    void handle_command_refused(const pubsub_itc_fw::EventMessage& message);
 
     /**
      * @brief Whether the venue last said it could process orders.
