@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 223 |
-| Open | 81 (56 defects, 25 tasks) |
-| Closed | 142 |
+| Open | 79 (56 defects, 23 tasks) |
+| Closed | 144 |
 | Next id | BUG-0224 |
 
 ## Open bugs by severity
 
-17 high, 49 medium, 15 low.
+17 high, 47 medium, 15 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -51,10 +51,8 @@
 | [BUG-0092](#bug_0092) | medium | defect | A refused cancel is answered with an execution report rather than an order cancel reject |
 | [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
-| [BUG-0114](#bug_0114) | medium | task | An order identifier used earlier in the day is accepted again once its first order has ended |
 | [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
 | [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
-| [BUG-0122](#bug_0122) | medium | task | Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism |
 | [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
 | [BUG-0128](#bug_0128) | medium | defect | Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread |
 | [BUG-0129](#bug_0129) | medium | defect | The stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation |
@@ -1219,57 +1217,6 @@ earlier one has free slots, because a freed slot returns to the pool it came fro
 during a trading day does not happen and is treated as an incident when it does, or expansion is made
 lock-free, with the next pool mapped in advance by another thread. See `lock-audit-report.txt`.
 
-### BUG-0122: Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism {#bug_0122}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task -- a simplification of the design, not a defect that loses or doubles orders today |
-| Found | 2026-10-06 |
-| Recorded | 2026-10-06 |
-| How | Looking back over the fixes for [BUG-0112](#bug_0112) and [BUG-0118](#bug_0118), which between them added two more ways for a gateway to send commands again and a special rule at the sequencer to stop the extra copies being sequenced twice |
-| Impact | The rule that an order is never sequenced twice is not stated once and enforced in one place. It holds only because of several separate mechanisms, each reasoned about on its own, and every new way for a command to arrive twice has needed another. That is where the next defect of this kind is most likely to be |
-
-**The rule as it stands.** The leading sequencer checks a command against its log only when the
-command is marked as sent again (part 4.3, decision 2 in
-[commands_during_a_change_of_leader.md](availability/commands_during_a_change_of_leader.md)). Every
-other command is sequenced without a check. That narrow rule is safe only as long as an unmarked
-command can never arrive after its marked copy, so each path by which a command can be sent again has
-needed its own argument, and sometimes its own mechanism:
-
-- **After a change of leader.** A gateway seeing a higher leader epoch sends its unanswered commands
-  again, marked (part 4.3).
-- **After a connection to a sequencer is established again.** Added for [BUG-0118](#bug_0118), because
-  a connection closed for a full queue ([BUG-0112](#bug_0112)) discards the commands waiting on it.
-- **While a gateway has two connections open to the leader.** Also added for BUG-0118. Unmarked
-  originals still unread on the old connection could be read after their marked copies on the new
-  one, and would be sequenced again, so the leader checks every command from that gateway until the
-  old connection ends. This rule exists only because the general rule is narrow.
-
-**The wider rule.** The leader sequences a command at most once, judged by its identity -- the
-member's comp id, the protocol and the `ClOrdID` -- whatever path it arrived by, and checks every
-command against its record of identifiers. A gateway then sends its unanswered commands again
-whenever its connection to the leader is established or the leader changes, for whatever reason,
-without anything depending on which copy arrives first. The two-connection rule above would no longer
-be needed, and neither would the reasoning about the order in which copies arrive.
-
-The mark `sent_again` would still be needed, but only to decide the reply, not whether to sequence.
-A command already in the log that is marked as sent again is answered by the routes in section 3.6 of
-the design. One that is not marked is a member reusing an identifier, which R-0119 forbids, and is
-refused. That second half is [BUG-0114](#bug_0114): the same check on every command, used to refuse.
-The two should be designed together.
-
-**What it costs.** A lookup in the record of identifiers for every command on the order path. The
-record is a hash set of 64-bit numbers; for a command not in the log, which is nearly every command,
-the lookup answers on its own, in the order of 100 nanoseconds. That figure is not yet measured on
-the order path; measuring it, by the method in `docs/operations/latency_findings.md`, is part of this
-task. A command the record may hold is checked exactly against the end of the log, as now.
-
-**Decided.** The wider rule is principle V7 in `docs/design_principles.md`, agreed with Andrew on
-11 October 2026, so this is now work the code must be brought up to, not an idea parked for later. It
-is to be designed together with BUG-0114, and scheduled within the plan for restoring the design
-(`docs/recovery_plan.md`), not started on its own.
-
 ### BUG-0121: A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader {#bug_0121}
 
 | | |
@@ -1339,38 +1286,6 @@ to the command queue's memory.
 still be running, which is a question for the framework; and whether that test's three-second limit
 for the second connection's 50,000 messages is too tight on a busy machine, since it failed there with
 and without the change for BUG-0112.
-
-### BUG-0114: An order identifier used earlier in the day is accepted again once its first order has ended {#bug_0114}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task |
-| Found | 2026-10-04 |
-| Recorded | 2026-10-04 |
-| How | Deciding, in the design of part 4.3, which commands the sequencer's record of identifiers checks ([commands_during_a_change_of_leader.md](availability/commands_during_a_change_of_leader.md), decision 2) |
-| Impact | A member can reuse a `ClOrdID` on the same session and day once the first order with it has been filled or cancelled, and the venue publishes two different orders under one identifier, which R-0119 forbids |
-
-**What happens.** The only check for a repeated `ClOrdID` is the matching engine's, against the orders
-currently on its book (`MatchingEngineThread::handle_new_order_single`, `order_book_.contains`). An
-order that has ended is no longer on the book, so its identifier is accepted again. The specification
-records this as a gap under R-0119.
-
-**What is decided.** Part 4.3 gives the sequencer a record of every identifier in its log, for the
-trading day: a set of 64-bit numbers derived from the session and the `ClOrdID`, reserved for 200
-million entries. In part 4.3 it checks only commands a gateway sends again after a change of leader.
-Checking every command against it would meet R-0119, and is this separate change.
-
-**What it needs.** A lookup per command on the order path, measured by the method in
-`docs/operations/latency_findings.md`; a way for the sequencer to refuse a command with a report,
-which today only the matching engine produces; and, because the record holds 64-bit numbers rather
-than the identifiers themselves, an exact check of each match against the log before refusing, as
-part 4.3 does for a command sent again. A scenario that reuses the identifier of a cancelled order,
-which R-0119's coverage note says does not exist.
-
-The same check on every command would also let the sequencer stop relying on which commands are
-marked as sent again to avoid sequencing a command twice, which is [BUG-0122](#bug_0122). The two
-should be designed together.
 
 ### BUG-0113: Every resend request reads the whole day's log on the thread that sequences orders {#bug_0113}
 
@@ -3803,6 +3718,91 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0122: Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism {#bug_0122}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- a simplification of the design, not a defect that loses or doubles orders today |
+| Found | 2026-10-06 |
+| Recorded | 2026-10-06 |
+| Fixed | 2026-11-02 -- one check, on every command, in the leading sequencer, through the library's replicated WAL; the rule for a gateway with two connections open is gone; a command sent again whose report the WAL holds is answered with that report. Scenarios 67, 68, 71 and 99 ([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), steps 1 to 4) |
+| How | Looking back over the fixes for [BUG-0112](#bug_0112) and [BUG-0118](#bug_0118), which between them added two more ways for a gateway to send commands again and a special rule at the sequencer to stop the extra copies being sequenced twice |
+| Impact | The rule that an order is never sequenced twice is not stated once and enforced in one place. It holds only because of several separate mechanisms, each reasoned about on its own, and every new way for a command to arrive twice has needed another. That is where the next defect of this kind is most likely to be |
+
+**The rule as it stands.** The leading sequencer checks a command against its log only when the
+command is marked as sent again (part 4.3, decision 2 in
+[commands_during_a_change_of_leader.md](availability/commands_during_a_change_of_leader.md)). Every
+other command is sequenced without a check. That narrow rule is safe only as long as an unmarked
+command can never arrive after its marked copy, so each path by which a command can be sent again has
+needed its own argument, and sometimes its own mechanism:
+
+- **After a change of leader.** A gateway seeing a higher leader epoch sends its unanswered commands
+  again, marked (part 4.3).
+- **After a connection to a sequencer is established again.** Added for [BUG-0118](#bug_0118), because
+  a connection closed for a full queue ([BUG-0112](#bug_0112)) discards the commands waiting on it.
+- **While a gateway has two connections open to the leader.** Also added for BUG-0118. Unmarked
+  originals still unread on the old connection could be read after their marked copies on the new
+  one, and would be sequenced again, so the leader checks every command from that gateway until the
+  old connection ends. This rule exists only because the general rule is narrow.
+
+**The wider rule.** The leader sequences a command at most once, judged by its identity -- the
+member's comp id, the protocol and the `ClOrdID` -- whatever path it arrived by, and checks every
+command against its record of identifiers. A gateway then sends its unanswered commands again
+whenever its connection to the leader is established or the leader changes, for whatever reason,
+without anything depending on which copy arrives first. The two-connection rule above would no longer
+be needed, and neither would the reasoning about the order in which copies arrive.
+
+The mark `sent_again` would still be needed, but only to decide the reply, not whether to sequence.
+A command already in the log that is marked as sent again is answered by the routes in section 3.6 of
+the design. One that is not marked is a member reusing an identifier, which R-0119 forbids, and is
+refused. That second half is [BUG-0114](#bug_0114): the same check on every command, used to refuse.
+The two should be designed together.
+
+**What it costs.** A lookup in the record of identifiers for every command on the order path. The
+record is a hash set of 64-bit numbers; for a command not in the log, which is nearly every command,
+the lookup answers on its own, in the order of 100 nanoseconds. That figure is not yet measured on
+the order path; measuring it, by the method in `docs/operations/latency_findings.md`, is part of this
+task. A command the record may hold is checked exactly against the end of the log, as now.
+
+**Decided.** The wider rule is principle V7 in `docs/design_principles.md`, agreed with Andrew on
+11 October 2026, so this is now work the code must be brought up to, not an idea parked for later. It
+is to be designed together with BUG-0114, and scheduled within the plan for restoring the design
+(`docs/recovery_plan.md`), not started on its own.
+
+### BUG-0114: An order identifier used earlier in the day is accepted again once its first order has ended {#bug_0114}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-04 |
+| Recorded | 2026-10-04 |
+| Fixed | 2026-11-02 -- the leading sequencer checks every command against its record of the identifiers its WAL holds, with high availability on or off, and refuses one not marked as sent again whose `ClOrdID` the WAL holds; its gateway rejects it with reason 6. Scenarios 96 and 98, through both gateways ([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), steps 2 and 3) |
+| How | Deciding, in the design of part 4.3, which commands the sequencer's record of identifiers checks ([commands_during_a_change_of_leader.md](availability/commands_during_a_change_of_leader.md), decision 2) |
+| Impact | A member can reuse a `ClOrdID` on the same session and day once the first order with it has been filled or cancelled, and the venue publishes two different orders under one identifier, which R-0119 forbids |
+
+**What happens.** The only check for a repeated `ClOrdID` is the matching engine's, against the orders
+currently on its book (`MatchingEngineThread::handle_new_order_single`, `order_book_.contains`). An
+order that has ended is no longer on the book, so its identifier is accepted again. The specification
+records this as a gap under R-0119.
+
+**What is decided.** Part 4.3 gives the sequencer a record of every identifier in its log, for the
+trading day: a set of 64-bit numbers derived from the session and the `ClOrdID`, reserved for 200
+million entries. In part 4.3 it checks only commands a gateway sends again after a change of leader.
+Checking every command against it would meet R-0119, and is this separate change.
+
+**What it needs.** A lookup per command on the order path, measured by the method in
+`docs/operations/latency_findings.md`; a way for the sequencer to refuse a command with a report,
+which today only the matching engine produces; and, because the record holds 64-bit numbers rather
+than the identifiers themselves, an exact check of each match against the log before refusing, as
+part 4.3 does for a command sent again. A scenario that reuses the identifier of a cancelled order,
+which R-0119's coverage note says does not exist.
+
+The same check on every command would also let the sequencer stop relying on which commands are
+marked as sent again to avoid sequencing a command twice, which is [BUG-0122](#bug_0122). The two
+should be designed together.
 
 ### BUG-0221: The sequencer's `sequencer_running_alone` gauge reads 0 while the leader runs with no follower connected, so an alert on it misses a dead follower {#bug_0221}
 

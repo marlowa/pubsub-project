@@ -402,6 +402,25 @@ first and with `--secondary-engine-first`, before the next starts.
    decision 4). A scenario drops the report on its way to the gateway, by a test fault, and changes the leader; the
    gateway's copy must be answered by the report from the WAL, marked as a possible repeat. Made to fail: without the
    read forward, the copy stays unanswered.
+
+   **As built.** When a command marked as sent again is already in the WAL, `SequencerThread::answer_from_wal` reads
+   forward from the record that holds it (`first_report_answering`), with a `WalCursor`, for the first report whose
+   envelope says it answers that record (`answers_seq_no`). It reads only committed records, because a report not yet
+   committed is forwarded by the ordinary path once it is, and at most 4,096 records past the command. The report is
+   sent to the member's session where it is bound now, which after a change of gateway may not be where the command came
+   from, marked as a possible repeat and carrying the command's `ClOrdID`, so that the gateway marks its copy answered.
+   When the member's session is not bound to any gateway, the report is not sent, and the sequencer logs at Info that
+   it was not. When the WAL holds no report of the command, it is answered as before. The sequencer raises the test event
+   `ReportSentFromWal` for each, and the summary of checks counts them.
+
+   Scenario 99 blocks the leader's sends to the gateways, so that the reports of three orders are written into the WAL
+   and never reach the member; sends two more orders, half a second apart, and waits, so that the follower learns from
+   the leader's later records that the leader handled those reports and discards the copies it kept; and kills the
+   leader. The gateway sends the three orders again, and the new leader must answer each with the report its WAL holds,
+   which the member must receive marked PossResend and which `ReportSentFromWal` must name, so that an acceptance that
+   came by the follower's kept reports does not pass the scenario. Made to fail: without the read forward, the member
+   receives no reply to the first of the three. Scenarios 65, 67, 68 and 71 pass unchanged. Both full suites pass: 99
+   of 99 with the primary engine first, and 38 of 38 with the secondary engine first. BUG-0114 and BUG-0122 are closed.
 5. **The cost.** The time the check adds to the sequencing of an order, measured on the order path by the method of
    [latency_findings.md](../operations/latency_findings.md), as part of the sequencer's time to send an order on; and
    the time of one read of a record that is not in the page cache. BUG-0122 estimates the lookup at about 100

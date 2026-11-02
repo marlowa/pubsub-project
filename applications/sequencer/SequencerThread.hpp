@@ -841,6 +841,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     int64_t sent_again_already_logged_{0};
     int64_t sent_again_sequenced_{0};
     int64_t commands_refused_reused_identifier_{0};
+    // Since the last summary: commands sent again that were answered by a report the WAL held.
+    int64_t commands_answered_from_wal_{0};
     // Since this instance started: commands sequenced unchecked because they had no comp id or no ClOrdID.
     int64_t commands_unchecked_without_identity_{0};
     // Where the identity of a command to be checked is written.
@@ -853,6 +855,22 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     [[nodiscard]] std::optional<int64_t> find_logged_command(const pubsub_itc_fw_app::WalRecordView& inbound, bool sent_again);
     // Refuses a command not marked as sent again whose ClOrdID the WAL holds as record @p first_seq_no: sends its
     // gateway CommandRefused, and writes nothing (docs/availability/one_check_against_sequencing_twice.md, section 4.1).
+    // A report in the WAL: the record that holds it, and the encoded report.
+    struct ReportInWal {
+        int64_t report_seq_no{0};
+        std::vector<uint8_t> payload;
+    };
+    // How far past a command the WAL is read for the report answering it. An order is normally answered within
+    // about 100 microseconds, a few records later; a command not answered within this many records is waiting for
+    // its engine, which answers it by the ordinary path.
+    static constexpr int64_t reports_read_for_an_answer_at_most = 4096;
+    // The first report in the WAL answering the command at @p command_seq_no, read forward from it through the
+    // committed records, at most reports_read_for_an_answer_at_most of them.
+    [[nodiscard]] std::optional<ReportInWal> first_report_answering(int64_t command_seq_no);
+    // Answers a command sent again that the WAL holds at @p command_seq_no with the first report of it the WAL holds,
+    // forwarded to the member's session marked as a possible repeat; when the WAL holds none, the matching engine
+    // answers it (docs/availability/one_check_against_sequencing_twice.md, section 3.3).
+    void answer_from_wal(const pubsub_itc_fw_app::WalRecordView& inbound, int64_t command_seq_no);
     // It is sent on @p came_by, the connection the command arrived on.
     void refuse_reused_identifier(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound, int64_t first_seq_no);
     // Logs what the checks since the last summary found, and gives back the memory of any search of the WAL.

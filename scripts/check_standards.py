@@ -1293,6 +1293,9 @@ _WAL_READER_RES = [re.compile(pattern) for pattern, _what in _WAL_READERS]
 
 _REPLAY_MODE = 'replay mode, which runs with nothing else and sequences nothing'
 _RESENDS = 'a resend or a request for undelivered reports: BUG-0113, which moves them to a recovery service'
+_ANSWER_FROM_WAL = ('the answer to a command sent again whose original the WAL holds: reads forward from the original, through '
+                    'committed records only and at most 4,096 of them, for the first report answering it '
+                    '(docs/availability/one_check_against_sequencing_twice.md, section 3.3)')
 _DUPLICATE_CHECK = ('the check against sequencing a command twice: normally one record read at the position the record of '
                     'identifiers gives, and a search only in the rare cases docs/availability/one_check_against_sequencing_twice.md, '
                     'section 3.2, lists')
@@ -1316,6 +1319,7 @@ _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_undelivered_reports_request', _RESENDS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_session_replay_request', _RESENDS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::find_logged_command', _DUPLICATE_CHECK),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::first_report_answering', _ANSWER_FROM_WAL),
     ('applications/sequencer/SequencerThread.hpp', 'handed_over_publishers_', _DEFINITION),
 ]
 

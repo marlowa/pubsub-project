@@ -238,3 +238,19 @@ message IdentifierRefused (id=220, version=1)
     string cl_ord_id        # the command's ClOrdID
     i64 first_seq_no        # the record in the WAL that holds the command that used the ClOrdID first
 end
+
+# ------------------------------------------------------------
+#  221 -- ReportSentFromWal
+#  The leading sequencer was sent again a command its WAL already
+#  holds, and answered it with the first report of it the WAL holds,
+#  read forward from the command and forwarded again marked as a
+#  possible repeat (docs/availability/one_check_against_sequencing_twice.md,
+#  section 3.3, item 1).
+# ------------------------------------------------------------
+message ReportSentFromWal (id=221, version=1)
+    string comp_id          # the member's comp id
+    i16 gateway_protocol    # 1 for FIX, 2 for binary
+    string cl_ord_id        # the command's ClOrdID
+    i64 command_seq_no      # the record in the WAL that holds the command
+    i64 report_seq_no       # the record in the WAL that holds the report forwarded
+end

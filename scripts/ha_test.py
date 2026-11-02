@@ -1304,6 +1304,11 @@ class Scenario(NamedTuple):
     # ClOrdID, and the resubmission is refused and never reaches the matching engine. See run_scenario's "resubmitted
     # after a gateway restart" block, R-0006 and R-0010.
     assert_resubmission_after_gateway_restart_refused: bool = False
+    # When True, the primary sequencer's sends to the gateways are blocked, the reports of some orders are lost, the
+    # follower discards the reports it kept of them, and the leader is killed: the gateway sends those orders again,
+    # and the new leader must answer each with the report its WAL holds, marked PossResend. See run_scenario's "answer
+    # from the WAL" block.
+    assert_answered_from_wal: bool = False
     # When True, send the binary gateway orders and cancels it must refuse, and some it must
     # accept, and check each reply. See run_scenario's "binary checks" block and BUG-0100.
     assert_binary_checks: bool = False
@@ -4878,6 +4883,30 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         steps=[],
     ),
+
+    # 99 -- a command sent again whose report the WAL holds is answered from the WAL.
+    #
+    # docs/availability/one_check_against_sequencing_twice.md, section 3.3, item 1. The primary sequencer is started with
+    # libblock_sends_to_ports.so preloaded, and once the flag file exists nothing it sends to a gateway arrives. A member
+    # sends orders, which the matching engine accepts; their reports are written into the WAL and never reach the member.
+    # More orders follow, and the scenario waits, so that the follower learns from the leader's later records that the
+    # leader handled those reports, and discards the copies it kept of them. The leader is killed. The gateway sends the
+    # unanswered orders again, marked, to the new leader, whose WAL holds each order and its report. The new leader must
+    # answer each by forwarding that report again, marked PossResend, which its ReportSentFromWal event shows.
+    Scenario(
+        number=99,
+        short_name="sent_again_answered_from_wal",
+        description="A command sent again whose report the new leader's WAL holds is answered with that report, marked PossResend",
+        expected_outcome=(
+            "the reports of orders the engine accepted never reach the member while the leader's sends are blocked; after the follower has "
+            "discarded its copies and the leader is killed, the new leader answers each order the gateway sends again with the report its "
+            "WAL holds, and the member receives each acceptance marked PossResend"
+        ),
+        assert_answered_from_wal=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -7683,7 +7712,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # The scenarios that check a refused command never reached the matching engine read the engine's outcomes for the
         # comp ids that send it.
         if (scenario.assert_identifier_reuse_refused or scenario.assert_held_identifier_refused_by_gateway
-                or scenario.assert_resubmission_after_gateway_restart_refused):
+                or scenario.assert_resubmission_after_gateway_restart_refused or scenario.assert_answered_from_wal):
             _REPORT_ORDERS_NOW = _REPORT_ORDERS_OF + (FIX8_COMP_ID, FIX8_RECOVERY_COMP_ID, _BINARY_COMP_ID)
         # The previous scenario's listener; its components have all been stopped by now.
         if _TEST_EVENTS is not None:
@@ -7702,7 +7731,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             extra_environment = None
             if scenario.block_leader_peer_sends and name == "sequencer_primary":
                 extra_environment = blocked_peer_environment(prefix, block_flag)
-            if scenario.assert_kept_reports_forwarded and name == "sequencer_primary":
+            if (scenario.assert_kept_reports_forwarded or scenario.assert_answered_from_wal) and name == "sequencer_primary":
                 extra_environment = blocked_gateway_environment(prefix, block_flag)
             if scenario.assert_logged_commands_reach_engine and name == "sequencer_secondary":
                 extra_environment = blocked_peer_environment(prefix, block_flag)
@@ -11631,6 +11660,80 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # Nothing is killed. A comp id with small limits sends bursts over them, and the replies
         # are matched to the commands by ClOrdID, so a report for some other order cannot be
         # mistaken for the answer to this one.
+        # ── Answer from the WAL ───────────────────────────────────────────────
+        if scenario.assert_answered_from_wal:
+            log("=== A command sent again whose report the WAL holds is answered from the WAL ===")
+            what = "answer from the WAL"
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
+                die(f"{what}: sequencer_primary is not leading, so blocking its sends would not stop any report.")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+            run_tag = datetime.now().strftime("%H%M%S")
+            member = logged_on_fix_member(prefix, FIX8_COMP_ID, what)
+            try:
+                # 1. Before anything is blocked an order is answered, so silence later is the block and nothing else.
+                before = f"fromwal-{run_tag}-before"
+                member.new_order_single(before, symbol=_REUSE_SYMBOL, price="9.0")
+                check_fix_status(member, before, "0", what)
+
+                # 2. Nothing the leader sends to a gateway arrives from now on.
+                block_flag.touch()
+                if not await_blocking(block_flag, _RAW_REPLY_TIMEOUT):
+                    die(f"{what}: libblock_sends_to_ports.so never confirmed that it had begun blocking.")
+                log("  the leader's sends to the gateways are now discarded, and the library has confirmed it -- OK")
+
+                # 3. Orders the engine accepts, whose reports reach the WAL and not the member.
+                lost = [f"fromwal-{run_tag}-{number}" for number in (1, 2, 3)]
+                accepted_from = _TEST_EVENTS.mark()
+                for cl_ord_id in lost:
+                    member.new_order_single(cl_ord_id, symbol=_REUSE_SYMBOL, price="9.0")
+                for cl_ord_id in lost:
+                    if not await_order_outcome(me_log.stem, cl_ord_id, "Accepted", _RAW_REPLY_TIMEOUT, accepted_from):
+                        die(f"{what}: the matching engine never accepted {cl_ord_id}, so the WAL holds no report of it.")
+
+                # 4. Later orders carry the leader's word that it handled those reports. Records written at least 100 ms
+                #    after one that says so let the follower discard its copies, which it does once a second.
+                later = [f"fromwal-{run_tag}-later-{number}" for number in (1, 2)]
+                for cl_ord_id in later:
+                    member.new_order_single(cl_ord_id, symbol=_REUSE_SYMBOL, price="9.0")
+                    time.sleep(0.5)
+                time.sleep(2.5)
+                if fix_reply(member, lost[0], 0.5) is not None:
+                    die(f"{what}: the member was answered for {lost[0]} while the leader's sends were blocked.")
+                log(f"  the engine accepted {len(lost)} orders, the member heard nothing of them, and the follower has had time to discard its "
+                    "copies of their reports")
+
+                # 5. The leader dies; the gateway sends the unanswered orders again to the new leader.
+                primary = proc_by_name["sequencer_primary"]
+                takeover_from = _TEST_EVENTS.mark()
+                log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
+                primary.kill()
+                primary.wait()
+                if Path(f"/proc/{primary.pid}").exists():
+                    die(f"{what}: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
+                if not await_expectation(expect_leads("sequencer_secondary"), args.failover_timeout, takeover_from)[0]:
+                    die(f"{what}: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
+                log("  sequencer_primary confirmed dead, and sequencer_secondary leads")
+
+                # 6. Each lost order is answered from the WAL, and its acceptance reaches the member marked PossResend.
+                for cl_ord_id in lost:
+                    reply = check_fix_status(member, cl_ord_id, "0", what)
+                    if reply.get(97) != "Y":
+                        die(f"{what}: the acceptance of {cl_ord_id} arrived without PossResend; the new leader cannot tell whether the old "
+                            "leader forwarded it, so it must be marked as a possible repeat (R-0122).")
+                sent_from_wal = message_of(_TEST_EVENTS.modules["sequencer_test_events"].ReportSentFromWal, "sequencer_secondary")
+                _TEST_EVENTS.pump(1.0)
+                answered = {event.message.cl_ord_id for event in _TEST_EVENTS.events[takeover_from:] if sent_from_wal(event)}
+                missing = [cl_ord_id for cl_ord_id in lost if cl_ord_id not in answered]
+                if missing:
+                    die(f"{what}: the new leader did not answer {missing} from its WAL (no ReportSentFromWal), so the acceptance came by "
+                        "another route, and this scenario has not tested the answer from the WAL.")
+                log(f"  the new leader answered all {len(lost)} orders with the reports its WAL holds, each marked PossResend -- OK")
+            finally:
+                member.close()
+
         # ── Identifier used again ─────────────────────────────────────────────
         if scenario.assert_identifier_reuse_refused:
             log("=== A ClOrdID used earlier today is refused, through both gateways ===")

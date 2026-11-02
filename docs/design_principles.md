@@ -592,20 +592,20 @@ answers on its own; one it may hold is proved by reading the one record at the p
 or, in the rare cases that cannot settle it, by searching the WAL
 ([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md)).
 
-**What checks it.** `ha_test.py` scenarios 67, 68 and 71 for commands sent again, and 96, 97 and 98 for
+**What checks it.** `ha_test.py` scenarios 67, 68, 71 and 99 for commands sent again, and 96, 97 and 98 for
 a member reusing an identifier, through both gateways; unit tests of `LoggedCommandIdentifiers`,
 `WalCommandSearch` and the replicated WAL's check (`ReplicatedWalCommandTest`).
 
 **Today: holds, by one check on every command, with or without high availability.** The leader checks
 every command against its record before giving it a number. A command marked as sent again that the
-WAL holds is not sequenced again; one not marked is refused with `CommandRefused`, which its gateway
-turns into a rejection with reason 6. A gateway refuses itself a command whose identifier it already
-holds waiting for an answer. Two parts of the design remain
-([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), section 8):
-a command sent again whose original's report the WAL already holds is answered only when the engine or
-the follower's kept reports answer it, not yet from the WAL (step 4, which closes
-[BUG-0122](bug_list.md#bug_0122) and [BUG-0114](bug_list.md#bug_0114)); and the cost of the check on
-every command, estimated at about 100 nanoseconds, is still to be measured on the order path (step 5).
+WAL holds is not sequenced again, and is answered with the first report of it the WAL holds, forwarded
+again marked as a possible repeat, or, when the WAL holds none yet, by the matching engine. One not
+marked is refused with `CommandRefused`, which its gateway turns into a rejection with reason 6. A
+gateway refuses itself a command whose identifier it already holds waiting for an answer. What remains
+of the design is the measurement of what the check costs on every command, estimated at about 100
+nanoseconds
+([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), section 8,
+step 5).
 
 ### V8. Every report the matching engine produces reaches the member (G3)
 

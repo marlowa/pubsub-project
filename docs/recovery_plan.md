@@ -495,7 +495,22 @@ order path.
 commands pass, and the cost is measured.
 
 **Design:** [one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), written on
-2 November 2026, whose seven decisions Andrew took the same day, each as recommended.
+2 November 2026, whose seven decisions Andrew took the same day, each as recommended. Section 8 of the design divides
+the work into six steps:
+
+1. the record of command identifiers moves into the library's replicated WAL and holds each command's position;
+2. the sequencer's refusal of a command, `CommandRefused`, and both gateways' rejection of it, and each gateway refusing
+   a second command under a `ClOrdID` still waiting for its answer;
+3. the leading sequencer checks every command, refuses a member reusing a `ClOrdID`, and the separate rule for a
+   gateway with two connections open goes;
+4. a command sent again whose report the WAL already holds is answered with that report (decision 4);
+5. the cost of the check on the order path is measured;
+6. the gateways' store of unanswered commands and their sending of commands again move onto the library's client side
+   (decision 7).
+
+Steps 1 to 4 are built. The leader checks every command, with high availability on or off (decided by Andrew on
+2 November 2026, since R-0119 holds in both configurations), and [BUG-0114](bug_list.md#bug_0114) and
+[BUG-0122](bug_list.md#bug_0122) are closed. Steps 5 and 6 remain.
 
 ### Phase 10. Divide what is left of the sequencer and the matching engine
 
@@ -577,3 +592,14 @@ not the aim. Gaps found along the way are recorded, not fixed within the phase. 
 - The code is tagged `pre-recovery-2026-10-09`.
 - Phase 1: the design principles, [design_principles.md](design_principles.md), agreed 11 October 2026.
 - Phase 2: the build enforces the framework principles about locks and threads, agreed 12 October 2026.
+- Phase 3: the lease classes, the voting service and the promise recorder are in the library, reviewed by Andrew on
+  13 October 2026.
+- Phase 4: the library's replicated WAL, written by one thread, with no lock taken for each order in the sequencer;
+  Andrew agreed its results on 14 October 2026.
+- Phase 5: the matching engine, the publishers and a rejoining follower are caught up through the library's reading
+  thread; finished 20 October 2026.
+- Phase 6: the high availability tests decide from test events, not from Quill log wording; finished 20 October 2026.
+- Phase 7: the matching engine is deterministic; Andrew closed the phase on 27 October 2026.
+- Phase 8: both matching engines apply the WAL, a promoted engine keeps every order, and a command that kills both
+  engines is voided; every point of its finish condition was met when the last step of voided commands was built, on
+  2 November 2026.
