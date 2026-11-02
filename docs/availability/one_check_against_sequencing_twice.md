@@ -14,7 +14,7 @@ The rule the phase brings the code up to is principle V7 of [design_principles.m
 checks every command, in one check, whatever path it arrived by.
 
 Section 1 says how the venue behaves now. Sections 2 to 6 are the design. Section 7 says what goes. Section 8 is the
-steps and how each is known to be right. Section 9 holds the decisions.
+steps and how each is known to be right. Section 9 holds its decisions, which Andrew took on 2 November 2026.
 
 ## 1. What happens now
 
@@ -307,6 +307,8 @@ Sections 3.1 and 3.3. This is V7 as agreed on 11 October 2026; the question is w
 
 **Recommendation: yes.**
 
+**Decided** on 2 November 2026: yes.
+
 ### Decision 2. How is a possible match proved? (Choose one.)
 
 Section 3.2. The record says only that the WAL may hold a command, so a match must be proved before a command is
@@ -326,12 +328,16 @@ refused or answered as already held.
 
 **Recommendation: A.** It is exact, and the 2 GiB buys the removal of a mechanism and the answer of decision 4.
 
+**Decided** on 2 November 2026: A.
+
 ### Decision 3. Is a reused identifier refused by the leader sending the gateway a refusal that is not written into the WAL, with the gateway refusing itself a command whose identity it holds unanswered? (Yes or no.)
 
 Section 4. The refusal changes nothing in the WAL, the book or the engines. The gateway's own refusal is what lets it
 read the leader's refusal correctly.
 
 **Recommendation: yes.**
+
+**Decided** on 2 November 2026: yes.
 
 ### Decision 4. When a command marked as sent again is already in the WAL, and the WAL holds the report answering it, does the leader forward that report again, marked as a possible repeat? (Yes or no.)
 
@@ -340,11 +346,15 @@ Section 3.3, item 1. Today a report lost between the leader and the gateway is r
 
 **Recommendation: yes.**
 
+**Decided** on 2 November 2026: yes.
+
 ### Decision 5. Does the matching engine keep its own check against the orders on its book? (Yes or no.)
 
 Section 5. It never refuses anything once the leader checks every command, and costs nothing extra.
 
 **Recommendation: yes.**
+
+**Decided** on 2 November 2026: yes.
 
 ### Decision 6. Where is the check built? (Choose one.)
 
@@ -357,9 +367,13 @@ Section 6.
 
 **Recommendation: A.**
 
+**Decided** on 2 November 2026: A.
+
 ### Decision 7. Are the gateways moved onto the library's client side in this phase, as step 6? (Yes or no.)
 
 Section 8, step 6. The plan puts it in phase 9. It changes no behaviour, so it could wait without harm; doing it here
 keeps the store of unanswered commands and the check that makes sending again safe in one phase.
 
 **Recommendation: yes.**
+
+**Decided** on 2 November 2026: yes.

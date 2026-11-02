@@ -495,7 +495,7 @@ order path.
 commands pass, and the cost is measured.
 
 **Design:** [one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), written on
-2 November 2026, with seven decisions for Andrew.
+2 November 2026, whose seven decisions Andrew took the same day, each as recommended.
 
 ### Phase 10. Divide what is left of the sequencer and the matching engine
 
