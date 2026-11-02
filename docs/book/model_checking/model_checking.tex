@@ -1,0 +1,101 @@
+\chapter{Model checking with TLA+}
+\label{ch:model_checking}
+
+Some behaviour depends on the order in which concurrent operations occur. Tests exercise
+selected runs of the venue, but cannot cover every possible order of thread steps, message
+arrivals, failures, and restarts. The project also describes selected concurrent algorithms
+in TLA+ and checks those descriptions with TLC, the TLA+ model checker.
+
+\section{What model checking checks}
+
+A TLA+ specification describes the state of a system, the actions that can change that
+state, and properties that must hold. TLC starts from the specified initial state and
+explores every state reachable under the chosen configuration. A configuration sets finite
+bounds, such as the number of threads, messages, failures, or leadership changes.
+
+A property that must hold in every reachable state is a safety property. Examples include
+never using a slab after it has been destroyed and never allowing two instances to act as
+leader at the same time. A liveness property describes progress, such as eventually
+choosing a leader. Liveness checks depend on assumptions about which actions continue to
+occur and how messages are delivered; the assumptions are part of the model and its
+configuration.
+
+When TLC finds a state that violates a property, it reports the sequence of actions that
+reaches that state. This sequence is a counterexample. A counterexample makes the
+failure concrete: it shows which operations can occur, in which order, and where the
+property stops holding.
+
+\section{Models in the project}
+
+\subsection{High availability}
+
+The high-availability models examine leadership and replication behaviour. The current
+leadership model, \texttt{MajorityLeaseHA.tla}, describes two instances and a third voter.
+It checks properties including whether two instances can act as leader at once and whether
+they can lead under the same epoch. It also checks progress under stated assumptions about
+message timing, fairness, and restarts.
+
+\texttt{FollowerBehindHA.tla} checks the rule that an instance must not take the lead when
+its matching engine has acted on commands that the instance does not hold. This model
+treats leadership as an abstract decision and concentrates on the commands in each log,
+the statements that restrict a follower from leading, and the events that write or copy
+those records. The high-availability section of this book describes the properties,
+results, and limits of these models in more detail.
+
+\subsection{Framework algorithms}
+
+The framework models focus on algorithms shared by multiple venue components:
+
+\begin{itemize}
+  \item \texttt{SlabReclaim.tla} checks when an empty slab can be queued and destroyed,
+  including whether any thread can still access it.
+  \item \texttt{QueueOfEmptySlabs.tla} checks the linked queue used to return empty slabs
+  for reclamation, including whether a slab can be lost or taken more than once.
+  \item \texttt{PoolFreeList.tla} checks the concurrent free list used by the fixed-size
+  memory pool, including the counter that prevents an ABA error and the validation of
+  free requests at the allocator boundary.
+  \item \texttt{FollowerHandOver.tla} checks that a follower catching up with a
+  write-ahead log receives every released record in order when responsibility passes
+  from the reading thread to the thread that owns the log.
+\end{itemize}
+
+The detailed specifications, configurations, properties, and results are recorded in
+\texttt{docs/availability/tla/findings.md} and
+\texttt{docs/framework/tla/findings.md}.
+
+\section{Checking that a model can find faults}
+
+A run in which TLC finds no violation is useful only if the model and its properties are
+capable of exposing a fault. The project therefore includes configurations that remove or
+change a rule and expect TLC to find the resulting violation. For example, the free-list
+model is also checked without its counter; TLC must then find a sequence in which a slot
+appears to be available while another thread still holds it. The slab queue and follower
+handover models also have configurations that remove rules needed to preserve their
+properties.
+
+The build can reproduce the recorded counterexamples for the high-availability lease
+models and generate a page that presents them as step-by-step traces. When Java and the
+TLA+ tools are available and this build feature is enabled, installation fails if the
+counterexamples no longer reproduce their expected violations. The separate
+\texttt{scripts/check\_pool\_free\_list\_tla.py} command checks two free-list
+configurations that must pass and one configuration that must find the expected
+violation.
+
+\section{What the results establish}
+
+TLC checks the specification, not the compiled C++ implementation. A result applies to
+the behaviour described by the model, for the bounds and assumptions in the configuration.
+It does not establish that the specification matches every relevant part of the
+implementation. The specification must be compared with the code and kept aligned with
+it.
+
+The framework models also abstract from details that TLC does not check. In particular,
+they do not verify that the C++ memory ordering of each atomic operation is sufficient,
+or that the compiler emits the instruction the model assumes. A model can check all
+interleavings of its abstract actions without checking the hardware and language rules
+that implement those actions.
+
+An exhaustive result is therefore evidence about a defined model, not a guarantee about
+every possible execution of the venue. The finite bounds, timing assumptions, and
+behaviour left out of each model determine what its result can support. Those limits are
+recorded alongside the individual specifications.

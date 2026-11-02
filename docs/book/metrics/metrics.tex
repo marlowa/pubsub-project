@@ -1,7 +1,176 @@
 \chapter{Metrics}
 \label{ch:metrics}
 
-What the venue measures about itself, what it publishes for collection, and what
-may and may not be concluded from it.
+Venue processes expose metrics that describe message handling, queueing, matching-engine
+activity, and resource use. Prometheus collects these measurements, and the Python metrics
+visualiser and Grafana dashboards make them available for investigation. The measurements
+describe only the events and values recorded by the instrumented code; their names and
+limitations determine what can be concluded from them.
 
-This chapter has not yet been written.
+\section{Collection and configuration}
+
+Metrics are configured separately for each process. When metrics are enabled, a process
+provides an HTTP endpoint that Prometheus scrapes. The endpoint does not require
+authentication and does not encrypt its traffic, so its listening address must be chosen
+with the surrounding network and access controls in mind.
+
+The metrics configuration identifies the application, the process instance, and the
+address and port used by the endpoint. Omitting the metrics configuration leaves
+collection disabled. When disabled, the framework uses no-op metric handles. Calls that
+record a metric still evaluate their arguments, but the values are not exported.
+
+The supplied development configuration enables venue metrics and configures Prometheus
+to scrape every five seconds. The supplied test, pre-production, and production
+configurations disable venue metrics. The development Prometheus configuration retains
+samples for 90 days. The development environment can also collect host-level measurements,
+which can be viewed alongside the venue's process metrics.
+
+\section{Metric names and types}
+
+Each metric key has three or four dot-separated parts:
+\begin{itemize}
+  \item the application name;
+  \item the process instance name;
+  \item an optional scope, such as a thread or subsystem;
+  \item the metric name.
+\end{itemize}
+
+The application, process instance, and optional scope become Prometheus labels. The final
+part is the exported metric name. For example, the key
+\texttt{pubsub.fix\_order\_gateway\_a.gateway\_thread.order\_round\_trip\_nanoseconds}
+becomes the metric \texttt{order\_round\_trip\_nanoseconds} with the labels
+\texttt{application="pubsub"}, \texttt{component="fix\_order\_gateway\_a"}, and
+\texttt{scope="gateway\_thread"}. The process label identifies a particular process
+instance, rather than a general component type.
+
+The framework exposes its reactor measurements for every process with metrics enabled.
+Application measurements are opt-in: the sequencer, matching engine, and order gateways
+configure a scope for their application threads. A thread's scope distinguishes its
+measurements from those of other threads. This is also important for histograms, which
+must be recorded by one thread only.
+
+Counters record values that accumulate, such as the number of orders processed. Gauges
+record values that can rise or fall, such as queue depth or the number of objects currently
+in a pool. Histograms record observations in configured buckets, along with a count and
+sum. Prometheus adds a cumulative count for each bucket boundary, as well as a bucket for
+all observations. Most latency measurements are recorded in nanoseconds.
+
+Some memory-pool measurements are cumulative counts but are exported as gauges. Queries
+and dashboards must account for that distinction rather than assuming that a metric's
+meaning can always be inferred from its Prometheus type.
+
+\section{Measurements recorded}
+
+The framework records measurements at several points in message processing. These
+measurements show where work is performed and how long it takes, but they do not all
+describe the same interval.
+
+\paragraph{Network and framework messages.}
+\texttt{framework\_pdu\_messages\_total} counts protocol data units delivered to
+application threads. It does not count every PDU read from the network: a PDU rejected
+before delivery is not included. The count is recorded per thread, so a process-wide
+total must be formed by summing the thread series.
+
+\paragraph{Inter-thread queues and reactor work.}
+\texttt{itc\_queue\_depth} records how many messages remain behind the message being
+dispatched. \texttt{itc\_queue\_latency\_nanoseconds} measures from enqueueing until
+dispatch. That interval includes both time waiting in the queue and the notification and
+wake-up needed to dispatch it. Reading the queue depth alongside the latency can help
+distinguish time spent waiting for a thread to run from time spent behind other queued
+messages.
+
+The reactor records separate histograms for command delay, sending, receiving, and its
+own work cycle. \texttt{reactor\_command\_latency\_nanoseconds} measures from when an
+application thread queues a command until the reactor takes it up.
+\texttt{reactor\_send\_path\_nanoseconds} measures the reactor's work to turn a send
+request into bytes on a socket, and
+\texttt{reactor\_receive\_path\_nanoseconds} measures its work to turn readable bytes
+into a message on an application thread's queue.
+\texttt{reactor\_lap\_nanoseconds} measures the time between successive checks for work.
+These are different intervals and should not be treated as interchangeable measures of
+network or application latency.
+
+\paragraph{Write-ahead log.}
+\texttt{wal\_append\_nanoseconds} records the time spent committing a record to the
+write-ahead log. It measures the append operation, not the full time for an order to reach
+the matching engine or a client.
+
+\paragraph{Order processing and replication.}
+\texttt{orders\_processed\_total} increases when the matching engine inserts a new order
+into its book. It excludes replayed orders, orders discarded by a follower, duplicate
+orders rejected by the matching engine, and cancellations. It is not a count of every
+order-related event handled by the venue.
+\texttt{follower\_report\_differences\_total} counts differences between reports produced
+by the follower and the leader while applying the same write-ahead log. A non-zero value
+indicates that the two matching engines did not produce identical reports.
+
+\paragraph{Gateway activity and latency.}
+Gateway counters record activity such as orders received, execution reports sent or
+dropped, orders refused, sessions established or lost, and orders rejected because a
+session has reached its rate limit. These counts describe the gateway's processing and
+session state; they are not interchangeable with counts recorded by the sequencer or
+matching engine.
+
+\texttt{order\_round\_trip\_nanoseconds} measures from when an order arrives at a gateway
+until that gateway starts sending the ExecutionReport that acknowledges a new order. It
+does not measure when the client receives the report. The separate
+\texttt{order\_ingress\_to\_forward\_nanoseconds} histogram ends when the gateway forwards
+the order to the sequencer. It measures gateway work, including parsing and validation,
+and is the more direct comparison of the FIX and binary gateways. Their round-trip
+measurements also include the work shared by the sequencer, matching engine, and report
+path.
+
+\texttt{order\_path\_elapsed\_nanoseconds} records how long an order has been inside the
+venue at several points on its path. The scope identifies the point, such as
+\texttt{order\_in}, \texttt{order\_out}, \texttt{er\_in}, or \texttt{er\_out}. These
+readings start from the same gateway ingress time. Subtracting readings at consecutive
+points gives the time spent between those points; a reading by itself describes how far
+along the path the order has travelled, not the duration of a separate operation.
+
+\paragraph{Order-book and memory-pool state.}
+Order-book gauges report the number of entries, occupied slots, whether the book is being
+moved into a larger table, and the largest table allocation made. Memory-pool gauges
+report values such as objects allocated or available and bytes in use or reserved. Pool
+measurements are scoped to an individual pool. Some pool gauges, including allocation
+and expansion counts, are cumulative despite being exported as gauges; queries must
+account for that when calculating changes over time.
+
+\section{Viewing the measurements}
+
+The Python visualiser in \texttt{scripts/pubsub\_metrics.py} queries Prometheus and can
+list the applications, process instances, and metrics currently available. It can display
+counters, gauges, and histogram data for a selected process. It also supports saved
+snapshots for later inspection and synthetic data for demonstrating its displays without
+using live measurements.
+
+For latency histograms, the visualiser can show estimated percentiles and latency bands.
+The bands report the 50th, 90th, and 99th percentiles together with the number of
+observations, so latency can be considered alongside the amount of traffic measured.
+Optional ceiling counts are available only when the histogram has a bucket boundary at
+the requested ceiling. The visualiser can compare all order gateways for a selected
+histogram, save a snapshot for rendering on another machine, and display synthetic
+demonstration data without querying Prometheus.
+
+The dashboard generator in \texttt{scripts/make\_grafana\_dashboard.py} creates panels
+for latency, throughput, queueing, order-book state, and memory-pool pressure. Its
+protocol comparisons include offered rates. Comparing latency without considering the
+amount of offered work can make differences in workload appear to be differences in
+protocol behaviour.
+
+\section{Interpreting results}
+
+Histogram percentiles are estimates based on the configured bucket boundaries. A
+percentile that falls within a bucket is estimated from that bucket; it is not a record
+of an individual observation at that value. Histograms do not provide the true minimum or
+maximum, and they do not preserve individual outlier observations. A ceiling count is
+exact only when the ceiling matches a configured bucket boundary.
+
+The observation count matters when reading a percentile. A percentile based on very few
+observations may not represent the wider workload. A period with no observations has no
+latency percentile to report; it does not mean that latency was zero.
+
+Measurements should be interpreted according to the point where they are recorded. For
+example, a count of messages delivered to an application thread cannot be used as the
+count of messages read from a network connection. Likewise, the matching engine's
+processed-order count cannot be used as a count of all orders received. A metric is
+evidence about its defined measurement point, not about events outside that point.

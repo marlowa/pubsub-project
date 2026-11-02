@@ -135,8 +135,8 @@ The LaTeX book under `docs/book/` (the functional specification): `book.tex`, `g
 `disaster_recovery`,
 `high_availability` (with its `disabled` and `enabled` sections), `library` (Reactor, threads,
 write-ahead log, inter-thread communication, memory, DSL, inter-process communication, timer,
-and configuration and logging sections written, not audited), `metrics` and
-`security`. A requirement in the book states what the venue must do, so a requirement the code does
+and configuration and logging sections written, not audited), `metrics` (written, not audited),
+`security`, and `model_checking` (written, not audited). A requirement in the book states what the venue must do, so a requirement the code does
 not meet is not corrected to match the code: it is reported, as a problem found in the code is.
 Statements of fact in the book (what exists, what a component does, which test covers a
 requirement) are corrected as in any other document. `scripts/check_book_requirements.py` checks
