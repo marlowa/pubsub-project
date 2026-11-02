@@ -128,6 +128,17 @@ constexpr size_t map_capacity = 16;
 constexpr int64_t taken_at = 1'700'000'000'000'000'000;
 constexpr int32_t trading_day = 20231114;
 
+// The TechnicalEvent the leading sequencer writes when no engine could be trading within the longest recovery the venue
+// does by itself, after the cancel of the book.
+pubsub_itc_fw_app::TechnicalEventView halt_for_recovery() {
+    pubsub_itc_fw_app::TechnicalEventView view{};
+    view.phase = pubsub_itc_fw_app::TradingPhase::Open;
+    view.halted = true;
+    view.trading_day = trading_day;
+    view.reason = pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong;
+    return view;
+}
+
 ReportIdentifiers::Secret test_secret() {
     ReportIdentifiers::Secret secret{};
     for (size_t index = 0; index < secret.size(); ++index) {
@@ -535,8 +546,9 @@ TEST_F(MatchingEngineStateMachineTest, ACatchUpRefusesANewOrderWhileHaltedAsTheL
     for (MatchingEngineStateMachine* machine : {&machine_, &caught_up}) {
         const CommandSource source = machine == &machine_ ? CommandSource::live : CommandSource::catch_up;
         machine->apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, source);
-        machine->apply_cancel_book(std::numeric_limits<int64_t>::max(), HaltIfOrdersCancelled::yes, 2, taken_at, trading_day, source);
-        machine->apply_new_order(new_order("ORD-2"), 3, taken_at, trading_day, member, source);
+        machine->apply_cancel_book(std::numeric_limits<int64_t>::max(), 2, taken_at, trading_day, source);
+        machine->apply_technical_event(halt_for_recovery(), 3, trading_day, source);
+        machine->apply_new_order(new_order("ORD-2"), 4, taken_at, trading_day, member, source);
     }
 
     ASSERT_EQ(caught_up_outputs.reports.size(), 3U);
@@ -551,35 +563,12 @@ TEST_F(MatchingEngineStateMachineTest, ACatchUpRefusesANewOrderWhileHaltedAsTheL
     EXPECT_EQ(caught_up_book.size(), 0U);
 }
 
-// R-0117: a cancel written because no engine could trade for too long halts trading only if it cancelled an order. With
-// nothing open, no member was locked out of anything, and trading carries on.
-TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandThatAsksToHaltHaltsOnlyIfItCancelsAnOrder) {
-    const MatchingEngineStateMachine::BookCancelledByCommand empty =
-        machine_.apply_cancel_book(std::numeric_limits<int64_t>::max(), HaltIfOrdersCancelled::yes, 1, taken_at, trading_day, CommandSource::live);
-    EXPECT_TRUE(empty.applied);
-    EXPECT_FALSE(empty.halted);
-    EXPECT_FALSE(machine_.halted());
-
-    machine_.apply_new_order(new_order("ORD-1"), 2, taken_at, trading_day, member, CommandSource::live);
-    const MatchingEngineStateMachine::BookCancelledByCommand held =
-        machine_.apply_cancel_book(std::numeric_limits<int64_t>::max(), HaltIfOrdersCancelled::yes, 3, taken_at, trading_day, CommandSource::live);
-    EXPECT_EQ(held.reports_sent, 1);
-    EXPECT_TRUE(held.halted);
-    EXPECT_TRUE(machine_.halted());
-
-    outputs_.reports.clear();
-    machine_.apply_new_order(new_order("ORD-2"), 4, taken_at, trading_day, member, CommandSource::live);
-    ASSERT_EQ(outputs_.reports.size(), 1U);
-    EXPECT_EQ(outputs_.reports[0].exec_type, pubsub_itc_fw_app::ExecType::Rejected);
-}
-
-// A cancel written for a promotion never halts, however many orders it cancels.
-TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandThatDoesNotAskToHaltLeavesTradingAsItWas) {
+// A cancel of the book never halts, however many orders it cancels: when the venue halts, a TechnicalEvent says so.
+TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandLeavesTradingAsItWas) {
     machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
     const MatchingEngineStateMachine::BookCancelledByCommand result =
-        machine_.apply_cancel_book(1, HaltIfOrdersCancelled::no, 2, taken_at, trading_day, CommandSource::live);
+        machine_.apply_cancel_book(std::numeric_limits<int64_t>::max(), 2, taken_at, trading_day, CommandSource::live);
     EXPECT_EQ(result.reports_sent, 1);
-    EXPECT_FALSE(result.halted);
     EXPECT_FALSE(machine_.halted());
 }
 
@@ -587,7 +576,7 @@ TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandThatDoesNotAskToHaltLea
 // is not sent the command again.
 TEST_F(MatchingEngineStateMachineTest, TheHaltIsFoundInTheRegionByTheNextProcessToOpenIt) {
     machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
-    machine_.apply_cancel_book(std::numeric_limits<int64_t>::max(), HaltIfOrdersCancelled::yes, 2, taken_at, trading_day, CommandSource::live);
+    machine_.apply_technical_event(halt_for_recovery(), 2, trading_day, CommandSource::live);
     ASSERT_TRUE(machine_.halted());
 
     OrderBook reopened;
@@ -840,8 +829,7 @@ TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandCancelsTheOrdersPlacedA
     machine_.apply_new_order(new_order("ORD-C"), 5, taken_at, trading_day, member, CommandSource::live);
     outputs_.reports.clear();
 
-    const MatchingEngineStateMachine::BookCancelledByCommand result =
-        machine_.apply_cancel_book(3, HaltIfOrdersCancelled::no, 6, taken_at + 7, trading_day, CommandSource::live);
+    const MatchingEngineStateMachine::BookCancelledByCommand result = machine_.apply_cancel_book(3, 6, taken_at + 7, trading_day, CommandSource::live);
 
     EXPECT_TRUE(result.applied);
     EXPECT_EQ(result.open_orders, 3);
@@ -878,10 +866,9 @@ TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandIsAppliedOnceAndAlikeLi
         const CommandSource source = machine == &machine_ ? CommandSource::live : CommandSource::catch_up;
         machine->apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, source);
         machine->apply_new_order(new_order("ORD-2"), 2, taken_at, trading_day, member, source);
-        EXPECT_TRUE(machine->apply_cancel_book(2, HaltIfOrdersCancelled::no, 3, taken_at, trading_day, source).applied);
+        EXPECT_TRUE(machine->apply_cancel_book(2, 3, taken_at, trading_day, source).applied);
     }
-    EXPECT_FALSE(machine_.apply_cancel_book(2, HaltIfOrdersCancelled::no, 3, taken_at, trading_day, CommandSource::catch_up).applied)
-        << "applied once, by its sequence number";
+    EXPECT_FALSE(machine_.apply_cancel_book(2, 3, taken_at, trading_day, CommandSource::catch_up).applied) << "applied once, by its sequence number";
 
     ASSERT_EQ(outputs_.reports.size(), caught_up_outputs.reports.size());
     for (size_t index = 0; index < outputs_.reports.size(); ++index) {
@@ -903,8 +890,7 @@ TEST_F(MatchingEngineStateMachineTest, ACancelOfEveryOrderReportsThemInTheOrderT
     machine_.apply_cancel(cancel_of("ORD-A", "CXL-A"), 7, taken_at, trading_day, other_member, CommandSource::live);
     outputs_.reports.clear();
 
-    static_cast<void>(
-        machine_.apply_cancel_book(std::numeric_limits<int64_t>::max(), HaltIfOrdersCancelled::no, 8, taken_at, trading_day, CommandSource::live));
+    static_cast<void>(machine_.apply_cancel_book(std::numeric_limits<int64_t>::max(), 8, taken_at, trading_day, CommandSource::live));
 
     std::vector<std::string> order_ids;
     for (const RecordedReport& report : outputs_.reports) {

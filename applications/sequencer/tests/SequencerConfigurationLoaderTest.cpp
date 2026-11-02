@@ -69,9 +69,6 @@ snapshot_interval_seconds = 30
 records_kept_for_publishers = 100
 bytes_kept_for_publishers   = 40000
 
-[absence]
-absence_limit_seconds = 7
-
 [catch_up]
 send_every_report = true
 
@@ -353,7 +350,6 @@ TEST(SequencerConfigurationLoaderTest, ReadsHowManyOrdersTheLeaderHoldsAtMost) {
 
 TEST(SequencerConfigurationLoaderTest, ReadsHowLongTheVenueMayBeWithoutAMatchingEngine) {
     const auto config = load_with_gateways(one_gateway);
-    EXPECT_EQ(config.absence_limit_seconds, 7);
     EXPECT_TRUE(config.send_every_report);
     EXPECT_EQ(config.automatic_recovery_limit_seconds, 12);
     EXPECT_EQ(config.orders_held_at_most_seconds, 4);
@@ -369,10 +365,10 @@ TEST(SequencerConfigurationLoaderTest, RejectsHoldingOrdersForLessThanOneSecond)
     EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
 }
 
-TEST(SequencerConfigurationLoaderTest, RejectsAnAbsenceLimitBelowOneSecond) {
+TEST(SequencerConfigurationLoaderTest, RejectsARecoveryLimitBelowOneSecond) {
     std::string sections(required_sections);
-    const std::string limit = "absence_limit_seconds = 7";
-    sections.replace(sections.find(limit), limit.size(), "absence_limit_seconds = 0");
+    const std::string limit = "automatic_recovery_limit_seconds = 12";
+    sections.replace(sections.find(limit), limit.size(), "automatic_recovery_limit_seconds = 0");
     pubsub_itc_fw::TomlConfiguration toml;
     const auto [ok, err] = toml.load_string(sections + one_gateway);
     ASSERT_TRUE(ok) << err;

@@ -276,14 +276,13 @@ as a twelve-minute absence, and cancel every member's orders for having been
 quiet. That is R-0118, and there is a test that a quiet spell before the venue
 went down is not counted.
 
-**What happens.** Longer than the stated period, with orders open: cancel each,
-tell the member that placed it, halt. Longer than the stated period with nothing
-open: resume without halting, because nothing went stale, there is nobody to tell,
-and halting would buy an outage. That is R-0117.
+**What happens.** Longer than the stated period: halt, cancel every order open,
+tell the member that placed each, and reject every order taken meanwhile and not
+yet matched. That is R-0117.
 
-The period is `[absence] absence_limit_seconds` in the sequencer's configuration,
-five minutes in the environment templates. It is a trading decision rather than a measurement: it says how long a
-member's resting order stays meaningful in this market.
+The period is `[recovery] automatic_recovery_limit_seconds` in the sequencer's configuration, ten seconds in the
+environment templates: the longest recovery the venue does by itself
+([voided_commands.md](../availability/voided_commands.md), section 5.3).
 
 **A halted venue refuses orders and says why**, in the reply to the order the
 member sent — `ExchangeClosed`, with text saying trading is halted. That is the

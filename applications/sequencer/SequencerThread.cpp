@@ -197,7 +197,7 @@ void SequencerThread::on_initial_event() {
 
     // The last time this process knew of a matching engine it routed orders to, which measures how long the venue was
     // without one when the whole venue was down; no earlier than the first record, before which there was nothing to
-    // cancel (EngineAbsenceRule).
+    // recover (EngineAbsenceRule).
     if (!engine_routed_stamp_.open(config_.wal_directory)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "SequencerThread: cannot open {}/{} -- after the whole venue was down, how long it was without a matching engine is measured from "
@@ -209,8 +209,8 @@ void SequencerThread::on_initial_event() {
     if (engine_absence_.absence_began_ns() != 0) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: this process last knew of a matching engine it routed orders to {} s ago; if this instance leads before one is routed "
-                   "to and that is longer than the {} s the venue allows, it writes a command cancelling the book (R-0117)",
-                   (config_.wall_clock->now_ns() - engine_absence_.absence_began_ns()) / 1000000000, config_.absence_limit_seconds);
+                   "to and that is longer than the {} s the venue recovers by itself, it halts trading and cancels the book (R-0117)",
+                   (config_.wall_clock->now_ns() - engine_absence_.absence_began_ns()) / 1000000000, config_.automatic_recovery_limit_seconds);
     }
     engine_absence_timer_id_ = start_recurring_timer(engine_absence_check_interval);
 
@@ -2131,9 +2131,6 @@ void SequencerThread::check_engine_absence() {
     engine_absence_.observe(engine_routed, now_ns);
     const bool leads = role_ == pubsub_itc_fw_app::Role::leader;
     const bool wal_holds_records = replicated_wal_->wal().last_seq_no() > 0;
-    if (engine_absence_.command_due(now_ns, leads, wal_holds_records)) {
-        write_absence_command(now_ns);
-    }
     if (recovery_limit_.halt_due(now_ns, engine_absence_.absence_began_ns(), leads, wal_holds_records, engine_catch_up_progress_)) {
         write_recovery_halt(now_ns);
     }
@@ -2149,61 +2146,74 @@ void SequencerThread::check_engine_absence() {
     }
 }
 
-void SequencerThread::write_recovery_halt(int64_t now_ns) {
-    pubsub_itc_fw_app::TechnicalEvent event{};
-    // The venue has only the open phase until the start and the end of the trading day are built.
-    event.phase = pubsub_itc_fw_app::TradingPhase::Open;
-    event.halted = true;
-    event.trading_day = trading_date_for(now_ns);
-    event.reason = pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong;
-    // Measured, then encoded into a buffer of the size measured.
-    size_t bytes_written = 0;
-    size_t bytes_needed = 0;
-    static_cast<void>(pubsub_itc_fw_app::encode(event, nullptr, 0, bytes_written, bytes_needed));
-    std::vector<uint8_t> bytes(bytes_needed);
-    if (!pubsub_itc_fw_app::encode(event, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a TechnicalEvent needs {} bytes and could not be encoded", bytes_needed);
-        return;
-    }
-    const std::optional<int64_t> estimate_ns = recovery_limit_.estimate_ns();
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "SequencerThread: no matching engine has been able to trade for {} s, and {} -- longer together than the {} s the venue recovers by "
-               "itself. Writing a TechnicalEvent that halts trading on trading day {}, and telling the gateways to refuse orders; a person must lift "
-               "the halt (R-0023)",
-               (now_ns - engine_absence_.absence_began_ns()) / 1000000000,
-               estimate_ns.has_value() ? fmt::format("the catch-up under way will take about {} s more", *estimate_ns / 1000000000)
-                                       : std::string("no catch-up under way says when one will finish"),
-               config_.automatic_recovery_limit_seconds, event.trading_day);
-    recovery_limit_.halt_written();
-    recovery_limit_passed_ = true;
-    write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id), bytes.data(), bytes_written);
-    refresh_order_acceptance();
-}
-
-void SequencerThread::write_absence_command(int64_t now_ns) {
-    pubsub_itc_fw_app::CancelBook command{};
-    command.reason = pubsub_itc_fw_app::CancelBookReason::UnableToMatchTooLong;
-    // Every order on the book: each was placed before this command.
-    command.orders_placed_through = std::numeric_limits<int64_t>::max();
-    command.halt_if_orders_cancelled = true;
+template <typename Command> bool SequencerThread::write_own_encoded_command(const Command& command, const char* name) {
     // Measured, then encoded into a buffer of the size measured.
     size_t bytes_written = 0;
     size_t bytes_needed = 0;
     static_cast<void>(pubsub_itc_fw_app::encode(command, nullptr, 0, bytes_written, bytes_needed));
     std::vector<uint8_t> bytes(bytes_needed);
     if (!pubsub_itc_fw_app::encode(command, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a CancelBook command needs {} bytes and could not be encoded",
-                   bytes_needed);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a {} needs {} bytes and could not be encoded", name, bytes_needed);
+        return false;
+    }
+    write_own_command(static_cast<int16_t>(Command::message_pdu_id), bytes.data(), bytes_written);
+    return true;
+}
+
+void SequencerThread::write_recovery_halt(int64_t now_ns) {
+    const std::optional<int64_t> estimate_ns = recovery_limit_.estimate_ns();
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "SequencerThread: no matching engine has been able to trade for {} s, and {} -- longer together than the {} s the venue recovers by "
+               "itself. Voiding the orders held, cancelling every order on the book and halting trading, and telling the gateways to refuse orders; "
+               "a person must lift the halt (R-0117, R-0023)",
+               (now_ns - engine_absence_.absence_began_ns()) / 1000000000,
+               estimate_ns.has_value() ? fmt::format("the catch-up under way will take about {} s more", *estimate_ns / 1000000000)
+                                       : std::string("no catch-up under way says when one will finish"),
+               config_.automatic_recovery_limit_seconds);
+    recovery_limit_.halt_written();
+    recovery_limit_passed_ = true;
+
+    // 1. The orders held: no engine has been sent them, so each is rejected by the engine that next leads, rather than
+    // applied once trading has halted. The cancels among them are carried out.
+    void_held_orders_at_the_halt();
+
+    // 2. Every order on the book, cancelled and reported to its member: they were locked out of their orders while no
+    // engine could trade, and the market moved meanwhile. Not halting here: the TechnicalEvent below halts.
+    pubsub_itc_fw_app::CancelBook cancel_book{};
+    cancel_book.reason = pubsub_itc_fw_app::CancelBookReason::RecoveryTooLong;
+    // Every order on the book: each was placed before this command.
+    cancel_book.orders_placed_through = std::numeric_limits<int64_t>::max();
+    static_cast<void>(write_own_encoded_command(cancel_book, "CancelBook"));
+
+    // 3. The halt itself.
+    pubsub_itc_fw_app::TechnicalEvent event{};
+    // The venue has only the open phase until the start and the end of the trading day are built.
+    event.phase = pubsub_itc_fw_app::TradingPhase::Open;
+    event.halted = true;
+    event.trading_day = trading_date_for(now_ns);
+    event.reason = pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong;
+    static_cast<void>(write_own_encoded_command(event, "TechnicalEvent"));
+    refresh_order_acceptance();
+}
+
+void SequencerThread::void_held_orders_at_the_halt() {
+    // Every command after the last one released has been sent to no engine: no engine is sent a record beyond the
+    // released position (docs/availability/voided_commands.md, section 5.1). Nor is any command at or below one a report
+    // in the WAL answers, because a report means an engine applied that command and went on.
+    const int64_t first = std::max(released_through(), highest_command_answered_) + 1;
+    const int64_t last = replicated_wal_->last_seq_no();
+    if (first > last) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: no order is held at the halt, so nothing is voided");
         return;
     }
-    // The orders are not stale because they are old. They are stale because the members that placed them were locked out
-    // of them while the market moved: no engine could trade, so they could not cancel.
+    // Only the new orders in the range: a held cancel applied late still does what its member asked, and every other
+    // command in it is applied as usual.
+    const pubsub_itc_fw_app::VoidCommands void_command{first, last, true, pubsub_itc_fw_app::VoidReason::HeldWhenTradingHalted};
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "SequencerThread: no matching engine has been able to trade for {} s, longer than the {} s the venue allows -- writing a CancelBook "
-               "command: every open order is cancelled and its member told, and trading halts if any was open (R-0117)",
-               (now_ns - engine_absence_.absence_began_ns()) / 1000000000, config_.absence_limit_seconds);
-    engine_absence_.command_written();
-    write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id), bytes.data(), bytes_written);
+               "SequencerThread: writing a VoidCommands for the new orders among commands seq={} to seq={}, held while no matching engine led -- the "
+               "engine that next leads rejects each, saying trading halted while it was waiting",
+               first, last);
+    static_cast<void>(write_own_encoded_command(void_command, "VoidCommands"));
 }
 
 void SequencerThread::handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {

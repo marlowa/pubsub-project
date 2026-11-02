@@ -279,13 +279,6 @@ lease_period_milliseconds = 3000
 lease_drift_allowance_milliseconds = 250
 lease_renewal_interval_milliseconds = 1000
 
-# How long the venue may be without a matching engine that can trade before the orders open
-# at the time are cancelled, each member told, and trading halted (R-0117). The leading
-# sequencer measures it and writes the decision into the WAL as a command, so declared once
-# here: both sequencers of the pair must use the same figure. A trading decision: how long a
-# resting order stays meaningful here, when its member cannot reach it.
-absence_limit_seconds = 300
-
 # The longest the venue recovers by itself while no matching engine can trade: when the time
 # without one, and how long the catch-up under way will still take, together pass this, the
 # leading sequencer halts trading and the gateways refuse orders with the reason, and a person

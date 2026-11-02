@@ -211,7 +211,6 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
         }
         config.snapshot_interval_seconds = snapshot_interval_seconds;
 
-        toml.get_required_except("absence.absence_limit_seconds", config.absence_limit_seconds);
         toml.get_required_except("catch_up.send_every_report", config.send_every_report);
         toml.get_required_except("recovery.automatic_recovery_limit_seconds", config.automatic_recovery_limit_seconds);
         if (config.automatic_recovery_limit_seconds < 1) {
@@ -222,10 +221,6 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
         if (config.orders_held_at_most_seconds < 1) {
             throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: recovery.orders_held_at_most_seconds must be >= 1, got " +
                                                         std::to_string(config.orders_held_at_most_seconds));
-        }
-        if (config.absence_limit_seconds < 1) {
-            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: absence.absence_limit_seconds must be >= 1, got " +
-                                                        std::to_string(config.absence_limit_seconds));
         }
 
         std::string applog_level_str;

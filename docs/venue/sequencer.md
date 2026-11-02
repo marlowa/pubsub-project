@@ -151,27 +151,34 @@ received, and sends it any command the log holds that the engine never got.
 
 ## When no matching engine can trade {#sequencer_absence}
 
-R-0117: when no matching engine could trade for longer than the venue allows, the orders open at the
-time are cancelled, each member told, and trading halted. The rule is about the venue, not one engine,
-so the leading sequencer measures it, because it routes orders only to the engine that leads and so
-knows when it has none to route to. About once a second, and whenever it takes the lead, it notes
-whether it has an engine to route to (`EngineAbsenceRule`, `SequencerThread::check_engine_absence`).
-When it has had none for longer than `[absence] absence_limit_seconds` (300 seconds), it writes a
-`CancelBook` command into the WAL that cancels every order on the book and halts trading if it
-cancelled any. The command is written once for each absence, only by the leader, and never into an
-empty WAL. An engine that comes back applies it in its catch-up.
+R-0117: when no matching engine could trade for longer than the venue recovers by itself, trading
+halts, the orders open at the time are cancelled, each member told, and the orders held meanwhile are
+rejected. The rule is about the venue, not one engine, so the leading sequencer measures it, because it
+routes orders only to the engine that leads and so knows when it has none to route to. About once a
+second, and whenever it takes the lead, it notes whether it has an engine to route to
+(`EngineAbsenceRule`, `SequencerThread::check_engine_absence`).
 
-A shorter limit halts without cancelling: the longest the venue recovers by itself,
-`[recovery] automatic_recovery_limit_seconds` (10 seconds). In the same check, the leading sequencer
-adds to the time it has had no engine how long the catch-up under way will still take, worked out
-from how far its reading thread has sent the catch-up and how fast that moved over the last second
-(`RecoveryLimitRule`). When the two together pass the limit, or the time so far alone does, it writes
-a `TechnicalEvent` that halts trading, with reason `RecoveryTooLong`, and tells the gateways it is not
-accepting orders, with that reason, so that they refuse new orders and cancels saying the venue is
-halted while it recovers. Nothing is cancelled. Once an engine is routed to again, the gateways are
-told the venue is accepting: the engine met the halt in its catch-up, so it refuses new orders as
-halted, and a person must lift the halt. See
-[far_back_catch_up.md](../availability/far_back_catch_up.md), section 5.
+The limit is `[recovery] automatic_recovery_limit_seconds` (10 seconds). In the same check, the
+leading sequencer adds to the time it has had no engine how long the catch-up under way will still
+take, worked out from how far its reading thread has sent the catch-up and how fast that moved over
+the last second (`RecoveryLimitRule`). When the two together pass the limit, or the time so far alone
+does, it writes three commands into the WAL, in order (`SequencerThread::write_recovery_halt`):
+
+- a `VoidCommands` naming the new orders it holds, which no engine has been sent, with the reason
+  `HeldWhenTradingHalted`, so that the engine that next leads rejects each instead of applying it.
+  The cancels it holds are carried out;
+- a `CancelBook` with reason `RecoveryTooLong`, which cancels every order on the book, each reported
+  to its member;
+- a `TechnicalEvent` that halts trading, with reason `RecoveryTooLong`.
+
+The three are held like the orders before them and sent to the engine that next leads. The sequencer
+then tells the gateways it is not accepting orders, with the reason `RecoveryTooLong`, so that they
+refuse new orders and cancels saying the venue is halted while it recovers. Once an engine is routed
+to again, the gateways are told the venue is accepting: the engine met the halt in its catch-up, so it
+refuses new orders as halted, and a person must lift the halt. See
+[voided_commands.md](../availability/voided_commands.md), section 5.3, and
+[far_back_catch_up.md](../availability/far_back_catch_up.md), section 5. The halt is written once for
+each absence, only by the leader, and never into an empty WAL.
 
 When the whole venue was down, the sequencer measures at start-up from the last time it knew of an
 engine it routed to, which it writes about once a second into `engine_routed_at`, a file of eight

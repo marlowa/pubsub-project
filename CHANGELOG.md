@@ -19,6 +19,21 @@ change in any release.
   two running engines holds them for more than 3.0 seconds, so the 5 second limit on holding orders stays.
   The TLA+ model `MajorityLeaseHA` allows the repeated request (`CandidateResends`), and TLC finds no state
   with two leaders.
+- **When no matching engine could be trading within the longest recovery the venue does by itself, the
+  halt now cancels the book and rejects the orders held.** Before the `TechnicalEvent` that halts trading,
+  the leading sequencer writes a `VoidCommands` naming the new orders it holds and a `CancelBook` that
+  cancels every order on the book. The engine that next leads rejects each held order, saying trading
+  halted while it was waiting, carries out each held cancel, and reports each cancel to its member (R-0117,
+  `docs/availability/voided_commands.md`, section 5.3). Scenario 85 checks it with both engines killed;
+  scenario 51 checks the cancel of the book with one engine.
+
+### Removed
+
+- **The absence rule and its setting, `[absence] absence_limit_seconds`.** The halt for the limit on
+  automatic recovery, 10 seconds, now cancels the book, so the separate cancel after 300 seconds without an
+  engine is gone, with `CancelBookReason::UnableToMatchTooLong`, the engine's halt reason of the same name,
+  and the `CancelBook` field `halt_if_orders_cancelled`. Remove the `[absence]` section from any sequencer
+  configuration and `absence_limit_seconds` from each environment's `[shared]` section.
 
 ### Fixed
 

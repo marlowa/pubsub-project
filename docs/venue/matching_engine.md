@@ -103,11 +103,12 @@ it is placed at the sequencer's current position without a catch-up. An order th
 and no engine had yet applied is not recovered by an engine that starts that way, and both sides log
 it.
 
-**A long absence cancels everything.** When no engine could trade for longer than the venue allows,
-the leading sequencer writes a `CancelBook` command into the WAL, and every engine that applies it
-cancels every order, reports each cancel to its member, and halts trading if it cancelled any (R-0117).
-Those orders were priced for a market that moved while their members could not cancel them. An empty
-book is not cancelled and does not halt. The engine does not measure the absence itself, so an engine
+**A long absence cancels everything.** When no engine could be trading within the longest recovery the
+venue does by itself, the leading sequencer writes three commands into the WAL: a `VoidCommands` naming
+the orders it held meanwhile, a `CancelBook`, and a `TechnicalEvent` that halts trading. Every engine
+that applies them rejects each held order, cancels every order on the book, reports each to its member,
+and halts (R-0117). Those orders were priced for a market that moved while their members could not
+cancel them. The engine does not measure the absence itself, so an engine
 that was down while the other traded cancels nothing. See [Sequencer](sequencer.md#sequencer_absence).
 
 **A file that cannot be used is rebuilt from the WAL.** A file that is damaged, or was written by a

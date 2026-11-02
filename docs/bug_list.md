@@ -30,7 +30,7 @@
 | [BUG-0193](#bug_0193) | high | task | Once both matching engines apply every command, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered, instead of halting and saying so |
-| [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the absence limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
+| [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -337,7 +337,7 @@ halted. That build is not the venue's, and the check is not repeated.
 region takes the lead: trading halts by the command, nothing is cancelled, and an order sent afterwards is refused.
 It becomes possible once the WAL is reclaimed ([BUG-0048](#bug_0048)), or once BUG-0210 is fixed.
 
-### BUG-0207: A sequencer that was down for longer than the absence limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen {#bug_0207}
+### BUG-0207: A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen {#bug_0207}
 
 | | |
 |---|---|
@@ -349,11 +349,13 @@ It becomes possible once the WAL is reclaimed ([BUG-0048](#bug_0048)), or once B
 
 **What happens.** When the whole venue was down, the leading sequencer measures how long no engine could trade from the
 stamp beside its own WAL, which it writes while it knows of an engine it routes orders to (`EngineRoutedStamp`). A
-sequencer that was itself down, for longer than the limit, while its peer led and an engine traded, holds a stamp from
-before it went down. If the whole venue then goes down and comes back, and this sequencer leads, it measures the
-absence from its own old stamp, and writes the command that cancels the book and halts. It can lead only if its WAL is
-as long as its peer's, so only if no record was written while it was down: a venue with orders resting and no command
-for longer than the limit, which is a quiet market, not an unusual one.
+sequencer that was itself down, for longer than the limit on automatic recovery, while its peer led and an engine
+traded, holds a stamp from before it went down. If the whole venue then goes down and comes back, and this sequencer
+leads, it measures the absence from its own old stamp, and at once voids the orders it holds, cancels the book and
+halts ([voided_commands.md](availability/voided_commands.md), section 5.3). It can lead only if its WAL is as long as
+its peer's, so only if no record was written while it was down: a venue with orders resting and no command for longer
+than the limit, which is a quiet market, not an unusual one. The limit is `[recovery] automatic_recovery_limit_seconds`,
+10 seconds, so a sequencer down for longer than that, a short time, is enough.
 
 **What is wanted.** The leading sequencer measures from the later of its own stamp and its peer's. The peer's could be
 carried in the exchange of status the two sequencers make when they connect (`StatusQuery`, `StatusResponse`), or
@@ -3727,9 +3729,10 @@ the WAL and holds it without an answer, and sends it to no engine. It refuses ne
 `[recovery] orders_held_at_most_seconds`, 5 seconds, or once no engine could be trading within the longest recovery the
 venue does by itself, `[recovery] automatic_recovery_limit_seconds`, 10 seconds, when it also halts trading (part 2
 below). When an engine leads again, it is caught up to the position released before the first held order, and is then
-sent the held orders live, so that it answers each with a first report (scenarios 53 and 92), the halt among them if it
-was written. Only if no engine could match for longer than `[absence] absence_limit_seconds`, 300 seconds in
-production, does the sequencer write a command that cancels every open order, tells each member, and halts.
+sent the held orders live, so that it answers each with a first report (scenarios 53 and 92). If the venue halted
+meanwhile, the sequencer wrote, before the halt, a void of the new orders it held and a cancel of the book, so the
+engine that leads rejects each held order, carries out each held cancel and cancels every order on the book, each
+reported to its member (scenarios 51 and 85). Nothing lifts the halt.
 
 The gap happens whenever both engines are unavailable at once. The case that prompted this entry: the
 leading engine dies, the other takes the lead, and the dead one is restarted by its launcher; while it reads
@@ -3760,9 +3763,8 @@ is also applied to a market that has moved, while its member could not cancel it
 
 The halt replaces both the sequencer's 45-second limit and the engine's 300-second absence limit.
 
-**Still to decide.** What a halt does to the orders resting on the book: kept, and live again once the halt
-is lifted, or cancelled with a report to each member. Both are definite answers; which one is a business
-decision, and `trading_phases.md` leaves it open on purpose.
+**Decided** on 31 October 2026, decision 6 of [voided_commands.md](availability/voided_commands.md): a halt for a long
+recovery cancels the orders resting on the book, each reported to its member.
 
 **What it needs.** The technical event, steps 3 to 5 of [trading_phases.md](venue/trading_phases.md): the
 message, the table of what each phase allows, and their implementation. A way to declare and lift a halt
@@ -3774,11 +3776,11 @@ message, the table of what each phase allows, and their implementation. A way to
 ([far_back_catch_up.md](availability/far_back_catch_up.md), section 5): past
 `[recovery] automatic_recovery_limit_seconds`, while no engine can trade, the leading sequencer writes a
 `TechnicalEvent` that halts trading, with reason `RecoveryTooLong`, and the gateways refuse new orders and cancels
-saying the venue is halted while it recovers (scenarios 85 and 86). Part 1, as sections 5.1 and 5.2 of
+saying the venue is halted while it recovers (scenarios 51, 85 and 86). Part 1, as sections 5.1 and 5.2 of
 [voided_commands.md](availability/voided_commands.md) design it: orders are held while no engine leads and sent to no
-engine meanwhile, and refused once none has led for 5 seconds (scenario 92). Parts 3 and 4 are not built: the orders held
-before the halt are still answered only once an engine leads, accepted rather than rejected, and nothing lifts the
-halt.
+engine meanwhile, and refused once none has led for 5 seconds (scenario 92). Part 3, as section 5.3 designs it, with
+decision 6 B: at the halt the orders held are voided and the book cancelled, and the engine that next leads rejects
+each held order and reports each cancel (scenario 85). Part 4 is not built: nothing lifts the halt.
 
 **Principles.** V6: every command a gateway accepted is answered; V2: the WAL is the record.
 

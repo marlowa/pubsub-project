@@ -47,7 +47,9 @@ second, so the gateways are told within a second of the limit passing whether or
 
 **Refusing is not halting.** It is automatic, and it ends by itself when an engine leads. The orders already
 held stay held, and are released to the engine that leads, which applies them. Halting trading is a separate
-rule, the limit on automatic recovery ([far_back_catch_up.md](far_back_catch_up.md), section 5).
+rule, the limit on automatic recovery ([far_back_catch_up.md](far_back_catch_up.md), section 5). If the venue
+halts while orders are held, the sequencer voids them, and the engine that next leads rejects each, saying
+trading halted while it was waiting ([voided_commands.md](voided_commands.md), section 5.3).
 
 ## What the venue does
 

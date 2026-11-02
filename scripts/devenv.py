@@ -605,8 +605,9 @@ def check_configs_expanded(install_dir: Path) -> None:
 # The open-order region is CURRENT STATE: the orders the matching engine was holding. It is
 # what makes a restart resume rather than forget, and it is also what grows without bound in a
 # sandbox, because load that places orders and never cancels them leaves every one of them
-# resting. Past a few minutes of absence that is an R-0117 cancel-and-halt on every start, and
-# the count only rises: 2,000 one day, 165,000 the next, each start slower than the last.
+# resting. A start after more than the limit on automatic recovery, ten seconds, with no engine
+# halts trading and cancels every one of them (R-0117); short of that, the count only rises:
+# 2,000 one day, 165,000 the next, each start slower than the last.
 #
 # The write-ahead log is HISTORY. Clearing it discards the record of what the venue did, which
 # is a different kind of loss and runs into a retention question this project has deliberately
@@ -992,7 +993,7 @@ def parse_args() -> argparse.Namespace:
         "--fresh-book", action="store_true",
         help="delete the matching engines' open-order regions before starting, so the venue comes up "
              "holding no orders. A sandbox driven by load that never cancels accumulates them without "
-             "limit, and past a few minutes of absence every start becomes an R-0117 cancel-and-halt. "
+             "limit, and a start after more than ten seconds without an engine halts and cancels them all (R-0117). "
              "Discards current state; leaves the write-ahead log alone",
     )
     parser.add_argument(

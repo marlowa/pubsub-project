@@ -1057,24 +1057,20 @@ class Scenario(NamedTuple):
     # restarted are still open afterwards -- by dropping the session and counting how many of
     # the cancels the gateway then sends are refused as orders the venue does not recognise.
     assert_open_orders_survive: bool = False
-    # How long the venue may be unable to match before the orders open at the time are
-    # cancelled and trading halts, written into the deployed configs before launch. The
-    # deployed figure is 300s, which no test is going to wait out; the scenario that exercises
-    # the rule shortens it and keeps the engine down past it.
-    absence_limit_seconds: int = 300
     # The longest the venue recovers by itself while no matching engine can trade, written into the deployed
     # configs before launch. The deployed figure is 10s, which many scenarios exceed on purpose, keeping an engine
     # down to see what the venue does meanwhile; they get 600s, so that the halt comes only in the scenarios about it.
     automatic_recovery_limit_seconds: int = 600
-    # When True, keep the matching engine down for longer than absence_limit_seconds before
-    # restarting it, then assert that it cancelled every order it recovered, told each member,
-    # and halted. See run_scenario's "long absence" block.
-    assert_absence_halt: bool = False
     # When True, the matching engine is kept down for longer than automatic_recovery_limit_seconds before it is restarted:
-    # assert that the leading sequencer halted trading with a TechnicalEvent, that a gateway refused an order meanwhile
-    # saying the venue is halted, and that the restarted engine halted and cancels nothing. See run_scenario's "recovery
-    # limit" block.
+    # assert that a gateway was told the venue is halted, and that the restarted engine cancelled every order it recovered
+    # by the command in the WAL, told each member, halted, and refuses an order sent afterwards (R-0117). See
+    # run_scenario's "recovery limit" block.
     assert_recovery_halt: bool = False
+    # When True, kill both matching engines and place orders and a cancel, which the sequencer holds, until the venue
+    # halts for the limit on automatic recovery; then start one engine, and assert that each held order is rejected, the
+    # held cancel is carried out and every other order on the book is cancelled, each reported to the member
+    # (docs/availability/voided_commands.md, section 5.3). See run_scenario's "held orders at the halt" block.
+    assert_halt_voids_held_orders: bool = False
     # When True, assert that no halt for the recovery limit was written: a failover finishes well within the limit.
     assert_no_recovery_halt: bool = False
     # When True, the leading matching engine is started with its sends on the link between the engines made to fail
@@ -2006,18 +2002,18 @@ _SCENARIOS: list[Scenario] = [
     # Getting a deterministic ER for an order whose gateway is dead is the awkward part.
     # Killing the gateway mid-burst would work but is a race. So this borrows a burst the
     # venue produces for its own reasons: the baseline orders rest on the book, the engine
-    # is killed and left down past the period the venue says it may be unable to match, so
-    # the leading sequencer writes a command cancelling the book, and the restarted engine
-    # cancels every order it recovers and reports each cancellation (R-0117).
+    # is killed and left down past the longest recovery the venue does by itself, so the
+    # leading sequencer writes a command cancelling the book and halts trading, and the
+    # restarted engine cancels every order it recovers and reports each cancellation (R-0117).
     # Those orders came from gateway a, which by then is dead, so every one of those reports
     # has nowhere to go.
     #
     # It used to borrow the burst a PROMOTION emitted, cancelling the whole book of a
     # promoted secondary. That stopped happening on 2026-08-30, when the engine gained a
-    # record of its open orders and a promotion began keeping them (R-0073). The absence
-    # rule is a better generator anyway: it needs one engine rather than a pair, and it is
-    # the venue doing something it must do rather than something it was doing for want of
-    # being able to do better.
+    # record of its open orders and a promotion began keeping them (R-0073). The halt for
+    # the recovery limit is a better generator anyway: it needs one engine rather than a
+    # pair, and it is the venue doing something it must do rather than something it was
+    # doing for want of being able to do better.
     #
     # Kill order matters: gateway a first, the engine second. The reverse would let the
     # cancellation reports reach a before it died and prove nothing.
@@ -2037,9 +2033,8 @@ _SCENARIOS: list[Scenario] = [
             "report bound for the dead instance rather than dropping it or rerouting it to b"
         ),
         gateway_b=True,
-        # Short enough that the scenario need not sit out the deployed five minutes, and the
-        # restart below stays down comfortably past it.
-        absence_limit_seconds=5,
+        # The restart below stays down comfortably past it.
+        automatic_recovery_limit_seconds=5,
         # The FIX session lives on gateway a. Once a is killed there is no session to
         # send through, so Phase 5 has nothing to do.
         orders_during_override=0,
@@ -3640,18 +3635,19 @@ _SCENARIOS: list[Scenario] = [
         restart_steps=[_me_restart_step()],
     ),
 
-    # 51 -- what a long absence does to the orders a member was locked out of.
+    # 51 -- what the halt for a long recovery does to the orders a member was locked out of.
     #
     # An order is not dangerous because it is old. One that rested all morning in a working
     # market is fine: its owner could have cancelled it at any moment and chose not to. What
     # makes an order dangerous is that its owner was LOCKED OUT of it -- the venue could not
     # match, so the member could not cancel, and the market moved while it could do nothing.
     #
-    # So this kills the engine and leaves it dead. The absence has to be real: the leading
-    # sequencer measures how long it has had no matching engine to route orders to, and when
-    # that passes the limit it writes a CancelBook command into the WAL. The deployed limit is
-    # five minutes, which no test is going to sit out, so the scenario shortens it to a few
-    # seconds and stays down past it. The restarted engine meets the command in its catch-up.
+    # So this kills the engine and keeps it down past the longest recovery the venue does by
+    # itself (docs/availability/far_back_catch_up.md, section 5), shortened to two seconds. The
+    # leading sequencer measures how long it has had no matching engine to route orders to, and
+    # when that passes the limit it writes a CancelBook command and a TechnicalEvent that halts
+    # trading into the WAL, and tells the gateways the venue is halted. The restarted engine meets
+    # both commands in its catch-up.
     #
     # What must then happen, per R-0117: every recovered order cancelled, by the command, the
     # member that placed each one told, and trading halted. And per R-0023, the halt stays until
@@ -3659,15 +3655,15 @@ _SCENARIOS: list[Scenario] = [
     # carrying on.
     Scenario(
         number=51,
-        short_name="long_absence_cancels_and_halts",
+        short_name="recovery_limit_cancels_and_halts",
         description="Orders a member was locked out of are cancelled, reported, and trading halts",
         expected_outcome=(
-            "the leading sequencer writes a command cancelling the book; the restarted engine "
-            "meets it in its catch-up, cancels every order it recovered, sends the member that "
-            "placed it a report saying so, halts, and refuses the orders sent afterwards"
+            "the leading sequencer writes a command cancelling the book and a TechnicalEvent halting trading, and tells "
+            "the gateways the venue is halted; the restarted engine meets both in its catch-up, cancels every order it "
+            "recovered, sends the member that placed it a report saying so, halts, and refuses the order sent afterwards"
         ),
-        absence_limit_seconds=5,
-        assert_absence_halt=True,
+        automatic_recovery_limit_seconds=2,
+        assert_recovery_halt=True,
         # No orders in flight across the kill: the subject is what happens to the orders that
         # were already resting, and in-flight traffic only makes the counts non-deterministic.
         orders_during_override=0,
@@ -3681,9 +3677,8 @@ _SCENARIOS: list[Scenario] = [
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=True,
                 settle_secs=_ME_SETTLE,
-                # Comfortably past the five seconds this scenario allows, and short enough that
-                # the suite does not notice.
-                down_secs=12.0,
+                # Comfortably past the two seconds this scenario allows.
+                down_secs=8.0,
             ),
         ],
     ),
@@ -4470,25 +4465,25 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
-    # 84 -- a following engine down for longer than the absence limit, while its peer trades, cancels nothing.
+    # 84 -- a following engine down for longer than the recovery limit, while its peer trades, cancels nothing.
     #
     # BUG-0146. R-0117 is about the venue: the orders are cancelled and trading halts only when no matching engine could
-    # trade for longer than the limit. An engine that is down while its peer leads is a loss of resilience and nothing
-    # more. The following engine is killed with the baseline orders resting, left down for twelve seconds against a
-    # limit of five, and restarted. The leading engine traded throughout, so the leading sequencer always had an engine
+    # be trading within the longest recovery the venue does by itself. An engine that is down while its peer leads is a
+    # loss of resilience and nothing more. The following engine is killed with the baseline orders resting, left down
+    # for twelve seconds against a limit of five, and restarted. The leading engine traded throughout, so the leading sequencer always had an engine
     # to route to and writes no command; the restarted engine must neither cancel its book nor halt, and neither must
     # the engine that leads. The orders sent afterwards are accepted as usual.
     Scenario(
         number=84,
-        short_name="follower_down_past_absence_limit_cancels_nothing",
-        description="A following matching engine down for longer than the absence limit, while its peer trades, cancels nothing and does not halt",
+        short_name="follower_down_past_recovery_limit_cancels_nothing",
+        description="A following matching engine down for longer than the recovery limit, while its peer trades, cancels nothing and does not halt",
         expected_outcome=(
             "the following engine returns after twelve seconds against a limit of five, rejoins as a follower, and neither it "
             "nor the engine that leads cancels the book or halts; orders sent afterwards are accepted"
         ),
         me_ha=True,
         recovery_on_primary=True,
-        absence_limit_seconds=5,
+        automatic_recovery_limit_seconds=5,
         orders_during_override=0,
         steps=[],
         restart_steps=[],
@@ -4525,41 +4520,32 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
-    # 85 -- no matching engine for longer than the venue recovers by itself.
+    # 85 -- no matching engine for longer than the venue recovers by itself, with orders and a cancel held.
     #
-    # docs/availability/far_back_catch_up.md, section 5. While no engine can trade, the venue cannot answer members, so
-    # it states the longest recovery it does by itself, and past that it halts trading and leaves a person to decide
-    # when trading resumes, rather than leaving members' orders unanswered for as long as the recovery takes. The engine
-    # is killed and kept down past a limit shortened to two seconds, well short of the absence limit, so that the halt
-    # comes from this rule and nothing is cancelled. The leading sequencer must write a TechnicalEvent that halts
-    # trading, and tell the gateways to refuse orders, saying why; the restarted engine meets the halt in its catch-up,
-    # halts, and refuses an order sent afterwards.
+    # docs/availability/voided_commands.md, section 5.3. While no engine leads, the leading sequencer holds every order
+    # and cancel, and sends them to no engine. When no engine could be trading within the longest recovery the venue
+    # does by itself, shortened here to four seconds, so that the halt comes before the five seconds after which new
+    # orders are refused, it writes three commands: a void of the new orders it holds, a cancel of the book, and a halt.
+    # Both engines are killed, the member places three orders and a cancel of one of two orders it placed before, and
+    # the venue halts. When an engine is started, the member must be sent a rejection of each held order, saying trading
+    # halted while it waited, a cancel of the order it asked to cancel, and a cancel of every other order on the book;
+    # no held order may be accepted. Left without the void, the held orders rest on the book and are then cancelled by
+    # the cancel of the book, so the member is told each was accepted.
     Scenario(
         number=85,
-        short_name="recovery_limit_halts_trading",
-        description="With no matching engine for longer than the venue recovers by itself, trading halts and orders are refused saying so",
+        short_name="halt_voids_held_orders",
+        description="With no matching engine for longer than the venue recovers by itself, held orders are rejected, held cancels carried out, and the book cancelled",
         expected_outcome=(
-            "the leading sequencer writes a TechnicalEvent that halts trading and tells the gateways the venue is halted; "
-            "the restarted engine halts in its catch-up, cancels nothing, and refuses the order sent afterwards"
+            "the leading sequencer voids the orders it holds, cancels the book and halts trading; the engine that next "
+            "leads rejects each held order, carries out the held cancel, cancels every other order on the book, each "
+            "reported to the member, halts, and refuses the order sent afterwards"
         ),
-        automatic_recovery_limit_seconds=2,
-        assert_recovery_halt=True,
+        me_ha=True,
+        automatic_recovery_limit_seconds=4,
+        assert_halt_voids_held_orders=True,
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
-        restart_steps=[
-            RestartStep(
-                proc_name="matching_engine",
-                ready_log_name="matching_engine.log",
-                ready=expect_engine_reachable("matching_engine", "matching_engine"),
-                ready_timeout=_ME_READY_TIMEOUT,
-                resets_me_counter=True,
-                settle_secs=_ME_SETTLE,
-                # Past the two seconds this scenario allows, and short of the five minutes after which the book is
-                # cancelled.
-                down_secs=8.0,
-            ),
-        ],
     ),
 
     # 86 -- a failover finishes well within the longest recovery the venue does by itself.
@@ -5388,38 +5374,16 @@ def set_installed_ha(prefix: Path, enabled: bool) -> int:
 
 
 def set_installed_recovery_limit(prefix: Path, seconds: int) -> int:
-    """Set recovery.automatic_recovery_limit_seconds in every deployed sequencer config, as set_installed_absence_limit
-    does for the absence limit, and for the same reasons: written on every launch, so that a scenario that shortened it
-    cannot leave it short for the next."""
-    changed = 0
-    pattern = re.compile(r"^(automatic_recovery_limit_seconds\s*=\s*)\d+", re.M)
-    for toml_path in sorted((prefix / "etc").rglob("*.toml")):
-        try:
-            text = toml_path.read_text(errors="replace")
-        except OSError:
-            continue
-        result, count = pattern.subn(lambda m: m.group(1) + str(seconds), text)
-        if count and result != text:
-            toml_path.write_text(result)
-            changed += 1
-    return changed
+    """Set recovery.automatic_recovery_limit_seconds in every deployed sequencer config.
 
-
-def set_installed_absence_limit(prefix: Path, seconds: int) -> int:
-    """Set absence.absence_limit_seconds in every deployed sequencer config.
-
-    The deployed figure is five minutes, which is a trading decision about how long a member's
-    resting order stays meaningful. No test is going to keep the venue down for five minutes to
-    watch it elapse, so the scenario that exercises the rule shortens it and keeps the engine
-    down past the shorter figure instead.
-
-    Written on every launch rather than restored afterwards, for the same reason
-    set_installed_ha is: a restore only runs when the scenario reaches it, and a scenario that
-    dies half way would leave every later one running with a three-second limit and cancelling
-    its book for no reason anyone could see.
+    The deployed figure is ten seconds, which many scenarios exceed on purpose, keeping an engine down to see what the
+    venue does meanwhile, so they are given a longer one; the scenarios about the limit shorten it instead. Written on
+    every launch rather than restored afterwards, for the same reason set_installed_ha is: a restore only runs when the
+    scenario reaches it, and a scenario that dies half way would leave every later one running with a short limit,
+    halting trading and cancelling its book for no reason anyone could see.
     """
     changed = 0
-    pattern = re.compile(r"^(absence_limit_seconds\s*=\s*)\d+", re.M)
+    pattern = re.compile(r"^(automatic_recovery_limit_seconds\s*=\s*)\d+", re.M)
     for toml_path in sorted((prefix / "etc").rglob("*.toml")):
         try:
             text = toml_path.read_text(errors="replace")
@@ -5570,7 +5534,6 @@ def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_
         # Every report sent again, so that each engine's reports can be compared with the replay's: by default an engine
         # catching up leaves out the reports the WAL already holds (docs/availability/far_back_catch_up.md, section 2.6).
         config = config_with_values(sequencer_config, {("ha", "ha_enabled"): "false", ("wal", "directory"): f'"{wal_copy}"',
-                                                       ("absence", "absence_limit_seconds"): "86400",
                                                        ("recovery", "automatic_recovery_limit_seconds"): "86400",
                                                        ("catch_up", "send_every_report"): "true"}, work / f"{sequencer}.toml")
         since = _TEST_EVENTS.mark()
@@ -7302,9 +7265,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # without setting the switch is precisely BUG-0061 -- the sequencer waits for an arbiter that
     # never arrives and forwards nothing -- and setting the switch without skipping the launches
     # leaves an arbiter that now refuses to start.
-    # The absence limit, set on every launch for the same reason. Scenarios that do not test
-    # the rule get the deployed figure back, so one that shortened it cannot leave it short.
-    set_installed_absence_limit(prefix, scenario.absence_limit_seconds)
     # The recovery limit, on every launch for the same reason.
     set_installed_recovery_limit(prefix, scenario.automatic_recovery_limit_seconds)
     # The promotion policy, on every launch and for the same reason: a scenario that set it
@@ -8022,7 +7982,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # which nobody is expected to take the lead: there is no promotion in either, so there
         # is no book a promotion resumed with to ask about.
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
-                and not scenario.assert_held_answered and not scenario.expects_no_new_leader
+                and not scenario.assert_held_answered and not scenario.assert_halt_voids_held_orders and not scenario.expects_no_new_leader
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
                 and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained):
@@ -8215,14 +8175,12 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "(R-0123).")
             log("  damaged region: nothing cancelled -- OK")
 
-        # ── A long absence: cancelled, reported, halted ───────────────────────
-        # The engine was kept down past the period the venue says it may be absent for, with
-        # orders resting. R-0117 requires all three things, and each is checked separately
-        # because any one of them alone would be a worse outcome than doing nothing:
-        # cancelling without reporting loses the member's position silently, reporting without
-        # halting carries on as though nothing happened, and halting without cancelling leaves
-        # the stale orders in place.
-        # ── The longest recovery the venue does by itself ────────────────────
+        # ── The longest recovery the venue does by itself: cancelled, reported, halted ──
+        # The engine was kept down past the longest recovery the venue does by itself, with orders resting. R-0117
+        # requires three things, and each is checked separately because any one of them alone would be a worse outcome
+        # than doing nothing: cancelling without reporting loses the member's position silently, reporting without
+        # halting carries on as though nothing happened, and halting without cancelling leaves the orders the member was
+        # locked out of in place.
         if scenario.assert_recovery_halt:
             gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
             halted_said = _TEST_EVENTS.find(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False,
@@ -8233,17 +8191,44 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("  recovery limit: the gateway was told the venue is halted, and refused orders saying so meanwhile -- OK")
 
             restarted_from = _TEST_EVENTS.since_introduction(me_log.stem)
+            cancelled_book = engine_event(me_log.stem, "BookCancelled", restarted_from, args.failover_timeout)
+            cancelled = cancelled_book.cancel_reports_sent if cancelled_book is not None else -1
+            if cancelled <= 0:
+                die("recovery limit: the engine did not cancel the orders it recovered "
+                    f"(count={cancelled}). No engine could trade for longer than the venue recovers by itself, with orders "
+                    "open, so every one of them should have been cancelled -- their members were locked out of them while "
+                    "the market moved (R-0117).")
+            if not cancelled_book.by_command:
+                die("recovery limit: the engine cancelled its book by a decision of its own, not by the command the leading "
+                    "sequencer writes into the WAL. An engine that decides alone decides differently from its peer and from "
+                    "an engine that catches up later (docs/availability/deterministic_matching_engine.md, section 4.2).")
+            log(f"  recovery limit: {cancelled} order(s) cancelled, by the command in the WAL")
+
             engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
             halt = engine_event(me_log.stem, "Halted", restarted_from, args.failover_timeout)
             if halt is None or halt.reason != engine_events.HaltReason.RecoveryTooLong:
                 die(f"recovery limit: the restarted engine did not halt for the recovery limit ({halt}). The halt is a command in "
-                    "the WAL, so an engine that catches up meets it where it was written")
-            cancelled_book = engine_event(me_log.stem, "BookCancelled", restarted_from, 0.0, settle=True)
-            if cancelled_book is not None:
-                die(f"recovery limit: the engine cancelled its book ({cancelled_book}). The recovery limit halts and cancels nothing; "
-                    "only the absence limit cancels")
-            log("  recovery limit: the restarted engine halted in its catch-up and cancelled nothing -- OK")
+                    "the WAL, so an engine that catches up meets it where it was written; lifting it is a judgement and needs a "
+                    "person (R-0023).")
+            log("  recovery limit: trading halted")
 
+            # The reports have to reach the members. A cancel nobody is told about is the silent loss this exists to
+            # prevent, and it looks identical from here to a cancel that worked. Counted at the member, which is where the
+            # reports have to arrive.
+            member_reports = client_reports(f8proc)
+            deadline = time.monotonic() + args.recovery_timeout
+            while member_reports.count("4") < cancelled and time.monotonic() < deadline:
+                time.sleep(POLL_INTERVAL)
+            told = member_reports.count("4")
+            if told < cancelled:
+                die(f"recovery limit: the member was sent {told} cancellation report(s), but {cancelled} order(s) were cancelled. "
+                    "A member that is not told its order was cancelled cannot tell that from the venue having lost it "
+                    "(R-0117, R-0020).")
+            log(f"  recovery limit: the member was sent a cancellation report for each of the {cancelled} order(s) -- OK")
+
+            # And the halt has to mean something. An order sent now must be refused, in the reply to that order, which is
+            # how a member trading into a halt finds out: a Rejected report (ExecType 8) whose reason is that the exchange
+            # is closed (OrdRejReason 2).
             log("=== Sending an order into the halt, which must be refused ===")
             refused_from = client_reports(f8proc).mark()
             halted_sent_before = send_orders(f8proc, b"T", 1)
@@ -8253,7 +8238,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 refused = client_reports(f8proc).count("8", refused_from, ord_rej_reason="2")
                 time.sleep(POLL_INTERVAL)
             if client_reports(f8proc).new_among(halted_sent_before, _ORDERS_PER_COMMAND[b"T"]):
-                die("recovery limit: the member was sent a New report for an order sent while halted (R-0023)")
+                die("recovery limit: the member was sent a New report for an order sent while halted. A halt that still takes "
+                    "orders is not a halt (R-0117, R-0023).")
             if not refused:
                 die("recovery limit: the venue accepted an order while halted, so it resumed trading by itself (R-0023)")
             log("  recovery limit: an order sent into the halt was refused -- OK")
@@ -8267,66 +8253,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if halted_said is not None:
                 die("no recovery halt: the venue halted for the recovery limit during a failover, which finishes well within it")
             log("  no recovery halt: the failover finished within the recovery limit, and nothing halted -- OK")
-
-        if scenario.assert_absence_halt:
-            restarted_from = _TEST_EVENTS.since_introduction(me_log.stem)  # the restarted engine's events
-
-            cancelled_book = engine_event(me_log.stem, "BookCancelled", restarted_from, args.failover_timeout)
-            cancelled = cancelled_book.cancel_reports_sent if cancelled_book is not None else -1
-            if cancelled <= 0:
-                die("long absence: the engine did not cancel the orders it recovered "
-                    f"(count={cancelled}). It was down for longer than the venue says it may be "
-                    "with orders open, so every one of them should have been cancelled -- their "
-                    "members were locked out of them while the market moved (R-0117).")
-            if not cancelled_book.by_command:
-                die("long absence: the engine cancelled its book by a decision of its own, not by the command the leading "
-                    "sequencer writes into the WAL. An engine that decides alone decides differently from its peer and from "
-                    "an engine that catches up later (docs/availability/deterministic_matching_engine.md, section 4.2).")
-            log(f"  long absence: {cancelled} order(s) cancelled, by the command in the WAL")
-
-            halt = engine_event(me_log.stem, "Halted", restarted_from, args.failover_timeout)
-            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
-            halted = halt is not None and halt.reason == engine_events.HaltReason.UnableToMatchTooLong
-            if not halted:
-                die("long absence: the engine cancelled the book but did not halt. Carrying on "
-                    "as though nothing had happened is what the halt exists to prevent (R-0117); "
-                    "lifting it is a judgement and needs a person (R-0023).")
-            log("  long absence: trading halted")
-
-            # The reports have to reach the members. A cancel nobody is told about is the
-            # silent loss this whole chapter exists to prevent, and it looks identical from
-            # here to a cancel that worked.
-            # Counted at the member, which is where the reports have to arrive.
-            member_reports = client_reports(f8proc)
-            deadline = time.monotonic() + args.recovery_timeout
-            while member_reports.count("4") < cancelled and time.monotonic() < deadline:
-                time.sleep(POLL_INTERVAL)
-            told = member_reports.count("4")
-            if told < cancelled:
-                die(f"long absence: the member was sent {told} cancellation report(s), but {cancelled} order(s) were cancelled. "
-                    "A member that is not told its order was cancelled cannot tell that from the venue having lost it "
-                    "(R-0117, R-0020).")
-            log(f"  long absence: the member was sent a cancellation report for each of the {cancelled} order(s) -- OK")
-
-            # And the halt has to mean something. An order sent now must be refused, in the
-            # reply to that order, which is how a member trading into a halt finds out.
-            log("=== Sending an order into the halt, which must be refused ===")
-            # Seen by the member: a Rejected report (ExecType 8) whose reason is that the exchange is closed (OrdRejReason 2).
-            refused_from = client_reports(f8proc).mark()
-            halted_sent_before = send_orders(f8proc, b"T", 1)
-            deadline = time.monotonic() + args.recovery_timeout
-            refused = 0
-            while time.monotonic() < deadline and not refused:
-                refused = client_reports(f8proc).count("8", refused_from, ord_rej_reason="2")
-                time.sleep(POLL_INTERVAL)
-            if client_reports(f8proc).new_among(halted_sent_before, _ORDERS_PER_COMMAND[b"T"]):
-                die("long absence: the member was sent a New report for an order sent while halted. A halt that still "
-                    "takes orders is not a halt (R-0117).")
-            if not refused:
-                die("long absence: the venue accepted an order while halted. A halt that still "
-                    "takes orders is not a halt, and the member is not told the venue is closed "
-                    "to business (R-0117).")
-            log("  long absence: an order sent into the halt was refused -- OK")
 
         # ── Do the member's open orders survive a restart of the matching engine? ──
         # The member-visible form of the question is whether those orders are still
@@ -8911,6 +8837,170 @@ def run_scenario(scenario: Scenario, args) -> bool:
                         f"{[(r.get(39), r.get(58)) for r in reports_by_order[cl_ord_id]]}. The gateway never passed it on.")
             if refused_ids:
                 log("  the refused order is not answered again -- OK")
+            member.close()
+
+        # ── Held orders at the halt: rejected, held cancels carried out, the book cancelled ──
+        # docs/availability/voided_commands.md, section 5.3. The member places two orders while the engines run, then
+        # both engines are killed, and it places three orders and a cancel of the first of the two, which the leading
+        # sequencer holds. Once no engine could be trading within the recovery limit, the sequencer voids the held new
+        # orders, cancels the book and halts. The engine started afterwards must reject each held order, as the first and
+        # only report of it, carry out the held cancel, and cancel the other order with the rest of the book.
+        if scenario.assert_halt_voids_held_orders:
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            gateway_port = gateway_listen_port(prefix, "a")
+            member = FixRawClient("127.0.0.1", gateway_port, FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("halt with held orders: the raw client could not log on. A test that cannot log on looks identical to a "
+                    "venue that will not answer, so this is checked first.")
+
+            # Every report the member is sent, by the ClOrdID it answers.
+            reports_by_order: dict[str, list[dict[int, str]]] = {}
+
+            def receive_halt_reports(timeout: float, done=lambda: False) -> None:
+                deadline = time.monotonic() + timeout
+                while not done():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return
+                    report = member.receive_until("8", timeout=min(1.0, remaining))
+                    if report is not None and report.get(11):
+                        reports_by_order.setdefault(report[11], []).append(report)
+
+            def has_status(cl_ord_id: str, status: str) -> bool:
+                return any(r.get(39) == status for r in reports_by_order.get(cl_ord_id, []))
+
+            resting_ids = ["halt-resting-1", "halt-resting-2"]
+            for cl_ord_id in resting_ids:
+                member.new_order_single(cl_ord_id)
+            receive_halt_reports(_HELD_ANSWER_TIMEOUT, lambda: all(has_status(cl_ord_id, "0") for cl_ord_id in resting_ids))
+            if not all(has_status(cl_ord_id, "0") for cl_ord_id in resting_ids):
+                member.close()
+                die(f"halt with held orders: the orders placed while the engines ran were not accepted: {reports_by_order}")
+            log(f"  {len(resting_ids)} order(s) placed and accepted while the engines run")
+
+            for engine in ("matching_engine_primary", "matching_engine_secondary"):
+                engine_proc = proc_by_name.get(engine)
+                if engine_proc is None or engine_proc.poll() is not None:
+                    member.close()
+                    die(f"halt with held orders: {engine} is not running, so taking every engine away is not what this "
+                        "scenario would be doing and it would prove nothing.")
+                log(f"  SIGKILL -> {engine} (PID {engine_proc.pid})")
+                engine_proc.kill()
+                engine_proc.wait()
+            halt_from = _TEST_EVENTS.mark()
+            log("  the venue now has no matching engine at all")
+
+            # Placed at once, well within the recovery limit, so that each is held rather than refused.
+            held_ids = [f"halt-held-{n}" for n in range(1, _HELD_ORDERS_PLACED + 1)]
+            for cl_ord_id in held_ids:
+                member.new_order_single(cl_ord_id)
+            held_cancel_id = "halt-held-cancel-1"
+            member.order_cancel_request(held_cancel_id, resting_ids[0])
+            log(f"  {len(held_ids)} order(s) and a cancel of {resting_ids[0]} placed while no engine leads")
+
+            gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+            halted_said = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False,
+                                                           halted_for_recovery=True), timeout=args.recovery_timeout, since=halt_from)
+            if halted_said is None:
+                member.close()
+                die("halt with held orders: the gateway was never told the venue is halted while it recovers, although no "
+                    f"engine has been able to trade for longer than the {scenario.automatic_recovery_limit_seconds}s limit")
+            receive_halt_reports(1.0)
+            answered = [cl_ord_id for cl_ord_id in held_ids + [held_cancel_id] if cl_ord_id in reports_by_order]
+            if answered:
+                member.close()
+                die(f"halt with held orders: {', '.join(answered)} answered before any engine was started: "
+                    f"{[(r.get(39), r.get(58)) for cl_ord_id in answered for r in reports_by_order[cl_ord_id]]}. Only an "
+                    "engine answers a held command.")
+            log("  the venue halted with the orders and the cancel held, and nothing answered yet -- correct so far")
+
+            log("  starting matching_engine_primary")
+            do_restart_step(
+                RestartStep(
+                    proc_name="matching_engine_primary",
+                    ready_log_name="matching_engine_primary.log",
+                    ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
+                    ready_timeout=_ME_READY_TIMEOUT,
+                    resets_me_counter=False,
+                    settle_secs=_ME_SETTLE,
+                ),
+                proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix),
+            )
+
+            receive_halt_reports(_HELD_ANSWER_TIMEOUT,
+                            lambda: all(cl_ord_id in reports_by_order for cl_ord_id in held_ids + [held_cancel_id])
+                            and has_status(resting_ids[1], "4"))
+            for cl_ord_id in held_ids + [held_cancel_id] + resting_ids:
+                for answer in reports_by_order.get(cl_ord_id, []):
+                    log(f"    {cl_ord_id}: OrdStatus={answer.get(39)} ExecType={answer.get(150)} OrdRejReason={answer.get(103, 'absent')} "
+                        f"PossResend={answer.get(97, 'absent')} Text='{answer.get(58, '')}'")
+
+            for cl_ord_id in held_ids:
+                answers = reports_by_order.get(cl_ord_id, [])
+                if not answers:
+                    member.close()
+                    die(f"halt with held orders: {cl_ord_id}, held when trading halted, was never answered. The venue halted "
+                        "while it was waiting, so the rule is that it is rejected, and the engine that next leads says so.")
+                if any(a.get(39) == "0" for a in answers):
+                    member.close()
+                    die(f"halt with held orders: {cl_ord_id} was accepted, with {[(a.get(39), a.get(58)) for a in answers]}. It "
+                        "was held when trading halted, so it was to be voided and rejected; accepted, it rested on a book the "
+                        "venue then cancelled, and the member was told of an order it never had a chance to trade "
+                        "(docs/availability/voided_commands.md, section 5.3).")
+                if len(answers) != 1 or answers[0].get(39) != "8" or answers[0].get(103) != "2":
+                    member.close()
+                    die(f"halt with held orders: {cl_ord_id} was answered with "
+                        f"{[(a.get(39), a.get(103), a.get(58)) for a in answers]}; one rejection, OrdStatus 8 with OrdRejReason 2, "
+                        "the exchange closed, was wanted.")
+                if answers[0].get(97) == "Y":
+                    member.close()
+                    die(f"halt with held orders: the rejection of {cl_ord_id} is marked PossResend. No engine applied the order "
+                        "before, so its rejection is the first report of it.")
+            log(f"  each of the {len(held_ids)} held order(s) is rejected, saying trading halted while it waited -- OK")
+
+            cancel_answers = reports_by_order.get(held_cancel_id, [])
+            if not any(a.get(39) == "4" and a.get(41) == resting_ids[0] for a in cancel_answers):
+                member.close()
+                die(f"halt with held orders: the cancel of {resting_ids[0]} held when trading halted was answered with "
+                    f"{[(a.get(39), a.get(41), a.get(58)) for a in cancel_answers]}. A held cancel is not voided: applied late, "
+                    "it still does what the member asked.")
+            if len(reports_by_order.get(resting_ids[0], [])) > 1:
+                member.close()
+                die(f"halt with held orders: {resting_ids[0]}, which the member's own cancel took off the book first, was "
+                    f"reported again: {[(a.get(39), a.get(58)) for a in reports_by_order[resting_ids[0]][1:]]}")
+            log(f"  the held cancel of {resting_ids[0]} is carried out -- OK")
+
+            if not has_status(resting_ids[1], "4"):
+                member.close()
+                die(f"halt with held orders: {resting_ids[1]}, resting on the book when trading halted, was not cancelled: "
+                    f"{[(a.get(39), a.get(58)) for a in reports_by_order.get(resting_ids[1], [])]}. The halt cancels every "
+                    "order on the book, because its member was locked out of it while no engine could trade (R-0117).")
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            restarted_from = _TEST_EVENTS.since_introduction("matching_engine_primary")
+            cancelled_book = engine_event("matching_engine_primary", "BookCancelled", restarted_from, args.failover_timeout)
+            if cancelled_book is None or not cancelled_book.by_command or cancelled_book.cancel_reports_sent < 1:
+                member.close()
+                die(f"halt with held orders: the engine that leads did not cancel its book by the command in the WAL ({cancelled_book})")
+            halt = engine_event("matching_engine_primary", "Halted", restarted_from, args.failover_timeout)
+            if halt is None or halt.reason != engine_events.HaltReason.RecoveryTooLong:
+                member.close()
+                die(f"halt with held orders: the engine that leads did not halt for the recovery limit ({halt})")
+            log(f"  {resting_ids[1]} and the rest of the book, {cancelled_book.cancel_reports_sent} order(s), are cancelled by the "
+                "command, and the engine halted -- OK")
+
+            into_halt_id = "halt-into-halt-1"
+            member.new_order_single(into_halt_id)
+            receive_halt_reports(args.recovery_timeout, lambda: into_halt_id in reports_by_order)
+            into_halt = reports_by_order.get(into_halt_id, [])
+            if not into_halt or any(a.get(39) != "8" for a in into_halt):
+                member.close()
+                die(f"halt with held orders: an order sent into the halt was answered with {[(a.get(39), a.get(58)) for a in into_halt]}; "
+                    "a rejection was wanted, because nothing lifts the halt but a person (R-0023)")
+            log("  an order sent into the halt is refused -- OK")
             member.close()
 
         # ── The follower's copy of the book across a break in the link between the engines ──

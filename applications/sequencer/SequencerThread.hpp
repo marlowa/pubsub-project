@@ -156,19 +156,18 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // catch up from either engine is always recognised (BUG-0108). See EngineOrderRouting.hpp.
     EngineOrderRouting engine_routing_;
 
-    // R-0117: when no matching engine could trade for longer than the venue allows, the leading sequencer writes a
-    // CancelBook command that halts trading if it cancels any order. EngineAbsenceRule decides when; the stamp beside the
-    // WAL says when this process last knew of an engine it routed to, for when the whole venue was down. Checked on
-    // engine_absence_timer_id_ about once a second.
-    EngineAbsenceRule engine_absence_{std::chrono::seconds(config_.absence_limit_seconds)};
+    // How long the venue has had no matching engine that can trade, for the limit on automatic recovery below.
+    // EngineAbsenceRule measures it; the stamp beside the WAL says when this process last knew of an engine it routed
+    // to, for when the whole venue was down. Checked on engine_absence_timer_id_ about once a second.
+    EngineAbsenceRule engine_absence_;
     EngineRoutedStamp engine_routed_stamp_;
     static constexpr std::chrono::seconds engine_absence_check_interval{1};
 
     // The longest recovery the venue does by itself: while no engine is routed to, when that time and how long the
-    // catch-up under way will still take together pass the limit, the leading sequencer halts trading with a
-    // TechnicalEvent and tells the gateways to refuse orders with the reason (docs/availability/far_back_catch_up.md,
-    // section 5). RecoveryLimitRule decides when, given the absence engine_absence_ measures and the progress of the
-    // engine's catch-up, which the reading thread reports. Checked with the absence.
+    // catch-up under way will still take together pass the limit, the leading sequencer voids the orders it holds,
+    // cancels the book and halts trading, and tells the gateways to refuse orders with the reason
+    // (docs/availability/far_back_catch_up.md, section 5; docs/availability/voided_commands.md, section 5.3). RecoveryLimitRule decides when, given the absence
+    // engine_absence_ measures and the progress of the engine's catch-up, which the reading thread reports. Checked with the absence.
     RecoveryLimitRule recovery_limit_{std::chrono::seconds(config_.automatic_recovery_limit_seconds)};
     // How far the catch-up of a matching engine that asked to be caught up has been sent, while one is under way.
     std::optional<RecoveryLimitRule::CatchUpProgress> engine_catch_up_progress_;
@@ -774,14 +773,26 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] size         How many bytes.
      */
     void write_own_command(int16_t inner_pdu_id, const uint8_t* bytes, size_t size);
-    // Stamps the time if an engine is routed to, tells engine_absence_ whether one is, and writes the command R-0117 asks
-    // for if it is due. Called on engine_absence_timer_id_, and when this instance takes the lead.
+    // Stamps the time if an engine is routed to, tells engine_absence_ whether one is, and halts trading if no engine
+    // could be trading within the limit on automatic recovery. Called on engine_absence_timer_id_, and when this instance
+    // takes the lead.
     void check_engine_absence();
-    // Writes the CancelBook command that cancels every order on the book and halts trading if it cancels any (R-0117).
-    void write_absence_command(int64_t now_ns);
-    // Writes the TechnicalEvent that halts trading because no engine could be trading within the longest recovery the
-    // venue does by itself, and tells the gateways the venue is not accepting orders, with the reason.
+
+    /**
+     * @brief Halts trading because no engine could be trading within the longest recovery the venue does by itself
+     *        (docs/availability/voided_commands.md, section 5.3, R-0117).
+     *
+     * Writes three commands, in this order: a VoidCommands naming every new order held, so that the engine that next
+     * leads rejects each instead of applying it; a CancelBook that cancels every order on the book, each reported to its
+     * member; and a TechnicalEvent that halts trading. They are held like the orders before them, and sent to the engine
+     * that next leads, in order. Then tells the gateways the venue is not accepting orders, with the reason.
+     */
     void write_recovery_halt(int64_t now_ns);
+    // Writes the VoidCommands of write_recovery_halt, if any order or cancel is held; voids only commands no engine has
+    // been sent and no report in the WAL answers.
+    void void_held_orders_at_the_halt();
+    // Encodes @p command and writes it with write_own_command. @return false, having logged why, if it cannot be encoded.
+    template <typename Command> bool write_own_encoded_command(const Command& command, const char* name);
     // A matching engine about to lead that cannot account for the orders the venue holds, asking for trading to be halted.
     void handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 

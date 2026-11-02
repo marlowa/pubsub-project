@@ -208,25 +208,24 @@ it was taken, and nowhere else.
 **The leading sequencer**, because it is the leader of the WAL and the only process that puts records in it. No engine
 cancels its book or halts on its own initiative any more. The decisions that are taken now are issued as follows.
 
-- **The absence rule (R-0117).** The rule is about the venue, not one engine: when no engine could trade for longer
-  than `absence_limit_seconds`, the open orders are cancelled, the members told, and trading halts. The leading
-  sequencer knows when an engine leads, because it routes orders only to the engine that leads
-  (`EngineOrderRouting`). It measures how long it has had no engine to route to, and when that exceeds the limit it
-  writes a cancel of the book and a halt. When the whole venue was down, sequencers included, the leading sequencer
-  measures the absence when it starts, and if that exceeds the limit, it writes the same command before any order. An
-  engine never measures its own absence, so a follower that was down for an hour cancels nothing
-  ([BUG-0146](../bug_list.md#bug_0146)). The rule is kept in one class of its own inside the sequencer, so that it can
-  move into the library if a second rule of the kind appears (decision 4).
+- **The absence rule (R-0117).** The rule is about the venue, not one engine: when no engine could be trading within
+  the longest recovery the venue does by itself, trading halts, the open orders are cancelled and the members told.
+  The leading sequencer knows when an engine leads, because it routes orders only to the engine that leads
+  (`EngineOrderRouting`). It measures how long it has had no engine to route to, and when that passes the limit it
+  writes the commands that cancel the book and halt. When the whole venue was down, sequencers included, the leading
+  sequencer measures the absence when it starts, and if that passes the limit, it writes the same commands before any
+  order. An engine never measures its own absence, so a follower that was down for an hour cancels nothing
+  ([BUG-0146](../bug_list.md#bug_0146)). The measure is kept in one class of its own inside the sequencer, so that it
+  can move into the library if a second rule of the kind appears (decision 4).
 
-  This is built. `EngineAbsenceRule` decides and `SequencerThread::check_engine_absence` acts, about once a second
-  and whenever this instance takes the lead. The limit is `[absence] absence_limit_seconds` in the sequencer's
-  configuration, declared once in each environment's shared section, because both sequencers of the pair must use the
-  same figure. The decision is one command: a `CancelBook` with reason `UnableToMatchTooLong`, through the largest
-  position, so that it cancels every order on the book, and with `halt_if_orders_cancelled` set, so that it halts
-  trading if it cancelled any. Where nothing was open, no member was locked out of anything, and trading carries on;
-  the sequencer cannot know whether the book held orders, but every engine that applies the command does, and they
-  all agree. It is written once for each absence, only by the leader, and never into an empty WAL, which holds no
-  order to cancel.
+  This is built. `EngineAbsenceRule` measures the absence, `RecoveryLimitRule` decides, and
+  `SequencerThread::check_engine_absence` acts, about once a second and whenever this instance takes the lead. The
+  limit is `[recovery] automatic_recovery_limit_seconds` in the sequencer's configuration, declared once in each
+  environment's shared section, because both sequencers of the pair must use the same figure. The decision is three
+  commands: a `VoidCommands` naming the orders the sequencer holds, a `CancelBook` with reason `RecoveryTooLong`,
+  through the largest position, so that it cancels every order on the book, and a `TechnicalEvent` that halts trading
+  ([voided_commands.md](voided_commands.md), section 5.3). They are written once for each absence, only by the leader,
+  and never into an empty WAL.
 
   When the whole venue was down, the absence is measured from a small file beside the WAL, `engine_routed_at`, which
   each sequencer writes about once a second with the wall time while it knows of an engine it routes orders to

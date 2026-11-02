@@ -202,8 +202,8 @@ WAL on the sequencer's thread (step 5 of phase 5) covers them.
 
 Agreed on 20 October 2026, and recorded in BUG-0176: while no matching engine can trade, the venue cannot answer
 members, and a catch-up from far back takes seconds or more, so members find their orders unanswered and telephone to
-ask whether the venue is working. The venue should state the longest recovery it does by itself, as it states the
-longest absence of an engine (R-0117). When an engine that is the only one able to trade could not be current within
+ask whether the venue is working. The venue should state the longest recovery it does by itself (R-0117, R-0118).
+When an engine that is the only one able to trade could not be current within
 that time, the venue halts trading, every order is refused with the reason, and a person decides when trading resumes.
 A follower catching up while the other engine leads is not limited, since members do not see it, and with section 2
 it sends the leading sequencer only the reports of commands the WAL does not yet hold every report of: those taken
@@ -214,8 +214,8 @@ their state, and never from further back than the start of the trading day.
 
 ### 5.2 The design
 
-**The leading sequencer measures it**, alongside the absence rule (`EngineAbsenceRule`), once a second, for the same
-reason: the rule is about the venue, and the leading sequencer is the process that knows whether any engine can trade,
+**The leading sequencer measures it**, from the absence of an engine that `EngineAbsenceRule` measures, once a second,
+because the rule is about the venue, and the leading sequencer is the process that knows whether any engine can trade,
 because it routes orders only to an engine that leads (`EngineOrderRouting`). It also knows how far the catch-up has
 got, because its reading thread is sending it: about every 100 milliseconds while it serves a follower, the reading
 thread tells the sequencer's thread the last record it has sent and the last it is serving up to (a `Progress`
@@ -240,26 +240,27 @@ time no engine has led exceeds the limit with no estimate, for instance because 
 2. It writes a `TechnicalEvent` that halts trading, with a new reason `RecoveryTooLong`, as the sequencer already does
    for `CannotAccountForBook`. Every engine applies it at its position, so when the engine has caught up it does not
    resume trading by itself, and an engine that replays the WAL later meets the halt at the same place.
-3. Nothing is cancelled. The absence rule still cancels every open order if no engine can trade for longer than its
-   own limit (300 seconds in production); the recovery limit is shorter, and halts only.
+   Before the halt it writes a `VoidCommands` naming the orders it holds, which the engine that next leads rejects, and
+   a `CancelBook` that cancels every order on the book, each reported to its member (R-0117;
+   [voided_commands.md](voided_commands.md), section 5.3).
 
-**This is built.** `RecoveryLimitRule` decides and `SequencerThread::check_engine_absence` acts, beside the absence
-rule. The rule estimates the time still to come from how far the reading thread moved over at least the last second,
+**This is built.** `RecoveryLimitRule` decides and `SequencerThread::check_engine_absence` acts. The rule estimates the time still to come from how far the reading thread moved over at least the last second,
 and acts once the time so far and that estimate together pass the limit, or the time so far alone passes it. The
 gateways are told the venue is accepting again once an engine is routed to: the engine applied the halt in its
 catch-up, so it refuses new orders as halted, and each refusal comes from it.
 
-Orders that reached the sequencer before the halt are before it in the WAL, and are applied when the engine reaches
-them, so each is answered then. Trading resumes when a person lifts the halt, through the operator's means of doing
+Orders that reached the sequencer while no engine led are held, and voided by the command written before the halt, so
+the engine that next leads rejects each, saying trading halted while it was waiting; cancels held with them are
+carried out. Trading resumes when a person lifts the halt, through the operator's means of doing
 so ([BUG-0065](../bug_list.md#bug_0065)), which is not built; until it is, a halt lasts until the end of the day, as
 the `CannotAccountForBook` halt does now.
 
 **It is the same rule as [BUG-0197](../bug_list.md#bug_0197).** That entry, agreed on 24 October 2026, asks that
 orders be held only for as long as a normal failover takes, and that past that, if no engine leads, the venue halts
 and says so at once. A far-back catch-up is one way for no engine to lead. So BUG-0197's halt and this limit are one
-measurement, one limit and one action, and are built once; BUG-0197 adds the rejection of the orders held before the
-halt, which needs rejecting a command through the WAL and is designed in phase 8. The limit's value then decides how
-long a normal failover may take, and should be set from a measurement of one.
+measurement, one limit and one action, and are built once, with the rejection of the orders held before the halt
+([voided_commands.md](voided_commands.md), section 5.3). A normal failover holds orders for at most 3.0 seconds, as
+measured in [voided_commands.md](voided_commands.md), section 8, step 3, well within the limit.
 
 ### 5.3 What the limit is set to
 

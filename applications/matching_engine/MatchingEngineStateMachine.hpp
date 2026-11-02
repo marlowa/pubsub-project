@@ -46,9 +46,6 @@ enum class ReportIsRepeat { no, yes };
  */
 enum class CommandSource { live, catch_up };
 
-/// Whether a CancelBook command also halts trading if it cancels any order. See MatchingEngineStateMachine::apply_cancel_book.
-enum class HaltIfOrdersCancelled { no, yes };
-
 /**
  * @brief Where the state machine's results go: the reports it produces, and what became of each command.
  *
@@ -176,7 +173,6 @@ class MatchingEngineStateMachine {
         int64_t open_orders{0};  ///< how many orders the book held when the command was applied
         int64_t reports_sent{0}; ///< how many orders were cancelled, each with a report
         int64_t orders_kept{0};  ///< how many orders, placed after the command's position, stay on the book
-        bool halted{false};      ///< true when the command halted trading, because it asked to if it cancelled any order and it did
     };
 
     /**
@@ -194,22 +190,18 @@ class MatchingEngineStateMachine {
      * time or a trading date is a defect in the sequencer; it is applied all the same, with what it carries, because it
      * has no member to refuse it to, and reported at Error.
      *
-     * With halt_if_orders_cancelled, a command that cancels any order halts trading as well, which is what R-0117 asks
-     * of the venue after no engine could trade for too long: the orders were cancelled because their members were locked
-     * out of them, and trading stays halted until a person lifts it. One that cancels nothing leaves trading as it was,
-     * because no member was left holding an order it could not reach. The halt is recorded in the region before the
-     * position is published, so an engine that restarts later finds it there.
+     * It never halts trading. When the venue halts because no engine could be trading within the longest recovery it
+     * does by itself, a TechnicalEvent that halts follows the command (docs/availability/voided_commands.md, section 5.3).
      *
      * @param[in] orders_placed_through   The command's position: orders placed at or before it are cancelled.
-     * @param[in] halt_if_orders_cancelled Whether to halt trading if the command cancels any order.
      * @param[in] sequence_number         The command's sequence number.
      * @param[in] transact_time           The time the sequencer recorded for it, written on every report.
      * @param[in] trading_date            The trading date it carries.
      * @param[in] source                  Whether it is applied live or during a catch-up.
      * @return What it did.
      */
-    BookCancelledByCommand apply_cancel_book(int64_t orders_placed_through, HaltIfOrdersCancelled halt_if_orders_cancelled, int64_t sequence_number,
-                                             int64_t transact_time, int32_t trading_date, CommandSource source);
+    BookCancelledByCommand apply_cancel_book(int64_t orders_placed_through, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
+                                             CommandSource source);
 
     /// What a TechnicalEvent command did.
     struct TechnicalEventApplied {

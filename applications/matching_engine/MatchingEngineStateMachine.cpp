@@ -1032,10 +1032,9 @@ void MatchingEngineStateMachine::after_failure(int64_t sequence_number, CommandS
     }
 }
 
-MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::apply_cancel_book(int64_t orders_placed_through,
-                                                                                                 HaltIfOrdersCancelled halt_if_orders_cancelled,
-                                                                                                 int64_t sequence_number, int64_t transact_time,
-                                                                                                 int32_t trading_date, CommandSource source) {
+MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::apply_cancel_book(int64_t orders_placed_through, int64_t sequence_number,
+                                                                                                 int64_t transact_time, int32_t trading_date,
+                                                                                                 CommandSource source) {
     BookCancelledByCommand result;
     const bool live = source == CommandSource::live;
     if (!live && applied_before(sequence_number)) {
@@ -1107,15 +1106,10 @@ MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::a
         outputs_.send_report(er, 0, entry.session, repeat);
     }));
     result.orders_kept = static_cast<int64_t>(book_.size());
-    // Recorded before the position is published, so that an engine that restarts after this command finds the halt.
-    if (halt_if_orders_cancelled == HaltIfOrdersCancelled::yes && result.reports_sent > 0 && !book_.halted()) {
-        set_halted(TradingHalted::yes);
-        result.halted = true;
-    }
     book_.publish(sequence_number);
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineStateMachine: CancelBook seq={} -- {} order(s) cancelled and reported, {} placed after seq={} kept{}", sequence_number,
-               result.reports_sent, result.orders_kept, orders_placed_through, result.halted ? ", and trading halts" : "");
+               "MatchingEngineStateMachine: CancelBook seq={} -- {} order(s) cancelled and reported, {} placed after seq={} kept", sequence_number,
+               result.reports_sent, result.orders_kept, orders_placed_through);
     return result;
 }
 

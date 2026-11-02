@@ -354,8 +354,9 @@ it chooses to, as section 11 describes. The authentication service, for example,
 **The three decisions in question.** Three things change the engine's book that no order or cancel
 from a member asks for:
 
-- **Halting after an absence.** If no engine could trade for longer than the configured limit
-  (`absence_limit_seconds`, 300 seconds by default), every order is cancelled and trading halts.
+- **Halting after an absence.** If no engine could be trading within the longest recovery the venue
+  does by itself (`automatic_recovery_limit_seconds`, 10 seconds by default), every order is cancelled
+  and trading halts.
 - **Acting on promotion.** When the follower engine takes over as leader, it cancels every order it
   inherited, if `open_orders_on_promotion = "cancel"` is configured.
 - **Refusing orders while halted.**

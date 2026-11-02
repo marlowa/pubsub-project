@@ -574,6 +574,34 @@ leading first.
 4. **Voiding the held orders at the halt (section 5.3).** Scenarios 85 and 86 require the held new orders to be rejected,
    the held cancels to be carried out, and, with decision 6 B, every open order to be cancelled with a report; made to
    fail by leaving out the `VoidCommands`, when the held orders rest on the book instead. The absence rule goes.
+
+   **As built.** When the limit on automatic recovery passes, `SequencerThread::write_recovery_halt` writes the three
+   commands of section 5.3 in order. The `VoidCommands` names every command after the last one released and after the
+   last one any report in the WAL answers, through the last record in the WAL, with `new_orders_only` set and the reason
+   `HeldWhenTradingHalted`; it is written only if that range holds a command. The `CancelBook`, with the new reason
+   `RecoveryTooLong`, cancels every order on the book. The `TechnicalEvent` halts. All three are held like the orders
+   before them. A `CancelBook` no longer halts trading itself: its field `halt_if_orders_cancelled` and the engine's halt
+   reason `UnableToMatchTooLong` are gone, because the `TechnicalEvent` after it halts. The absence rule is gone:
+   `[absence] absence_limit_seconds`, `write_absence_command` and `CancelBookReason::UnableToMatchTooLong`.
+   `EngineAbsenceRule` now only measures how long the venue has had no engine, for the limit on automatic recovery.
+
+   Scenario 85 now kills both engines, has the member place three orders and a cancel of one of two orders it placed
+   before, and waits for the venue to halt, with the limit shortened to four seconds so that the halt comes before new
+   orders are refused. It starts one engine and requires each held order to be rejected, once, with OrdRejReason 2 and
+   not marked as a possible repeat; the held cancel to be carried out; the other order and the rest of the book to be
+   cancelled by the command; the engine to halt; and an order sent afterwards to be refused. Scenario 51, which tested
+   the absence rule, now keeps a single engine down past a limit of two seconds and requires every order on the book to
+   be cancelled by the command and reported to the member, the engine to halt, and an order sent afterwards to be
+   refused. Scenario 84 keeps the following engine down past the limit while its peer trades, and requires nothing to be
+   cancelled and nothing to halt. Scenario 18, which needs a burst of cancels for a gateway that has died, gets it from
+   the halt in place of the absence rule. Scenario 86 is unchanged.
+
+   Made to fail on 1 November 2026. With the `VoidCommands` left out, scenario 85 fails: each held order is accepted.
+   With the `CancelBook` made to cancel nothing, scenarios 51 and 85 both fail: the engine cancels no order, and the
+   order resting when trading halted is not cancelled.
+
+   Both full suites passed on 1 and 2 November 2026: 93 of 93 with the primary engine leading first, and 36 of 36 with
+   the secondary first, which now includes scenario 85.
 5. **The operator's halt and lift (section 6).** The sequencer's halted state, the reason `Halted`, the operator's
    request and how it reaches the sequencer. A scenario halts the venue by the limit on automatic recovery, has an
    operator try to lift it before any engine leads and requires the request to be declined, starts an engine, lifts the

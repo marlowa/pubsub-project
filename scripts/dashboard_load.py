@@ -284,8 +284,9 @@ def main(argv=None):
     parser.add_argument("--fix-comp-id", default="CLIENT", help="SenderCompID for the FIX client")
     parser.add_argument("--cancel-ratio", type=float, default=0.9,
                         help="fraction of placed orders also cancelled (default: 0.9). Orders never cancelled rest "
-                             "on the book for ever and are recovered at the next start, which past a few minutes "
-                             "of absence is an R-0117 cancel-and-halt. Set 0 to let the book accumulate")
+                             "on the book for ever and are recovered at the next start, which after more than ten "
+                             "seconds without an engine halts and cancels them all (R-0117). Set 0 to let the book "
+                             "accumulate")
     parser.add_argument("--first-cl-ord-id", type=int, default=None,
                         help="starting ClOrdID. Defaults to something derived from the clock, because a ClOrdID the "
                              "matching engine has already seen is rejected as a duplicate")

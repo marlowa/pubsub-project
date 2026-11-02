@@ -735,7 +735,7 @@ end
 
 # Why a cancel of the book was written.
 enum CancelBookReason : i8 {
-    UnableToMatchTooLong = 2   # no matching engine could trade for longer than absence_limit_seconds (R-0117)
+    RecoveryTooLong = 3   # no matching engine could be trading within the longest recovery the venue does by itself (R-0117)
 }
 
 # ------------------------------------------------------------
@@ -744,15 +744,15 @@ enum CancelBookReason : i8 {
 #  envelope like a new order or a cancel: cancel every order on
 #  the book placed at or before orders_placed_through, in the
 #  order they were placed, reporting each to its member. Orders
-#  placed after it stay on the book. A cancel written because no
-#  engine could trade for too long carries the largest i64, so that
-#  it cancels every order on the book, and halts trading if it
-#  cancelled any.
+#  placed after it stay on the book. The cancel written when no
+#  engine could be trading within the longest recovery the venue
+#  does by itself carries the largest i64, so that it cancels every
+#  order on the book, and is followed by a TechnicalEvent that halts
+#  trading (docs/availability/voided_commands.md, section 5.3).
 # ------------------------------------------------------------
 message CancelBook (id=139, version=1)
     CancelBookReason reason
     i64 orders_placed_through
-    bool halt_if_orders_cancelled   # true: if the command cancels any order, trading halts too (R-0117)
 end
 
 # The venue's trading phase. See docs/venue/trading_phases.md. Until

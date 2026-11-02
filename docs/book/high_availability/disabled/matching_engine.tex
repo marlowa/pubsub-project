@@ -194,10 +194,10 @@ exercised continually rather than only when a test produces a failover.
 \end{requirement}
 
 \begin{requirement}{R-0117}{Orders open across a long absence are cancelled, reported, and trading halts}
-  Where the venue was unable to match for longer than a stated period and orders
-  were open when it stopped, it shall cancel each of them, send the member that
-  placed it a report saying so, and halt. Where nothing was open, it shall resume
-  without halting.
+  Where the venue was unable to match for longer than a stated period, it shall
+  halt, cancel every order open when it stopped, and send the member that placed
+  each a report saying so. Every order it took and had not yet matched shall be
+  rejected, with a report saying that trading halted while the order was waiting.
   \rationale{\textbf{The period is the length of the outage, not the age of the
   order.} An order that has rested since the morning in a working market is not a problem,
   because its owner could have cancelled it at any moment and chose not to. The
@@ -212,15 +212,23 @@ exercised continually rather than only when a test produces a failover.
   from a damaged region.
 
   Cancelling removes the uncertainty. The reports tell each member where it stands.
-  The halt records that the venue did not simply carry on. The exception for an
-  empty book matters because traffic is bursty: a long absence during a quiet period
-  leaves no stale order and nothing to report, and halting would produce an outage
-  for no benefit.
+  The halt records that the venue did not simply carry on, and it does not depend on
+  whether any order was open: the venue halts because it could not recover by itself
+  within the period it states, and a person decides when trading resumes.
+
+  \textbf{An order taken while the venue could not match is rejected, not matched
+  late.} The venue records such an order and holds it, so that it can be matched
+  after an ordinary failover, which is short. Once the absence has passed the stated
+  period, matching it late would put an order on a book the venue has just cancelled
+  for being out of date, and its member has been told nothing about it all the while.
+  Rejecting it gives the member a definite answer, and the same answer whatever
+  happens next. An order to cancel that was waiting is carried out, because applied
+  late it still does what the member asked.
 
   The venue can measure both parts of this condition, the length of the absence and
   what it cancelled, so it can enter the condition without a person present.
   Lifting the condition still requires a person, under \reqref{R-0023}.}
-  \covers{ha_test:51}
+  \covers{ha_test:51, ha_test:85}
 \end{requirement}
 
 \begin{requirement}{R-0118}{How long an absence may be before orders are cancelled is a stated figure}
@@ -247,9 +255,12 @@ exercised continually rather than only when a test produces a failover.
   stopped must reach the same answer, and it does: an hour has passed, the orders
   are an hour stale, and cancelling them is correct.
 
-  The figure is a trading decision rather than a measurement. It states how long a
-  member's resting order stays meaningful in this market, which is a judgement
-  about members rather than about how long the code takes.}
+  \textbf{The figure is the longest recovery the venue makes by itself.} It is set
+  from how long an ordinary failover takes, with a margin, so that an ordinary failover
+  never reaches it, and every absence longer than that is treated as the venue being
+  unable to recover without a person. Where a recovery under way says how long it
+  will still take, the venue may act as soon as the absence and that estimate
+  together pass the figure, rather than waiting for the absence alone to pass it.}
   \covers{ha_test:51}
 \end{requirement}
 

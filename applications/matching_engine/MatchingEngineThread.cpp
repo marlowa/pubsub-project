@@ -2168,9 +2168,8 @@ void MatchingEngineThread::request_halt() {
 void MatchingEngineThread::apply_cancel_book_command(const pubsub_itc_fw_app::CancelBookView& command, int64_t sequence_number, int64_t transact_time,
                                                      int32_t trading_date, CommandSource source) {
     const int64_t orders_placed_through = command.orders_placed_through;
-    const HaltIfOrdersCancelled halt_if_orders_cancelled = command.halt_if_orders_cancelled ? HaltIfOrdersCancelled::yes : HaltIfOrdersCancelled::no;
     const MatchingEngineStateMachine::BookCancelledByCommand result =
-        state_machine_.apply_cancel_book(orders_placed_through, halt_if_orders_cancelled, sequence_number, transact_time, trading_date, source);
+        state_machine_.apply_cancel_book(orders_placed_through, sequence_number, transact_time, trading_date, source);
     if (!result.applied) {
         return;
     }
@@ -2178,23 +2177,12 @@ void MatchingEngineThread::apply_cancel_book_command(const pubsub_itc_fw_app::Ca
         test_events_->send_event(pubsub_itc_fw_app::BookCancelled::message_pdu_id,
                                  pubsub_itc_fw_app::BookCancelled{result.open_orders, result.reports_sent, true, result.orders_kept});
     }
-    if (command.reason == pubsub_itc_fw_app::CancelBookReason::UnableToMatchTooLong) {
-        // The orders are not stale because they are old. They are stale because the members that placed them were locked
-        // out of them while the market moved: no engine could trade, so they could not cancel.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "MatchingEngineThread: the leading sequencer wrote at seq={} that no matching engine could trade for longer than the venue allows -- {} "
-                   "order(s) cancelled and their members told{} (R-0117)",
-                   sequence_number, result.reports_sent,
-                   result.halted             ? ", and trading is halted until a person lifts it (R-0023)"
-                   : state_machine_.halted() ? "; trading was halted already"
-                                             : "; trading carries on, because none were open");
-    }
-    if (result.halted) {
-        halt_reason_ = pubsub_itc_fw_app::HaltReason::UnableToMatchTooLong;
-        if (test_events_.has_value()) {
-            test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{*halt_reason_});
-        }
-    }
+    // The orders are not stale because they are old. They are stale because the members that placed them were locked out
+    // of them while the market moved: no engine could trade, so they could not cancel.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "MatchingEngineThread: the leading sequencer wrote at seq={} that no matching engine could be trading within the longest recovery the "
+               "venue does by itself -- {} order(s) cancelled and their members told (R-0117)",
+               sequence_number, result.reports_sent);
 }
 
 void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app::TechnicalEventView& event, int64_t sequence_number, int32_t trading_date,

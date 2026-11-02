@@ -78,7 +78,6 @@
 namespace {
 
 using matching_engine::CommandSource;
-using matching_engine::HaltIfOrdersCancelled;
 using matching_engine::MatchingEngineOutputsInterface;
 using matching_engine::MatchingEngineStateMachine;
 using matching_engine::OrderBook;
@@ -362,9 +361,8 @@ int main(int argc, char** argv) {
                             return;
                         }
                         ++commands;
-                        static_cast<void>(machine.apply_cancel_book(
-                            command.orders_placed_through, command.halt_if_orders_cancelled ? HaltIfOrdersCancelled::yes : HaltIfOrdersCancelled::no, record_id,
-                            envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
+                        static_cast<void>(machine.apply_cancel_book(command.orders_placed_through, record_id, envelope.wall_time_ns,
+                                                                    envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
                     } else if (envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) {
                         pubsub_itc_fw_app::TechnicalEventView event{};
                         if (!pubsub_itc_fw_app::decode(event, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
