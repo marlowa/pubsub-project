@@ -1292,6 +1292,18 @@ class Scenario(NamedTuple):
     # When True, also start binary_order_gateway_a, directly after the FIX gateway. Only the
     # scenarios that test the binary gateway want it.
     binary_gateway: bool = False
+    # When True, a member reuses, through each gateway, the ClOrdID of an order it cancelled and of a cancel, and each
+    # is refused by the leading sequencer with reason 6 and never reaches the matching
+    # engine. See run_scenario's "identifier used again" block and R-0119.
+    assert_identifier_reuse_refused: bool = False
+    # When True, a member sends, through each gateway, a second order under a ClOrdID whose first order has not yet been
+    # answered, and the gateway refuses the second itself; the first is then answered as usual. See run_scenario's
+    # "identifier held unanswered" block.
+    assert_held_identifier_refused_by_gateway: bool = False
+    # When True, each gateway is restarted while a member's order rests, the member resubmits that order under its
+    # ClOrdID, and the resubmission is refused and never reaches the matching engine. See run_scenario's "resubmitted
+    # after a gateway restart" block, R-0006 and R-0010.
+    assert_resubmission_after_gateway_restart_refused: bool = False
     # When True, send the binary gateway orders and cancels it must refuse, and some it must
     # accept, and check each reply. See run_scenario's "binary checks" block and BUG-0100.
     assert_binary_checks: bool = False
@@ -4797,6 +4809,75 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         steps=[],
     ),
+
+    # 96 -- a ClOrdID used earlier today is refused, whatever became of the command that used it.
+    #
+    # docs/availability/one_check_against_sequencing_twice.md, sections 3.3 and 4. Through the FIX gateway, a member
+    # places an order and cancels it, and places a second order that rests. It then sends a new order under the ClOrdID
+    # of the cancelled order, and a cancel of the resting order under the ClOrdID of its earlier cancel. Each must be
+    # refused by the leading sequencer, which the sequencer's IdentifierRefused event shows, and answered with
+    # OrdRejReason 6 or CxlRejReason 6 and the text "ClOrdID already used today", and neither may reach the matching
+    # engine. The same is then done through the binary gateway with an order and its cancel. The engine does not match
+    # orders, so the case of an order that has been filled cannot be run; a cancelled order is one whose first use has
+    # ended and is off the book, which is the case R-0119 is about.
+    Scenario(
+        number=96,
+        short_name="identifier_used_again_refused",
+        description="A member reusing the ClOrdID of a cancelled order or of a cancel is refused, through both gateways",
+        expected_outcome=(
+            "through each gateway, a new order reusing the ClOrdID of a cancelled order is rejected with OrdRejReason 6, and a cancel "
+            "reusing a cancel's ClOrdID is refused with CxlRejReason 6; the leading sequencer refuses each, and none reaches the matching engine"
+        ),
+        binary_gateway=True,
+        assert_identifier_reuse_refused=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 97 -- a second command under a ClOrdID still waiting for its answer is refused by the gateway itself.
+    #
+    # docs/availability/one_check_against_sequencing_twice.md, section 4.3. The matching engine is stopped with SIGSTOP,
+    # so that nothing answers. Through the FIX gateway, a member sends an order, and then a second order under the same
+    # ClOrdID: the gateway must refuse the second at once, with OrdRejReason 6, and the leading sequencer must refuse
+    # nothing, which shows the gateway did not send it on. The engine is let run, and the first order must be accepted.
+    # The same is done through the binary gateway, with the two orders sent on one connection.
+    Scenario(
+        number=97,
+        short_name="identifier_held_unanswered_refused_by_gateway",
+        description="A second order under a ClOrdID still waiting for its answer is refused by the gateway, through both gateways",
+        expected_outcome=(
+            "through each gateway, with the engine stopped, a second order under the ClOrdID of an unanswered order is rejected by the gateway with "
+            "OrdRejReason 6 and never reaches the sequencer; once the engine runs, the first order is accepted"
+        ),
+        binary_gateway=True,
+        assert_held_identifier_refused_by_gateway=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 98 -- an order resubmitted after its gateway restarted is refused, and no second order rests.
+    #
+    # docs/availability/one_check_against_sequencing_twice.md, section 3.3, and R-0003, R-0006 and R-0010. A member places
+    # an order through the FIX gateway, which rests. The gateway is killed and restarted, so it holds no copy of the
+    # order. The member logs on again and resubmits the order under its ClOrdID, as R-0003 allows a member that cannot
+    # tell whether the venue took it. The leading sequencer must refuse it, with OrdRejReason 6, and it must not reach the
+    # matching engine, so no second order rests. The same is done through the binary gateway.
+    Scenario(
+        number=98,
+        short_name="resubmission_after_gateway_restart_refused",
+        description="An order resubmitted after its gateway restarts is refused, and no second order rests, through both gateways",
+        expected_outcome=(
+            "through each gateway, an order that rests is resubmitted under its ClOrdID after the gateway is killed and restarted; the leading "
+            "sequencer refuses it with OrdRejReason 6, and it never reaches the matching engine"
+        ),
+        binary_gateway=True,
+        assert_resubmission_after_gateway_restart_refused=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -6523,7 +6604,7 @@ def installed_toml_int(config: Path, key: str) -> int:
 # One reply as binary_client prints it. Text comes last because it may contain spaces.
 _BINARY_REPORT_LINE = re.compile(
     r"^ExecutionReport seq=(?P<seq>\S+) ClOrdID=(?P<cl_ord_id>\S*) OrderID=(?P<order_id>\S*) OrdStatus=(?P<ord_status>\S+) "
-    r"ExecType=(?P<exec_type>\S+) Symbol=(?P<symbol>\S*) Text=(?P<text>.*)$")
+    r"ExecType=(?P<exec_type>\S+) Symbol=(?P<symbol>\S*) OrdRejReason=(?P<ord_rej_reason>\S+) Text=(?P<text>.*)$")
 _BINARY_CANCEL_REJECT_LINE = re.compile(
     r"^OrderCancelReject seq=(?P<seq>\S+) ClOrdID=(?P<cl_ord_id>\S*) OrigClOrdID=(?P<orig_cl_ord_id>\S*) OrdStatus=(?P<ord_status>\S+) "
     r"CxlRejReason=(?P<cxl_rej_reason>\S+) Text=(?P<text>.*)$")
@@ -6550,6 +6631,103 @@ def run_binary_client(bin_dir: Path, port: int, *arguments: str) -> tuple[int, l
         if reject:
             replies.append({"kind": "OrderCancelReject", **reject.groupdict()})
     return result.returncode, replies, result.stdout + result.stderr
+
+
+# The text both gateways give a member whose command reuses a ClOrdID (fix_common/GatewayRefusal.hpp).
+_IDENTIFIER_USED_TEXT = "ClOrdID already used today"
+# The symbol the scenarios about reused ClOrdIDs trade, so that their orders meet no other scenario's.
+_REUSE_SYMBOL = "REUSE"
+
+
+def identifier_refusals(since: int, cl_ord_id: str) -> int:
+    """How many times a sequencer has refused cl_ord_id as a ClOrdID used before (IdentifierRefused), at or after since,
+    among the events read so far."""
+    refused = message_of(_TEST_EVENTS.modules["sequencer_test_events"].IdentifierRefused, None, cl_ord_id=cl_ord_id)
+    _TEST_EVENTS.check()
+    return sum(1 for event in _TEST_EVENTS.events[since:] if refused(event))
+
+
+def await_identifier_refusal(since: int, cl_ord_id: str, timeout: float) -> bool:
+    """Wait up to timeout seconds for a sequencer to refuse cl_ord_id as a ClOrdID used before, at or after since."""
+    deadline = time.monotonic() + timeout
+    while identifier_refusals(since, cl_ord_id) == 0:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        _TEST_EVENTS.pump(min(remaining, 0.05))
+    return True
+
+
+def logged_on_fix_member(prefix: Path, comp_id: str, what: str):
+    """A FixRawClient logged on to FIX gateway instance a as comp_id. Dies, naming what, if it cannot log on: a test that
+    cannot log on looks the same as a venue that refuses everything."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+    member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), comp_id, "GATEWAY", FIX8_PASSWORD)
+    member.connect()
+    member.logon(reset_seq_num=True)
+    if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+        member.close()
+        die(f"{what}: '{comp_id}' could not log on to the FIX gateway.")
+    return member
+
+
+def fix_reply(member, cl_ord_id: str, timeout: float = _RAW_REPLY_TIMEOUT) -> dict[int, str] | None:
+    """The next ExecutionReport or OrderCancelReject the member receives for cl_ord_id, or None within timeout seconds."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        reply = member.receive_until("8", "9", timeout=max(0.1, deadline - time.monotonic()))
+        if reply is not None and reply.get(11) == cl_ord_id:
+            return reply
+    return None
+
+
+def check_fix_status(member, cl_ord_id: str, ord_status: str, what: str) -> dict[int, str]:
+    """The member's report for cl_ord_id with OrdStatus ord_status, passing over the reports before it, such as the
+    acknowledgement (OrdStatus 0) that comes before a fill; dies if none arrives within the reply timeout."""
+    deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
+    last: dict[int, str] | None = None
+    while time.monotonic() < deadline:
+        reply = fix_reply(member, cl_ord_id, max(0.1, deadline - time.monotonic()))
+        if reply is None:
+            break
+        if reply.get(39) == ord_status:
+            return reply
+        last = reply
+    die(f"{what}: expected OrdStatus {ord_status} for ClOrdID {cl_ord_id}, got "
+        f"{'no reply' if last is None else f'only OrdStatus {last.get(39)} Text={last.get(58)!r}'}.")
+    return {}  # unreachable; die() exits
+
+
+def check_fix_identifier_refusal(reply: dict[int, str] | None, cl_ord_id: str, kind: str, what: str) -> None:
+    """reply must refuse cl_ord_id for reusing a ClOrdID: an ExecutionReport with OrdRejReason 6 for a new order (kind
+    "order"), or an OrderCancelReject with CxlRejReason 6 for a cancel (kind "cancel")."""
+    if reply is None:
+        die(f"{what}: no reply to ClOrdID {cl_ord_id}. A refused command must be answered.")
+    if kind == "order":
+        if reply.get(35) != "8" or reply.get(39) != "8" or reply.get(103) != "6" or not reply.get(37, "").startswith("GW-ORD-"):
+            die(f"{what}: ClOrdID {cl_ord_id} was answered MsgType={reply.get(35)} OrdStatus={reply.get(39)} OrdRejReason={reply.get(103)} "
+                f"OrderID={reply.get(37)}; expected a rejection with OrdRejReason 6 and an OrderID the gateway made.")
+    elif reply.get(35) != "9" or reply.get(102) != "6":
+        die(f"{what}: cancel ClOrdID {cl_ord_id} was answered MsgType={reply.get(35)} CxlRejReason={reply.get(102)}; expected an "
+            "OrderCancelReject with CxlRejReason 6.")
+    if reply.get(58) != _IDENTIFIER_USED_TEXT:
+        die(f"{what}: ClOrdID {cl_ord_id} was refused with Text={reply.get(58)!r}; expected {_IDENTIFIER_USED_TEXT!r}.")
+
+
+def check_binary_identifier_refusal(replies: list[dict[str, str]], output: str, cl_ord_id: str, kind: str, what: str) -> None:
+    """binary_client's replies must refuse cl_ord_id for reusing a ClOrdID, as check_fix_identifier_refusal says."""
+    reply = next((reply for reply in replies if reply["cl_ord_id"] == cl_ord_id), None)
+    if reply is None:
+        die(f"{what}: binary_client printed no reply to ClOrdID {cl_ord_id}:\n{output}")
+    if kind == "order":
+        if (reply["kind"] != "ExecutionReport" or reply["ord_status"] != "Rejected" or reply["ord_rej_reason"] != "6"
+                or not reply["order_id"].startswith("GW-ORD-")):
+            die(f"{what}: ClOrdID {cl_ord_id} was answered {reply}; expected a rejection with OrdRejReason 6 and an OrderID the gateway made.")
+    elif reply["kind"] != "OrderCancelReject" or reply["cxl_rej_reason"] != "6":
+        die(f"{what}: cancel ClOrdID {cl_ord_id} was answered {reply}; expected an OrderCancelReject with CxlRejReason 6.")
+    if reply["text"] != _IDENTIFIER_USED_TEXT:
+        die(f"{what}: ClOrdID {cl_ord_id} was refused with Text={reply['text']!r}; expected {_IDENTIFIER_USED_TEXT!r}.")
 
 
 def write_fix8_variant(filename: str, *, listen_port: int | None = None,
@@ -7502,6 +7680,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
                            or scenario.assert_open_orders_survive or scenario.assert_inflight_recovery
                            or scenario.assert_unbound_reports_delivered)
         _REPORT_ORDERS_NOW = _REPORT_ORDERS_OF + ((FIX8_COMP_ID,) if member_outcomes else ())
+        # The scenarios that check a refused command never reached the matching engine read the engine's outcomes for the
+        # comp ids that send it.
+        if (scenario.assert_identifier_reuse_refused or scenario.assert_held_identifier_refused_by_gateway
+                or scenario.assert_resubmission_after_gateway_restart_refused):
+            _REPORT_ORDERS_NOW = _REPORT_ORDERS_OF + (FIX8_COMP_ID, FIX8_RECOVERY_COMP_ID, _BINARY_COMP_ID)
         # The previous scenario's listener; its components have all been stopped by now.
         if _TEST_EVENTS is not None:
             _TEST_EVENTS.close()
@@ -10805,7 +10988,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
-            import threading  # pylint: disable=import-outside-toplevel
 
             member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
             member.connect()
@@ -11449,6 +11631,198 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # Nothing is killed. A comp id with small limits sends bursts over them, and the replies
         # are matched to the commands by ClOrdID, so a report for some other order cannot be
         # mistaken for the answer to this one.
+        # ── Identifier used again ─────────────────────────────────────────────
+        if scenario.assert_identifier_reuse_refused:
+            log("=== A ClOrdID used earlier today is refused, through both gateways ===")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+            run_tag = datetime.now().strftime("%H%M%S")
+            engine = me_log.stem
+            what = "identifier used again"
+            started_from = _TEST_EVENTS.mark()
+
+            # The matching engine does not match orders (docs/venue/matching_engine.md), so no order can be filled; an
+            # order that has been cancelled is one whose first use has ended, and is off the book.
+            member = logged_on_fix_member(prefix, FIX8_COMP_ID, what)
+            cancelled = f"reuse-{run_tag}-cancelled"
+            cancel = f"reuse-{run_tag}-cancel"
+            resting = f"reuse-{run_tag}-resting"
+            try:
+                member.new_order_single(cancelled, symbol=_REUSE_SYMBOL, side="1", price="9.0")
+                check_fix_status(member, cancelled, "0", what)
+                member.order_cancel_request(cancel, cancelled, symbol=_REUSE_SYMBOL, side="1")
+                check_fix_status(member, cancel, "4", what)
+                member.new_order_single(resting, symbol=_REUSE_SYMBOL, side="1", price="9.5")
+                check_fix_status(member, resting, "0", what)
+                log("  FIX: one order was cancelled and another rests -- OK")
+
+                refused_from = _TEST_EVENTS.mark()
+                member.new_order_single(cancelled, symbol=_REUSE_SYMBOL, side="1", price="9.0")
+                check_fix_identifier_refusal(fix_reply(member, cancelled), cancelled, "order", what)
+                if not await_identifier_refusal(refused_from, cancelled, _RAW_REPLY_TIMEOUT):
+                    die(f"{what}: the reuse of {cancelled} was rejected, but no sequencer says it refused it, so something else did.")
+                log("  FIX: a new order reusing the ClOrdID of the cancelled order was refused by the sequencer with OrdRejReason 6 -- OK")
+                member.order_cancel_request(cancel, resting, symbol=_REUSE_SYMBOL, side="1")
+                check_fix_identifier_refusal(fix_reply(member, cancel), cancel, "cancel", what)
+                if not await_identifier_refusal(refused_from, cancel, _RAW_REPLY_TIMEOUT):
+                    die(f"{what}: the reuse of cancel {cancel} was refused, but no sequencer says it refused it.")
+                log("  FIX: a cancel reusing the ClOrdID of an earlier cancel was refused by the sequencer with CxlRejReason 6 -- OK")
+            finally:
+                member.close()
+
+            binary_port = binary_gateway_listen_port(prefix)
+            binary_order = f"breuse-{run_tag}"
+            binary_cancel = f"{binary_order}-CANCEL"
+            status, replies, output = run_binary_client(bin_dir, binary_port, "--cl-ord-id", binary_order, "--symbol", _REUSE_SYMBOL, "--price", "9.00")
+            if status != 0 or not replies or replies[0]["ord_status"] != "New":
+                die(f"{what}: the binary member's order {binary_order} was not accepted:\n{output}")
+            status, replies, output = run_binary_client(bin_dir, binary_port, "--cancel", binary_order, "--symbol", _REUSE_SYMBOL)
+            if status != 0 or not replies or replies[0]["ord_status"] != "Canceled":
+                die(f"{what}: the binary member's cancel of {binary_order} was not carried out:\n{output}")
+            binary_from = _TEST_EVENTS.mark()
+            _status, replies, output = run_binary_client(bin_dir, binary_port, "--cl-ord-id", binary_order, "--symbol", _REUSE_SYMBOL, "--price", "9.00")
+            check_binary_identifier_refusal(replies, output, binary_order, "order", what)
+            _status, replies, output = run_binary_client(bin_dir, binary_port, "--cancel", binary_order, "--symbol", _REUSE_SYMBOL)
+            check_binary_identifier_refusal(replies, output, binary_cancel, "cancel", what)
+            for reused in (binary_order, binary_cancel):
+                if not await_identifier_refusal(binary_from, reused, _RAW_REPLY_TIMEOUT):
+                    die(f"{what}: the binary member's reuse of {reused} was refused, but no sequencer says it refused it.")
+            log("  binary: a new order and a cancel reusing ClOrdIDs were refused by the sequencer with reason 6 -- OK")
+
+            # The engine reports these comp ids' orders, which the orders it accepted show; the refused ones it never saw.
+            _TEST_EVENTS.pump(1.0)
+            if order_outcomes(engine, started_from, cancelled, "Accepted") != 1 or order_outcomes(engine, started_from, binary_order, "Accepted") != 1:
+                die(f"{what}: the matching engine did not report accepting {cancelled} and {binary_order} once each, so its silence about "
+                    "the refused commands below would prove nothing.")
+            for reused in (cancelled, cancel, binary_order, binary_cancel):
+                if order_outcomes(engine, refused_from if not reused.startswith("breuse") else binary_from, reused) != 0:
+                    die(f"{what}: the matching engine dealt with {reused} after it was refused, so the refused command reached it.")
+            log("  none of the refused commands reached the matching engine -- OK")
+
+        # ── Identifier held unanswered ────────────────────────────────────────
+        if scenario.assert_held_identifier_refused_by_gateway:
+            log("=== A second order under a ClOrdID still waiting for its answer is refused by the gateway, through both gateways ===")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+            run_tag = datetime.now().strftime("%H%M%S")
+            what = "identifier held unanswered"
+            engine_process = proc_by_name[me_log.stem]
+            member = logged_on_fix_member(prefix, FIX8_COMP_ID, what)
+            first = f"held-{run_tag}"
+            held_from = _TEST_EVENTS.mark()
+            try:
+                os.kill(engine_process.pid, signal.SIGSTOP)
+                log(f"  SIGSTOP -> {me_log.stem} (PID {engine_process.pid}): nothing answers")
+                try:
+                    member.new_order_single(first, symbol=_REUSE_SYMBOL, side="1", price="9.0")
+                    # The first order has been read and sent on, so the gateway holds its copy, before the second is sent.
+                    time.sleep(0.3)
+                    member.new_order_single(first, symbol=_REUSE_SYMBOL, side="1", price="9.0")
+                    check_fix_identifier_refusal(fix_reply(member, first, _RAW_REPLY_TIMEOUT / 2), first, "order", what)
+                finally:
+                    os.kill(engine_process.pid, signal.SIGCONT)
+                    log(f"  SIGCONT -> {me_log.stem} (PID {engine_process.pid})")
+                check_fix_status(member, first, "0", what)
+            finally:
+                member.close()
+            log("  FIX: the second order was refused with OrdRejReason 6, and the first was then accepted -- OK")
+
+            binary_port = binary_gateway_listen_port(prefix)
+            binary_first = f"bheld-{run_tag}"
+            os.kill(engine_process.pid, signal.SIGSTOP)
+            log(f"  SIGSTOP -> {me_log.stem} (PID {engine_process.pid}): nothing answers")
+            outcome: dict[str, tuple[int, list[dict[str, str]], str]] = {}
+            try:
+                # Both orders on one connection, the second sent straight after the first; the engine is let run while
+                # the client waits, so that the first is answered.
+                client = threading.Thread(target=lambda: outcome.update(result=run_binary_client(
+                    bin_dir, binary_port, "--cl-ord-id", binary_first, "--orders", "2", "--symbol", _REUSE_SYMBOL, "--price", "9.00")))
+                client.start()
+                time.sleep(2.0)
+            finally:
+                os.kill(engine_process.pid, signal.SIGCONT)
+                log(f"  SIGCONT -> {me_log.stem} (PID {engine_process.pid})")
+            client.join(timeout=_BINARY_REPLY_TIMEOUT * 5)
+            if "result" not in outcome:
+                die(f"{what}: binary_client did not finish.")
+            _status, replies, output = outcome["result"]
+            refusals = [reply for reply in replies if reply["ord_status"] == "Rejected"]
+            accepted = [reply for reply in replies if reply["ord_status"] == "New"]
+            if len(refusals) != 1 or len(accepted) != 1:
+                die(f"{what}: binary_client's two orders under {binary_first} were answered {replies}; expected one rejection and one acceptance:\n"
+                    f"{output}")
+            check_binary_identifier_refusal(refusals, output, binary_first, "order", what)
+            log("  binary: the second order was refused with OrdRejReason 6, and the first was then accepted -- OK")
+
+            _TEST_EVENTS.pump(1.0)
+            for held in (first, binary_first):
+                if identifier_refusals(held_from, held) != 0:
+                    die(f"{what}: a sequencer refused {held}, so the gateway sent the second order on instead of refusing it itself.")
+            log("  no sequencer refused either second order, so each gateway refused its own -- OK")
+
+        # ── Resubmitted after a gateway restart ───────────────────────────────
+        if scenario.assert_resubmission_after_gateway_restart_refused:
+            log("=== An order resubmitted after its gateway restarts is refused, through both gateways ===")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+            run_tag = datetime.now().strftime("%H%M%S")
+            engine = me_log.stem
+            what = "resubmitted after a gateway restart"
+            started_from = _TEST_EVENTS.mark()
+
+            member = logged_on_fix_member(prefix, FIX8_COMP_ID, what)
+            resting = f"restart-{run_tag}"
+            try:
+                member.new_order_single(resting, symbol=_REUSE_SYMBOL, side="1", price="9.0")
+                check_fix_status(member, resting, "0", what)
+            finally:
+                member.close()
+            do_restart_step(RestartStep(proc_name="fix_order_gateway_a", ready_log_name="fix_order_gateway_a.log", ready=expect_started("fix_order_gateway_a"),
+                                        ready_timeout=30.0, resets_me_counter=False, settle_secs=_RAW_CLIENT_SETTLE),
+                            proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
+            member = logged_on_fix_member(prefix, FIX8_COMP_ID, what)
+            resubmitted_from = _TEST_EVENTS.mark()
+            try:
+                member.new_order_single(resting, symbol=_REUSE_SYMBOL, side="1", price="9.0")
+                check_fix_identifier_refusal(fix_reply(member, resting), resting, "order", what)
+            finally:
+                member.close()
+            if not await_identifier_refusal(resubmitted_from, resting, _RAW_REPLY_TIMEOUT):
+                die(f"{what}: the resubmitted {resting} was rejected, but no sequencer says it refused it.")
+            log("  FIX: the order resubmitted after the gateway restarted was refused by the sequencer with OrdRejReason 6 -- OK")
+
+            binary_port = binary_gateway_listen_port(prefix)
+            binary_resting = f"brestart-{run_tag}"
+            status, replies, output = run_binary_client(bin_dir, binary_port, "--cl-ord-id", binary_resting, "--symbol", _REUSE_SYMBOL, "--price", "9.00")
+            if status != 0 or not replies or replies[0]["ord_status"] != "New":
+                die(f"{what}: the binary member's order {binary_resting} was not accepted:\n{output}")
+            do_restart_step(RestartStep(proc_name="binary_order_gateway_a", ready_log_name="binary_order_gateway_a.log",
+                                        ready=expect_started("binary_order_gateway_a"), ready_timeout=30.0, resets_me_counter=False,
+                                        settle_secs=_RAW_CLIENT_SETTLE),
+                            proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
+            binary_from = _TEST_EVENTS.mark()
+            _status, replies, output = run_binary_client(bin_dir, binary_port, "--cl-ord-id", binary_resting, "--symbol", _REUSE_SYMBOL, "--price", "9.00")
+            check_binary_identifier_refusal(replies, output, binary_resting, "order", what)
+            if not await_identifier_refusal(binary_from, binary_resting, _RAW_REPLY_TIMEOUT):
+                die(f"{what}: the binary member's resubmitted {binary_resting} was rejected, but no sequencer says it refused it.")
+            log("  binary: the order resubmitted after the gateway restarted was refused by the sequencer with OrdRejReason 6 -- OK")
+
+            _TEST_EVENTS.pump(1.0)
+            for placed in (resting, binary_resting):
+                if order_outcomes(engine, started_from, placed, "Accepted") != 1:
+                    die(f"{what}: the matching engine reported accepting {placed} {order_outcomes(engine, started_from, placed, 'Accepted')} "
+                        "time(s); expected exactly once, the first time, and never for the resubmission.")
+            for resubmitted, since in ((resting, resubmitted_from), (binary_resting, binary_from)):
+                if order_outcomes(engine, since, resubmitted) != 0:
+                    die(f"{what}: the matching engine dealt with the resubmitted {resubmitted}, so a second order may rest.")
+            log("  each order was accepted once, and neither resubmission reached the matching engine -- OK")
+
         if scenario.assert_gateway_throttles:
             log("=== Throttles ===")
             stop_f8test(f8proc)

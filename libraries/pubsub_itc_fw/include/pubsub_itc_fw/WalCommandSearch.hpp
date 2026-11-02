@@ -12,7 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 #include <dirent.h>
@@ -72,13 +72,14 @@ class WalCommandSearch {
     }
 
     /**
-     * @brief Whether the WAL holds a command with exactly this identity.
+     * @brief The number of the earliest record the search has read that holds a command with exactly this identity.
      * @param[in] identity      The command's identity, as CommandIdentityInterface writes it.
      * @param[in] not_before_ns The command was first sent no earlier than this, by the sender's clock. Records
      *                          older than this, less `clock_margin_ns`, need not be read. The smallest possible
      *                          value reads the whole WAL.
+     * @return The record's number, or nothing when no record the search read holds the command.
      */
-    [[nodiscard]] bool holds(std::string_view identity, int64_t not_before_ns) {
+    [[nodiscard]] std::optional<int64_t> find(std::string_view identity, int64_t not_before_ns) {
         read_forwards();
         const int64_t read_back_to =
             not_before_ns < std::numeric_limits<int64_t>::min() + clock_margin_ns ? std::numeric_limits<int64_t>::min() : not_before_ns - clock_margin_ns;
@@ -86,7 +87,16 @@ class WalCommandSearch {
             read_segment(segments_[static_cast<size_t>(next_older_)]);
             --next_older_;
         }
-        return commands_.count(std::string(identity)) != 0;
+        const auto found = commands_.find(std::string(identity));
+        if (found == commands_.end()) {
+            return std::nullopt;
+        }
+        return found->second;
+    }
+
+    /// Whether the WAL holds a command with exactly this identity: find(), without the record's number.
+    [[nodiscard]] bool holds(std::string_view identity, int64_t not_before_ns) {
+        return find(identity, not_before_ns).has_value();
     }
 
     /// How many distinct commands the search holds.
@@ -139,15 +149,15 @@ class WalCommandSearch {
             }
         }
         forward_from_ =
-            WalReader::replay(directory_, forward_from_, [this](int64_t /*record_id*/, const void* payload, size_t size) { add_record(payload, size); });
+            WalReader::replay(directory_, forward_from_, [this](int64_t record_id, const void* payload, size_t size) { add_record(record_id, payload, size); });
     }
 
     void read_segment(uint64_t segment) {
         static_cast<void>(WalReader::replay_segment(segment_path(segment), 0,
-                                                    [this](int64_t /*record_id*/, const void* payload, size_t size) { add_record(payload, size); }));
+                                                    [this](int64_t record_id, const void* payload, size_t size) { add_record(record_id, payload, size); }));
     }
 
-    void add_record(const void* payload, size_t size) {
+    void add_record(int64_t record_id, const void* payload, size_t size) {
         ++records_read_;
         const std::optional<WalEntryContents> contents = read_wal_entry_contents(payload, size);
         if (!contents.has_value() || contents->size == 0) {
@@ -158,7 +168,11 @@ class WalCommandSearch {
         if (identity_size == 0 || identity_size > identity_buffer_.size()) {
             return;
         }
-        commands_.emplace(identity_buffer_.data(), identity_size);
+        // The earliest record is kept: the backwards reads reach older records after newer ones.
+        const auto [held, inserted] = commands_.emplace(std::string(identity_buffer_.data(), identity_size), record_id);
+        if (!inserted && record_id < held->second) {
+            held->second = record_id;
+        }
     }
 
     [[nodiscard]] static std::vector<uint64_t> segment_numbers(const std::string& directory) {
@@ -190,7 +204,8 @@ class WalCommandSearch {
     // The oldest record time read so far.
     int64_t oldest_read_ns_{std::numeric_limits<int64_t>::max()};
     int64_t records_read_{0};
-    std::unordered_set<std::string> commands_;
+    // Each command read, by its exact identity, with the number of the earliest record holding it.
+    std::unordered_map<std::string, int64_t> commands_;
     std::vector<uint8_t> scratch_ = std::vector<uint8_t>(CommandIdentityInterface::scratch_size);
     std::array<char, CommandIdentityInterface::max_identity_size> identity_buffer_{};
 };

@@ -168,12 +168,11 @@ void SequencerThread::on_initial_event() {
     wal_configuration.lease = config_.lease;
     wal_configuration.wal_append_histogram = wal_append_histogram_;
     wal_configuration.running_alone_gauge = running_alone_gauge_;
-    // With high availability on, the WAL keeps a record of the commands it holds, so that a command is never
-    // sequenced twice (docs/availability/one_check_against_sequencing_twice.md).
-    if (config_.ha_enabled) {
-        wal_configuration.command_identity = &command_identity_;
-        wal_configuration.identifiers_reserved = config_.identifiers_reserved;
-    }
+    // The WAL keeps a record of the commands it holds, with high availability on or off, so that the leader writes a
+    // command into the WAL at most once, and refuses a member that uses an identifier again
+    // (docs/availability/one_check_against_sequencing_twice.md).
+    wal_configuration.command_identity = &command_identity_;
+    wal_configuration.identifiers_reserved = config_.identifiers_reserved;
     replicated_wal_.emplace(std::move(wal_configuration), get_logger(), replication_links_, lease_links_, replicated_wal_events_);
     // Only when a test started this instance (docs/availability/test_events.md).
     if (config_.test_events.enabled) {
@@ -461,7 +460,6 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
                    "SequencerThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
         return;
     }
-    forget_command_connection(id);
     if (leading_engine_announced_on_.is_valid() && id == leading_engine_announced_on_) {
         // The engine that said it leads has gone, or at least the connection it said so on has: it is no longer taken to
         // lead when a void is asked for, and is sent no orders until it is caught up to lead or says so again, so that a
@@ -701,10 +699,6 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        // Noted whatever this instance's role, because a follower can be promoted while a gateway still
-        // has two connections open here.
-        const bool gateway_has_two_connections = note_command_connection(message.connection_id(), inbound);
-
         // A follower writes its log only from its leader's records, so that the two logs stay
         // identical, and numbers nothing itself. So does an instance that has not yet learnt its role:
         // it may already be receiving its leader's records, and a record it numbered itself would
@@ -722,28 +716,32 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        // A command a gateway sends again after a change of leader, or after its connection to this
-        // sequencer was closed and opened again, because nothing had answered it. If this log already
-        // holds it, it must not be sequenced twice: its answer comes from the engine, by one of the
-        // routes in docs/availability/commands_during_a_change_of_leader.md, section 3.6. If not,
-        // nothing ever acted on it, and it is sequenced as a new command.
+        // Every command is checked against the WAL before it is given a number, whatever path it came by, so that
+        // the WAL holds each command at most once (docs/availability/one_check_against_sequencing_twice.md, 3.1).
         //
-        // An unmarked command is checked too while its gateway has two connections open here: it may
-        // be an original read from the old connection after its marked copy came in on the new one.
+        // A command whose gateway marked it as sent again had no answer: the gateway sent it again after a change of
+        // leader, or after its connection to this sequencer was closed and opened again. If the WAL holds it, its
+        // answer comes from the engine, by one of the routes in docs/availability/commands_during_a_change_of_leader.md,
+        // section 3.6, and it is not sequenced twice.
+        //
+        // A command not marked whose identity the WAL holds is a member using a ClOrdID it has used today. It is
+        // refused, and nothing is written (section 4.1).
         const bool sent_again = inbound.has_sent_again && inbound.sent_again;
-        if (role_ == pubsub_itc_fw_app::Role::leader && (sent_again || gateway_has_two_connections) && command_already_logged(inbound)) {
+        const std::optional<int64_t> first_seq_no = find_logged_command(inbound, sent_again);
+        if (first_seq_no.has_value()) {
             if (sent_again) {
                 ++sent_again_already_logged_;
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                           "SequencerThread: command ClOrdID={} from comp_id='{}' sent again -- the WAL already holds it as record {}, not sequencing it "
+                           "twice",
+                           inbound.cl_ord_id, inbound.sender_comp_id, *first_seq_no);
             } else {
-                ++command_connections_[command_connection_gateway_[message.connection_id().get_value()]].already_logged;
+                refuse_reused_identifier(message.connection_id(), inbound, *first_seq_no);
             }
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                       "SequencerThread: command ClOrdID={} from comp_id='{}' {} -- this log already holds it, not sequencing it twice", inbound.cl_ord_id,
-                       inbound.sender_comp_id, sent_again ? "sent again" : "arrived while its gateway had two connections open");
             release_pdu_payload(message);
             return;
         }
-        if (inbound.has_sent_again && inbound.sent_again) {
+        if (sent_again) {
             ++sent_again_sequenced_;
         }
 
@@ -2608,81 +2606,79 @@ int32_t SequencerThread::trading_date_for(int64_t wall_time_ns) {
     return trading_date_;
 }
 
-bool SequencerThread::command_already_logged(const pubsub_itc_fw_app::WalRecordView& inbound) {
-    if (!config_.ha_enabled) {
-        // Without HA there is no change of leader, and so nothing is ever sent again.
-        return false;
-    }
+std::optional<int64_t> SequencerThread::find_logged_command(const pubsub_itc_fw_app::WalRecordView& inbound, bool sent_again) {
     const size_t identity_size = write_command_identity(inbound.has_sender_comp_id ? inbound.sender_comp_id : std::string_view{},
                                                         inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent,
                                                         inbound.has_cl_ord_id ? inbound.cl_ord_id : std::string_view{}, command_identity_buffer_.data(),
                                                         command_identity_buffer_.size());
     if (identity_size == 0) {
-        // A command that does not say whose it is cannot be looked for.
-        return false;
+        // Both gateways put the comp id on every command and drop one without a ClOrdID, so one that does not say
+        // whose it is means a gateway is not doing what the check relies on. It is sequenced unchecked.
+        ++commands_unchecked_without_identity_;
+        if (commands_unchecked_without_identity_ == 1) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "SequencerThread: a command from gateway protocol={} instance={} has no comp id or no ClOrdID, so it cannot be checked against the "
+                       "WAL -- it is sequenced unchecked, and so is any later one, counted in the summary of checks",
+                       inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent,
+                       inbound.has_gateway_instance_id ? inbound.gateway_instance_id : 0);
+        }
+        return std::nullopt;
     }
+    // Commands sent again and refusals are what the summary of checks reports; every other command is checked too,
+    // and counted only in the WAL's own counts.
+    if (sent_again) {
+        commands_checked_since_summary_ = true;
+        last_command_checked_at_ = std::chrono::steady_clock::now();
+    }
+    // A command sent again was first sent no earlier than the gateway first received it, which bounds any search of
+    // the WAL. A command not marked may reuse an identifier from any time today, so a search may read the whole WAL.
+    const int64_t first_sent_no_earlier_than = sent_again && inbound.has_gateway_ingress_ns ? inbound.gateway_ingress_ns : std::numeric_limits<int64_t>::min();
+    return replicated_wal_->find_command(std::string_view(command_identity_buffer_.data(), identity_size), first_sent_no_earlier_than);
+}
+
+void SequencerThread::refuse_reused_identifier(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound,
+                                               int64_t first_seq_no) {
+    ++commands_refused_reused_identifier_;
     commands_checked_since_summary_ = true;
     last_command_checked_at_ = std::chrono::steady_clock::now();
-    const int64_t first_sent_no_earlier_than = inbound.has_gateway_ingress_ns ? inbound.gateway_ingress_ns : std::numeric_limits<int64_t>::min();
-    return replicated_wal_->holds_command(std::string_view(command_identity_buffer_.data(), identity_size), first_sent_no_earlier_than);
-}
+    const int16_t protocol = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
+    const int16_t instance = inbound.has_gateway_instance_id ? inbound.gateway_instance_id : 0;
+    // Info: the member's mistake, which the venue handles correctly.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: refusing comp_id='{}' ClOrdID={} from gateway protocol={} instance={}: the WAL already holds a command with this ClOrdID, "
+               "record {}, and this one is not marked as sent again -- nothing is written",
+               inbound.sender_comp_id, inbound.cl_ord_id, protocol, instance, first_seq_no);
 
-bool SequencerThread::note_command_connection(const pubsub_itc_fw::ConnectionID& id, const pubsub_itc_fw_app::WalRecordView& inbound) {
-    auto known = command_connection_gateway_.find(id.get_value());
-    if (known == command_connection_gateway_.end()) {
-        if (!inbound.has_gateway_instance_id) {
-            // A command that does not say which gateway instance sent it cannot be matched with others.
-            return false;
-        }
-        const int16_t protocol = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
-        const GatewayKey gateway = gateway_key(protocol, inbound.gateway_instance_id);
-        known = command_connection_gateway_.emplace(id.get_value(), gateway).first;
-        CommandConnections& connections = command_connections_[gateway];
-        ++connections.open;
-        if (connections.open == 2) {
-            connections.already_logged = 0;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: gateway protocol={} instance={} is sending commands on a second connection, {}, while its earlier one is still "
-                       "open -- checking every command from it against the log until the earlier one ends",
-                       protocol, inbound.gateway_instance_id, id.get_value());
-        }
-    }
-    return command_connections_[known->second].open > 1;
-}
-
-void SequencerThread::forget_command_connection(const pubsub_itc_fw::ConnectionID& id) {
-    const auto known = command_connection_gateway_.find(id.get_value());
-    if (known == command_connection_gateway_.end()) {
-        return;
-    }
-    const GatewayKey gateway = known->second;
-    command_connection_gateway_.erase(known);
-    CommandConnections& connections = command_connections_[gateway];
-    --connections.open;
-    if (connections.open == 1) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: gateway protocol={} instance={} has one connection open again -- {} command(s) that arrived while it had two "
-                   "were already in this log and were not sequenced twice; checking only commands marked as sent again from now on",
-                   gateway >> 16, static_cast<int16_t>(gateway & 0xFFFF), connections.already_logged);
-    }
-    if (connections.open == 0) {
-        command_connections_.erase(gateway);
-    }
+    report(pubsub_itc_fw_app::IdentifierRefused{inbound.sender_comp_id, protocol, inbound.cl_ord_id, first_seq_no});
+    pubsub_itc_fw_app::CommandRefused refused{};
+    refused.gateway_session_conn_id = inbound.has_gateway_session_conn_id ? inbound.gateway_session_conn_id : 0;
+    refused.sender_comp_id = inbound.sender_comp_id;
+    refused.cl_ord_id = inbound.cl_ord_id;
+    refused.command_pdu_id = inbound.pdu_id;
+    refused.command = inbound.payload;
+    refused.reason = pubsub_itc_fw_app::CommandRefusedReason::IdentifierAlreadyUsed;
+    refused.first_seq_no = first_seq_no;
+    // On the connection the command came by, which the gateway dialled and certainly has open: the connection this
+    // sequencer dials to send the gateway its reports may not be open yet, after the gateway has restarted. A refused
+    // command has no reports, so nothing on that connection needs to arrive before this.
+    send_pdu(came_by, pubsub_itc_fw_app::CommandRefused::message_pdu_id, 0, refused);
 }
 
 void SequencerThread::summarise_command_checks(const char* reason) {
     const int64_t searched_records = replicated_wal_->discard_command_search();
     const pubsub_itc_fw::ReplicatedWal::CommandCheckCounts& counts = replicated_wal_->command_check_counts();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: commands sent again since the change of leader: {} already in the WAL and not sequenced twice, {} sequenced as new. "
-               "Since this instance started, the WAL has settled {} checked command(s) by the record of identifiers alone, proved {} by reading "
-               "the one record at its position, and searched for {}, {} of them because that record was another command; {} WAL record(s) read "
-               "by the search now ended -- {}",
-               sent_again_already_logged_, sent_again_sequenced_, counts.not_held_by_number, counts.proved_by_reading, counts.searched,
-               counts.other_command_at_position, searched_records, reason);
+               "SequencerThread: since the last summary of checks, {} command(s) sent again were already in the WAL and not sequenced twice, {} sent "
+               "again were sequenced as new, and {} reused a ClOrdID and were refused. Since this instance started, the WAL has settled {} checked "
+               "command(s) by the record of identifiers alone, proved {} by reading the one record at its position, and searched for {}, {} of them "
+               "because that record was another command; {} command(s) could not be checked because they said not whose they were; {} WAL "
+               "record(s) read by the search now ended -- {}",
+               sent_again_already_logged_, sent_again_sequenced_, commands_refused_reused_identifier_, counts.not_held_by_number, counts.proved_by_reading,
+               counts.searched, counts.other_command_at_position, commands_unchecked_without_identity_, searched_records, reason);
     commands_checked_since_summary_ = false;
     sent_again_already_logged_ = 0;
     sent_again_sequenced_ = 0;
+    commands_refused_reused_identifier_ = 0;
 }
 
 std::optional<EngineReportPosition> SequencerThread::reports_forwarded_through() const {

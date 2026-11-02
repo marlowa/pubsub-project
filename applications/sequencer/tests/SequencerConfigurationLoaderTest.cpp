@@ -447,3 +447,17 @@ TEST(SequencerConfigurationLoaderTest, RejectsReservingNoCommandIdentifiers) {
     ASSERT_TRUE(ok) << err;
     EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
 }
+
+// The leader checks every command against its record of identifiers with high availability off too, so the record's
+// size is read in both configurations.
+TEST(SequencerConfigurationLoaderTest, ReadsHowManyCommandIdentifiersToReserveWithHighAvailabilityOff) {
+    std::string sections(required_sections);
+    const std::string enabled = "ha_enabled                  = true";
+    sections.replace(sections.find(enabled), enabled.size(), "ha_enabled                  = false");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    const auto config = sequencer::SequencerConfigurationLoader::load(toml);
+    EXPECT_FALSE(config.ha_enabled);
+    EXPECT_EQ(config.identifiers_reserved, 1000U);
+}

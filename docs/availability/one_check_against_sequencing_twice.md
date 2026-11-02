@@ -361,6 +361,43 @@ first and with `--secondary-engine-first`, before the next starts.
    The existing scenarios for commands sent again (66, 67, 68, 71) must pass unchanged. Made to fail: with the check
    left only for marked commands, the reuse scenarios fail; with the gateway's own refusal of a held identity removed,
    the second scenario fails, with the first order's copy marked answered by the refusal of the second.
+
+   **As built.** `SequencerThread::find_logged_command` checks every command the leader is given, before it takes a
+   number, with `ReplicatedWal::find_command`, which says not only whether the WAL holds the command but which record
+   holds it: the one at the position the record of identifiers gives, or the earliest the search has read. A command
+   marked as sent again that the WAL holds is not sequenced, as before. One not marked is refused by
+   `refuse_reused_identifier`, which sends `CommandRefused`, naming the first record, and raises the test event
+   `IdentifierRefused`. The rule about two connections, its tracking and its logs are gone. The summary of checks
+   counts commands sent again and refusals, and a command without a comp id or a `ClOrdID` is sequenced unchecked,
+   counted, and the first logged at Error.
+
+   Three things differ from what the sections above say:
+
+   - **With high availability off too.** The sequencer keeps the record of identifiers and checks every command in
+     both configurations, so that R-0119 holds in both; `commands.identifiers_reserved` is read in both, and a single
+     sequencer reserves the same memory as one of a pair (decided by Andrew, 2 November 2026).
+   - **The refusal goes back on the connection the command came by**, as section 4.1 says, and the binary gateway
+     reads `CommandRefused` on the connections it dials to the sequencers. The connection a sequencer dials to send a
+     gateway its reports is not open for a moment after the gateway restarts, and a refusal sent there was lost; a
+     member that resubmits as soon as it has logged on again, which scenario 98 does, then waited for ever.
+   - **The case of a filled order is not run**, because the matching engine does not match orders
+     ([matching_engine.md](../venue/matching_engine.md)). A cancelled order is one whose first use has ended and is
+     off the book, which is the case R-0119 is about.
+
+   The scenarios are 96 (a `ClOrdID` reused after its order was cancelled, and a cancel's `ClOrdID` reused), 97 (a
+   second order under a `ClOrdID` still waiting for its answer) and 98 (an order resubmitted after its gateway was
+   restarted), each through the FIX gateway and the binary gateway. Each checks the sequencer's `IdentifierRefused`
+   event as well as the member's rejection: the rejection the gateway makes itself and the one it makes from
+   `CommandRefused` look the same to the member. Scenarios 66, 67, 68 and 71 pass unchanged. Made to fail: with the
+   check left only for marked commands, scenario 96 has the reused `ClOrdID` accepted as a new order and scenario 98
+   has the resubmission reach the matching engine; with the gateways' own refusal removed, scenario 97 finds that the
+   sequencer refused the second order. The unit tests are `find_command`'s, in `ReplicatedWalCommandTest` and
+   `WalCommandSearchTest`, and the loader's with high availability off, each made to fail.
+
+   Both full suites pass: 38 of 38 with the secondary engine first, and 97 of 98 with the primary first. The one
+   failure, scenario 22, was the fix8 test client logging on and exiting without sending its baseline orders, with no
+   fault logged by any venue component ([BUG-0223](../bug_list.md#bug_0223)); run twice on its own straight
+   afterwards, it passed both times.
 4. **The answer from the WAL** for a marked command whose original's report the WAL holds (section 3.3, item 1;
    decision 4). A scenario drops the report on its way to the gateway, by a test fault, and changes the leader; the
    gateway's copy must be answered by the report from the WAL, marked as a possible repeat. Made to fail: without the

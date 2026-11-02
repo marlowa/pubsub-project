@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -185,6 +186,20 @@ TEST_F(ReplicatedWalCommandTest, OfTwoCommandsWithTheSameNumberBothAreFound) {
     EXPECT_EQ(wal_->command_check_counts().proved_by_reading, 1);
     EXPECT_EQ(wal_->command_check_counts().other_command_at_position, 2);
     EXPECT_EQ(wal_->command_check_counts().searched, 2);
+    EXPECT_EQ(wal_->find_command("MEMBER/first", the_whole_wal), std::optional<int64_t>{1}) << "proved by reading its record";
+    EXPECT_EQ(wal_->find_command("MEMBER/second", the_whole_wal), std::optional<int64_t>{2}) << "found by the search";
+}
+
+TEST_F(ReplicatedWalCommandTest, TheRecordHoldingACommandIsNamed) {
+    open();
+    build_record();
+    write("MEMBER/order-1");
+    write("MEMBER/order-2");
+    write("MEMBER/order-3");
+    EXPECT_EQ(wal_->find_command("MEMBER/order-2", the_whole_wal), std::optional<int64_t>{2});
+    EXPECT_EQ(wal_->find_command("MEMBER/order-3", the_whole_wal), std::optional<int64_t>{3});
+    EXPECT_EQ(wal_->find_command("MEMBER/order-4", the_whole_wal), std::nullopt);
+    EXPECT_EQ(wal_->command_check_counts().searched, 0);
 }
 
 TEST_F(ReplicatedWalCommandTest, AFullRecordFallsBackToASearchForACommandItDoesNotHold) {
@@ -197,6 +212,7 @@ TEST_F(ReplicatedWalCommandTest, AFullRecordFallsBackToASearchForACommandItDoesN
     EXPECT_TRUE(wal_->holds_command("MEMBER/order-2", the_whole_wal)) << "written after the record filled, so found only by searching";
     EXPECT_FALSE(wal_->holds_command("MEMBER/order-3", the_whole_wal));
     EXPECT_EQ(wal_->command_check_counts().searched, 2);
+    EXPECT_EQ(wal_->find_command("MEMBER/order-2", the_whole_wal), std::optional<int64_t>{2});
 }
 
 TEST_F(ReplicatedWalCommandTest, BeforeTheRecordIsBuiltTheWalIsSearched) {

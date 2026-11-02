@@ -109,4 +109,16 @@ TEST_F(WalCommandSearchTest, AnEmptyWalHoldsNothing) {
     EXPECT_TRUE(search.holds("order-1", the_whole_wal));
 }
 
+// The search names the earliest record it has read that holds the command. A command written twice is named by its
+// later record when the search has not read back as far as the earlier one, and by the earlier record once it has.
+TEST_F(WalCommandSearchTest, TheEarliestRecordReadThatHoldsACommandIsNamed) {
+    append_commands(500);
+    append_command("order-3", 501 * one_second_ns);
+    WalCommandSearch search(dir_, identity_);
+    EXPECT_EQ(search.find("order-3", 499 * one_second_ns), std::optional<int64_t>{501}) << "record 3 is older than the time given, so is not read";
+    EXPECT_EQ(search.find("order-3", the_whole_wal), std::optional<int64_t>{3});
+    EXPECT_EQ(search.find("order-250", the_whole_wal), std::optional<int64_t>{250});
+    EXPECT_EQ(search.find("order-999", the_whole_wal), std::nullopt);
+}
+
 } // namespaces

@@ -101,6 +101,15 @@ in `applications/fix_common/FixOrderLimits.hpp`), because the same number sizes 
 open-order entry and the matching engine's key for an order. The limits on `Symbol` and `OrderQty`
 come from the configuration (`[fix_limits]`), and every environment sets them to 32 and 24 bytes.
 
+A member that sends a command under a `ClOrdID` it has already used today is refused. If the first
+command is still waiting for its answer, the gateway refuses the second itself and does not pass it
+on, because an answer to it could not be told from an answer to the first. Otherwise the leading
+sequencer refuses it, finding the `ClOrdID` in its log, and sends the gateway `CommandRefused` on the
+connection the command went out on. Either way the member gets a rejected ExecutionReport with
+OrdRejReason 6 (duplicate order) for a new order, or an OrderCancelReject with CxlRejReason 6
+(duplicate ClOrdID) for a cancel, each with the text "ClOrdID already used today"
+([One check against sequencing a command twice](../availability/one_check_against_sequencing_twice.md)).
+
 When neither sequencer is connected, the gateway refuses orders and cancels itself, with the text
 "Sequencer unavailable", and logs each refusal at Warning. The member's session stays up, so it can
 try again once a sequencer is back. The refusals while the venue is not accepting orders are described in

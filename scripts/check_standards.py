@@ -1286,7 +1286,7 @@ _WAL_READERS = [
     (r'\bWalHandedOverFollowers\b', 'the library class that reads committed records back for followers already handed over'),
     (r'\bhanded_over_publishers_->send_to(?:_all)?\b', 'the sequencer member holding a WalHandedOverFollowers, sending records it reads'),
     (r'\bhanded_over_engines_->send_to(?:_all)?\b', 'the sequencer member holding a WalHandedOverFollowers, sending records it reads'),
-    (r'\bholds_command\s*\(', 'the replicated WAL\'s check of whether it holds a command, which reads one record, or searches the WAL'),
+    (r'\b(?:holds|find)_command\s*\(', 'the replicated WAL\'s check of whether, and where, it holds a command, which reads one record, or searches the WAL'),
     (r'\bcommand_in_wal_at\s*\(', 'the sequencer function that reads one record back from the WAL on its own thread'),
 ]
 _WAL_READER_RES = [re.compile(pattern) for pattern, _what in _WAL_READERS]
@@ -1315,7 +1315,7 @@ _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.hpp', 'handed_over_engines_', _DEFINITION),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_undelivered_reports_request', _RESENDS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_session_replay_request', _RESENDS),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::command_already_logged', _DUPLICATE_CHECK),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::find_logged_command', _DUPLICATE_CHECK),
     ('applications/sequencer/SequencerThread.hpp', 'handed_over_publishers_', _DEFINITION),
 ]
 

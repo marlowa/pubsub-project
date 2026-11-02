@@ -353,8 +353,14 @@ void BinaryOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::Eve
 
     // The sequencers answer this gateway's session announcements on the connections it dialled.
     // The FIX gateway uses those answers to settle a session's sequence numbers; the binary
-    // protocol has none, so they are read past.
+    // protocol has none, so they are read past. A refusal of a command comes back on the
+    // connection the command went out on, which is one of these.
     const bool from_sequencer = message.connection_id() == sequencer_primary_conn_id_ || message.connection_id() == sequencer_secondary_conn_id_;
+    if (from_sequencer && message.pdu_id() == pubsub_itc_fw_app::CommandRefused::message_pdu_id) {
+        handle_command_refused(message);
+        release_pdu_payload(message);
+        return;
+    }
     if (from_sequencer) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "BinaryOrderGatewayThread: PDU id {} from a sequencer on connection {} -- not needed here",
                    message.pdu_id(), message.connection_id().get_value());

@@ -948,7 +948,9 @@ enum CommandRefusedReason : i8 {
 # ------------------------------------------------------------
 #  164 -- CommandRefused
 #  Sent by the leading sequencer to the gateway a member's command
-#  came from, on the connection it came by, when the sequencer
+#  came from, on the connection it came by, which the gateway dialled
+#  and so reads whether or not the sequencer's own connection to it,
+#  which carries reports, is open yet. Sent when the sequencer
 #  refuses the command without writing it into the WAL. Nothing in
 #  the WAL, the book or the matching engines changes. The gateway
 #  answers the member with a rejection: an execution report for a

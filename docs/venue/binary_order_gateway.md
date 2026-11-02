@@ -103,8 +103,11 @@ session's record of open orders.
    is kept until the sequencer answers it, so that it can be sent again to a new sequencer leader
    (`[unanswered_commands]`). When that store is full the command is refused with the text "the
    venue is busy: too many commands are waiting to be answered".
+7. **No command with the same `ClOrdID` from this member is still waiting for its answer.** If
+   one is, the second is refused with reason 6 and the text "ClOrdID already used today", and not
+   passed on, because an answer to it could not be told from an answer to the first.
 
-Checks 1 to 3 are `BinaryCommandChecks.hpp`; 4 to 6 are the gateway thread's. The texts of the
+Checks 1 to 3 are `BinaryCommandChecks.hpp`; 4 to 7 are the gateway thread's. The texts of the
 refusals for check 4 are the FIX gateway's. A command whose ClOrdID is empty, or which cannot be
 decoded at all, cannot be named in a reply, so it is dropped and logged at Info.
 
@@ -112,7 +115,13 @@ decoded at all, cannot be named in a reply, so it is dropped and logged at Info.
 OrderID the gateway assigns (`GW-ORD-n`), and a cancel with an `OrderCancelReject` reporting the
 order still open (OrdStatus New), with CxlRejReason 99 (Other). That reject carries the order's
 OrderID when the session's record of open orders holds it, and FIX's "NONE" otherwise. A refused
-command is never passed on.
+command is never passed on. A new order refused for its `ClOrdID` carries OrdRejReason 6 (duplicate
+order), and a cancel CxlRejReason 6 (duplicate ClOrdID).
+
+**A `ClOrdID` the member has used before today** is refused by the leading sequencer, which sends
+`CommandRefused` on the connection the command went out on; the gateway answers the member with the
+same rejection as above, built from the command the message carries
+([One check against sequencing a command twice](../availability/one_check_against_sequencing_twice.md)).
 
 **The matching engine's refusal of a cancel** arrives as a rejected `ExecutionReport` carrying the
 OrigClOrdID of the order named. The gateway decodes every report it relays, to keep the session's

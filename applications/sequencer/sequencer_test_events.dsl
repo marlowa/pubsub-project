@@ -222,3 +222,19 @@ message EngineTakesOrdersAgain (id=219, version=1)
     i64 orders_held                      # the orders and cancels that arrived meanwhile, all of them held
     bool an_engine_led_before            # false when no engine had taken orders since this sequencer began leading, as when the venue starts
 end
+
+# ------------------------------------------------------------
+#  220 -- IdentifierRefused
+#  The leading sequencer refused a member's command, not marked as
+#  sent again, because the WAL already holds a command with the same
+#  comp id, protocol and ClOrdID. Nothing was written, and the
+#  gateway was sent CommandRefused on the connection the command came
+#  by (docs/availability/one_check_against_sequencing_twice.md,
+#  section 4.1).
+# ------------------------------------------------------------
+message IdentifierRefused (id=220, version=1)
+    string comp_id          # the member's comp id
+    i16 gateway_protocol    # 1 for FIX, 2 for binary
+    string cl_ord_id        # the command's ClOrdID
+    i64 first_seq_no        # the record in the WAL that holds the command that used the ClOrdID first
+end

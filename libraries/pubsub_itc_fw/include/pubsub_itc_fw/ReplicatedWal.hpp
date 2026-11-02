@@ -433,6 +433,19 @@ class ReplicatedWal {
      */
     [[nodiscard]] bool holds_command(std::string_view identity, int64_t not_before_ns);
 
+    /**
+     * @brief As holds_command(), and where: the number of a record in the WAL holding a command with this identity.
+     *
+     * When the record of identifiers proves the match, the record is the one at its stored position, which is the
+     * first the WAL was given for that identity's number. When the WAL is searched, it is the earliest record the
+     * search has read that holds the command.
+     *
+     * @param[in] identity      The command's identity, as the configured CommandIdentityInterface writes it.
+     * @param[in] not_before_ns As for holds_command().
+     * @return The record's number, or nothing when the WAL does not hold the command or no command_identity is configured.
+     */
+    [[nodiscard]] std::optional<int64_t> find_command(std::string_view identity, int64_t not_before_ns);
+
     /// Whether a search of the WAL is being kept for holds_command(), with what it has read.
     [[nodiscard]] bool command_search_in_use() const {
         return command_search_.has_value();
@@ -485,8 +498,8 @@ class ReplicatedWal {
     void note_command_written(WalPosition position, const WalEntryContents& entry);
     void add_command(uint64_t number, WalPosition position);
     // Whether the record at @p position holds the command with @p identity.
-    [[nodiscard]] bool command_at(WalPosition position, std::string_view identity);
-    [[nodiscard]] bool search_for_command(std::string_view identity, int64_t not_before_ns);
+    [[nodiscard]] std::optional<int64_t> command_at(WalPosition position, std::string_view identity);
+    [[nodiscard]] std::optional<int64_t> search_for_command(std::string_view identity, int64_t not_before_ns);
 
     ReplicatedWalConfiguration configuration_;
     QuillLogger& logger_;

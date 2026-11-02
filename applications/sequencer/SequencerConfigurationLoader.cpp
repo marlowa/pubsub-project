@@ -163,13 +163,6 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
             config.peer_port = static_cast<uint16_t>(peer_port);
             config.lease = pubsub_itc_fw::LeaseTiming::load(toml, "SequencerConfigurationLoader");
 
-            int64_t identifiers_reserved = 0;
-            toml.get_required_except("commands.identifiers_reserved", identifiers_reserved);
-            if (identifiers_reserved <= 0) {
-                throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: commands.identifiers_reserved must be positive");
-            }
-            config.identifiers_reserved = static_cast<size_t>(identifiers_reserved);
-
             int64_t orders_held_at_most = 0;
             toml.get_required_except("commands.orders_held_at_most", orders_held_at_most);
             if (orders_held_at_most <= 0) {
@@ -177,6 +170,15 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
             }
             config.orders_held_at_most = static_cast<size_t>(orders_held_at_most);
         }
+
+        // With high availability on or off: the leader checks every command against its record of the commands its WAL
+        // holds, which is reserved for this many (docs/availability/one_check_against_sequencing_twice.md).
+        int64_t identifiers_reserved = 0;
+        toml.get_required_except("commands.identifiers_reserved", identifiers_reserved);
+        if (identifiers_reserved <= 0) {
+            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: commands.identifiers_reserved must be positive");
+        }
+        config.identifiers_reserved = static_cast<size_t>(identifiers_reserved);
 
         int32_t wal_subscriber_listen_port = 0;
         toml.get_required_except("wal_subscriber.listen_host", config.wal_subscriber_listen_host);

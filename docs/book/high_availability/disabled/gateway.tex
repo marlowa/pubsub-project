@@ -199,7 +199,7 @@ reach the member leaves a gap in the member's numbering.
   create a second order.
   \rationale{This requirement is what makes \reqref{R-0003} safe. A member cannot tell the two
   cases apart, and relies on the venue to distinguish them.}
-  \uncovered{no scenario restarts a gateway}
+  \covers{ha_test:98}
 \end{requirement}
 
 \begin{requirement}{R-0010}{A duplicate is refused whatever has become of the first order}
@@ -211,7 +211,7 @@ reach the member leaves a gap in the member's numbering.
   applied, and an engine that has restarted holds no record of an earlier
   submission. In either case a member following \reqref{R-0003} would be given a
   second live order.}
-  \uncovered{no scenario restarts a gateway}
+  \covers{ha_test:96, ha_test:98}
 \end{requirement}
 
 \begin{requirement}{R-0119}{An order identifier used today is refused for the rest of the day}
@@ -236,18 +236,8 @@ reach the member leaves a gap in the member's numbering.
 
   The trading day bounds the set of identifiers. The venue adds identifiers through
   a trading day and discards the set at the end of it, which keeps the set finite.}
-  \uncovered{no scenario reuses an identifier whose order has been cancelled}
+  \covers{ha_test:96, ha_test:98}
 \end{requirement}
-
-\begin{gap}{}
-  An identifier is checked against the orders the venue currently holds open, and
-  a cancelled order is removed from that set --- so an identifier whose order has
-  been cancelled is accepted again, and the activity the venue publishes can carry
-  the same identifier for two different orders on the same day.
-
-  Nothing durable holds the identifiers used during a day either, so even the
-  check that exists does not survive a restart of the component that makes it.
-\end{gap}
 
 \begin{requirement}{R-0005}{A report produced for an unbound session is delivered on reconnection}
   An execution report produced while the session had no connection shall be

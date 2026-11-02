@@ -831,50 +831,32 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     int64_t leading_engine_instance_{0};
     pubsub_itc_fw::ConnectionID leading_engine_announced_on_{};
 
-    // The commands checked against the WAL since the last summary of them: whether any has been, and when the last
-    // was. The summary is logged a minute after the last, or when this instance stops leading.
+    // Whether a command has been sent again or refused since the last summary of checks, and when the last was. The
+    // summary is logged a minute after the last, or when this instance stops leading.
     bool commands_checked_since_summary_{false};
     std::chrono::steady_clock::time_point last_command_checked_at_{};
     static constexpr std::chrono::seconds command_check_summary_idle_limit{60};
+    // Since the last summary: commands sent again that the WAL already held, commands sent again that it did not, and
+    // commands refused because they reused a ClOrdID.
     int64_t sent_again_already_logged_{0};
     int64_t sent_again_sequenced_{0};
+    int64_t commands_refused_reused_identifier_{0};
+    // Since this instance started: commands sequenced unchecked because they had no comp id or no ClOrdID.
+    int64_t commands_unchecked_without_identity_{0};
     // Where the identity of a command to be checked is written.
     std::array<char, pubsub_itc_fw::CommandIdentityInterface::max_identity_size> command_identity_buffer_{};
 
-    // Whether the WAL already holds a command a gateway has sent again. Exact: the replicated WAL proves it
-    // (ReplicatedWal::holds_command).
-    [[nodiscard]] bool command_already_logged(const pubsub_itc_fw_app::WalRecordView& inbound);
+    // The record in the WAL that holds a command with the same comp id, protocol and ClOrdID as this one, if any. Exact:
+    // the replicated WAL proves it (ReplicatedWal::find_command). @p sent_again says whether the gateway marked the
+    // command as sent again, which bounds how far back a search of the WAL need read. A command that does not say
+    // whose it is cannot be checked, and is counted and treated as not held.
+    [[nodiscard]] std::optional<int64_t> find_logged_command(const pubsub_itc_fw_app::WalRecordView& inbound, bool sent_again);
+    // Refuses a command not marked as sent again whose ClOrdID the WAL holds as record @p first_seq_no: sends its
+    // gateway CommandRefused, and writes nothing (docs/availability/one_check_against_sequencing_twice.md, section 4.1).
+    // It is sent on @p came_by, the connection the command arrived on.
+    void refuse_reused_identifier(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound, int64_t first_seq_no);
     // Logs what the checks since the last summary found, and gives back the memory of any search of the WAL.
     void summarise_command_checks(const char* reason);
-
-    /**
-     * @brief The connections carrying commands from each gateway instance.
-     *
-     * A gateway opens its own connection to each sequencer to send commands on. When that connection's
-     * queue of waiting sends fills, because this sequencer stopped reading from it, the gateway closes
-     * it and opens another, and sends again, marked as sent again, every command still unanswered.
-     * Commands the gateway had already written to the old connection may still be unread in this
-     * machine's buffers for it, and may be read after their copies on the new connection. Those
-     * originals are not marked, so they would not be checked against the log, and a command could be
-     * sequenced twice (docs/bug_list.md, BUG-0118).
-     *
-     * So while a gateway instance has more than one connection open here, every command from it is
-     * checked against the log, marked or not, until the older connection has been read to its end.
-     * The gateway instance is learned from the first command on each connection, which says which
-     * gateway sent it.
-     */
-    struct CommandConnections {
-        int open{0};
-        int64_t already_logged{0};
-    };
-    std::unordered_map<int, GatewayKey> command_connection_gateway_;
-    std::unordered_map<GatewayKey, CommandConnections> command_connections_;
-
-    // Records which gateway instance a connection carries commands from, and returns whether that
-    // instance has more than one such connection open, in which case every command from it is checked.
-    [[nodiscard]] bool note_command_connection(const pubsub_itc_fw::ConnectionID& id, const pubsub_itc_fw_app::WalRecordView& inbound);
-    // Forgets a connection that carried commands, once it has been read to its end.
-    void forget_command_connection(const pubsub_itc_fw::ConnectionID& id);
 
     // The latest report from the engine this instance has handled while leading: forwarded, waiting
     // for an acknowledgement, or dropped because its session was not connected.

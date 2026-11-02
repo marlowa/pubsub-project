@@ -329,9 +329,9 @@ int main(int argc, char** argv) {
             return 1;
         }
         // The same layout as an order's report, so one parser reads both.
-        fmt::print("ExecutionReport seq={} ClOrdID={} OrderID={} OrdStatus={} ExecType={} Symbol={} Text={}\n", seq_no, report.cl_ord_id, report.order_id,
-                   pubsub_itc_fw_app::to_string(report.ord_status), pubsub_itc_fw_app::to_string(report.exec_type), report.symbol,
-                   report.has_text ? report.text : std::string_view());
+        fmt::print("ExecutionReport seq={} ClOrdID={} OrderID={} OrdStatus={} ExecType={} Symbol={} OrdRejReason={} Text={}\n", seq_no, report.cl_ord_id,
+                   report.order_id, pubsub_itc_fw_app::to_string(report.ord_status), pubsub_itc_fw_app::to_string(report.exec_type), report.symbol,
+                   report.has_ord_rej_reason ? static_cast<int>(report.ord_rej_reason) : -1, report.has_text ? report.text : std::string_view());
         ::close(socket_fd);
         fmt::print("done\n");
         // A rejected cancel is a failed run: it means the venue could not find the order,
@@ -385,10 +385,10 @@ int main(int argc, char** argv) {
             fmt::print("failed to decode ExecutionReport\n");
             continue;
         }
-        fmt::print("ExecutionReport seq={} ClOrdID={} OrderID={} OrdStatus={} ExecType={} Symbol={} Text={}\n", seq_no,
+        fmt::print("ExecutionReport seq={} ClOrdID={} OrderID={} OrdStatus={} ExecType={} Symbol={} OrdRejReason={} Text={}\n", seq_no,
                    std::string_view(report.cl_ord_id.data(), report.cl_ord_id.size()), report.order_id, pubsub_itc_fw_app::to_string(report.ord_status),
                    pubsub_itc_fw_app::to_string(report.exec_type), std::string_view(report.symbol.data(), report.symbol.size()),
-                   report.has_text ? report.text : std::string_view());
+                   report.has_ord_rej_reason ? static_cast<int>(report.ord_rej_reason) : -1, report.has_text ? report.text : std::string_view());
     }
 
     ::close(socket_fd);

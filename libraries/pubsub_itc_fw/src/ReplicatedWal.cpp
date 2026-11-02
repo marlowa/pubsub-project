@@ -898,8 +898,12 @@ void ReplicatedWal::add_command(uint64_t number, WalPosition position) {
 }
 
 bool ReplicatedWal::holds_command(std::string_view identity, int64_t not_before_ns) {
+    return find_command(identity, not_before_ns).has_value();
+}
+
+std::optional<int64_t> ReplicatedWal::find_command(std::string_view identity, int64_t not_before_ns) {
     if (configuration_.command_identity == nullptr) {
-        return false;
+        return std::nullopt;
     }
     take_record_of_commands_if_built();
     const uint64_t number = configuration_.command_number(identity);
@@ -907,16 +911,17 @@ bool ReplicatedWal::holds_command(std::string_view identity, int64_t not_before_
         const LoggedCommandIdentifiers::Lookup found = commands_->find(number);
         if (!found.may_hold && !commands_->full()) {
             ++command_check_counts_.not_held_by_number;
-            return false;
+            return std::nullopt;
         }
         if (!command_check_reported_) {
             command_check_reported_ = true;
             events_.checking_for_commands_already_held(wal_.last_seq_no());
         }
         if (found.position_known) {
-            if (command_at(found.position, identity)) {
+            const std::optional<int64_t> record = command_at(found.position, identity);
+            if (record.has_value()) {
                 ++command_check_counts_.proved_by_reading;
-                return true;
+                return record;
             }
             ++command_check_counts_.other_command_at_position;
             PUBSUB_LOG(logger_, FwLogLevel::Warning,
@@ -933,7 +938,7 @@ bool ReplicatedWal::holds_command(std::string_view identity, int64_t not_before_
     return search_for_command(identity, not_before_ns);
 }
 
-bool ReplicatedWal::command_at(WalPosition position, std::string_view identity) {
+std::optional<int64_t> ReplicatedWal::command_at(WalPosition position, std::string_view identity) {
     try {
         WalCursor cursor;
         cursor.open(configuration_.wal_directory, position);
@@ -941,32 +946,35 @@ bool ReplicatedWal::command_at(WalPosition position, std::string_view identity) 
         const uint8_t* payload = nullptr;
         size_t size = 0;
         if (!cursor.read_next(record_id, payload, size)) {
-            return false;
+            return std::nullopt;
         }
         // A cursor that finds no valid entry at the position goes on to the next segment, so a record read from
         // another segment is not the one at the position.
         if (cursor.position().segment != position.segment) {
-            return false;
+            return std::nullopt;
         }
         const std::optional<WalEntryContents> contents = read_wal_entry_contents(payload, size);
         if (!contents.has_value()) {
-            return false;
+            return std::nullopt;
         }
         const size_t identity_size = configuration_.command_identity->identity_of(*contents, identity_scratch_.data(), identity_buffer_.data());
-        return identity_size != 0 && identity_size <= identity_buffer_.size() && std::string_view(identity_buffer_.data(), identity_size) == identity;
+        if (identity_size == 0 || identity_size > identity_buffer_.size() || std::string_view(identity_buffer_.data(), identity_size) != identity) {
+            return std::nullopt;
+        }
+        return record_id;
     } catch (const std::exception& error) {
         PUBSUB_LOG(logger_, FwLogLevel::Warning, "{}: reading the WAL record at segment {}, byte {} failed: {}", configuration_.owner_name, position.segment,
                    position.offset, error.what());
-        return false;
+        return std::nullopt;
     }
 }
 
-bool ReplicatedWal::search_for_command(std::string_view identity, int64_t not_before_ns) {
+std::optional<int64_t> ReplicatedWal::search_for_command(std::string_view identity, int64_t not_before_ns) {
     if (!command_search_.has_value()) {
         command_search_.emplace(configuration_.wal_directory, *configuration_.command_identity);
         PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: searching the WAL for commands the record of command identifiers cannot settle", configuration_.owner_name);
     }
-    return command_search_->holds(identity, not_before_ns);
+    return command_search_->find(identity, not_before_ns);
 }
 
 int64_t ReplicatedWal::discard_command_search() {

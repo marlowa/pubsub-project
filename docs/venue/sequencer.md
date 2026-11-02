@@ -38,15 +38,19 @@ copy is thrown away before a number is taken.
 
 **The leader**, in order:
 
-1. **Refuses to sequence a command twice.** A gateway sends a command again, marked as sent again,
-   when nothing answered it, which happens across a change of leader or when its connection to the
-   sequencer is closed and opened again. If the log already holds that command, it is not sequenced
-   again, and its answer comes from the matching engine. A command not marked is checked as well
-   while the gateway has two connections open, because it may be the original arriving on the old
-   connection after its marked copy arrived on the new one. The check uses a table of every command
-   identifier in the log, reserved for 200 million commands (`[commands] identifiers_reserved`) and
-   filled from the log in the background when the sequencer starts. See
-   [Commands during a change of leader](../availability/commands_during_a_change_of_leader.md).
+1. **Checks the command against the log.** Every command is checked, with high availability on or
+   off, against a table of the identity of every command in the log (comp id, protocol and
+   `ClOrdID`), reserved for 200 million commands (`[commands] identifiers_reserved`) and filled from
+   the log in the background when the sequencer starts. A command the log does not hold goes on to
+   step 2. One the log holds is not written again:
+   - if its gateway marked it as sent again, because nothing answered it across a change of leader or
+     after its connection to the sequencer was closed and opened again, its answer comes from the
+     matching engine
+     ([Commands during a change of leader](../availability/commands_during_a_change_of_leader.md));
+   - if not, the member has used the `ClOrdID` before today, and the leader refuses it: it sends the
+     gateway `CommandRefused` on the connection the command came by, and the gateway rejects the
+     command with reason 6, "ClOrdID already used today"
+     ([One check against sequencing a command twice](../availability/one_check_against_sequencing_twice.md)).
 2. **Numbers it and stamps it.** The envelope is given the next sequence number and the current wall
    clock time (`wall_time_ns`), and the leader's epoch. That one time is used wherever the time of
    sequencing is needed: it is written to the log, and it is the `TransactTime` the matching engine
