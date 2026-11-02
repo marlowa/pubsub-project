@@ -2197,10 +2197,22 @@ void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app
             cancel_timer(halt_request_timer_id_);
             halt_request_timer_id_ = pubsub_itc_fw::TimerID{};
         }
-        if (event.reason == pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook ||
-            event.reason == pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong) {
-            halt_reason_ = event.reason == pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook ? pubsub_itc_fw_app::HaltReason::CannotAccountForBook
-                                                                                                         : pubsub_itc_fw_app::HaltReason::RecoveryTooLong;
+        std::optional<pubsub_itc_fw_app::HaltReason> reason;
+        switch (event.reason) {
+            case pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook:
+                reason = pubsub_itc_fw_app::HaltReason::CannotAccountForBook;
+                break;
+            case pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong:
+                reason = pubsub_itc_fw_app::HaltReason::RecoveryTooLong;
+                break;
+            case pubsub_itc_fw_app::TechnicalEventReason::DeclaredByOperator:
+                reason = pubsub_itc_fw_app::HaltReason::DeclaredByOperator;
+                break;
+            default:
+                break;
+        }
+        if (reason.has_value()) {
+            halt_reason_ = reason;
             if (test_events_.has_value()) {
                 test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{*halt_reason_});
             }
@@ -2209,6 +2221,11 @@ void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app
                        "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
     } else {
         halt_reason_.reset();
+        if (test_events_.has_value()) {
+            test_events_->send_event(pubsub_itc_fw_app::HaltLifted::message_pdu_id, pubsub_itc_fw_app::HaltLifted{sequence_number});
+        }
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: the halt is lifted at seq={} ({}) -- new orders are acted on again",
+                   sequence_number, pubsub_itc_fw_app::to_string(event.reason));
     }
 }
 

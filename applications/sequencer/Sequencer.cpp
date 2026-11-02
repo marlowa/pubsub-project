@@ -30,6 +30,7 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalFollowing.hpp>
 #include <pubsub_itc_fw/WalReadingThread.hpp>
@@ -98,6 +99,15 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.wal_subscriber_listen_host, config_.wal_subscriber_listen_port},
                                         pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
                                         pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
+
+    // The listener for operators, who halt trading or lift a halt over it (docs/availability/voided_commands.md, section
+    // 6.2). TLS only, and a client is accepted only with a certificate the operator's certificate authority signed. The
+    // bytes reach SequencerThread::on_raw_socket_message, which reads each request whole. A request is a few dozen bytes,
+    // so a small buffer is ample.
+    reactor_->register_inbound_tls_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.operator_listen_host, config_.operator_listen_port},
+                                            pubsub_itc_fw::ThreadID{1}, 65536,
+                                            pubsub_itc_fw::TlsListenerConfiguration{config_.operator_tls_certificate_path,
+                                                                                    config_.operator_tls_private_key_path, config_.operator_tls_ca_path, true});
 
     sequencer_thread_ = pubsub_itc_fw::ApplicationThread::create<SequencerThread>(*logger_, *reactor_, config_, wal_positions_);
 

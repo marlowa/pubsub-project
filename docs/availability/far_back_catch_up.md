@@ -245,15 +245,15 @@ time no engine has led exceeds the limit with no estimate, for instance because 
    [voided_commands.md](voided_commands.md), section 5.3).
 
 **This is built.** `RecoveryLimitRule` decides and `SequencerThread::check_engine_absence` acts. The rule estimates the time still to come from how far the reading thread moved over at least the last second,
-and acts once the time so far and that estimate together pass the limit, or the time so far alone passes it. The
-gateways are told the venue is accepting again once an engine is routed to: the engine applied the halt in its
-catch-up, so it refuses new orders as halted, and each refusal comes from it.
+and acts once the time so far and that estimate together pass the limit, or the time so far alone passes it. Once an
+engine is routed to again, trading stays halted: the gateways are told so with the reason `Halted`, and refuse new
+orders and pass cancels on, which the engine carries out while halted.
 
 Orders that reached the sequencer while no engine led are held, and voided by the command written before the halt, so
 the engine that next leads rejects each, saying trading halted while it was waiting; cancels held with them are
-carried out. Trading resumes when a person lifts the halt, through the operator's means of doing
-so ([BUG-0065](../bug_list.md#bug_0065)), which is not built; until it is, a halt lasts until the end of the day, as
-the `CannotAccountForBook` halt does now.
+carried out. Trading resumes when a person lifts the halt with `scripts/operator_halt.py`, which the leading
+sequencer does only once an engine leads and every order and cancel written before the halt has been answered
+([voided_commands.md](voided_commands.md), section 6.2).
 
 **It is the same rule as [BUG-0197](../bug_list.md#bug_0197).** That entry, agreed on 24 October 2026, asks that
 orders be held only for as long as a normal failover takes, and that past that, if no engine leads, the venue halts

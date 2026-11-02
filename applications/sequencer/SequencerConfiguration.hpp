@@ -269,6 +269,28 @@ struct SequencerConfiguration {
     /** @brief TCP port on which the external WAL subscriber listener binds (7030 primary, 7031 secondary). */
     uint16_t wal_subscriber_listen_port{7030};
 
+    // The listener for operators: TLS only, and a client must present a certificate signed by the operator's certificate
+    // authority. An operator halts trading, or lifts a halt, over it (docs/availability/voided_commands.md, section 6.2).
+
+    /** @brief Host address on which the listener for operators binds. `[operator] listen_host`. */
+    std::string operator_listen_host{"127.0.0.1"};
+
+    /** @brief TCP port on which the listener for operators binds. `[operator] listen_port`. */
+    uint16_t operator_listen_port{0};
+
+    /** @brief This sequencer's certificate on the listener for operators. `[operator] tls_certificate_path`. */
+    std::string operator_tls_certificate_path;
+
+    /** @brief The private key of that certificate. `[operator] tls_private_key_path`. */
+    std::string operator_tls_private_key_path;
+
+    /**
+     * @brief The certificate of the operator's certificate authority. `[operator] tls_ca_path`.
+     *
+     * A client is accepted only if it presents a certificate this authority signed, so it may not be empty.
+     */
+    std::string operator_tls_ca_path;
+
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};
 

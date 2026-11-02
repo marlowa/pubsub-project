@@ -3,12 +3,12 @@
 
 \emph{Placeholder, created 2026-09-08. The requirements below are named, not written.}
 
-The venue can say one thing about itself --- whether it is accepting orders --- and everything
-else it knows is private to the process that knows it. A matching engine that cannot account for
-what it was holding sets a local flag and writes a line to its log, and no gateway and no
-sequencer mentions a halt at all: the gateway goes on admitting orders and the sequencer goes on
-sequencing them into a venue whose engine has stopped. ``Trading is halted'' is one
-process's private opinion.
+The venue says little about itself. It tells its gateways whether it is accepting orders, and if
+not why, which includes that trading is halted: a halt is a command in the WAL, which every
+matching engine applies, and the leading sequencer keeps whether trading is halted from those
+commands and tells the gateways, which refuse new orders while it is (eqref{R-0023}). What it
+does not do is announce anything to a member that is not trading, or say which phase of the day
+it is in.
 
 That is why this section is in this chapter rather than beside the components that will carry the
 message. \Cref{sec:ha:enabled:process_death} requires that the venue not run with no instance of a

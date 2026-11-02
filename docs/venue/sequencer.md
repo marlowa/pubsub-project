@@ -173,12 +173,52 @@ does, it writes three commands into the WAL, in order (`SequencerThread::write_r
 
 The three are held like the orders before them and sent to the engine that next leads. The sequencer
 then tells the gateways it is not accepting orders, with the reason `RecoveryTooLong`, so that they
-refuse new orders and cancels saying the venue is halted while it recovers. Once an engine is routed
-to again, the gateways are told the venue is accepting: the engine met the halt in its catch-up, so it
-refuses new orders as halted, and a person must lift the halt. See
+refuse new orders and cancels saying the venue is halted while it recovers. Once an engine leads again,
+trading stays halted: the gateways are told so with the reason `Halted`, under which they refuse new
+orders and pass cancels on, and a person lifts the halt (below). See
 [voided_commands.md](../availability/voided_commands.md), section 5.3, and
 [far_back_catch_up.md](../availability/far_back_catch_up.md), section 5. The halt is written once for
 each absence, only by the leader, and never into an empty WAL.
+
+### Whether trading is halted, and the operator's halt and lift
+
+The sequencer keeps whether trading is halted from the `TechnicalEvent` records in its WAL
+(`TradingHaltState`), in the same three ways as it keeps the voids: as the replicated WAL reads the
+whole WAL when it opens, as it writes records as leader, and as it writes its leader's records as
+follower. The latest `TechnicalEvent` says whether trading is halted. With each one it keeps the last
+member's new order or cancel written before it. While trading is halted, the leading sequencer tells
+the gateways so with `OrderAcceptance`, whether or not an engine leads:
+
+| What the sequencer knows | Reason sent | What the gateways do |
+|---|---|---|
+| halted for the recovery limit, and no engine leads | `RecoveryTooLong` | refuse new orders and cancels |
+| halted, and no engine has led for longer than orders are held | `NoMatchingEngine` | refuse new orders and cancels |
+| halted otherwise | `Halted` | refuse new orders, saying the venue is halted, and pass cancels on, which the engine carries out while halted |
+| not halted, and no engine has led for longer than orders are held | `NoMatchingEngine` | refuse new orders and cancels |
+| not halted otherwise | `Accepting` | pass everything on |
+
+A gateway refusing a new order because trading is halted gives OrdRejReason 2, exchange closed, as the
+matching engine does when it refuses one for the same reason.
+
+An operator halts trading, or lifts a halt, with `scripts/operator_halt.py`, which sends an
+`OperatorHaltRequest` to both sequencers over each one's listener for operators (`[operator]`). The
+listener accepts only TLS, and only a client presenting a certificate signed by the operator's
+certificate authority (`tls_ca_path`); deployment makes the authority, each listener's certificate and
+the operator's certificate (`[operator_certificates]` in the environment file). Only the leader acts:
+
+- **To halt**, it writes a `TechnicalEvent` that halts trading, with the reason `DeclaredByOperator`,
+  and cancels nothing: an operator's halt keeps the book. If trading is halted already, it writes
+  nothing and says so.
+- **To lift**, it writes a `TechnicalEvent` that does not halt, with the reason `LiftedByOperator`,
+  only if a matching engine leads and the WAL holds a report answering the last member's command
+  before the halt. The engine sends every report of a command before it applies the next, so that
+  report means every order and cancel the venue held has been answered, and every member has been sent
+  its rejections and its cancels. Otherwise it declines, saying why (`NoEngineLeads` or
+  `ReportsOutstanding`), and the operator asks again.
+
+A follower answers `NotLeader`. Every request is answered with an `OperatorHaltAnswer`, saying what was
+written or why nothing was, and logged at Warning with the operator's name. See
+[voided_commands.md](../availability/voided_commands.md), section 6.
 
 When the whole venue was down, the sequencer measures at start-up from the last time it knew of an
 engine it routed to, which it writes about once a second into `engine_routed_at`, a file of eight

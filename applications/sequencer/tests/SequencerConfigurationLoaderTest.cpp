@@ -62,6 +62,13 @@ orders_held_at_most = 64
 listen_host = "127.0.0.1"
 listen_port = 11030
 
+[operator]
+listen_host          = "127.0.0.1"
+listen_port          = 11050
+tls_certificate_path = "operator_listener.crt"
+tls_private_key_path = "operator_listener.key"
+tls_ca_path          = "operator_ca.crt"
+
 [wal]
 directory                 = "var/sequencer_wal"
 segment_size              = 4194304
@@ -369,6 +376,26 @@ TEST(SequencerConfigurationLoaderTest, RejectsARecoveryLimitBelowOneSecond) {
     std::string sections(required_sections);
     const std::string limit = "automatic_recovery_limit_seconds = 12";
     sections.replace(sections.find(limit), limit.size(), "automatic_recovery_limit_seconds = 0");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
+}
+
+TEST(SequencerConfigurationLoaderTest, ReadsTheListenerForOperators) {
+    const auto config = load_with_gateways(one_gateway);
+    EXPECT_EQ(config.operator_listen_host, "127.0.0.1");
+    EXPECT_EQ(config.operator_listen_port, 11050);
+    EXPECT_EQ(config.operator_tls_certificate_path, "operator_listener.crt");
+    EXPECT_EQ(config.operator_tls_private_key_path, "operator_listener.key");
+    EXPECT_EQ(config.operator_tls_ca_path, "operator_ca.crt");
+}
+
+// Without a certificate authority, any client could halt the venue.
+TEST(SequencerConfigurationLoaderTest, RejectsAListenerForOperatorsWithNoCertificateAuthority) {
+    std::string sections(required_sections);
+    const std::string authority = "tls_ca_path          = \"operator_ca.crt\"";
+    sections.replace(sections.find(authority), authority.size(), "tls_ca_path          = \"\"");
     pubsub_itc_fw::TomlConfiguration toml;
     const auto [ok, err] = toml.load_string(sections + one_gateway);
     ASSERT_TRUE(ok) << err;

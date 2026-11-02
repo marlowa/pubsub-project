@@ -116,6 +116,17 @@ orders_held_at_most = 16384
 listen_host = "${sequencer_secondary_wal_subscriber_listen_host}"
 listen_port = ${sequencer_secondary_wal_subscriber_listen_port}
 
+# The listener for operators. It accepts only TLS, and only a client presenting a certificate signed by
+# the certificate authority named by tls_ca_path. An operator halts trading, or lifts a halt, over it,
+# with scripts/operator_halt.py. deploy.py makes the authority, this sequencer's certificate and the
+# operator's certificate. See docs/availability/voided_commands.md, section 6.2.
+[operator]
+listen_host          = "${sequencer_secondary_operator_listen_host}"
+listen_port          = ${sequencer_secondary_operator_listen_port}
+tls_certificate_path = "${sequencer_secondary_operator_tls_certificate}"
+tls_private_key_path = "${sequencer_secondary_operator_tls_private_key}"
+tls_ca_path          = "${sequencer_secondary_operator_tls_ca}"
+
 [wal]
 directory                 = "${sequencer_secondary_wal_directory}"
 segment_size              = 4194304

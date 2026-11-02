@@ -2,7 +2,8 @@
 
 While no matching engine leads, the venue holds the orders it receives for as long as a normal change of
 engine leader takes, and then, if none leads yet, it refuses new orders and cancels with a reply saying why.
-It starts accepting again on its own when a matching engine leads. `ha_test.py` scenarios 42 and 92 check it.
+It starts accepting again on its own when a matching engine leads, unless trading is halted, which only a person
+lifts. `ha_test.py` scenarios 42 and 92 check it.
 
 ## The condition
 
@@ -109,6 +110,14 @@ While the venue is not accepting:
   as an order does, and a member believing it had cancelled would be more dangerously wrong than one
   believing it had traded.
 
+While trading is halted the reason differs, and so does what is refused. With `RecoveryTooLong`, halted because no
+engine could be trading within the longest recovery the venue does by itself and none trades yet, new orders and
+cancels are refused, saying the venue is halted while it recovers. With `Halted`, halted while an engine leads, only
+new orders are refused, with the text *"Venue is halted: new orders are refused until the halt is lifted; cancels are
+carried out"*, and cancels are passed on, because the engine carries them out while trading is halted. A new order
+refused for either is given `OrdRejReason` 2, exchange closed, as the matching engine gives one it refuses because
+trading is halted. [Sequencer](../venue/sequencer.md) has the table of which reason is sent when.
+
 Both gateways refuse the same way, with the same texts. *Considered and rejected: a
 `BusinessMessageReject`,* which many members would read as a fault in their message rather than an
 outcome for the order.
@@ -152,8 +161,11 @@ and the failure this design answers is one in which nobody noticed for seven min
 
 Resuming without a person is right **while nothing has been lost.** Once orders have been lost, a
 venue that reopens quietly hides the damage rather than recovering from it; that case belongs to a
-declared halt, which does not lift by itself ([design notes, section 15](design_notes.md#ha_recovery_ends_at_loss),
-[BUG-0065](../bug_list.md#bug_0065)).
+declared halt, which does not lift by itself ([design notes, section 15](design_notes.md#ha_recovery_ends_at_loss)).
+A halt, whether for a recovery that took too long, for an engine that cannot account for the orders the venue holds,
+or declared by an operator, stays until an operator lifts it with `scripts/operator_halt.py`, and the leading
+sequencer lifts it only once an engine leads and every order and cancel written before the halt has been answered
+([voided_commands.md](voided_commands.md), section 6.2).
 
 ## What this does not solve
 

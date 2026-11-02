@@ -541,8 +541,10 @@ events is sent for each order, and it does not change the round trip.
   number of cancel reports it sent;
 - `ResumedAsLeader` (173): a promoted engine finished catching up and serves again, with the orders on its book;
 - `Halted` (174): the engine halted trading, with the reason: no engine could trade for longer than the venue allows,
-  so a `CancelBook` command cancelled its book and halted; or its region could not be used and the WAL does not reach
-  the first command of the day, so a `TechnicalEvent` halted trading, cancelling nothing;
+  so a `CancelBook` command cancelled its book and a `TechnicalEvent` halted; its region could not be used and the WAL
+  does not reach the first command of the day, so a `TechnicalEvent` halted trading, cancelling nothing; or an operator
+  declared a halt, cancelling nothing. `HaltLifted` (163) says the engine applied a `TechnicalEvent` that lifts a halt,
+  with its position ([voided_commands.md](voided_commands.md), section 6);
 - `RegionUnusable` (175): at startup, the region holding the open orders could not be used, with the reason;
 - `RegionRebuilt` (169): the region could not be used, and the engine rebuilt its book from the WAL, which reached the
   first command of the day, and carries on with it, with the orders it holds.

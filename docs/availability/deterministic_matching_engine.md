@@ -189,15 +189,17 @@ Three kinds of command join the new order and the cancel as commands the engine 
   in which the orders were placed (section 5). It carries a reason, which the reports' text gives.
 - **Halt trading.** The engine refuses every new order from then on, until trading resumes. A cancel is still
   carried out, so that a member can always take its orders off the book. It carries a reason.
-- **Resume trading.** The engine accepts orders again. Only a person lifts a halt (R-0023), through the operator's
-  means of doing so, and the resume command is how that reaches the engines.
+- **Resume trading.** The engine accepts orders again. Only a person lifts a halt (R-0023), with
+  `scripts/operator_halt.py`, and the resume command is how that reaches the engines.
 
 The halt and the resume are one message, the technical event of [trading_phases.md](../venue/trading_phases.md)
 (decision 6): `TechnicalEvent` in `leader_follower.dsl`, carrying the phase, whether trading is halted, the trading
 day and a reason. The engine applies it; one whose trading day is older than the trading date of the record carrying it
 is refused. The leading sequencer writes one that halts trading when an engine about to lead cannot account for the
-orders the venue holds (section 4.2); the resume waits for the operator's means of lifting a halt
-([BUG-0065](../bug_list.md#bug_0065)). The phase is always open.
+orders the venue holds (section 4.2), when no engine could be trading within the longest recovery the venue does by
+itself, and when an operator asks; it writes one that lifts the halt, with reason `LiftedByOperator`, when an operator
+asks, a matching engine leads, and every order and cancel written before the halt has been answered
+([voided_commands.md](voided_commands.md), section 6). The phase is always open.
 
 Each is a WAL record like an order, with a sequence number and the time the sequencer recorded, and a catch-up sends
 it to an engine like an order. So an engine that restarts and catches up meets each decision at the position where
@@ -234,11 +236,11 @@ cancels its book or halts on its own initiative any more. The decisions that are
   no engine runs are still written, which would make the absence look shorter. When this instance is told another
   leads, the venue was not down as a whole, and what it measured at start-up is dropped.
 - **The limit on automatic recovery.** When no engine can trade, and the time so far plus how long the catch-up
-  under way will still take passes `[recovery] automatic_recovery_limit_seconds`, the leading sequencer writes a
-  `TechnicalEvent` that halts trading, with reason `RecoveryTooLong`, and the gateways refuse orders saying the venue
-  is halted while it recovers. Nothing is cancelled. This is built (`RecoveryLimitRule`), and is the halt
-  [BUG-0197](../bug_list.md#bug_0197) asks for; the rejection of the orders held before it is designed in phase 8
-  ([far_back_catch_up.md](far_back_catch_up.md), section 5).
+  under way will still take passes `[recovery] automatic_recovery_limit_seconds`, the leading sequencer voids the
+  orders it holds, cancels the book, writes a `TechnicalEvent` that halts trading, with reason `RecoveryTooLong`, and
+  the gateways refuse orders saying the venue is halted while it recovers. This is built (`RecoveryLimitRule`), and is
+  the halt [BUG-0197](../bug_list.md#bug_0197) asks for ([voided_commands.md](voided_commands.md), section 5.3). An
+  operator lifts it once an engine leads (section 6.2).
 - **Cancelling on promotion** is gone. A promoted engine followed the WAL, so it keeps every order on its book
   ([both_engines_apply_the_wal.md](both_engines_apply_the_wal.md), section 5). The only cancel of the book is the absence
   rule's, a command in the WAL like any other.

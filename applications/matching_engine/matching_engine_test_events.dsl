@@ -111,6 +111,7 @@ end
 enum HaltReason : i8 {
     CannotAccountForBook = 3   # its region could not be used and the WAL does not reach the first command; a TechnicalEvent halted, cancelling nothing
     RecoveryTooLong = 4        # no engine could be trading within the longest recovery the venue does by itself; a CancelBook cancelled the book and a TechnicalEvent halted
+    DeclaredByOperator = 5     # a person halted trading; a TechnicalEvent halted, cancelling nothing
 }
 
 # ------------------------------------------------------------
@@ -120,6 +121,16 @@ enum HaltReason : i8 {
 # ------------------------------------------------------------
 message Halted (id=174, version=1)
     HaltReason reason
+end
+
+# ------------------------------------------------------------
+#  163 -- HaltLifted
+#  The engine applied a TechnicalEvent that lifts a halt: it acts on
+#  new orders again (docs/availability/voided_commands.md, section
+#  6.2).
+# ------------------------------------------------------------
+message HaltLifted (id=163, version=1)
+    i64 seq_no                 # the position of the TechnicalEvent that lifted it
 end
 
 # ------------------------------------------------------------

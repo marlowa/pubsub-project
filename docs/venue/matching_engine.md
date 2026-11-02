@@ -167,7 +167,12 @@ With high availability on, two instances run: `matching_engine` (the primary, in
   writes a `TechnicalEvent` that halts trading; nothing is cancelled. An engine that follows asks for
   no halt, because the engine that leads goes on trading.
 
-A halt stays until a person lifts it; see [Trading phases](trading_phases.md).
+A halt stays until a person lifts it with `scripts/operator_halt.py`, and an operator may also declare
+one, which cancels nothing. While halted, the engine refuses new orders, with OrdRejReason exchange
+closed, and carries out cancels. It reports `Halted` on the test event channel when it applies a halt,
+with the reason, and `HaltLifted` when it applies the lift. See
+[voided_commands.md](../availability/voided_commands.md), section 6, and
+[Trading phases](trading_phases.md).
 
 `ha_test.py` scenario 16 kills the primary engine and checks that the secondary takes over.
 

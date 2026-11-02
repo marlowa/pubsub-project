@@ -242,7 +242,8 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      *                      for this call only.
      * @param[in] reason    Text for tag 58.
      */
-    void send_reject_execution_report(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason);
+    void send_reject_execution_report(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason,
+                                      pubsub_itc_fw_app::OrdRejReason ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other);
 
     /**
      * @brief Sends an OrderCancelReject (35=9) when the gateway refuses a request to cancel.
@@ -609,6 +610,11 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     bool venue_accepting_orders_{true};
     // Why the venue is not accepting, as the leading sequencer last said, which decides what a member is told.
     pubsub_itc_fw_app::OrderAcceptanceReason venue_refusal_reason_{pubsub_itc_fw_app::OrderAcceptanceReason::Accepting};
+    // The text a member is given when a new order is refused because the venue is not accepting, saying why.
+    [[nodiscard]] const char* venue_refusal_text() const;
+    // The OrdRejReason of that refusal: ExchangeClosed while trading is halted, as the matching engine says when it refuses
+    // an order because trading is halted, and Other otherwise.
+    [[nodiscard]] pubsub_itc_fw_app::OrdRejReason venue_refusal_ord_rej_reason() const;
 
     /// Whether the sequencer reported a session's numbering before the gateway opened the session.
     enum class SessionNumbering {

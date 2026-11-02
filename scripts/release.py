@@ -7,7 +7,9 @@ and can be handed directly to deploy.py:
 
   bin/            application binaries (derived from the env TOML;
                   test/bench binaries are excluded)
-  lib/            libpubsub_itc_fw.so; admin-service.jar if present
+  lib/            libpubsub_itc_fw.so; admin-service.jar if present;
+                  python/ with pdu_framing.py and leader_follower.py, which
+                  operator_halt.py needs
   etc/            component config templates
                   (credentials.toml, *.crt, *.key excluded — generated at
                    deploy time)
@@ -16,6 +18,7 @@ and can be handed directly to deploy.py:
   environments/   env TOML files (dev.toml, prod.toml, …)
   devenv.py       sandbox management script
   deploy.py       deployment script (included if present)
+  operator_halt.py  an operator's tool to halt trading or lift a halt
   release.json    version, git hash, build timestamp
 
 Artefact name:  pubsub-<version>-<git-short-hash>-<mode>.tar.gz
@@ -184,6 +187,17 @@ def stage_lib(install_dir: Path, stage: Path, jar_paths: set[str]) -> None:
     shutil.copy2(shared_lib, stage_lib_dir / shared_lib.name)
     print(f"  lib/  {shared_lib.name}")
 
+    # The Python an operator's tool needs: operator_halt.py halts trading, or lifts a halt, with the generated
+    # messages and the PDU framing (docs/availability/voided_commands.md, section 6.2).
+    stage_python_dir = stage_lib_dir / "python"
+    stage_python_dir.mkdir()
+    for module_name in ("pdu_framing.py", "leader_follower.py"):
+        source = install_dir / "lib" / "python" / module_name
+        if not source.is_file():
+            sys.exit(f"error: generated Python module not found: {source}")
+        shutil.copy2(source, stage_python_dir / module_name)
+        print(f"  lib/python/  {module_name}")
+
     for jar_relative in sorted(jar_paths):
         source = install_dir / jar_relative
         if source.is_file():
@@ -272,7 +286,7 @@ def stage_environments(stage: Path) -> None:
 
 
 def stage_scripts(stage: Path) -> None:
-    scripts = ["devenv.py", "deploy.py"]
+    scripts = ["devenv.py", "deploy.py", "operator_halt.py"]
     for script_name in scripts:
         source = _SCRIPT_DIR / script_name
         if source.is_file():

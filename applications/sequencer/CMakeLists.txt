@@ -25,6 +25,7 @@ target_sources(sequencer PRIVATE
         SequencerConfigurationLoader.hpp
         SequencerThread.hpp
         Sequencer.hpp
+        TradingHaltState.hpp
         VoidFromWal.hpp
 )
 
@@ -93,6 +94,7 @@ add_executable(sequencer_tests
         tests/WalRecordEncodingTest.cpp
         tests/FullyReportedThroughTest.cpp
         tests/VoidFromWalTest.cpp
+        tests/TradingHaltStateTest.cpp
         SequencerConfigurationLoader.cpp
 )
 

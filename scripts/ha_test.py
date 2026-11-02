@@ -1071,6 +1071,17 @@ class Scenario(NamedTuple):
     # held cancel is carried out and every other order on the book is cancelled, each reported to the member
     # (docs/availability/voided_commands.md, section 5.3). See run_scenario's "held orders at the halt" block.
     assert_halt_voids_held_orders: bool = False
+    # When True, kill both matching engines until the venue halts for the limit on automatic recovery; have an operator
+    # ask, with scripts/operator_halt.py, for the halt to be lifted before any engine leads, and require it to be
+    # declined; start one engine, require new orders to be refused while trading is halted, lift the halt, and require
+    # new orders to be accepted again (docs/availability/voided_commands.md, section 6.2). See run_scenario's "operator
+    # lifts the halt" block.
+    assert_operator_lift: bool = False
+    # When True, an operator halts trading with scripts/operator_halt.py while an engine leads: require new orders to be
+    # refused, a cancel to be carried out, and the book to be kept; then lift the halt, and require a new order to be
+    # accepted and an order placed before the halt still to be on the book (section 6.2). See run_scenario's "operator's
+    # halt" block.
+    assert_operator_halt: bool = False
     # When True, assert that no halt for the recovery limit was written: a failover finishes well within the limit.
     assert_no_recovery_halt: bool = False
     # When True, the leading matching engine is started with its sends on the link between the engines made to fail
@@ -4712,6 +4723,55 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 94 -- an operator lifts the halt for a recovery that took too long, once an engine leads.
+    #
+    # docs/availability/voided_commands.md, section 6.2. Both engines are killed and kept down past the limit on automatic
+    # recovery, shortened to four seconds, so the venue halts. An operator asks, with scripts/operator_halt.py, for the halt
+    # to be lifted while no engine leads, and the leading sequencer must decline, saying no engine leads. One engine is
+    # then started. Trading stays halted although it leads: the gateways refuse new orders, saying the venue is halted,
+    # and pass cancels on. The operator asks again, and the halt is lifted once the WAL holds a report of every order and
+    # cancel before the halt; a new order is then accepted. Left without the checks of section 6.2, the first request
+    # lifts the halt with no engine to trade, and the scenario fails there.
+    Scenario(
+        number=94,
+        short_name="operator_lifts_recovery_halt",
+        description="An operator's lift of a halt is declined while no matching engine leads, and accepted once one does",
+        expected_outcome=(
+            "the venue halts for the recovery limit; a lift asked for before any engine leads is declined, saying no engine "
+            "leads; once an engine leads, new orders are refused while trading is halted, the lift is accepted, and a new "
+            "order is accepted"
+        ),
+        me_ha=True,
+        automatic_recovery_limit_seconds=4,
+        assert_operator_lift=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 95 -- an operator's halt keeps the book and carries out cancels.
+    #
+    # Section 6.2. While an engine leads, an operator halts trading with scripts/operator_halt.py. The engine must halt
+    # without cancelling anything; a new order must be refused, saying the venue is halted; a cancel must be carried out;
+    # and a second request to halt must be answered that trading is halted already. The operator then lifts the halt: a
+    # new order must be accepted, and an order placed before the halt must still be on the book, which a cancel of it
+    # shows.
+    Scenario(
+        number=95,
+        short_name="operator_halt_keeps_book",
+        description="An operator's halt refuses new orders, carries out cancels and keeps the book, until the operator lifts it",
+        expected_outcome=(
+            "the halt is written and the engine halts without cancelling; a new order is refused, a cancel is carried out, a "
+            "second halt is answered as halted already; the lift is written, a new order is accepted, and an order placed "
+            "before the halt is still on the book"
+        ),
+        me_ha=True,
+        assert_operator_halt=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 92 -- orders are held while no engine leads, for as long as a change of engine leader takes, and refused after that.
     #
     # docs/availability/voided_commands.md, sections 5.1 and 5.2. Both engines are taken away. Several orders are placed
@@ -5533,9 +5593,13 @@ def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_
     try:
         # Every report sent again, so that each engine's reports can be compared with the replay's: by default an engine
         # catching up leaves out the reports the WAL already holds (docs/availability/far_back_catch_up.md, section 2.6).
+        # The copy is written, and the sequencer started, in another directory, so the certificates of its listener for
+        # operators, named relative to its own directory, are named by their full paths.
+        certificates = {("operator", key): f'"{sequencer_config.parent / installed_toml_section_value(sequencer_config, "operator", key)}"'
+                        for key in ("tls_certificate_path", "tls_private_key_path", "tls_ca_path")}
         config = config_with_values(sequencer_config, {("ha", "ha_enabled"): "false", ("wal", "directory"): f'"{wal_copy}"',
                                                        ("recovery", "automatic_recovery_limit_seconds"): "86400",
-                                                       ("catch_up", "send_every_report"): "true"}, work / f"{sequencer}.toml")
+                                                       ("catch_up", "send_every_report"): "true", **certificates}, work / f"{sequencer}.toml")
         since = _TEST_EVENTS.mark()
         processes.append((sequencer, launch_app(sequencer, "sequencer", config, bin_dir, log_dir)))
         if _TEST_EVENTS.wait_for(leads(_TEST_EVENTS.messages, sequencer), timeout=15.0, since=since) is None:
@@ -6013,6 +6077,19 @@ def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str) -> No
     result = header + "".join(f"[[credential]]{b}" for b in kept) + new_block
     creds_file.write_text(result)
     log(f"  SCRAM credential for '{comp_id}' (empty password) written to {creds_file.name}")
+
+
+def run_operator_halt(prefix: Path, action: str) -> tuple[int, str]:
+    """Runs scripts/operator_halt.py, as an operator would, against the deployed sequencers, and returns its exit status
+    and what it printed: 0 when the leading sequencer wrote what was asked, 1 when it declined, 2 when no leader
+    answered."""
+    completed = subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "operator_halt.py"), action, "--operator", "ha_test",
+                                "--install-dir", str(prefix)], capture_output=True, text=True, timeout=60, check=False)
+    said = (completed.stdout + completed.stderr).strip()
+    log(f"  operator_halt.py {action} -> exit {completed.returncode}")
+    for line in said.splitlines():
+        log(f"    {line}")
+    return completed.returncode, said
 
 
 def gateway_listen_port(prefix: Path, instance: str) -> int:
@@ -7983,6 +8060,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # is no book a promotion resumed with to ask about.
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
                 and not scenario.assert_held_answered and not scenario.assert_halt_voids_held_orders and not scenario.expects_no_new_leader
+                and not scenario.assert_operator_lift and not scenario.assert_operator_halt
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
                 and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained):
@@ -9001,6 +9079,263 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"halt with held orders: an order sent into the halt was answered with {[(a.get(39), a.get(58)) for a in into_halt]}; "
                     "a rejection was wanted, because nothing lifts the halt but a person (R-0023)")
             log("  an order sent into the halt is refused -- OK")
+            member.close()
+
+        # ── The operator lifts the halt for a recovery that took too long ──
+        # docs/availability/voided_commands.md, section 6.2. Both engines are killed until the venue halts for the limit on
+        # automatic recovery. A lift asked for while no engine leads must be declined. Once an engine leads, trading stays
+        # halted, with new orders refused at the gateway, until the operator lifts it; then a new order is accepted.
+        if scenario.assert_operator_lift:
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            gateway_port = gateway_listen_port(prefix, "a")
+            member = FixRawClient("127.0.0.1", gateway_port, FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("operator lifts the halt: the raw client could not log on. A test that cannot log on looks identical to a "
+                    "venue that will not answer, so this is checked first.")
+
+            # Every report the member is sent, by the ClOrdID it answers.
+            lift_reports: dict[str, list[dict[int, str]]] = {}
+
+            def receive_lift_reports(timeout: float, done=lambda: False) -> None:
+                deadline = time.monotonic() + timeout
+                while not done():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return
+                    report = member.receive_until("8", timeout=min(1.0, remaining))
+                    if report is not None and report.get(11):
+                        lift_reports.setdefault(report[11], []).append(report)
+
+            def lift_answers(cl_ord_id: str) -> list[tuple[str | None, str | None]]:
+                return [(r.get(39), r.get(58)) for r in lift_reports.get(cl_ord_id, [])]
+
+            resting_id = "lift-resting-1"
+            member.new_order_single(resting_id)
+            receive_lift_reports(_HELD_ANSWER_TIMEOUT, lambda: resting_id in lift_reports)
+            if [status for status, _ in lift_answers(resting_id)] != ["0"]:
+                member.close()
+                die(f"operator lifts the halt: the order placed while the engines ran was answered with {lift_answers(resting_id)}")
+            log(f"  {resting_id} placed and accepted while the engines run")
+
+            for engine in ("matching_engine_primary", "matching_engine_secondary"):
+                engine_proc = proc_by_name.get(engine)
+                if engine_proc is None or engine_proc.poll() is not None:
+                    member.close()
+                    die(f"operator lifts the halt: {engine} is not running, so taking every engine away is not what this "
+                        "scenario would be doing and it would prove nothing.")
+                log(f"  SIGKILL -> {engine} (PID {engine_proc.pid})")
+                engine_proc.kill()
+                engine_proc.wait()
+            halt_from = _TEST_EVENTS.mark()
+            log("  the venue now has no matching engine at all")
+
+            gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+            halted_said = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False,
+                                                           halted_for_recovery=True), timeout=args.recovery_timeout, since=halt_from)
+            if halted_said is None:
+                member.close()
+                die("operator lifts the halt: the gateway was never told the venue is halted while it recovers, although no "
+                    f"engine has been able to trade for longer than the {scenario.automatic_recovery_limit_seconds}s limit")
+            log("  the venue halted for the recovery limit")
+
+            status, said = run_operator_halt(prefix, "lift")
+            if status != 1 or "NoEngineLeads" not in said:
+                member.close()
+                die(f"operator lifts the halt: a lift asked for while no matching engine leads was answered with exit {status} and "
+                    f"'{said}'. It must be declined, saying no engine leads: lifted now, the venue would take orders with no "
+                    "engine to trade them (docs/availability/voided_commands.md, section 6.2).")
+            log("  a lift asked for while no engine leads is declined, saying so -- OK")
+
+            log("  starting matching_engine_primary")
+            do_restart_step(
+                RestartStep(
+                    proc_name="matching_engine_primary",
+                    ready_log_name="matching_engine_primary.log",
+                    ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
+                    ready_timeout=_ME_READY_TIMEOUT,
+                    resets_me_counter=False,
+                    settle_secs=_ME_SETTLE,
+                ),
+                proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix),
+            )
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            restarted_from = _TEST_EVENTS.since_introduction("matching_engine_primary")
+            halt = engine_event("matching_engine_primary", "Halted", restarted_from, args.failover_timeout)
+            if halt is None or halt.reason != engine_events.HaltReason.RecoveryTooLong:
+                member.close()
+                die(f"operator lifts the halt: the engine that leads did not halt for the recovery limit ({halt})")
+            halted_with_engine = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False,
+                                                                  halted=True), timeout=args.recovery_timeout, since=halt_from)
+            if halted_with_engine is None:
+                member.close()
+                die("operator lifts the halt: once an engine leads, the gateway was never told that trading is halted with an "
+                    "engine leading, under which it refuses new orders and passes cancels on. Trading stays halted until a "
+                    "person lifts it (R-0023).")
+            log("  an engine leads, the engine is halted, and the gateway is told trading is halted -- OK")
+
+            into_halt_id = "lift-into-halt-1"
+            member.new_order_single(into_halt_id)
+            receive_lift_reports(args.recovery_timeout, lambda: into_halt_id in lift_reports)
+            into_halt = lift_answers(into_halt_id)
+            if len(into_halt) != 1 or into_halt[0][0] != "8" or "halted" not in (into_halt[0][1] or ""):
+                member.close()
+                die(f"operator lifts the halt: an order sent while trading is halted with an engine leading was answered with "
+                    f"{into_halt}; one rejection, saying the venue is halted, was wanted")
+            log("  an order sent while trading is halted is refused, saying so -- OK")
+
+            lift_from = _TEST_EVENTS.mark()
+            deadline = time.monotonic() + args.recovery_timeout
+            while True:
+                status, said = run_operator_halt(prefix, "lift")
+                if status == 0 and "Lifted" in said:
+                    break
+                # Declined only while the engine that leads is still answering the orders held before the halt.
+                if status != 1 or "ReportsOutstanding" not in said or time.monotonic() > deadline:
+                    member.close()
+                    die(f"operator lifts the halt: with an engine leading, the lift was answered with exit {status} and '{said}'")
+                time.sleep(0.5)
+            lifted = engine_event("matching_engine_primary", "HaltLifted", lift_from, args.failover_timeout)
+            if lifted is None:
+                member.close()
+                die("operator lifts the halt: the sequencer wrote the lift, and the engine that leads never applied it")
+            accepting_said = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=True),
+                                                   timeout=args.recovery_timeout, since=lift_from)
+            if accepting_said is None:
+                member.close()
+                die("operator lifts the halt: the halt is lifted, and the gateway was never told the venue accepts orders again")
+            log(f"  the halt is lifted at seq={lifted.seq_no}, and the gateway is told the venue accepts orders -- OK")
+
+            after_id = "lift-after-1"
+            member.new_order_single(after_id)
+            receive_lift_reports(args.recovery_timeout, lambda: after_id in lift_reports)
+            if [status for status, _ in lift_answers(after_id)] != ["0"]:
+                member.close()
+                die(f"operator lifts the halt: an order sent after the lift was answered with {lift_answers(after_id)}; it was "
+                    "to be accepted")
+            log("  an order sent after the lift is accepted -- OK")
+            member.close()
+
+        # ── The operator's halt: new orders refused, cancels carried out, the book kept ──
+        # Section 6.2. An operator halts trading while an engine leads, and later lifts the halt. Nothing may be cancelled
+        # by the halt: an order placed before it must still be on the book after the lift.
+        if scenario.assert_operator_halt:
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            gateway_port = gateway_listen_port(prefix, "a")
+            member = FixRawClient("127.0.0.1", gateway_port, FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("operator's halt: the raw client could not log on. A test that cannot log on looks identical to a venue "
+                    "that will not answer, so this is checked first.")
+
+            operator_reports: dict[str, list[dict[int, str]]] = {}
+
+            def receive_operator_reports(timeout: float, done=lambda: False) -> None:
+                deadline = time.monotonic() + timeout
+                while not done():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return
+                    report = member.receive_until("8", timeout=min(1.0, remaining))
+                    if report is not None and report.get(11):
+                        operator_reports.setdefault(report[11], []).append(report)
+
+            def operator_answers(cl_ord_id: str) -> list[tuple[str | None, str | None]]:
+                return [(r.get(39), r.get(58)) for r in operator_reports.get(cl_ord_id, [])]
+
+            resting_ids = ["op-resting-1", "op-resting-2"]
+            for cl_ord_id in resting_ids:
+                member.new_order_single(cl_ord_id)
+            receive_operator_reports(_HELD_ANSWER_TIMEOUT, lambda: all(cl_ord_id in operator_reports for cl_ord_id in resting_ids))
+            if any([status for status, _ in operator_answers(cl_ord_id)] != ["0"] for cl_ord_id in resting_ids):
+                member.close()
+                die(f"operator's halt: the orders placed before the halt were answered with {[operator_answers(c) for c in resting_ids]}")
+            log(f"  {len(resting_ids)} order(s) placed and accepted")
+
+            leader = resolved(ENGINE_LEADING_AT_START)
+            halt_from = _TEST_EVENTS.mark()
+            status, said = run_operator_halt(prefix, "halt")
+            if status != 0 or "Halted" not in said:
+                member.close()
+                die(f"operator's halt: the halt was answered with exit {status} and '{said}'; the leading sequencer was to write it")
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            halt = engine_event(leader, "Halted", halt_from, args.failover_timeout)
+            if halt is None or halt.reason != engine_events.HaltReason.DeclaredByOperator:
+                member.close()
+                die(f"operator's halt: {leader}, which leads, did not halt for the operator ({halt})")
+            gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+            halted_said = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False,
+                                                           halted=True), timeout=args.recovery_timeout, since=halt_from)
+            if halted_said is None:
+                member.close()
+                die("operator's halt: the gateway was never told that trading is halted")
+            log(f"  the halt is written, {leader} halts, and the gateway is told -- OK")
+
+            status, said = run_operator_halt(prefix, "halt")
+            if status != 1 or "AlreadyHalted" not in said:
+                member.close()
+                die(f"operator's halt: a second halt was answered with exit {status} and '{said}'; it was to be declined as halted "
+                    "already, writing nothing")
+            log("  a second halt is answered that trading is halted already -- OK")
+
+            into_halt_id = "op-into-halt-1"
+            member.new_order_single(into_halt_id)
+            cancel_id = "op-cancel-1"
+            member.order_cancel_request(cancel_id, resting_ids[0])
+            receive_operator_reports(args.recovery_timeout, lambda: into_halt_id in operator_reports and cancel_id in operator_reports)
+            into_halt = operator_answers(into_halt_id)
+            if len(into_halt) != 1 or into_halt[0][0] != "8" or "halted" not in (into_halt[0][1] or ""):
+                member.close()
+                die(f"operator's halt: an order sent while trading is halted was answered with {into_halt}; one rejection, saying "
+                    "the venue is halted, was wanted")
+            if not any(r.get(39) == "4" and r.get(41) == resting_ids[0] for r in operator_reports.get(cancel_id, [])):
+                member.close()
+                die(f"operator's halt: the cancel of {resting_ids[0]} sent while trading is halted was answered with "
+                    f"{operator_answers(cancel_id)}; it was to be carried out, because an engine carries out cancels while halted")
+            log(f"  an order sent into the halt is refused, and the cancel of {resting_ids[0]} is carried out -- OK")
+
+            cancelled_book = engine_event(leader, "BookCancelled", halt_from, 0.0, settle=True)
+            if cancelled_book is not None:
+                member.close()
+                die(f"operator's halt: {leader} cancelled its book ({cancelled_book}); an operator's halt cancels nothing")
+            if len(operator_reports.get(resting_ids[1], [])) != 1:
+                member.close()
+                die(f"operator's halt: {resting_ids[1]} was reported again during the halt: {operator_answers(resting_ids[1])}")
+
+            lift_from = _TEST_EVENTS.mark()
+            status, said = run_operator_halt(prefix, "lift")
+            if status != 0 or "Lifted" not in said:
+                member.close()
+                die(f"operator's halt: the lift was answered with exit {status} and '{said}'; with an engine leading and every "
+                    "command answered, it was to be written")
+            if engine_event(leader, "HaltLifted", lift_from, args.failover_timeout) is None:
+                member.close()
+                die(f"operator's halt: the lift was written, and {leader} never applied it")
+            if _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=True),
+                                     timeout=args.recovery_timeout, since=lift_from) is None:
+                member.close()
+                die("operator's halt: the halt is lifted, and the gateway was never told the venue accepts orders again")
+            log("  the halt is lifted, the engine applies it, and the gateway is told -- OK")
+
+            after_id = "op-after-lift-1"
+            member.new_order_single(after_id)
+            kept_cancel_id = "op-cancel-2"
+            member.order_cancel_request(kept_cancel_id, resting_ids[1])
+            receive_operator_reports(args.recovery_timeout, lambda: after_id in operator_reports and kept_cancel_id in operator_reports)
+            if [status for status, _ in operator_answers(after_id)] != ["0"]:
+                member.close()
+                die(f"operator's halt: an order sent after the lift was answered with {operator_answers(after_id)}; it was to be accepted")
+            if not any(r.get(39) == "4" and r.get(41) == resting_ids[1] for r in operator_reports.get(kept_cancel_id, [])):
+                member.close()
+                die(f"operator's halt: the cancel of {resting_ids[1]}, placed before the halt, was answered with "
+                    f"{operator_answers(kept_cancel_id)}. It was to be still on the book: an operator's halt keeps the book.")
+            log(f"  an order sent after the lift is accepted, and {resting_ids[1]} was kept on the book through the halt -- OK")
             member.close()
 
         # ── The follower's copy of the book across a break in the link between the engines ──

@@ -395,10 +395,11 @@ leader's, and does not lead if they differ. Its step 5 measured the stream to th
 median, and about 15 at the 99th percentile, of the sequencer's time to send an order on. Every point of the finish
 condition below is met. The second design the phase needs, for [BUG-0193](bug_list.md#bug_0193) and
 [BUG-0197](bug_list.md#bug_0197), is [voided_commands.md](availability/voided_commands.md), whose eight decisions Andrew
-took on 31 October 2026. Its steps 1 to 3 are built: the void; voiding a command that crashed both engines
-([BUG-0193](bug_list.md#bug_0193) remains open for what it costs); and holding orders while no engine leads, sent to no
-engine, and refusing new ones after five seconds. Steps 4 and 5, voiding the held orders at a halt and the operator's
-halt and lift, remain.
+took on 31 October 2026. All five of its steps are built: the void; voiding a command that crashed both engines
+([BUG-0193](bug_list.md#bug_0193) remains open for what it costs); holding orders while no engine leads, sent to no
+engine, and refusing new ones after five seconds; voiding the held orders and cancelling the book at a halt; and the
+operator's halt and lift, with the sequencer keeping whether trading is halted. [BUG-0197](bug_list.md#bug_0197) is
+closed.
 
 **For:** losing the leading matching engine costs a short pause and nothing else. The members' resting
 orders are still on the book afterwards.

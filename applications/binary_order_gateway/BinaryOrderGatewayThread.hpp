@@ -132,7 +132,8 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in]     order   The decoded order.
      * @param[in]     reason  The text to send. Must stay valid for the call.
      */
-    void refuse_new_order(BinarySession& session, const pubsub_itc_fw_app::NewOrderSingleView& order, std::string_view reason);
+    void refuse_new_order(BinarySession& session, const pubsub_itc_fw_app::NewOrderSingleView& order, std::string_view reason,
+                          pubsub_itc_fw_app::OrdRejReason ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other);
 
     /**
      * @brief Refuses a request to cancel with an OrderCancelReject carrying @p reason.
@@ -164,6 +165,10 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      *        venue not accepting orders.
      * @return The reason, or an empty view if the venue can take the command.
      */
+    // Whether a sequencer connection is open, without which nothing is passed on.
+    [[nodiscard]] bool sequencer_connected() const;
+    // Whether the leading sequencer last said trading is halted (OrderAcceptanceReason RecoveryTooLong or Halted).
+    [[nodiscard]] bool venue_halted() const;
     [[nodiscard]] std::string_view venue_refusal(fix_common::ThrottledCommand command) const;
 
     /// Handles the sequencer's statement of whether the venue is accepting orders.

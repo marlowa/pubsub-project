@@ -9,7 +9,29 @@ change in any release.
 
 ## [Unreleased]
 
+### Added
+
+- **An operator halts trading, and lifts a halt, with `scripts/operator_halt.py`**, which the release now
+  ships with the two Python modules it needs (`lib/python/pdu_framing.py` and `leader_follower.py`). It
+  sends `OperatorHaltRequest` to both sequencers over a new listener for operators, `[operator]` in each
+  sequencer's configuration, which accepts only TLS with a client certificate signed by the operator's
+  certificate authority. The leading sequencer halts without cancelling anything, and lifts a halt only
+  once a matching engine leads and every order and cancel written before the halt has been answered;
+  otherwise it declines and says why (`docs/availability/voided_commands.md`, section 6). `deploy.py`
+  makes the authority, the operator's certificate and each listener's certificate from the new
+  `[operator_certificates]` section of the environment file; add that section, and the five
+  `operator_*` settings of each sequencer, to any environment file of your own. Scenarios 94 and 95
+  check it.
+
 ### Changed
+
+- **A halt stays until an operator lifts it.** The leading sequencer keeps whether trading is halted from
+  the `TechnicalEvent` records in its WAL, and while it is, tells the gateways so with the new
+  `OrderAcceptance` reason `Halted`, whether or not a matching engine leads: they refuse new orders,
+  saying the venue is halted, and pass cancels on, which the engine carries out while halted. After a halt
+  for the limit on automatic recovery, a matching engine that leads again no longer makes the gateways
+  pass new orders on. A gateway refusing a new order because trading is halted gives OrdRejReason 2,
+  exchange closed, as the engine does, instead of 99.
 
 - **An instance asking to lead sends its request again every renewal interval** until a voter grants it,
   instead of waiting out a whole lease period after a refusal; it still gives the request up a lease period
@@ -41,6 +63,10 @@ change in any release.
   counterexample on two threads that read one file with no lock, and with some fingerprint functions
   the race makes it fail while printing the trace. The script runs TLC with `-fp 0`, under which no run
   has failed in 200, and stops with a message naming the race if it ever does (BUG-0220).
+- While no matching engine led, a member was told nothing about the orders it sent, for as long as no
+  engine led. Orders are now held for at most 5 seconds; past the limit on automatic recovery the venue
+  halts, rejects every order it held and cancels the book, each reported to its member, and trading
+  resumes only when an operator lifts the halt (BUG-0197).
 
 ## [0.5.0] - 2026-11-01
 

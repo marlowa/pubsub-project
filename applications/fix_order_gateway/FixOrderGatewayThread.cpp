@@ -1644,7 +1644,8 @@ void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMe
     }
     venue_accepting_orders_ = view.accepting;
     venue_refusal_reason_ = view.reason;
-    report(pubsub_itc_fw_app::OrderAcceptanceChanged{view.accepting, view.reason == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong});
+    report(pubsub_itc_fw_app::OrderAcceptanceChanged{view.accepting, view.reason == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong,
+                                                     view.reason == pubsub_itc_fw_app::OrderAcceptanceReason::Halted});
 
     if (view.accepting) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: the venue is accepting orders again");
@@ -1653,7 +1654,14 @@ void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMe
     if (view.reason == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "FixOrderGatewayThread: the venue is halted -- no matching engine could be trading within the time it recovers by itself. New "
-                       "orders and cancels are refused, saying so, until a matching engine trades again");
+                       "orders and cancels are refused, saying so, until a matching engine trades again; after that new orders are refused until a "
+                       "person lifts the halt");
+        return;
+    }
+    if (view.reason == pubsub_itc_fw_app::OrderAcceptanceReason::Halted) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "FixOrderGatewayThread: trading is halted -- new orders are refused, saying so, and cancels are passed on, because the matching "
+                       "engine carries them out while trading is halted. A person lifts the halt");
         return;
     }
     // Warning rather than Error: nothing is lost and nothing has failed. The venue has stopped
@@ -1663,6 +1671,23 @@ void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMe
                "FixOrderGatewayThread: the venue is no longer accepting orders -- no matching engine has led for {}s, and {} order(s) and cancel(s) "
                "are held until one does. New orders and cancels are refused until it is",
                view.no_engine_for_seconds, view.held_order_count);
+}
+
+const char* FixOrderGatewayThread::venue_refusal_text() const {
+    switch (venue_refusal_reason_) {
+        case pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong:
+            return "Venue is halted: no matching engine could be trading within the time the venue recovers by itself";
+        case pubsub_itc_fw_app::OrderAcceptanceReason::Halted:
+            return "Venue is halted: new orders are refused until the halt is lifted; cancels are carried out";
+        default:
+            return "Venue is not accepting orders: no matching engine available";
+    }
+}
+
+pubsub_itc_fw_app::OrdRejReason FixOrderGatewayThread::venue_refusal_ord_rej_reason() const {
+    const bool halted = venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong ||
+                        venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::Halted;
+    return halted ? pubsub_itc_fw_app::OrdRejReason::ExchangeClosed : pubsub_itc_fw_app::OrdRejReason::Other;
 }
 
 void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventMessage& message) {
@@ -2007,10 +2032,7 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "FixOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused -- the venue is not accepting orders ({} refused so far)",
                    session.conn_id.get_value(), cl_ord_id, orders_refused_);
-        send_reject_execution_report(session, msg,
-                                     venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong
-                                         ? "Venue is halted: no matching engine could be trading within the time the venue recovers by itself"
-                                         : "Venue is not accepting orders: no matching engine available");
+        send_reject_execution_report(session, msg, venue_refusal_text(), venue_refusal_ord_rej_reason());
         return;
     }
 
@@ -2211,7 +2233,10 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
     //
     // The original order is untouched by this, and the text says so. Whether it is resting in the
     // book or still deferred, the refusal changes nothing about it.
-    if (!venue_accepting_orders_) {
+    //
+    // The exception is a halt while an engine leads (OrderAcceptanceReason::Halted): the engine carries out cancels
+    // while trading is halted, so a cancel is passed on and only new orders are refused.
+    if (!venue_accepting_orders_ && venue_refusal_reason_ != pubsub_itc_fw_app::OrderAcceptanceReason::Halted) {
         ++cancels_refused_;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused -- the venue is not accepting orders "
@@ -2279,7 +2304,8 @@ void FixOrderGatewayThread::send_fix_to_session(FixSession& session, const FixMe
     send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
 }
 
-void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason) {
+void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason,
+                                                         pubsub_itc_fw_app::OrdRejReason ord_rej_reason) {
     // The matching engine never sees this order, so the gateway makes its own
     // identifiers from per-session counters, with a GW- prefix, which no
     // identifier of the matching engine's has, so that the origin is plain in
@@ -2314,7 +2340,7 @@ void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, co
         er.set(Tag::LeavesQty, std::string("0"));
         er.set(Tag::CumQty, std::string("0"));
     }
-    er.set(103, 99); // 103 = OrdRejReason, 99 = Other
+    er.set(103, static_cast<int>(ord_rej_reason)); // 103 = OrdRejReason
     er.set(Tag::Text, reason);
 
     // Debug, because every caller has already logged why, at the level its reason deserves. A

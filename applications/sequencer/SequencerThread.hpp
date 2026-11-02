@@ -49,6 +49,7 @@
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
+#include "TradingHaltState.hpp"
 #include "VoidFromWal.hpp"
 #include "VoidedCommandList.hpp"
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
@@ -104,6 +105,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
     void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
+    // The bytes of the listener for operators, which is TLS: each whole OperatorHaltRequest is dealt with as it arrives.
+    void on_raw_socket_message(const pubsub_itc_fw::EventMessage& message) override;
     void on_timer_event(pubsub_itc_fw::TimerID id) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
     bool prioritise_data_over_timers() const override {
@@ -172,9 +175,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // How far the catch-up of a matching engine that asked to be caught up has been sent, while one is under way.
     std::optional<RecoveryLimitRule::CatchUpProgress> engine_catch_up_progress_;
     pubsub_itc_fw::ConnectionID engine_catch_up_connection_{};
-    // Whether the halt for passing the limit has been written in the present absence; the gateways are told the venue is
-    // not accepting, with the reason, until an engine is routed to again.
-    bool recovery_limit_passed_{false};
 
     // ConnectionIDs of the outbound peer and arbiter connections.
     pubsub_itc_fw::ConnectionID peer_conn_id_;
@@ -796,6 +796,31 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // A matching engine about to lead that cannot account for the orders the venue holds, asking for trading to be halted.
     void handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 
+    // Whether trading is halted, kept from the TechnicalEvent records in the WAL in the same three ways as voids_, and
+    // the last member's command before each (docs/availability/voided_commands.md, section 6.1).
+    TradingHaltState trading_halt_;
+
+    /**
+     * @brief Keeps what the command at @p seq_no says about whether trading is halted: a member's new order or cancel, or
+     *        a TechnicalEvent. Anything else is passed over.
+     * @return true when it changes whether trading is halted.
+     */
+    bool note_trading_halt(int64_t seq_no, int16_t inner_pdu_id, const uint8_t* bytes, size_t size);
+
+    /**
+     * @brief An operator asking, over the listener for operators, for trading to be halted or the halt lifted
+     *        (docs/availability/voided_commands.md, section 6.2).
+     *
+     * Only the leader acts. To halt, it writes a TechnicalEvent that halts trading, with the reason DeclaredByOperator,
+     * and cancels nothing. To lift, it writes one that does not halt, with the reason LiftedByOperator, only if a matching
+     * engine leads and the WAL holds a report answering the last member's command before the halt; otherwise it declines,
+     * saying why. Every request is answered and logged at Warning with the operator's name.
+     */
+    void handle_operator_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, size_t size);
+    // Sends the operator's tool the answer, and logs it at Warning.
+    void answer_operator(const pubsub_itc_fw::ConnectionID& conn_id, std::string_view operator_name, pubsub_itc_fw_app::OperatorHaltOutcome outcome,
+                         int64_t technical_event_seq_no, const std::string& explanation);
+
     // A matching engine that died applying a command, and whose peer has not applied it, asking for it to be voided
     // (docs/availability/voided_commands.md, section 4.3). Only the leader acts: it writes a VoidCommands command naming
     // the command, if that is safe, answers with the voids if the command is voided already, and otherwise answers
@@ -1151,16 +1176,19 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     [[nodiscard]] std::chrono::steady_clock::duration time_without_an_engine() const;
 
     /**
-     * @brief Whether the venue is currently telling its gateways it can take new orders.
+     * @brief What the venue is currently telling its gateways about taking new orders: Accepting, or why not.
      *
-     * Starts true: a sequencer that has just come up and has not yet failed to forward
-     * anything is accepting. Moved only by refresh_order_acceptance().
+     * Starts Accepting: a sequencer that has just come up and has not yet failed to forward
+     * anything is accepting. Moved only by refresh_order_acceptance(), and reset when this
+     * instance stops leading.
      */
-    bool accepting_orders_{true};
+    pubsub_itc_fw_app::OrderAcceptanceReason order_acceptance_{pubsub_itc_fw_app::OrderAcceptanceReason::Accepting};
+    // What order_acceptance_ should be now, from how long no matching engine has led and whether trading is halted.
+    [[nodiscard]] pubsub_itc_fw_app::OrderAcceptanceReason order_acceptance_now() const;
 
     /**
-     * @brief Recomputes acceptance from how long no matching engine has led, and from whether trading is halted for a long
-     *        recovery.
+     * @brief Recomputes acceptance from how long no matching engine has led, and from whether trading is halted
+     *        (order_acceptance_now).
      *
      * @return true if the state changed, in which case every connected gateway has been told.
      */

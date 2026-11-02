@@ -40,7 +40,11 @@ For example, a value in a section named \texttt{arbiter\_primary} with the key
 template. Deployment fails and identifies the missing value if a template
 contains an unresolved placeholder. It generates self-signed TLS certificates
 unless \texttt{--skip-certs} is given; \texttt{--force-certs} regenerates
-certificates that already exist. Deployment can create the database and export
+certificates that already exist. In the same step it makes a certificate
+authority for operators, a certificate signed by it for each sequencer's
+listener for operators, and an operator's certificate signed by it, from the
+\texttt{operator\_certificates} section of the profile; an operator presents
+that certificate to halt trading or lift a halt. Deployment can create the database and export
 the credentials used by the authentication service; options allow those
 database steps to be skipped when the database is managed separately.
 

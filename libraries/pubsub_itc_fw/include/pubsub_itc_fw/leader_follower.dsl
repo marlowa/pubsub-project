@@ -710,6 +710,7 @@ enum OrderAcceptanceReason : i8 {
     Accepting = 0          # the venue is accepting orders
     NoMatchingEngine = 1   # no matching engine has led for longer than orders are held
     RecoveryTooLong = 2    # no matching engine could be trading within the longest recovery the venue does by itself; trading is halted
+    Halted = 3             # trading is halted: new orders are refused, and cancels are passed on, because the engine carries them out while halted
 }
 
 message OrderAcceptance (id=127, version=1)
@@ -771,6 +772,7 @@ enum TechnicalEventReason : i8 {
     CannotAccountForBook = 1   # a matching engine could not say what orders the venue held, so trading halts without cancelling (R-0123)
     LiftedByOperator = 2       # a person lifted a halt (R-0023)
     RecoveryTooLong = 3        # no matching engine could be trading within the longest recovery the venue does by itself, so a person decides when trading resumes
+    DeclaredByOperator = 4     # a person halted trading; nothing is cancelled, and a person lifts it
 }
 
 # ------------------------------------------------------------
@@ -898,4 +900,42 @@ enum VoidDeclinedReason : i8 {
 message VoidDeclined (id=160, version=1)
     i64 seq_no                      # the command the request named
     VoidDeclinedReason reason
+end
+
+# ------------------------------------------------------------
+#  161 -- OperatorHaltRequest
+#  Sent by the operator's command-line tool, scripts/operator_halt.py,
+#  to each sequencer, over the sequencer's listener for operators,
+#  which accepts only TLS with a client certificate signed by the
+#  operator's certificate authority. Asks the leading sequencer to
+#  halt trading, or to lift a halt. A sequencer that does not lead
+#  declines. Every request is answered with OperatorHaltAnswer. See
+#  docs/availability/voided_commands.md, section 6.2.
+# ------------------------------------------------------------
+message OperatorHaltRequest (id=161, version=1)
+    bool halt                       # true: halt trading; false: lift the halt
+    string operator_name            # who asked, for the Quill log
+end
+
+# What the sequencer did with an OperatorHaltRequest.
+enum OperatorHaltOutcome : i8 {
+    Halted = 1               # a TechnicalEvent that halts trading was written
+    Lifted = 2               # a TechnicalEvent that lifts the halt was written
+    AlreadyHalted = 3        # trading was halted already, so nothing was written
+    NotHalted = 4            # trading was not halted, so there was nothing to lift
+    NotLeader = 5            # this sequencer does not lead, so it wrote nothing; the one that leads acts
+    NoEngineLeads = 6        # no matching engine leads, so the halt cannot be lifted yet
+    ReportsOutstanding = 7   # the WAL does not yet hold a report of every order and cancel written before the halt
+}
+
+# ------------------------------------------------------------
+#  162 -- OperatorHaltAnswer
+#  A sequencer's answer to an OperatorHaltRequest: what it wrote, or
+#  why it wrote nothing, so that the operator can try again.
+# ------------------------------------------------------------
+message OperatorHaltAnswer (id=162, version=1)
+    OperatorHaltOutcome outcome
+    bool halted                     # whether trading is halted, as this sequencer knows it, once the request is dealt with
+    i64 technical_event_seq_no      # the position of the TechnicalEvent written, or 0 when none was
+    string explanation              # the outcome in words, as the sequencer logged it
 end

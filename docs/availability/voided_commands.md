@@ -608,6 +608,35 @@ leading first.
    halt, and requires orders to be accepted again; a second declares a halt by the operator and requires the book to be
    kept and cancels to be carried out during it. Made to fail by writing the lift without the check of section 6.2.
 
+   **As built.** `TradingHaltState` keeps, from the WAL in the three ways of section 3.3, every `TechnicalEvent` and,
+   with each, the last member's new order or cancel before it. It keeps the positions of the latest 1,024 members'
+   commands, so that when a follower's WAL is cut back the last one left is known exactly; a cut-back of more than
+   that takes the position cut back to, which can only make a lift wait, never come early. `may_lift` decides a lift:
+   trading halted, an engine taking orders, and `highest_command_answered_` at or past the last member's command
+   before the halt. `SequencerThread::order_acceptance_now` chooses the reason: `RecoveryTooLong` while halted for the
+   recovery limit and no engine takes orders; `NoMatchingEngine` while no engine has led for longer than orders are
+   held, halted or not; `Halted` while halted otherwise. The gateways refuse a new order under `Halted` or
+   `RecoveryTooLong` with OrdRejReason 2, exchange closed, as the engine does. `recovery_limit_passed_` is gone.
+
+   The listener for operators is `[operator]` in each sequencer's configuration: TLS, with the client's certificate
+   required, and `tls_ca_path` may not be empty. `deploy.py` makes a certificate authority, the operator's certificate
+   and each sequencer's listener certificate from `[operator_certificates]` in the environment file, and the release
+   ships `operator_halt.py` with `lib/python/pdu_framing.py` and `leader_follower.py`. The tool asks both sequencers,
+   prints each answer, and exits 0 when the leader wrote what was asked, 1 when it declined, and 2 when no leader
+   answered. The engine reports `Halted` with the new reason `DeclaredByOperator`, and `HaltLifted`, on the test event
+   channel; the FIX gateway's `OrderAcceptanceChanged` has a new field, `halted`.
+
+   `ha_test.py` scenario 94 is the first scenario above and 95 the second. In 94 the lift asked for while no engine
+   leads is answered `NoEngineLeads`; once an engine leads the gateway is told `Halted`, an order is refused saying the
+   venue is halted, the lift is written, and an order is accepted. In 95 the halt is written, the engine halts with
+   `DeclaredByOperator` and cancels nothing, a second halt is answered `AlreadyHalted`, an order is refused and a cancel
+   carried out, the lift is written, an order is accepted, and an order placed before the halt is cancelled afterwards,
+   so it was kept. Neither scenario reaches `ReportsOutstanding`, because the engine has answered every command before
+   the halt by the time it leads; `TradingHaltStateTest` covers it. Made to fail on 2 November 2026: with `may_lift`
+   allowing every lift while halted, the unit test fails, and scenario 94 fails at its first lift, which is written
+   with no engine leading. Every scenario passes in both full runs, primary engine first (95 of 95) and secondary
+   engine first (38 of 38).
+
 ## 9. Decisions
 
 Decisions 1 to 4 and 8 are separate yes-or-no questions. Decisions 5, 6 and 7 each ask you to choose one of the options

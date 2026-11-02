@@ -1,31 +1,31 @@
 # Trading phases and the technical event {#trading_phases}
 
-**Status: design. None of it is built.** The requirements it leads to are named, but not yet
-written, in the high availability chapter of the functional specification (`docs/book`, the section
-"The venue says what it is doing").
+**Status: the technical event and halting are built; the phases are design.** The `TechnicalEvent`
+command, the venue's halt and an operator's halt and lift are built
+([voided_commands.md](../availability/voided_commands.md), section 6). The phases other than open,
+the table of what each allows, and telling a member that is not trading that the venue is halted are
+not. The requirements they lead to are named, but not yet written, in the high availability chapter
+of the functional specification (`docs/book`, the section "The venue says what it is doing").
 
 ## What this is for
 
-The venue has no way to say what it is doing. It can say one thing about itself — whether it is
-accepting orders — and that is a single boolean broadcast to the gateways as `OrderAcceptance`
-(127), alongside how many orders are waiting, how long the venue has been unable to pass them on,
-and the epoch of the sequencer that sent it. Everything else is known only to the matching engines. The clearest case: when a
-matching engine cannot account for what the venue holds, the leading sequencer writes a `TechnicalEvent` into the WAL that
-halts trading, every matching engine applies it, and the engine logs
+The venue says little about what it is doing. It tells the gateways whether it is accepting orders,
+and if not why, with `OrderAcceptance` (127), alongside how many orders are waiting, how long the
+venue has been unable to pass them on, and the epoch of the sequencer that sent it.
 
-```
-MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)
-```
+Halting is a `TechnicalEvent` command in the WAL, which every matching engine applies at its position.
+The leading sequencer writes one when a matching engine cannot account for what the venue holds, when
+no engine could be trading within the longest recovery the venue does by itself, and when an operator
+asks; and it writes one that lifts the halt when an operator asks and the venue is ready
+([voided_commands.md](../availability/voided_commands.md), section 6). The sequencer keeps whether
+trading is halted from those records, and while it is, it tells the gateways so with the reason
+`Halted`: they refuse new orders, saying the venue is halted, with OrdRejReason Exchange closed, and
+pass cancels on, which the engine carries out while halted.
 
-and **nothing in the sequencer or the gateways acts on the halt**. The gateway goes on
-admitting members' orders and the sequencer goes on sequencing them into a venue whose engine has
-stopped. The engine refuses each of those orders, with OrdRejReason Exchange closed and the text
-"trading is halted", so a member that places an order learns of the halt from the reply. A member
-that is connected and not trading, or that connects during the halt, is told nothing until it tries.
-"Trading is halted" is known to the matching engines alone.
-
-That is [BUG-0065](../bug_list.md), and it is what R-0126 waits on: the venue cannot announce that
-it is unable to do a component's work, because it has no way to announce anything about itself.
+What the venue does not do is tell a member that is connected and not trading, or that connects during
+the halt, that the venue is halted and when it resumes: a member learns of the halt from the reply to
+an order. That is what remains of [BUG-0065](../bug_list.md), with the phases other than open and the
+table below, and it is what R-0126 waits on.
 
 This note settles the shape of the mechanism.
 
@@ -168,18 +168,17 @@ member may cancel an order during `eod` must be settled with that in mind.
 
 ### The control-plane path already exists in the right shape
 
-`OrderAcceptance` (127) carries `accepting`, `held_order_count` and `no_engine_for_seconds` from
-the sequencer to every gateway, and a gateway refuses on it with a member-visible rejection
-carrying a reason string. What it cannot express is *why*: a bare boolean cannot distinguish
+`OrderAcceptance` (127) carries `accepting`, `held_order_count`, `no_engine_for_seconds` and a
+reason from the sequencer to every gateway, and a gateway refuses on it with a member-visible
+rejection carrying a reason string. The reason already distinguishes
 
-- no matching engine leading, with orders held, from
-- halted, which a person must lift, from
-- closed, because it is after hours.
+- no matching engine leading, with orders held (`NoMatchingEngine`), from
+- halted, which a person must lift (`Halted`, and `RecoveryTooLong` while no engine leads).
 
-Those are the same refusal to a member and very different situations for an operator. So the
-likeliest shape is that `OrderAcceptance` gains the phase and the halted flag rather than a second
-mechanism competing with it — the gateway already knows how to refuse on a venue-wide signal and
-already tells the member why.
+What it cannot yet express is closed, because it is after hours. Those are the same refusal to a
+member and very different situations for an operator. So the likeliest shape is that
+`OrderAcceptance` gains the phase rather than a second mechanism competing with it — the gateway
+already knows how to refuse on a venue-wide signal and already tells the member why.
 
 ---
 

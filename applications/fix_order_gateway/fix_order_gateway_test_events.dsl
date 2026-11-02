@@ -236,11 +236,13 @@ end
 #  207 -- OrderAcceptanceChanged
 #  What the leading sequencer says about whether the venue takes
 #  orders has changed (OrderAcceptance): whether it is accepting,
-#  and whether it is not because trading is halted while no matching
-#  engine could be trading within the longest recovery the venue
-#  does by itself. Sent on the change, not on each arrival.
+#  and why not: because trading is halted while no matching engine
+#  could be trading within the longest recovery the venue does by
+#  itself, or because trading is halted while an engine leads. Sent
+#  on the change, not on each arrival.
 # ------------------------------------------------------------
 message OrderAcceptanceChanged (id=207, version=1)
     bool accepting              # true: the gateway passes orders on again
     bool halted_for_recovery    # true: refused because the venue is halted while it recovers (RecoveryTooLong)
+    bool halted                 # true: trading is halted while an engine leads (Halted): new orders are refused and cancels passed on
 end

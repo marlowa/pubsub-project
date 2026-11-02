@@ -15,7 +15,10 @@ Steps (in order):
      Because deploy runs on the target machine, one declaration serves hosts of
      different sizes and survives a hardware refresh.
   4. Generate self-signed TLS certificates for each [tls.*] section in the env
-     TOML (unless --skip-certs).
+     TOML, and the certificates of [operator_certificates]: a certificate
+     authority for operators, a certificate it signs for each sequencer's
+     listener for operators, and one operator's certificate (unless
+     --skip-certs).
   5. Create or update the PostgreSQL database via db/create_db.py
      (unless --skip-db).
   6. Provision FIX client SCRAM credentials from [[fix_credentials]] entries in
@@ -33,10 +36,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import secrets
 import shutil
+import socket
 import string
 import subprocess
 import sys
@@ -353,6 +358,122 @@ def generate_tls_certs(env: dict, install_dir: Path, force: bool) -> None:
         print(f"  generated: {cert_path.relative_to(install_dir)}")
 
     _generate_fix_client_truststore(env, install_dir, force)
+
+
+def _generate_certificate_authority(certificate_path: Path, key_path: Path) -> None:
+    """Make a self-signed certificate authority, whose key signs the certificates of operators and of the listeners."""
+    subprocess.run(
+        [
+            "openssl", "req", "-x509",
+            "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(key_path),
+            "-out",    str(certificate_path),
+            "-days",   "3650",
+            "-subj",   "/CN=pubsub operator certificate authority",
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    os.chmod(key_path, 0o600)
+
+
+def _generate_signed_certificate(certificate_path: Path, key_path: Path, common_name: str, extensions: list[str],
+                                 authority_certificate: Path, authority_key: Path) -> None:
+    """Make a key and a certificate for it signed by the certificate authority, with the X.509 extensions given."""
+    request_path = certificate_path.with_suffix(".csr")
+    extensions_path = certificate_path.with_suffix(".ext")
+    try:
+        subprocess.run(
+            ["openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key_path), "-out", str(request_path), "-subj", f"/CN={common_name}"],
+            check=True,
+            capture_output=True,
+        )
+        extensions_path.write_text("\n".join(extensions) + "\n", encoding="utf-8")
+        subprocess.run(
+            [
+                "openssl", "x509", "-req",
+                "-in",       str(request_path),
+                "-CA",       str(authority_certificate),
+                "-CAkey",    str(authority_key),
+                "-set_serial", str(secrets.randbits(63)),
+                "-days",     "3650",
+                "-extfile",  str(extensions_path),
+                "-out",      str(certificate_path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        os.chmod(key_path, 0o600)
+    finally:
+        request_path.unlink(missing_ok=True)
+        extensions_path.unlink(missing_ok=True)
+
+
+def generate_operator_certificates(env: dict, install_dir: Path, force: bool) -> None:
+    """Make the certificates an operator halts trading, or lifts a halt, with (docs/availability/voided_commands.md, 6.2).
+
+    [operator_certificates] names a directory, relative to the install directory, for a certificate authority and for
+    one operator's certificate signed by it, which scripts/operator_halt.py presents. Each component it lists as a
+    listener, a sequencer, is given a certificate for its listener for operators, signed by the same authority and
+    naming the listener's host, and a copy of the authority's certificate, in its working directory under the names
+    its own section gives (operator_tls_certificate, operator_tls_private_key and operator_tls_ca). A sequencer accepts
+    only a client whose certificate the authority signed, and the tool accepts only a sequencer whose certificate it
+    signed. Nothing that exists is replaced, unless force is given; a new authority replaces every certificate it signs.
+    """
+    settings = env.get("operator_certificates")
+    if not settings:
+        print("  no [operator_certificates] section in env TOML — skipping")
+        return
+    directory = install_dir / settings["directory"]
+    directory.mkdir(parents=True, exist_ok=True)
+    authority_certificate = directory / "operator_ca.crt"
+    authority_key = directory / "operator_ca.key"
+    renew_every_certificate = force or not authority_certificate.exists() or not authority_key.exists()
+    if renew_every_certificate:
+        _generate_certificate_authority(authority_certificate, authority_key)
+        print(f"  generated: {authority_certificate.relative_to(install_dir)}")
+    else:
+        print(f"  {authority_certificate.relative_to(install_dir)}: already exists — skipping (use --force-certs to regenerate)")
+
+    operator_certificate = directory / "operator.crt"
+    operator_key = directory / "operator.key"
+    if renew_every_certificate or not operator_certificate.exists() or not operator_key.exists():
+        _generate_signed_certificate(operator_certificate, operator_key, settings["operator_name"],
+                                     ["basicConstraints=CA:FALSE", "keyUsage=critical,digitalSignature,keyEncipherment", "extendedKeyUsage=clientAuth"],
+                                     authority_certificate, authority_key)
+        print(f"  generated: {operator_certificate.relative_to(install_dir)} (operator {settings['operator_name']})")
+
+    for listener in settings.get("listeners", []):
+        component = env.get("components", {}).get(listener)
+        listener_settings = env.get(listener)
+        if component is None or listener_settings is None:
+            print(f"  warning: no component or section '{listener}' for [operator_certificates] — skipping")
+            continue
+        workdir = (install_dir / component["workdir"]).resolve()
+        workdir.mkdir(parents=True, exist_ok=True)
+        certificate = workdir / listener_settings["operator_tls_certificate"]
+        key = workdir / listener_settings["operator_tls_private_key"]
+        # The copy is made every time, so that the listener always trusts the authority in the directory.
+        shutil.copy2(authority_certificate, workdir / listener_settings["operator_tls_ca"])
+        if not renew_every_certificate and certificate.exists() and key.exists():
+            print(f"  {certificate.relative_to(install_dir)}: already exists — skipping (use --force-certs to regenerate)")
+            continue
+        host = listener_settings["operator_listen_host"]
+        # The tool checks that the certificate names the host it connected to.
+        names = ["DNS:localhost", "IP:127.0.0.1"]
+        try:
+            address = ipaddress.ip_address(host)
+            # A listener on every interface is reached by this machine's name.
+            names.append(f"DNS:{socket.getfqdn()}" if address.is_unspecified else f"IP:{host}")
+        except ValueError:
+            names.append(f"DNS:{host}")
+        _generate_signed_certificate(certificate, key, f"{listener} listener for operators",
+                                     ["basicConstraints=CA:FALSE", "keyUsage=critical,digitalSignature,keyEncipherment", "extendedKeyUsage=serverAuth",
+                                      "subjectAltName=" + ",".join(dict.fromkeys(names))],
+                                     authority_certificate, authority_key)
+        print(f"  generated: {certificate.relative_to(install_dir)}")
 
 
 def _generate_fix_client_truststore(env: dict, install_dir: Path, force: bool) -> None:
@@ -983,6 +1104,7 @@ def main() -> None:
     if not args.skip_certs:
         print("=== generating TLS certificates ===")
         generate_tls_certs(env, install_dir, force=args.force_certs)
+        generate_operator_certificates(env, install_dir, force=args.force_certs)
         print()
 
     # Steps 5-7: database and credentials

@@ -92,6 +92,20 @@ cert = "admin.crt"
 key  = "admin.key"
 ca   = "ca.crt"
 
+# ── Certificates for operators ────────────────────────────────────────────────
+# An operator halts trading, or lifts a halt, with scripts/operator_halt.py, over each sequencer's
+# listener for operators (docs/availability/voided_commands.md, section 6.2). Both ends present a
+# certificate signed by one certificate authority: operator_ca.crt and its key, and the operator's
+# operator.crt and its key, are in directory, relative to the install directory. Each component in
+# listeners is given its listener's certificate and a copy of operator_ca.crt in its working directory,
+# under the names its own section gives. operator_name is the name in the operator's certificate.
+# deploy.py makes these unless they exist. In production, place certificates issued by your own
+# certificate authority at the same paths before running deploy.py, and pass --skip-certs.
+[operator_certificates]
+directory     = "etc/operator"
+operator_name = "operator"
+listeners     = ["sequencer_primary", "sequencer_secondary"]
+
 # ── Components ────────────────────────────────────────────────────────────────
 
 # hot_path_rank declares the order in which entitlement to a dedicated CPU core is
@@ -614,6 +628,14 @@ peer_port                  = 11004
 wal_directory              = "/opt/pubsub/var/sequencer_wal"
 wal_subscriber_listen_host = "0.0.0.0"
 wal_subscriber_listen_port = 11030
+# The listener for operators, who halt trading or lift a halt over it with scripts/operator_halt.py. TLS only,
+# and a client must present a certificate signed by the operator's certificate authority, operator_tls_ca.
+# The three files are in the working directory; [operator_certificates] says where they come from.
+operator_listen_host       = "0.0.0.0"
+operator_listen_port       = 11050
+operator_tls_certificate   = "operator_listener_primary.crt"
+operator_tls_private_key   = "operator_listener_primary.key"
+operator_tls_ca            = "operator_ca.crt"
 
 [sequencer_secondary]
 # Reactor waiting: left off here. Whether this deployment spends a core on waiting is its own
@@ -654,6 +676,14 @@ peer_port                  = 11003
 wal_directory              = "/opt/pubsub/var/sequencer_secondary_wal"
 wal_subscriber_listen_host = "0.0.0.0"
 wal_subscriber_listen_port = 11031
+# The listener for operators, who halt trading or lift a halt over it with scripts/operator_halt.py. TLS only,
+# and a client must present a certificate signed by the operator's certificate authority, operator_tls_ca.
+# The three files are in the working directory; [operator_certificates] says where they come from.
+operator_listen_host       = "0.0.0.0"
+operator_listen_port       = 11051
+operator_tls_certificate   = "operator_listener_secondary.crt"
+operator_tls_private_key   = "operator_listener_secondary.key"
+operator_tls_ca            = "operator_ca.crt"
 
 # ── Admin service ──────────────────────────────────────────────────────────────
 # auth_service_admin_port must match auth_service_a.admin_listen_port above.

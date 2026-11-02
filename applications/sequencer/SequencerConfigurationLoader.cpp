@@ -184,6 +184,20 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
         validate_port(wal_subscriber_listen_port, "wal_subscriber.listen_port");
         config.wal_subscriber_listen_port = static_cast<uint16_t>(wal_subscriber_listen_port);
 
+        int32_t operator_listen_port = 0;
+        toml.get_required_except("operator.listen_host", config.operator_listen_host);
+        toml.get_required_except("operator.listen_port", operator_listen_port);
+        validate_port(operator_listen_port, "operator.listen_port");
+        config.operator_listen_port = static_cast<uint16_t>(operator_listen_port);
+        toml.get_required_except("operator.tls_certificate_path", config.operator_tls_certificate_path);
+        toml.get_required_except("operator.tls_private_key_path", config.operator_tls_private_key_path);
+        toml.get_required_except("operator.tls_ca_path", config.operator_tls_ca_path);
+        // Without an authority, any client could halt the venue.
+        if (config.operator_tls_ca_path.empty()) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "SequencerConfigurationLoader: operator.tls_ca_path must name the certificate authority that signs the operators' certificates");
+        }
+
         toml.get_required_except("wal.directory", config.wal_directory);
         int64_t segment_size_bytes = 0;
         toml.get_required_except("wal.segment_size", segment_size_bytes);

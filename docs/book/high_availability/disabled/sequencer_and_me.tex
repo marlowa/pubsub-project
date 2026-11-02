@@ -79,8 +79,16 @@ disorderly conditions.
   tells it nothing. A member reconnecting into a halt would otherwise discover the
   halt by sending an order and having it refused. Requiring a person to lift the
   halt is what distinguishes it from the automatic states that clear themselves.}
-  \uncovered{no scenario halts the venue, because it has no halted state to enter}
+  \covers{ha_test:94, ha_test:95}
 \end{requirement}
+
+\begin{gap}{BUG-0065}
+  An operator halts trading and lifts the halt, and a member placing an order
+  during a halt is told in the reply that the venue is halted. A member that is
+  connected and not trading, or that logs on during a halt, is told nothing, and
+  no member is told when trading resumes. \reqref{R-0023} is met only in part
+  until then.
+\end{gap}
 
 \begin{requirement}{R-0024}{A halt that cancels open orders reports every cancellation}
   Where a halt cancels the venue's open orders, an execution report shall be
@@ -90,7 +98,7 @@ disorderly conditions.
   have done it when a market became disorderly. What makes it safe is that each
   member's view of its orders comes to match the venue's, and that requires the
   venue to report what it cancelled rather than to stop mentioning those orders.}
-  \uncovered{no scenario halts the venue, because it has no halted state to enter}
+  \covers{ha_test:51, ha_test:85}
 \end{requirement}
 
 \begin{requirement}{R-0017}{Recovery does not depend on the order the components return in}

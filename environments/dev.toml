@@ -103,6 +103,19 @@ cert = "fix_gateway.crt"
 key  = "fix_gateway.key"
 ca   = ""
 
+# ── Certificates for operators ────────────────────────────────────────────────
+# An operator halts trading, or lifts a halt, with scripts/operator_halt.py, over each sequencer's
+# listener for operators (docs/availability/voided_commands.md, section 6.2). Both ends present a
+# certificate signed by one certificate authority: operator_ca.crt and its key, and the operator's
+# operator.crt and its key, are in directory, relative to the install directory. Each component in
+# listeners is given its listener's certificate and a copy of operator_ca.crt in its working directory,
+# under the names its own section gives. operator_name is the name in the operator's certificate.
+# deploy.py makes these unless they exist; --force-certs makes them again.
+[operator_certificates]
+directory     = "etc/operator"
+operator_name = "operator"
+listeners     = ["sequencer_primary", "sequencer_secondary"]
+
 # ── Components ────────────────────────────────────────────────────────────────
 # binary and config paths are relative to install_dir.
 # workdir is the process working directory at launch, relative to install_dir.
@@ -964,6 +977,14 @@ peer_port                  = 11004
 wal_directory              = "var/sequencer_wal"
 wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11030
+# The listener for operators, who halt trading or lift a halt over it with scripts/operator_halt.py. TLS only,
+# and a client must present a certificate signed by the operator's certificate authority, operator_tls_ca.
+# The three files are in the working directory; [operator_certificates] says where they come from.
+operator_listen_host       = "127.0.0.1"
+operator_listen_port       = 11050
+operator_tls_certificate   = "operator_listener_primary.crt"
+operator_tls_private_key   = "operator_listener_primary.key"
+operator_tls_ca            = "operator_ca.crt"
 command_queue_pool_initial_slabs            = 1
 command_queue_pool_objects_per_slab         = 1500000
 event_queue_pool_initial_slabs              = 1
@@ -1007,6 +1028,14 @@ peer_port                  = 11003
 wal_directory              = "var/sequencer_secondary_wal"
 wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11031
+# The listener for operators, who halt trading or lift a halt over it with scripts/operator_halt.py. TLS only,
+# and a client must present a certificate signed by the operator's certificate authority, operator_tls_ca.
+# The three files are in the working directory; [operator_certificates] says where they come from.
+operator_listen_host       = "127.0.0.1"
+operator_listen_port       = 11051
+operator_tls_certificate   = "operator_listener_secondary.crt"
+operator_tls_private_key   = "operator_listener_secondary.key"
+operator_tls_ca            = "operator_ca.crt"
 command_queue_pool_initial_slabs            = 1
 command_queue_pool_objects_per_slab         = 532480
 event_queue_pool_initial_slabs              = 1

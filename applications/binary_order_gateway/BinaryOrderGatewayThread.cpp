@@ -776,7 +776,9 @@ void BinaryOrderGatewayThread::handle_new_order_single(BinarySession& session, c
         // line per refused order would flood the log for the whole outage.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "BinaryOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused: {}",
                    session.conn_id.get_value(), order.cl_ord_id, unavailable);
-        refuse_new_order(session, order, unavailable);
+        // Refused because trading is halted: ExchangeClosed, as the matching engine says when it refuses an order for that.
+        refuse_new_order(session, order, unavailable,
+                         venue_halted() ? pubsub_itc_fw_app::OrdRejReason::ExchangeClosed : pubsub_itc_fw_app::OrdRejReason::Other);
         release_pdu_payload(message);
         return;
     }
@@ -858,16 +860,30 @@ template <typename ViewType> bool BinaryOrderGatewayThread::decode_command(ViewT
     }
 }
 
+bool BinaryOrderGatewayThread::sequencer_connected() const {
+    return sequencer_primary_conn_id_.get_value() != 0 || (config_.ha_enabled && sequencer_secondary_conn_id_.get_value() != 0);
+}
+
+bool BinaryOrderGatewayThread::venue_halted() const {
+    return sequencer_connected() && !venue_accepting_orders_ &&
+           (venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong ||
+            venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::Halted);
+}
+
 std::string_view BinaryOrderGatewayThread::venue_refusal(fix_common::ThrottledCommand command) const {
     // The same conditions, and the same texts, as the FIX gateway's.
-    const bool sequencer_connected = sequencer_primary_conn_id_.get_value() != 0 || (config_.ha_enabled && sequencer_secondary_conn_id_.get_value() != 0);
-    if (!sequencer_connected) {
+    if (!sequencer_connected()) {
         return "Sequencer unavailable";
     }
     if (!venue_accepting_orders_ && venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong) {
         return command == fix_common::ThrottledCommand::Place
                    ? "Venue is halted: no matching engine could be trading within the time the venue recovers by itself"
                    : "Venue is halted while it recovers and cannot process cancels now. The order is unchanged";
+    }
+    if (!venue_accepting_orders_ && venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::Halted) {
+        // The engine carries out cancels while trading is halted, so only new orders are refused.
+        return command == fix_common::ThrottledCommand::Place ? "Venue is halted: new orders are refused until the halt is lifted; cancels are carried out"
+                                                              : std::string_view{};
     }
     if (!venue_accepting_orders_) {
         return command == fix_common::ThrottledCommand::Place ? "Venue is not accepting orders: no matching engine available"
@@ -911,7 +927,14 @@ void BinaryOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::Even
     if (view.reason == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "BinaryOrderGatewayThread: the venue is halted -- no matching engine could be trading within the time it recovers by itself. "
-                       "New orders and cancels are refused, saying so, until a matching engine trades again");
+                       "New orders and cancels are refused, saying so, until a matching engine trades again; after that new orders are refused "
+                       "until a person lifts the halt");
+        return;
+    }
+    if (view.reason == pubsub_itc_fw_app::OrderAcceptanceReason::Halted) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "BinaryOrderGatewayThread: trading is halted -- new orders are refused, saying so, and cancels are passed on, because the "
+                       "matching engine carries them out while trading is halted. A person lifts the halt");
         return;
     }
     // Warning rather than Error, as in the FIX gateway: nothing is lost, and refusing is the
@@ -1227,7 +1250,8 @@ void BinaryOrderGatewayThread::log_throttling_ended_by_disconnection(const Binar
     }
 }
 
-void BinaryOrderGatewayThread::refuse_new_order(BinarySession& session, const pubsub_itc_fw_app::NewOrderSingleView& order, std::string_view reason) {
+void BinaryOrderGatewayThread::refuse_new_order(BinarySession& session, const pubsub_itc_fw_app::NewOrderSingleView& order, std::string_view reason,
+                                                pubsub_itc_fw_app::OrdRejReason ord_rej_reason) {
     // Twenty digits is enough for any int64_t, so these never truncate.
     char order_id_buffer[32];
     char exec_id_buffer[32];
@@ -1250,7 +1274,7 @@ void BinaryOrderGatewayThread::refuse_new_order(BinarySession& session, const pu
     report.has_order_qty = true;
     report.order_qty = order.order_qty;
     report.has_ord_rej_reason = true;
-    report.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
+    report.ord_rej_reason = ord_rej_reason;
     report.has_text = true;
     report.text = reason;
     send_pdu(session.conn_id, pubsub_itc_fw_app::ExecutionReport::message_pdu_id, 0, report);

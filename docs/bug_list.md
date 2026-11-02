@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 220 |
-| Open | 80 (56 defects, 24 tasks) |
-| Closed | 140 |
+| Open | 79 (55 defects, 24 tasks) |
+| Closed | 141 |
 | Next id | BUG-0221 |
 
 ## Open bugs by severity
 
-18 high, 48 medium, 14 low.
+17 high, 48 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -18,7 +18,7 @@
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
 | [BUG-0061](#bug_0061) | high | defect | With high availability off, a secondary sequencer started alone leads but no gateway can reach it |
 | [BUG-0062](#bug_0062) | high | defect | Two instances led with HA off, and nothing notices when they are reunited |
-| [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
+| [BUG-0065](#bug_0065) | high | task | The venue tells a member of a trading halt only in the reply to an order, and cannot halt one instrument |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
@@ -29,7 +29,6 @@
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
 | [BUG-0193](#bug_0193) | high | task | Once both matching engines apply every command, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
-| [BUG-0197](#bug_0197) | high | defect | While no matching engine leads, the venue holds members' orders unanswered, instead of halting and saying so |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
@@ -1502,7 +1501,7 @@ real defect rather than a flake.
 
 ---
 
-### BUG-0065: The venue has no way to declare a trading halt {#bug_0065}
+### BUG-0065: The venue tells a member of a trading halt only in the reply to an order, and cannot halt one instrument {#bug_0065}
 
 | | |
 |---|---|
@@ -1511,11 +1510,22 @@ real defect rather than a flake.
 | Found | 2026-08-28 |
 | Recorded | 2026-08-28 |
 | How | Andrew observing that members will not put up with "service not available" indefinitely, while reviewing the escalation design for [BUG-0009](#bug_0009) |
-| Impact | The venue cannot tell members trading has stopped, for any reason. A prolonged outage reaches them only as an unbounded stream of per-order rejections, which invites retries and never says "stop asking" |
+| Impact | A member that is connected and not trading, or that logs on during a halt, is not told the venue is halted, and learns it only by placing an order. A halt cannot be limited to one instrument |
 
-There is no notion of a trading halt anywhere in this project -- not in the code, not in the
-documentation. `TradingSessionStatus` (FIX 35=h) is neither sent nor understood, and the venue has
-no state meaning "trading has stopped" as distinct from "this order cannot be processed".
+**What is built.** The venue has a halted state, distinct from refusing orders for want of a matching engine. It is a
+`TechnicalEvent` command in the WAL, which every matching engine applies, and which the leading sequencer writes when
+an engine cannot account for the orders the venue holds, when no engine could be trading within the longest recovery
+the venue does by itself, and when an operator declares one with `scripts/operator_halt.py`. Only an operator lifts
+it, with the same tool, and the sequencer lifts it only once an engine leads and every order and cancel written before
+the halt has been answered. The sequencer keeps the halted state from its WAL, and tells the gateways, which refuse new
+orders saying the venue is halted and pass cancels on, which the engine carries out while halted
+([voided_commands.md](availability/voided_commands.md), section 6).
+
+**What remains**, by decision 8 of that design: `TradingSessionStatus` (FIX 35=h), and its equivalent on the binary
+gateway, is neither sent nor understood, so a member that is not trading, or that logs on during a halt, is not told
+the venue is halted or when it resumes (R-0023, which is partly met until then); a halt is always venue-wide; and the
+table of what each trading phase allows ([trading_phases.md](venue/trading_phases.md)) does not exist. The rest of
+this entry is the analysis these were designed from.
 
 **How it works in practice, from a venue Andrew has operated:** the matching engine holds a halted
 state, and a member placing an order is told so in the FIX reply. That is the mechanism that must
@@ -1633,11 +1643,11 @@ Four things the event's shape has to get right:
 a venue that reopens quietly after losing orders conceals the loss, so the event that lifts a halt
 is published because a person decided it was safe, never because an engine reconnected.
 
-**Designed so far.** An operator's means of declaring and lifting a halt, the sequencer keeping whether trading is
-halted, and the gateways refusing orders while it is, are designed in
-[voided_commands.md](availability/voided_commands.md), section 6, because [BUG-0197](#bug_0197) needs them. Telling
-members who are not trading, halting one instrument, and the table of what each phase allows are not; section 6.3 of
-that design proposes where they go.
+**Built.** An operator's means of declaring and lifting a halt, the sequencer keeping whether trading is halted, and
+the gateways refusing new orders while it is, as [voided_commands.md](availability/voided_commands.md), section 6,
+designs them, because [BUG-0197](#bug_0197) needs them (`ha_test.py` scenarios 94 and 95). Telling members who are not
+trading, halting one instrument, and the table of what each phase allows are not built; section 6.3 of that design
+says where they go.
 
 Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the third state
 necessary rather than tidy. [BUG-0061](#bug_0061), since a non-HA venue has no arbiter and reaches
@@ -3714,6 +3724,36 @@ a loss of resilience is not a loss of service (V11).
 **Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
 the member.
 
+### BUG-0203: The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together {#bug_0203}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-25 |
+| Recorded | 2026-10-25 |
+| How | `perf_run.py --clients 2` at 11:02:39: one of the two FIX sessions was refused. The same run passed three times. The Quill logs and the credentials of the failed run are in `tmp/bug0191/logs-signature-mismatch` |
+| Impact | A member's logon is refused with "Authentication service identity could not be verified", although its credentials are correct. The member can log on again. When many members log on at once, as at the start of the day, some may be refused |
+
+**What happens.** Two clients logged on to `fix_order_gateway_a` within the same millisecond, as `CLIENT-1` and
+`CLIENT-2`. For `CLIENT-2` (connection 9, request 9) the gateway sent the authentication request and its proof, and the
+authentication service logged "AuthenticationResult Granted request_id=9 comp_id=CLIENT-2". The gateway then logged
+"connection 9 ServerSignature mismatch -- possible impostor -- sending Logout" and disconnected the member
+(`FixOrderGatewayThread::handle_authentication_result`). `CLIENT-1`'s logon succeeded.
+
+**Why.** Not yet known. The service granted the logon, so the client's proof matched the stored key; it is the server's
+signature that differed from the one the gateway computed from the member's password and the service's challenge
+(`session.scram_expected_server_signature`). The service keeps each exchange under its request id, and the gateway
+keeps its expectation in the session, so neither is shared between the two logons on its face. The credentials are
+written afresh, with a random salt, at the start of each run. To be found: whether the two logons share state
+anywhere else, and whether the stored server key can disagree with the stored key for some salts.
+
+**What is wanted.** Every logon with correct credentials is granted however many are under way at once. A test that
+logs on many sessions together, repeated, which fails now some of the time.
+
+**Principles.** None of the venue's guarantees about orders; members' access.
+
+## Closed
+
 ### BUG-0197: While no matching engine leads, the venue holds members' orders unanswered, instead of halting and saying so {#bug_0197}
 
 | | |
@@ -3721,8 +3761,12 @@ the member.
 | Severity | high |
 | Found | 2026-10-24 |
 | Recorded | 2026-10-24 |
+| Fixed | 2026-11-02 -- past the limit on automatic recovery the venue halts, voids the orders it held and cancels the book, and only an operator lifts the halt, once a matching engine leads and every order before the halt is answered |
 | How | Working out with Andrew what happens if the leading matching engine dies while the other is still starting, which at production size takes 8 to 17 seconds ([BUG-0028](#bug_0028)) |
 | Impact | For as long as no matching engine leads, a member is told nothing about the orders it sends: not that they are refused, not that the market is halted, not when they will be answered |
+
+**What happened.** While no matching engine led, the sequencer took orders, wrote each to the WAL and held it
+without an answer, for as long as no engine led. A member was told nothing.
 
 **What happens now.** While no matching engine leads, the sequencer goes on taking orders. It writes each to
 the WAL and holds it without an answer, and sends it to no engine. It refuses new orders once no engine has led for
@@ -3732,7 +3776,9 @@ below). When an engine leads again, it is caught up to the position released bef
 sent the held orders live, so that it answers each with a first report (scenarios 53 and 92). If the venue halted
 meanwhile, the sequencer wrote, before the halt, a void of the new orders it held and a cancel of the book, so the
 engine that leads rejects each held order, carries out each held cancel and cancels every order on the book, each
-reported to its member (scenarios 51 and 85). Nothing lifts the halt.
+reported to its member (scenarios 51 and 85). The halt stays until an operator lifts it with `scripts/operator_halt.py`;
+the leading sequencer writes the lift only once a matching engine leads and the WAL holds a report answering the last
+member's order or cancel before the halt (scenario 94).
 
 The gap happens whenever both engines are unavailable at once. The case that prompted this entry: the
 leading engine dies, the other takes the lead, and the dead one is restarted by its launcher; while it reads
@@ -3772,7 +3818,7 @@ message, the table of what each phase allows, and their implementation. A way to
 [recovery plan](recovery_plan.md) build for BUG-0193. Parts 1, 3 and 4 are designed in
 [voided_commands.md](availability/voided_commands.md), sections 5 and 6.
 
-**Built so far.** Part 2, with the limit on automatic recovery, as one rule
+**How it was fixed.** Part 2, with the limit on automatic recovery, as one rule
 ([far_back_catch_up.md](availability/far_back_catch_up.md), section 5): past
 `[recovery] automatic_recovery_limit_seconds`, while no engine can trade, the leading sequencer writes a
 `TechnicalEvent` that halts trading, with reason `RecoveryTooLong`, and the gateways refuse new orders and cancels
@@ -3780,39 +3826,13 @@ saying the venue is halted while it recovers (scenarios 51, 85 and 86). Part 1, 
 [voided_commands.md](availability/voided_commands.md) design it: orders are held while no engine leads and sent to no
 engine meanwhile, and refused once none has led for 5 seconds (scenario 92). Part 3, as section 5.3 designs it, with
 decision 6 B: at the halt the orders held are voided and the book cancelled, and the engine that next leads rejects
-each held order and reports each cancel (scenario 85). Part 4 is not built: nothing lifts the halt.
+each held order and reports each cancel (scenario 85). Part 4, as section 6 of [voided_commands.md](availability/voided_commands.md)
+designs it, with decision 7 A: an operator halts trading or lifts the halt with `scripts/operator_halt.py`, over a
+listener on each sequencer that accepts only TLS from a client whose certificate the operator's certificate authority
+signed (scenarios 94 and 95). A member asking the gateway for the market's status, in part 2, is not built; it stays in
+[BUG-0065](#bug_0065), by decision 8.
 
 **Principles.** V6: every command a gateway accepted is answered; V2: the WAL is the record.
-
-### BUG-0203: The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together {#bug_0203}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-25 |
-| Recorded | 2026-10-25 |
-| How | `perf_run.py --clients 2` at 11:02:39: one of the two FIX sessions was refused. The same run passed three times. The Quill logs and the credentials of the failed run are in `tmp/bug0191/logs-signature-mismatch` |
-| Impact | A member's logon is refused with "Authentication service identity could not be verified", although its credentials are correct. The member can log on again. When many members log on at once, as at the start of the day, some may be refused |
-
-**What happens.** Two clients logged on to `fix_order_gateway_a` within the same millisecond, as `CLIENT-1` and
-`CLIENT-2`. For `CLIENT-2` (connection 9, request 9) the gateway sent the authentication request and its proof, and the
-authentication service logged "AuthenticationResult Granted request_id=9 comp_id=CLIENT-2". The gateway then logged
-"connection 9 ServerSignature mismatch -- possible impostor -- sending Logout" and disconnected the member
-(`FixOrderGatewayThread::handle_authentication_result`). `CLIENT-1`'s logon succeeded.
-
-**Why.** Not yet known. The service granted the logon, so the client's proof matched the stored key; it is the server's
-signature that differed from the one the gateway computed from the member's password and the service's challenge
-(`session.scram_expected_server_signature`). The service keeps each exchange under its request id, and the gateway
-keeps its expectation in the session, so neither is shared between the two logons on its face. The credentials are
-written afresh, with a random salt, at the start of each run. To be found: whether the two logons share state
-anywhere else, and whether the stored server key can disagree with the stored key for some salts.
-
-**What is wanted.** Every logon with correct credentials is granted however many are under way at once. A test that
-logs on many sessions together, repeated, which fails now some of the time.
-
-**Principles.** None of the venue's guarantees about orders; members' access.
-
-## Closed
 
 ### BUG-0220: `tla_trace_pages.py` failed on about one run in four, because TLC 2.19 can fail while printing a liveness counterexample {#bug_0220}
 
