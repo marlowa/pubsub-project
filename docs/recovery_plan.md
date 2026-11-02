@@ -494,6 +494,9 @@ order path.
 **Finished when:** the separate checks are gone, the high availability scenarios that test repeated
 commands pass, and the cost is measured.
 
+**Design:** [one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), written on
+2 November 2026, with seven decisions for Andrew.
+
 ### Phase 10. Divide what is left of the sequencer and the matching engine
 
 **For:** a sequencer and a matching engine a reader can understand, and where a change to one job cannot
