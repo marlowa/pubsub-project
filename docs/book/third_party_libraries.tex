@@ -1,0 +1,58 @@
+\chapter{Third party libraries}
+\label{ch:third_party_libraries}
+
+This chapter describes the open-source third-party libraries used by the
+project's C++ code. It does not cover the separate dependencies of the Java
+programs. The libraries have distinct roles: some are part of the running
+venue, while others are used only for tests or measurements.
+
+\section{Libraries used by the venue}
+\label{sec:third_party_libraries_venue}
+
+\begin{description}
+  \item[Quill] provides asynchronous logging. The framework wraps it to give
+    venue components a common logger, file and console sinks, and a backend
+    thread.
+  \item[\texttt{fmt}] formats log messages, diagnostics, and other strings
+    throughout the framework and applications.
+  \item[TOML++] reads the TOML configuration files used to configure the
+    framework and venue components.
+  \item[Prometheus C++] provides metric types, registries, and the HTTP
+    endpoint that exposes metrics for scraping.
+  \item[\texttt{robin-map}] provides hash maps used for order tracking and
+    other indexes. The project also uses it where predictable, pre-reserved
+    storage helps avoid allocation while processing orders.
+  \item[OpenSSL] provides TLS and cryptographic operations. The framework
+    uses it for encrypted network connections; the authentication service and
+    matching engine use its cryptographic functions as well.
+  \item[\texttt{cpptrace}] captures stack traces in framework precondition
+    failures, so a report can show where the failure was raised.
+  \item[\texttt{argparse}] parses command-line options for the
+    \texttt{topic\_probe} application.
+\end{description}
+
+\section{Libraries used for tests and measurements}
+\label{sec:third_party_libraries_tests}
+
+\begin{description}
+  \item[GoogleTest] provides the C++ unit and integration test framework.
+  \item[Google Benchmark] provides the optional
+    \texttt{prometheus\_observe\_overhead} benchmark, which measures the cost
+    of recording a metric. It is separate from the deployed venue and is not
+    built when Google Benchmark is unavailable.
+  \item[libnuma] is optional and is used by NUMA-specific framework tests
+    when it is available. Those tests are skipped when the library is absent.
+\end{description}
+
+\section{Dependencies brought in by these libraries}
+\label{sec:third_party_libraries_transitive}
+
+Some libraries bring additional open-source dependencies. In this build,
+Prometheus C++ requires Threads, zlib, and curl; its pull endpoint also
+includes civetweb. The stack-trace library builds libdwarf as one of its
+dependencies. These support the libraries above and are not APIs that the
+venue calls directly.
+
+The versions selected for the C++ build are set in
+\texttt{scripts/devsetup.sh}. Each library remains subject to the open-source
+licence specified by its maintainers.

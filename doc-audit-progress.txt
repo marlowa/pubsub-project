@@ -110,6 +110,8 @@ venue: `README.md`, `admin_service.md`, `arbiter.md`, `authentication_service.md
 `binary_order_gateway.md`, `fix_order_gateway.md`, `fix_test_client.md`, `gateway_throttles.md`,
 `matching_engine.md`, `sequencer.md`, `sequencer_app.md`, `trading_phases.md`, `witness.md`
 
+book: `third_party_libraries.tex`
+
 ## Not started
 
 availability: `design_notes.md` (see question 4)

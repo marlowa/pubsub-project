@@ -52,14 +52,14 @@ epub: $(JOB).epub
 
 $(JOB).epub: $(JOB).pdf $(JOB).mk4
 	rm -f $(JOB).epub
-	tex4ebook -e $(JOB).mk4 -f epub3 $(JOB).tex || true
+	tex4ebook -e $(JOB).mk4 -f epub3 $(JOB).tex > $(JOB)-epub-conversion.log 2>&1 || true
 	@! grep '^! ' $(JOB).log | grep -v 'Missing \\begin{document}' || { echo "errors converting the book to EPUB: see $(JOB).log"; exit 1; }
 	@test -s $(JOB).epub || { echo "tex4ebook wrote no $(JOB).epub"; exit 1; }
-	@printf '%s\n' "The 'Missing \\begin{document}' errors above are expected: see $(JOB).mk4. 'make check' reads the EPUB to confirm it is sound."
+	@printf '%s\n' "EPUB generated. TeX4ht's known glossary diagnostic and any tidy warning are in $(JOB)-epub-conversion.log. Run 'make check' to validate $(JOB).epub."
 
 clean:
 	rm -f $(JOB).pdf $(JOB).aux $(JOB).bbl $(JOB).blg $(JOB).log $(JOB).toc $(JOB).out $(JOB).req
-	rm -f $(JOB)-pdf.log $(JOB)-pdf.req
+	rm -f $(JOB)-pdf.log $(JOB)-pdf.req $(JOB)-epub-conversion.log
 	rm -f $(JOB).txt $(JOB).html $(JOB).css $(JOB).lg $(JOB).xref $(JOB).tmp $(JOB).idv $(JOB).4ct $(JOB).4tc $(JOB).dvi
 	rm -f $(JOB).glo $(JOB).gls $(JOB).glg $(JOB).acn $(JOB).acr $(JOB).alg $(JOB).ist
 	rm -f $(JOB).epub $(JOB).ncx content.opf *.xhtml
