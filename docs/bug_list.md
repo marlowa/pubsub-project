@@ -3838,6 +3838,18 @@ run. So some functions fail often (129: 27 of 40 runs) and others never have (0:
 fails on some runs and not others. [findings.md, section 11.8](availability/tla/findings.md) gives the evidence, read
 from TLC's compiled code with `javap`, and the measurements.
 
+**It is a known defect of TLC, fixed upstream, and the release used here does not have the fix.** It is
+[tlaplus issue 597](https://github.com/tlaplus/tlaplus/issues/597), and commit `ba14c21a6c` of 26 March 2021 fixes it
+by making `AbstractDiskGraph.getNode` and `getNodeFromDisk` synchronized. Its message names the same failure, "Read
+past end of file", and the same cause: the reconstruction of a liveness counterexample was made parallel in TLC 2.08,
+and the two methods are not safe to call from two threads. Every later commit to `AbstractDiskGraph.java` on the main
+line keeps the fix. Release 1.7.4, the one this project uses, which reports itself as TLC 2.19 of 8 August 2024
+(revision `5a47802`), was not built from the main line: its branch left the main line on 25 April 2020, before the
+fix, and in its compiled classes, and in its source at that revision, neither method is synchronized. Release 1.8.0,
+of 30 October 2026, is built from the main line. So nothing needs reporting upstream. Whether release 1.8.0 removes the
+failure here has not been run: its `AbstractDiskGraph.java` on the main line is synchronized, but its jar has not been
+run on these models.
+
 **Why the fix is only partial.** A fixed function makes the race unlikely for these graphs; it does not remove it. A
 change to the model can make function 0 fail too. The script then stops with a message naming the race and saying to
 choose another function, instead of one saying that TLC printed no states. Made to fail on purpose: with `-fp 129` in
