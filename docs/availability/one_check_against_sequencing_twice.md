@@ -69,12 +69,13 @@ second time, but it is still sent to the sequencers.
 
 The leading sequencer checks every command, before giving it a number, against the record of identifiers. The record
 holds, beside each identity's number, the position in the WAL of the command that has it, so a possible match is
-proved or disproved by reading that one record, however long ago it was written. A command whose identity the WAL
+proved by reading that one record, however long ago it was written, and in the rare cases one read cannot settle, by
+searching the WAL. A command whose identity the WAL
 does not hold is sequenced as now. One whose identity the WAL holds is not sequenced. If its gateway marked it as sent
 again, it is answered with what became of the original, from the WAL where the WAL holds the answer. If not, it is a
 member using an identifier again, and the leader refuses it: it sends the gateway a refusal, which the gateway turns
 into a rejection for the member. The refusal is not written into the WAL, because nothing in the WAL changes. The rule
-about two connections, the tracking of connections it needs, and `LogTailIndex` all go.
+about two connections, and the tracking of connections it needs, go.
 
 ## 3. The check
 
@@ -111,9 +112,28 @@ the offset, a small change to the library that its other callers can ignore.
 
 **Proving a match.** When the map holds a command's number, the leader reads the one record at the position beside
 it, decodes its comp id, protocol and `ClOrdID`, and compares them with the command's. If they are equal, the WAL holds
-the command. If not, the two identities merely gave the same number; the WAL does not hold the command, and the command
-is sequenced as a new one. That case is expected to arise about once in the lifetime of the venue (section 3.4), and
-the leader logs it at Warning when it does, with both identities.
+the command.
+
+If they differ, the leader cannot conclude that the WAL does not hold the command, because the map holds one position
+for each number, and there are two ways for that position not to be the command's:
+
+- **Two commands in the WAL gave the same number.** The map holds the position of the first of them only, so a check
+  of the second reads the first, and finds a different identity, although the second is in the WAL too.
+- **The WAL was cut back and written again.** A follower whose WAL is cut back to match its leader's discards the
+  records after a position and writes its leader's records in their place. A command can then be in the WAL at a new
+  position while the map still holds its old one, which now holds another record or nothing.
+
+So when the identities differ, or the position holds no record, the leader searches the WAL for the command exactly,
+as for a full record (below), and logs at Warning that it did, with both identities. The first case is expected about
+once in the lifetime of the venue (section 3.4). The second needs a follower that was cut back to be promoted, and a
+command written in the part that was cut back to be checked afterwards. The map keeps the first position it was given
+for a number, and is never changed by a later record with the same number.
+
+**Searching the WAL.** The search reads the WAL backwards from its end, comparing exact identities, as `LogTailIndex`
+does today. For a command marked as sent again, it stops at the time the gateway first received the command, which
+the envelope carries, less a margin for the two machines' clocks, as now. For a command not marked, the first command
+with its identity may be from any time that day, so the search may read the whole WAL. That is slow, on the thread that
+sequences orders, but happens only in the rare cases above and when the record is full or not yet built.
 
 **What the read costs.** One read of one record, on the thread that sequences orders. A command sent again is recent,
 so its record is almost always still in memory, in the page cache. A member reusing an identifier from hours earlier
@@ -123,8 +143,7 @@ is a member's mistake, rare, and costs the venue that one read, not a read of ev
 
 **When the record is full.** As now, the record accepts no more entries once it holds as many as it was reserved for,
 and says so once at Error. A command whose number is not in a full record may still be in the WAL. The leader then has
-no position to read, and must search the WAL for it; with a full record it does that with the same backwards read as
-today. The record's size is set so that this does not happen on a normal day (50 million orders, and the test of 100
+no position to read, and searches the WAL for it. The record's size is set so that this does not happen on a normal day (50 million orders, and the test of 100
 million), and the Error asks for `commands.identifiers_reserved` to be raised.
 
 **While the record is still being built**, in the second or so after the sequencer starts, a command the part not yet
@@ -159,8 +178,8 @@ under the same `ClOrdID` before it has had an answer to the first.
 Two identities give the same number with a chance of one in 2^64 for each pair. On a day of 50 million commands, the
 chance that some new command's number equals that of a different command already in the record is about 50 million
 squared divided by 2^65, about 7 in 100,000. At 250 trading days a year, that is about once in 60 years. Because a
-possible match is always proved by reading the record (section 3.2), such a coincidence costs one read and a Warning,
-and never a wrong answer.
+possible match is always proved by reading the record, and a record with a different identity sends the leader to
+search the WAL (section 3.2), such a coincidence costs a search and a Warning, and never a wrong answer.
 
 ## 4. The refusal
 
@@ -236,8 +255,9 @@ the sequencer is divided. Building it in the library means:
 
 - the rule that every command from a gateway with two connections open is checked, `note_command_connection`,
   `forget_command_connection`, `command_connections_` and their logs;
-- `LogTailIndex` and its unit tests, except for the backwards search a full or unfinished record still needs
-  (section 3.2), which becomes a function of the record's owner;
+- `LogTailIndex` as the ordinary way of proving a match. Its backwards search stays, in the library, for the cases of
+  section 3.2 in which the record cannot prove a match by one read: a full record, one not yet built, two commands
+  with the same number, and a WAL cut back and written again;
 - the sequencer's counts of commands sent again that were already in the WAL, which become counts kept by the check.
 
 **Changes:**
@@ -261,15 +281,16 @@ first and with `--secondary-engine-first`, before the next starts.
 
 1. **The record holds positions, in the library** (with decision 6 A; otherwise in the sequencer). The record and its
    builder move into the library and hold each command's position; the replicated WAL proves a possible match by
-   reading the record at that position. Behaviour is unchanged: the sequencer still checks only the commands it checks
-   today. Unit tests: a match is proved by reading the record; two identities with the same number are told apart (a
-   test sets the number so that they collide); a full record and an unfinished one fall back to the search. Made to
-   fail: with the comparison of identities removed, the collision test fails.
+   reading the record at that position, and searches the WAL when it cannot. Behaviour is unchanged: the sequencer
+   still checks only the commands it checks today. Unit tests: a match is proved by reading the record; of two
+   commands in the WAL with the same number (a test sets the number so that they collide), both are found; a command
+   written again at a new position after the WAL is cut back is found; a full record and an unfinished one fall back
+   to the search. Made to fail: with a different identity taken to mean "not held", the collision test fails.
 2. **The refusal.** `CommandRefused`, and both gateways turning it into a rejection; both gateways refusing a command
    whose identity they hold unanswered (section 4.3). Unit tests in each gateway. Nothing sends `CommandRefused` yet,
    so the scenarios are unchanged.
 3. **Every command is checked.** The leader checks every command, refuses an unmarked one already held, and answers a
-   marked one as section 3.3 says. The rule about two connections, its tracking, and `LogTailIndex` go. New scenarios:
+   marked one as section 3.3 says. The rule about two connections and its tracking go. New scenarios:
    - a member reuses the `ClOrdID` of an order it has cancelled, and of an order that has been filled, and each is
      refused with reason 6 while the first order's record is unchanged (R-0119);
    - a member sends a second order under a `ClOrdID` before the first has been answered, and the gateway refuses it
@@ -315,8 +336,8 @@ Section 3.2. The record says only that the WAL may hold a command, so a match mu
 refused or answered as already held.
 
 - **A. The record holds each command's position, and the leader reads that one record.** Exact, and one read however
-  old the first command is. The record grows from 4 GiB to 6 GiB. `LogTailIndex` goes, apart from the search a full or
-  unfinished record needs. It is also what makes decision 4 possible.
+  old the first command is, apart from the rare cases of section 3.2 that need a search. The record grows from 4 GiB to
+  6 GiB. It is also what makes decision 4 possible.
 - **B. The record stays as it is, and an unmarked match is refused on the number alone**, without reading the WAL; a
   marked one is still proved by reading backwards, as now, which is cheap because it is recent. No more memory and no
   read for a reused identifier. A new command would be wrongly refused about once in 60 years (section 3.4), with the
