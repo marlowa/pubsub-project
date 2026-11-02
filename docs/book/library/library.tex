@@ -32,12 +32,18 @@ its own work and not the reactor's.
 \subsection{Lock-free algorithms}
 \label{sec:fw_lock_free}
 
-No hot path in the framework takes a lock. A thread that blocks on a mutex
-waits for a thread the scheduler may not run for milliseconds, and a venue
-cannot answer a member on that timescale.
+The framework avoids locks on its common message-processing paths. The
+message queue operations and the pool allocator's fast allocation path are
+lock-free. If the current pool has no free slots, however,
+\texttt{ExpandablePoolAllocator::allocate()} takes a mutex while it searches
+the pool chain and, if necessary, maps and adds another pool. This slow path
+can occur while a message is being processed, so allocation is not lock-free
+in every case. A thread blocked on a mutex waits for a thread the scheduler may
+not run for milliseconds, and a venue cannot answer a member on that timescale.
 
-The production build uses two lock-free structures on its hot paths. Both are
-stated in full in the sections that specify them.
+The production build uses two lock-free structures on its common
+message-processing paths. Both are stated in full in the sections that specify
+them.
 
 \begin{itemize}[nosep]
   \item \textbf{A Treiber stack} of free memory slots

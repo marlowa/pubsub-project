@@ -54,10 +54,11 @@ which is outside the DSL.
 
 \subsection dsl_enums Enums
 
-Enums have an explicit signed underlying type (\c i8, \c i16, \c i32, or \c i64).
-Each entry has an explicit integer value. Generated code includes \c to_string()
-and \c validate() constexpr helpers. Enums are fixed-size on the wire and require
-no arena allocation.
+Enums have an explicit underlying type: signed \c i8, \c i16, \c i32, or \c i64,
+or \c char. A \c char enum uses character literals and their ASCII values. Each
+entry has an explicit value. Generated code includes \c to_string() and
+\c validate() constexpr helpers. Enums are fixed-size on the wire and require no
+arena allocation.
 
 \subsection dsl_messages Messages
 

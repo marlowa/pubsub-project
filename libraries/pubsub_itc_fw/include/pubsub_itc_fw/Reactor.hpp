@@ -156,12 +156,10 @@ class Reactor : public ThreadLookupInterface {
      * given address during initialisation, and routes all inbound data from
      * accepted connections to the specified ApplicationThread.
      *
-     * One-connection contract:
-     *   Each registered listener accepts exactly one peer connection at a time.
-     *   If a second peer attempts to connect while a connection is already
-     *   established, the reactor accepts and immediately closes the socket, logs
-     *   a Warning, and does NOT notify the application thread.
-     *   When the established connection is lost, the listener resumes accepting.
+     * A listener may accept multiple concurrent peer connections. Each accepted
+     * connection has its own ConnectionID, and its events are routed to the
+     * specified ApplicationThread. Applications that require a point-to-point
+     * link must enforce that limit themselves.
      *
      * Protocol type:
      *   Pass ProtocolType::FrameworkPdu (the default) for connections carrying

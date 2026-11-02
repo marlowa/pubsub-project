@@ -49,11 +49,11 @@ being told, which leaves it holding nothing for a session that was not bound at
 the time. A promoted follower was told the same things as they happened, so it
 holds the numbering of sessions that no gateway would report.
 
-The pair also settles leadership between themselves when they can see each other,
-rather than asking the arbiter. Both instances hold both instance identities and
-both generations, so both compute the same answer from the same inputs. The
-arbiter decides the case the pair cannot settle alone: one instance cannot see
-the other, and a second claimant may exist that it cannot see.
+Leadership is decided by leases, not by comparing shared generations. Each
+instance asks its peer and the active arbiter for a lease. Its own vote and an
+unexpired grant from either voter form a majority, which permits it to act. The
+arbiter is a voter in every election, not only when the sequencers cannot see
+each other.
 
 \subsubsection{What the member is told}
 \label{sec:ha:enabled:sequencer:member}
@@ -163,9 +163,8 @@ Nothing. The member sees a brief pause in responses and no break in numbering.
   Where both instances are present and neither holds the entitlement, they shall
   reach the same answer without referring it, and shall reach it whichever
   started first.
-  \rationale{Both instances hold both identities and both generations, so both compute the
-  same result from the same inputs. Asking the arbiter instead makes the venue wait
-  on a component that has just started itself, and that holds less information than
-  either instance.}
+  \rationale{A peer's grant can provide the second vote needed for a majority, so the pair can
+  decide leadership when the active arbiter is unavailable. The implementation also asks the
+  arbiter, whose grant can provide that vote when the peer cannot.}
   \covers{ha_test:36, ha_test:37}
 \end{requirement}

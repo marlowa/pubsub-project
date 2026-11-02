@@ -34,9 +34,11 @@ lease. Losing one arbiter moves no entitlement and interrupts nothing, which is
 \subsubsection{What is done about the witness being single}
 \label{sec:ha:enabled:arbiter:witness}
 
-\textbf{The witness holds no state, so losing it loses nothing.} It has no record
-to recover and no history to lose. After it restarts it grants nothing for one
-lease period, which is the whole of its recovery.
+\textbf{The witness keeps no state on disk, so losing it loses no durable record.}
+While it is running, it holds its lease vote in memory, including the current
+promise and the highest epoch it has granted. After it restarts, it grants
+nothing for one lease period, allowing any promise made before it stopped to
+expire.
 
 \textbf{Losing the witness alone changes nothing.} Two arbiters that can see each
 other grant each other leases without it. The absence of the witness is felt only
@@ -83,7 +85,8 @@ highest generation granted in each group. It holds nothing about orders, session
 or sequence numbers. That limit is deliberate: a component that decides which
 instance may act must not itself hold state that can be wrong.
 
-The witness holds its vote on which arbiter is active, and nothing else.
+The witness holds only the in-memory lease-voter state needed to decide which
+arbiter may lead: its current promise and the highest epoch it has granted.
 
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:enabled:arbiter:durable}

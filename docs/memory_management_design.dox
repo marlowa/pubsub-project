@@ -14,15 +14,16 @@ docs/design_principles.md, which lists where the order path still breaks it.
 
 Two purpose-built allocators provide this guarantee:
 
-- \b ExpandableSlabAllocator -- for variable-sized PDU frames.
+- \b ExpandableSlabAllocator -- for variable-sized outbound PDU frames and raw
+  byte buffers, and inbound PDU payloads.
 - \b ExpandablePoolAllocator -- for fixed-size ITC message queue nodes, shared
   across all threads.
 
-\section mmd_slab ExpandableSlabAllocator -- PDU transport layer
+\section mmd_slab ExpandableSlabAllocator -- variable-size transport buffers
 
 The \c ExpandableSlabAllocator is a variable-sized bump allocator backed by a
-chain of \c mmap regions (slabs). It is used exclusively for PDU transport:
-outbound PDU frames and inbound PDU payloads.
+chain of \c mmap regions (slabs). It serves outbound PDU frames and raw byte
+buffers, and inbound PDU payloads.
 
 \subsection mmd_slab_structure Structure
 
@@ -159,7 +160,7 @@ its pre-allocated capacity.
 | Thread safety | One allocating thread, any deallocating thread | Lock-free, except chain expansion (a mutex) |
 | Free list | Lock-free MPSC queue | Treiber stack with ABA prevention |
 | Reclamation | Demand-driven on reactor | Immediate on deallocate |
-| Used for | PDU transport | ITC message queues |
+| Used for | PDU and raw-byte transport | ITC message queues |
 | Backpressure | Buffer-full disconnect | Watermark callbacks |
 | Heap allocation on hot path | No | No; expansion maps a new pool |
 

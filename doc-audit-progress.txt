@@ -162,15 +162,6 @@ bugs. During the documentation audit, record them here without changing code or 
 `docs/bug_list.md`. A later review can decide whether each item is a code bug, a documentation
 correction, or neither.
 
-- **Epoll trigger mode:** `claude.md` and `docs/framework/README.md` say the reactor uses
-  edge-triggered epoll. The reactor and connection-manager code registers descriptors without
-  `EPOLLET`, and the connection-manager headers describe level-triggered epoll. The implementation
-  is level-triggered; align the architecture guidance and framework index with that behaviour.
-- **Inbound connections per listener:** `Reactor.hpp` and `docs/framework/reactor.md` describe a
-  one-peer limit. `InboundListener.hpp` says a listener accepts multiple concurrent connections,
-  and `InboundConnectionManager` stores each accepted connection independently. Update the
-  conflicting descriptions to state that a listener can accept multiple peers, all routed to its
-  configured application thread.
 - **Extra-thread CPU placement:** `ApplicationThread.hpp` says the reactor claims a dedicated CPU
   for each thread registered through `register_extra_thread()`. `Reactor.cpp` leaves these threads
   in the background tier and excludes them from the component's hot-path CPU count. Correct the
@@ -193,6 +184,22 @@ Reported to Andrew, and not changed by the audit.
   replaces the release libraries and programs that `devenv.py`, `perf_run.py` and `ha_test.py` run. The
   instrumented flavours were separated for exactly this reason. Found auditing
   `docs/orientation/building.md`, 11 October 2026, after it happened in practice.
+
+- **The sequencer can report orders without a follower copy** (`applications/sequencer/SequencerThread.cpp`,
+  `libraries/pubsub_itc_fw/src/ReplicatedWal.cpp`): when the follower is absent or behind, the leader
+  records with another voter that the follower may not lead, then commits and sends orders without
+  waiting for the follower. A member can therefore receive a report for an order held only on the
+  leader. This does not meet book requirements R-0066 (a report waits for acknowledgement by a
+  second instance) or R-0070 (stop reports rather than continue without the follower).
+  `docs/availability/wal_and_ha.md` documents the degraded-mode exception. Decide whether the
+  requirements or the degraded-mode behaviour is intended.
+
+- **Matching-engine leadership requirement R-0074 does not describe the implemented election**
+  (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/PairLeaseAgent.hpp`): the requirement says an
+  instance adopts the follower position only on its peer's assertion, whereas the matching engine
+  asks both its peer and the active arbiter for leases and may lead with a grant from either. The
+  book's factual descriptions now state the implemented lease rules; R-0074 remains unchanged as a
+  requirement, and the difference is recorded here for review.
 
 - **`Wal::append` allocates from the heap for a record over 512 bytes** (`libraries/pubsub_itc_fw/src/Wal.cpp`):
   it builds the record's payload in a 512-byte buffer on the stack, and in a `std::vector` otherwise. On

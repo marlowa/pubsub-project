@@ -23,8 +23,12 @@ availability is disabled, which is why that configuration needs a checkpoint.
 \label{sec:ha:enabled:me:recovery}
 
 The promoted instance reports the sequence number its replica has reached,
-receives everything committed after that number, applies it silently, and begins
-acting.
+receives every committed record after that number, applies the commands to its
+local book, and then begins acting. Rebuilding the book does not treat the
+commands as new live orders. An instance following the log does not send its
+reports to members; it keeps them until it is entitled to lead. When an engine
+catches up to take leadership, it does not send reports the sequencer already
+holds, and marks any missing reports as possible repeats.
 
 \textbf{This is the same operation as \cref{sec:ha:disabled:me:recovery}
 describes.} A restarting instance learns its starting number from a checkpoint,
@@ -32,13 +36,11 @@ and a promoted instance takes it from the replica it has been maintaining.
 Nothing else about the operation differs, so the mechanism built for the disabled
 configuration is the mechanism this configuration uses.
 
-The engine differs from the sequencer in one respect. A sequencer pair settles
-leadership between themselves in both directions, because both instances hold
-both generations at the same moment. A matching engine only ever \emph{gives}
-leadership up. It adopts the follower position on its peer's assertion, takes the
-generation it is given, and issues no generation of its own. An instance that
-gives up leadership cannot produce a second acting instance, whatever its peer
-has got wrong, which is why acting on the peer's assertion alone is safe here.
+The matching-engine pair uses the same majority-lease rules as the sequencer
+pair. Each instance asks its peer and the active arbiter for a lease, and may
+act while its own vote and an unexpired lease from either voter form a majority.
+A peer's request participates in the lease exchange, but does not by itself
+authorise an instance to act; a majority lease does.
 
 \subsubsection{What the member is told}
 \label{sec:ha:enabled:me:member}

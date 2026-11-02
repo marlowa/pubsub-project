@@ -12,5 +12,5 @@
 
 ## Architectural Guardrails
 - Core pattern is a low-level, event-driven Reactor pattern.
-- Sockets must use non-blocking I/O (`O_NONBLOCK`) and edge-triggered `epoll` (`EPOLLET`).
+- Sockets use non-blocking I/O (`O_NONBLOCK`) and level-triggered `epoll`.
 - Do not use modern `std::jthread` or C++20 synchronization primitives (like `std::binary_semaphore`). Stick to C++17 standard features (`std::thread`, `std::mutex`, `std::condition_variable`).

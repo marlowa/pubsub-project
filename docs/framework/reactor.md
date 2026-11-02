@@ -105,6 +105,12 @@ Nothing is done on the tick once the reactor has been asked to shut down.
 
 Manages accepted TCP connections. Owns three maps:
 
+A listener may accept multiple concurrent peer connections. Each accepted
+connection has its own `ConnectionID`, and its data and lifecycle events are
+routed to the listener's configured application thread. The framework does not
+enforce a one-peer limit; an application that needs a point-to-point link must
+enforce that itself.
+
 | Map | Type | Notes |
 |-----|------|-------|
 | `inbound_listeners_` | `fd → InboundListener` | Owning; one entry per listening socket |

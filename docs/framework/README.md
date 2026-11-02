@@ -3,7 +3,7 @@
 `pubsub_itc_fw`, the reactor and threading library everything else is built on. These documents describe
 the primitive rather than the venue: a component here is a building block, not a process you can start.
 
-- [reactor.md](reactor.md) — The event loop: edge-triggered epoll, non-blocking sockets, the callback contract
+- [reactor.md](reactor.md) — The event loop: level-triggered epoll, non-blocking sockets, the callback contract
 - [threading.md](threading.md) — ApplicationThread, the ITC message system, and the idle-blocking wake strategy
 - [application_thread_itc.md](application_thread_itc.md) — EventMessage, who owns each payload, and sending a message from one thread to another
 - [single_writer_histogram.md](single_writer_histogram.md) — A histogram the recording thread updates without a lock, read by the scrape without stopping it. **Agreed for BUG-0125, not built**
