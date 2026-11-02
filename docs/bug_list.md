@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 222 |
-| Open | 81 (56 defects, 25 tasks) |
-| Closed | 141 |
+| Open | 80 (55 defects, 25 tasks) |
+| Closed | 142 |
 | Next id | BUG-0223 |
 
 ## Open bugs by severity
 
-17 high, 50 medium, 14 low.
+17 high, 49 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -78,7 +78,6 @@
 | [BUG-0209](#bug_0209) | medium | task | No scenario reaches the halt when a matching engine cannot account for the orders the venue holds |
 | [BUG-0210](#bug_0210) | medium | defect | A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again |
 | [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
-| [BUG-0221](#bug_0221) | medium | defect | The sequencer's `sequencer_running_alone` gauge reads 0 while the leader runs with no follower connected, so an alert on it misses a dead follower |
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
@@ -214,31 +213,6 @@ lost for good, the follower is refused the lead, correctly, and nothing in the v
    so that the follower can take the lead, and logs at Warning what it has done and why (R-0161).
 2. A procedure that establishes which orders members were sent execution reports for that the surviving log does not
    hold, and tells each member affected which of its orders these are (R-0162).
-
-**Principles.** V11: a loss of resilience is not a loss of service.
-
-### BUG-0221: The sequencer's `sequencer_running_alone` gauge reads 0 while the leader runs with no follower connected, so an alert on it misses a dead follower {#bug_0221}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-02 |
-| Recorded | 2026-11-02 |
-| How | Reading `ReplicatedWal::on_peer_connection_lost` while checking that R-0158 in the functional specification describes what the code does |
-| Impact | An operator who raises an alert on the gauge is told when the follower is connected and behind, and is not told when the follower has died or the link to it is down, which is the longer and more common exposure |
-
-**What happens.** The leader carries on without its follower in two situations: the follower is connected but too far
-behind, and the follower is not connected at all. Only the first sets `running_alone_` and the gauge
-`sequencer_running_alone` to 1. When the connection to the follower is lost, `ReplicatedWal::on_peer_connection_lost`
-leaves the gauge at 0 if the leader was waiting for the follower. If the leader was already running alone, it calls
-`stop_running_alone`, which sets the gauge to 0 and logs at Info "the follower is keeping up again -- it has
-disconnected, and the leader runs alone as it does with no follower". In both cases the leader then commits records without the follower, after a voter has confirmed that the follower may not lead, exactly
-as it does when running alone. The sequencer's thread does log at Warning that the peer connection was lost, so the
-Quill log shows it, but the gauge and the running-alone log messages say the opposite.
-
-**What is wanted.** The gauge reads 1, and the start and end are logged, whenever the leader is committing records
-without its follower, whether the follower is behind or not connected (R-0158). Scenario 60 checks the gauge for a
-follower that is behind; a scenario should check it for a follower that is killed.
 
 **Principles.** V11: a loss of resilience is not a loss of service.
 
@@ -3806,6 +3780,38 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0221: The sequencer's `sequencer_running_alone` gauge reads 0 while the leader runs with no follower connected, so an alert on it misses a dead follower {#bug_0221}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-02 |
+| Recorded | 2026-11-02 |
+| Fixed | 2026-11-02 -- the gauge follows whether the leader waits for its follower, whatever the reason; ReplicatedWalTest and scenario 61 check a dead follower |
+| How | Reading `ReplicatedWal::on_peer_connection_lost` while checking that R-0158 in the functional specification describes what the code does |
+| Impact | An operator who raises an alert on the gauge is told when the follower is connected and behind, and is not told when the follower has died or the link to it is down, which is the longer and more common exposure |
+
+**What happens.** The leader carries on without its follower in two situations: the follower is connected but too far
+behind, and the follower is not connected at all. Only the first sets `running_alone_` and the gauge
+`sequencer_running_alone` to 1. When the connection to the follower is lost, `ReplicatedWal::on_peer_connection_lost`
+leaves the gauge at 0 if the leader was waiting for the follower. If the leader was already running alone, it calls
+`stop_running_alone`, which sets the gauge to 0 and logs at Info "the follower is keeping up again -- it has
+disconnected, and the leader runs alone as it does with no follower". In both cases the leader then commits records without the follower, after a voter has confirmed that the follower may not lead, exactly
+as it does when running alone. The sequencer's thread does log at Warning that the peer connection was lost, so the
+Quill log shows it, but the gauge and the running-alone log messages say the opposite.
+
+**How it was fixed.** `ReplicatedWal::note_whether_the_follower_is_waited_for` sets the gauge, and is called at the end
+of everything that can change the answer: an append, every message from the peer or a voter, a connection opening or
+closing, the hand-over of a catch-up, the acknowledgement watch and the lease tick. The gauge is 1 while the instance
+leads with high availability on and does not wait for its follower, and 0 otherwise. It logs at Warning when that
+starts because no follower is connected or the follower is too far behind, at Info when a present follower is being
+brought up to date, and at Info when the leader waits for its follower again. A lost connection no longer logs that
+the follower "is keeping up again". Two unit tests, a dead follower and a follower that fell behind and then
+disconnected, each failed with the matching part of the fix removed; scenario 61 reads the gauge with the follower
+killed and again once it has rejoined.
+
+**Principles.** V11: a loss of resilience is not a loss of service.
 
 ### BUG-0197: While no matching engine leads, the venue holds members' orders unanswered, instead of halting and saying so {#bug_0197}
 

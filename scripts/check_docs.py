@@ -45,7 +45,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Deliberately outside the book: instructions to an AI assistant, the changelog, which GitHub
 # renders on its own, and scratch directories that are not documentation at all.
 _NOT_IN_THE_BOOK = {'claude.md', 'CHANGELOG.md', 'README.md', 'DESIGN.md'}
-_IGNORED_PREFIXES = ('.pytest_cache/', 'python/.pytest_cache/', '.claude/')
+# .claude/ and .github/ hold instructions to AI assistants, which no project document links to or should.
+_IGNORED_PREFIXES = ('.pytest_cache/', 'python/.pytest_cache/', '.claude/', '.github/')
 
 # Paths that are deliberately illustrative. architecture_map_howto.dox teaches how to add a
 # component by working through an invented one, so its example path must not exist.

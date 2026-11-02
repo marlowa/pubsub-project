@@ -608,8 +608,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         return config_.orders_held_at_most / 4;
     }
 
-    // 1 while the leader carries on without waiting for a follower that is connected but too far
-    // behind. Registered here and set by the replicated WAL.
+    // 1 while this sequencer leads and commits orders without waiting for its follower, for any reason.
+    // Registered here and set by the replicated WAL.
     pubsub_itc_fw::GaugeHandle running_alone_gauge_;
 
     void hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message);

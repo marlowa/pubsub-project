@@ -143,8 +143,8 @@ void SequencerThread::on_initial_event() {
     }
     running_alone_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "sequencer_running_alone",
-        "1 while a follower is connected but too far behind and the leader sends orders to the matching engine without waiting for it; a loss of "
-        "resilience. Expected to be 0");
+        "1 while this sequencer leads and commits orders without waiting for its follower: no follower is connected, the follower is being brought "
+        "up to date, or it is too far behind. A loss of resilience. Expected to be 0, apart from a few seconds after a start or a change of leader");
 
     // The WAL, kept on both instances of the pair, and the deciding of which instance leads. Opening it
     // reads every record, discards any after a gap, and recovers the epoch; with HA off, this instance

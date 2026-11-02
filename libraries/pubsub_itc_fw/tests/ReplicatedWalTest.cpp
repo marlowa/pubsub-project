@@ -30,10 +30,12 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <prometheus/gauge.h>
 
 #include <pubsub_itc_fw/BackgroundPromiseRecorderInterface.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/GaugeHandle.hpp>
 #include <pubsub_itc_fw/LeasePromiseRecorderInterface.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/LeaseVoter.hpp>
@@ -263,6 +265,8 @@ class Pair {
         configuration.third_voter_id = arbiter_id;
         configuration.third_voter_name = "the arbiter";
         configuration.lease = timing_;
+        running_alone_gauges_[i].Set(0.0);
+        configuration.running_alone_gauge = GaugeHandle{&running_alone_gauges_[i]};
         if (command_identity_ != nullptr) {
             configuration.command_identity = command_identity_;
             configuration.identifiers_reserved = 1000;
@@ -514,6 +518,21 @@ class Pair {
         now_ += by;
     }
 
+    // Whether any line logged since the last forget_log() contains @p text.
+    [[nodiscard]] bool logged(const std::string& text) {
+        logger_.flush();
+        return std::any_of(log_.begin(), log_.end(), [&text](const std::string& line) { return line.find(text) != std::string::npos; });
+    }
+
+    void forget_log() {
+        logger_.flush();
+        log_.clear();
+    }
+
+    [[nodiscard]] double running_alone_gauge(int i) const {
+        return running_alone_gauges_[i].Value();
+    }
+
     LeaseTiming timing_{};
     Clock::time_point now_{};
     std::vector<std::string> log_;
@@ -535,6 +554,8 @@ class Pair {
     TestEventChannel* test_events_[2]{nullptr, nullptr};
     // How each instance reads a command's identity, if it keeps a record of commands.
     const CommandIdentityInterface* command_identity_{nullptr};
+    // What each instance sets its running_alone_gauge to.
+    prometheus::Gauge running_alone_gauges_[2];
 };
 
 TEST(ReplicatedWalTest, AnInstanceRunningAloneLeadsAtOnceAndCommitsEachRecordOnceWritten) {
@@ -545,6 +566,7 @@ TEST(ReplicatedWalTest, AnInstanceRunningAloneLeadsAtOnceAndCommitsEachRecordOnc
     EXPECT_EQ(seq_no, 1);
     EXPECT_EQ(pair.events_[0].committed, 1);
     EXPECT_EQ(pair.wals_[0]->next_seq_no(), 2);
+    EXPECT_EQ(pair.running_alone_gauge(0), 0.0) << "an instance with HA off has no follower to be without";
 }
 
 TEST(ReplicatedWalTest, OpeningTheWalShowsTheApplicationEveryRecordItHoldsInOrder) {
@@ -743,6 +765,7 @@ TEST(ReplicatedWalTest, AFollowerThatStopsAcknowledgingIsLeftBehindOnlyOnceAVote
     EXPECT_EQ(leader_events.links.running_alone, std::vector<bool>{true});
     EXPECT_EQ(leader_events.links.peer_may_lead, std::vector<bool>{false});
     EXPECT_LT(pair.events_[0].committed, seq_no) << "committed before a voter confirmed that the follower may not lead";
+    EXPECT_EQ(pair.running_alone_gauge(0), 1.0);
 
     // The statement goes to the arbiter with the leader's next renewal, and the grant confirms it.
     for (int n = 0; n < 20 && pair.events_[0].committed < seq_no; ++n) {
@@ -754,6 +777,7 @@ TEST(ReplicatedWalTest, AFollowerThatStopsAcknowledgingIsLeftBehindOnlyOnceAVote
     pair.held_[1] = false;
     ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
     EXPECT_EQ(leader_events.links.running_alone, (std::vector<bool>{true, false}));
+    EXPECT_EQ(pair.running_alone_gauge(0), 0.0);
     for (int n = 0; n < 20 && leader_events.links.peer_may_lead.size() < 2; ++n) {
         pair.step();
     }
@@ -789,6 +813,56 @@ TEST(ReplicatedWalTest, RunningAloneAndWhatTheLeaderSaysOfItsFollowerAreReported
     }
     EXPECT_EQ(links.running_alone, (std::vector<bool>{true, false}));
     EXPECT_EQ(links.peer_may_lead, (std::vector<bool>{false, true}));
+}
+
+TEST(ReplicatedWalTest, TheRunningAloneGaugeReadsOneWhileTheLeaderHasNoFollowerConnected) {
+    Pair pair("replicated_wal_gauge_no_follower");
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    EXPECT_EQ(pair.running_alone_gauge(0), 0.0) << "the leader waits for a follower that keeps up";
+    EXPECT_EQ(pair.running_alone_gauge(1), 0.0) << "an instance that follows has no follower to be without";
+
+    pair.forget_log();
+    pair.crash(1);
+    EXPECT_EQ(pair.running_alone_gauge(0), 1.0) << "the leader carries on without its follower and the gauge does not say so";
+    EXPECT_TRUE(pair.logged("committing records without waiting for the follower -- no follower is connected"));
+
+    // A record is committed without the follower once a voter confirms that the follower may not lead.
+    const int64_t seq_no = pair.append(0, 60);
+    for (int n = 0; n < 20 && pair.events_[0].committed < seq_no; ++n) {
+        pair.step();
+    }
+    EXPECT_EQ(pair.events_[0].committed, seq_no);
+    EXPECT_EQ(pair.running_alone_gauge(0), 1.0);
+
+    // The follower restarts, is sent what it missed, and acknowledges everything.
+    pair.start(1);
+    pair.connect();
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    EXPECT_EQ(pair.running_alone_gauge(0), 0.0);
+    EXPECT_TRUE(pair.logged("waiting for the follower's acknowledgements again"));
+}
+
+TEST(ReplicatedWalTest, TheRunningAloneGaugeStaysAtOneWhenAFollowerThatFellBehindDisconnects) {
+    Pair pair("replicated_wal_gauge_behind_then_gone");
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+
+    pair.held_[1] = true;
+    static_cast<void>(pair.append(0, 70));
+    pair.advance(ReplicatedWal::follower_acknowledgement_timeout);
+    pair.wals_[0]->on_acknowledgement_watch(pair.now_);
+    ASSERT_EQ(pair.running_alone_gauge(0), 1.0);
+    EXPECT_TRUE(pair.logged("committing records without waiting for the follower -- the follower is too far behind"));
+
+    pair.forget_log();
+    pair.held_[1] = false;
+    pair.disconnect();
+    EXPECT_EQ(pair.running_alone_gauge(0), 1.0) << "the follower has gone, and the leader is still without it";
+    EXPECT_TRUE(pair.logged("still committing records without waiting for the follower -- now because no follower is connected"));
+    EXPECT_FALSE(pair.logged("waiting for the follower's acknowledgements again"));
 }
 
 TEST(ReplicatedWalTest, ARejoiningFollowerDiscardsTheRecordsOfAnOlderLeadershipAndTakesItsLeaders) {

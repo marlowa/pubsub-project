@@ -173,18 +173,13 @@ Nothing. The member sees a brief pause in responses and no break in numbering.
   \rationale{A member cannot see that the venue is running on one machine, so nobody outside
   the venue learns of it unless the venue says so. The time spent running on one
   machine is the venue's exposure to losing the leader's machine, which
-  \reqref{R-0094} requires to be knowable. When the follower is connected and
-  behind, the sequencer writes a warning to its log and sets the gauge
-  \texttt{sequencer\_running\_alone} to 1, and logs again and sets the gauge to 0
-  when the follower has caught up.}
-  \covers{ha_test:60}
+  \reqref{R-0094} requires to be knowable. The sequencer sets the gauge
+  \texttt{sequencer\_running\_alone} to 1 whenever it leads without waiting for
+  its follower, whether the follower is behind or not connected at all, and logs
+  a warning when that starts. It sets the gauge to 0, and logs again, when the
+  follower holds every record.}
+  \covers{ha_test:60, ha_test:61}
 \end{requirement}
-
-\begin{gap}{BUG-0221}
-  The gauge reads 0 while the leader carries on with no follower connected. The
-  sequencer logs a warning that the connection to its peer was lost, and an alert
-  on the gauge alone misses a follower that has died.
-\end{gap}
 
 \begin{requirement}{R-0159}{A leader waits for its follower again once the follower has caught up}
   When the second instance has acknowledged every record the leader has written,

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <string_view>
 #include <utility>
 
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -168,6 +169,7 @@ int64_t ReplicatedWal::append(int16_t pdu_id, const uint8_t* bytes, size_t size,
         say_follower_may_not_lead(now);
     }
     advance_commit();
+    note_whether_the_follower_is_waited_for(now);
     return seq_no;
 }
 
@@ -204,6 +206,7 @@ void ReplicatedWal::follower_too_far_behind(const char* reason, Clock::time_poin
     if (waits_for_follower()) {
         start_running_alone(reason, now);
     }
+    note_whether_the_follower_is_waited_for(now);
 }
 
 void ReplicatedWal::start_running_alone(const char* reason, Clock::time_point now) {
@@ -213,8 +216,8 @@ void ReplicatedWal::start_running_alone(const char* reason, Clock::time_point no
     running_alone_ = true;
     running_alone_since_ = now;
     waiting_since_.reset();
-    configuration_.running_alone_gauge.set(1.0);
-    PUBSUB_LOG(logger_, FwLogLevel::Warning,
+    // The Warning, and the gauge, come from note_whether_the_follower_is_waited_for; this line says why.
+    PUBSUB_LOG(logger_, FwLogLevel::Info,
                "{}: the follower is too far behind -- {}. Running as if alone: once a voter confirms that the follower may not lead, records are "
                "committed without waiting for it, so resilience is reduced until the follower catches up. The follower has acknowledged through {} of {}",
                configuration_.owner_name, reason, peer_acked_through_, log_epochs_.last_seq_no());
@@ -228,11 +231,70 @@ void ReplicatedWal::stop_running_alone(const char* reason, Clock::time_point now
         return;
     }
     running_alone_ = false;
-    configuration_.running_alone_gauge.set(0.0);
     const auto alone_for = std::chrono::duration_cast<std::chrono::milliseconds>(now - running_alone_since_);
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: the follower is keeping up again -- {}. Waiting for its acknowledgements again after {} ms running as if alone",
-               configuration_.owner_name, reason, alone_for.count());
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: no longer running as if alone -- {}, after {} ms", configuration_.owner_name, reason, alone_for.count());
     report(RunningAloneChanged{configuration_.owner_name, configuration_.instance_id, false, reason, peer_acked_through_, log_epochs_.last_seq_no()});
+}
+
+namespace {
+
+// Why a leader does not wait for its follower, and how loudly that is logged. A follower that is connected and is
+// being brought up to date is expected after every start and every change of leader, and is logged at Info; no
+// follower at all, or one too far behind to keep up, is a fault and is logged at Warning.
+struct WithoutFollowerReason {
+    std::string_view words;
+    FwLogLevel level;
+};
+
+} // un-named namespace
+
+void ReplicatedWal::note_whether_the_follower_is_waited_for(Clock::time_point now) {
+    const bool without_follower = configuration_.ha_enabled && role_ == ReplicaRole::leader && !waits_for_follower();
+    if (!without_follower) {
+        if (!committing_without_follower_) {
+            return;
+        }
+        committing_without_follower_ = false;
+        without_follower_reason_ = std::string_view{};
+        configuration_.running_alone_gauge.set(0.0);
+        // A leader that stops leading says so where its role changes; only a leader still leading has gone back to waiting.
+        if (role_ == ReplicaRole::leader) {
+            const auto without_for = std::chrono::duration_cast<std::chrono::milliseconds>(now - committing_without_follower_since_);
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: waiting for the follower's acknowledgements again, after {} ms committing records without it",
+                       configuration_.owner_name, without_for.count());
+        }
+        return;
+    }
+
+    WithoutFollowerReason reason{"the follower has not yet acknowledged every record it was sent when it rejoined", FwLogLevel::Info};
+    if (!links_.peer_connected()) {
+        reason = WithoutFollowerReason{"no follower is connected", FwLogLevel::Warning};
+    } else if (running_alone_) {
+        reason = WithoutFollowerReason{"the follower is too far behind", FwLogLevel::Warning};
+    } else if (peer_catching_up_) {
+        reason = WithoutFollowerReason{"the follower is being sent the records it missed", FwLogLevel::Info};
+    } else if (!follower_wal_matches_) {
+        reason = WithoutFollowerReason{"the follower's WAL is not yet known to agree with this one", FwLogLevel::Info};
+    }
+
+    if (!committing_without_follower_) {
+        committing_without_follower_ = true;
+        committing_without_follower_since_ = now;
+        without_follower_reason_ = reason.words;
+        configuration_.running_alone_gauge.set(1.0);
+        PUBSUB_LOG(logger_, reason.level,
+                   "{}: committing records without waiting for the follower -- {}. A record the follower does not hold is on this machine only, so "
+                   "resilience is reduced until the follower holds every record again",
+                   configuration_.owner_name, reason.words);
+        return;
+    }
+    if (reason.words != without_follower_reason_) {
+        without_follower_reason_ = reason.words;
+        // A rejoining follower passes through several of the Info reasons within a millisecond, so only a change to a
+        // Warning reason is worth a line in the ordinary log.
+        const FwLogLevel level = reason.level == FwLogLevel::Warning ? FwLogLevel::Warning : FwLogLevel::Debug;
+        PUBSUB_LOG(logger_, level, "{}: still committing records without waiting for the follower -- now because {}", configuration_.owner_name, reason.words);
+    }
 }
 
 void ReplicatedWal::say_follower_may_not_lead(Clock::time_point now) {
@@ -262,6 +324,12 @@ void ReplicatedWal::say_follower_may_lead_if_it_holds_everything(Clock::time_poi
 }
 
 bool ReplicatedWal::handle_message(const ConnectionID& from, int16_t pdu_id, const uint8_t* payload, size_t size, Clock::time_point now) {
+    const bool handled = dispatch_message(from, pdu_id, payload, size, now);
+    note_whether_the_follower_is_waited_for(now);
+    return handled;
+}
+
+bool ReplicatedWal::dispatch_message(const ConnectionID& from, int16_t pdu_id, const uint8_t* payload, size_t size, Clock::time_point now) {
     std::array<uint8_t, 64 * 1024> arena_buffer;
     BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
     size_t consumed = 0;
@@ -380,7 +448,7 @@ void ReplicatedWal::handle_ack(int64_t seq_no, Clock::time_point now) {
         waiting_since_ = now;
     }
     if (running_alone_ && peer_acked_through_ >= log_epochs_.last_seq_no()) {
-        stop_running_alone("it has acknowledged every record this leader has written", now);
+        stop_running_alone("the follower has acknowledged every record this leader has written", now);
     }
     advance_commit();
     say_follower_may_lead_if_it_holds_everything(now);
@@ -527,7 +595,7 @@ void ReplicatedWal::handle_position_request(int64_t last_seq_no, int32_t last_ep
     report(WalsAgree{configuration_.owner_name, configuration_.instance_id, WalSide::Leader, after});
 }
 
-void ReplicatedWal::on_peer_caught_up(int64_t through, Clock::time_point /*now*/) {
+void ReplicatedWal::on_peer_caught_up(int64_t through, Clock::time_point now) {
     if (!peer_catching_up_ || role_ != ReplicaRole::leader) {
         return;
     }
@@ -539,6 +607,7 @@ void ReplicatedWal::on_peer_caught_up(int64_t through, Clock::time_point /*now*/
                "it has acknowledged them all",
                configuration_.owner_name, through);
     report(FollowerHandedOver{configuration_.owner_name, configuration_.instance_id, through});
+    note_whether_the_follower_is_waited_for(now);
 }
 
 void ReplicatedWal::on_peer_catch_up_stopped(Clock::time_point now) {
@@ -548,6 +617,7 @@ void ReplicatedWal::on_peer_catch_up_stopped(Clock::time_point now) {
     const UnansweredRequest request = *unanswered_request_;
     unanswered_request_.reset();
     handle_position_request(request.last_seq_no, request.last_epoch, now);
+    note_whether_the_follower_is_waited_for(now);
 }
 
 void ReplicatedWal::handle_position_reply(const LogPositionReplyView& reply, Clock::time_point now) {
@@ -637,17 +707,19 @@ void ReplicatedWal::handle_lease_refusal(const LeaseRefusalView& refusal, Clock:
 void ReplicatedWal::on_peer_connection_established(Clock::time_point now) {
     forget_agreement();
     send_position_request(now);
+    note_whether_the_follower_is_waited_for(now);
 }
 
 void ReplicatedWal::on_peer_connection_lost(Clock::time_point now) {
     forget_agreement();
     if (running_alone_) {
-        stop_running_alone("it has disconnected, and the leader runs alone as it does with no follower", now);
+        stop_running_alone("the follower has disconnected, and the leader carries on without it as it does with no follower", now);
     }
     if (configuration_.ha_enabled) {
         say_follower_may_not_lead(now);
     }
     advance_commit();
+    note_whether_the_follower_is_waited_for(now);
 }
 
 void ReplicatedWal::on_lease_tick(Clock::time_point now) {
@@ -660,6 +732,7 @@ void ReplicatedWal::on_lease_tick(Clock::time_point now) {
     if (!follower_wal_agreed_ && now - last_position_request_at_ >= position_request_interval) {
         send_position_request(now);
     }
+    note_whether_the_follower_is_waited_for(now);
 }
 
 void ReplicatedWal::on_acknowledgement_watch(Clock::time_point now) {
@@ -669,6 +742,7 @@ void ReplicatedWal::on_acknowledgement_watch(Clock::time_point now) {
     if (now - *waiting_since_ >= follower_acknowledgement_timeout) {
         start_running_alone("no acknowledgement from it for at least 100 ms while records were waiting", now);
     }
+    note_whether_the_follower_is_waited_for(now);
 }
 
 void ReplicatedWal::act_on(PairLeaseAgent::Change change, Clock::time_point now) {
@@ -738,11 +812,9 @@ void ReplicatedWal::change_role(ReplicaRole new_role, Clock::time_point now) {
         waiting_since_.reset();
     } else if (new_role == ReplicaRole::follower) {
         send_position_request(now);
-        if (running_alone_) {
-            running_alone_ = false;
-            configuration_.running_alone_gauge.set(0.0);
-        }
+        running_alone_ = false;
     }
+    note_whether_the_follower_is_waited_for(now);
     if (test_events_ != nullptr) {
         test_events_->role_changed(configuration_.owner_name, configuration_.instance_id, leadership_role(old_role), leadership_role(new_role), epoch_);
     }

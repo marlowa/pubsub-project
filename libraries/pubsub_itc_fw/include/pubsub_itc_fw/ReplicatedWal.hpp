@@ -173,8 +173,10 @@ struct ReplicatedWalConfiguration {
     LeaseTiming lease{};
     /// Where to record how long each write to the WAL takes. Left as constructed, nothing is recorded.
     HistogramHandle wal_append_histogram{};
-    /// Set to 1 while the leader carries on without waiting for a follower that is connected but too far
-    /// behind, and to 0 otherwise. Left as constructed, nothing is set.
+    /// Set to 1 while this instance leads and commits records without waiting for its follower, whatever the reason:
+    /// no follower is connected, the follower's WAL is not yet known to agree with this one, the follower is being
+    /// sent records it missed, or it is too far behind. Set to 0 otherwise, which includes every instance that follows
+    /// and every instance with ha_enabled false. Left as constructed, nothing is set.
     GaugeHandle running_alone_gauge{};
     /// How a command's identity is read from a record. When set, the WAL keeps a record of the identity and the
     /// position of every command it holds, and holds_command() says whether it holds one
@@ -463,6 +465,8 @@ class ReplicatedWal {
 
   private:
     void write(int64_t seq_no, int32_t leader_epoch, int16_t pdu_id, const uint8_t* bytes, size_t size, int64_t wall_time_ns);
+    // The body of handle_message, which handle_message follows with note_whether_the_follower_is_waited_for.
+    bool dispatch_message(const ConnectionID& from, int16_t pdu_id, const uint8_t* payload, size_t size, Clock::time_point now);
     void act_on(PairLeaseAgent::Change change, Clock::time_point now);
     void change_role(ReplicaRole new_role, Clock::time_point now);
     void set_epoch(int32_t new_epoch);
@@ -472,6 +476,9 @@ class ReplicatedWal {
     void say_follower_may_lead_if_it_holds_everything(Clock::time_point now);
     void start_running_alone(const char* reason, Clock::time_point now);
     void stop_running_alone(const char* reason, Clock::time_point now);
+    // Sets running_alone_gauge, and logs, when this instance starts or stops committing records without waiting for
+    // its follower, and logs when the reason changes. Called at the end of everything that can change the answer.
+    void note_whether_the_follower_is_waited_for(Clock::time_point now);
     [[nodiscard]] bool may_commit_without_follower() const;
     void advance_commit();
     // Notes the identity and position of the command a record just written holds, if it holds one.
@@ -547,6 +554,13 @@ class ReplicatedWal {
     // As the leader: carrying on without waiting for a follower that is connected but too far behind.
     bool running_alone_{false};
     Clock::time_point running_alone_since_{};
+
+    // As the leader: committing records without waiting for the follower, for any of the reasons running_alone_gauge
+    // lists; since when; and the reason last logged, so that a change of reason is logged once. The reason always
+    // views a string literal.
+    bool committing_without_follower_{false};
+    Clock::time_point committing_without_follower_since_{};
+    std::string_view without_follower_reason_;
 
     // As the leader: the last record committed. Only ever advances within one leadership.
     int64_t committed_through_{0};

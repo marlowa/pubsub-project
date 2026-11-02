@@ -13,8 +13,8 @@ Mark a document done in this file in the same commit that corrects it.
 
 Before committing, run `scripts/check_docs.py` (links resolve and every document is reachable) and
 `scripts/check_doc_claims.py` (the `<!-- verify: ... -->` comments in documents still hold).
-The unreachable report for `.github/copilot-instructions.md` is expected: that file is intentionally
-not linked from another document, and this report is not an error.
+`check_docs.py` does not check the files under `.claude/` and `.github/`, which are instructions to
+AI assistants rather than project documents.
 
 ## Questions waiting for Andrew
 

@@ -10,7 +10,11 @@ situations in which the leader does not wait, and sends commands to the engine a
 - **No follower is connected.** The follower has died, has not started yet, or the link to it is down.
 - **The follower has fallen behind.** The leader's storage for commands waiting on the follower is full,
   or no acknowledgement has arrived for 100 milliseconds while commands were waiting. The leader then
-  runs as if it had no follower, and the gauge `sequencer_running_alone` is 1.
+  runs as if it had no follower.
+
+In both situations the gauge `sequencer_running_alone` is 1, and the leader logs a Warning when it starts. The gauge
+is also 1 for the short time a restarted follower is being sent the records it missed, because the leader does not
+wait for it then either.
 
 In both situations the leader's log holds commands that the engine has acted on, that members may have
 been sent reports for, and that the follower's log does not hold. If the leader died at that moment and

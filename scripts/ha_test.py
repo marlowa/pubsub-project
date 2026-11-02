@@ -3869,15 +3869,17 @@ _SCENARIOS: list[Scenario] = [
     # The follower sequencer is killed and the leader takes orders without it. When the follower is
     # restarted, it and the leader find the last record their logs agree on, and the leader sends it
     # every record after that. Its log must then hold the same records, with the same contents, as
-    # the leader's from where it stopped: no gap. Then the leader is killed, and the follower, which
-    # takes the lead, must hold every order the matching engine accepted while it was away.
+    # the leader's from where it stopped: no gap. While the follower is dead, the leader's
+    # sequencer_running_alone gauge must read 1, and once the follower holds every record, 0. Then the
+    # leader is killed, and the follower, which takes the lead, must hold every order the matching
+    # engine accepted while it was away.
     Scenario(
         number=61,
         short_name="restarted_follower_log_repaired",
         description="A follower sequencer that restarts is sent the records it missed, and can then take over",
         expected_outcome=(
-            "after the follower restarts, its log holds the same records as the leader's from where it stopped, with no gap; "
-            "when the leader is then killed, the new leader's log holds every order the engine accepted while the follower was down"
+            "the leader's sequencer_running_alone gauge reads 1 while the follower is dead; after the follower restarts, its log "
+            "holds the same records as the leader's from where it stopped, with no gap, and the gauge reads 0; when the leader is then killed, the new leader's log holds every order the engine accepted while the follower was down"
         ),
         orders_during_override=0,
         orders_after_override=0,
@@ -6400,6 +6402,18 @@ def installed_toml_section_value(config: Path, section: str, key: str) -> str:
                 return match.group(1).strip('"')
     die(f"no {key} in section [{section}] of {config}")
     return ""  # unreachable; die() exits
+
+
+def sequencer_running_alone_gauge(config: Path) -> str:
+    """The value of the gauge sequencer_running_alone, as the sequencer whose deployed configuration is config serves it on
+    its metrics port, or "absent" if it serves no such gauge. It reads 1 while that sequencer leads and commits orders
+    without waiting for its follower, for any reason, and 0 otherwise."""
+    metrics_port = installed_toml_section_value(config, "metrics", "listen_port")
+    with urllib.request.urlopen(f"http://127.0.0.1:{metrics_port}/metrics", timeout=5) as response:
+        for line in response.read().decode().splitlines():
+            if line.startswith("sequencer_running_alone{") or line.startswith("sequencer_running_alone "):
+                return line.rsplit(" ", 1)[1]
+    return "absent"
 
 
 def blocked_peer_environment(prefix: Path, flag: Path) -> dict[str, str]:
@@ -10162,14 +10176,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             sequencer_etc = prefix / "etc" / "sequencer"
             primary_config = sequencer_etc / "sequencer_primary.toml"
             order_port = installed_toml_section_value(primary_config, "network", "listen_port")
-            metrics_port = installed_toml_section_value(primary_config, "metrics", "listen_port")
 
             def running_alone_gauge() -> str:
-                with urllib.request.urlopen(f"http://127.0.0.1:{metrics_port}/metrics", timeout=5) as response:
-                    for line in response.read().decode().splitlines():
-                        if line.startswith("sequencer_running_alone{") or line.startswith("sequencer_running_alone "):
-                            return line.rsplit(" ", 1)[1]
-                return "absent"
+                return sequencer_running_alone_gauge(primary_config)
 
             def send_order(cl_ord_id: str) -> None:
                 result = subprocess.run([str(bin_dir / "inject_order"), "--port", order_port, "--cl-ord-id", cl_ord_id],
@@ -10299,6 +10308,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 if not await_order_outcome(me_log.stem, cl_ord_id, "Accepted", _RAW_REPLY_TIMEOUT, accepted_from):
                     die(f"follower restarts: the matching engine did not accept {cl_ord_id}, sent while the follower was down.")
             log(f"  the leader took {len(missed_ids)} orders while the follower was down, and the engine accepted them all")
+            gauge = sequencer_running_alone_gauge(configs["primary"])
+            if gauge not in ("1", "1.0"):
+                die(f"follower restarts: the leader took orders with its follower dead, but its sequencer_running_alone gauge reads {gauge}, "
+                    "so an operator alerting on it would not know the venue is running on one machine (BUG-0221).")
+            log("  the leader's sequencer_running_alone gauge reads 1 while the follower is dead -- OK")
 
             agreed_from = _TEST_EVENTS.mark()
             do_restart_step(RestartStep(proc_name="sequencer_secondary", ready_log_name="sequencer_secondary.log", ready=expect_started("sequencer_secondary"),
@@ -10313,6 +10327,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
             compared = compare_logs_after("follower restarts", wal_dirs["primary"], start_positions["primary"], wal_dirs["secondary"],
                                           start_positions["secondary"], stopped_at)
             log(f"  the restarted follower's log holds the same {compared} records as the leader's from record {stopped_at + 1}, with no gap -- OK")
+            gauge = sequencer_running_alone_gauge(configs["primary"])
+            if gauge not in ("0", "0.0"):
+                die(f"follower restarts: the restarted follower holds every record, but the leader's sequencer_running_alone gauge reads {gauge}.")
+            log("  the leader's sequencer_running_alone gauge reads 0 once the restarted follower holds every record -- OK")
 
             # The follower can now take over without losing anything the engine acted on.
             primary = proc_by_name["sequencer_primary"]
