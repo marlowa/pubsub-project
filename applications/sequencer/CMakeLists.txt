@@ -87,10 +87,8 @@ add_executable(sequencer_tests
         tests/RecoveryLimitRuleTest.cpp
         tests/KeptReportStoreTest.cpp
         tests/ReportsHeldForUnknownSessionsTest.cpp
-        tests/LoggedCommandIdentifiersTest.cpp
-        tests/LoggedCommandIdentifiersBuilderTest.cpp
+        tests/SequencerCommandIdentityTest.cpp
         tests/PublisherRecordFromWalTest.cpp
-        tests/LogTailIndexTest.cpp
         tests/WalRecordEncodingTest.cpp
         tests/FullyReportedThroughTest.cpp
         tests/VoidFromWalTest.cpp

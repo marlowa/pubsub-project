@@ -482,8 +482,8 @@ channel its owner gives it, and by the arbiter:
 **The sequencer's events.** `applications/sequencer/sequencer_test_events.dsl` (message ids 180 to 189) defines four:
 the storage for orders waiting for the follower is full (`HeldOrdersFull`); the reading thread sends the matching
 engine orders that waited in the WAL (`EngineServedFromWal`); it has sent them all and hands the engine over
-(`EngineHandedOver`); and the first command that may already be in the WAL arrived, so the sequencer began reading the
-end of the WAL to check such commands (`CheckingLogForRepeats`). None is sent for each order. Two more, at 210 and 211, concern
+(`EngineHandedOver`); and, once in each leadership, the first command that may already be in the WAL arrived, so the
+WAL began proving such commands exactly (`CheckingLogForRepeats`). None is sent for each order. Two more, at 210 and 211, concern
 members' sessions: a gateway told the sequencer that a session established before is still connected to it, and
 whether the sequencer was leading when told (`SessionAnnouncedAgain`); and the first report dropped for a session since
 it was last connected, because it is connected to no gateway that has told the sequencer so

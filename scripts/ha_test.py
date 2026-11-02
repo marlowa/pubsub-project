@@ -10772,7 +10772,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if accepted_by_engine(never_sent, started_from) != 1:
                 die(f"sent again: the engine accepted {never_sent} {accepted_by_engine(never_sent, started_from)} times, not once.")
             if not await_expectation(expect_message(leader_name, "checking the end of the WAL for repeats", "CheckingLogForRepeats", "sequencer_test_events"), 1.0, check_from)[0]:
-                die("sent again: the leader never built its index of the end of the log, so the check above did not run as designed.")
+                die("sent again: the leader never said it was checking whether its WAL held a command, so the check above did not run as designed.")
             log("  the order sent again was not sequenced twice, and the order sent again for the first time was applied once -- OK")
 
         # ── Orders during a change of leader ──────────────────────────────────

@@ -144,6 +144,9 @@ target_include_directories(pubsub_itc_fw SYSTEM PRIVATE
 # ------------------------------------------------------------
 target_link_libraries(pubsub_itc_fw PUBLIC
         fmt::fmt
+        # The record of command identifiers the replicated WAL keeps (LoggedCommandIdentifiers.hpp, a public
+        # header). Header only.
+        tsl::robin_map
         quill::quill
         argparse::argparse
         atomic

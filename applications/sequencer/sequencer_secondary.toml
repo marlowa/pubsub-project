@@ -99,10 +99,11 @@ period_milliseconds = ${shared_lease_period_milliseconds}
 drift_allowance_milliseconds = ${shared_lease_drift_allowance_milliseconds}
 renewal_interval_milliseconds = ${shared_lease_renewal_interval_milliseconds}
 
-# How many command identifiers the record of the commands in the log reserves room for: the most
-# orders and cancels in one trading day. 200 million is the figure a MiFID test uses, twice the 100
-# million the venue is tested with. The table, 4 GiB at this size, is reserved and filled from the log
-# in the background when the sequencer starts, and never grows. Read only when [ha] ha_enabled is true.
+# How many commands the record of the commands in the WAL reserves room for: the most orders and
+# cancels in one trading day. 200 million is the figure a MiFID test uses, twice the 100 million the
+# venue is tested with. The table holds each command's identifier and its position in the WAL, 6 GiB at
+# this size; it is reserved and filled from the WAL in the background when the sequencer starts, and
+# never grows. Read only when [ha] ha_enabled is true.
 [commands]
 identifiers_reserved = 200000000
 

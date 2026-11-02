@@ -10,6 +10,7 @@
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/LeaderEpoch.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/WalCursor.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 
 namespace pubsub_itc_fw {
@@ -114,7 +115,15 @@ int64_t ReplicatedWal::open(Clock::time_point now) {
 void ReplicatedWal::write(int64_t seq_no, int32_t leader_epoch, int16_t pdu_id, const uint8_t* bytes, size_t size, int64_t wall_time_ns) {
     // The one thing on the order path that touches a disk, so how long it takes is recorded.
     const auto started = Clock::now();
+    const WalPosition before = wal_.write_position();
     wal_.append(seq_no, pdu_id, bytes, static_cast<int>(size), wall_time_ns, leader_epoch);
+    if (configuration_.command_identity != nullptr) {
+        // An entry never spans two segments: one that does not fit in the rest of a segment is written at the
+        // start of the next.
+        const WalPosition after = wal_.write_position();
+        const WalPosition start = after.segment == before.segment ? before : WalPosition{after.segment, 0};
+        note_command_written(start, WalEntryContents{wall_time_ns, leader_epoch, pdu_id, bytes, size});
+    }
     if (positions_ != nullptr) {
         // After the record is completely written, so that a reader that stops before this position reads
         // only complete records.
@@ -737,7 +746,164 @@ void ReplicatedWal::change_role(ReplicaRole new_role, Clock::time_point now) {
     if (test_events_ != nullptr) {
         test_events_->role_changed(configuration_.owner_name, configuration_.instance_id, leadership_role(old_role), leadership_role(new_role), epoch_);
     }
+    // Each leadership reports once that it is checking for commands already held.
+    command_check_reported_ = false;
     events_.role_changed(old_role, new_role, epoch_);
+    // Only the leader checks commands. After the application has been told, so that it can say what the search
+    // read before it goes.
+    if (old_role == ReplicaRole::leader && command_search_.has_value()) {
+        static_cast<void>(discard_command_search());
+    }
+}
+
+void ReplicatedWal::start_building_record_of_commands() {
+    if (configuration_.command_identity == nullptr || commands_building_ || commands_.has_value()) {
+        return;
+    }
+    std::vector<LoggedCommandIdentifiersBuilder::Segment> segments;
+    for (const uint64_t segment : wal_.segments_on_disk()) {
+        segments.push_back(LoggedCommandIdentifiersBuilder::Segment{segment, wal_.segment_path(segment)});
+    }
+    commands_building_ = true;
+    PUBSUB_LOG(logger_, FwLogLevel::Info,
+               "{}: building the record of command identifiers in the background, for {} identifier(s), from {} WAL segment(s) -- until it is "
+               "complete, a command that must be checked is looked for in the WAL itself",
+               configuration_.owner_name, configuration_.identifiers_reserved, segments.size());
+    commands_builder_.start(configuration_.identifiers_reserved, std::move(segments), *configuration_.command_identity, configuration_.command_number,
+                            configuration_.helper_cores);
+}
+
+void ReplicatedWal::take_record_of_commands_if_built() {
+    if (!commands_building_ || !commands_builder_.finished()) {
+        return;
+    }
+    commands_.emplace(commands_builder_.take());
+    commands_building_ = false;
+    const size_t noted = commands_noted_while_building_.size();
+    for (const auto& [number, position] : commands_noted_while_building_) {
+        add_command(number, position);
+    }
+    commands_noted_while_building_.clear();
+    commands_noted_while_building_.shrink_to_fit();
+    PUBSUB_LOG(logger_, FwLogLevel::Info,
+               "{}: the record of command identifiers is complete -- {} MiB reserved in {} ms and {} WAL record(s) read in {} ms in the background, "
+               "holding {} identifier(s) of {} reserved, {} of them noted while it was built",
+               configuration_.owner_name, commands_builder_.table_bytes() / (1024 * 1024), commands_builder_.reserve_time().count(),
+               commands_builder_.records_read(), commands_builder_.read_time().count(), commands_->size(), commands_->capacity(), noted);
+    if (commands_builder_.segments_not_read() > 0) {
+        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                   "{}: {} WAL segment(s) could not be read while the record of command identifiers was built, and were passed over (the last "
+                   "because: {}). This is expected only when a repair cut the WAL back meanwhile, which the Quill log shows above",
+                   configuration_.owner_name, commands_builder_.segments_not_read(), commands_builder_.last_segment_error());
+    }
+}
+
+void ReplicatedWal::note_command_written(WalPosition position, const WalEntryContents& entry) {
+    const size_t identity_size = configuration_.command_identity->identity_of(entry, identity_scratch_.data(), identity_buffer_.data());
+    if (identity_size == 0 || identity_size > identity_buffer_.size()) {
+        return;
+    }
+    const std::string_view identity(identity_buffer_.data(), identity_size);
+    const uint64_t number = configuration_.command_number(identity);
+    if (commands_building_) {
+        commands_noted_while_building_.emplace_back(number, position);
+        return;
+    }
+    add_command(number, position);
+}
+
+void ReplicatedWal::add_command(uint64_t number, WalPosition position) {
+    if (!commands_.has_value()) {
+        return;
+    }
+    if (commands_->add(number, position) == LoggedCommandIdentifiers::Added::full && !commands_full_reported_) {
+        commands_full_reported_ = true;
+        PUBSUB_LOG(logger_, FwLogLevel::Error,
+                   "{}: the record of command identifiers is full at {} -- later commands are not recorded, so every command that must be checked "
+                   "and is not in the record is looked for in the WAL itself. Raise the number of identifiers reserved for it",
+                   configuration_.owner_name, commands_->capacity());
+    }
+}
+
+bool ReplicatedWal::holds_command(std::string_view identity, int64_t not_before_ns) {
+    if (configuration_.command_identity == nullptr) {
+        return false;
+    }
+    take_record_of_commands_if_built();
+    const uint64_t number = configuration_.command_number(identity);
+    if (commands_.has_value()) {
+        const LoggedCommandIdentifiers::Lookup found = commands_->find(number);
+        if (!found.may_hold && !commands_->full()) {
+            ++command_check_counts_.not_held_by_number;
+            return false;
+        }
+        if (!command_check_reported_) {
+            command_check_reported_ = true;
+            events_.checking_for_commands_already_held(wal_.last_seq_no());
+        }
+        if (found.position_known) {
+            if (command_at(found.position, identity)) {
+                ++command_check_counts_.proved_by_reading;
+                return true;
+            }
+            ++command_check_counts_.other_command_at_position;
+            PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                       "{}: the record of command identifiers holds the number of a command to be checked, and the WAL record at its position "
+                       "(segment {}, byte {}) is not that command -- two commands gave the same number, or the WAL was cut back and written "
+                       "again. Searching the WAL for it",
+                       configuration_.owner_name, found.position.segment, found.position.offset);
+        }
+    } else if (!command_check_reported_) {
+        command_check_reported_ = true;
+        events_.checking_for_commands_already_held(wal_.last_seq_no());
+    }
+    ++command_check_counts_.searched;
+    return search_for_command(identity, not_before_ns);
+}
+
+bool ReplicatedWal::command_at(WalPosition position, std::string_view identity) {
+    try {
+        WalCursor cursor;
+        cursor.open(configuration_.wal_directory, position);
+        int64_t record_id = 0;
+        const uint8_t* payload = nullptr;
+        size_t size = 0;
+        if (!cursor.read_next(record_id, payload, size)) {
+            return false;
+        }
+        // A cursor that finds no valid entry at the position goes on to the next segment, so a record read from
+        // another segment is not the one at the position.
+        if (cursor.position().segment != position.segment) {
+            return false;
+        }
+        const std::optional<WalEntryContents> contents = read_wal_entry_contents(payload, size);
+        if (!contents.has_value()) {
+            return false;
+        }
+        const size_t identity_size = configuration_.command_identity->identity_of(*contents, identity_scratch_.data(), identity_buffer_.data());
+        return identity_size != 0 && identity_size <= identity_buffer_.size() && std::string_view(identity_buffer_.data(), identity_size) == identity;
+    } catch (const std::exception& error) {
+        PUBSUB_LOG(logger_, FwLogLevel::Warning, "{}: reading the WAL record at segment {}, byte {} failed: {}", configuration_.owner_name, position.segment,
+                   position.offset, error.what());
+        return false;
+    }
+}
+
+bool ReplicatedWal::search_for_command(std::string_view identity, int64_t not_before_ns) {
+    if (!command_search_.has_value()) {
+        command_search_.emplace(configuration_.wal_directory, *configuration_.command_identity);
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: searching the WAL for commands the record of command identifiers cannot settle", configuration_.owner_name);
+    }
+    return command_search_->holds(identity, not_before_ns);
+}
+
+int64_t ReplicatedWal::discard_command_search() {
+    if (!command_search_.has_value()) {
+        return 0;
+    }
+    const int64_t read = command_search_->records_read();
+    command_search_.reset();
+    return read;
 }
 
 void ReplicatedWal::set_epoch(int32_t new_epoch) {

@@ -304,9 +304,9 @@ of such numbers is covered by one gap fill. That is the split FIX prescribes.
 - **The reports come from a scan of the sequencer's log.** Every report is already there, tagged
   with its session, so nothing is stored twice. Measured: 18 ms to scan a 4 MB log and return 3,223
   records for one session. The replay uses no index, deliberately: an index would put work on the
-  path every order takes so that a rare reconnect could be quicker. (`LogTailIndex`, built on demand
-  after a change of leader, serves a different purpose: checking whether a command a gateway sends
-  again is already in the log.)
+  path every order takes so that a rare reconnect could be quicker. (The replicated WAL's record of
+  the commands it holds serves a different purpose: checking whether a command a gateway sends again
+  is already in the WAL.)
 
 The `PossDupFlag` is not decoration. A report sent again carries a lower number than the member
 expects, and FIX requires a member to treat that as fatal unless the flag is set.

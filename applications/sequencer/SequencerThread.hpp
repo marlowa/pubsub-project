@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <array>
 #include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <map>
@@ -41,12 +42,10 @@
 #include "EngineRoutedStamp.hpp"
 #include "GatewayIds.hpp"
 #include "KeptReportStore.hpp"
-#include "LogTailIndex.hpp"
-#include "LoggedCommandIdentifiers.hpp"
-#include "LoggedCommandIdentifiersBuilder.hpp"
 #include "RecoveryLimitRule.hpp"
 #include "ReportsHeldForUnknownSessions.hpp"
 #include "SeqNumRanges.hpp"
+#include "SequencerCommandIdentity.hpp"
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
 #include "TradingHaltState.hpp"
@@ -288,11 +287,16 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         void discarded_after(int64_t seq_no) override;
         void granted_lease_to_peer(std::chrono::steady_clock::time_point at) override;
         void read_at_open(int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry) override;
+        void checking_for_commands_already_held(int64_t last_seq_no) override;
 
       private:
         SequencerThread& owner_;
     };
     SequencerReplicatedWalEvents replicated_wal_events_{*this};
+
+    // How the replicated WAL reads a command's identity from a record, so that it keeps a record of the commands it
+    // holds (docs/availability/one_check_against_sequencing_twice.md). Declared before the WAL, which uses it.
+    SequencerCommandIdentity command_identity_;
 
     // The sequencer's write-ahead log, kept on both instances of the pair, and the deciding of which
     // instance leads: the library's replicated WAL (docs/availability/replicated_wal_in_the_library.md).
@@ -701,32 +705,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void stop_awaiting_engine_position(const char* reason);
     void release_orders_that_waited_for_the_engine();
 
-    // The identifiers of the commands this instance's log holds, so that a command a gateway sends
-    // again after a change of leader is not sequenced twice (LoggedCommandIdentifiers, and
-    // docs/availability/commands_during_a_change_of_leader.md, section 3.4). Built in the background
-    // when HA is on, by identifiers_builder_, and touched only by this thread once taken from it. Each
-    // command is noted as it is written, whether this instance leads or follows.
-    std::optional<LoggedCommandIdentifiers> logged_identifiers_;
-    bool identifiers_full_reported_{false};
-    // While the record is being built: the identifiers of the commands noted meanwhile, added to the
-    // record when it is taken; and every command that must be checked is checked against the log itself
-    // (docs/bug_list.md, BUG-0121).
-    bool identifiers_building_{false};
-    std::vector<uint64_t> identifiers_noted_while_building_;
-    LoggedCommandIdentifiersBuilder identifiers_builder_;
     // As a follower: when the kept reports the leader has said it forwarded were last discarded.
     std::chrono::steady_clock::time_point kept_reports_discarded_at_{};
     static constexpr std::chrono::milliseconds kept_reports_discard_interval{1000};
-
-    // Starts building the record of identifiers in the background from the segments of the log as it
-    // stands once opened.
-    void start_building_record_of_identifiers();
-    // Takes the record from the builder if it has finished, and adds what was noted meanwhile.
-    void take_record_of_identifiers_if_built();
-    void note_logged_command(const pubsub_itc_fw_app::WalRecordView& view);
-    void note_logged_command(std::string_view comp_id, int16_t protocol, int16_t inner_pdu_id, std::string_view cl_ord_id);
-    // Notes an identifier: added to the record, or kept until the record is built.
-    void note_logged_identifier(uint64_t id);
 
     // The trading date, as the number yyyymmdd, written on every new order and cancel this instance puts in the WAL as
     // leader: the UTC date of the first record in the day's WAL. Zero until known. A follower learns it from each
@@ -849,21 +830,22 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // of an engine that has died. Cleared when that instance announces that it follows, or the connection is lost.
     int64_t leading_engine_instance_{0};
     pubsub_itc_fw::ConnectionID leading_engine_announced_on_{};
-    // Adds an identifier to the record, reporting once if it is full.
-    void record_identifier(uint64_t id);
 
-    // An exact index of the end of the log, built when the first command is sent again after a
-    // change of leader and discarded a minute after the last, or when this instance stops leading.
-    std::optional<LogTailIndex> log_tail_index_;
-    std::chrono::steady_clock::time_point log_tail_index_used_at_{};
-    static constexpr std::chrono::seconds log_tail_index_idle_limit{60};
+    // The commands checked against the WAL since the last summary of them: whether any has been, and when the last
+    // was. The summary is logged a minute after the last, or when this instance stops leading.
+    bool commands_checked_since_summary_{false};
+    std::chrono::steady_clock::time_point last_command_checked_at_{};
+    static constexpr std::chrono::seconds command_check_summary_idle_limit{60};
     int64_t sent_again_already_logged_{0};
     int64_t sent_again_sequenced_{0};
+    // Where the identity of a command to be checked is written.
+    std::array<char, pubsub_itc_fw::CommandIdentityInterface::max_identity_size> command_identity_buffer_{};
 
-    // Whether this log already holds a command a gateway has sent again. Exact: the record of
-    // identifiers rules a command out, and the index of the end of the log confirms one it does not.
+    // Whether the WAL already holds a command a gateway has sent again. Exact: the replicated WAL proves it
+    // (ReplicatedWal::holds_command).
     [[nodiscard]] bool command_already_logged(const pubsub_itc_fw_app::WalRecordView& inbound);
-    void discard_log_tail_index(const char* reason);
+    // Logs what the checks since the last summary found, and gives back the memory of any search of the WAL.
+    void summarise_command_checks(const char* reason);
 
     /**
      * @brief The connections carrying commands from each gateway instance.

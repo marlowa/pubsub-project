@@ -130,7 +130,7 @@ break the recovery bound this whole design exists for.
 
 It belongs with the sequencer, which commits every order and every cancellation
 and therefore has the facts already, and the sequencer keeps it
-(`LoggedCommandIdentifiers`). The engine refuses a repeated identifier only while
+(`LoggedCommandIdentifiers`, in its replicated WAL). The engine refuses a repeated identifier only while
 the first order is still on its book; refusing one used earlier in the day is
 [BUG-0114](../bug_list.md#bug_0114).
 

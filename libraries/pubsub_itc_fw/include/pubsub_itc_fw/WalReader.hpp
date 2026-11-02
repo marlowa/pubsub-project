@@ -40,16 +40,19 @@ class WalReader {
      */
     using EntryCallback = std::function<void(int64_t record_id, const void* payload, size_t size)>;
 
+    /// As EntryCallback, with the byte offset within its segment at which the entry starts.
+    using PositionedEntryCallback = std::function<void(int64_t record_id, size_t offset, const void* payload, size_t size)>;
+
     /**
      * @brief Replays all valid WAL entries from `from` onward.
      *
      * Scans segment files `wal_NNNNNN.log` in `directory` in ascending order,
-     * starting at `from`. For each valid entry, `cb` is invoked. Scanning stops
+     * starting at `from`. For each valid entry, `callback` is invoked. Scanning stops
      * at the end of committed data.
      *
      * @param[in] directory  Directory containing the segment files.
      * @param[in] from       Position to start scanning from (snapshot anchor or {0,0}).
-     * @param[in] cb         Called for each valid entry (may be nullptr to skip callbacks).
+     * @param[in] callback         Called for each valid entry (may be nullptr to skip callbacks).
      * @return The position immediately after the last committed entry. Pass this
      *         to WalWriter::open() to resume writing without gaps or overwrites.
      *
@@ -61,7 +64,7 @@ class WalReader {
      * while it is read is not mistaken for damage: the writer appends in order, so it is read again
      * once a later entry is found.
      */
-    [[nodiscard]] static WalPosition replay(const std::string& directory, WalPosition from, const EntryCallback& cb);
+    [[nodiscard]] static WalPosition replay(const std::string& directory, WalPosition from, const EntryCallback& callback);
 
     /**
      * @brief Replays the valid entries of one segment file, from `start_offset` to the end of its
@@ -72,10 +75,19 @@ class WalReader {
      *
      * @param[in] path          The segment file.
      * @param[in] start_offset  The byte offset of the first entry to read; zero for the whole segment.
-     * @param[in] cb            Called for each valid entry (may be nullptr to skip callbacks).
+     * @param[in] callback            Called for each valid entry (may be nullptr to skip callbacks).
      * @return The byte offset at which the scan stopped.
      */
-    static size_t replay_segment(const std::string& path, size_t start_offset, const EntryCallback& cb);
+    static size_t replay_segment(const std::string& path, size_t start_offset, const EntryCallback& callback);
+
+    /**
+     * @brief As replay_segment(), giving the callback the byte offset at which each entry starts, which with
+     *        the segment's number is the entry's position.
+     *
+     * For a reader that records where each record is, such as the one that builds the record of command
+     * identifiers (LoggedCommandIdentifiersBuilder).
+     */
+    static size_t replay_segment_with_offsets(const std::string& path, size_t start_offset, const PositionedEntryCallback& callback);
 
   private:
     // How the reading of one segment ended.
@@ -89,7 +101,8 @@ class WalReader {
 
     // Reads one segment, and throws PubSubItcException if an entry that is not valid is followed, in
     // the same segment, by one that is.
-    static SegmentScan scan_segment(const std::string& path, size_t start_offset, const EntryCallback& cb);
+    static SegmentScan scan_segment(const std::string& path, size_t start_offset, const EntryCallback& callback);
+    static SegmentScan scan_segment(const std::string& path, size_t start_offset, const PositionedEntryCallback& callback);
 };
 
 } // namespaces

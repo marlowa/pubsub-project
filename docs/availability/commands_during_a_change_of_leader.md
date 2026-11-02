@@ -242,7 +242,7 @@ Each test was shown to fail before the change it tests was made.
 | Scenario 67 | An order, then the same order marked as sent again, then an order marked as sent again that was never sent before. The first is applied once and never refused as a duplicate; the last is applied once. Section 3.4 |
 | Scenario 68 | A member sends orders at 100 a second from a second before the leader is killed until two seconds after the follower takes the lead. Every order is answered, and none is applied twice. Before the gateways kept commands, 266 of 598 orders were never answered |
 | Scenario 71 | Gateway a allows only 1,024 waiting sends on a connection. The leading sequencer is stopped with SIGSTOP while a member sends orders, until the gateway closes its connection to it; the sequencer is resumed well within its lease. Every order is accepted once and none refused, and the leader keeps the lead. With the resend on reconnection switched off, 1,889 orders were still unanswered 15 seconds later. [BUG-0118](../bug_list.md#bug_0118) |
-| Unit tests | `UnansweredCommandStore`, including a test against a simple model and a test that counts heap allocations; `LoggedCommandIdentifiers`; `LogTailIndex`, against a real log; `PacedResend` and `UnansweredSnapshot` |
+| Unit tests | `UnansweredCommandStore`, including a test against a simple model and a test that counts heap allocations; `LoggedCommandIdentifiers`; `WalCommandSearch`, against a real WAL; the replicated WAL's check (`ReplicatedWalCommandTest`); `PacedResend` and `UnansweredSnapshot` |
 
 Scenario 1 sends a burst of 20,000 orders just before the leader is killed. They all reach the venue
 before the kill, so scenario 1 does not test orders sent during the change of leader, and its
@@ -250,14 +250,15 @@ description says so; scenario 68 tests them.
 
 ## 7. Decisions
 
-**Decision 1, decided: the record is a `tsl::robin_set<uint64_t>` reserved for 200 million
-identifiers.** The venue plans for 50 million orders a day and tests with 100 million; a MiFID test
+**Decision 1, decided: the record is a table reserved for 200 million identifiers.** It is kept by the
+library's replicated WAL, and holds each command's position in the WAL beside its identifier
+([one_check_against_sequencing_twice.md](one_check_against_sequencing_twice.md), section 3.2). The venue plans for 50 million orders a day and tests with 100 million; a MiFID test
 doubles that. Each identifier is a 64-bit number derived from the session's comp id, its gateway
 protocol and the `ClOrdID`.
 
 - *Memory.* The table is reserved when the sequencer starts and never grows during the day, so it
-  never pauses to rehash. Its size is a power of two and each slot is 16 bytes, the number and the library's
-  bookkeeping, so 200 million identifiers at a maximum fill of 0.9 take 2^28 slots, 4 GiB. Reserving it
+  never pauses to rehash. Its size is a power of two and each slot is 24 bytes, the number, the position and
+  the table's bookkeeping, so 200 million identifiers at a maximum fill of 0.9 take 2^28 slots, 6 GiB. Reserving it
   writes to all of it at startup, so inserting during the day never waits for the kernel to supply a
   page. Before each insert the sequencer compares the number held with the reserved size and treats
   reaching it as full, rather than letting the table grow.
@@ -273,21 +274,20 @@ protocol and the `ClOrdID`.
 - *Why a match is checked.* An identifier is a string of up to dozens of characters, and a 64-bit
   number cannot give each one a different value, so two different identifiers can, rarely, give the
   same number. A number that is not in the table means the command is certainly not in the log. A
-  number that is in it means only that the command may be, so the new leader checks: it searches its
-  own log, backwards from the end, for a record with exactly the same comp id, protocol and `ClOrdID`.
-  It searches no further back than the time the gateway first received the command, which the envelope
-  carries (`gateway_ingress_ns`), less five seconds for any difference between the machines' clocks:
-  normally a few seconds of records. Found, the command is held and is not sequenced again; not found,
-  the numbers merely matched, and the command is sequenced as new. A match therefore never causes a
-  command to be lost. Right after a change of leader many commands can need this check, so the search
-  is not repeated for each: the new leader builds an exact index of the end of its log
-  (`LogTailIndex`) on the first one, reading each record once, forwards for records written since and
-  backwards only as far as a command's time requires, and discards it a minute after the last command
-  sent again. A command that carries no receipt time, such as a cancel a gateway generated itself when a
-  member disconnected, is looked for in the whole log.
+  number that is in it means only that the command may be, so the new leader checks: it reads the one
+  record at the position the table gives, and compares the comp id, protocol and `ClOrdID` exactly. When
+  that record is another command, because two commands gave the same number or the WAL was cut back and
+  written again, it searches its WAL backwards from the end (`WalCommandSearch`), no further back than
+  the time the gateway first received the command, which the envelope carries (`gateway_ingress_ns`),
+  less five seconds for any difference between the machines' clocks. Found, the command is held and is
+  not sequenced again; not found, it is sequenced as new. A match therefore never causes a command to be
+  lost. A search reads each record once however many commands it checks, and is discarded a minute after
+  the last command checked. A command that carries no receipt time, such as a cancel a gateway generated
+  itself when a member disconnected, is looked for in the whole WAL.
 - *The same check covers records a repair discards.* When a rejoining follower discards records its
-  leader does not hold, their identifiers stay in the table. A command sent again that matches one is
-  not found in the log, and is sequenced as new. Nothing needs removing from the table.
+  leader does not hold, their identifiers and positions stay in the table. A command sent again that
+  matches one finds another record, or none, at the position, and is searched for, and not found, and is
+  sequenced as new. Nothing needs removing from the table.
 - *When the table is full,* the sequencer logs an Error once. Commands logged after that are not in the
   table, so a number that is not in it no longer proves anything, and every command sent again is then
   checked against the log by the same index. Nothing is refused: refusing a command that may be live

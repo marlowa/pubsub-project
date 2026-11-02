@@ -72,7 +72,7 @@ on its own. With one writer, nothing needs reasoning about.
 **Where it is meant to hold.** In the structure of the code: each `ApplicationThread` subclass owns
 its own members and receives everything else through `on_itc_message`, `on_framework_pdu_message`,
 `on_timer_event` and the other callbacks listed in [threading.md](framework/threading.md). Helper
-threads, such as the log's segment helper (`WalWriter`), the identifier builder
+threads, such as the log's segment helper (`WalWriter`), the replicated WAL's identifier builder
 (`LoggedCommandIdentifiersBuilder`) and the FIX capture writer (`FixCapture`), own their own state and
 hand results back through atomics written by one side only.
 
@@ -585,12 +585,15 @@ the functional specification forbids for the rest of the trading day (R-0119), a
 the command arrived (V6). Because there is one check on every command, nobody has to reason about the
 order in which copies arrive, and a new way for a command to arrive twice needs no new mechanism.
 
-**Where it should hold.** In one check, in the leading sequencer, applied to every command, against
-`LoggedCommandIdentifiers`. For a command not in the log, which is nearly every command, the record
-answers on its own; one it may hold is checked exactly against the end of the log.
+**Where it should hold.** In one check, in the leading sequencer, applied to every command, made by the
+library's replicated WAL (`ReplicatedWal::holds_command`) against its record of the commands it holds,
+`LoggedCommandIdentifiers`. For a command not in the WAL, which is nearly every command, the record
+answers on its own; one it may hold is proved by reading the one record at the position the record gives,
+or, in the rare cases that cannot settle it, by searching the WAL
+([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md)).
 
-**What checks it.** `ha_test.py` scenarios 67, 68 and 71; unit tests of `LoggedCommandIdentifiers`
-and `LogTailIndex`.
+**What checks it.** `ha_test.py` scenarios 67, 68 and 71; unit tests of `LoggedCommandIdentifiers`,
+`WalCommandSearch` and the replicated WAL's check (`ReplicatedWalCommandTest`).
 
 **Today: holds on the paths tested, by three separate mechanisms, not by one check.** The leader
 checks a command against its record only when the gateway has marked it as sent again, and every

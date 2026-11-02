@@ -168,6 +168,12 @@ void SequencerThread::on_initial_event() {
     wal_configuration.lease = config_.lease;
     wal_configuration.wal_append_histogram = wal_append_histogram_;
     wal_configuration.running_alone_gauge = running_alone_gauge_;
+    // With high availability on, the WAL keeps a record of the commands it holds, so that a command is never
+    // sequenced twice (docs/availability/one_check_against_sequencing_twice.md).
+    if (config_.ha_enabled) {
+        wal_configuration.command_identity = &command_identity_;
+        wal_configuration.identifiers_reserved = config_.identifiers_reserved;
+    }
     replicated_wal_.emplace(std::move(wal_configuration), get_logger(), replication_links_, lease_links_, replicated_wal_events_);
     // Only when a test started this instance (docs/availability/test_events.md).
     if (config_.test_events.enabled) {
@@ -188,7 +194,7 @@ void SequencerThread::on_initial_event() {
         replicated_wal_->use_peer_catch_up(wal_following_);
     }
     const int64_t recovered_seq = replicated_wal_->open(std::chrono::steady_clock::now());
-    start_building_record_of_identifiers();
+    replicated_wal_->start_building_record_of_commands();
     if (recovered_seq > 0) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: WAL open complete: recovered seq_no={}, record_count={}, next_sequence_number={}", recovered_seq,
@@ -798,9 +804,6 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // WAL commit: the leader appends from the direct gateway PDU. Every other instance has
         // already returned above.
         append_envelope_to_wal(envelope);
-        note_logged_command(envelope.has_sender_comp_id ? envelope.sender_comp_id : std::string_view{},
-                            envelope.has_origin_gateway_id ? envelope.origin_gateway_id : gateway_ids::default_when_absent, inner_pdu_id,
-                            envelope.has_cl_ord_id ? envelope.cl_ord_id : std::string_view{});
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "SequencerThread: order envelope on connection {} inner_pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
                    message.connection_id().get_value(), inner_pdu_id, seq, replicated_wal_->wal().record_count(), pubsub_itc_fw_app::to_string(role_));
@@ -1285,9 +1288,9 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
             kept_reports_discarded_at_ = now;
             discard_kept_reports_the_leader_forwarded();
         }
-        take_record_of_identifiers_if_built();
-        if (log_tail_index_.has_value() && now - log_tail_index_used_at_ >= log_tail_index_idle_limit) {
-            discard_log_tail_index("no command has been sent again for a minute");
+        replicated_wal_->take_record_of_commands_if_built();
+        if (commands_checked_since_summary_ && now - last_command_checked_at_ >= command_check_summary_idle_limit) {
+            summarise_command_checks("no command has been checked for a minute");
         }
         return;
     }
@@ -1558,8 +1561,8 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
         // say how long the venue has been without a matching engine.
         engine_absence_.another_instance_leads(config_.wall_clock->now_ns());
         awaiting_engine_position_ = false;
-        if (log_tail_index_.has_value()) {
-            discard_log_tail_index("this instance has stopped leading");
+        if (commands_checked_since_summary_) {
+            summarise_command_checks("this instance has stopped leading");
         }
         discard_held_orders();
         first_unheld_seq_ = 0;
@@ -1676,7 +1679,6 @@ void SequencerThread::SequencerReplicatedWalEvents::written_as_follower(int64_t 
         PUBSUB_LOG_STR(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: a replicated record did not decode as a WalRecord");
         return;
     }
-    owner_.note_logged_command(view);
     owner_.note_trading_date(view);
     owner_.note_forwarded_sample(entry.wall_time_ns, view);
     owner_.note_report_answers(view);
@@ -1701,6 +1703,12 @@ void SequencerThread::SequencerReplicatedWalEvents::discarded_after(int64_t seq_
                    "SequencerThread: the WAL is cut back to seq={}, removing a TechnicalEvent -- trading is {} as the WAL now stands", seq_no,
                    owner_.trading_halt_.halted() ? "halted" : "not halted");
     }
+}
+
+void SequencerThread::SequencerReplicatedWalEvents::checking_for_commands_already_held(int64_t last_seq_no) {
+    PUBSUB_LOG_STR(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: commands that may already be in the WAL are arriving -- the WAL proves each one exactly");
+    owner_.report(pubsub_itc_fw_app::CheckingLogForRepeats{last_seq_no});
 }
 
 void SequencerThread::SequencerReplicatedWalEvents::read_at_open(int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry) {
@@ -2092,47 +2100,6 @@ void SequencerThread::send_orders_that_waited_in_the_log(int64_t first) {
                    engine.get_value());
         report(pubsub_itc_fw_app::EngineServedFromWal{engine.get_value(), first - 1});
         serve_engine(engine, first - 1, EngineServing{});
-    }
-}
-
-void SequencerThread::start_building_record_of_identifiers() {
-    if (!config_.ha_enabled) {
-        return;
-    }
-    std::vector<std::string> segment_paths;
-    for (const uint64_t segment : replicated_wal_->wal().segments_on_disk()) {
-        segment_paths.push_back(replicated_wal_->wal().segment_path(segment));
-    }
-    identifiers_building_ = true;
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: building the record of command identifiers in the background, for {} identifier(s), from {} log segment(s) -- "
-               "until it is complete, a command sent again is checked against the log itself",
-               config_.identifiers_reserved, segment_paths.size());
-    identifiers_builder_.start(config_.identifiers_reserved, std::move(segment_paths), background_cores_);
-}
-
-void SequencerThread::take_record_of_identifiers_if_built() {
-    if (!identifiers_building_ || !identifiers_builder_.finished()) {
-        return;
-    }
-    logged_identifiers_.emplace(identifiers_builder_.take());
-    identifiers_building_ = false;
-    const size_t noted = identifiers_noted_while_building_.size();
-    for (const uint64_t id : identifiers_noted_while_building_) {
-        record_identifier(id);
-    }
-    identifiers_noted_while_building_.clear();
-    identifiers_noted_while_building_.shrink_to_fit();
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: the record of command identifiers is complete -- {} MiB reserved in {} ms and {} log record(s) read in {} ms in "
-               "the background, holding {} identifier(s) of {} reserved, {} of them noted while it was built",
-               identifiers_builder_.table_bytes() / (1024 * 1024), identifiers_builder_.reserve_time().count(), identifiers_builder_.records_read(),
-               identifiers_builder_.read_time().count(), logged_identifiers_->size(), logged_identifiers_->capacity(), noted);
-    if (identifiers_builder_.segments_not_read() > 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: {} log segment(s) could not be read while the record of command identifiers was built, and were passed over "
-                   "(the last because: {}). This is expected only when a repair cut the log back meanwhile, which the Quill log shows above",
-                   identifiers_builder_.segments_not_read(), identifiers_builder_.last_segment_error());
     }
 }
 
@@ -2641,65 +2608,23 @@ int32_t SequencerThread::trading_date_for(int64_t wall_time_ns) {
     return trading_date_;
 }
 
-void SequencerThread::note_logged_command(const pubsub_itc_fw_app::WalRecordView& view) {
-    const std::optional<uint64_t> id = command_identifier(view);
-    if (id.has_value()) {
-        note_logged_identifier(*id);
-    }
-}
-
-void SequencerThread::note_logged_command(std::string_view comp_id, int16_t protocol, int16_t inner_pdu_id, std::string_view cl_ord_id) {
-    const std::optional<uint64_t> id = command_identifier(comp_id, protocol, inner_pdu_id, cl_ord_id);
-    if (id.has_value()) {
-        note_logged_identifier(*id);
-    }
-}
-
-void SequencerThread::note_logged_identifier(uint64_t id) {
-    if (identifiers_building_) {
-        identifiers_noted_while_building_.push_back(id);
-        return;
-    }
-    record_identifier(id);
-}
-
-void SequencerThread::record_identifier(uint64_t id) {
-    if (!logged_identifiers_.has_value()) {
-        return;
-    }
-    if (logged_identifiers_->add(id) == LoggedCommandIdentifiers::Added::full && !identifiers_full_reported_) {
-        identifiers_full_reported_ = true;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "SequencerThread: the record of command identifiers is full at {} -- later commands are not recorded, so every command a gateway "
-                   "sends again after a change of leader is checked against the log itself. Raise commands.identifiers_reserved",
-                   logged_identifiers_->capacity());
-    }
-}
-
 bool SequencerThread::command_already_logged(const pubsub_itc_fw_app::WalRecordView& inbound) {
-    if (!config_.ha_enabled || !inbound.has_cl_ord_id || inbound.cl_ord_id.empty() || !inbound.has_sender_comp_id || inbound.sender_comp_id.empty()) {
-        // Without HA there is no change of leader, and so nothing is ever sent again; a command that
-        // does not say whose it is cannot be looked for.
+    if (!config_.ha_enabled) {
+        // Without HA there is no change of leader, and so nothing is ever sent again.
         return false;
     }
-    take_record_of_identifiers_if_built();
-    const int16_t protocol = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
-    const uint64_t id = LoggedCommandIdentifiers::identifier(inbound.sender_comp_id, protocol, inbound.cl_ord_id);
-    // Not in the record means certainly not in the log -- unless the record is full, when a command
-    // logged after it filled would not be in it either, or is still being built, when the command may
-    // be in the part of the log not yet read into it. In both cases the log itself is checked.
-    if (logged_identifiers_.has_value() && !logged_identifiers_->full() && !logged_identifiers_->may_hold(id)) {
+    const size_t identity_size = write_command_identity(inbound.has_sender_comp_id ? inbound.sender_comp_id : std::string_view{},
+                                                        inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent,
+                                                        inbound.has_cl_ord_id ? inbound.cl_ord_id : std::string_view{}, command_identity_buffer_.data(),
+                                                        command_identity_buffer_.size());
+    if (identity_size == 0) {
+        // A command that does not say whose it is cannot be looked for.
         return false;
     }
-    if (!log_tail_index_.has_value()) {
-        log_tail_index_.emplace(config_.wal_directory);
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: commands that may already be in the log are arriving -- reading the end of the log to check them exactly");
-        report(pubsub_itc_fw_app::CheckingLogForRepeats{replicated_wal_.has_value() ? replicated_wal_->next_seq_no() - 1 : 0});
-    }
-    log_tail_index_used_at_ = std::chrono::steady_clock::now();
+    commands_checked_since_summary_ = true;
+    last_command_checked_at_ = std::chrono::steady_clock::now();
     const int64_t first_sent_no_earlier_than = inbound.has_gateway_ingress_ns ? inbound.gateway_ingress_ns : std::numeric_limits<int64_t>::min();
-    return log_tail_index_->holds(inbound.sender_comp_id, protocol, inbound.cl_ord_id, first_sent_no_earlier_than);
+    return replicated_wal_->holds_command(std::string_view(command_identity_buffer_.data(), identity_size), first_sent_no_earlier_than);
 }
 
 bool SequencerThread::note_command_connection(const pubsub_itc_fw::ConnectionID& id, const pubsub_itc_fw_app::WalRecordView& inbound) {
@@ -2745,12 +2670,17 @@ void SequencerThread::forget_command_connection(const pubsub_itc_fw::ConnectionI
     }
 }
 
-void SequencerThread::discard_log_tail_index(const char* reason) {
+void SequencerThread::summarise_command_checks(const char* reason) {
+    const int64_t searched_records = replicated_wal_->discard_command_search();
+    const pubsub_itc_fw::ReplicatedWal::CommandCheckCounts& counts = replicated_wal_->command_check_counts();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: commands sent again since the change of leader: {} already in this log and not sequenced twice, {} sequenced as new; "
-               "{} log record(s) read to check them -- {}",
-               sent_again_already_logged_, sent_again_sequenced_, log_tail_index_->records_read(), reason);
-    log_tail_index_.reset();
+               "SequencerThread: commands sent again since the change of leader: {} already in the WAL and not sequenced twice, {} sequenced as new. "
+               "Since this instance started, the WAL has settled {} checked command(s) by the record of identifiers alone, proved {} by reading "
+               "the one record at its position, and searched for {}, {} of them because that record was another command; {} WAL record(s) read "
+               "by the search now ended -- {}",
+               sent_again_already_logged_, sent_again_sequenced_, counts.not_held_by_number, counts.proved_by_reading, counts.searched,
+               counts.other_command_at_position, searched_records, reason);
+    commands_checked_since_summary_ = false;
     sent_again_already_logged_ = 0;
     sent_again_sequenced_ = 0;
 }

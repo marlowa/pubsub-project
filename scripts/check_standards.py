@@ -1286,18 +1286,16 @@ _WAL_READERS = [
     (r'\bWalHandedOverFollowers\b', 'the library class that reads committed records back for followers already handed over'),
     (r'\bhanded_over_publishers_->send_to(?:_all)?\b', 'the sequencer member holding a WalHandedOverFollowers, sending records it reads'),
     (r'\bhanded_over_engines_->send_to(?:_all)?\b', 'the sequencer member holding a WalHandedOverFollowers, sending records it reads'),
-    (r'\bLogTailIndex\b', 'the sequencer class that reads the newest segments for the duplicate check'),
-    (r'\blog_tail_index_->holds\b', 'the sequencer member holding a LogTailIndex, reading segments it has not yet read'),
-    (r'\bLoggedCommandIdentifiersBuilder\b', 'the sequencer class that reads every segment to build the record of command identifiers'),
-    (r'\bidentifiers_builder_\.start\b', 'the sequencer member holding a LoggedCommandIdentifiersBuilder, starting its reading'),
+    (r'\bholds_command\s*\(', 'the replicated WAL\'s check of whether it holds a command, which reads one record, or searches the WAL'),
     (r'\bcommand_in_wal_at\s*\(', 'the sequencer function that reads one record back from the WAL on its own thread'),
 ]
 _WAL_READER_RES = [re.compile(pattern) for pattern, _what in _WAL_READERS]
 
 _REPLAY_MODE = 'replay mode, which runs with nothing else and sequences nothing'
-_THREAD_OF_ITS_OWN = 'runs on a thread of its own, on the background cores, not on the sequencer\'s thread'
 _RESENDS = 'a resend or a request for undelivered reports: BUG-0113, which moves them to a recovery service'
-_DUPLICATE_CHECK = 'the duplicate check: BUG-0122, replaced in phase 9 of docs/recovery_plan.md'
+_DUPLICATE_CHECK = ('the check against sequencing a command twice: normally one record read at the position the record of '
+                    'identifiers gives, and a search only in the rare cases docs/availability/one_check_against_sequencing_twice.md, '
+                    'section 3.2, lists')
 _PUBLISHERS = ('a record sent to a publisher already handed over, read back moments after it was written, once '
                'whatever the number of publishers: BUG-0171')
 _FOLLOWER_ENGINES = ('a record sent to a matching engine that follows the WAL, already handed over, read back moments after '
@@ -1318,14 +1316,7 @@ _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_undelivered_reports_request', _RESENDS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_session_replay_request', _RESENDS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::command_already_logged', _DUPLICATE_CHECK),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::start_building_record_of_identifiers', _THREAD_OF_ITS_OWN),
     ('applications/sequencer/SequencerThread.hpp', 'handed_over_publishers_', _DEFINITION),
-    ('applications/sequencer/SequencerThread.hpp', 'log_tail_index_', _DEFINITION),
-    ('applications/sequencer/SequencerThread.hpp', 'identifiers_builder_', _DEFINITION),
-    ('applications/sequencer/LogTailIndex.hpp', 'LogTailIndex', _DEFINITION),
-    ('applications/sequencer/LogTailIndex.hpp', 'WalReader', _DUPLICATE_CHECK),
-    ('applications/sequencer/LoggedCommandIdentifiersBuilder.hpp', 'LoggedCommandIdentifiersBuilder', _DEFINITION),
-    ('applications/sequencer/LoggedCommandIdentifiersBuilder.hpp', 'WalReader', _THREAD_OF_ITS_OWN),
 ]
 
 # Entries of _PERMITTED_WAL_READS that matched at least one read in this run (see report_unused_permitted_wal_reads).

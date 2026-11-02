@@ -286,6 +286,42 @@ first and with `--secondary-engine-first`, before the next starts.
    commands in the WAL with the same number (a test sets the number so that they collide), both are found; a command
    written again at a new position after the WAL is cut back is found; a full record and an unfinished one fall back
    to the search. Made to fail: with a different identity taken to mean "not held", the collision test fails.
+
+   **As built.** The library has four new parts. `CommandIdentityInterface` is what an application supplies to say
+   how a command's identity is read from a WAL record; the sequencer's is `SequencerCommandIdentity`, which writes the
+   member's comp id with its length, the gateway's protocol and the `ClOrdID`. `LoggedCommandIdentifiers` is the record:
+   a table from each identity's number to the position in the WAL of the first record with that number, 24 bytes a
+   slot, so that with the 200 million commands configured (`identifiers_reserved`) the table is 2^28 slots, 6 GiB.
+   `LoggedCommandIdentifiersBuilder` fills it from the WAL on a thread of its own when the WAL is opened.
+   `WalCommandSearch` searches the WAL backwards from its end, reading each record at most once, for the cases the
+   record cannot settle.
+
+   `ReplicatedWal` keeps the record and answers `holds_command(identity, not_before_ns)`. When the record holds the
+   identity's number, the WAL reads the one record at the stored position: the same identity proves the command is
+   held, and another identity, from two commands with the same number or a WAL cut back and written again, sends it to
+   the search. When the record is full or not yet built, it searches. Each record `write()` adds is noted in the record
+   with its position. The WAL counts how each check was settled (`command_check_counts`), and raises the event
+   `checking_for_commands_already_held` once in each period of leadership, the first time a check is not settled by
+   the record lacking the identity's number: because the record holds the number, is full, or is not yet built. The
+   search is discarded when the instance stops leading. The sequencer's own copies of the record, its
+   builder and its search are gone, and the sequencer still checks only the commands it checked before this step.
+
+   The unit tests are those the step names, in `LoggedCommandIdentifiersTest`, `LoggedCommandIdentifiersBuilderTest`,
+   `WalCommandSearchTest`, `ReplicatedWalCommandTest` and `SequencerCommandIdentityTest`, with the WAL cut back and a
+   command written again in `ReplicatedWalTest`. Made to fail: with a record at the stored position holding another
+   identity taken to mean "not held", the collision test and the test of the WAL cut back both fail.
+
+   Both full suites pass: 38 of 38 with the secondary engine first, and 94 of 95 with the primary first. The one
+   failure, scenario 52, is the matching engine not being ready within 15 seconds after it finds its open-order region
+   damaged and creates a new one of about 500 MB, every block of which is written before it is ready. In that run the
+   disk was writing at about 16 MB a second, with each write waiting about 440 milliseconds, so creating the region took
+   about 30 seconds. The drive is an SSD whose speed for a 500 MB write forced to disk measured between 13 and 82 MB a
+   second at the time, against 441 MB a second at best. Scenario 52 passes run on its own, with the engine ready
+   9.5 seconds after its restart, and after the drive's free space is trimmed (`fstrim`) the engine is ready in
+   2.1 seconds, as in the runs before this step.
+
+   Each sequencer's resident memory is about 7 GB, most of it the record's table. With both instances on one machine
+   of 32 GB, as in the tests, the two take 14 GB.
 2. **The refusal.** `CommandRefused`, and both gateways turning it into a rejection; both gateways refusing a command
    whose identity they hold unanswered (section 4.3). Unit tests in each gateway. Nothing sends `CommandRefused` yet,
    so the scenarios are unchanged.

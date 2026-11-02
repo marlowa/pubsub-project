@@ -3,15 +3,19 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
 #include <pubsub_itc_fw/BackgroundPromiseRecorderInterface.hpp>
+#include <pubsub_itc_fw/CommandIdentityInterface.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/CpuPinning.hpp>
 #include <pubsub_itc_fw/EpochStore.hpp>
@@ -21,10 +25,13 @@
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/LogEpochTable.hpp>
+#include <pubsub_itc_fw/LoggedCommandIdentifiers.hpp>
+#include <pubsub_itc_fw/LoggedCommandIdentifiersBuilder.hpp>
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
+#include <pubsub_itc_fw/WalCommandSearch.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalFollowing.hpp>
 
@@ -122,6 +129,11 @@ class ReplicatedWalEventsInterface {
     /// for each record in order, up to any gap, so that the application can keep what it needs from the records
     /// without reading the WAL again. @p entry is valid only during the call.
     virtual void read_at_open(int64_t seq_no, const WalEntryContents& entry) = 0;
+
+    /// As the leader: the first time since it took the lead that holds_command() has had to prove whether the
+    /// WAL holds a command, because the record of identifiers said that it may. @p last_seq_no is the last
+    /// record the WAL holds. Called once in each leadership, not for each command.
+    virtual void checking_for_commands_already_held(int64_t last_seq_no) = 0;
 };
 
 /**
@@ -164,6 +176,14 @@ struct ReplicatedWalConfiguration {
     /// Set to 1 while the leader carries on without waiting for a follower that is connected but too far
     /// behind, and to 0 otherwise. Left as constructed, nothing is set.
     GaugeHandle running_alone_gauge{};
+    /// How a command's identity is read from a record. When set, the WAL keeps a record of the identity and the
+    /// position of every command it holds, and holds_command() says whether it holds one
+    /// (docs/availability/one_check_against_sequencing_twice.md). Left null, it keeps none. Must outlive the WAL.
+    const CommandIdentityInterface* command_identity{nullptr};
+    /// How many identities that record has room for. It is reserved in full when it is built.
+    size_t identifiers_reserved{0};
+    /// How an identity becomes a number in that record. Replaced only by a test, to make two identities collide.
+    LoggedCommandIdentifiers::NumberFunction command_number{&LoggedCommandIdentifiers::identifier};
 };
 
 /**
@@ -382,6 +402,60 @@ class ReplicatedWal {
     [[nodiscard]] bool alone() const {
         return !configuration_.ha_enabled;
     }
+
+    /**
+     * @brief Starts building the record of the commands the WAL holds, from the WAL as it stands, on a thread of
+     *        its own on the helper cores. Call once, after open(), and only with a command_identity configured.
+     *
+     * Until the record is built, holds_command() searches the WAL, and the commands written meanwhile are noted
+     * and added when the record is taken over.
+     */
+    void start_building_record_of_commands();
+
+    /// Takes the record of commands over once its thread has built it. holds_command() does this too; call it
+    /// periodically as well, so that the memory the noted commands take is given back soon after startup.
+    void take_record_of_commands_if_built();
+
+    /**
+     * @brief Whether the WAL holds a command with this identity
+     *        (docs/availability/one_check_against_sequencing_twice.md, section 3.2).
+     *
+     * A number the record does not hold means no. One it holds is proved by reading the one record at the
+     * position beside it and comparing identities. When that cannot settle it, because the record is full or
+     * not yet built, or the record at the position is another command, the WAL is searched (WalCommandSearch).
+     *
+     * @param[in] identity      The command's identity, as the configured CommandIdentityInterface writes it.
+     * @param[in] not_before_ns The command was first sent no earlier than this, by the sender's clock, which
+     *                          bounds a search. The smallest possible value lets a search read the whole WAL.
+     * @return false when no command_identity is configured.
+     */
+    [[nodiscard]] bool holds_command(std::string_view identity, int64_t not_before_ns);
+
+    /// Whether a search of the WAL is being kept for holds_command(), with what it has read.
+    [[nodiscard]] bool command_search_in_use() const {
+        return command_search_.has_value();
+    }
+
+    /// Discards the search kept for holds_command(), giving back its memory, and returns how many records it
+    /// read. A later search starts again from the end of the WAL. The WAL discards it itself on ceasing to lead.
+    int64_t discard_command_search();
+
+    /// The record of commands, once built and taken over; null before.
+    [[nodiscard]] const LoggedCommandIdentifiers* record_of_commands() const {
+        return commands_.has_value() ? &*commands_ : nullptr;
+    }
+
+    /// How holds_command() has settled each command it was asked about.
+    struct CommandCheckCounts {
+        int64_t not_held_by_number{0};        ///< the record held no such number
+        int64_t proved_by_reading{0};         ///< the record at the position was the command
+        int64_t searched{0};                  ///< the WAL was searched
+        int64_t other_command_at_position{0}; ///< of those searched, how many because the record at the position was another command
+    };
+    [[nodiscard]] const CommandCheckCounts& command_check_counts() const {
+        return command_check_counts_;
+    }
+
     /// Whether this instance's lease agent says that its follower may lead, which a leader says once the follower holds every record.
     [[nodiscard]] bool says_follower_may_lead() const {
         return lease_agent_.has_value() && lease_agent_->says_peer_may_lead();
@@ -400,6 +474,12 @@ class ReplicatedWal {
     void stop_running_alone(const char* reason, Clock::time_point now);
     [[nodiscard]] bool may_commit_without_follower() const;
     void advance_commit();
+    // Notes the identity and position of the command a record just written holds, if it holds one.
+    void note_command_written(WalPosition position, const WalEntryContents& entry);
+    void add_command(uint64_t number, WalPosition position);
+    // Whether the record at @p position holds the command with @p identity.
+    [[nodiscard]] bool command_at(WalPosition position, std::string_view identity);
+    [[nodiscard]] bool search_for_command(std::string_view identity, int64_t not_before_ns);
 
     ReplicatedWalConfiguration configuration_;
     QuillLogger& logger_;
@@ -470,6 +550,23 @@ class ReplicatedWal {
 
     // As the leader: the last record committed. Only ever advances within one leadership.
     int64_t committed_through_{0};
+
+    // The record of the commands the WAL holds, each with its position, once built and taken over
+    // (docs/availability/one_check_against_sequencing_twice.md); and what builds it at startup.
+    std::optional<LoggedCommandIdentifiers> commands_;
+    LoggedCommandIdentifiersBuilder commands_builder_;
+    bool commands_building_{false};
+    // The commands written while the record was being built: each one's number and position.
+    std::vector<std::pair<uint64_t, WalPosition>> commands_noted_while_building_;
+    bool commands_full_reported_{false};
+    // The search for commands the record cannot settle, kept while it is in use.
+    std::optional<WalCommandSearch> command_search_;
+    // Whether this leadership has reported checking_for_commands_already_held.
+    bool command_check_reported_{false};
+    CommandCheckCounts command_check_counts_;
+    // Space for reading identities on this thread.
+    std::vector<uint8_t> identity_scratch_ = std::vector<uint8_t>(CommandIdentityInterface::scratch_size);
+    std::array<char, CommandIdentityInterface::max_identity_size> identity_buffer_{};
 };
 
 } // namespaces

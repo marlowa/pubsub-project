@@ -149,11 +149,10 @@ struct SequencerConfiguration {
     pubsub_itc_fw::LeaseTiming lease{};
 
     /**
-     * @brief How many command identifiers the record of the identifiers in the log reserves room
-     * for. Only applies when ha_enabled=true, because only a change of leader produces commands sent
-     * again, which are what the record is for. 16 bytes a slot, in a table whose size is a power of
-     * two: 200 million reserves 4 GiB. See LoggedCommandIdentifiers and
-     * docs/availability/commands_during_a_change_of_leader.md.
+     * @brief How many commands the replicated WAL's record of the commands it holds reserves room for.
+     * Only applies when ha_enabled=true. 24 bytes a slot, holding a command's identifier and its position
+     * in the WAL, in a table whose size is a power of two: 200 million reserves 6 GiB. See
+     * pubsub_itc_fw::LoggedCommandIdentifiers and docs/availability/one_check_against_sequencing_twice.md.
      */
     size_t identifiers_reserved{0};
 

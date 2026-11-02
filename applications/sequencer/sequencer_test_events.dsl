@@ -52,9 +52,10 @@ end
 
 # ------------------------------------------------------------
 #  183 -- CheckingLogForRepeats
-#  The first command that may already be in the WAL arrived, and the
-#  sequencer began reading the end of the WAL to check such commands
-#  exactly, before its record of command identifiers is complete.
+#  Once in each leadership: the first command that may already be in the
+#  WAL arrived, and the replicated WAL began proving such commands exactly,
+#  by reading the record at the position its record of command identifiers
+#  gives, or by searching the WAL.
 # ------------------------------------------------------------
 message CheckingLogForRepeats (id=183, version=1)
     i64 last_record            # the last record in the WAL when it began

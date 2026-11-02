@@ -42,7 +42,15 @@ std::string segment_path(const std::string& directory, uint64_t seg_num) {
 
 // scan_segment() -- read one segment file, and say how the reading stopped
 
-WalReader::SegmentScan WalReader::scan_segment(const std::string& path, size_t start_offset, const EntryCallback& cb) {
+WalReader::SegmentScan WalReader::scan_segment(const std::string& path, size_t start_offset, const EntryCallback& callback) {
+    if (!callback) {
+        return scan_segment(path, start_offset, PositionedEntryCallback{});
+    }
+    const auto without_offset = [&callback](int64_t record_id, size_t /*offset*/, const void* payload, size_t size) { callback(record_id, payload, size); };
+    return scan_segment(path, start_offset, PositionedEntryCallback{without_offset});
+}
+
+WalReader::SegmentScan WalReader::scan_segment(const std::string& path, size_t start_offset, const PositionedEntryCallback& callback) {
     SegmentScan scan{start_offset, true};
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
@@ -75,10 +83,10 @@ WalReader::SegmentScan WalReader::scan_segment(const std::string& path, size_t s
     for (;;) {
         const size_t entry_size = valid_entry_size_at(base, file_size, offset);
         if (entry_size != 0) {
-            if (cb) {
+            if (callback) {
                 WalEntryHeader hdr{};
                 std::memcpy(&hdr, base + offset, sizeof(WalEntryHeader));
-                cb(hdr.record_id, base + offset + sizeof(WalEntryHeader), static_cast<size_t>(hdr.payload_size));
+                callback(hdr.record_id, offset, base + offset + sizeof(WalEntryHeader), static_cast<size_t>(hdr.payload_size));
             }
             offset += entry_size;
             continue;
@@ -115,13 +123,17 @@ WalReader::SegmentScan WalReader::scan_segment(const std::string& path, size_t s
 
 // replay_segment() -- scan one segment file; returns bytes consumed
 
-size_t WalReader::replay_segment(const std::string& path, size_t start_offset, const EntryCallback& cb) {
-    return scan_segment(path, start_offset, cb).consumed;
+size_t WalReader::replay_segment(const std::string& path, size_t start_offset, const EntryCallback& callback) {
+    return scan_segment(path, start_offset, callback).consumed;
+}
+
+size_t WalReader::replay_segment_with_offsets(const std::string& path, size_t start_offset, const PositionedEntryCallback& callback) {
+    return scan_segment(path, start_offset, callback).consumed;
 }
 
 // replay() -- discover segments, replay from anchor, return end position
 
-WalPosition WalReader::replay(const std::string& directory, WalPosition from, const EntryCallback& cb) {
+WalPosition WalReader::replay(const std::string& directory, WalPosition from, const EntryCallback& callback) {
     // Discover segment files in the directory.
     std::vector<uint64_t> seg_nums;
     {
@@ -160,13 +172,13 @@ WalPosition WalReader::replay(const std::string& directory, WalPosition from, co
         if (!unclean_path.empty()) {
             // A writer that has moved on to this segment finished the entry it was writing in the last
             // one, so read that again from where it stopped before deciding.
-            const SegmentScan again = scan_segment(unclean_path, unclean_offset, cb);
+            const SegmentScan again = scan_segment(unclean_path, unclean_offset, callback);
             if (again.consumed > unclean_offset) {
                 end.segment = end.segment;
                 end.offset = again.consumed;
             }
             if (!again.stopped_cleanly) {
-                const SegmentScan here = scan_segment(path, start, nullptr);
+                const SegmentScan here = scan_segment(path, start, PositionedEntryCallback{});
                 if (here.consumed > start) {
                     throw PubSubItcException(fmt::format("WalReader: the write-ahead log is damaged -- {} has an entry at byte {} that is not valid, and "
                                                          "{} holds valid entries after it. Records after the damage would be lost, so the log is not "
@@ -176,7 +188,7 @@ WalPosition WalReader::replay(const std::string& directory, WalPosition from, co
             }
             unclean_path.clear();
         }
-        const SegmentScan scan = scan_segment(path, start, cb);
+        const SegmentScan scan = scan_segment(path, start, callback);
         const size_t consumed = scan.consumed;
         if (!scan.stopped_cleanly) {
             unclean_path = path;

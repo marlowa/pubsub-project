@@ -19,11 +19,13 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
 #include <random>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -45,6 +47,8 @@
 #include <lease_messages.hpp>
 #include <replication_messages.hpp>
 #include <test_events.hpp>
+
+#include "TestCommandIdentity.hpp"
 
 namespace pubsub_itc_fw::tests {
 
@@ -151,6 +155,7 @@ struct Events : public ReplicatedWalEventsInterface {
         read_at_open_seq_nos.push_back(seq_no);
         read_at_open_bytes.emplace_back(entry.bytes, entry.bytes + entry.size);
     }
+    void checking_for_commands_already_held(int64_t /*last_seq_no*/) override {}
 
     // Each record open() read, and its bytes.
     std::vector<int64_t> read_at_open_seq_nos;
@@ -258,6 +263,10 @@ class Pair {
         configuration.third_voter_id = arbiter_id;
         configuration.third_voter_name = "the arbiter";
         configuration.lease = timing_;
+        if (command_identity_ != nullptr) {
+            configuration.command_identity = command_identity_;
+            configuration.identifiers_reserved = 1000;
+        }
         events_[i] = Events{};
         // A write whose outcome the process never read is forgotten with the process.
         kept_[i].outcome.reset();
@@ -524,6 +533,8 @@ class Pair {
     SimulatedCatchUp catch_ups_[2];
     // Where each instance reports its test events, if anywhere.
     TestEventChannel* test_events_[2]{nullptr, nullptr};
+    // How each instance reads a command's identity, if it keeps a record of commands.
+    const CommandIdentityInterface* command_identity_{nullptr};
 };
 
 TEST(ReplicatedWalTest, AnInstanceRunningAloneLeadsAtOnceAndCommitsEachRecordOnceWritten) {
@@ -814,6 +825,57 @@ TEST(ReplicatedWalTest, ARejoiningFollowerDiscardsTheRecordsOfAnOlderLeadershipA
     const auto follower_records = read_wal(pair.directories_[1]);
     EXPECT_EQ(follower_records, read_wal(pair.directories_[0]));
     EXPECT_EQ(follower_records.at(5).first, 2);
+}
+
+// A follower whose WAL is cut back and written again from its leader's can hold a command at a new position
+// while its record of commands still holds the old one, which now holds another record. The WAL then searches,
+// and finds the command where it now is; a command that was discarded is not found
+// (docs/availability/one_check_against_sequencing_twice.md, section 3.2).
+TEST(ReplicatedWalTest, AfterTheWalIsCutBackACommandWrittenAgainElsewhereIsFoundAndOneDiscardedIsNot) {
+    const TestCommandIdentity identity;
+    Pair pair("replicated_wal_cut_back_commands");
+    pair.command_identity_ = &identity;
+    // Both hold records 1 to 3 from epoch 1. Instance 2 also holds the commands X and Y at 4 and 5, from epoch
+    // 1, which its leader never had; instance 1 holds Z at 4 and X at 5, from epoch 2.
+    {
+        Wal first;
+        Wal second;
+        first.open(pair.directories_[0], segment_size);
+        second.open(pair.directories_[1], segment_size);
+        const uint8_t other_bytes[] = {1};
+        for (int64_t seq_no = 1; seq_no <= 3; ++seq_no) {
+            first.append(seq_no, test_pdu_id, other_bytes, 1, 0, 1);
+            second.append(seq_no, test_pdu_id, other_bytes, 1, 0, 1);
+        }
+        const auto append_command = [](Wal& wal, int64_t seq_no, const std::string& command, int32_t epoch) {
+            const std::vector<uint8_t> bytes = test_command_bytes(command);
+            wal.append(seq_no, test_command_pdu_id, bytes.data(), static_cast<int>(bytes.size()), 0, epoch);
+        };
+        append_command(second, 4, "X", 1);
+        append_command(second, 5, "Y", 1);
+        append_command(first, 4, "Z", 2);
+        append_command(first, 5, "X", 2);
+    }
+    pair.start(0);
+    pair.start(1);
+    // Instance 2's record is built from its WAL as it was, before the repair.
+    pair.wals_[1]->start_building_record_of_commands();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while (pair.wals_[1]->record_of_commands() == nullptr) {
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "the record of commands was not built";
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        pair.wals_[1]->take_record_of_commands_if_built();
+    }
+    pair.connect();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    ASSERT_EQ(pair.events_[1].discarded_after_seq_nos.size(), 1U);
+
+    constexpr int64_t the_whole_wal = std::numeric_limits<int64_t>::min();
+    EXPECT_TRUE(pair.wals_[1]->holds_command("X", the_whole_wal)) << "X is in the follower's WAL, at 5 now rather than 4";
+    EXPECT_TRUE(pair.wals_[1]->holds_command("Z", the_whole_wal));
+    EXPECT_FALSE(pair.wals_[1]->holds_command("Y", the_whole_wal)) << "Y was discarded";
+    EXPECT_GE(pair.wals_[1]->command_check_counts().other_command_at_position, 2);
 }
 
 TEST(ReplicatedWalTest, ANewLeaderNumbersItsRecordsAboveEveryRecordItHolds) {

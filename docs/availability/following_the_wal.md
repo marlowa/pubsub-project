@@ -59,11 +59,11 @@ Phase 5 has five steps, each tested before the next starts, in the same way as p
 | A publisher's subscription: every record after the publisher's position | Each publisher, with `WalSubscribeRequest` | `SequencerThread::handle_wal_subscribe_request` | From the first segment of the WAL, whatever the position asked for | Phase 5, step 4 |
 | A member's resend request: that member's execution reports in a range | A gateway, with `SessionReplayRequest` | `SequencerThread::handle_session_replay_request` | Segments from the newest backwards until the range is covered | Not phase 5; [BUG-0113](../bug_list.md#bug_0113) (decision 3) |
 | Reports produced while a member had no connection | The sequencer, when the member's session is bound again | `SequencerThread::handle_undelivered_reports_request` | Segments from the newest backwards | Not phase 5; BUG-0113 (decision 3) |
-| Checking a command sent again against the WAL itself, while the record of identifiers cannot answer | The sequencer, when such a command arrives | `LogTailIndex`, from `SequencerThread::command_already_logged` | The end of the WAL | Not phase 5; phase 9 replaces the duplicate checks with one ([BUG-0122](../bug_list.md#bug_0122)) |
+| Checking whether the WAL holds a command sent again | The sequencer, when such a command arrives | `ReplicatedWal::holds_command`, from `SequencerThread::command_already_logged` | One record, at the position the record of identifiers gives; the end of the WAL, searched backwards, only when that cannot settle it | Not phase 5; phase 9 ([one_check_against_sequencing_twice.md](one_check_against_sequencing_twice.md)) |
 
 Two other reads are not on the order path: replay mode, a tool run against a WAL with nothing else
-running, and the building of the record of command identifiers, which already runs on a thread of its
-own (`LoggedCommandIdentifiersBuilder`).
+running, and the building of the record of command identifiers, which runs on a thread of its own
+(`LoggedCommandIdentifiersBuilder`, in the library's replicated WAL).
 
 ### 2.2 What it costs
 
@@ -597,8 +597,8 @@ commit's work for the order path.
 
 `scripts/check_standards.py` refuses any read of the WAL in the sequencer outside a
 table of permitted uses, in the same way as its table of permitted locks, each entry with its reason:
-replay mode, which runs with nothing else; the resends and undelivered reports, naming BUG-0113; and the
-duplicate check's `LogTailIndex`, naming BUG-0122 and phase 9; and the records sent to a publisher after
+replay mode, which runs with nothing else; the resends and undelivered reports, naming BUG-0113; the
+check against sequencing a command twice, `ReplicatedWal::holds_command`, naming phase 9; and the records sent to a publisher after
 it has been handed over, read back moments after they were written, through the library's
 `WalHandedOverFollowers`, naming BUG-0171 for its cost. That last read happens inside a library class, so the
 check has to look at what the sequencer constructs, not only at the readers it names. It is made to fail on
@@ -610,8 +610,7 @@ purpose before it is relied on. The documents that describe the catch-ups (`sequ
 `applications/sequencer` that is not in its table `_PERMITTED_WAL_READS`. A read is a use of anything in its
 list `_WAL_READERS`: the library's classes that read the WAL (`WalReader`, `WalCursor` and
 `WalHandedOverFollowers`), and the sequencer's own functions and members that read it with one of them
-(`LogTailIndex`, `LoggedCommandIdentifiersBuilder`, `send_logged_orders`, and the
-members holding the first two and the publishers' `WalHandedOverFollowers`). Listing the sequencer's own
+(`holds_command`, `send_logged_orders`, and the member holding the publishers' `WalHandedOverFollowers`). Listing the sequencer's own
 readers means that a new call to a function that already reads the WAL is refused, not only a new use of a
 library class. Each entry of the table names the function, or in a header the word on the line, that it
 permits, and gives its reason:

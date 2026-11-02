@@ -60,6 +60,10 @@ add_executable(pubsub_itc_fw_tests
     EpochStoreTest.cpp
     LogEpochTableTest.cpp
     ReplicatedWalTest.cpp
+    ReplicatedWalCommandTest.cpp
+    LoggedCommandIdentifiersTest.cpp
+    LoggedCommandIdentifiersBuilderTest.cpp
+    WalCommandSearchTest.cpp
     WalFollowerClientTest.cpp
     WalFollowerServiceTest.cpp
     TestEventChannelTest.cpp
