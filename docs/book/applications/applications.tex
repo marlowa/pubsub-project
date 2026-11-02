@@ -12,8 +12,10 @@ accepts and cancels orders and does not match them. Absences of that kind are
 deliberate, and this chapter records which they are, so that a reader can tell
 them from defects.
 
-The rest of this chapter is not yet written, except for the order gateways' cancel
-requirements, their limits on how fast a member may send, and the placeholders below.
+This chapter currently describes the matching engine publisher and specifies
+the order gateways' cancellation requirements and limits on how quickly a
+member may send orders. Requirements for the other applications have not yet
+been added.
 
 \section{The order gateways}
 \label{sec:order_gateways}
@@ -184,52 +186,30 @@ session separately. The design is in \texttt{docs/venue/gateway\_throttles.md}.
 \section{The matching engine publisher}
 \label{sec:matching_engine_publisher}
 
-\emph{Placeholder, created 2026-09-08. Nothing here is settled.}
-
-The matching engine publisher follows the sequencer's write-ahead log and republishes what it
-sees. It is the venue's first publisher, and today it is the only one.
+The matching engine publisher (MEP) follows the sequencer's write-ahead log,
+stores the records in its own log, and serves two topics: \texttt{orders} and
+\texttt{execution\_reports}. The MEP is currently the venue's only publisher.
+\texttt{topic\_probe} is the only implemented subscriber. The Order Activity
+Recorder (OAR) is planned as another subscriber to the execution-report topic,
+but the OAR application has not yet been written.
 
 \subsection{What it publishes}
 \label{sec:mep_pubsub}
 
-Two topics exist: orders, and execution reports. This subsection is to record what each carries,
-who is entitled to subscribe to it, and what a subscriber is promised --- as requirements, and
-referring back to section~\ref{sec:pubsub} for anything general rather than restating it.
+The \texttt{orders} topic carries \texttt{NewOrderSingle} and
+\texttt{OrderCancelRequest} messages. The \texttt{execution\_reports} topic
+carries \texttt{ExecutionReport} messages. Each record retains the sequence
+number assigned by the sequencer. The record therefore has the same position
+in the logs of both MEP instances, allowing a subscriber to resume from its
+position after failover.
 
-Two facts to keep in view while writing it. The publisher stores each record under the
-\emph{sequencer's} sequence number rather than one of its own, so a position means the same thing
-on either instance of the pair and a subscriber's cursor survives a failover. And the fanout as
-built is a loop over unicast connections, which is the scaffolding the pub/sub mechanism was
-always meant to replace.
+The MEP sends each record separately to each subscriber over that subscriber's
+own unicast connection. The alternatives considered and the reasons for
+rejecting them are described in \cref{sec:pubsub_alternatives}.
 
 \subsection{Technical events}
 \label{sec:mep_technical_events}
 
-\emph{Placeholder, created 2026-09-08. Whether this subsection belongs to this component at all
-is undecided; see below.}
-
-\textbf{The requirements are not here.} They belong to
-\cref{sec:ha:technical_event}, because the venue's inability to say anything about itself is what
-blocks the requirement that it not run with no instance of a component without saying so. What
-belongs in this subsection is this component's part in carrying the announcement, referring there
-rather than restating it.
-
-Which leaves the question this subsection waits on: whether this component publishes the technical
-event at all. \Cref{sec:ha:technical_event} establishes two audiences reached by two paths.
-A component that must act on a phase --- a gateway refusing a member's order, the sequencer
-declining to sequence one --- takes it on the control plane, most likely by the existing
-order-acceptance broadcast gaining the phase and the halted flag rather than by a second mechanism
-competing with it. A component that only needs to know takes it by publish and subscribe, and this
-publisher is named among those.
-
-So this publisher appears there as something to be \emph{told}. Whether it is also the component
-that owns the topic and redistributes the event is open. There is an argument that it is: a
-topic's history lives in exactly one publisher's write-ahead log, this publisher already follows
-the sequencer's log, and it stores each record under the sequencer's own sequence number --- so an
-event that entered through the sequencer would keep its position relative to the orders it speaks
-about, which is the whole of what a halt means. There is an argument that it is not: a component
-that both consumes a fact and republishes it is doing two jobs, and the venue may prefer the event
-to reach its subscribers from wherever it is declared.
-
-That is to be settled with the trading-halt entry in the bug list, and in the order of work set
-out in \texttt{docs/venue/trading\_phases.md} --- not here and not first.
+Whether the MEP publishes technical events remains undecided. The venue-level
+requirement and the unresolved choice of how to distribute these events are
+described in \cref{sec:ha:technical_event}.

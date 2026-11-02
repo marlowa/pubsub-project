@@ -764,7 +764,8 @@ shutting down.
 
 Application-thread event queues may also contain socket messages and other
 work when a timer event arrives. A thread normally handles events in queue
-order. A component that overrides \texttt{prioritise\_data\_over\_timers()} to
+order. A component that overrides
+\texttt{prioritise\_\allowbreak data\_\allowbreak over\_\allowbreak timers()} to
 return true defers timer events until it has handled the other events already
 available in that queue drain. This lets a component process data such as a
 WAL acknowledgement before work initiated by a timer, while still delivering
@@ -789,9 +790,59 @@ and does not invoke an application timer callback.
 \section{Configuration and logging}
 \label{sec:fw_configuration}
 
-How a component reads its configuration, and how it logs.
+\subsection{Configuration files}
 
-\emph{Not yet specified.}
+Each C++ component reads its settings from a TOML file during start-up. A
+component-specific loader reads the file into a typed configuration structure.
+Settings are looked up by their full, dotted names, such as
+\texttt{network.listen\_port} or \texttt{logging.applog\_level}. Names are
+case-sensitive. Shared settings, including logging and metrics settings, are
+read by shared framework loaders.
+
+The loaders check that required settings are present and have the expected
+type. They also validate values that have additional constraints, such as
+valid port numbers. If the TOML cannot be parsed, a required setting is
+missing, or a setting has an invalid type or value, configuration loading
+fails and the component does not start. Optional settings are read only when
+present and otherwise use their defined defaults.
+
+Configuration is read at start-up; components do not continue reading their
+TOML files while running.
+
+The current loaders do not detect settings that no loader reads. A misspelt or
+obsolete setting can therefore go unnoticed. Unknown-setting rejection is not
+implemented.
+
+\subsection{Logging}
+
+The framework provides a common logger built on Quill. In production, a
+component sends log records to an application log file and to syslog. Each
+destination has its own severity threshold, so the file and syslog can record
+different levels. The application log file can be configured not to rotate,
+to rotate when it reaches a size limit, or to rotate daily. The component
+supplies the log file path at start-up.
+
+Tests use a console log sink. They can also supply a callback that receives
+log records, allowing tests to inspect output without reading a file or
+syslog.
+
+Logging is asynchronous. A logging call places its arguments in a queue; the
+Quill backend formats the record and sends it to the configured destinations.
+Formatting and writing therefore do not occur on the calling thread. A
+logging call returning does not guarantee that the record has reached its
+destination. If the process terminates unexpectedly, some recent records may
+be lost.
+
+\subsection{Severity}
+
+The framework supports Trace, Debug, Info, Notice, Warning, Error, Critical,
+and Alert. The configured threshold determines which records each destination
+receives.
+
+Severity should reflect the nature of the event. Warning and Error are for
+faults in the venue's software or configuration. A correctly handled member
+error is an Info event, not a warning about the member. Debug is for expected
+conditions that may generate frequent records.
 
 \section{Pub/sub}
 \label{sec:pubsub}

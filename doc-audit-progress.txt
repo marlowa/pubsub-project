@@ -128,11 +128,12 @@ Doxygen pages at the top of `docs/`: `architecture_map.dox`, `architecture_map_h
 
 The LaTeX book under `docs/book/` (the functional specification): `book.tex`, `glossary.tex`,
 `references.bib`, `functional_coverage_map.md`, `introduction.tex` and
-`build_release_deployment.tex` (written, not audited), and the chapters `applications`,
+`build_release_deployment.tex` (written, not audited), and the chapters `applications`
+(MEP section written, not audited),
 `disaster_recovery`,
 `high_availability` (with its `disabled` and `enabled` sections), `library` (Reactor, threads,
-write-ahead log, inter-thread communication, memory, DSL, inter-process communication and timer
-sections written, not audited), `metrics` and
+write-ahead log, inter-thread communication, memory, DSL, inter-process communication, timer,
+and configuration and logging sections written, not audited), `metrics` and
 `security`. A requirement in the book states what the venue must do, so a requirement the code does
 not meet is not corrected to match the code: it is reported, as a problem found in the code is.
 Statements of fact in the book (what exists, what a component does, which test covers a

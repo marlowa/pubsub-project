@@ -13,12 +13,13 @@ next morning.
 \subsubsection{Why the mechanisms already described do not serve}
 \label{sec:ha:disabled:long_lived:why}
 
-A checkpoint records the orders held at a point in the sequence. It is useful
-only while the record it is anchored to still holds what followed that point, as
-\cref{sec:ha:disabled:me:durable} describes. A day boundary breaks that
-relationship, because a new day's record does not continue the previous day's.
-Retaining every day's record, so that a checkpoint from any day remains usable,
-would require the venue to keep every record it has ever written.
+A checkpoint records the open orders at a particular sequence number. It can
+be used only if the log still contains every record after that number, so the
+venue can apply those records and bring the orders up to date. A day boundary
+breaks that relationship, because a new day's record does not continue the
+previous day's. Retaining every day's record, so that a checkpoint from any day
+remains usable, would require the venue to keep every record it has ever
+written.
 
 An order intended to outlive the day therefore needs a durable store of its own.
 The venue holds that store independently of the record of what it did, and reads

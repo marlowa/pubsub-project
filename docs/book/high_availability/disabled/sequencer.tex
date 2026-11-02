@@ -27,8 +27,9 @@ component that every gateway instance talks to.
 a committed order back to the session that placed it.
 
 \textbf{What it holds while no matching engine leads.} The sequencer holds the
-orders it has taken while no matching engine leads, which it sends no engine
-until one leads, how many there are, and how long no engine has led.
+orders it has accepted but not yet sent to an engine while no matching engine
+is the leader. It tracks how many orders are waiting and how long no engine has
+been leader. It sends the waiting orders when an engine becomes leader.
 
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:disabled:sequencer:durable}

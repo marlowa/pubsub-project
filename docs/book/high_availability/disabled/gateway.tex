@@ -36,12 +36,11 @@ what must be true wherever they are held, and this chapter does not say where
 that is. \texttt{docs/availability/session\_binding.md} makes that choice and
 gives the reason.
 
-Two cases have to be told apart, and only one of them is answered by holding the
-instructions somewhere a gateway can ask. A gateway that restarts is asked for
-nothing until the member binds again, and binding is what fetches them. A gateway
-that dies holding live sessions is asked nothing at all, and a member that never
-reconnects binds nowhere --- so the instruction that was to fire at that moment
-must be carried out by whatever owns the orders, which is \reqref{R-0113}.
+Storing the instructions where a gateway can retrieve them handles a restart
+only after the member reconnects and binds to a gateway. It does not handle a
+gateway that dies while holding live sessions: a member who never reconnects
+will not trigger another bind. In that case, the component that owns the orders
+must carry out the member's instruction when the gateway dies (\reqref{R-0113}).
 
 \begin{gap}{BUG-0091}
   The instructions are held only by the gateway that was given them. A gateway

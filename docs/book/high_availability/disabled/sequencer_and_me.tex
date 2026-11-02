@@ -45,10 +45,10 @@ The sequencer's own record that the order was waiting does not survive the
 restart, and the venue does not depend on it. The position the engine presents is
 what determines the records the sequencer sends.
 
-Recovery therefore acquires an ordering it does not otherwise have. The engine
-cannot become current before the sequencer is current, because the engine becomes
-current by asking the sequencer. Where only one of the two components failed, the
-surviving component was already running and that ordering did not arise.
+Recovery now has a required order: the sequencer must become current before the
+matching engine can. The engine gets missing records from the sequencer, so it
+cannot catch up until the sequencer is ready. This dependency does not arise
+when only one component fails, because the other remains running.
 
 \subsubsection{What the member is told}
 \label{sec:ha:disabled:seq_and_me:member}

@@ -59,9 +59,12 @@ separately.
 \subsection{Two properties, and why one does not imply the other}
 \label{subsec:ha_two_properties}
 
-High availability is usually discussed as one property and is two. They fail
-independently, and a venue can have the first in full while having none of the
-second.
+High availability has two separate properties: continuity and custody.
+Continuity means that the venue continues operating after a failure. Custody
+means that it retains the state it held before the failure. These properties
+are independent: the venue can resume service after failover even if the
+replacement instance has lost accepted orders, session state, or unsent
+reports.
 
 \textbf{Continuity} is the venue continuing to work. Something detects that an
 instance has stopped, another instance takes over, and members go on placing

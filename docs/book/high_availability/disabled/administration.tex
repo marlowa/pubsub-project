@@ -12,8 +12,8 @@ a restart takes. A second instance would need arbitration of its own to remain
 the single writer, which is a large mechanism for a component that is idle for
 most of a trading day.
 
-That decision carries one condition: everything the single instance must retain
-has to survive the instance.
+Because the administration service has only one instance, any state it must
+retain after a restart must be stored durably outside its running process.
 
 \subsubsection{What state it holds}
 \label{sec:ha:disabled:admin:state}

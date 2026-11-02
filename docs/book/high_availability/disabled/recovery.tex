@@ -12,10 +12,11 @@ failure. A log truncated part-way through a record, a checkpoint that fails its
 checksum, or a file that is absent leaves a component with nothing to recover
 from. This configuration provides no second instance holding an undamaged copy.
 
-\textbf{This configuration is weak there, by decision.} Where high availability
-is enabled, the instance whose copy is undamaged takes over, and that is the
-venue's answer to damaged state. The disabled configuration has no equivalent, so
-it should be run only where losing what it holds is acceptable.
+\textbf{This configuration does not protect against damaged or missing durable
+state.} Where high availability is enabled, the instance whose copy is
+undamaged takes over, and that is the venue's answer to damaged state. The
+disabled configuration has no equivalent, so it should be run only where losing
+what it holds is acceptable.
 
 \begin{gap}{}
   Damaged durable state is not detected as such. A component reads what it can
