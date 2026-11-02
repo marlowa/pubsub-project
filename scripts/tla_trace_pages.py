@@ -41,8 +41,8 @@ variable of MajorityLeaseHA.tla means, so a counterexample from another specific
 rules of its own before it can be added here.
 
 TLC is in tla2tools.jar, from https://github.com/tlaplus/tlaplus/releases. The build uses release
-v1.7.4. The jar is found from --jar, then the TLA2TOOLS_JAR environment variable, then
-$THIRDPARTY_DIR/tla2tools-1.7.4/tla2tools.jar. It needs Java 11 or later.
+v1.8.0. The jar is found from --jar, then the TLA2TOOLS_JAR environment variable, then
+$THIRDPARTY_DIR/tla2tools-1.8.0/tla2tools.jar. It needs Java 11 or later.
 
 To add a counterexample, add an entry to COUNTEREXAMPLES: the constants to change, the specification
 and the property to check, the property TLC must report broken, and the words the page shows. Then run
@@ -76,7 +76,7 @@ _FOLLOWER_SPEC = 'FollowerBehindHA'
 _CONSTRAINTS = {_SPEC: 'EpochBound', _FOLLOWER_SPEC: 'InFlightBound'}
 _TEMPLATE = Path(__file__).resolve().parent / 'tla_trace_page.html'
 _PAGE_NAME = 'majority_lease_counterexamples.html'
-_TLA_TOOLS_VERSION = '1.7.4'
+_TLA_TOOLS_VERSION = '1.8.0'
 _TLC_TIMEOUT_SECONDS = 300
 
 # The constants shared by the runs below, before each run's own changes. Each run allows one generation
@@ -265,12 +265,10 @@ def run_tlc(java: str, jar: Path, example: Counterexample) -> str:
         (work_dir / f'{spec}.cfg').write_text(make_config(base, example))
         # One worker, so that the reported counterexample is the same on every run. -metadir keeps
         # TLC's state files inside the scratch directory. -fp 0 fixes the fingerprint function, which TLC
-        # otherwise picks at random on each run. TLC 2.19 prints a liveness counterexample on two threads
-        # that read its behaviour graph through one file with no lock, and it reads that file only for a
-        # node whose slot in its in-memory cache another node has taken. Which nodes share a slot depends
-        # on the fingerprint function. With function 0 no run of lease-6 or lease-7 has failed, in 200;
-        # with a function chosen at random, 9 of 40 runs of lease-7 failed. findings.md, section 11.8,
-        # gives the evidence, and check_broken reports such a failure for what it is.
+        # otherwise picks at random on each run. A liveness property is broken by several loops, and which
+        # one TLC reports depends on the fingerprint function: with one chosen at random, lease-6 and
+        # lease-7 come out as a different loop on each run, so the page would change on every build. The
+        # safety counterexamples are the same under any fingerprint function.
         command = [java, '-XX:+UseParallelGC', '-cp', str(jar), 'tlc2.TLC', '-deadlock', '-workers', '1', '-fp', '0',
                    '-metadir', str(work_dir / 'states'), '-config', f'{spec}.cfg', f'{spec}.tla']
         try:
@@ -310,10 +308,9 @@ def check_broken(example: Counterexample, output: str) -> None:
     broken = broken_property(example, output)
     if broken == example.broken and 'TLC threw an unexpected exception' in output:
         raise TraceError(f'{example.name}: TLC found {example.broken} broken, as expected, but then failed while printing '
-                         f'the counterexample. This is a race in TLC itself, between the two threads that print a '
-                         f'liveness counterexample, described in docs/availability/tla/findings.md, section 11.8. '
-                         f'Change the fingerprint function given to TLC with -fp in run_tlc to one under which every '
-                         f'counterexample prints, and run again.')
+                         f'the counterexample. TLC releases before 1.8.0 have a race between the two threads that '
+                         f'print a liveness counterexample, described in docs/availability/tla/findings.md, section '
+                         f'11.8. Check that the jar is release 1.8.0 or later.')
     if broken == example.broken:
         return
     if 'No error has been found' in output:

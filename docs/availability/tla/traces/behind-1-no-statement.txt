@@ -7,8 +7,8 @@ or may lead, and the statement's number. confirmed is the highest statement numb
 msgs lists statements in flight as "st from>to eEPOCH.NUMBER bar|may".
 Reproduced by scripts/tla_trace_pages.py, entry behind-1-no-statement.
   1 Initial                up=<<T,T,T>>      leader=0 lepoch=<<0,0>> log=<<{},{}>>    acted={}     barred=<<0,0,0>> disk=<<0,0,0>> stmt=bar:0 bar:0  confirmed=<<0,0>> msgs={}
-  2 Elect                  up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{},{}>>    acted={}     barred=<<2,0,0>> disk=<<2,0,0>> stmt=bar:1 bar:0  confirmed=<<0,0>> msgs={}
-  3 Write                  up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{1},{}>>   acted={}     barred=<<2,0,0>> disk=<<2,0,0>> stmt=bar:1 bar:0  confirmed=<<0,0>> msgs={}
-  4 Act                    up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{1},{}>>   acted={1}    barred=<<2,0,0>> disk=<<2,0,0>> stmt=bar:1 bar:0  confirmed=<<0,0>> msgs={}
-  5 StopActing             up=<<T,T,T>>      leader=0 lepoch=<<1,0>> log=<<{1},{}>>   acted={1}    barred=<<2,0,0>> disk=<<2,0,0>> stmt=bar:1 bar:0  confirmed=<<0,0>> msgs={}
-  6 Elect                  up=<<T,T,T>>      leader=2 lepoch=<<1,2>> log=<<{1},{}>>   acted={1}    barred=<<2,1,0>> disk=<<2,1,0>> stmt=bar:1 bar:1  confirmed=<<0,0>> msgs={}
+  2 Elect(1)               up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{},{}>>    acted={}     barred=<<2,0,0>> disk=<<2,0,0>> stmt=bar:1 bar:0  confirmed=<<0,0>> msgs={}
+  3 Write(1)               up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{1},{}>>   acted={}     barred=<<2,0,0>> disk=<<2,0,0>> stmt=bar:1 bar:0  confirmed=<<0,0>> msgs={}
+  4 Act(1)                 up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{1},{}>>   acted={1}    barred=<<2,0,0>> disk=<<2,0,0>> stmt=bar:1 bar:0  confirmed=<<0,0>> msgs={}
+  5 StopActing(1)          up=<<T,T,T>>      leader=0 lepoch=<<1,0>> log=<<{1},{}>>   acted={1}    barred=<<2,0,0>> disk=<<2,0,0>> stmt=bar:1 bar:0  confirmed=<<0,0>> msgs={}
+  6 Elect(2)               up=<<T,T,T>>      leader=2 lepoch=<<1,2>> log=<<{1},{}>>   acted={1}    barred=<<2,1,0>> disk=<<2,1,0>> stmt=bar:1 bar:1  confirmed=<<0,0>> msgs={}

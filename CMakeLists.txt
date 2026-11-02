@@ -354,20 +354,20 @@ endif()
 # web page that steps through them into ${CMAKE_BINARY_DIR}/tla_pages, which is installed beside
 # the Doxygen output. The whole run takes a few seconds.
 #
-# TLC needs Java and tla2tools.jar, release 1.7.4 from https://github.com/tlaplus/tlaplus/releases.
+# TLC needs Java and tla2tools.jar, release 1.8.0 from https://github.com/tlaplus/tlaplus/releases.
 # The jar is taken from -DTLA2TOOLS_JAR, then the TLA2TOOLS_JAR environment variable, then
-# $THIRDPARTY_DIR/tla2tools-1.7.4/tla2tools.jar. Without Java or the jar the step is skipped with
+# $THIRDPARTY_DIR/tla2tools-1.8.0/tla2tools.jar. Without Java or the jar the step is skipped with
 # a message, in the same way as Doxygen when it is not installed.
 # ------------------------------------------------------------
 option(ENABLE_TLA_PAGES "Reproduce the TLA+ counterexamples and write their web page at install time" ON)
-set(TLA2TOOLS_JAR "" CACHE FILEPATH "Path to tla2tools.jar, release 1.7.4")
+set(TLA2TOOLS_JAR "" CACHE FILEPATH "Path to tla2tools.jar, release 1.8.0")
 
 set(_pubsub_tla_jar "${TLA2TOOLS_JAR}")
 if(NOT _pubsub_tla_jar AND DEFINED ENV{TLA2TOOLS_JAR})
     set(_pubsub_tla_jar "$ENV{TLA2TOOLS_JAR}")
 endif()
 if(NOT _pubsub_tla_jar AND DEFINED ENV{THIRDPARTY_DIR})
-    set(_pubsub_tla_jar "$ENV{THIRDPARTY_DIR}/tla2tools-1.7.4/tla2tools.jar")
+    set(_pubsub_tla_jar "$ENV{THIRDPARTY_DIR}/tla2tools-1.8.0/tla2tools.jar")
 endif()
 
 find_package(Java COMPONENTS Runtime QUIET)
@@ -406,7 +406,7 @@ elseif(NOT Java_JAVA_EXECUTABLE)
     message(STATUS "TLA+ counterexample pages skipped: no Java runtime found")
 else()
     message(STATUS "TLA+ counterexample pages skipped: tla2tools.jar not found "
-                   "(set TLA2TOOLS_JAR, or place it in \$THIRDPARTY_DIR/tla2tools-1.7.4/)")
+                   "(set TLA2TOOLS_JAR, or place it in \$THIRDPARTY_DIR/tla2tools-1.8.0/)")
 endif()
 
 # ------------------------------------------------------------

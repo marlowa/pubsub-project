@@ -49,6 +49,11 @@ change in any release.
   `docs/availability/voided_commands.md`, section 5.3). Scenario 85 checks it with both engines killed;
   scenario 51 checks the cancel of the book with one engine.
 
+- **The build uses release 1.8.0 of the TLA+ tools**, in place of 1.7.4. The Rocky 8 container downloads it
+  and checks its checksum. On a host with no network, copy `tla2tools.jar` from release 1.8.0 to
+  `$THIRDPARTY_DIR/tla2tools-1.8.0/` by hand, or set `TLA2TOOLS_JAR`; without it the install skips the
+  TLA+ counterexample pages and says why. Every model gives the same result under both releases.
+
 ### Removed
 
 - **The absence rule and its setting, `[absence] absence_limit_seconds`.** The halt for the limit on
@@ -59,10 +64,11 @@ change in any release.
 
 ### Fixed
 
-- `scripts/tla_trace_pages.py` failed on about one run in four, because TLC 2.19 prints a liveness
-  counterexample on two threads that read one file with no lock, and with some fingerprint functions
-  the race makes it fail while printing the trace. The script runs TLC with `-fp 0`, under which no run
-  has failed in 200, and stops with a message naming the race if it ever does (BUG-0220).
+- `scripts/tla_trace_pages.py` failed on about one run in four, because TLC 2.19, in release 1.7.4 of the
+  TLA+ tools, prints a liveness counterexample on two threads that read one file with no lock, and the race
+  can make it fail while printing the trace. Release 1.8.0 has the fix, and the project now uses it (see
+  Changed); none of 2,000 runs failed. Given an older release, the script stops with a message naming the
+  race (BUG-0220).
 - While no matching engine led, a member was told nothing about the orders it sent, for as long as no
   engine led. Orders are now held for at most 5 seconds; past the limit on automatic recovery the venue
   halts, rejects every order it held and cancels the book, each reported to its member, and trading

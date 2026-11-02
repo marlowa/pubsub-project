@@ -71,13 +71,13 @@ RUN dnf install -y --enablerepo=powertools doxygen graphviz \
 # for Rocky 8: it is a single jar published on the TLA+ project's GitHub releases page, and runs
 # on the Java 17 installed above. The release and its checksum are pinned so the counterexamples
 # are reproduced by the same checker on every build.
-ARG TLA_TOOLS_VERSION=1.7.4
-ARG TLA_TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+ARG TLA_TOOLS_VERSION=1.8.0
+ARG TLA_TOOLS_SHA256=011267fca25d0752cf18894dd585cd28b96960c112ea8a20b823ea770e7e10cd
 RUN mkdir -p /opt/tla2tools-${TLA_TOOLS_VERSION} \
     && wget -q -O /opt/tla2tools-${TLA_TOOLS_VERSION}/tla2tools.jar \
        https://github.com/tlaplus/tlaplus/releases/download/v${TLA_TOOLS_VERSION}/tla2tools.jar \
     && echo "${TLA_TOOLS_SHA256}  /opt/tla2tools-${TLA_TOOLS_VERSION}/tla2tools.jar" | sha256sum -c -
-ENV TLA2TOOLS_JAR=/opt/tla2tools-1.7.4/tla2tools.jar
+ENV TLA2TOOLS_JAR=/opt/tla2tools-1.8.0/tla2tools.jar
 
 # Configure git to allow /workspace
 RUN git config --global --add safe.directory /workspace

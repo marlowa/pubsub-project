@@ -716,9 +716,11 @@ larger failure budgets are run with `MaxEpoch = 0`.
 The table above is with `CandidateResends = FALSE`. The first row, the configuration in
 `MajorityLeaseHA.cfg`, is also checked with `CandidateResends = TRUE`, the setting the code uses: both
 safety properties hold over 416,722,789 distinct states, which takes TLC about 50 minutes on 32
-cores, against about 4 minutes for the 42,179,802 states without it. At that size TLC estimates the
-chance that two different states shared a fingerprint, so that one of them was never checked, at
-0.2% from the fingerprints it actually saw, and at 8% by its more cautious calculation. The other
+cores, against about 4 minutes for the 42,179,802 states without it. Releases 1.7.4 and 1.8.0 of the
+TLA+ tools give the same number of states. At that size TLC estimates the chance that two different
+states shared a fingerprint, so that one of them was never checked, at between 0.2% and 0.5% from the
+fingerprints it actually saw, depending on the fingerprint function it chose for the run, and at 8%
+by its more cautious calculation. The other
 rows are not yet checked with `CandidateResends = TRUE`.
 
 The liveness property, with `Prompt` on and `MaxEpoch = 1`, each checked with `CandidateResends` both
@@ -792,11 +794,11 @@ The counterexamples in 11.4 and 11.5 are reproduced on every install by `scripts
 which also writes a web page that steps through them. The install fails if any of them stops breaking
 its property. Each is rerun with the smallest failure budget that produces it, which is smaller than the
 budgets in the tables above. The script's list of counterexamples gives the exact settings of each. It
-runs TLC with a fixed fingerprint function, `-fp 0`, because TLC 2.19 can fail while printing a liveness
-counterexample; section 11.8 explains why, and why a fixed function avoids it.
+runs TLC with a fixed fingerprint function, `-fp 0`, so that each liveness counterexample is the same loop on every
+build; section 11.8 explains why, and why the script needs TLC release 1.8.0 or later.
 `docs/orientation/building.md` describes the step and what it needs.
 
-### 11.8 TLC can fail while printing a liveness counterexample
+### 11.8 TLC releases before 1.8.0 can fail while printing a liveness counterexample
 
 **What happens.** With `CandidateResends = TRUE`, TLC 2.19 finds `lease-6` and `lease-7` broken, as it should, and then
 sometimes stops while printing the counterexample. It reports `java.io.EOFException`, thrown in `GraphNode.read`,
@@ -840,28 +842,36 @@ same counterexample as the script runs:
 With `CandidateResends = FALSE` no failure was seen, in 44 runs of each counterexample with 44 different functions; the
 model then has fewer states, and so a different graph.
 
-**How it is avoided, and the limit of that.** `scripts/tla_trace_pages.py` runs TLC with `-fp 0`. Under function 0 no
-run has failed. That lowers the chance of the race to nothing measurable for these graphs; it does not remove the race.
-A change to the model changes its states and their fingerprints, and can put two nodes the trace needs into one slot
-under function 0 too. The script therefore checks for it: when TLC reports the expected property broken and then
-reports an unexpected exception, the script stops with a message naming this section, rather than one saying that TLC
-printed no states. The remedy is then to choose another fixed function.
-
-**It is a known defect of TLC, fixed upstream, and the release used here does not have the fix.** It is
+**It is a known defect of TLC, fixed in release 1.8.0, which this project uses.** It is
 [tlaplus issue 597](https://github.com/tlaplus/tlaplus/issues/597), and commit `ba14c21a6c` of 26 March 2021 fixes it
 by making `AbstractDiskGraph.getNode` and `getNodeFromDisk` synchronized. Its message names the same failure, "Read
 past end of file", and the same cause: the reconstruction of a liveness counterexample was made parallel in TLC 2.08,
-and the two methods are not safe to call from two threads. Every later commit to `AbstractDiskGraph.java` on the main
-line keeps the fix. Release 1.7.4, the one this project uses, which reports itself as TLC 2.19 of 8 August 2024
-(revision `5a47802`), was not built from the main line: its branch left the main line on 25 April 2020, before the
-fix, and in its compiled classes, and in its source at that revision, neither method is synchronized. Release 1.8.0,
-of 30 October 2026, is built from the main line. So nothing needs reporting upstream. Whether release 1.8.0 removes the
-failure here has not been run: its `AbstractDiskGraph.java` on the main line is synchronized, but its jar has not been
-run on these models.
+and the two methods are not safe to call from two threads. Release 1.7.4, which reports itself as TLC 2.19 of 8 August
+2024 (revision `5a47802`), was not built from the main line: its branch left the main line on 25 April 2020, before the
+fix, and in its compiled classes neither method is synchronized. Release 1.8.0, of 30 October 2026, is built from the
+main line (revision `090e85c`), and in its compiled classes both methods are synchronized. So nothing needs reporting
+upstream.
+
+**Release 1.8.0 does not fail.** Measured on 2 November 2026, each counterexample run as the script runs it but with
+the fingerprint function chosen at random by TLC on each run:
+
+| Counterexample | Release | Runs | Failed |
+|---|---|---|---|
+| `lease-6-no-yield-livelock` | 1.7.4 | 200 | 24 |
+| `lease-7-no-peer-vote` | 1.7.4 | 200 | 29 |
+| `lease-6-no-yield-livelock` | 1.8.0 | 1,000 | 0 |
+| `lease-7-no-peer-vote` | 1.8.0 | 1,000 | 0 |
+
+`scripts/tla_trace_pages.py` still runs TLC with `-fp 0`, for a different reason: a liveness property is broken by
+several loops, and which one TLC reports depends on the fingerprint function. With one chosen at random, six runs of
+the script gave six different loops for each of `lease-6` and `lease-7`, each of them breaking the property; with
+`-fp 0`, three runs gave the same two loops each time. Fixing the function keeps the page the same from one build to
+the next. If the script is given an older release and TLC fails while printing a counterexample, the script stops with
+a message naming this section and asking for release 1.8.0 or later.
 
 The two threads and the shared file are in TLC's liveness checker, which prints only liveness counterexamples. No
-safety counterexample has failed to print, and the five the script compares with the committed copies are unchanged
-under `-fp 0`.
+safety counterexample has failed to print, and the safety counterexamples the script compares with the committed copies
+are the same under any fingerprint function.
 
 ## 12. Rule 11: a follower that is behind must not lead
 

@@ -14,7 +14,7 @@ from typing import Optional
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _TLA_DIR = _PROJECT_ROOT / 'docs' / 'framework' / 'tla'
-_TLA_TOOLS_VERSION = '1.7.4'
+_TLA_TOOLS_VERSION = '1.8.0'
 _TLC_TIMEOUT_SECONDS = 300
 _EXPECTED_ABA_ERRORS = [
     'Error: Invariant FreeListSound is violated.',

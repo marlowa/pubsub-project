@@ -29,8 +29,8 @@ which TLC must find that fault.
 ## How to run
 
 TLC is in `tla2tools.jar`, from the TLA+ project's releases at
-<https://github.com/tlaplus/tlaplus/releases>; the Rocky 8 Dockerfile installs version 1.7.4 in
-`/opt/tla2tools-1.7.4`. From this directory:
+<https://github.com/tlaplus/tlaplus/releases>; the Rocky 8 Dockerfile installs version 1.8.0 in
+`/opt/tla2tools-1.8.0`. From this directory:
 
 ```
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config SlabReclaim.cfg SlabReclaim.tla

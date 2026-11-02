@@ -301,9 +301,9 @@ the browser's own fonts where there is no network.
 - a constant listed for a counterexample does not appear in its specification's `.cfg` file, which is how
   a misspelt name is caught instead of silently leaving the default in place.
 
-**What it needs.** Java 11 or later, and `tla2tools.jar` from release 1.7.4 of the TLA+ tools, published
+**What it needs.** Java 11 or later, and `tla2tools.jar` from release 1.8.0 of the TLA+ tools, published
 at `https://github.com/tlaplus/tlaplus/releases`. The jar is taken from `-DTLA2TOOLS_JAR`, then the
-`TLA2TOOLS_JAR` environment variable, then `$THIRDPARTY_DIR/tla2tools-1.7.4/tla2tools.jar`. On a host with
+`TLA2TOOLS_JAR` environment variable, then `$THIRDPARTY_DIR/tla2tools-1.8.0/tla2tools.jar`. On a host with
 no network, copy the jar there by hand. Without Java or the jar the step is skipped and CMake says why;
 `-DENABLE_TLA_PAGES=OFF` turns it off. The Rocky 8 container downloads the pinned release and checks its
 SHA-256 checksum, and sets `TLA2TOOLS_JAR`.
