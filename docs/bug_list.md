@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 223 |
-| Open | 79 (56 defects, 23 tasks) |
+| Bugs recorded | 224 |
+| Open | 80 (57 defects, 23 tasks) |
 | Closed | 144 |
-| Next id | BUG-0224 |
+| Next id | BUG-0225 |
 
 ## Open bugs by severity
 
-17 high, 47 medium, 15 low.
+17 high, 48 medium, 15 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -76,6 +76,7 @@
 | [BUG-0209](#bug_0209) | medium | task | No scenario reaches the halt when a matching engine cannot account for the orders the venue holds |
 | [BUG-0210](#bug_0210) | medium | defect | A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again |
 | [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
+| [BUG-0224](#bug_0224) | medium | defect | Reading one WAL record at a known position lists the whole WAL directory and reads its whole segment ahead, so it takes milliseconds on the thread that sequences orders |
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
@@ -188,6 +189,41 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0224: Reading one WAL record at a known position lists the whole WAL directory and reads its whole segment ahead, so it takes milliseconds on the thread that sequences orders {#bug_0224}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | defect |
+| Found | 2026-11-03 |
+| Recorded | 2026-11-03 |
+| How | Measuring the cost of the leading sequencer's check of each command against its WAL, for phase 9 step 5, with the benchmark `command_check_cost` |
+| Impact | Every command sent again whose identity the WAL holds, and every reused ClOrdID, holds up every order behind it on the leading sequencer for between about 15 microseconds and 6 milliseconds. After a change of leader the gateways send every unanswered command again, and each costs one such read |
+
+**What happens.** When the record of command identifiers holds a command's number, the leader reads the one WAL record
+at the position kept beside it (`ReplicatedWal::command_at`), and `SequencerThread::first_report_answering` reads
+forward from a command's record for its report. Both open a `WalCursor` at a position, and the cursor does two things
+that cost far more than reading one record:
+
+- `WalCursor::open` lists the WAL directory with `readdir` and sorts the segment numbers, every time it is opened. A
+  record in the sequencer's WAL averages 292 bytes, so a day of 50 million orders, with their reports and cancels,
+  leaves between about 4000 and 16000 segment files of 4 MiB. Measured with the segment in the page cache, one read
+  takes 15 microseconds with 20 segment files in the directory and 735 microseconds with 4000.
+- `WalCursor::map_current_segment` maps the whole segment and calls `madvise(MADV_WILLNEED)` on it, which asks the
+  kernel to read all 4 MiB from the disk. Measured with the segment's pages dropped from the page cache first, one
+  read takes 3.2 milliseconds with 20 segment files and 4.0 with 4000, against the fraction of a millisecond the
+  design expected for one page.
+
+Measured with the machine set up for measuring, one read with the segment in the page cache takes 15 microseconds
+with 20 segment files, 735 with 4000 and 2.96 milliseconds with 16000; with the segment's pages dropped from the page
+cache, it takes 3.2, 4.0 and 6.1 milliseconds
+([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), section 8, step 5).
+
+**What is wanted.** A read of one record at a known position opens that segment by its number, which the position
+gives, without listing the directory; and maps only the pages that hold the record, or reads them with `pread`,
+without asking for the whole segment to be read ahead. A reader that goes on to read many records, as a catch-up does,
+keeps reading ahead. Measured again with `command_check_cost` afterwards.
 
 ### BUG-0223: The fix8 test client once logged on and exited without sending its baseline orders, failing scenario 22 {#bug_0223}
 
@@ -3762,9 +3798,9 @@ The two should be designed together.
 
 **What it costs.** A lookup in the record of identifiers for every command on the order path. The
 record is a hash set of 64-bit numbers; for a command not in the log, which is nearly every command,
-the lookup answers on its own, in the order of 100 nanoseconds. That figure is not yet measured on
-the order path; measuring it, by the method in `docs/operations/latency_findings.md`, is part of this
-task. A command the record may hold is checked exactly against the end of the log, as now.
+the lookup answers on its own, in the order of 100 nanoseconds. Measured on the order path in phase 9,
+step 5, the whole check takes 295 nanoseconds at the median
+([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), section 8). A command the record may hold is checked exactly against the end of the log, as now.
 
 **Decided.** The wider rule is principle V7 in `docs/design_principles.md`, agreed with Andrew on
 11 October 2026, so this is now work the code must be brought up to, not an idea parked for later. It
@@ -5711,6 +5747,10 @@ the processors on the performance governor throughout, and all 100 passed. The m
 the cause of the failures: while those builds ran, the machine was also being used for other things, such as web
 browsing and playing videos, which should have waited until the tests had finished. A venue runs on machines given to it
 alone, with nothing else running that could compete with it.
+
+**Seen again on 3 November 2026.** It failed the developer loop with 8 beats against the 50 required, at 06:22, two
+minutes after the processors were put on the performance governor with the deep idle states off. A web browser was
+using about half of one processor at the time. Run on its own straight afterwards, it passed ten times out of ten.
 
 **Principles.** None directly; every component's heartbeats and timeouts run on the reactor's timers.
 

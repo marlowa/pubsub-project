@@ -62,3 +62,29 @@ message(STATUS "  Added benchmark: prometheus_observe_overhead")
 install(TARGETS prometheus_observe_overhead
     RUNTIME DESTINATION bin_benchmarks
 )
+
+# -----------------------------------------------------------------------------
+# command_check_cost: what the leading sequencer's check of a command against its WAL costs -- making
+# the command's number, looking it up in and adding it to a record of the size the venue reserves, and
+# reading one WAL record from the page cache and from the disk.
+add_executable(command_check_cost
+    src/CommandCheckCost.cpp
+)
+
+target_link_libraries(command_check_cost PRIVATE
+    pubsub_itc_fw
+    benchmark::benchmark
+    pthread
+)
+
+# No -O optimisation level here, for the reason given for prometheus_observe_overhead above.
+target_compile_options(command_check_cost PRIVATE
+    -g
+    -fno-omit-frame-pointer
+)
+
+message(STATUS "  Added benchmark: command_check_cost")
+
+install(TARGETS command_check_cost
+    RUNTIME DESTINATION bin_benchmarks
+)

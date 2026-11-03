@@ -363,6 +363,30 @@ throughout. Sending each acknowledgement on the connection its record arrived on
 measurement is the reason the library's replicated WAL answers on the arriving connection
 ([replicated_wal_in_the_library.md](../availability/replicated_wal_in_the_library.md), section 5.2).
 
+### Checking every command against the WAL costs about 0.3 microseconds
+
+The leading sequencer checks every command against its record of the day's command identifiers before
+giving it a number, so that no command is sequenced twice. Timed with the steady clock around the check
+in the leading sequencer, with the record at the size the venue reserves (200 million identifiers,
+6 GiB), over two runs of the comparison above, the check takes 295 nanoseconds at the median, 410 at the
+90th percentile and 550 at the 99th; reading the clock costs 10. That is about a quarter of one per cent
+of the round trip, smaller than the difference between two measurements of the same build, so it cannot
+be seen in the round trip itself.
+
+Most of it is one read of main memory. Measured on its own with `command_check_cost`, a lookup that does
+not find the number takes 111 to 113 nanoseconds in the record of 6 GiB and 11.5 in one small enough to
+stay in the processor's caches. The rest is that at 100 orders a second the sequencer's code and data
+are no longer in the caches when the next order arrives, as in the first finding above.
+
+Reading the one WAL record that proves a match is not cheap. It takes 15 microseconds with the segment
+in the page cache and 20 segment files, and grows with the number of files in the WAL directory, to
+2.96 milliseconds at 16000 files, because the reader lists the directory each time it is opened; from
+the disk it takes 3.2 to 6.1 milliseconds, because the reader asks for the whole 4 MiB segment to be
+read ahead. That read happens only for a command sent again that the WAL holds and for a reused
+`ClOrdID` ([BUG-0224](../bug_list.md#bug_0224);
+[one_check_against_sequencing_twice.md](../availability/one_check_against_sequencing_twice.md),
+section 8, step 5).
+
 ## Ruled out by measurement
 
 ### Looking for work more often

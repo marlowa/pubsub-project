@@ -425,6 +425,32 @@ first and with `--secondary-engine-first`, before the next starts.
    [latency_findings.md](../operations/latency_findings.md), as part of the sequencer's time to send an order on; and
    the time of one read of a record that is not in the page cache. BUG-0122 estimates the lookup at about 100
    nanoseconds; this step replaces the estimate with a measurement.
+
+   **As built.** On the order path, the check takes 295 nanoseconds at the median, 410 at the 90th percentile and 550
+   at the 99th. That was measured by timing `SequencerThread::find_logged_command` with the steady clock in the leading
+   sequencer, with a record of the size the venue reserves (200 million identifiers, 6 GiB), while
+   `fix_load_client.py` sent 6000 orders at 100 a second, with cancels, twice, by the method of
+   [latency_findings.md](../operations/latency_findings.md). Reading the clock costs 10 nanoseconds. The timer was a
+   temporary change, and is not in the code. No check searched the WAL, so every one was settled by the record.
+   Against a round trip of about 125 microseconds, the check is about a quarter of one per cent of it, less than two
+   measurements of the same build differ by.
+
+   The benchmark `command_check_cost` (in `libraries/pubsub_itc_fw/benchmarks`) measures the parts on their own.
+   Making the number takes 4 nanoseconds. A lookup that does not find the number takes 111 to 113 nanoseconds in the
+   record of 6 GiB holding 50 or 100 million identifiers, against 11.5 in one small enough to stay in the processor's
+   caches, so the lookup's time is one read of main memory. Adding a command to the record also takes 113 to 118
+   nanoseconds; it is done when the command is written, as it was before this design. The check on the order path
+   costs more than the lookup on its own because at 100 orders a second the sequencer's caches no longer hold its
+   code and data when the next order arrives.
+
+   Reading the one record at a position costs far more than section 3.2 expected, for two reasons that are recorded as
+   [BUG-0224](../bug_list.md#bug_0224). `WalCursor` lists the whole WAL directory every time it is opened. It also
+   asks the kernel to read the whole 4 MiB segment ahead. With the segment in the page cache, one read takes
+   15 microseconds with 20 segment files in the directory, 735 microseconds with 4000, and 2.96 milliseconds with 16000.
+   A day of 50 million orders leaves between about 4000 and 16000 files. From the disk, one read takes 3.2, 4.0 and 6.1
+   milliseconds with the same directories. The read is made only for a command sent again whose identity the record
+   holds, and for a reused `ClOrdID`, but it is made on the thread that sequences orders, and the read forward for a
+   report in step 4 opens a cursor the same way.
 6. **The gateways onto the library's client side** (decision 7). `UnansweredCommandStore` and the sending of commands
    again move into the library, as [ha_library_boundary.md](ha_library_boundary.md), section 7, describes: the library
    keeps the copies and sends them again on a change of leader or a connection established again, and refuses new

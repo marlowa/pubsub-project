@@ -601,11 +601,11 @@ every command against its record before giving it a number. A command marked as 
 WAL holds is not sequenced again, and is answered with the first report of it the WAL holds, forwarded
 again marked as a possible repeat, or, when the WAL holds none yet, by the matching engine. One not
 marked is refused with `CommandRefused`, which its gateway turns into a rejection with reason 6. A
-gateway refuses itself a command whose identifier it already holds waiting for an answer. What remains
-of the design is the measurement of what the check costs on every command, estimated at about 100
-nanoseconds
+gateway refuses itself a command whose identifier it already holds waiting for an answer. The check
+costs 295 nanoseconds at the median on the order path, measured
 ([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), section 8,
-step 5).
+step 5). Reading the one record that proves a match takes from 15 microseconds to 6 milliseconds on the
+thread that sequences orders, which is [BUG-0224](bug_list.md#bug_0224).
 
 ### V8. Every report the matching engine produces reaches the member (G3)
 
