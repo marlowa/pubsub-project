@@ -158,6 +158,86 @@ code did: each step compares the part's moves with the table. And it is where a 
 not happen, or a move nobody intended, is found. Following the plan, each defect found is recorded in the bug list and
 not fixed within this phase, unless it can lose or duplicate an order, in which case it is raised with Andrew first.
 
+### 6.1 The matching engine's role (`EngineRole`)
+
+**Where it is held now.** Seven members of `MatchingEngineThread` together say what the instance is doing:
+
+- `ha_role_state_`: Unknown, Reconciling (catching up), Leader or Follower;
+- `catch_up_purpose_`: what the catch-up under way is for: BecomeCurrent, Lead or FollowAgain;
+- `follows_the_wal_`: whether the latest catch-up request asked to follow the WAL rather than to lead;
+- `has_reconciled_`: whether a catch-up has completed;
+- `role_when_following_again_`: for a catch-up to follow again, the role to go back to when it ends;
+- `peer_leader_heard_while_reconciling_`, with `peer_leader_instance_id_` and `peer_leader_epoch_`: that this
+  instance agreed the peer leads while it was catching up, to be acted on when the catch-up ends;
+- `refused_to_lead_`: that this instance has found its reports differ from the leader's, and will not lead until it
+  is restarted.
+
+Three functions read them together. `following_the_wal()` is true when high availability is on, `follows_the_wal_`
+is set, and the role is neither Reconciling nor Leader. `keeps_its_reports()` is true when high availability is on,
+`follows_the_wal_` is set, and the role is not Leader. `holding_reports_until_entitled()` is true when high
+availability is on, the role is Reconciling, and the purpose is not Lead.
+
+**The situations.** With high availability on, these are the combinations that occur. Each is named by what the
+instance is doing.
+
+| Situation | Members now | Commands it is sent | Its reports | Announces |
+|-----------|-------------|---------------------|-------------|-----------|
+| **Starting** | Unknown; no catch-up has completed | discarded | none produced | nothing |
+| **Catching up to become current** | Reconciling; purpose BecomeCurrent; asked to follow | applied | held until it knows whether it serves | nothing |
+| **Current, following the WAL** | Unknown; a catch-up has completed; asked to follow | applied, as a follower | kept, and compared with the leader's | nothing |
+| **Catching up to lead** | Reconciling; purpose Lead; asked to lead | applied | sent | nothing |
+| **Leading** | Leader | applied | sent | Leader |
+| **Catching up to follow again** | Reconciling; purpose FollowAgain; asked to follow; the role to go back to is Unknown or Follower | applied | kept | nothing |
+| **Following** | Follower; asked to follow | applied, as a follower | kept, and compared with the leader's | Follower |
+| **Following, without following the WAL** | Follower; the last request asked to lead | discarded | none produced | Follower |
+
+The last situation is a defect: see "Found" below.
+
+`refused_to_lead_` is separate from the situation: an instance that has refused to lead goes on doing what it was
+doing, and no longer asks for a lease. It stays a separate true-or-false member in `EngineRole`.
+
+With high availability off, the single instance is in none of these. It is Unknown, applies every command it is
+sent, and catches up once, when the first sequencer connects, asking as one that is to lead.
+
+**The moves.** "The lease agent says" means the change `PairLeaseAgent` returns to `act_on`: BecameLeader,
+StoppedLeading, or AgreedPeerLeads. AgreedPeerLeads is returned for every request from the peer that this instance
+grants, so a leading peer causes it once every renewal interval, not only once.
+
+| From | Event | To | Done as it moves |
+|------|-------|----|------------------|
+| Starting | the first connection from a sequencer for orders | Catching up to become current | `begin_reconciliation`: the catch-up is asked for |
+| Starting | a command arrives | Starting | discarded |
+| Starting | the lease agent says AgreedPeerLeads | Following, without following the WAL | `follow_peer_claiming_leadership`: takes the peer's epoch, unless it is older than this instance's; announces Follower. The first sequencer connection then asks for no catch-up, because the role is Follower |
+| Catching up to become current | the catch-up completes | Current, following the WAL | reports held stay held; the next record expected is set; if the peer was agreed to lead meanwhile, and trading is not halted, Following, at the peer's epoch, if that is not older than this instance's |
+| Catching up to become current | the lease agent says AgreedPeerLeads | the same | noted, to be acted on when the catch-up completes |
+| Current, following the WAL | the lease agent says AgreedPeerLeads | Following | `follow_peer_claiming_leadership`: takes the peer's epoch, unless it is older than this instance's; reports held are discarded; announces Follower |
+| Starting, Current, Following, or catching up to become current or to follow again | the lease agent says BecameLeader | Catching up to lead | `become_leader_when_current`; a catch-up under way is replaced, and its answer not waited for |
+| Catching up to lead | the catch-up completes | Leading | announces Leader; reports held are sent |
+| Catching up to lead | the lease agent says StoppedLeading | Following, without following the WAL | the purpose is set back to BecomeCurrent; a halt awaited is no longer asked for; reports held are discarded; announces Follower |
+| Leading | the lease agent says StoppedLeading | Catching up to follow again, to go back to Following | announces Follower, then asks to follow again |
+| Current, following the WAL, or Following | a record arrives out of turn; a sequencer connects; or a sequencer says it now leads | Catching up to follow again, to go back to the situation it was in | `follow_the_wal_again` |
+| Catching up to follow again | the catch-up completes | the situation it is to go back to | the next record expected is set |
+| Catching up to follow again | the lease agent says AgreedPeerLeads | the same | noted, but not acted on when this catch-up completes; an instance going back to Current, following the WAL, moves to Following at the next grant |
+| any situation that is catching up | the catch-up is incomplete (R-0101) | the same | asked for again on the next tick of the retry timer |
+
+**Found.** *Following, without following the WAL* is reached in two ways, and is a defect, recorded as
+[BUG-0225](../bug_list.md#bug_0225):
+
+- **An instance restarted beside a leading peer** grants its peer a lease while it is still Starting, before any
+  sequencer has connected, and becomes a Follower without having asked to follow the WAL. When the sequencers connect,
+  it asks for no catch-up, because the role is Follower. This is the ordinary way a standby comes back. It was seen in
+  scenario 24 on 3 November 2026, with the restarted engine's Quill log copied aside while the scenario ran.
+- **The lease runs out while the instance is catching up to lead**, for example when it cannot reach its peer or the
+  arbiter during a catch-up that takes seconds. `enter_follower_state` asks to follow the WAL only when the role it
+  is leaving is Leader; here it is Reconciling. Found by reading the code; not reproduced.
+
+From then on the instance announces that it follows, but applies no command, keeps no report, and its book falls
+behind. No event makes it ask to follow: each of the three that do (a record out of turn, a sequencer connecting, a
+sequencer saying it now leads) is acted on only by an instance that follows the WAL or is catching up. It catches up
+again only if it is later granted the lead. Nothing is lost, because that catch-up brings every command it lacks, but
+the venue has a standby that cannot take over promptly, and nothing says so, which principle V11 requires. Following
+the plan, it is recorded and not fixed within this phase: it loses and duplicates no order.
+
 ## 7. How it is tested
 
 - **After every step**, the whole test suite passes: `scripts/devsetup.sh --skip-db`, and then both full suites of

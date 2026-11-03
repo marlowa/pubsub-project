@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 224 |
-| Open | 79 (56 defects, 23 tasks) |
+| Bugs recorded | 225 |
+| Open | 80 (57 defects, 23 tasks) |
 | Closed | 145 |
-| Next id | BUG-0225 |
+| Next id | BUG-0226 |
 
 ## Open bugs by severity
 
-17 high, 47 medium, 15 low.
+17 high, 48 medium, 15 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -77,6 +77,7 @@
 | [BUG-0210](#bug_0210) | medium | defect | A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again |
 | [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
+| [BUG-0225](#bug_0225) | medium | defect | A matching engine that becomes a follower before it has asked to follow the WAL announces that it follows, but applies nothing |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -188,6 +189,47 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0225: A matching engine that becomes a follower before it has asked to follow the WAL announces that it follows, but applies nothing {#bug_0225}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | defect |
+| Found | 2026-11-03 |
+| Recorded | 2026-11-03 |
+| How | Writing down the matching engine's role states for phase 10 ([dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md), section 6.1), and then seen in scenario 24 |
+| Impact | A matching engine restarted beside a leading peer, the ordinary way a standby comes back, says it follows but applies no command and keeps no report, so its book falls behind and nothing says so. Nothing is lost: if it is later given the lead, it catches up first. But the venue has a standby that cannot take over promptly, and V11 requires that to be reported |
+
+**What happens.** A matching engine asks to follow the WAL only in its catch-up request, and makes that request in
+three cases: when the first sequencer connects for orders, if no catch-up has completed and the role is not Follower;
+when the lease agent says it leads; and when, already following the WAL, a record arrives out of turn, a sequencer
+connects, or a sequencer says it now leads. It becomes a Follower without making the request in two ways:
+
+1. **Restarted beside a leading peer.** While the instance is still Unknown, before any sequencer has connected, its
+   peer asks for a lease and the instance grants it. `act_on` takes the AgreedPeerLeads branch for an Unknown role and
+   calls `follow_peer_claiming_leadership`, which makes the instance a Follower. When the sequencers then connect, the
+   catch-up is skipped, because the role is Follower ("an instance that already follows ... follows the WAL, and asks
+   again itself when it needs to"), but it does not follow the WAL, so it never asks.
+2. **The lease runs out while it is catching up to lead.** `act_on` takes the StoppedLeading branch and calls
+   `enter_follower_state`, which asks to follow again only when the role it leaves is Leader; here it is Reconciling.
+
+In either case the instance announces Follower, applies nothing, and keeps no report. Each event that would make it
+ask again is acted on only by an instance that follows the WAL or is catching up.
+
+**Evidence.** Scenario 24 (the engine that led is killed, the other takes the lead, and the first is restarted) run on
+3 November 2026 with the restarted engine's Quill log copied aside while the scenario ran: the restarted engine
+started at 10:51:36.83 as Unknown, granted its peer a lease and became a Follower at 10:51:38.89 ("peer (instance_id=2)
+leads at epoch 45258 -- this instance granted it a lease, and follows it"), and the two sequencer order connections
+were established at 10:51:39.20 and 10:51:39.29 with no catch-up asked for: no "entering RECONCILING" line follows.
+The scenario passes, because it checks only that the restarted engine is a follower. The second way was found by
+reading the code and has not been reproduced.
+
+**What is wanted.** An engine that is a Follower always follows the WAL: becoming a Follower by either way above asks
+to follow, as a follower that stops leading does. Scenario 24 checks that the restarted engine catches up and applies
+the commands sent after it restarted, and is made to fail on purpose without the fix.
+
+**Principles.** V11: a loss of resilience is not a loss of service, and is reported.
 
 ### BUG-0223: The fix8 test client once logged on and exited without sending its baseline orders, failing scenario 22 {#bug_0223}
 
