@@ -1,4 +1,5 @@
 add_executable(matching_engine
+        EngineCatchUp.cpp
         EngineReportSending.cpp
         Ff1Cipher.cpp
         FollowerReportComparison.cpp
@@ -25,6 +26,7 @@ add_dependencies(matching_engine fix_orders_generated matching_engine_replicatio
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(matching_engine PRIVATE
+        EngineCatchUp.hpp
         EngineReportSending.hpp
         Ff1Cipher.hpp
         FollowerReportComparison.hpp
@@ -114,6 +116,8 @@ add_executable(matching_engine_tests
         tests/ReportIdentifiersTest.cpp
         tests/EngineReportSendingTest.cpp
         tests/FollowerReportComparisonTest.cpp
+        tests/EngineCatchUpTest.cpp
+        EngineCatchUp.cpp
         EngineReportSending.cpp
         FollowerReportComparison.cpp
         Ff1Cipher.cpp

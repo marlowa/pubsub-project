@@ -532,12 +532,32 @@ small steps, with the whole test suite passing after each.
 
 **Design:** [dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md),
 written on 3 November 2026, when Andrew closed phase 9, whose four decisions Andrew took the same day, each as
-recommended: the matching engine is divided first, and the sequencer's replay mode is removed.
+recommended: the matching engine is divided first, and the sequencer's replay mode is removed. Section 9 of the
+design divides the work into sixteen steps, each followed by the developer loop and both full suites:
 
-Step 1 is done: the states of both programs are written down, as the code is now, in section 6 of the design. It
-found [BUG-0225](bug_list.md#bug_0225) and [BUG-0226](bug_list.md#bug_0226). Step 2 is done: the matching engine's
-report sending is the part `EngineReportSending`. Step 3 is done: the comparison of the reports kept while following, and
-the refusal to lead, are the part `FollowerReportComparison`. Step 4 is next.
+1. the states of both programs written down, as the code is now (documents only);
+2. the matching engine's report sending, `EngineReportSending`;
+3. the comparison of the reports kept while following, and the refusal to lead, `FollowerReportComparison`;
+4. the matching engine's catch-up, `EngineCatchUp`;
+5. the matching engine's role, `EngineRole`, as one explicit state;
+6. the check of a command the previous process died applying, `DiedApplyingCheck`, and of the settings the two
+   engines share, `PeerSettingsCheck`, leaving `MatchingEngineThread` with its connections, timers and the handing on
+   of events;
+7. the facts the sequencer reads from the WAL, `VenueStateFromTheWal`;
+8. member sessions, `MemberSessions`;
+9. forwarding reports, `ReportForwarding`;
+10. the reports kept while not leading, `KeptReportStore`, extended;
+11. holding and releasing orders, `OrderRelease`;
+12. which matching engine takes orders, `EnginePresence`;
+13. the checks of each command against the WAL, `CommandChecks`;
+14. requests to halt trading or void commands, `HaltAndVoidRequests`;
+15. serving those that follow the WAL, `ServingWalFollowers`, leaving `SequencerThread` with its connections, timers
+    and the handing on of events;
+16. replay mode removed, the order's round trip measured again, and the sequencer and matching engine documents
+    brought up to date.
+
+Steps 1 to 4 are done. Step 1 found [BUG-0225](bug_list.md#bug_0225) and [BUG-0226](bug_list.md#bug_0226). Step 5
+is next.
 
 ### Framework fixes done alongside the phases
 

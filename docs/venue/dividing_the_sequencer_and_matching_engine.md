@@ -668,6 +668,16 @@ engine first (decision 2, option A).
    `FollowerReportComparisonTest` has eleven tests, and seven faults put in on purpose were each caught. Both full
    suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 4. `EngineCatchUp`.
+
+   **As built.** `EngineCatchUp` (`applications/matching_engine/EngineCatchUp.hpp`) holds the request numbers, the
+   connection the latest answer started on and its tally, the counts of a catch-up, the engine's position, the record
+   expected next while following, and the decision about an unusable region with its request to halt. Whether the
+   engine is catching up, and for what purpose, stays in the role (step 5): the thread passes it in, with whether a
+   catch-up may be asked for and the last command applied (`RequestContext`). The thread keeps the two timers and the
+   sequencer connections for orders, which the part reads, and implements `EngineCatchUpLinksInterface`, which sends a
+   request, starts and stops the timers, asks for a halt, and raises the test event `RegionRebuilt`. The part's Quill
+   log lines begin with its name. `EngineCatchUpTest` has seventeen tests, and nine faults put in on purpose were each
+   caught. Both full suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 5. `EngineRole`, with its one state.
 6. `DiedApplyingCheck` and `PeerSettingsCheck`, and what is left of `MatchingEngineThread` reduced to its connections,
    timers and the handing on of events.

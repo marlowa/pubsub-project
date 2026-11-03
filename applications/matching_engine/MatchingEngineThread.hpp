@@ -31,6 +31,7 @@
 #include <matching_engine_test_events.hpp>
 #include <replication_messages.hpp>
 
+#include "EngineCatchUp.hpp"
 #include "EngineReportSending.hpp"
 #include "FixOrderLimits.hpp"
 #include "FollowerReportComparison.hpp"
@@ -151,10 +152,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID outbound_peer_conn_id_;
     pubsub_itc_fw::ConnectionID inbound_peer_conn_id_;
 
-    // The last command the open-order region records as applied when this process found it, or 0. A catch-up is asked
-    // for from the larger of this and the last command applied since.
-    int64_t last_replicated_seq_no_{0};
-
     // Order book keyed by (session identity, cl_ord_id).
     // Built by applying the WAL's commands, whether this instance leads or follows.
     //
@@ -270,10 +267,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // after the book, the maker of identifiers and the outputs it is given, so that they exist when it is constructed.
     MatchingEngineStateMachine state_machine_{order_book_, report_identifiers_, engine_outputs_, get_logger()};
 
-    // The region this process inherited could not be read, so what it held is unknown here and
-    // the book cannot be vouched for however well the reconciliation goes. R-0102.
-    bool region_was_unusable_{false};
-
     // HA state machine (Slice C+D)
 
     // Current HA role. Unknown for a non-HA (single-instance) ME and for the
@@ -345,50 +338,21 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // startup, waiting to be told what it may do.
     void report_present_state();
 
-    // What the sequencer said it had sent, in the catch-up that last completed, for report_present_state.
-    int64_t last_catch_up_records_sent_{0};
-
     // Why the region holding the open orders could not be used at startup, or empty if it could; and why trading is
     // halted, once it is. Kept for the test, which may connect after either happened (report_present_state).
     std::string region_unusable_reason_;
     std::optional<pubsub_itc_fw_app::HaltReason> halt_reason_;
 
-    // While this instance waits for the TechnicalEvent halting trading that it asked for, the timer that asks again.
-    bool halt_awaited_{false};
+    // While this instance waits for the TechnicalEvent halting trading that it asked for (EngineCatchUp::halt_awaited),
+    // the timer that asks again.
     pubsub_itc_fw::TimerID halt_request_timer_id_{};
     static constexpr std::chrono::seconds halt_request_interval{1};
 
     void report_order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
                               ReportIsRepeat repeat, int64_t sequence_number, std::string_view orig_cl_ord_id = {});
 
-    // Armed while this instance is reconciling, and cancelled by the ack. Only a sequencer
-    // that leads serves a catch-up; one that is not leading drops the request without
-    // answering. So the request is re-sent while the answer is outstanding, rather than
-    // assumed to have been received -- an instance that asked once at the wrong moment would
-    // wait for an answer nobody is going to send.
+    // Armed while this instance is reconciling, and cancelled by the ack: its ticks go to EngineCatchUp::on_retry_tick.
     pubsub_itc_fw::TimerID reconciliation_timer_id_{};
-    int reconciliation_attempts_{0};
-
-    // Records applied since reconciliation began, and the figure at the previous tick. A
-    // request is only repeated when nothing has arrived since the last one: a sequencer that
-    // is serving the catch-up is sending records, and asking it again mid-stream would have it
-    // send the whole catch-up a second time -- which arrives after this instance has promoted
-    // and is then processed as live traffic, duplicating every order in it.
-    int64_t reconciliation_records_seen_{0};
-    int64_t reconciliation_records_at_last_tick_{0};
-
-    // Reports sent out of the catch-up, counted so the engine can say what it did. An operator
-    // reading this line learns how much a member was told on a promotion, which is otherwise
-    // visible only at Debug and only per record.
-    int64_t reconciliation_reports_sent_{0};
-
-    // The last command the WAL holds every report of, from the WalFollowStarted that answers the latest catch-up request,
-    // or 0 for none. A catch-up sends no report for a command at or before it: those reports reach their members
-    // through the sequencers, and sending them again flooded the leading sequencer (docs/availability/far_back_catch_up.md,
-    // section 2). A lower figure only means more reports are sent again, each marked as a possible repeat.
-    int64_t reports_in_wal_through_{0};
-    // The reports of the present catch-up that were not sent, because the WAL already holds them.
-    int64_t reconciliation_reports_left_out_{0};
 
     // Whether reports are held until this instance knows whether it serves: it is catching up, with high availability
     // on, for a purpose other than leading. An instance that is about to learn its peer leads would otherwise report
@@ -396,40 +360,11 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // fifth trap says being current and being entitled to act are separate things.
     [[nodiscard]] bool holding_reports_until_entitled() const;
 
-    // Establishes that the catch-up was complete before this instance acts on it (R-0101).
-    //
-    // Its life is one answer rather than one reconciliation, unlike the counter above: what the ack accounts for is what
-    // the answer to the latest request sent. It is reset when that answer starts (WalFollowStarted).
-    pubsub_itc_fw::CatchUpTally catch_up_tally_{0};
-
-    // The number of the latest catch-up request, counting up from 1. The same number is sent on every sequencer order
-    // connection, and the leading sequencer echoes it on WalFollowStarted and WalFollowCaughtUp.
-    int64_t follow_request_number_{0};
-
-    // The connection on which the answer to the latest request has started, or none until it has. While catching up,
-    // records on any other connection, or before the answer starts, are from an earlier answer still on its way, and
-    // are ignored: applying them would apply again what the latest answer brings.
-    pubsub_itc_fw::ConnectionID catch_up_connection_{};
-
-    // How many records from earlier answers were ignored in the present catch-up, for the Quill log.
-    int64_t records_from_earlier_answers_{0};
-
     // Whether the catch-up has been done. A venue with high availability off has no
     // lease to trigger one, so it reconciles when the sequencer first connects -- once,
     // not on every reconnect: this instance's position advances as it works and is not tracked
     // between catch-ups, so asking again later would replay what it has already applied.
     bool has_reconciled_{false};
-
-    // Whether the current catch-up has been asked for on at least one sequencer order connection. False from the moment
-    // a catch-up begins until the request is first sent, which is later when no sequencer had connected yet.
-    bool follow_request_sent_{false};
-
-    // Whether this instance knows where it had got to. A process that found a region left by a
-    // predecessor does: the region says which sequence number its contents are current to. One
-    // that found no region at all does not, and must not pretend the answer is zero -- asking
-    // for everything after zero asks for the whole retained log, which is every order the venue
-    // has taken since the last reclaim rather than the few it missed.
-    bool has_position_{false};
 
     // What the present catch-up is for: becoming current, taking the role, or following again.
     // Being current and being entitled to act are separate things, and only the lease rules say
@@ -450,10 +385,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // that is not to lead asks to follow: it is sent every committed record, reports included, and applies every command
     // among them as the leader does, sending none of their reports. Whether the latest request asked to follow.
     bool follows_the_wal_{false};
-    // While following, after the catch-up: the number the next record must have. The WAL's records are numbered one
-    // after another, and a follower is sent every one of them, in order, so any other number means one was missed. 0
-    // when there is no record to expect, before the catch-up has ended.
-    int64_t next_followed_seq_no_{0};
     // Whether the command being applied came to this instance as a follower of the WAL, so that its reports are not sent.
     bool current_command_follows_{false};
     // How many reports were not sent because their commands were applied while following, for the Quill log.
@@ -499,6 +430,29 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // SequencerThread::handle_me_position_request). This guarantees the leader --
     // whichever it is -- reconciles this ME and re-routes live orders here.
     std::unordered_set<pubsub_itc_fw::ConnectionID> sequencer_order_conn_ids_;
+
+    // How EngineCatchUp sends its requests and starts its timers.
+    class CatchUpLinks : public EngineCatchUpLinksInterface {
+      public:
+        explicit CatchUpLinks(MatchingEngineThread& owner) : owner_(owner) {}
+        void send_follow_request(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw::WalFollowRequest& request) override;
+        void start_retry_timer() override;
+        void stop_retry_timer() override;
+        void request_halt() override;
+        void start_halt_timer() override;
+        void stop_halt_timer() override;
+        void region_rebuilt(int64_t through) override;
+
+      private:
+        MatchingEngineThread& owner_;
+    };
+    CatchUpLinks catch_up_links_{*this};
+    // Asking to be caught up and checking the answer, the engine's position, and an unusable region (section 6.4 of
+    // docs/venue/dividing_the_sequencer_and_matching_engine.md). Declared after the connections it sends on.
+    EngineCatchUp catch_up_{static_cast<int64_t>(config_.instance_id), config_.ha_enabled, sequencer_order_conn_ids_, catch_up_links_, get_logger()};
+    // What a catch-up request says that EngineCatchUp does not know: whether one may be asked for, whether to lead, and
+    // the last command applied.
+    [[nodiscard]] EngineCatchUp::RequestContext catch_up_context() const;
 
     // Arbiter-mediated promotion helpers.
     void enter_follower_state();
@@ -582,8 +536,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // catch-up has already been asked for on others, so that a stream already under way is left to finish (BUG-0200);
     // otherwise begins the catch-up.
     void ask_on_new_sequencer_connection(const pubsub_itc_fw::ConnectionID& id);
-    // The catch-up request this instance sends, naming it follower_name, which must outlive the request.
-    [[nodiscard]] pubsub_itc_fw::WalFollowRequest follow_request(const std::string& follower_name) const;
     // The leading sequencer has started to answer a catch-up request (WalFollowStarted).
     void handle_follow_started(const pubsub_itc_fw::EventMessage& message);
     // The leading sequencer has sent every order after this instance's position (WalFollowCaughtUp).
@@ -646,18 +598,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      * (R-0102, R-0123). See account_for_unusable_region.
      */
     [[nodiscard]] bool book_can_be_vouched_for() const;
-
-    /**
-     * @brief Decides, once a catch-up has finished, what an engine whose region could not be used does with the book the
-     * catch-up rebuilt (R-0123).
-     *
-     * Where the WAL reached the first command of the trading day, the book is exactly the venue's, so the engine carries
-     * on with it, cancelling nothing, and reports at Error that it rebuilt its record. Where it did not, the engine cannot
-     * account for the orders the venue holds: if it is about to lead, it asks the leading sequencer to halt trading, by a
-     * TechnicalEvent in the WAL, so that every engine halts at the same point; if it follows, the engine that leads goes
-     * on trading, and this one asks again when it is to lead.
-     */
-    void account_for_unusable_region(const pubsub_itc_fw::WalFollowCaughtUpView& ack);
 
     // Asks every sequencer for a TechnicalEvent halting trading because this instance cannot account for the book; the
     // leading one writes it. Asked again every halt_request_interval until trading is halted.
