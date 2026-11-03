@@ -725,6 +725,12 @@ engine first (decision 2, option A).
    halted, and the position the instance resumed leading from. And two serve test hooks. The thread's source and
    header together went from 3,193 lines before this phase to 2,467. Both full suites pass: 99 of 99 with the primary
    engine first, and 38 of 38 with the secondary engine first.
+
+   **The round trip.** The engine after step 6 is measured against the engine built from the code before step 2, the
+   first step to touch the order path, in one deployment that differs only in the engine binary. Steps 2 to 6 cost
+   nothing measurable: the median was 106.7 to 107.1 µs and the 90th percentile 113.7 to 114.5 µs with either engine
+   ([latency_findings.md](../operations/latency_findings.md), "Dividing the matching engine into parts costs nothing
+   measurable"). The sequencer's steps are measured the same way, against the code after step 6.
 7. `VenueStateFromTheWal`.
 8. `MemberSessions`.
 9. `ReportForwarding`.

@@ -387,6 +387,26 @@ ahead, takes up to 3 milliseconds from the page cache and 6 from the disk on a d
 [one_check_against_sequencing_twice.md](../availability/one_check_against_sequencing_twice.md),
 section 8, step 5).
 
+### Dividing the matching engine into parts costs nothing measurable
+
+Steps 2 to 6 of [dividing_the_sequencer_and_matching_engine.md](../venue/dividing_the_sequencer_and_matching_engine.md)
+moved the matching engine's report sending, catch-up, role and checks out of `MatchingEngineThread` into parts, which
+the thread reaches through interfaces, so through virtual calls on the order path. Measured on 3 November 2026 with the
+machine in measuring mode, by the method above: one deployment, with only the matching engine binary differing between
+the two arms, the engine built from the code before step 2 against the engine after step 6, in six sessions taken in
+turn (old, new, old, new, new, old), each with cleared WALs, a warm-up run that was discarded, and two runs of 6000
+orders at 100 a second.
+
+| Engine | Round trip, median | 90th percentile | Engine's own time, order in to acknowledgement out (mean) |
+|--------|--------------------|-----------------|------------------------------------------------------------|
+| before step 2, three sessions | 106.7 to 107.0 µs | 113.7 to 114.3 µs | 2.7 to 3.0 µs |
+| after step 6, two sessions | 106.8 to 107.1 µs | 113.9 to 114.5 µs | 2.6 to 3.0 µs |
+
+A third session of the new engine was slower, with a median of 108.2 and 110.4 µs and a 90th percentile of 121 and
+128 µs. Orders in its slower run reached the sequencer later too, 18.8 µs against 17.5, which is before the engine is
+reached, and the two sessions of the same binary either side of it were as fast as the old engine, so it is a variation
+between sessions, not a cost of the code. It is why a comparison takes more than one session of each arm.
+
 ## Ruled out by measurement
 
 ### Looking for work more often
