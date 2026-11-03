@@ -137,9 +137,9 @@ sequences orders, but happens only in the rare cases above and when the record i
 
 **What the read costs.** One read of one record, on the thread that sequences orders. A command sent again is recent,
 so its record is almost always still in memory, in the page cache. A member reusing an identifier from hours earlier
-may need a read from disk, of the order of 0.1 to 10 milliseconds, while orders behind it wait. Reusing an identifier
-is a member's mistake, rare, and costs the venue that one read, not a read of every record written since, as
-`LogTailIndex` would. Section 8, step 5, measures it.
+may need a read from disk, about 0.2 milliseconds, while orders behind it wait. Reusing an identifier is a member's
+mistake, rare, and costs the venue that one read, not a read of every record written since, as `LogTailIndex` would.
+Section 8, step 5, gives the measurements.
 
 **When the record is full.** As now, the record accepts no more entries once it holds as many as it was reserved for,
 and says so once at Error. A command whose number is not in a full record may still be in the WAL. The leader then has
@@ -443,14 +443,13 @@ first and with `--secondary-engine-first`, before the next starts.
    costs more than the lookup on its own because at 100 orders a second the sequencer's caches no longer hold its
    code and data when the next order arrives.
 
-   Reading the one record at a position costs far more than section 3.2 expected, for two reasons that are recorded as
-   [BUG-0224](../bug_list.md#bug_0224). `WalCursor` lists the whole WAL directory every time it is opened. It also
-   asks the kernel to read the whole 4 MiB segment ahead. With the segment in the page cache, one read takes
-   15 microseconds with 20 segment files in the directory, 735 microseconds with 4000, and 2.96 milliseconds with 16000.
-   A day of 50 million orders leaves between about 4000 and 16000 files. From the disk, one read takes 3.2, 4.0 and 6.1
-   milliseconds with the same directories. The read is made only for a command sent again whose identity the record
-   holds, and for a reused `ClOrdID`, but it is made on the thread that sequences orders, and the read forward for a
-   report in step 4 opens a cursor the same way.
+   Reading the one record at a position takes about 6.5 microseconds with the record in the page cache and about
+   0.2 milliseconds from the disk, whether the WAL directory holds 20 segment files or 16000; a day of 50 million
+   orders leaves between about 4000 and 16000. The cursor opens the segment by its number, without listing the
+   directory, and asks the kernel to read only the pages it touches, not the whole 4 MiB segment
+   ([BUG-0224](../bug_list.md#bug_0224)). The read forward for a report in step 4
+   starts at the command's own record, whose position the check returns, and `Wal::scan_start_for`, used where only a
+   record's number is known, is a binary search taking 14 microseconds at 16000 segments.
 6. **The gateways onto the library's client side** (decision 7). `UnansweredCommandStore` and the sending of commands
    again move into the library, as [ha_library_boundary.md](ha_library_boundary.md), section 7, describes: the library
    keeps the copies and sends them again on a change of leader or a connection established again, and refuses new

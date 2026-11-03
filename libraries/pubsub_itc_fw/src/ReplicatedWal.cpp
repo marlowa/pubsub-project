@@ -901,7 +901,7 @@ bool ReplicatedWal::holds_command(std::string_view identity, int64_t not_before_
     return find_command(identity, not_before_ns).has_value();
 }
 
-std::optional<int64_t> ReplicatedWal::find_command(std::string_view identity, int64_t not_before_ns) {
+std::optional<CommandInWal> ReplicatedWal::find_command(std::string_view identity, int64_t not_before_ns) {
     if (configuration_.command_identity == nullptr) {
         return std::nullopt;
     }
@@ -921,7 +921,7 @@ std::optional<int64_t> ReplicatedWal::find_command(std::string_view identity, in
             const std::optional<int64_t> record = command_at(found.position, identity);
             if (record.has_value()) {
                 ++command_check_counts_.proved_by_reading;
-                return record;
+                return CommandInWal{*record, found.position};
             }
             ++command_check_counts_.other_command_at_position;
             PUBSUB_LOG(logger_, FwLogLevel::Warning,
@@ -935,13 +935,18 @@ std::optional<int64_t> ReplicatedWal::find_command(std::string_view identity, in
         events_.checking_for_commands_already_held(wal_.last_seq_no());
     }
     ++command_check_counts_.searched;
-    return search_for_command(identity, not_before_ns);
+    const std::optional<int64_t> searched = search_for_command(identity, not_before_ns);
+    if (!searched.has_value()) {
+        return std::nullopt;
+    }
+    return CommandInWal{*searched, std::nullopt};
 }
 
 std::optional<int64_t> ReplicatedWal::command_at(WalPosition position, std::string_view identity) {
     try {
+        // One record at a known position: the cursor opens its segment by number and reads only the pages it touches.
         WalCursor cursor;
-        cursor.open(configuration_.wal_directory, position);
+        cursor.open(configuration_.wal_directory, position, WalCursor::ReadAhead::pages_read_only);
         int64_t record_id = 0;
         const uint8_t* payload = nullptr;
         size_t size = 0;

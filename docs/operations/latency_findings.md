@@ -378,12 +378,12 @@ not find the number takes 111 to 113 nanoseconds in the record of 6 GiB and 11.5
 stay in the processor's caches. The rest is that at 100 orders a second the sequencer's code and data
 are no longer in the caches when the next order arrives, as in the first finding above.
 
-Reading the one WAL record that proves a match is not cheap. It takes 15 microseconds with the segment
-in the page cache and 20 segment files, and grows with the number of files in the WAL directory, to
-2.96 milliseconds at 16000 files, because the reader lists the directory each time it is opened; from
-the disk it takes 3.2 to 6.1 milliseconds, because the reader asks for the whole 4 MiB segment to be
-read ahead. That read happens only for a command sent again that the WAL holds and for a reused
-`ClOrdID` ([BUG-0224](../bug_list.md#bug_0224);
+Reading the one WAL record that proves a match takes about 6.5 microseconds with the segment in the
+page cache and about 0.2 milliseconds from the disk, however many segment files the WAL directory
+holds. It happens only for a command sent again that the WAL holds and for a reused `ClOrdID`. A
+reader that lists the directory each time it is opened, or asks for the whole 4 MiB segment to be read
+ahead, takes up to 3 milliseconds from the page cache and 6 from the disk on a day's WAL
+([BUG-0224](../bug_list.md#bug_0224);
 [one_check_against_sequencing_twice.md](../availability/one_check_against_sequencing_twice.md),
 section 8, step 5).
 

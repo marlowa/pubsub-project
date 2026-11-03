@@ -34,6 +34,7 @@
 #include <pubsub_itc_fw/WalCommandSearch.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalFollowing.hpp>
+#include <pubsub_itc_fw/WalPosition.hpp>
 
 #include <lease_messages.hpp>
 #include <replication_messages.hpp>
@@ -93,6 +94,15 @@ class PeerCatchUpInterface {
 
     /// Whether nothing is reading the WAL for a follower, so that it may be cut back.
     [[nodiscard]] virtual bool reading_has_stopped() const = 0;
+};
+
+/// Where a replicated WAL holds a command.
+struct CommandInWal {
+    /// The number of the record that holds the command.
+    int64_t record_id{0};
+    /// Where that record starts. Known when the record of command identifiers proved the match by reading the record
+    /// at the position it keeps; not known when the WAL was searched.
+    std::optional<WalPosition> position;
 };
 
 /**
@@ -442,9 +452,10 @@ class ReplicatedWal {
      *
      * @param[in] identity      The command's identity, as the configured CommandIdentityInterface writes it.
      * @param[in] not_before_ns As for holds_command().
-     * @return The record's number, or nothing when the WAL does not hold the command or no command_identity is configured.
+     * @return The record's number and, when the record of identifiers proved the match, its position; or nothing when
+     *         the WAL does not hold the command or no command_identity is configured.
      */
-    [[nodiscard]] std::optional<int64_t> find_command(std::string_view identity, int64_t not_before_ns);
+    [[nodiscard]] std::optional<CommandInWal> find_command(std::string_view identity, int64_t not_before_ns);
 
     /// Whether a search of the WAL is being kept for holds_command(), with what it has read.
     [[nodiscard]] bool command_search_in_use() const {

@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 224 |
-| Open | 80 (57 defects, 23 tasks) |
-| Closed | 144 |
+| Open | 79 (56 defects, 23 tasks) |
+| Closed | 145 |
 | Next id | BUG-0225 |
 
 ## Open bugs by severity
 
-17 high, 48 medium, 15 low.
+17 high, 47 medium, 15 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -76,7 +76,6 @@
 | [BUG-0209](#bug_0209) | medium | task | No scenario reaches the halt when a matching engine cannot account for the orders the venue holds |
 | [BUG-0210](#bug_0210) | medium | defect | A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again |
 | [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
-| [BUG-0224](#bug_0224) | medium | defect | Reading one WAL record at a known position lists the whole WAL directory and reads its whole segment ahead, so it takes milliseconds on the thread that sequences orders |
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
@@ -189,41 +188,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0224: Reading one WAL record at a known position lists the whole WAL directory and reads its whole segment ahead, so it takes milliseconds on the thread that sequences orders {#bug_0224}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | defect |
-| Found | 2026-11-03 |
-| Recorded | 2026-11-03 |
-| How | Measuring the cost of the leading sequencer's check of each command against its WAL, for phase 9 step 5, with the benchmark `command_check_cost` |
-| Impact | Every command sent again whose identity the WAL holds, and every reused ClOrdID, holds up every order behind it on the leading sequencer for between about 15 microseconds and 6 milliseconds. After a change of leader the gateways send every unanswered command again, and each costs one such read |
-
-**What happens.** When the record of command identifiers holds a command's number, the leader reads the one WAL record
-at the position kept beside it (`ReplicatedWal::command_at`), and `SequencerThread::first_report_answering` reads
-forward from a command's record for its report. Both open a `WalCursor` at a position, and the cursor does two things
-that cost far more than reading one record:
-
-- `WalCursor::open` lists the WAL directory with `readdir` and sorts the segment numbers, every time it is opened. A
-  record in the sequencer's WAL averages 292 bytes, so a day of 50 million orders, with their reports and cancels,
-  leaves between about 4000 and 16000 segment files of 4 MiB. Measured with the segment in the page cache, one read
-  takes 15 microseconds with 20 segment files in the directory and 735 microseconds with 4000.
-- `WalCursor::map_current_segment` maps the whole segment and calls `madvise(MADV_WILLNEED)` on it, which asks the
-  kernel to read all 4 MiB from the disk. Measured with the segment's pages dropped from the page cache first, one
-  read takes 3.2 milliseconds with 20 segment files and 4.0 with 4000, against the fraction of a millisecond the
-  design expected for one page.
-
-Measured with the machine set up for measuring, one read with the segment in the page cache takes 15 microseconds
-with 20 segment files, 735 with 4000 and 2.96 milliseconds with 16000; with the segment's pages dropped from the page
-cache, it takes 3.2, 4.0 and 6.1 milliseconds
-([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), section 8, step 5).
-
-**What is wanted.** A read of one record at a known position opens that segment by its number, which the position
-gives, without listing the directory; and maps only the pages that hold the record, or reads them with `pread`,
-without asking for the whole segment to be read ahead. A reader that goes on to read many records, as a catch-up does,
-keeps reading ahead. Measured again with `command_check_cost` afterwards.
 
 ### BUG-0223: The fix8 test client once logged on and exited without sending its baseline orders, failing scenario 22 {#bug_0223}
 
@@ -3754,6 +3718,63 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0224: Reading one WAL record at a known position lists the whole WAL directory and reads its whole segment ahead, so it takes milliseconds on the thread that sequences orders {#bug_0224}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | defect |
+| Found | 2026-11-03 |
+| Recorded | 2026-11-03 |
+| Fixed | 2026-11-03 -- a cursor opens a segment by its number and lists the directory only when that segment does not exist; a reader of a few records asks the kernel for only the pages it reads; `Wal::scan_start_for` finds the segment by a binary search; and the read forward for a report starts at the command's own record |
+| How | Measuring the cost of the leading sequencer's check of each command against its WAL, for phase 9 step 5, with the benchmark `command_check_cost` |
+| Impact | Every command sent again whose identity the WAL holds, and every reused ClOrdID, holds up every order behind it on the leading sequencer for between about 15 microseconds and 6 milliseconds. After a change of leader the gateways send every unanswered command again, and each costs one such read |
+
+**What happens.** When the record of command identifiers holds a command's number, the leader reads the one WAL record
+at the position kept beside it (`ReplicatedWal::command_at`), and `SequencerThread::first_report_answering` reads
+forward from a command's record for its report. Both open a `WalCursor` at a position, and the cursor does two things
+that cost far more than reading one record:
+
+- `WalCursor::open` lists the WAL directory with `readdir` and sorts the segment numbers, every time it is opened. A
+  record in the sequencer's WAL averages 292 bytes, so a day of 50 million orders, with their reports and cancels,
+  leaves between about 4000 and 16000 segment files of 4 MiB. Measured with the segment in the page cache, one read
+  takes 15 microseconds with 20 segment files in the directory and 735 microseconds with 4000.
+- `WalCursor::map_current_segment` maps the whole segment and calls `madvise(MADV_WILLNEED)` on it, which asks the
+  kernel to read all 4 MiB from the disk. Measured with the segment's pages dropped from the page cache first, one
+  read takes 3.2 milliseconds with 20 segment files and 4.0 with 4000, against the fraction of a millisecond the
+  design expected for one page.
+
+Measured with the machine set up for measuring, one read with the segment in the page cache takes 15 microseconds
+with 20 segment files, 735 with 4000 and 2.96 milliseconds with 16000; with the segment's pages dropped from the page
+cache, it takes 3.2, 4.0 and 6.1 milliseconds
+([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), section 8, step 5).
+
+**What was done.** Four changes, each measured with `command_check_cost` on the same machine in the same power
+state as the figures above:
+
+- `WalCursor::open` opens the segment its position names by its number. The writer numbers segments one after
+  another and the log loses segments only from its start or its end, so the segments on disk are numbered without
+  gaps; the cursor moves to the next segment by opening the next number, and lists the directory only when the
+  segment it is opened at does not exist. One read of a record in the page cache now takes 6.3 to 6.6 microseconds
+  with 20, 4000 or 16000 segment files.
+- `WalCursor::open` takes a `ReadAhead`. `pages_read_only` advises the kernel with `MADV_RANDOM`, so that only the
+  pages the cursor touches are read from the disk; `whole_segment`, the default, keeps `MADV_WILLNEED` for readers that
+  go on through many records. `ReplicatedWal::command_at` uses the first. One read from the disk now takes 195 to 214
+  microseconds, against 3.7 milliseconds with the whole segment read ahead.
+- `Wal::scan_start_for`, which finds the segment holding a record known only by its number, read the first header of
+  every segment in turn: 22 microseconds with 20 segments, 4.4 milliseconds with 4000 and 19.8 with 16000, for a
+  record in the last segments. It is now a binary search between segment 0 and the segment being written, taking 5.5,
+  12.2 and 13.9 microseconds.
+- `ReplicatedWal::find_command` returns the position of the command's record with its number when the record of
+  identifiers proved the match (`CommandInWal`), and `SequencerThread::first_report_answering` starts reading there,
+  reading only the pages it touches. When the WAL was searched, the position is not known, and it starts at the
+  segment `scan_start_for` finds, with the whole segment read ahead.
+
+Unit tests of `WalCursor`, `Wal` and the replicated WAL's check cover a cursor opened at a segment that no longer
+exists, the two kinds of read ahead, a cursor opened again reading segments written since, the binary search against
+the first record of every segment for every record, the search after the start of the log is discarded, and the
+position `find_command` gives. Each was made to fail by breaking the change it covers.
 
 ### BUG-0122: Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism {#bug_0122}
 

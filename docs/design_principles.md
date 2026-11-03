@@ -604,8 +604,8 @@ marked is refused with `CommandRefused`, which its gateway turns into a rejectio
 gateway refuses itself a command whose identifier it already holds waiting for an answer. The check
 costs 295 nanoseconds at the median on the order path, measured
 ([one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md), section 8,
-step 5). Reading the one record that proves a match takes from 15 microseconds to 6 milliseconds on the
-thread that sequences orders, which is [BUG-0224](bug_list.md#bug_0224).
+step 5). Reading the one record that proves a match takes about 6.5 microseconds from the page cache and
+0.2 milliseconds from the disk.
 
 ### V8. Every report the matching engine produces reaches the member (G3)
 

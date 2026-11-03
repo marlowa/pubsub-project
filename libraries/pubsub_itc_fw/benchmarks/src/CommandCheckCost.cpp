@@ -33,13 +33,19 @@
  *   Reading one record. read_one_record does what the leader does to read the record at a position:
  *   it opens a WalCursor at the position and reads the next record. It is measured with the segment in
  *   the page cache ("warm") and with the segment's pages dropped from the page cache first ("cold"), so
- *   that the read must go to the disk. Each is measured with the WAL's directory holding 20 segment
- *   files, 4000 and 16000, because the cursor lists the directory every time it is opened. A record in
+ *   that the read must go to the disk, and with the cursor asking the kernel to read the whole segment
+ *   ahead ("read_only_pages" 0) or only the pages it reads (1), which is how the leader reads one record.
+ *   Each is measured with the WAL's directory holding 20 segment files, 4000 and 16000, to show that the
+ *   time does not depend on how many segments the WAL has. A record in
  *   the sequencer's WAL averages 292 bytes, so 50 million records fill about 3500 segments of 4 MiB; a
  *   day of 50 million orders writes a record for each order and each report, and for each cancel and its
  *   report, so 4000 files is a day with few cancels and 16000 a day with many. The cold case checks, with mincore,
  *   that none of the segment's pages was in the page cache before each read, and reports how many were
  *   as pages_resident_before_read, which must be zero for the figure to mean a read from the disk.
+ *
+ *   Finding the segment that holds a record. find_segment_of_record times Wal::scan_start_for, which
+ *   the leader uses to start reading at a record it knows only by its number, for records in the last
+ *   segments of the same three directories, with the segments in the page cache.
  *
  * The WAL is written in a directory given by the environment variable COMMAND_CHECK_COST_WAL_DIRECTORY,
  * on the disk whose read is to be measured; the directory is removed and written again at the start.
@@ -58,8 +64,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -74,7 +82,9 @@
 #include <benchmark/benchmark.h>
 #include <fmt/format.h>
 
+#include <pubsub_itc_fw/Crc32.hpp>
 #include <pubsub_itc_fw/LoggedCommandIdentifiers.hpp>
+#include <pubsub_itc_fw/Wal.hpp>
 #include <pubsub_itc_fw/WalCursor.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
@@ -213,12 +223,36 @@ std::string segment_path(const std::string& directory, uint64_t segment) {
 }
 
 // A WAL of segments_written full segments, the last segment_files of a directory holding segment_files files.
-// The files before them are empty: the cursor lists them, as it lists a full day's segments, and never opens them.
+// Each file before them holds one record, numbered in order, and nothing else: they stand for the earlier segments of
+// a day, which the readers measured here must not have to read, without taking 4 MiB of disk each.
 struct WrittenWal {
     std::string directory;
     uint64_t first_segment{0};
+    int64_t first_full_segment_record{0};
     std::vector<WalPosition> positions;
 };
+
+// Writes a segment file holding the one record @p record_id, framed as WalWriter frames an entry: magic, payload size,
+// record id and eight reserved bytes, the payload, and a CRC32 of the header and the payload.
+void write_one_record_segment(const std::string& path, int64_t record_id) {
+    std::array<uint8_t, 24 + record_size + 4> entry{};
+    const uint32_t magic = pubsub_itc_fw::WalWriter::entry_magic;
+    const auto payload_size = static_cast<uint32_t>(record_size);
+    std::memcpy(entry.data(), &magic, sizeof(magic));
+    std::memcpy(entry.data() + 4, &payload_size, sizeof(payload_size));
+    std::memcpy(entry.data() + 8, &record_id, sizeof(record_id));
+    const uint32_t checksum = pubsub_itc_fw::Crc32::compute(entry.data(), 24 + record_size);
+    std::memcpy(entry.data() + 24 + record_size, &checksum, sizeof(checksum));
+    const int fd = ::open(path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) {
+        throw std::runtime_error("cannot create " + path);
+    }
+    const ssize_t written = ::write(fd, entry.data(), entry.size());
+    ::close(fd);
+    if (written != static_cast<ssize_t>(entry.size())) {
+        throw std::runtime_error("cannot write " + path);
+    }
+}
 
 WrittenWal& wal_of(size_t segment_files) {
     static std::vector<std::unique_ptr<WrittenWal>> written;
@@ -233,14 +267,14 @@ WrittenWal& wal_of(size_t segment_files) {
     std::filesystem::remove_all(wal->directory);
     std::filesystem::create_directories(wal->directory);
     for (uint64_t segment = 0; segment < wal->first_segment; ++segment) {
-        const int fd = ::open(segment_path(wal->directory, segment).c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
-        ::close(fd);
+        write_one_record_segment(segment_path(wal->directory, segment), static_cast<int64_t>(segment) + 1);
     }
+    wal->first_full_segment_record = static_cast<int64_t>(wal->first_segment) + 1;
     {
         pubsub_itc_fw::WalWriter writer;
         writer.open(wal->directory, segment_size, WalPosition{wal->first_segment, 0});
         std::array<uint8_t, record_size> payload{};
-        int64_t record_id = 1;
+        int64_t record_id = wal->first_full_segment_record;
         while (writer.current_position().segment < wal->first_segment + segments_written) {
             payload.fill(static_cast<uint8_t>(record_id));
             const WalPosition before = writer.current_position();
@@ -291,9 +325,9 @@ size_t drop_from_page_cache(const std::string& path) {
 }
 
 // Reads the one record at the position as the leader does, and returns a sum of its bytes so that they are read.
-uint64_t read_record_at(const std::string& directory, WalPosition position) {
+uint64_t read_record_at(const std::string& directory, WalPosition position, pubsub_itc_fw::WalCursor::ReadAhead read_ahead) {
     pubsub_itc_fw::WalCursor cursor;
-    cursor.open(directory, position);
+    cursor.open(directory, position, read_ahead);
     int64_t record_id = 0;
     const uint8_t* payload = nullptr;
     size_t size = 0;
@@ -309,6 +343,7 @@ uint64_t read_record_at(const std::string& directory, WalPosition position) {
 
 void read_one_record(benchmark::State& state) {
     const bool cold = state.range(0) != 0;
+    const auto read_ahead = state.range(2) != 0 ? pubsub_itc_fw::WalCursor::ReadAhead::pages_read_only : pubsub_itc_fw::WalCursor::ReadAhead::whole_segment;
     const auto segment_files = static_cast<size_t>(state.range(1));
     const WrittenWal& wal = wal_of(segment_files);
     uint64_t chain = 1;
@@ -319,7 +354,7 @@ void read_one_record(benchmark::State& state) {
             resident_before_read += drop_from_page_cache(segment_path(wal.directory, position.segment));
         }
         const auto start = std::chrono::steady_clock::now();
-        uint64_t sum = read_record_at(wal.directory, position);
+        uint64_t sum = read_record_at(wal.directory, position, read_ahead);
         const auto finish = std::chrono::steady_clock::now();
         benchmark::DoNotOptimize(sum);
         state.SetIterationTime(std::chrono::duration<double>(finish - start).count());
@@ -327,6 +362,35 @@ void read_one_record(benchmark::State& state) {
     }
     state.counters["pages_resident_before_read"] = static_cast<double>(resident_before_read);
     state.counters["records"] = static_cast<double>(wal.positions.size());
+}
+
+void find_segment_of_record(benchmark::State& state) {
+    const WrittenWal& written = wal_of(static_cast<size_t>(state.range(0)));
+    // A Wal opened on the directory, as the sequencer's is; opening it reads the records once to find the end.
+    static std::vector<std::pair<std::string, std::unique_ptr<pubsub_itc_fw::Wal>>> opened;
+    pubsub_itc_fw::Wal* wal = nullptr;
+    for (auto& [directory, open_wal] : opened) {
+        if (directory == written.directory) {
+            wal = open_wal.get();
+        }
+    }
+    if (wal == nullptr) {
+        auto open_wal = std::make_unique<pubsub_itc_fw::Wal>();
+        open_wal->open(written.directory, segment_size);
+        wal = open_wal.get();
+        opened.emplace_back(written.directory, std::move(open_wal));
+    }
+    // Records in the last three segments, which is where a recent command is.
+    const int64_t last_record = written.first_full_segment_record + static_cast<int64_t>(written.positions.size()) - 1;
+    const int64_t first_looked_for = last_record - 3 * 12'000;
+    uint64_t chain = 1;
+    WalPosition found{};
+    for (auto _ : state) {
+        found = wal->scan_start_for(first_looked_for + static_cast<int64_t>(mix(chain) % (3 * 12'000)));
+        benchmark::DoNotOptimize(found);
+        ++chain;
+    }
+    state.counters["last_segment_found"] = static_cast<double>(found.segment);
 }
 
 constexpr int repetitions = 5;
@@ -351,24 +415,27 @@ BENCHMARK(add_new)
     ->DisplayAggregatesOnly(true);
 
 BENCHMARK(read_one_record)
-    ->ArgNames({"cold", "segment_files"})
-    ->Args({0, 20})
-    ->Args({0, 4000})
-    ->Args({0, 16000})
+    ->ArgNames({"cold", "segment_files", "read_only_pages"})
+    ->Args({0, 20, 1})
+    ->Args({0, 4000, 1})
+    ->Args({0, 16000, 1})
     ->UseManualTime()
     ->Iterations(2000)
     ->Repetitions(repetitions)
     ->DisplayAggregatesOnly(true);
 
 BENCHMARK(read_one_record)
-    ->ArgNames({"cold", "segment_files"})
-    ->Args({1, 20})
-    ->Args({1, 4000})
-    ->Args({1, 16000})
+    ->ArgNames({"cold", "segment_files", "read_only_pages"})
+    ->Args({1, 20, 0})
+    ->Args({1, 20, 1})
+    ->Args({1, 4000, 1})
+    ->Args({1, 16000, 1})
     ->UseManualTime()
     ->Iterations(200)
     ->Repetitions(repetitions)
     ->DisplayAggregatesOnly(true);
+
+BENCHMARK(find_segment_of_record)->Arg(20)->Arg(4000)->Arg(16000)->Repetitions(repetitions)->DisplayAggregatesOnly(true);
 
 } // un-named namespace
 

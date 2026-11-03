@@ -22,6 +22,8 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReplicatedWal.hpp>
+#include <pubsub_itc_fw/WalCursor.hpp>
+#include <pubsub_itc_fw/WalPosition.hpp>
 #include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 
 #include <lease_messages.hpp>
@@ -37,6 +39,21 @@ using Clock = std::chrono::steady_clock;
 
 constexpr size_t small_segments = 4096;
 constexpr int64_t the_whole_wal = std::numeric_limits<int64_t>::min();
+
+// The number of the record find_command() names, or nothing.
+std::optional<int64_t> record_of(const std::optional<CommandInWal>& found) {
+    return found.has_value() ? std::optional<int64_t>{found->record_id} : std::nullopt;
+}
+
+// The number of the record a cursor finds at @p position.
+int64_t record_at(const std::string& directory, WalPosition position) {
+    WalCursor cursor;
+    cursor.open(directory, position, WalCursor::ReadAhead::pages_read_only);
+    int64_t record_id = 0;
+    const uint8_t* payload = nullptr;
+    size_t size = 0;
+    return cursor.read_next(record_id, payload, size) ? record_id : 0;
+}
 
 // Running alone, the instance sends its peer nothing and asks no voter anything.
 struct NoPeer : public ReplicationLinksInterface {
@@ -186,8 +203,12 @@ TEST_F(ReplicatedWalCommandTest, OfTwoCommandsWithTheSameNumberBothAreFound) {
     EXPECT_EQ(wal_->command_check_counts().proved_by_reading, 1);
     EXPECT_EQ(wal_->command_check_counts().other_command_at_position, 2);
     EXPECT_EQ(wal_->command_check_counts().searched, 2);
-    EXPECT_EQ(wal_->find_command("MEMBER/first", the_whole_wal), std::optional<int64_t>{1}) << "proved by reading its record";
-    EXPECT_EQ(wal_->find_command("MEMBER/second", the_whole_wal), std::optional<int64_t>{2}) << "found by the search";
+    const std::optional<CommandInWal> first = wal_->find_command("MEMBER/first", the_whole_wal);
+    const std::optional<CommandInWal> second = wal_->find_command("MEMBER/second", the_whole_wal);
+    EXPECT_EQ(record_of(first), std::optional<int64_t>{1}) << "proved by reading its record";
+    EXPECT_TRUE(first.has_value() && first->position.has_value()) << "proved by reading the record at its position, so the position is known";
+    EXPECT_EQ(record_of(second), std::optional<int64_t>{2}) << "found by the search";
+    EXPECT_TRUE(second.has_value() && !second->position.has_value()) << "found by the search, which does not keep positions";
 }
 
 TEST_F(ReplicatedWalCommandTest, TheRecordHoldingACommandIsNamed) {
@@ -196,10 +217,13 @@ TEST_F(ReplicatedWalCommandTest, TheRecordHoldingACommandIsNamed) {
     write("MEMBER/order-1");
     write("MEMBER/order-2");
     write("MEMBER/order-3");
-    EXPECT_EQ(wal_->find_command("MEMBER/order-2", the_whole_wal), std::optional<int64_t>{2});
-    EXPECT_EQ(wal_->find_command("MEMBER/order-3", the_whole_wal), std::optional<int64_t>{3});
-    EXPECT_EQ(wal_->find_command("MEMBER/order-4", the_whole_wal), std::nullopt);
+    const std::optional<CommandInWal> second = wal_->find_command("MEMBER/order-2", the_whole_wal);
+    EXPECT_EQ(record_of(second), std::optional<int64_t>{2});
+    EXPECT_EQ(record_of(wal_->find_command("MEMBER/order-3", the_whole_wal)), std::optional<int64_t>{3});
+    EXPECT_EQ(record_of(wal_->find_command("MEMBER/order-4", the_whole_wal)), std::nullopt);
     EXPECT_EQ(wal_->command_check_counts().searched, 0);
+    ASSERT_TRUE(second.has_value() && second->position.has_value());
+    EXPECT_EQ(record_at(dir_, *second->position), 2) << "the position given is where the command's record starts";
 }
 
 TEST_F(ReplicatedWalCommandTest, AFullRecordFallsBackToASearchForACommandItDoesNotHold) {
@@ -212,7 +236,7 @@ TEST_F(ReplicatedWalCommandTest, AFullRecordFallsBackToASearchForACommandItDoesN
     EXPECT_TRUE(wal_->holds_command("MEMBER/order-2", the_whole_wal)) << "written after the record filled, so found only by searching";
     EXPECT_FALSE(wal_->holds_command("MEMBER/order-3", the_whole_wal));
     EXPECT_EQ(wal_->command_check_counts().searched, 2);
-    EXPECT_EQ(wal_->find_command("MEMBER/order-2", the_whole_wal), std::optional<int64_t>{2});
+    EXPECT_EQ(record_of(wal_->find_command("MEMBER/order-2", the_whole_wal)), std::optional<int64_t>{2});
 }
 
 TEST_F(ReplicatedWalCommandTest, BeforeTheRecordIsBuiltTheWalIsSearched) {

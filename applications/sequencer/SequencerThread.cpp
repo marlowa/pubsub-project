@@ -727,17 +727,17 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // A command not marked whose identity the WAL holds is a member using a ClOrdID it has used today. It is
         // refused, and nothing is written (section 4.1).
         const bool sent_again = inbound.has_sent_again && inbound.sent_again;
-        const std::optional<int64_t> first_seq_no = find_logged_command(inbound, sent_again);
-        if (first_seq_no.has_value()) {
+        const std::optional<pubsub_itc_fw::CommandInWal> logged = find_logged_command(inbound, sent_again);
+        if (logged.has_value()) {
             if (sent_again) {
                 ++sent_again_already_logged_;
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                            "SequencerThread: command ClOrdID={} from comp_id='{}' sent again -- the WAL already holds it as record {}, not sequencing it "
                            "twice",
-                           inbound.cl_ord_id, inbound.sender_comp_id, *first_seq_no);
-                answer_from_wal(inbound, *first_seq_no);
+                           inbound.cl_ord_id, inbound.sender_comp_id, logged->record_id);
+                answer_from_wal(inbound, *logged);
             } else {
-                refuse_reused_identifier(message.connection_id(), inbound, *first_seq_no);
+                refuse_reused_identifier(message.connection_id(), inbound, logged->record_id);
             }
             release_pdu_payload(message);
             return;
@@ -2607,7 +2607,7 @@ int32_t SequencerThread::trading_date_for(int64_t wall_time_ns) {
     return trading_date_;
 }
 
-std::optional<int64_t> SequencerThread::find_logged_command(const pubsub_itc_fw_app::WalRecordView& inbound, bool sent_again) {
+std::optional<pubsub_itc_fw::CommandInWal> SequencerThread::find_logged_command(const pubsub_itc_fw_app::WalRecordView& inbound, bool sent_again) {
     const size_t identity_size = write_command_identity(inbound.has_sender_comp_id ? inbound.sender_comp_id : std::string_view{},
                                                         inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent,
                                                         inbound.has_cl_ord_id ? inbound.cl_ord_id : std::string_view{}, command_identity_buffer_.data(),
@@ -2637,15 +2637,23 @@ std::optional<int64_t> SequencerThread::find_logged_command(const pubsub_itc_fw_
     return replicated_wal_->find_command(std::string_view(command_identity_buffer_.data(), identity_size), first_sent_no_earlier_than);
 }
 
-std::optional<SequencerThread::ReportInWal> SequencerThread::first_report_answering(int64_t command_seq_no) {
+std::optional<SequencerThread::ReportInWal> SequencerThread::first_report_answering(const pubsub_itc_fw::CommandInWal& command) {
+    const int64_t command_seq_no = command.record_id;
     // Only committed records: a report written later is forwarded by the ordinary path once it is committed.
     const int64_t read_through = std::min(replicated_wal_->committed_through(), command_seq_no + reports_read_for_an_answer_at_most);
     if (read_through <= command_seq_no) {
         return std::nullopt;
     }
     try {
+        // From the command's own record when its position is known, reading only the pages that hold the records read,
+        // since the report is normally a few records later. Otherwise from the start of the segment that holds the
+        // command, which may mean reading most of the segment, so the whole segment is read ahead.
         pubsub_itc_fw::WalCursor cursor;
-        cursor.open(config_.wal_directory, replicated_wal_->wal().scan_start_for(command_seq_no + 1));
+        if (command.position.has_value()) {
+            cursor.open(config_.wal_directory, *command.position, pubsub_itc_fw::WalCursor::ReadAhead::pages_read_only);
+        } else {
+            cursor.open(config_.wal_directory, replicated_wal_->wal().scan_start_for(command_seq_no + 1));
+        }
         int64_t record_id = 0;
         const uint8_t* payload = nullptr;
         size_t size = 0;
@@ -2684,8 +2692,9 @@ std::optional<SequencerThread::ReportInWal> SequencerThread::first_report_answer
     return std::nullopt;
 }
 
-void SequencerThread::answer_from_wal(const pubsub_itc_fw_app::WalRecordView& inbound, int64_t command_seq_no) {
-    const std::optional<ReportInWal> found = first_report_answering(command_seq_no);
+void SequencerThread::answer_from_wal(const pubsub_itc_fw_app::WalRecordView& inbound, const pubsub_itc_fw::CommandInWal& command) {
+    const int64_t command_seq_no = command.record_id;
+    const std::optional<ReportInWal> found = first_report_answering(command);
     if (!found.has_value()) {
         // The engine has not applied the command yet, or applies it after the change of leader, and its report
         // comes by the ordinary path; or the command is sent from the WAL to an engine that never received it.

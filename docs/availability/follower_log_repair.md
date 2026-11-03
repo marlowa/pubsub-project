@@ -137,8 +137,8 @@ The follower logs at Warning how many records it discarded and their numbers and
 
 Having answered that the logs agree, the leader reads its own log from the segment that holds the first
 record to send, and sends the follower every record after the agreed one, in order, exactly as stored,
-and only then starts sending it live records. The segment is found by reading only the first entry of
-each segment file (`Wal::scan_start_for`). The reading is done by the leader's reading thread, not by the
+and only then starts sending it live records. The segment is found by a binary search on the first entry of
+the segment files (`Wal::scan_start_for`). The reading is done by the leader's reading thread, not by the
 thread that sequences orders, so the order path does not wait while it is done; the matching engine and
 the matching engine publishers are caught up by the same thread
 ([following_the_wal.md](following_the_wal.md)).

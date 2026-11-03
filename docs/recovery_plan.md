@@ -511,8 +511,8 @@ the work into six steps:
 Steps 1 to 5 are done. The leader checks every command, with high availability on or off (decided by Andrew on
 2 November 2026, since R-0119 holds in both configurations), and [BUG-0114](bug_list.md#bug_0114) and
 [BUG-0122](bug_list.md#bug_0122) are closed. The check costs 295 nanoseconds at the median on the order path,
-measured on 3 November 2026; reading the one record that proves a match is slow, which is
-[BUG-0224](bug_list.md#bug_0224). Step 6 remains.
+measured on 3 November 2026; the measurement found that reading the one record that proves a match took
+milliseconds, which was fixed as [BUG-0224](bug_list.md#bug_0224). Step 6 remains.
 
 ### Phase 10. Divide what is left of the sequencer and the matching engine
 

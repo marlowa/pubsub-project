@@ -25,6 +25,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -756,6 +757,79 @@ TEST_F(WalClassTest, ReadingFromTheScanStartReachesTheRecordWithoutReadingEarlie
     }
     EXPECT_TRUE(reached);
     EXPECT_EQ(wal.scan_start_for(1).segment, 0U);
+}
+
+namespace {
+
+// The first record of each segment of the WAL in @p directory, segment 0 first, up to the first segment that does not
+// exist or holds no record.
+std::vector<int64_t> first_record_of_each_segment(const std::string& directory) {
+    std::vector<int64_t> firsts;
+    for (uint64_t segment = 0;; ++segment) {
+        if (!std::filesystem::exists(fmt::format("{}/wal_{:06}.log", directory, segment))) {
+            return firsts;
+        }
+        WalCursor cursor;
+        cursor.open(directory, WalPosition{segment, 0});
+        int64_t record_id = 0;
+        const uint8_t* payload = nullptr;
+        size_t size = 0;
+        if (!cursor.read_next(record_id, payload, size) || cursor.position().segment != segment) {
+            return firsts;
+        }
+        firsts.push_back(record_id);
+    }
+}
+
+} // namespaces
+
+// The scan start is found by a binary search on each segment's first record; it must be the last segment whose first
+// record is at or below the record, for every record, as reading every segment's first record in turn finds.
+TEST_F(WalClassTest, TheScanStartIsTheLastSegmentWhoseFirstRecordIsAtOrBelowTheRecord) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    append_records(wal, 1, 400, 0xAA);
+    const std::vector<int64_t> firsts = first_record_of_each_segment(dir_);
+    ASSERT_GT(firsts.size(), 4U) << "400 records span several segments";
+    for (int64_t record = 1; record <= 400; ++record) {
+        uint64_t expected = 0;
+        for (uint64_t segment = 0; segment < firsts.size(); ++segment) {
+            if (firsts[segment] <= record) {
+                expected = segment;
+            }
+        }
+        const WalPosition start = wal.scan_start_for(record);
+        EXPECT_EQ(start.segment, expected) << "record " << record;
+        EXPECT_EQ(start.offset, 0U) << "record " << record;
+    }
+    EXPECT_EQ(wal.scan_start_for(401).segment, firsts.size() - 1) << "a record not yet written is looked for in the last segment";
+}
+
+// Once the start of the log is discarded, its segments no longer exist; a record still held is found, and one that is
+// not gives the start of the log, where a cursor finds the first segment that remains.
+TEST_F(WalClassTest, TheScanStartIsFoundAfterTheStartOfTheLogIsDiscarded) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    append_records(wal, 1, 400, 0xAA);
+    wal.truncate_below(200);
+    ASSERT_FALSE(std::filesystem::exists(dir_ + "/wal_000000.log"));
+    const WalPosition start = wal.scan_start_for(300);
+    WalCursor cursor;
+    cursor.open(dir_, start);
+    int64_t record_id = 0;
+    const uint8_t* payload = nullptr;
+    size_t size = 0;
+    ASSERT_TRUE(cursor.read_next(record_id, payload, size));
+    EXPECT_LE(record_id, 300);
+    EXPECT_GT(record_id, 100) << "the search starts in the segment that holds the record, not at the first that remains";
+
+    EXPECT_EQ(wal.scan_start_for(1).segment, 0U);
+    EXPECT_EQ(wal.scan_start_for(1).offset, 0U);
+    WalCursor from_the_start;
+    from_the_start.open(dir_, WalPosition{0, 0});
+    ASSERT_TRUE(from_the_start.read_next(record_id, payload, size));
+    EXPECT_LE(record_id, 200) << "the first segment that remains holds record 200";
+    EXPECT_GT(record_id, 1);
 }
 
 TEST_F(WalClassTest, TruncateAfterARecordNotInTheLogIsRefused) {

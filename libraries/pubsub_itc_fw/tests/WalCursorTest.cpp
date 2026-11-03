@@ -149,6 +149,56 @@ TEST_F(WalCursorTest, ResumeFromPositionContinuesWhereItStopped) {
     EXPECT_EQ(rest[2].id, 5);
 }
 
+// The segment a cursor is opened at may no longer exist, when the start of the log has been discarded. Reading then
+// starts at the first segment after it.
+TEST_F(WalCursorTest, AtASegmentThatDoesNotExistReadingStartsAtTheNextOne) {
+    write_records(small_segment_size, 10); // 4 records per segment
+    std::filesystem::remove(dir_ + "/wal_000000.log");
+    WalCursor cursor;
+    cursor.open(dir_, {0, 0});
+    const std::vector<Record> records = drain(cursor);
+    ASSERT_EQ(records.size(), 6U);
+    EXPECT_EQ(records.front().id, 5);
+    EXPECT_EQ(records.back().id, 10);
+}
+
+// Asking the kernel for only the pages read changes what is read from the disk, not what the cursor reads.
+TEST_F(WalCursorTest, ReadingOnlyThePagesReadGivesTheSameRecords) {
+    write_records(small_segment_size, 10);
+    WalCursor cursor;
+    cursor.open(dir_, {0, 0}, WalCursor::ReadAhead::pages_read_only);
+    const std::vector<Record> records = drain(cursor);
+    ASSERT_EQ(records.size(), 10U);
+    for (size_t index = 0; index < records.size(); ++index) {
+        EXPECT_EQ(records[index].id, static_cast<int64_t>(index + 1));
+        EXPECT_EQ(records[index].value, static_cast<uint32_t>((index + 1) * 100));
+    }
+}
+
+// A cursor that has read the last segment stays finished, as it always has: it is opened again at its position to
+// read what the writer adds later, including a new segment.
+TEST_F(WalCursorTest, ACursorOpenedAgainAtItsPositionReadsSegmentsWrittenSince) {
+    WalWriter writer;
+    writer.open(dir_, small_segment_size, {0, 0});
+    for (int i = 1; i <= 3; ++i) {
+        const uint32_t payload = static_cast<uint32_t>(i * 100);
+        writer.append(static_cast<int64_t>(i), &payload, sizeof(payload));
+    }
+    WalCursor cursor;
+    cursor.open(dir_, {0, 0});
+    ASSERT_EQ(drain(cursor).size(), 3U);
+    for (int i = 4; i <= 9; ++i) {
+        const uint32_t payload = static_cast<uint32_t>(i * 100);
+        writer.append(static_cast<int64_t>(i), &payload, sizeof(payload));
+    }
+    WalCursor again;
+    again.open(dir_, cursor.position());
+    const std::vector<Record> rest = drain(again);
+    ASSERT_EQ(rest.size(), 6U);
+    EXPECT_EQ(rest.front().id, 4);
+    EXPECT_EQ(rest.back().id, 9);
+}
+
 // Resuming across a segment boundary: read past the first segment, capture the
 // position, and confirm a fresh cursor picks up the exact next record.
 TEST_F(WalCursorTest, ResumeAcrossSegmentBoundary) {

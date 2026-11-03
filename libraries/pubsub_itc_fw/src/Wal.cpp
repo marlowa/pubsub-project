@@ -256,11 +256,18 @@ void Wal::truncate_after(int64_t seq_no) {
 }
 
 WalPosition Wal::scan_start_for(int64_t seq_no) const {
-    WalPosition start{0, 0};
-    for (const uint64_t segment : segment_numbers()) {
+    // Records are numbered in rising order through the segments, and the segments on disk are numbered without
+    // gaps up to the one being written, so the segment wanted is found by a binary search on each segment's first
+    // record, reading one header for each step. A day's WAL holds thousands of segments, and reading the first
+    // header of each in turn would take tens of milliseconds on the thread that calls this.
+    //
+    // A segment comes before the one wanted when it does not exist (the log lost it from its start) or its first
+    // record is numbered seq_no or below. It comes after when its first record is numbered above seq_no, or it
+    // holds no record yet. That divides the segments into those before and those after, in that order.
+    const auto comes_before = [this, seq_no](uint64_t segment) {
         const int fd = ::open(segment_path_for_delete(segment).c_str(), O_RDONLY | O_CLOEXEC);
         if (fd < 0) {
-            break;
+            return true;
         }
         // The first entry's header: magic (4 bytes), payload size (4), record id (8), reserved (8).
         uint8_t header[24] = {};
@@ -270,12 +277,29 @@ WalPosition Wal::scan_start_for(int64_t seq_no) const {
         int64_t record_id = 0;
         std::memcpy(&magic, header, sizeof(magic));
         std::memcpy(&record_id, header + 8, sizeof(record_id));
-        if (got != static_cast<ssize_t>(sizeof(header)) || magic != WalWriter::entry_magic || record_id > seq_no) {
-            break;
-        }
-        start = WalPosition{segment, 0};
+        return got == static_cast<ssize_t>(sizeof(header)) && magic == WalWriter::entry_magic && record_id <= seq_no;
+    };
+    const uint64_t last = writer_.current_position().segment;
+    if (!comes_before(0)) {
+        return WalPosition{0, 0};
     }
-    return start;
+    // The last segment that comes before, between low (which does) and last.
+    uint64_t low = 0;
+    uint64_t high = last;
+    while (low < high) {
+        const uint64_t middle = low + (high - low + 1) / 2;
+        if (comes_before(middle)) {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    // A segment that does not exist holds no record, so the search found none at or below seq_no: start at the
+    // start of the log, wherever that is.
+    if (::access(segment_path_for_delete(low).c_str(), F_OK) != 0) {
+        return WalPosition{0, 0};
+    }
+    return WalPosition{low, 0};
 }
 
 int64_t Wal::first_seq_no() const {
