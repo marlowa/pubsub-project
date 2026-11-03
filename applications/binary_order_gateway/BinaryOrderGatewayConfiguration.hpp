@@ -226,7 +226,7 @@ struct BinaryOrderGatewayConfiguration {
     /**
      * @brief The store of commands sent to the sequencers and not yet answered, kept to be sent again
      * after a change of sequencer leader: how many commands, and how many bytes of their envelopes.
-     * Used only with high availability on. See fix_common::UnansweredCommandStore and
+     * Used only with high availability on. See pubsub_itc_fw::UnansweredCommands and
      * docs/availability/commands_during_a_change_of_leader.md, section 7, decision 4.
      */
     size_t unanswered_commands_capacity{262144};

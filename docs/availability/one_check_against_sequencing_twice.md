@@ -61,9 +61,9 @@ gateway restarted, resubmits under the original `ClOrdID` an order the venue had
 allows: if that order has ended, the resubmission becomes a second order, which R-0006 and R-0010 forbid.
 
 **The gateway's side.** Each gateway keeps a copy of every command until the first report for it arrives
-(`fix_common::UnansweredCommandStore`), and matches a report to its copy by comp id and `ClOrdID`. A command whose comp
-id and `ClOrdID` the store already holds unanswered, a member resubmitting before it has had an answer, is not kept a
-second time, but it is still sent to the sequencers.
+(`pubsub_itc_fw::UnansweredCommands`, the library's client side), and matches a report to its copy by comp id and
+`ClOrdID`. A command whose comp id and `ClOrdID` the store already holds unanswered, a member resubmitting before it has
+had an answer, is not kept a second time, and the gateway refuses it (section 4.2).
 
 ## 2. The design in one paragraph
 
@@ -455,6 +455,31 @@ first and with `--secondary-engine-first`, before the next starts.
    keeps the copies and sends them again on a change of leader or a connection established again, and refuses new
    commands when the store is full; each gateway supplies how to recognise an answer and what to tell its member when
    the store is full. Behaviour is unchanged; every scenario for commands sent again is the check.
+
+   **As built.** `UnansweredCommandStore`, `UnansweredSnapshot` and `PacedResend` are in the library, in the
+   `pubsub_itc_fw` namespace, with their unit tests, and `pubsub_itc_fw::UnansweredCommands` uses them to do what each
+   gateway did for itself. It is created with the names of the instances the commands go to, the primary and the
+   secondary sequencer, and the gateway refers to each afterwards by its place in that list. The gateway tells it of
+   each command it sends (`keep`), each answer it recognises (`answered`), each member whose session has ended for
+   good (`drop_session`), each new leader (`on_new_leader`), and each connection to a sequencer established, lost, or
+   able to take more (`on_connection_established`, `on_connection_lost`, `on_connection_writable`). It decides what is
+   sent again and when: every copy to every connected sequencer for a new leader; every copy on a connection
+   established again, and nothing on one established for the first time; `PacedResend::batch_size` at a time on each
+   connection, each batch after the connection has written the last. It writes the Quill log lines for these, and for
+   the store filling and having room again, and counts the commands refused while it was full. When `keep` says the
+   store is full, or that it already holds a command with the same comp id and `ClOrdID`, the gateway refuses the
+   command to its member, as before.
+
+   The gateway supplies one thing, through `UnansweredCommandLinksInterface`: how to send a copy again. The library
+   keeps each copy as the bytes the gateway gave it and does not read them; each gateway's `ResendLinks` decodes the
+   copy, marks it as sent again (`envelope_to_send_again`), sends it, and asks for the connection to say when it has
+   written everything waiting on it.
+
+   `UnansweredCommandsTest` checks each of these decisions, in eleven tests, and each was made to fail: a copy sent on
+   a connection established for the first time; a resend not started again on a new copy; a lost connection not
+   forgotten. The unit tests of both gateways, `fix_common`, the sequencer and the library pass, and both full suites
+   pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first, among them scenarios 1,
+   66, 67, 68, 71 and 96 to 99, which send commands again.
 
 BUG-0114 and BUG-0122 close at the end of step 4.
 

@@ -25,6 +25,7 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
+#include <pubsub_itc_fw/UnansweredCommands.hpp>
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
 #include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
 #endif
@@ -47,13 +48,11 @@
 #include "GatewayIds.hpp"
 #include "GatewayProgressMetrics.hpp"
 #include "GatewayRefusal.hpp"
-#include "PacedResend.hpp"
 #include "PoolMetricsReporter.hpp"
 #include "RefusedCommand.hpp"
 #include "SentAgainEnvelope.hpp"
 #include "ThrottleRefusalMetrics.hpp"
 #include "ThrottledCommand.hpp"
-#include "UnansweredCommandStore.hpp"
 
 namespace binary_order_gateway {
 
@@ -222,37 +221,30 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // Keeps a copy of a command's envelope until it is answered. Returns GatewayRefusal::None when the copy was kept,
     // and when the store is not in use because high availability is off; otherwise why it could not be kept.
     fix_common::GatewayRefusal keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id, std::string_view cl_ord_id);
-    // Sends again, marked as sent again, every command still unanswered: a new sequencer leads.
-    void send_unanswered_commands_again(int32_t new_epoch);
-
-    // Whether any command sent to the sequencers is still waiting for its answer.
-    [[nodiscard]] bool holds_unanswered_commands() const {
-        return unanswered_commands_.has_value() && unanswered_commands_->unanswered() > 0;
-    }
-    // Sends again, marked as sent again, every command still unanswered, on one sequencer connection
-    // that has been established again. Commands that were waiting to be sent on the connection it
-    // replaces were discarded when that connection was closed (docs/bug_list.md, BUG-0118).
-    void send_unanswered_commands_on(const pubsub_itc_fw::ConnectionID& id, std::string_view sequencer);
-    // Takes a fresh copy of the unanswered commands and starts sending it, from the beginning, on each
-    // connection named, and on any connection whose resend of an earlier copy had not finished.
-    void start_resends(bool to_primary, bool to_secondary);
-    // Sends the next batch of a resend on its connection, and asks to be told when the connection has
-    // written it, if more remain.
-    void continue_resend(fix_common::PacedResend& resend, const pubsub_itc_fw::ConnectionID& id, std::string_view sequencer);
-    // A connection to a sequencer has written everything waiting on it: the next batch of a resend goes.
+    // A connection to a sequencer has written everything waiting on it: the next batch of commands being sent again
+    // goes (pubsub_itc_fw::UnansweredCommands).
     void on_connection_writable(pubsub_itc_fw::ConnectionID id) override;
-    // The commands being sent again, and how far each sequencer connection has got through them.
-    fix_common::UnansweredSnapshot resend_snapshot_;
-    fix_common::PacedResend resend_to_primary_;
-    fix_common::PacedResend resend_to_secondary_;
-    // Whether each sequencer connection has been established before, so that one established again
-    // can be told from the first.
-    bool sequencer_primary_connected_before_{false};
-    bool sequencer_secondary_connected_before_{false};
 
-    // The commands sent to the sequencers and not yet answered. Present only with high availability
-    // on, because only a change of sequencer leader makes a command need sending again.
-    std::optional<fix_common::UnansweredCommandStore> unanswered_commands_;
+    // How the library's store of unanswered commands sends a kept command again: decoded, marked as sent again, and
+    // sent on the sequencer connection it names.
+    class ResendLinks : public pubsub_itc_fw::UnansweredCommandLinksInterface {
+      public:
+        explicit ResendLinks(BinaryOrderGatewayThread& owner) : owner_(owner) {}
+        void send_again(const pubsub_itc_fw::ConnectionID& connection, const uint8_t* kept, size_t size) override;
+        void request_writable_notification(const pubsub_itc_fw::ConnectionID& connection) override;
+
+      private:
+        BinaryOrderGatewayThread& owner_;
+    };
+    ResendLinks resend_links_{*this};
+    // The sequencers, in the order they are named to the store of unanswered commands.
+    static constexpr size_t primary_sequencer_destination = 0;
+    static constexpr size_t secondary_sequencer_destination = 1;
+
+    // The commands sent to the sequencers and not yet answered, sent again after a change of sequencer leader or when a
+    // sequencer connection is established again. Present only with high availability on, because only then is there
+    // more than one sequencer.
+    std::optional<pubsub_itc_fw::UnansweredCommands> unanswered_commands_;
 
     // The test events this thread sends, when a test started this gateway (docs/availability/test_events.md).
     class GatewayTestEventLinks : public pubsub_itc_fw::TestEventLinksInterface {
@@ -267,8 +259,6 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     std::optional<pubsub_itc_fw::TestEventChannel> test_events_;
     std::vector<uint8_t> unanswered_encode_buffer_;
     std::vector<uint8_t> resend_arena_buffer_ = std::vector<uint8_t>(64 * 1024);
-    bool unanswered_store_full_{false};
-    int64_t refused_because_store_full_{0};
     // The highest sequencer leadership epoch an OrderAcceptance has carried; zero before the first.
     int32_t highest_leader_epoch_seen_{0};
 

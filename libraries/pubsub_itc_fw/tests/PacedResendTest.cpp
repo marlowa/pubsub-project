@@ -7,12 +7,12 @@
 
 #include <gtest/gtest.h>
 
-#include "PacedResend.hpp"
-#include "UnansweredCommandStore.hpp"
+#include <pubsub_itc_fw/PacedResend.hpp>
+#include <pubsub_itc_fw/UnansweredCommandStore.hpp>
 
-using fix_common::PacedResend;
-using fix_common::UnansweredCommandStore;
-using fix_common::UnansweredSnapshot;
+using pubsub_itc_fw::PacedResend;
+using pubsub_itc_fw::UnansweredCommandStore;
+using pubsub_itc_fw::UnansweredSnapshot;
 
 namespace {
 

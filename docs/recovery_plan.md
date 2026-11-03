@@ -508,11 +508,12 @@ the work into six steps:
 6. the gateways' store of unanswered commands and their sending of commands again move onto the library's client side
    (decision 7).
 
-Steps 1 to 5 are done. The leader checks every command, with high availability on or off (decided by Andrew on
-2 November 2026, since R-0119 holds in both configurations), and [BUG-0114](bug_list.md#bug_0114) and
-[BUG-0122](bug_list.md#bug_0122) are closed. The check costs 295 nanoseconds at the median on the order path,
-measured on 3 November 2026; the measurement found that reading the one record that proves a match took
-milliseconds, which was fixed as [BUG-0224](bug_list.md#bug_0224). Step 6 remains.
+All six steps are done, and the phase is finished. The leader checks every command, with high availability on or off
+(decided by Andrew on 2 November 2026, since R-0119 holds in both configurations), and
+[BUG-0114](bug_list.md#bug_0114) and [BUG-0122](bug_list.md#bug_0122) are closed. The check costs 295 nanoseconds at
+the median on the order path, measured on 3 November 2026; the measurement found that reading the one record that
+proves a match took milliseconds, which was fixed as [BUG-0224](bug_list.md#bug_0224). The gateways keep their
+unanswered commands and send them again through the library's `UnansweredCommands`.
 
 ### Phase 10. Divide what is left of the sequencer and the matching engine
 
@@ -605,3 +606,6 @@ not the aim. Gaps found along the way are recorded, not fixed within the phase. 
 - Phase 8: both matching engines apply the WAL, a promoted engine keeps every order, and a command that kills both
   engines is voided; every point of its finish condition was met when the last step of voided commands was built, on
   2 November 2026.
+- Phase 9: the leader checks every command against sequencing it twice, in one check, at a measured cost of
+  295 nanoseconds at the median, and the gateways' keeping and sending again of unanswered commands is in the
+  library; every point of its finish condition was met when step 6 was built, on 3 November 2026.

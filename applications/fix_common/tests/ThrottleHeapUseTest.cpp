@@ -14,7 +14,7 @@
 #include "ThrottleLimits.hpp"
 #include "ThrottleOutcome.hpp"
 #include "ThrottledCommand.hpp"
-#include "UnansweredCommandStore.hpp"
+#include <pubsub_itc_fw/UnansweredCommandStore.hpp>
 
 /*
  * Checks that deciding about a command never uses the heap.
@@ -185,7 +185,7 @@ TEST(ThrottleHeapUseTest, DecidingAboutCommandsNeverUsesTheHeap) {
 // The gateway keeps a copy of every command it sends until it is answered, on the order path, so
 // keeping and answering must never use the heap. Only creating the store may.
 TEST(ThrottleHeapUseTest, KeepingAndAnsweringCommandsNeverUsesTheHeap) {
-    fix_common::UnansweredCommandStore store(64 * 1024, 256);
+    pubsub_itc_fw::UnansweredCommandStore store(64 * 1024, 256);
     std::vector<std::string> cl_ord_ids;
     for (int number = 0; number < 1000; ++number) {
         cl_ord_ids.push_back("order-number-" + std::to_string(number));
@@ -197,7 +197,7 @@ TEST(ThrottleHeapUseTest, KeepingAndAnsweringCommandsNeverUsesTheHeap) {
     // Every command is kept and then answered, a hundred commands behind, so the store wraps many times.
     for (size_t round = 0; round < 20; ++round) {
         for (size_t index = 0; index < cl_ord_ids.size(); ++index) {
-            if (store.keep("MEMBER", cl_ord_ids[index], envelope.data(), envelope.size()) == fix_common::UnansweredCommandStore::Kept::kept) {
+            if (store.keep("MEMBER", cl_ord_ids[index], envelope.data(), envelope.size()) == pubsub_itc_fw::UnansweredCommandStore::Kept::kept) {
                 ++kept;
             }
             static_cast<void>(store.answered("MEMBER", cl_ord_ids[(index + cl_ord_ids.size() - 100) % cl_ord_ids.size()]));

@@ -64,8 +64,8 @@ envelope, exactly as sent, so that sending it again sends the same bytes.
 
 How it is built:
 
-- The store is `fix_common::UnansweredCommandStore`, shared by both gateways, and exists only with high
-  availability on, because without it there is no change of leader. A copy is kept just before the
+- The store is the library's `pubsub_itc_fw::UnansweredCommands`, used by both gateways, and exists only
+  with high availability on, because without it there is no change of leader. A copy is kept just before the
   command is sent, so a command that cannot be kept is not sent.
 - A report is matched to its command by the member's comp id and the `ClOrdID`, both of which the
   sequencer puts on the report's envelope. The binary gateway relays a report without decoding it, so
@@ -242,7 +242,7 @@ Each test was shown to fail before the change it tests was made.
 | Scenario 67 | An order, then the same order marked as sent again, then an order marked as sent again that was never sent before. The first is applied once and never refused as a duplicate; the last is applied once. Section 3.4 |
 | Scenario 68 | A member sends orders at 100 a second from a second before the leader is killed until two seconds after the follower takes the lead. Every order is answered, and none is applied twice. Before the gateways kept commands, 266 of 598 orders were never answered |
 | Scenario 71 | Gateway a allows only 1,024 waiting sends on a connection. The leading sequencer is stopped with SIGSTOP while a member sends orders, until the gateway closes its connection to it; the sequencer is resumed well within its lease. Every order is accepted once and none refused, and the leader keeps the lead. With the resend on reconnection switched off, 1,889 orders were still unanswered 15 seconds later. [BUG-0118](../bug_list.md#bug_0118) |
-| Unit tests | `UnansweredCommandStore`, including a test against a simple model and a test that counts heap allocations; `LoggedCommandIdentifiers`; `WalCommandSearch`, against a real WAL; the replicated WAL's check (`ReplicatedWalCommandTest`); `PacedResend` and `UnansweredSnapshot` |
+| Unit tests | `UnansweredCommandStore`, including a test against a simple model and a test that counts heap allocations; `UnansweredCommands`, when copies are sent again and to which connection; `LoggedCommandIdentifiers`; `WalCommandSearch`, against a real WAL; the replicated WAL's check (`ReplicatedWalCommandTest`); `PacedResend` and `UnansweredSnapshot` |
 
 Scenario 1 sends a burst of 20,000 orders just before the leader is killed. They all reach the venue
 before the kill, so scenario 1 does not test orders sent during the change of leader, and its

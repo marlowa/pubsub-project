@@ -10,7 +10,7 @@ namespace fix_common {
 /**
  * @brief Whether a gateway must refuse a member's command instead of sending it to the sequencers, and why.
  *
- * Both gateways keep a copy of every command they send until it is answered (UnansweredCommandStore). Keeping the
+ * Both gateways keep a copy of every command they send until it is answered (`pubsub_itc_fw::UnansweredCommands`). Keeping the
  * copy can fail in two ways, and each is answered to the member with a rejection rather than by sending the command.
  */
 enum class GatewayRefusal {

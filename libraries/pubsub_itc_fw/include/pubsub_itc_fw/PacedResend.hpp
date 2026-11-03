@@ -9,25 +9,25 @@
 #include <utility>
 #include <vector>
 
-#include "UnansweredCommandStore.hpp"
+#include <pubsub_itc_fw/UnansweredCommandStore.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
- * @brief A copy of the commands a gateway holds unanswered, taken at one moment, to be sent again in
+ * @brief A copy of the commands a client holds unanswered, taken at one moment, to be sent again in
  *        batches.
  *
- * A gateway sends its unanswered commands again after a change of sequencer leader, and on a
- * connection to a sequencer that has been closed and opened again (docs/bug_list.md, BUG-0118). There
- * can be hundreds of thousands of them. Sent all at once, they would queue on the connection faster
- * than the sequencer reads them, and a connection whose queue of waiting sends reaches its limit is
- * closed (BUG-0112): the gateway would connect again, send them all again, and be closed again.
+ * A client sends its unanswered commands again after a change of leader, and on a connection to an
+ * instance that has been closed and opened again (docs/bug_list.md, BUG-0118). There can be hundreds
+ * of thousands of them. Sent all at once, they would queue on the connection faster than the instance
+ * reads them, and a connection whose queue of waiting sends reaches its limit is closed (BUG-0112): the
+ * client would connect again, send them all again, and be closed again.
  *
  * So they are copied here when the resend starts, and sent a batch at a time on each connection that
  * needs them, each batch after the connection has reported that everything before it is written. The
  * store itself cannot be read a batch at a time, because commands are answered, and their space reused,
  * while the resend goes on. A command answered after the copy is taken is still sent again; the leader
- * finds it in its log and does not sequence it twice.
+ * finds it in its WAL and does not sequence it twice.
  *
  * The copy is held in one buffer, which keeps its memory for the next resend rather than allocating it
  * again.

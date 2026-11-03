@@ -29,8 +29,8 @@ Measured on 11 October 2026:
   a change of leader. None of these is about sequencing orders; they are about keeping a WAL replicated.
 - **The matching engine**, about 3,000 lines, has its own catch-up, its own reconciliation, and the
   replication of its book to its follower.
-- **The gateways** keep the commands not yet answered and send them again when the leader changes
-  (`UnansweredCommandStore`).
+- **The gateways** keep the commands not yet answered and send them again when the leader changes,
+  now through the library's `UnansweredCommands`.
 
 The library, about 10,500 lines, provides almost none of this.
 

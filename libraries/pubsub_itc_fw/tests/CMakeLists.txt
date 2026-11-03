@@ -64,6 +64,9 @@ add_executable(pubsub_itc_fw_tests
     LoggedCommandIdentifiersTest.cpp
     LoggedCommandIdentifiersBuilderTest.cpp
     WalCommandSearchTest.cpp
+    UnansweredCommandStoreTest.cpp
+    UnansweredCommandsTest.cpp
+    PacedResendTest.cpp
     WalFollowerClientTest.cpp
     WalFollowerServiceTest.cpp
     TestEventChannelTest.cpp

@@ -561,7 +561,9 @@ guessing.
 **Where it holds.** In the gateways, which keep each command until it is answered and send again what
 they hold when the leader changes or their connection to it is made again
 ([commands_during_a_change_of_leader.md](availability/commands_during_a_change_of_leader.md),
-sections 3.1 and 3.2; `UnansweredCommandStore`). Sending again is safe only because of V7.
+sections 3.1 and 3.2). The keeping and the sending again are the library's client side,
+`pubsub_itc_fw::UnansweredCommands`; each gateway tells it of every command it sends and every answer it
+recognises, and sends each copy again itself, marked as sent again. Sending again is safe only because of V7.
 
 **What checks it.** `ha_test.py` scenarios 1, 66, 68 and 71.
 

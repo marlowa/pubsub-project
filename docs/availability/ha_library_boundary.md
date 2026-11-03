@@ -141,16 +141,18 @@ outcome of the original if the command was marked as sent again, and a refusal i
 **What it is for.** Every command a client has sent is answered (V6), across a change of leader or a
 lost connection.
 
-**How it is done now.** In each gateway: `UnansweredCommandStore` keeps every command until its first
-answer, and the gateway sends all it holds again when a new leader announces itself or the connection
-to the leader is made again.
+**How it is done now.** As this section describes, built in step 6 of phase 9. The library's
+`UnansweredCommands` keeps a copy of every command until its first answer, in a store of fixed size
+(`UnansweredCommandStore`), and sends every copy it holds again, a batch at a time on each connection
+(`PacedResend`), when a new leader announces itself or a connection to an instance is established again.
+When the store is full it refuses to keep a command, and says so in the Quill log when it fills and when
+it has room again.
 
-**What the library would provide.** The same, for any client: a fixed-size store of unanswered
-commands, sending them again on a change of leader or reconnection, and refusing new commands when the
-store is full.
-
-**What an application would supply.** How to recognise the answer to a command, and what to tell its
-own users when the store is full.
+**What the application supplies.** How to recognise the answer to a command: each gateway calls
+`answered()` with the comp id and `ClOrdID` of every report and every refusal. How to send a copy again:
+the library keeps the bytes the gateway sent without reading them, and the gateway decodes a copy, marks
+it as sent again and sends it (`UnansweredCommandLinksInterface`). And what to tell its own users when the
+store is full: the gateway rejects the command.
 
 ## 8. Design area: time and decisions only one instance may make
 
@@ -305,7 +307,7 @@ machines and a round trip to a second machine to each logon, and would protect n
 | Catch-ups for the engine and the publishers | The library's way of following the WAL (section 4) | The handler and the starting position |
 | The engine's open-order region | Stays the engine's snapshot (section 5) | How it writes and reads its state |
 | The three checks against sequencing twice | One check in the library's WAL (section 6) | Reading a command's identity; the reply to a duplicate |
-| `UnansweredCommandStore` and resending in each gateway | The library's client side (section 7) | Recognising an answer |
+| `UnansweredCommandStore` and resending in each gateway | The library's client side (section 7), done | Recognising an answer; sending a copy again |
 | Decisions taken by the leading engine alone | Commands in the WAL (section 8) | What each decision does |
 | Counters for identifiers | Identifiers from the position in the WAL (section 9) | The identifiers' format |
 | `BookUpdate` replication | Removed, under option B (section 10) | Nothing |

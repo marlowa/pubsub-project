@@ -121,10 +121,9 @@ void BinaryOrderGatewayThread::on_app_ready_event() {
     // path allocates nothing. Only with high availability on: without it there is one sequencer and
     // no change of leader, so nothing is ever sent again.
     if (config_.ha_enabled) {
-        unanswered_commands_.emplace(config_.unanswered_commands_bytes, config_.unanswered_commands_capacity);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "BinaryOrderGatewayThread: keeping up to {} unanswered command(s) in {} MiB, to send again after a change of sequencer leader",
-                   config_.unanswered_commands_capacity, config_.unanswered_commands_bytes / (1024 * 1024));
+        unanswered_commands_.emplace(config_.unanswered_commands_bytes, config_.unanswered_commands_capacity,
+                                     std::vector<std::string>{"primary sequencer", "secondary sequencer"}, resend_links_, get_logger(),
+                                     "BinaryOrderGatewayThread");
     }
     open_order_pool_ = std::make_unique<pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>>(
         "BinaryOpenOrderPool", config_.open_order_pool_objects_per_pool, config_.open_order_pool_initial_pools,
@@ -221,20 +220,18 @@ void BinaryOrderGatewayThread::on_connection_established(pubsub_itc_fw::Connecti
         sequencer_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: primary sequencer connection {} established", id.get_value());
         announce_sessions_when_due(id, announce_to_primary_timer_id_);
-        if (sequencer_primary_connected_before_) {
-            send_unanswered_commands_on(id, "primary");
+        if (unanswered_commands_.has_value()) {
+            unanswered_commands_->on_connection_established(primary_sequencer_destination, id);
         }
-        sequencer_primary_connected_before_ = true;
         return;
     }
     if (service == "sequencer_secondary") {
         sequencer_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: secondary sequencer connection {} established", id.get_value());
         announce_sessions_when_due(id, announce_to_secondary_timer_id_);
-        if (sequencer_secondary_connected_before_) {
-            send_unanswered_commands_on(id, "secondary");
+        if (unanswered_commands_.has_value()) {
+            unanswered_commands_->on_connection_established(secondary_sequencer_destination, id);
         }
-        sequencer_secondary_connected_before_ = true;
         return;
     }
     if (service == er_inbound_service_) {
@@ -276,14 +273,18 @@ void BinaryOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::Connectio
     }
     if (id == sequencer_primary_conn_id_) {
         sequencer_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        resend_to_primary_.abandon();
+        if (unanswered_commands_.has_value()) {
+            unanswered_commands_->on_connection_lost(primary_sequencer_destination);
+        }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOrderGatewayThread: primary sequencer connection {} lost: {}", id.get_value(),
                    reason);
         return;
     }
     if (id == sequencer_secondary_conn_id_) {
         sequencer_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        resend_to_secondary_.abandon();
+        if (unanswered_commands_.has_value()) {
+            unanswered_commands_->on_connection_lost(secondary_sequencer_destination);
+        }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOrderGatewayThread: secondary sequencer connection {} lost: {}", id.get_value(),
                    reason);
         return;
@@ -935,8 +936,8 @@ void BinaryOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::Even
     if (view.has_leader_epoch && view.leader_epoch > highest_leader_epoch_seen_) {
         const bool first_seen = highest_leader_epoch_seen_ == 0;
         highest_leader_epoch_seen_ = view.leader_epoch;
-        if (!first_seen || holds_unanswered_commands()) {
-            send_unanswered_commands_again(view.leader_epoch);
+        if (unanswered_commands_.has_value()) {
+            unanswered_commands_->on_new_leader(view.leader_epoch, first_seen);
         }
     }
     if (view.accepting == venue_accepting_orders_ && view.reason == venue_refusal_reason_) {
@@ -1510,103 +1511,37 @@ fix_common::GatewayRefusal BinaryOrderGatewayThread::keep_until_answered(const p
         return fix_common::GatewayRefusal::None;
     }
     const auto kept = unanswered_commands_->keep(comp_id, cl_ord_id, unanswered_encode_buffer_.data(), bytes_written);
-    if (kept == fix_common::UnansweredCommandStore::Kept::already_held) {
+    if (kept == pubsub_itc_fw::UnansweredCommands::Kept::already_held) {
         return fix_common::GatewayRefusal::IdentifierHeldUnanswered;
     }
-    if (kept == fix_common::UnansweredCommandStore::Kept::full) {
-        ++refused_because_store_full_;
-        if (!unanswered_store_full_) {
-            unanswered_store_full_ = true;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "BinaryOrderGatewayThread: the store of unanswered commands is full with {} command(s) waiting -- the venue is not answering, and new "
-                       "commands are refused until it does",
-                       unanswered_commands_->unanswered());
-        }
+    if (kept == pubsub_itc_fw::UnansweredCommands::Kept::full) {
         return fix_common::GatewayRefusal::StoreFull;
-    }
-    if (unanswered_store_full_) {
-        unanswered_store_full_ = false;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "BinaryOrderGatewayThread: the store of unanswered commands has room again -- {} command(s) were refused while it was full",
-                   refused_because_store_full_);
     }
     return fix_common::GatewayRefusal::None;
 }
 
-void BinaryOrderGatewayThread::send_unanswered_commands_again(int32_t new_epoch) {
-    if (!unanswered_commands_.has_value()) {
+void BinaryOrderGatewayThread::ResendLinks::send_again(const pubsub_itc_fw::ConnectionID& connection, const uint8_t* kept, size_t size) {
+    pubsub_itc_fw::BumpAllocator arena(owner_.resend_arena_buffer_.data(), owner_.resend_arena_buffer_.size());
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    pubsub_itc_fw_app::WalRecordView kept_envelope{};
+    if (!pubsub_itc_fw_app::decode(kept_envelope, kept, size, bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "BinaryOrderGatewayThread: a kept command could not be decoded -- not sent again");
         return;
     }
-    // To both sequencers: the new leader may be either, and only it acts on them.
-    const bool to_primary = true;
-    const bool to_secondary = true;
-    start_resends(to_primary, to_secondary);
-    PUBSUB_LOG(
-        get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-        "BinaryOrderGatewayThread: a new sequencer leader at epoch {} -- sending again {} command(s) still unanswered, each marked as sent again, {} at a time",
-        new_epoch, resend_snapshot_.count(), fix_common::PacedResend::batch_size);
+    const pubsub_itc_fw_app::WalRecord again = fix_common::envelope_to_send_again(kept_envelope);
+    owner_.send_pdu(connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, 0, again,
+                    pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
 }
 
-void BinaryOrderGatewayThread::send_unanswered_commands_on(const pubsub_itc_fw::ConnectionID& id, std::string_view sequencer) {
-    if (!unanswered_commands_.has_value()) {
-        return;
-    }
-    const bool primary = id == sequencer_primary_conn_id_;
-    start_resends(primary, !primary);
-    PUBSUB_LOG(
-        get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-        "BinaryOrderGatewayThread: {} sequencer connection {} established again -- sending again on it {} command(s) still unanswered, each marked as sent "
-        "again, {} at a time",
-        sequencer, id.get_value(), resend_snapshot_.count(), fix_common::PacedResend::batch_size);
-}
-
-void BinaryOrderGatewayThread::start_resends(bool to_primary, bool to_secondary) {
-    // A resend still going is restarted on the new copy, because its place in the old copy means
-    // nothing in the new one. Commands it had already sent are sent again; the leader finds each in its
-    // log and does not sequence it twice.
-    const bool primary = (to_primary || resend_to_primary_.active()) && sequencer_primary_conn_id_.get_value() != 0;
-    const bool secondary = (to_secondary || resend_to_secondary_.active()) && config_.ha_enabled && sequencer_secondary_conn_id_.get_value() != 0;
-    resend_snapshot_.take(*unanswered_commands_);
-    resend_to_primary_.abandon();
-    resend_to_secondary_.abandon();
-    if (primary) {
-        resend_to_primary_.start(resend_snapshot_.count());
-        continue_resend(resend_to_primary_, sequencer_primary_conn_id_, "primary");
-    }
-    if (secondary) {
-        resend_to_secondary_.start(resend_snapshot_.count());
-        continue_resend(resend_to_secondary_, sequencer_secondary_conn_id_, "secondary");
-    }
-}
-
-void BinaryOrderGatewayThread::continue_resend(fix_common::PacedResend& resend, const pubsub_itc_fw::ConnectionID& id, std::string_view sequencer) {
-    const bool more = resend.send_next_batch([this, &id](size_t index) {
-        const auto [bytes, size] = resend_snapshot_.command(index);
-        pubsub_itc_fw::BumpAllocator arena(resend_arena_buffer_.data(), resend_arena_buffer_.size());
-        size_t bytes_consumed = 0;
-        size_t arena_bytes_needed = 0;
-        pubsub_itc_fw_app::WalRecordView kept{};
-        if (!pubsub_itc_fw_app::decode(kept, bytes, size, bytes_consumed, arena, arena_bytes_needed)) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "BinaryOrderGatewayThread: a kept command could not be decoded -- not sent again");
-            return;
-        }
-        const pubsub_itc_fw_app::WalRecord again = fix_common::envelope_to_send_again(kept);
-        send_pdu(id, pubsub_itc_fw_app::WalRecord::message_pdu_id, 0, again,
-                 pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
-    });
-    if (more) {
-        request_writable_notification(id);
-        return;
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: finished sending again {} unanswered command(s) to the {} sequencer",
-               resend.sent(), sequencer);
+void BinaryOrderGatewayThread::ResendLinks::request_writable_notification(const pubsub_itc_fw::ConnectionID& connection) {
+    owner_.request_writable_notification(connection);
 }
 
 void BinaryOrderGatewayThread::on_connection_writable(pubsub_itc_fw::ConnectionID id) {
-    if (id == sequencer_primary_conn_id_ && resend_to_primary_.active()) {
-        continue_resend(resend_to_primary_, id, "primary");
-    } else if (id == sequencer_secondary_conn_id_ && resend_to_secondary_.active()) {
-        continue_resend(resend_to_secondary_, id, "secondary");
+    if (unanswered_commands_.has_value()) {
+        static_cast<void>(unanswered_commands_->on_connection_writable(id));
     }
 }
 

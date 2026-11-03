@@ -9,11 +9,11 @@
 
 #include <gtest/gtest.h>
 
-#include "UnansweredCommandStore.hpp"
+#include <pubsub_itc_fw/UnansweredCommandStore.hpp>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
-using fix_common::UnansweredCommandStore;
+using pubsub_itc_fw::UnansweredCommandStore;
 
 namespace {
 

@@ -460,7 +460,7 @@ field.
 | 4.1 numbering, and the engine's guard | `SequencerThread` on taking the lead; `MatchingEngineThread::sequence_goes_backwards` | [BUG-0105](../bug_list.md#bug_0105) |
 | 4.2 option A, and running as if alone | `ReplicatedWal` in the library, which commits records and runs as if alone; `SequencerThread::hold_until_acknowledged` | [BUG-0103](../bug_list.md#bug_0103) |
 | Open question 2, a follower that is behind does not lead | The lease classes, the lease agent, the arbiter, and `ReplicatedWal` ([a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md)) | |
-| 4.3 the gateway keeping commands, and the record of identifiers | `UnansweredCommandStore` in each gateway; `LoggedCommandIdentifiers` in the sequencer's replicated WAL ([commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md)) | [BUG-0103](../bug_list.md#bug_0103), [BUG-0115](../bug_list.md#bug_0115) |
+| 4.3 the gateway keeping commands, and the record of identifiers | `UnansweredCommands` in the library, used by each gateway; `LoggedCommandIdentifiers` in the sequencer's replicated WAL ([commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md)) | [BUG-0103](../bug_list.md#bug_0103), [BUG-0115](../bug_list.md#bug_0115) |
 | 4.4 the follower keeping reports | `KeptReportStore` | [BUG-0103](../bug_list.md#bug_0103) |
 | 4.5 the rejoin | [follower_log_repair.md](follower_log_repair.md) | [BUG-0097](../bug_list.md#bug_0097) |
 

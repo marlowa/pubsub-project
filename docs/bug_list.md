@@ -7192,8 +7192,8 @@ so if the sequencer that stopped was leading and still led, the discarded comman
 - **Sent in batches.** There can be hundreds of thousands of unanswered commands. Sent all at once
   they would fill the new connection's queue faster than the sequencer reads them, the connection
   would be closed again, and the gateway would send them all again. So the gateway copies them when
-  the resend starts (`fix_common::UnansweredSnapshot`) and sends 256 at a time, each batch after the
-  connection has reported that everything before it is written (`fix_common::PacedResend`). The
+  the resend starts (`pubsub_itc_fw::UnansweredSnapshot`) and sends 256 at a time, each batch after the
+  connection has reported that everything before it is written (`pubsub_itc_fw::PacedResend`). The
   resend after a change of leader is sent the same way. A gateway refuses a configured limit on
   waiting sends below 1,024, four batches.
 - **No command sequenced twice.** When the gateway closes the old connection, commands it had

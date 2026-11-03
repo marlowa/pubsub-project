@@ -18,20 +18,22 @@
 #include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
 #endif
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
- * @brief The commands a gateway has sent to the sequencers and not yet seen answered, kept so that it
- *        can send them again to a new leader after a change of sequencer leader.
+ * @brief The commands a client has sent to a replicated service and not yet seen answered, kept so that
+ *        they can be sent again to a new leader. UnansweredCommands uses it; see there for when copies are
+ *        sent again.
  *
- * A gateway sends each command, a new order or a request to cancel, to both sequencers. If the leading
- * sequencer dies, a command can be lost: sent while no instance was leading, or held by the old leader
- * alone. The gateway keeps a copy of each command until the first report for it arrives, and when a
- * new leader announces itself it sends every copy it still holds again, in the order they were first
- * sent (docs/availability/commands_during_a_change_of_leader.md, sections 3.1 and 3.2).
+ * A client, such as an order gateway, sends each command to every instance of the service. If the leader
+ * dies, a command can be lost: sent while no instance was leading, or held by the old leader alone. The
+ * client keeps a copy of each command until the first answer to it arrives, and when a new leader
+ * announces itself every copy still held is sent again, in the order they were first sent
+ * (docs/availability/commands_during_a_change_of_leader.md, sections 3.1 and 3.2).
  *
- * A command is identified by the member's comp id and the command's `ClOrdID`. A copy is the encoded
- * `WalRecord` envelope exactly as sent, so that sending it again sends the same command.
+ * A command is identified by the member's comp id and the command's `ClOrdID`. A copy is the bytes the
+ * client sends, exactly as sent, so that sending it again sends the same command; the store does not
+ * read them.
  *
  * **The storage is allocated once, when the store is created.** The copies are written one after
  * another into a block of bytes of fixed size, continuing at the start when the end is reached. A list
@@ -41,10 +43,10 @@ namespace fix_common {
  * **Copies are answered out of order, and their space is reclaimed in order.** An answered copy is
  * marked, and its space is reused once every copy older than it has been answered too. A command that
  * stays unanswered for a long time therefore holds the space behind it, and the store fills. That is
- * the intended behaviour: a venue that is not answering commands should stop taking more, and a full
- * store makes the gateway refuse each new command with a reply.
+ * the intended behaviour: a service that is not answering commands should stop taking more, and a full
+ * store makes the client refuse each new command with a reply.
  *
- * One thread, the gateway's, calls every member function.
+ * One thread, the client's, calls every member function.
  */
 class UnansweredCommandStore {
   public:
@@ -167,7 +169,7 @@ class UnansweredCommandStore {
     }
 
   private:
-    // Every member function is for the gateway's thread alone (principle F1). Compiled to nothing
+    // Every member function is for the client's thread alone (principle F1). Compiled to nothing
     // unless PUBSUB_ITC_FW_THREAD_CHECKS is set.
     void check_owning_thread() const {
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
@@ -196,7 +198,7 @@ class UnansweredCommandStore {
 
     [[nodiscard]] static Index make_index(size_t capacity_bytes, size_t capacity_commands) {
         if (capacity_bytes == 0 || capacity_commands == 0) {
-            throw pubsub_itc_fw::PreconditionAssertion("UnansweredCommandStore: both capacities must be greater than zero", __FILE__, __LINE__);
+            throw PreconditionAssertion("UnansweredCommandStore: both capacities must be greater than zero", __FILE__, __LINE__);
         }
         Index index;
         // Reserved for every command the list can hold, so that the index never grows, and so never
@@ -207,7 +209,7 @@ class UnansweredCommandStore {
 
     [[nodiscard]] Index::const_iterator find(std::string_view comp_id, std::string_view cl_ord_id) const {
         // The key is assembled in a small buffer on the stack. A comp id or ClOrdID too long for it is
-        // longer than any the gateways accept, and cannot have been kept.
+        // longer than any a client accepts, and cannot have been kept.
         std::array<char, 256> buffer{};
         if (comp_id.size() + 1 + cl_ord_id.size() > buffer.size()) {
             return index_.end();
@@ -274,7 +276,7 @@ class UnansweredCommandStore {
     bool wrapped_{false};
 
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
-    pubsub_itc_fw::ThreadConfinementCheck owning_thread_{"UnansweredCommandStore"};
+    ThreadConfinementCheck owning_thread_{"UnansweredCommandStore"};
 #endif
 };
 

@@ -11,7 +11,7 @@ namespace fix_common {
  * @brief The envelope a gateway sends when it sends a command again after a change of sequencer
  *        leader: the command exactly as it was first sent, marked as sent again.
  *
- * @p kept is a copy the gateway kept in its `UnansweredCommandStore`, decoded. The envelope returned
+ * @p kept is a copy the gateway kept in `pubsub_itc_fw::UnansweredCommands`, decoded. The envelope returned
  * borrows its strings and payload, so it is valid only while the bytes @p kept was decoded from are.
  * See docs/availability/commands_during_a_change_of_leader.md, section 3.2.
  */

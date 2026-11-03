@@ -19,7 +19,7 @@
 #include "GatewayMetrics.hpp"
 #include "OpenOrderEntry.hpp"
 #include "OrderPathMetrics.hpp"
-#include "PacedResend.hpp"
+#include <pubsub_itc_fw/PacedResend.hpp>
 
 namespace binary_order_gateway {
 
@@ -169,9 +169,9 @@ BinaryOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& 
     if (has_waiting_sends) {
         // A resend of unanswered commands puts a batch at a time on a connection, so the queue must hold
         // several batches, or the first batch of a resend would fill it and close the connection again.
-        if (waiting_sends_from_file < 4 * static_cast<int64_t>(fix_common::PacedResend::batch_size)) {
+        if (waiting_sends_from_file < 4 * static_cast<int64_t>(pubsub_itc_fw::PacedResend::batch_size)) {
             throw pubsub_itc_fw::ConfigurationException("reactor.connection_waiting_sends_maximum must be at least " +
-                                                        std::to_string(4 * fix_common::PacedResend::batch_size) +
+                                                        std::to_string(4 * pubsub_itc_fw::PacedResend::batch_size) +
                                                         ", four batches of a resend of unanswered commands");
         }
         config.reactor_connection_waiting_sends_maximum = waiting_sends_from_file;
