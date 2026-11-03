@@ -49,6 +49,7 @@
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
 #include "TradingHaltState.hpp"
+#include "VenueStateFromTheWal.hpp"
 #include "VoidFromWal.hpp"
 #include "VoidedCommandList.hpp"
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
@@ -709,35 +710,16 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     std::chrono::steady_clock::time_point kept_reports_discarded_at_{};
     static constexpr std::chrono::milliseconds kept_reports_discard_interval{1000};
 
-    // The trading date, as the number yyyymmdd, written on every new order and cancel this instance puts in the WAL as
-    // leader: the UTC date of the first record in the day's WAL. Zero until known. A follower learns it from each
-    // command it is sent, so that on taking the lead it writes the date its leader wrote. An instance that leads before
-    // it has been sent one reads the wall time of the first record in its WAL once (Wal::first_wall_time_ns, one small
-    // read); one whose WAL holds nothing takes the date of the command it is writing, which is then the first record. The matching engine makes its identifiers
-    // with keys derived from it (docs/availability/deterministic_matching_engine.md, section 3.3).
-    int32_t trading_date_{0};
-    // The trading date to write on a command sequenced at this wall time, finding it as trading_date_ describes.
+    // The facts read from the WAL, which every instance keeps whether it leads or follows: whether trading is halted, the
+    // voided commands, the trading date, and the highest command a report answers (section 6.10 of
+    // docs/venue/dividing_the_sequencer_and_matching_engine.md).
+    VenueStateFromTheWal venue_state_{get_logger()};
+    // The trading date to write on a command sequenced at this wall time: the UTC date of the first record in the day's
+    // WAL, as a follower is told it by its leader's commands, or as this instance reads it from its WAL once. The matching
+    // engine makes its identifiers with keys derived from it (docs/availability/deterministic_matching_engine.md, section
+    // 3.3).
     [[nodiscard]] int32_t trading_date_for(int64_t wall_time_ns);
-    // Learns the trading date from a command in the WAL, if it carries one.
-    void note_trading_date(const pubsub_itc_fw_app::WalRecordView& view);
 
-    // The voids in this instance's WAL: the commands that a later VoidCommands record says are answered with a rejection
-    // instead of being applied (docs/availability/voided_commands.md, section 3.3). Kept from the WAL in three ways:
-    // read as the replicated WAL opens, noted as this instance writes a void as leader, and noted as it writes its
-    // leader's record of one as follower. Only voids whose records are committed are sent to an engine, because one that
-    // is not may yet be lost with the leader that wrote it, and an engine told of it would void commands that every other
-    // engine applies.
-    fix_common::VoidedCommandList voids_;
-    // The position of a void written as leader and not yet sent to the engines, which are sent the list once its record
-    // is committed; zero when there is none.
-    int64_t void_awaiting_commit_{0};
-    // Keeps a void found by void_from_wal or void_from_command in the record at seq_no. @return true when it was a void
-    // not already held.
-    bool note_void(int64_t seq_no, VoidFromWal found, const fix_common::VoidedRange& voided);
-    // Scratch space for decoding a void's command, apart from decode_arena_buffer(), which may hold the envelope that
-    // the command's bytes are read from. A command of the sequencer's own is at most HeldOrder::own_payload_capacity
-    // bytes, and decoding one needs no more space than that.
-    std::vector<uint8_t> void_decode_arena_ = std::vector<uint8_t>(1024);
     // Sends one matching engine connection every void whose record is committed, if there are any.
     void send_voided_commands(const pubsub_itc_fw::ConnectionID& engine);
     // Sends the voids to every engine connected, once the record of the latest is committed through @p seq_no. Called
@@ -777,17 +759,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // A matching engine about to lead that cannot account for the orders the venue holds, asking for trading to be halted.
     void handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 
-    // Whether trading is halted, kept from the TechnicalEvent records in the WAL in the same three ways as voids_, and
-    // the last member's command before each (docs/availability/voided_commands.md, section 6.1).
-    TradingHaltState trading_halt_;
-
-    /**
-     * @brief Keeps what the command at @p seq_no says about whether trading is halted: a member's new order or cancel, or
-     *        a TechnicalEvent. Anything else is passed over.
-     * @return true when it changes whether trading is halted.
-     */
-    bool note_trading_halt(int64_t seq_no, int16_t inner_pdu_id, const uint8_t* bytes, size_t size);
-
     /**
      * @brief An operator asking, over the listener for operators, for trading to be halted or the halt lifted
      *        (docs/availability/voided_commands.md, section 6.2).
@@ -814,15 +785,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // this thread, from the start of the segment holding the record; done only for a VoidRequest, which comes after an
     // engine has died.
     [[nodiscard]] CommandInRecord command_in_wal_at(int64_t seq_no, bool& found);
-
-    // The highest command that any report in this instance's WAL answers, kept as the voids are: read as the replicated
-    // WAL opens, and noted as each report record is written, as leader or as follower. A report answering a command means
-    // an engine applied it and went on, and perhaps that its member was told what it did, so no command at or below this
-    // is voided. Records discarded from the WAL do not lower it: a figure too high only declines a void that could have
-    // been written, which costs the rest of the day but never voids a command an engine went past.
-    int64_t highest_command_answered_{0};
-    // Notes a record's envelope, if it is a report answering a command.
-    void note_report_answers(const pubsub_itc_fw_app::WalRecordView& view);
 
     // The matching engine instance that last announced that it leads, and the connection it announced it on, while that
     // connection is up; 0 and none otherwise. EngineOrderRouting remembers the last leader after its process dies, so

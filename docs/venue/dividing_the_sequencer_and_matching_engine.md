@@ -732,6 +732,18 @@ engine first (decision 2, option A).
    ([latency_findings.md](../operations/latency_findings.md), "Dividing the matching engine into parts costs nothing
    measurable"). The sequencer's steps are measured the same way, against the code after step 6.
 7. `VenueStateFromTheWal`.
+
+   **As built.** `VenueStateFromTheWal` (`applications/sequencer/VenueStateFromTheWal.hpp`) holds whether trading is
+   halted, the voids, the void written as leader and not yet sent to the engines, the trading date, and the highest
+   command a report answers. Every record is noted in one way, `note_record`, told how the instance came to hold it:
+   read when the WAL was opened, written as follower, or written by this instance as leader. The differences of
+   section 6.10 are made in that one function, each with its reason. As leader, every record is noted as
+   `append_envelope_to_wal` writes it, so the report's highest command answered and the void of a command of the
+   sequencer's own are noted there, as the halt already was, rather than by the callers after it; finding a void in a
+   member's order costs one comparison of its message type. The leader reads the first record's time from the WAL
+   only while the trading date is not known. The part's Quill log lines begin with its name.
+   `VenueStateFromTheWalTest` has eleven tests, and eight faults put in on purpose were each caught. Both full suites
+   pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 8. `MemberSessions`.
 9. `ReportForwarding`.
 10. `KeptReportStore`, extended.

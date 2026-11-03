@@ -2,6 +2,7 @@ add_executable(sequencer
         SequencerConfigurationLoader.cpp
         SequencerThread.cpp
         Sequencer.cpp
+        VenueStateFromTheWal.cpp
 )
 
 target_include_directories(sequencer PRIVATE
@@ -26,6 +27,7 @@ target_sources(sequencer PRIVATE
         SequencerThread.hpp
         Sequencer.hpp
         TradingHaltState.hpp
+        VenueStateFromTheWal.hpp
         VoidFromWal.hpp
 )
 
@@ -93,7 +95,9 @@ add_executable(sequencer_tests
         tests/FullyReportedThroughTest.cpp
         tests/VoidFromWalTest.cpp
         tests/TradingHaltStateTest.cpp
+        tests/VenueStateFromTheWalTest.cpp
         SequencerConfigurationLoader.cpp
+        VenueStateFromTheWal.cpp
 )
 
 target_include_directories(sequencer_tests PRIVATE

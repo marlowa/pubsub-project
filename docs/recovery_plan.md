@@ -556,8 +556,8 @@ design divides the work into sixteen steps, each followed by the developer loop 
 16. replay mode removed, the order's round trip measured again, and the sequencer and matching engine documents
     brought up to date.
 
-Steps 1 to 6 are done, which divides the matching engine. Step 1 found [BUG-0225](bug_list.md#bug_0225) and
-[BUG-0226](bug_list.md#bug_0226). Step 7, the first of the sequencer's, is next.
+Steps 1 to 7 are done: the matching engine is divided, and the sequencer's facts read from the WAL are a part. Step 1
+found [BUG-0225](bug_list.md#bug_0225) and [BUG-0226](bug_list.md#bug_0226). Step 8 is next.
 
 ### Framework fixes done alongside the phases
 
