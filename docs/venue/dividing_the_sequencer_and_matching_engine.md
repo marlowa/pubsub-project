@@ -238,6 +238,125 @@ again only if it is later granted the lead. Nothing is lost, because that catch-
 the venue has a standby that cannot take over promptly, and nothing says so, which principle V11 requires. Following
 the plan, it is recorded and not fixed within this phase: it loses and duplicates no order.
 
+### 6.2 Sending reports (`EngineReportSending`)
+
+**Where it is held now.** `held_reports_`, `held_reports_overflowed_`, `waiting_for_report_connection_`, the two
+connections for reports (`sequencer_er_conn_id_`, `sequencer_er_secondary_conn_id_`), and the numbering
+(`report_number_`, `report_number_epoch_`). Each held report records whether it has been numbered, and whether it has
+been sent to each sequencer.
+
+**What decides where a report goes.** `EngineOutputs::send_report` first passes over a report of a command applied
+while following, or a report marked as a possible repeat, whose command the WAL already holds every report of
+(`reports_in_wal_through_`). A report of a command applied while following is then kept (section 6.3), not sent. Any
+other report goes to `send_er_to_sequencer`, which holds it or sends it.
+
+| Situation | What makes it so | A new report is |
+|-----------|------------------|-----------------|
+| **Sending** | not catching up to become current or to follow again, and a connection for reports is up | numbered and sent on every connection for reports that is up |
+| **Holding until it knows whether it serves** | high availability on, and catching up for a purpose other than to lead (`holding_reports_until_entitled`) | held, up to 50,000; past that, sent as in the next two rows, and the overflow said once at Warning |
+| **Holding for want of a connection** | neither connection for reports is up | held, up to 50,000; past that, lost, and the loss said once at Error |
+
+**The moves.**
+
+| Event | What is done with the reports held |
+|-------|-------------------------------------|
+| the instance becomes Leading (`adopt_leader_role`) | `release_held_reports`: each is numbered, if it was not, and sent on each connection for reports that is up and it has not been sent on; one sent on every connection there is is dropped |
+| the instance becomes Following (`enter_follower_state`) | `discard_held_reports`: all dropped, and the number said at Info |
+| a connection for reports is established | `release_reports_held_for_a_connection`: sent as above, unless the instance is holding until it knows whether it serves |
+| the instance takes the lead and its catch-up starts (`send_kept_reports_after`) | the reports kept while following, of commands after the last the WAL holds every report of, are added to those held, and sent as above |
+
+One member, `held_reports_overflowed_`, records the overflow of both kinds of holding, though the two overflows mean
+different things: in the first, later reports are sent; in the second, they are lost. In `EngineReportSending` they
+become two.
+
+### 6.3 Comparing the reports of commands applied while following (`FollowerReportComparison`)
+
+**Where it is held now.** `kept_reports_`, `kept_reports_overflowed_`, `keeping_from_`,
+`last_report_record_accounted_`, `highest_command_compared_`, `report_differences_`, and `refused_to_lead_` with the
+counter beside it.
+
+**What it does.** While the instance keeps its reports (`keeps_its_reports`), each report of a command it applies is
+kept, in the order of the commands. When a report record of the leader's arrives, answering command N:
+
+- each kept report of a command before N that was never compared is a difference (ReportNotSent), and every kept
+  report of a command before N is dropped;
+- the first kept report of N not yet compared is compared byte for byte with the leader's; if they differ, that is a
+  difference (ReportDiffers);
+- if none of N is kept, and N is after the last command the WAL held every report of when the catch-up started, at or
+  after the first command whose reports are kept, and the store has not overflowed, that is a difference
+  (ReportNotProduced);
+- a report record of a command before the highest already compared is passed over: a sequencer that took the lead
+  writes such reports again.
+
+The first difference makes the instance refuse to lead (`refuse_to_lead`): it stops asking for a lease and marks its
+region unusable. The situation is one member, `refused_to_lead_`, which never goes back. On taking the lead, the kept
+reports of commands after the last the WAL holds every report of are sent (section 6.2), and the rest dropped.
+
+When more than 100,000 reports are kept, later ones are not kept, which is said once at Error, and a missing report is
+then no longer counted as a difference.
+
+### 6.4 Catching up (`EngineCatchUp`)
+
+**Where it is held now.** `follow_request_number_`, `follow_request_sent_`, `catch_up_connection_`,
+`catch_up_tally_`, `reconciliation_timer_id_`, `reconciliation_attempts_`, `reconciliation_records_seen_`,
+`reconciliation_records_at_last_tick_`, `reconciliation_reports_sent_`, `reconciliation_reports_left_out_`,
+`reports_in_wal_through_`, `records_from_earlier_answers_`, `has_position_`, `last_replicated_seq_no_`,
+`next_followed_seq_no_`, and, for an unusable region, `region_was_unusable_` and `halt_awaited_` with its timer.
+
+**The situations of one catch-up.**
+
+| Situation | What makes it so | A record that arrives is |
+|-----------|------------------|--------------------------|
+| **Not asked yet** | catching up, and the request not sent: no sequencer is connected for orders, or the question of a command the previous process died applying is not settled | ignored, as from an earlier answer |
+| **Asked, no answer started** | the request sent, on every sequencer connection for orders, with a new number | ignored, as from an earlier answer |
+| **Answer under way** | `WalFollowStarted` with the latest number has arrived; its connection is noted, and the tally set from where it starts | applied, and counted in the tally |
+| **Following** | the catch-up has completed, and the instance follows the WAL | applied only if it is the next record expected; otherwise nothing more is applied and the instance asks to be caught up again |
+
+**The moves.**
+
+| Event | Done |
+|-------|------|
+| a catch-up begins (`begin_reconciliation`) | the counts are set to zero, the retry timer started, and the request sent if a sequencer is connected for orders |
+| a sequencer connects for orders, while catching up | if the request has not been sent, the catch-up begins again; if it has, the request is sent on that connection alone, with the same number, so that an answer under way is left to finish (BUG-0200) |
+| the retry timer, while catching up | nothing while the died-applying question is open; a warning if no sequencer is connected for orders; nothing if records have arrived since the last tick; otherwise the request is sent again, with a new number |
+| `WalLeaderChanged`, while catching up | the request is sent again, with a new number |
+| `WalFollowCaughtUp` with the latest number | if the tally accounts for every record the sequencer sent, the catch-up is complete: the timer is stopped, and the role moves as section 6.1 says; if not, it is said at Error, and the timer asks again |
+| `WalFollowCaughtUp` or `WalFollowStarted` with another number, or when not catching up | ignored |
+| the catch-up completes, with the region found unusable | if the WAL reaches the first command of the day, the region counts as usable from then on; otherwise, if the instance is catching up to lead, or high availability is off, it asks the sequencers every second to halt trading, until trading is halted or it stops leading |
+
+Both of the first two situations ignore every record: `from_an_earlier_answer` ignores a record that arrives while
+catching up on any connection other than the one the latest answer started on, and before an answer has started
+there is no such connection. A record from an earlier answer can still be arriving when a new request is sent,
+because the leading sequencer stops answering an earlier request before it answers a later one, but what it had
+already sent is still on its way.
+
+### 6.5 A command the previous process died applying (`DiedApplyingCheck`)
+
+**Where it is held now.** `died_applying_question_`, already one state (none, asking the peer, asking the sequencers),
+with `died_applying_`, `died_applying_outcome_`, `peer_asked_whether_applied_`, and two timers.
+
+| From | Event | To | Done |
+|------|-------|----|------|
+| none | the application is ready, and the region recorded a command being applied above the position it published | asking the peer (high availability on), or asking the sequencers (off) | the peer is asked, once, on whichever connection to it is up, and a timer of one lease period started |
+| asking the peer | the peer says it has applied the command | none | settled: PeerAppliedIt |
+| asking the peer | the peer says it has not, or the timer runs out | asking the sequencers | `VoidRequest` on every sequencer connection for orders, and again every second |
+| asking the sequencers | `VoidedCommands` names the command | none | settled: Voided |
+| asking the sequencers | `VoidDeclined` names the command | none | settled: Declined |
+
+Settling it stops both timers, tells the test, and sends the catch-up request if a catch-up is waiting for it. While
+the question is open, no catch-up is asked for, because the catch-up would apply the command again.
+
+### 6.6 The settings the two engines must share (`PeerSettingsCheck`)
+
+**Where it is held now.** `peer_settings_known_`, `peer_region_capacity_`, `peer_secret_fingerprint_` and
+`peer_settings_differ_`.
+
+The situations are: the peer's settings not yet known; known and the same; known and different. They are sent when
+this instance's connection to the peer's listener is established, and kept when that connection is lost. While this
+instance leads, it says through the lease agent that its peer may not lead whenever the settings differ, and that it
+may lead again when they no longer differ (`bar_peer_if_settings_differ`), which is checked when the peer's settings
+arrive and when this instance takes the lead.
+
 ## 7. How it is tested
 
 - **After every step**, the whole test suite passes: `scripts/devsetup.sh --skip-db`, and then both full suites of
