@@ -9,6 +9,7 @@ the order flow. The clickable [architecture map](../orientation/architecture.md)
 - [matching_engine.md](matching_engine.md) — The book of open orders, which survives the process and is copied to the standby; leadership and catch-up. It does not match orders
 - [sequencer.md](sequencer.md) — The sequencing design: ordering, the WAL commit, and fanout
 - [sequencer_app.md](sequencer_app.md) — The sequencer as a deployed component
+- [dividing_the_sequencer_and_matching_engine.md](dividing_the_sequencer_and_matching_engine.md) — The design for dividing the sequencer and the matching engine into parts, each with one job and its own state
 - [arbiter.md](arbiter.md) — The third party that settles leadership when the peers cannot
 - [witness.md](witness.md) — The quorum witness
 - [authentication_service.md](authentication_service.md) — Credential checking for member logons

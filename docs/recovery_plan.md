@@ -530,6 +530,9 @@ small steps, with the whole test suite passing after each.
 
 **Finished when:** each part has one job, its states are written down, and the tests pass.
 
+**Design:** [dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md),
+written on 3 November 2026, when Andrew closed phase 9. Its four decisions await Andrew.
+
 ### Framework fixes done alongside the phases
 
 **For:** the breaches of the framework principles that have nothing to do with high availability.
