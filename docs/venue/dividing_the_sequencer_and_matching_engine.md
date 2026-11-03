@@ -183,7 +183,7 @@ instance is doing.
 | Situation | Members now | Commands it is sent | Its reports | Announces |
 |-----------|-------------|---------------------|-------------|-----------|
 | **Starting** | Unknown; no catch-up has completed | discarded | none produced | nothing |
-| **Catching up to become current** | Reconciling; purpose BecomeCurrent; asked to follow | applied | held until it knows whether it serves | nothing |
+| **Catching up to become current** | Reconciling; purpose BecomeCurrent; asked to follow | applied | kept, and compared with the leader's, because the request asked to follow | nothing |
 | **Current, following the WAL** | Unknown; a catch-up has completed; asked to follow | applied, as a follower | kept, and compared with the leader's | nothing |
 | **Catching up to lead** | Reconciling; purpose Lead; asked to lead | applied | sent | nothing |
 | **Leading** | Leader | applied | sent | Leader |
@@ -192,6 +192,12 @@ instance is doing.
 | **Following, without following the WAL** | Follower; the last request asked to lead | discarded | none produced | Follower |
 
 The last situation is a defect: see "Found" below.
+
+Holding a report until the instance knows whether it serves (section 6.2) happens when high availability is on and
+the instance is catching up for a purpose other than leading. With high availability on, such a catch-up's request
+always asks to follow, and a report of a command applied after a request to follow is kept rather than held. So the
+holding is reached only before any request has been sent in a catch-up, when no record can arrive; with the code as
+it is, a report is not held for this reason in practice.
 
 `refused_to_lead_` is separate from the situation: an instance that has refused to lead goes on doing what it was
 doing, and no longer asks for a lease. It is held by `FollowerReportComparison` (section 6.3), through which every
@@ -679,6 +685,21 @@ engine first (decision 2, option A).
    log lines begin with its name. `EngineCatchUpTest` has seventeen tests, and nine faults put in on purpose were each
    caught. Both full suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 5. `EngineRole`, with its one state.
+
+   **As built.** `EngineRole` (`applications/matching_engine/EngineRole.hpp`) holds what the instance is doing as one
+   state, `EngineRole::Situation`: starting, catching up to become current, current, catching up to lead, leading,
+   catching up to follow again, or following. The role as the Quill log and the test name it, `MeRole`, is worked out
+   from it. Four of the seven members of section 6.1 are folded into it: the role, the purpose of the catch-up, the
+   situation to go back to after following again, and the peer noted as leading. Two stay beside it as facts, because
+   each is acted on in more than one situation: whether the latest catch-up request asked to follow, which decides
+   whether a catch-up's reports are kept and whether a follower follows the WAL at all; and whether any catch-up has
+   completed, for the test's report of where the instance stands. The seventh, the refusal to lead, is held by
+   `FollowerReportComparison` (step 3). The situation of BUG-0225, a follower that never asked to follow the WAL, is
+   kept as it is and named (`follows_without_following_the_wal`). The lease agent, the epoch and its store stay in the
+   thread for now: their handling is short and mostly the library's `PairLeaseAgent`, and step 6 decides where they
+   belong. `EngineRoleTest` has eleven tests, and six faults put in on purpose were each caught; one of them only by a
+   test of a combination no sequence of events reaches, which pins the check that a leader never keeps its reports.
+   Both full suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 6. `DiedApplyingCheck` and `PeerSettingsCheck`, and what is left of `MatchingEngineThread` reduced to its connections,
    timers and the handing on of events.
 7. `VenueStateFromTheWal`.

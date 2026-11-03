@@ -148,14 +148,13 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     // someone reading a log from a machine that has just come up can see what it thinks it is
     // before anything else happens.
     if (ha_enabled_) {
-        ha_role_state_ = MeRole::Unknown;
         // Recover the leadership generation before anything can elect. Without this
         // the node starts at zero, and a pair restarted together would agree on a
         // generation the venue has already used -- see pubsub_itc_fw::EpochStore.
         epoch_ = epoch_store_.load();
 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: HA enabled, starting as {} (instance_id={}, configured {}, epoch={})",
-                   me_role_name(ha_role_state_), config_.instance_id, is_primary_ ? "primary" : "secondary", epoch_);
+                   me_role_name(role_.role()), config_.instance_id, is_primary_ ? "primary" : "secondary", epoch_);
         if (epoch_ > 0) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: recovered epoch={} from {}", epoch_, epoch_store_.path());
         } else {
@@ -241,8 +240,8 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // A role taken, or a catch-up begun or finished, before the connection was made is reported now, so that the test
         // learns it whenever it connects.
         report_present_state();
-        if (ha_role_state_ == MeRole::Leader || ha_role_state_ == MeRole::Follower) {
-            report_role_change(MeRole::Unknown, ha_role_state_);
+        if (role_.role() == MeRole::Leader || role_.role() == MeRole::Follower) {
+            report_role_change(MeRole::Unknown, role_.role());
         }
         return;
     }
@@ -295,13 +294,13 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         if (died_applying_question_ == DiedApplyingQuestion::asking_sequencers) {
             send_void_request();
         }
-        if (ha_role_state_ == MeRole::Reconciling) {
+        if (role_.role() == MeRole::Reconciling) {
             // Either reconciliation was begun before any sequencer had dialled in, so the request
             // could not be sent, and sending it now is what keeps that from stranding the venue
             // with no engine leading -- the outage BUG-0043 recorded; or it was sent on another
             // connection, and only this one is still to be asked.
             ask_on_new_sequencer_connection(id);
-        } else if (!has_reconciled_ && ha_role_state_ != MeRole::Follower) {
+        } else if (!role_.catch_up_completed() && role_.role() != MeRole::Follower) {
             // The catch-up belongs here, at the moment this instance first has somewhere to ask
             // and before it has served anything, rather than later when a role is settled. An
             // instance that starts and works for fifteen seconds while an arbiter makes up its
@@ -318,7 +317,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
             // Becoming current, not taking the role: who may act is the arbiter's to say, and
             // an instance that promoted itself on the strength of having caught up would be
             // deciding that for itself.
-            catch_up_purpose_ = CatchUpPurpose::BecomeCurrent;
+            role_.start_catching_up_to_become_current();
             begin_reconciliation();
         }
     }
@@ -497,7 +496,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
                               (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id));
 
     // ---- Order PDU gating by HA state -------------------------------------
-    if (is_order_pdu && ha_role_state_ == MeRole::Follower && !following_the_wal()) {
+    if (is_order_pdu && role_.role() == MeRole::Follower && !following_the_wal()) {
         // A follower applies only what it is sent as a follower of the WAL. A command reaching it otherwise, from order
         // routing before the sequencer learned it follows, is in the WAL, and reaches it as a follower in its turn.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: FOLLOWER -- discarding order PDU inner_pdu_id={} on connection {}",
@@ -505,7 +504,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         release_pdu_payload(message);
         return;
     }
-    if (is_order_pdu && ha_enabled_ && ha_role_state_ == MeRole::Unknown && !following_the_wal()) {
+    if (is_order_pdu && ha_enabled_ && role_.role() == MeRole::Unknown && !following_the_wal()) {
         // With high availability on, Unknown means this instance holds no lease: it has not yet
         // been granted one, or it has caught up and is waiting to be. It must not match orders,
         // or an instance that no majority chose would be acting (R-0146). Nothing is lost by
@@ -519,7 +518,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "MatchingEngineThread: holding no lease -- discarding order PDU inner_pdu_id={} on connection {}", inner_pdu_id,
                    message.connection_id().get_value());
-        has_reconciled_ = false;
+        role_.command_discarded_without_a_lease();
         release_pdu_payload(message);
         return;
     }
@@ -529,7 +528,7 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         // A report record: the engine produces reports and applies none. One that follows the WAL is sent every record,
         // so during its catch-up a report record is one of the records sent, and is counted as arrived (R-0101).
-        if (ha_role_state_ == MeRole::Reconciling) {
+        if (role_.role() == MeRole::Reconciling) {
             catch_up_.record_offered(message.seq_no());
         }
         if (keeps_its_reports() && envelope.has_answers_seq_no) {
@@ -643,7 +642,7 @@ void MatchingEngineThread::die_if_named(const pubsub_itc_fw_app::NewOrderSingleV
 
 void MatchingEngineThread::lose_and_regain_lease_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view) {
     const std::string& named = config_.test_events.lose_and_regain_lease_after_cl_ord_id;
-    if (named.empty() || view.cl_ord_id != named || lost_and_regained_lease_ || !ha_enabled_ || ha_role_state_ != MeRole::Leader) {
+    if (named.empty() || view.cl_ord_id != named || lost_and_regained_lease_ || !ha_enabled_ || role_.role() != MeRole::Leader) {
         return;
     }
     lost_and_regained_lease_ = true;
@@ -659,7 +658,7 @@ CommandSource MatchingEngineThread::command_source_for(int64_t sequence_number) 
         // every command. None of its reports is sent: the leader's are the ones the members are sent.
         return CommandSource::catch_up;
     }
-    if (ha_role_state_ != MeRole::Reconciling) {
+    if (role_.role() != MeRole::Reconciling) {
         return CommandSource::live;
     }
     // Counted before the state machine decides anything, a refusal included: the catch-up is complete
@@ -709,7 +708,7 @@ bool MatchingEngineThread::holding_reports_until_entitled() const {
     // Only a catch-up done at startup. A promotion's catch-up is a different case: that instance
     // has been told it will lead, and its reports go out as they are produced. With high
     // availability off there is no peer to defer to and nothing to wait for.
-    return ha_enabled_ && ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead();
+    return role_.holding_reports_until_entitled();
 }
 
 void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, const fix_common::SessionIdentity& session,
@@ -792,7 +791,7 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     }
 
     if (id == reconciliation_timer_id_) {
-        catch_up_.on_retry_tick(ha_role_state_ == MeRole::Reconciling, catch_up_context());
+        catch_up_.on_retry_tick(role_.role() == MeRole::Reconciling, catch_up_context());
         return;
     }
 
@@ -882,12 +881,12 @@ const char* MatchingEngineThread::me_role_name(MeRole role) {
 }
 
 void MatchingEngineThread::adopt_leader_role() {
-    if (ha_role_state_ == MeRole::Leader) {
+    if (role_.role() == MeRole::Leader) {
         return;
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: adopting LEADER role (epoch={})", epoch_);
-    report_role_change(ha_role_state_, MeRole::Leader);
-    ha_role_state_ = MeRole::Leader;
+    report_role_change(role_.role(), MeRole::Leader);
+    role_.became_leader();
     announce_role();
 
     // This instance is going to serve, so anything it caught up on and held back is owed to the
@@ -907,19 +906,14 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
         case pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading:
             // Stops matching at once, whatever it was doing, and tells the sequencers so they stop
             // routing orders here.
-            if (catch_up_purpose_ == CatchUpPurpose::Lead) {
-                catch_up_purpose_ = CatchUpPurpose::BecomeCurrent;
-            }
             catch_up_.stop_awaiting_halt();
             enter_follower_state();
             break;
         case pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads:
-            if (ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead()) {
+            if (role_.catching_up() && !role_.catching_up_to_lead()) {
                 // Catching up at startup: follow once the catch-up ends.
-                peer_leader_heard_while_reconciling_ = true;
-                peer_leader_instance_id_ = peer_instance_id();
-                peer_leader_epoch_ = lease_agent_->highest_epoch();
-            } else if (ha_role_state_ == MeRole::Unknown) {
+                role_.note_peer_leader(peer_instance_id(), lease_agent_->highest_epoch());
+            } else if (role_.role() == MeRole::Unknown) {
                 static_cast<void>(follow_peer_claiming_leadership(peer_instance_id(), lease_agent_->highest_epoch()));
             }
             break;
@@ -1008,15 +1002,15 @@ void MatchingEngineThread::report_present_state() {
     if (died_applying_outcome_.has_value()) {
         test_events_->send_event(pubsub_itc_fw_app::DiedApplying::message_pdu_id, pubsub_itc_fw_app::DiedApplying{died_applying_, *died_applying_outcome_});
     }
-    if (ha_role_state_ == MeRole::Reconciling) {
+    if (role_.role() == MeRole::Reconciling) {
         report_catch_up(pubsub_itc_fw_app::CatchUpStage::Started, catch_up_.position(), 0);
         return;
     }
-    if (!has_reconciled_) {
+    if (!role_.catch_up_completed()) {
         return;
     }
     report_catch_up(pubsub_itc_fw_app::CatchUpStage::Completed, catch_up_.position(), catch_up_.last_records_sent());
-    if (ha_role_state_ == MeRole::Unknown) {
+    if (role_.role() == MeRole::Unknown) {
         report_catch_up(pubsub_itc_fw_app::CatchUpStage::CurrentAndWaiting, catch_up_.position(), catch_up_.last_records_sent());
     }
 }
@@ -1098,8 +1092,8 @@ void MatchingEngineThread::handle_lease_refusal(const pubsub_itc_fw::EventMessag
 }
 
 void MatchingEngineThread::enter_follower_state() {
-    const MeRole previous = ha_role_state_;
-    ha_role_state_ = MeRole::Follower;
+    const MeRole previous = role_.role();
+    role_.became_follower();
     // Logged here rather than at each caller, so no path into this state is silent. Support
     // reading a log after an incident wants every role CHANGE in it -- but a secondary that
     // starts as a follower and is then confirmed as one has not changed anything, and
@@ -1121,7 +1115,7 @@ void MatchingEngineThread::enter_follower_state() {
 }
 
 bool MatchingEngineThread::keeps_its_reports() const {
-    return ha_enabled_ && follows_the_wal_ && ha_role_state_ != MeRole::Leader;
+    return role_.keeps_its_reports();
 }
 
 void MatchingEngineThread::keep_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t seq_no, const fix_common::SessionIdentity& session) {
@@ -1172,7 +1166,7 @@ void MatchingEngineThread::ReportComparisonLinks::kept_reports_sent(int64_t sent
 }
 
 bool MatchingEngineThread::following_the_wal() const {
-    return ha_enabled_ && follows_the_wal_ && ha_role_state_ != MeRole::Reconciling && ha_role_state_ != MeRole::Leader;
+    return role_.following_the_wal();
 }
 
 bool MatchingEngineThread::next_followed_record(int64_t seq_no) {
@@ -1191,8 +1185,7 @@ void MatchingEngineThread::follow_the_wal_again(const char* why) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: following the WAL -- {}, so asking to be caught up again from the last command applied, {}, and to go on following", why,
                state_machine_.highest_applied());
-    role_when_following_again_ = ha_role_state_ == MeRole::Leader ? MeRole::Follower : ha_role_state_;
-    catch_up_purpose_ = CatchUpPurpose::FollowAgain;
+    role_.start_catching_up_to_follow_again();
     catch_up_.stop_following();
     begin_reconciliation();
 }
@@ -1220,30 +1213,28 @@ bool MatchingEngineThread::follow_peer_claiming_leadership(int64_t instance_id, 
 }
 
 void MatchingEngineThread::act_on_peer_leader_heard_while_reconciling() {
-    if (!peer_leader_heard_while_reconciling_) {
+    // Consumed whether or not it is followed, so a claim heard once cannot be applied twice and cannot outlive the
+    // catch-up it arrived during.
+    const std::optional<EngineRole::PeerLeader> noted = role_.take_peer_leader_note();
+    if (!noted.has_value()) {
         return;
     }
-    // Consumed whether or not it is followed, so a claim heard once cannot be applied twice and
-    // cannot outlive the catch-up it arrived during.
-    peer_leader_heard_while_reconciling_ = false;
-    const int64_t instance_id = peer_leader_instance_id_;
-    const int32_t announced_epoch = peer_leader_epoch_;
-    // Re-checked against the epoch as it stands now, not as it stood when the announcement
-    // arrived: reconciliation can have advanced this instance's own generation in between.
-    follow_peer_claiming_leadership(instance_id, announced_epoch);
+    // Checked against the epoch as it stands now, not as it stood when the announcement arrived: reconciliation can have
+    // advanced this instance's own generation in between.
+    static_cast<void>(follow_peer_claiming_leadership(noted->instance_id, noted->epoch));
 }
 
 void MatchingEngineThread::announce_role() {
     // Reconciling counts as follower to the outside world: this instance has been told it
     // will lead but cannot serve until its book is caught up, and orders sent meanwhile
     // would be dropped. It announces LEADER from adopt_leader_role, once it can.
-    if (ha_role_state_ != MeRole::Leader && ha_role_state_ != MeRole::Follower) {
+    if (role_.role() != MeRole::Leader && role_.role() != MeRole::Follower) {
         return;
     }
     pubsub_itc_fw_app::RoleAnnouncement announcement{};
     announcement.instance_id = static_cast<int64_t>(config_.instance_id);
     announcement.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
-    announcement.current_role = ha_role_state_ == MeRole::Leader ? pubsub_itc_fw_app::Role::leader : pubsub_itc_fw_app::Role::follower;
+    announcement.current_role = role_.role() == MeRole::Leader ? pubsub_itc_fw_app::Role::leader : pubsub_itc_fw_app::Role::follower;
     announcement.epoch = epoch_;
 
     // The peer gets this too, not just the sequencers. An instance starting beside
@@ -1334,7 +1325,7 @@ void MatchingEngineThread::recover_open_orders(bool region_existed) {
 }
 
 void MatchingEngineThread::become_leader_when_current() {
-    if (ha_role_state_ == MeRole::Leader) {
+    if (role_.role() == MeRole::Leader) {
         // Already serving: it has applied every order as it arrived, and catching up now would
         // make the live orders arriving meanwhile read as replay.
         return;
@@ -1345,17 +1336,16 @@ void MatchingEngineThread::become_leader_when_current() {
     // while it waited reached it only through the WAL. Leading without catching up would lose
     // each of them, and tell no member (BUG-0198). A catch-up to follow again that is under way is replaced: its answer is
     // not waited for (BUG-0218).
-    catch_up_purpose_ = CatchUpPurpose::Lead;
+    role_.start_catching_up_to_lead();
     begin_reconciliation();
 }
 
 void MatchingEngineThread::begin_reconciliation() {
-    ha_role_state_ = MeRole::Reconciling;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: entering RECONCILING (last_replicated_seq_no={}, book_size={})",
                catch_up_.position(), order_book_.size());
     report_catch_up(pubsub_itc_fw_app::CatchUpStage::Started, catch_up_.position(), 0);
     if (catch_up_.begin(catch_up_context())) {
-        follows_the_wal_ = !(reconciling_to_lead() || !ha_enabled_);
+        role_.request_sent(role_.catching_up_to_lead() || !ha_enabled_);
     }
 }
 
@@ -1363,7 +1353,7 @@ EngineCatchUp::RequestContext MatchingEngineThread::catch_up_context() const {
     EngineCatchUp::RequestContext context{};
     context.may_ask = died_applying_question_ == DiedApplyingQuestion::none;
     context.died_applying = died_applying_;
-    context.to_lead = reconciling_to_lead();
+    context.to_lead = role_.catching_up_to_lead();
     context.highest_applied = state_machine_.highest_applied();
     return context;
 }
@@ -1371,7 +1361,7 @@ EngineCatchUp::RequestContext MatchingEngineThread::catch_up_context() const {
 void MatchingEngineThread::send_follow_request() {
     if (catch_up_.send_request(catch_up_context())) {
         // Whether the latest request asked to follow: with high availability on, every request not to lead does.
-        follows_the_wal_ = !(reconciling_to_lead() || !ha_enabled_);
+        role_.request_sent(role_.catching_up_to_lead() || !ha_enabled_);
     }
 }
 
@@ -1400,7 +1390,7 @@ void MatchingEngineThread::handle_leader_changed(const pubsub_itc_fw::EventMessa
         follow_the_wal_again("another sequencer leads");
         return;
     }
-    if (ha_role_state_ != MeRole::Reconciling) {
+    if (role_.role() != MeRole::Reconciling) {
         return; // caught up already: nothing to ask for
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: the sequencer on connection {} now leads -- asking again to be caught up",
@@ -1520,11 +1510,11 @@ void MatchingEngineThread::handle_engine_position_query(const pubsub_itc_fw::Eve
     // applies. An engine that is still catching up as part of a promotion catches up from the
     // sequencer that asks, so its answer would be out of date by the time it finished; the
     // sequencer asks again until it gets one.
-    const bool acting_on_orders = !ha_enabled_ || ha_role_state_ == MeRole::Leader;
+    const bool acting_on_orders = !ha_enabled_ || role_.role() == MeRole::Leader;
     if (!acting_on_orders) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: EnginePositionQuery {} on connection {} -- not acting on orders (state={}), not answering", query.request_id,
-                   message.connection_id().get_value(), static_cast<int>(ha_role_state_));
+                   message.connection_id().get_value(), static_cast<int>(role_.role()));
         return;
     }
 
@@ -1542,7 +1532,7 @@ bool MatchingEngineThread::from_an_earlier_answer(const pubsub_itc_fw::Connectio
     // or before that answer has started, answers an earlier request: the leading sequencer stops answering an earlier
     // request on a connection before it answers a later one, but what it had already sent still arrives. Every record
     // it holds is in the latest answer, which starts from the last command this instance applied (BUG-0212).
-    return ha_role_state_ == MeRole::Reconciling && catch_up_.from_an_earlier_answer(connection);
+    return role_.role() == MeRole::Reconciling && catch_up_.from_an_earlier_answer(connection);
 }
 
 void MatchingEngineThread::handle_follow_started(const pubsub_itc_fw::EventMessage& message) {
@@ -1556,13 +1546,13 @@ void MatchingEngineThread::handle_follow_started(const pubsub_itc_fw::EventMessa
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode WalFollowStarted -- dropping");
         return;
     }
-    if (!catch_up_.started(message.connection_id(), started, ha_role_state_ == MeRole::Reconciling)) {
+    if (!catch_up_.started(message.connection_id(), started, role_.role() == MeRole::Reconciling)) {
         return;
     }
-    if (follows_the_wal_) {
+    if (role_.latest_request_asked_to_follow()) {
         report_comparison_.start_keeping_after(started.after_seq_no);
     }
-    if (reconciling_to_lead()) {
+    if (role_.catching_up_to_lead()) {
         send_kept_reports_after(catch_up_.reports_in_wal_through());
     }
 }
@@ -1584,9 +1574,9 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     // sequencer order connection, so a straggler ack (e.g. from a sequencer that
     // just won an election) can still arrive after we have promoted; ignore it
     // rather than re-running cancel-on-failover.
-    if (ha_role_state_ != MeRole::Reconciling) {
+    if (role_.role() != MeRole::Reconciling) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: already promoted (state={}) -- ignoring a duplicate caught-up message",
-                   static_cast<int>(ha_role_state_));
+                   static_cast<int>(role_.role()));
         return;
     }
     switch (catch_up_.caught_up(message.connection_id(), ack, order_book_.size())) {
@@ -1601,14 +1591,12 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     state_machine_.note_caught_up_to(ack.last_seq_no);
     report_catch_up(pubsub_itc_fw_app::CatchUpStage::Completed, ack.last_seq_no, ack.records_sent);
 
-    if (catch_up_purpose_ == CatchUpPurpose::FollowAgain) {
-        catch_up_purpose_ = CatchUpPurpose::BecomeCurrent;
-        has_reconciled_ = true;
-        ha_role_state_ = role_when_following_again_;
+    if (role_.situation() == EngineRole::Situation::catching_up_to_follow_again) {
+        static_cast<void>(role_.catch_up_completed_now());
         catch_up_.follow_from(ack.last_seq_no + 1);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: caught up again at seq_no={} with {} order(s) on the book -- following the WAL from record {}, as {}",
-                   ack.last_seq_no, order_book_.size(), catch_up_.next_followed(), me_role_name(ha_role_state_));
+                   ack.last_seq_no, order_book_.size(), catch_up_.next_followed(), me_role_name(role_.role()));
         return;
     }
 
@@ -1620,7 +1608,7 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     // Where the region could not be used, R-0123 decides first: the book the catch-up rebuilt is kept if the WAL
     // reached the first command of the day, and otherwise trading halts.
     if (!book_can_be_vouched_for()) {
-        catch_up_.account_for_unusable_region(ack, !ha_enabled_ || reconciling_to_lead(), order_book_.size());
+        catch_up_.account_for_unusable_region(ack, !ha_enabled_ || role_.catching_up_to_lead(), order_book_.size());
     }
     if (!book_can_be_vouched_for()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: holding {} order(s) it cannot vouch for", order_book_.size());
@@ -1629,11 +1617,11 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
                    order_book_.size());
     }
 
-    has_reconciled_ = true;
-    ha_role_state_ = MeRole::Unknown; // clear reconciling
+    // Current, as the role reports it, until a catch-up to lead adopts the leader role below.
+    const EngineRole::Completed completed = role_.catch_up_completed_now();
 
-    if (!reconciling_to_lead()) {
-        if (follows_the_wal_) {
+    if (completed != EngineRole::Completed::to_lead) {
+        if (role_.latest_request_asked_to_follow()) {
             catch_up_.follow_from(ack.last_seq_no + 1);
         }
         // Current, and that is all. This catch-up was done at startup so that nothing is
@@ -1946,7 +1934,7 @@ void MatchingEngineThread::settle_died_applying(pubsub_itc_fw_app::DiedApplyingO
         test_events_->send_event(pubsub_itc_fw_app::DiedApplying::message_pdu_id, pubsub_itc_fw_app::DiedApplying{died_applying_, outcome});
     }
     // A catch-up begun while the question was open asked for nothing; it is asked for now.
-    if (ha_role_state_ == MeRole::Reconciling && !catch_up_.request_sent() && !sequencer_order_conn_ids_.empty()) {
+    if (role_.role() == MeRole::Reconciling && !catch_up_.request_sent() && !sequencer_order_conn_ids_.empty()) {
         send_follow_request();
     }
 }

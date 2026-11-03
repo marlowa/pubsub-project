@@ -556,7 +556,7 @@ design divides the work into sixteen steps, each followed by the developer loop 
 16. replay mode removed, the order's round trip measured again, and the sequencer and matching engine documents
     brought up to date.
 
-Steps 1 to 4 are done. Step 1 found [BUG-0225](bug_list.md#bug_0225) and [BUG-0226](bug_list.md#bug_0226). Step 5
+Steps 1 to 5 are done. Step 1 found [BUG-0225](bug_list.md#bug_0225) and [BUG-0226](bug_list.md#bug_0226). Step 6
 is next.
 
 ### Framework fixes done alongside the phases

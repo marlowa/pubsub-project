@@ -33,6 +33,7 @@
 
 #include "EngineCatchUp.hpp"
 #include "EngineReportSending.hpp"
+#include "EngineRole.hpp"
 #include "FixOrderLimits.hpp"
 #include "FollowerReportComparison.hpp"
 #include "GatewayIds.hpp"
@@ -51,16 +52,6 @@
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 
 namespace matching_engine {
-
-/**
- * @brief HA state for the matching-engine instance (Slice C+D).
- *
- * Unknown    -- HA disabled or not yet classified.
- * Follower   -- another instance leads: this one follows the WAL, applying every command and keeping its reports.
- * Reconciling-- catching up from the WAL, to follow it or to lead.
- * Leader     -- active: processes orders and emits ERs normally.
- */
-enum class MeRole { Unknown, Follower, Reconciling, Leader };
 
 /**
  * @brief ApplicationThread subclass implementing the matching engine stub.
@@ -267,11 +258,9 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // after the book, the maker of identifiers and the outputs it is given, so that they exist when it is constructed.
     MatchingEngineStateMachine state_machine_{order_book_, report_identifiers_, engine_outputs_, get_logger()};
 
-    // HA state machine (Slice C+D)
-
-    // Current HA role. Unknown for a non-HA (single-instance) ME and for the
-    // primary before it adopts leadership; Follower for the passive secondary.
-    MeRole ha_role_state_{MeRole::Unknown};
+    // What this instance is doing: starting, catching up, leading, or following, and why (section 6.1 of
+    // docs/venue/dividing_the_sequencer_and_matching_engine.md).
+    EngineRole role_{config_.ha_enabled};
 
     // The leadership generation. Never assign to this directly: go through
     // set_epoch(), which also writes it to disk. A restart that forgets the
@@ -360,47 +349,10 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // fifth trap says being current and being entitled to act are separate things.
     [[nodiscard]] bool holding_reports_until_entitled() const;
 
-    // Whether the catch-up has been done. A venue with high availability off has no
-    // lease to trigger one, so it reconciles when the sequencer first connects -- once,
-    // not on every reconnect: this instance's position advances as it works and is not tracked
-    // between catch-ups, so asking again later would replay what it has already applied.
-    bool has_reconciled_{false};
-
-    // What the present catch-up is for: becoming current, taking the role, or following again.
-    // Being current and being entitled to act are separate things, and only the lease rules say
-    // who acts. A catch-up done at startup ends with the instance current and still waiting to
-    // be told; one begun because this instance is to lead ends with it leading; one begun by an
-    // instance already following, after it found a record missing, lost its sequencer, or stopped
-    // leading, ends with it following again, in the role it had. One value, not a flag for each,
-    // because a later request replaces an earlier one: an instance that began following again and
-    // was then granted a lease asks to lead, and the answer it waits for is the one to lead
-    // (BUG-0218).
-    enum class CatchUpPurpose : int8_t { BecomeCurrent, Lead, FollowAgain };
-    CatchUpPurpose catch_up_purpose_{CatchUpPurpose::BecomeCurrent};
-    [[nodiscard]] bool reconciling_to_lead() const {
-        return catch_up_purpose_ == CatchUpPurpose::Lead;
-    }
-
-    // Following the WAL (docs/availability/both_engines_apply_the_wal.md, section 2). With high availability on, an engine
-    // that is not to lead asks to follow: it is sent every committed record, reports included, and applies every command
-    // among them as the leader does, sending none of their reports. Whether the latest request asked to follow.
-    bool follows_the_wal_{false};
     // Whether the command being applied came to this instance as a follower of the WAL, so that its reports are not sent.
     bool current_command_follows_{false};
     // How many reports were not sent because their commands were applied while following, for the Quill log.
     int64_t followed_reports_withheld_{0};
-    // For a catch-up to follow again: the role the instance goes back to when it ends.
-    MeRole role_when_following_again_{MeRole::Unknown};
-
-    // That this instance granted its peer a lease while it was still catching up at startup, and
-    // so agreed that the peer leads. It cannot follow until the catch-up ends, so this is acted on
-    // then.
-    //
-    // The epoch is re-checked when it is acted on rather than when it is stored, because
-    // reconciliation can advance this instance's own epoch in between.
-    bool peer_leader_heard_while_reconciling_{false};
-    int64_t peer_leader_instance_id_{0};
-    int32_t peer_leader_epoch_{0};
 
     pubsub_itc_fw::TimerID book_metrics_timer_id_{};
 

@@ -5856,6 +5856,10 @@ alone, with nothing else running that could compete with it.
 minutes after the processors were put on the performance governor with the deep idle states off. A web browser was
 using about half of one processor at the time. Run on its own straight afterwards, it passed ten times out of ten.
 
+It failed the developer loop again at 16:10 the same day, with 14 beats against 50, on a machine with no browser and
+no other load. Run on its own straight afterwards, still with nothing else running, it failed the first time, with 24
+beats, and passed the next four. So a quiet machine does not prevent it.
+
 **Principles.** None directly; every component's heartbeats and timeouts run on the reactor's timers.
 
 ### BUG-0180: The high availability tests' check that the matching engine received orders in ascending sequence number reads a message the engine no longer writes, so it always passes {#bug_0180}
