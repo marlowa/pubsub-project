@@ -357,6 +357,259 @@ instance leads, it says through the lease agent that its peer may not lead whene
 may lead again when they no longer differ (`bar_peer_if_settings_differ`), which is checked when the peer's settings
 arrive and when this instance takes the lead.
 
+### 6.7 The sequencer's role, and what each part does when it changes
+
+The sequencer's role is the replicated WAL's, in the library: unknown when the process starts, then leader or follower.
+The replicated WAL moves it to leader when the lease agent says BecameLeader, and to follower when it says
+StoppedLeading or AgreedPeerLeads. It never moves it back to unknown. With high availability off, it is leader from
+the start. `SequencerThread::on_role_changed` is told of each change and does each part's work for it, in this order:
+
+| Part | On taking the lead | On stopping leading |
+|------|--------------------|---------------------|
+| `ServingWalFollowers` | told that this instance leads, at its epoch | every follower served is stopped, the engines being served are forgotten, and a pause of reading for a hand-over ends; the publishers and engines handed over are forgotten |
+| `ReportForwarding` | nothing | every report held for sessions not yet announced, and for gateways with no connection for reports, is discarded |
+| `KeptReportStore` | those the leader had forwarded are discarded; the rest are forwarded, marked as possible repeats | nothing |
+| `EnginePresence` | the gateways are told whether the venue takes orders; the absence of an engine is checked | the absence is told that another instance leads; what the gateways are told goes back to Accepting, and the time without an engine is forgotten |
+| `OrderRelease` | with high availability on, the leading engine is asked for the highest order it has acted on | the wait for that answer ends; every held order is discarded, the record of orders that waited in the WAL is cleared, and reading from the gateways is resumed if it can be |
+| `CommandChecks` | nothing | the summary of checks is logged, if any check was made since the last |
+
+The work on stopping leading is split across the two branches of the function: the first group is done whenever the
+instance stops leading, the second whenever it becomes a follower. Since the replicated WAL only ever moves a leader
+to follower, the two always happen together, but a reader has to check the replicated WAL to know that.
+
+### 6.8 Holding and releasing orders (`OrderRelease`)
+
+**Where it is held now.** `held_orders_`, `first_unheld_seq_`, `order_reading_paused_`, `paused_for_hand_over_`,
+`order_connection_ids_`, and, for the wait after taking the lead, `awaiting_engine_position_`, `held_at_takeover_`,
+`engine_position_request_id_`, `engine_position_asks_` and `engine_position_asked_at_`.
+
+**An order.** The leader writes each order into the WAL and holds it in `held_orders_`, keeping the inbound message's
+buffer. When the storage is full, the order is not held; `first_unheld_seq_` records the first such order, and no
+later order is held either, so that orders are sent in order. Held orders are sent to the leading engine, oldest
+first, once their records are committed (`committed_through`), unless the leader is waiting for the engine's position
+or no engine takes orders (section 6.9). Orders that waited in the WAL are sent by the reading thread. The last order
+released (`released_through`) is the lower of the last record committed and the record before the oldest order still
+waiting.
+
+**Reading from the gateways.** Two members hold three situations:
+
+| Situation | Members now | Entered when | Left when |
+|-----------|-------------|--------------|-----------|
+| **Reading** | neither set | | |
+| **Paused for held orders** | `order_reading_paused_` | leading, waiting for the follower's confirmation or for the engine's position, and three quarters of the storage is used or an order waited in the WAL | the storage falls to a quarter and no order waits in the WAL, or the leader no longer waits for either |
+| **Paused for a hand-over** | both set | a follower's hand-over cannot finish because records are released faster than one round between the two threads | the hand-over finishes, or this instance stops leading; reading then resumes unless held orders keep it paused |
+
+**The wait after taking the lead** (`awaiting_engine_position_`), with high availability on:
+
+| From | Event | To | Done |
+|------|-------|----|------|
+| not waiting | this instance takes the lead, and an engine is routed to | waiting | the highest record in the WAL is noted, and the engine asked for the highest order it has acted on |
+| not waiting | this instance takes the lead, and no engine is routed to | not waiting | nothing: whichever engine acts next catches up from the WAL |
+| waiting | a second passes without an answer (on the acknowledgement watch timer) | waiting | asked again, with a new request number; the fifth ask is logged at Warning |
+| waiting | the answer, with the latest request number | not waiting | if the engine lacks orders the WAL holds, and takes orders, the reading thread sends them from the WAL; then the held orders are released |
+| waiting | asked again with no engine routed to | not waiting | the held orders are released |
+| waiting | this instance stops leading | not waiting | |
+
+### 6.9 Which matching engine takes orders (`EnginePresence`)
+
+**Where it is held now.** `engine_routing_`, `engine_servings_`, `leading_engine_instance_` and
+`leading_engine_announced_on_`, `no_engine_since_`, `an_engine_took_orders_`, `orders_held_without_an_engine_`,
+`last_no_engine_warning_`, `order_acceptance_`, and, for the limit on automatic recovery, `engine_absence_`,
+`engine_routed_stamp_`, `recovery_limit_`, `engine_catch_up_progress_` and `engine_catch_up_connection_`.
+
+**Whether an engine takes orders** (`an_engine_takes_orders`): the order connection goes to an engine known to lead,
+which does not follow the WAL and is not being caught up in answer to its own request.
+
+**The time without an engine**, while this instance leads:
+
+| Situation | Members now | Entered when | Done on entering |
+|-----------|-------------|--------------|------------------|
+| **An engine takes orders** | `no_engine_since_` empty, `an_engine_took_orders_` set | an engine takes orders | if there was a time without one, it is logged with its length and the orders held, `EngineTakesOrdersAgain` raised, and what the gateways are told worked out again |
+| **No engine yet** | `no_engine_since_` set, `an_engine_took_orders_` not set | this instance leads and no engine has taken orders since it began | the start is noted, and logged at Warning |
+| **No engine since one did** | `no_engine_since_` set, `an_engine_took_orders_` set | the engine that took orders stops doing so | as above |
+
+While there is no engine, a Warning is repeated every 5 seconds, and once no engine has taken orders for
+`orders_held_at_most_seconds`, the gateways are told to refuse new orders.
+
+**What the gateways are told** (`order_acceptance_`), worked out by `order_acceptance_now` while leading, and always
+Accepting otherwise:
+
+| Halted? | No engine for the limit? | Told |
+|---------|--------------------------|------|
+| no | no | Accepting |
+| no | yes | NoMatchingEngine |
+| yes, for a recovery that took too long, and no engine takes orders | either | RecoveryTooLong |
+| yes, otherwise | no | Halted |
+| yes, otherwise | yes | NoMatchingEngine |
+
+It is worked out again when an engine starts or stops taking orders, on the engine absence timer, about once a
+second, and when a record that changes whether trading is halted is written.
+
+**The limit on automatic recovery** measures a different absence: `engine_absence_` is told whether the order
+connection goes to any engine (`engine_routing_.active()` is valid), whether or not that engine is known to lead,
+follows the WAL, or is being caught up; and the stamp beside the WAL records when an engine was last routed to. So the
+venue keeps two clocks of the time without an engine, by two definitions. The design keeps both, in one part, each
+with a comment saying which question it answers; whether the two definitions should be one is a question for the
+design of that part, in step 12, not a change made by moving the code.
+
+### 6.10 The facts read from the WAL (`VenueStateFromTheWal`)
+
+**Where it is held now.** `trading_halt_`, `voids_`, `void_awaiting_commit_`, `trading_date_`,
+`highest_command_answered_`, and the samples of the leader's forwarded position (section 6.16).
+
+**Where each is noted from.**
+
+| Fact | When the WAL is opened (`read_at_open`) | As follower (`written_as_follower`) | As leader |
+|------|-----------------------------------------|-------------------------------------|-----------|
+| whether trading is halted | yes | yes | yes, for every record written (`append_envelope_to_wal`) |
+| the voided commands | yes, and a record that does not decode is noted as one that cannot be read | yes | yes, for each command of its own (`write_own_command`) |
+| the highest command a report answers | yes | yes | yes, for each report written (`forward_report_from_engine`) |
+| the trading date | no | yes, from each command that carries one, following the leader if they differ | read once, from the first record in the WAL, when the first command needs it (`trading_date_for`) |
+| the leader's forwarded position | no | yes | no |
+
+Each difference has a reason: the trading date is the date of the first record of the day, which a leader reads and a
+follower is told; and only a follower reads the position its leader has forwarded reports through. When records are
+discarded from the WAL (`discarded_after`), the voids and halts after the point are discarded too, and a change in
+whether trading is halted is logged at Warning. The highest command answered is not lowered: a figure too high only
+declines a void that could have been written.
+
+### 6.11 Forwarding reports (`ReportForwarding`)
+
+**Where it is held now.** `pending_er_`, `latest_report_seen_`, `held_reports_` with `reports_held_since_sessions_known_`,
+`held_reports_dropped_reported_`, `held_reports_dropping_`, `held_reports_oldest_position_` and
+`held_report_encoding_`; `reports_held_for_gateways_` with `gateways_holding_reports_`,
+`gateway_held_reports_dropped_reported_` and `held_envelope_encoding_`; `gateway_announcements_`; `gateway_conn_ids_`
+and `unknown_gateways_warned_`.
+
+**A report from the leading matching engine** is given its own record in the WAL, and then goes one of four ways:
+
+| Where it goes | When |
+|---------------|------|
+| **sent at once** to its member's gateway | the leader does not wait for its follower, or the record it depends on is committed: the command's record, or, for a report marked as a possible repeat or answering no command, its own record |
+| **waits** in `pending_er_`, keyed by that record | otherwise; sent when the record is committed (`forward_pending_er_through`) |
+| **held for an unannounced session** | when it is to be sent, its session is connected nowhere, this instance leads, and some configured gateway instance has not announced its sessions on its present link; sent when the session binds, or dropped once every gateway has announced |
+| **held for its gateway** | when it is to be sent, this instance leads, has no connection for reports to that gateway instance, and the instance is in the configuration; sent when the connection is made |
+
+A report whose session is connected nowhere, once every gateway has announced, is dropped and counted
+(`note_report_dropped_unbound`). Every report held of either kind is discarded when this instance stops leading.
+
+**How far reports have been forwarded** (`reports_forwarded_through`), written on every record the leader writes: just
+before the oldest report waiting in `pending_er_` or held for an unannounced session, or else the latest report seen.
+A report held for its gateway does not hold it back, which is a defect, recorded as
+[BUG-0226](../bug_list.md#bug_0226): a follower discards its kept copy of such a report, and the report is lost if
+the leader dies before the connection is made.
+
+**Gateways announcing their sessions** (`gateway_announcements_`): for each configured gateway instance, whether it
+has announced its sessions on its present link, and that link. While any has not, reports for sessions connected
+nowhere are held; when the last announces, those still held are dropped. A link lost makes its gateway unannounced
+again.
+
+The counts of reports dropped for lack of room in each store are said once when dropping starts and again with the
+total when reports next leave the store. Three pairs of members hold that, one for each store, as
+`held_reports_dropped_reported_` and `held_reports_dropping_` do for the first.
+
+### 6.12 Member sessions (`MemberSessions`)
+
+**Where it is held now.** `session_destinations_`, `session_sequence_state_`, `seq_no_to_session_`,
+`sessions_with_reports_dropped_`, and `reports_dropped_unbound_` with its gauge.
+
+**A session**, named by its comp id and protocol, is **bound** to a gateway instance and connection, or **connected
+nowhere**. It is bound by `SessionBound` and unbound by `SessionUnbound`. Every instance keeps the bindings, leading
+or not; only the leader answers a `SessionBound` with `SessionBoundAck`.
+
+| Event | Done |
+|-------|------|
+| `SessionBound`, the session still connected (a gateway announcing again after a change of leader) | the destination is recorded; reports held for it are sent; `SessionAnnouncedAgain` raised |
+| `SessionBound`, a new logon | the destination is recorded; reports held for it are discarded for the FIX gateway, which sends them itself from the WAL when the member asks, and sent for the binary gateway; with `reset_seq_nums`, the sequence state is forgotten; the leader answers with the numbers to resume from, adding the reports forwarded since the gateway last reported and an allowance of 64 when the previous session's gateway died without unbinding it |
+| `SessionUnbound` | the destination is forgotten; the numbers the gateway reports are kept |
+| `SessionSequenceUpdate` | the numbers the gateway reports are kept, never lowered |
+| a report forwarded to the session | counted against the numbers last reported (`note_report_forwarded`) |
+| a report dropped because the session is connected nowhere | the first since it was last bound is logged at Warning, the rest at Debug |
+
+**The sequence state of a session** (`SessionSequenceState`) holds the outbound and inbound numbers last reported,
+which outbound numbers held reports, the last report delivered, the last record in the WAL when the session bound
+again (until the reports missed meanwhile have been sent), and whether the delivered figure may be behind.
+
+**Which session placed each order** (`seq_no_to_session_`) is kept by its record's number from when the order is
+written until a report ends it (filled, cancelled, rejected, expired, done for the day, or replaced).
+
+### 6.13 Checking each command against the WAL (`CommandChecks`)
+
+**Where it is held now.** The counts (`sent_again_already_logged_`, `sent_again_sequenced_`,
+`commands_refused_reused_identifier_`, `commands_answered_from_wal_`, `commands_unchecked_without_identity_`),
+`commands_checked_since_summary_`, `last_command_checked_at_` and `command_identity_buffer_`.
+
+Each command the leader receives goes one of five ways
+([one_check_against_sequencing_twice.md](../availability/one_check_against_sequencing_twice.md)):
+
+| The command | Done |
+|-------------|------|
+| carries no comp id or no `ClOrdID` | sequenced, unchecked, and counted |
+| is not in the WAL | sequenced; if it was marked as sent again, counted |
+| is in the WAL, not marked as sent again | refused with `CommandRefused` on the connection it came by, nothing written, and counted |
+| is in the WAL, marked as sent again, and the WAL holds a report answering it | that report forwarded to the member's session, marked as a possible repeat, and counted |
+| is in the WAL, marked as sent again, and the WAL holds no report of it | passed over: the engine answers it by the ordinary path; counted |
+
+A summary of the counts is logged a minute after the last command checked, or when this instance stops leading.
+
+### 6.14 Requests to halt trading or void commands (`HaltAndVoidRequests`)
+
+**Where it is held now.** Nothing of its own beyond what section 6.10 holds; it decides from those facts, from whether
+an engine takes orders, and from what the WAL holds, and writes commands into the WAL through the thread.
+
+| Request | Who acts | Done |
+|---------|----------|------|
+| an operator asks to halt (`OperatorHaltRequest`, halt) | the leader | a `TechnicalEvent` that halts, reason DeclaredByOperator, cancelling nothing |
+| an operator asks to lift the halt | the leader | a `TechnicalEvent` that does not halt, reason LiftedByOperator, only if an engine takes orders and the WAL holds a report answering the last member's command before the halt; otherwise declined, saying why |
+| a matching engine that cannot account for the book asks to halt (`HaltRequest`) | the leader, and only for the engine orders are routed to | a `TechnicalEvent` that halts, with the reason the engine gave |
+| a matching engine that died applying a command asks for it to be voided (`VoidRequest`) | the leader | if it is voided already, the voids are sent; otherwise `VoidDeclined`, saying why, if another engine has announced that it leads, if a report in the WAL answers it or a later command, if the WAL does not hold it, or if it is not a member's new order or cancel; otherwise a `VoidCommands` naming it |
+| no engine could be trading within the limit on automatic recovery (section 6.9) | the leader, on the engine absence timer | a `VoidCommands` naming every order held, a `CancelBook`, and a `TechnicalEvent` that halts, in that order; then the gateways are told |
+
+Every operator request is answered and logged at Warning with the operator's name.
+
+### 6.15 Serving those that follow the WAL (`ServingWalFollowers`)
+
+**Where it is held now.** `wal_following_`, `wal_follower_service_`, `handed_over_publishers_`,
+`handed_over_engines_`, `engine_servings_`, `damaged_records_reported_`, `damaged_record_standing_` with its gauge, and
+`paused_for_hand_over_` (shared with section 6.8).
+
+**A matching engine being served** (`EngineServing`) is one of three kinds, held now in three true-or-false members of
+which the third is always the opposite of the second when the first is set:
+
+| Kind | `answers_catch_up_request` | `asking_to_lead` | `follows_the_wal` | When handed over |
+|------|---------------------------|------------------|-------------------|------------------|
+| **sent the orders it lacks**, after this instance took the lead and asked its position | no | no | no | nothing more |
+| **caught up to lead** | yes | yes | no | `WalFollowCaughtUp` sent; orders routed to it |
+| **caught up to follow** | yes | no | yes | `WalFollowCaughtUp` sent; sent every record as it is committed from then on |
+
+While an engine is being served, this instance sends it nothing itself: the reading thread sends it everything up to
+the last order released. A request from an engine while this instance does not lead is declined, and the order
+connection is noted as one whose engine follows. The follower sequencer's catch-up, and each publisher's, are served
+the same way by the library's `WalFollowerService`.
+
+A damaged record that stops a follower being caught up is said at Error the first time it stops each kind of follower,
+and at Info when the same follower asks again, and is shown by a gauge holding its number until a follower is handed
+over past it.
+
+### 6.16 Reports kept while not leading (`KeptReportStore`, extended)
+
+**Where it is held now.** `kept_reports_` (already a class), `last_granted_to_leader_`, `kept_reports_lost_reported_`
+with its gauge, `kept_reports_discarded_at_`, `kept_reports_discarded_as_forwarded_`, and the samples of the leader's
+forwarded position (`forwarded_samples_`, `forwarded_samples_head_`, `forwarded_samples_count_`,
+`latest_record_written_ns_`).
+
+While this instance does not lead, each report from the matching engine is kept. A kept report is no longer needed
+when either:
+
+- it arrived more than a lease period plus the drift allowance before the last time this instance granted its leader
+  a lease (`kept_reports_needed_from`), because the leader forwarded everything it received in that time; or
+- a record the leader wrote at least 100 milliseconds before the latest record this instance holds says the leader
+  had forwarded it (`discard_kept_reports_the_leader_forwarded`, once a second on the acknowledgement watch timer).
+
+On taking the lead, those the leader had forwarded are discarded, and the rest forwarded to their members, marked as
+possible repeats. A report lost because the store was full is counted, and said when the loss happens, not for each
+report after it.
+
 ## 7. How it is tested
 
 - **After every step**, the whole test suite passes: `scripts/devsetup.sh --skip-db`, and then both full suites of
@@ -382,6 +635,13 @@ Each step moves one part, adds its unit tests, and leaves the whole suite passin
 engine first (decision 2, option A).
 
 1. **The states written down**, for both programs, as the code is now (section 6). Documents only.
+
+   **Done** on 3 November 2026: sections 6.1 to 6.16. It found two defects, recorded and not fixed within this phase:
+   [BUG-0225](../bug_list.md#bug_0225), a matching engine that becomes a follower before it has asked to follow the
+   WAL, seen in scenario 24; and [BUG-0226](../bug_list.md#bug_0226), a report held for a gateway with no connection
+   for reports counting as forwarded, found by reading the code. It also found two things for the design of the parts
+   to settle: the two definitions of the time without an engine (section 6.9), and the work on stopping leading split
+   across two branches that always happen together (section 6.7).
 2. `EngineReportSending`.
 3. `FollowerReportComparison`.
 4. `EngineCatchUp`.

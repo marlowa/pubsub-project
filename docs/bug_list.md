@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 225 |
-| Open | 80 (57 defects, 23 tasks) |
+| Bugs recorded | 226 |
+| Open | 81 (58 defects, 23 tasks) |
 | Closed | 145 |
-| Next id | BUG-0226 |
+| Next id | BUG-0227 |
 
 ## Open bugs by severity
 
-17 high, 48 medium, 15 low.
+17 high, 49 medium, 15 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -78,6 +78,7 @@
 | [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0225](#bug_0225) | medium | defect | A matching engine that becomes a follower before it has asked to follow the WAL announces that it follows, but applies nothing |
+| [BUG-0226](#bug_0226) | medium | defect | A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -190,6 +191,41 @@ went looking.
 
 ## Open
 
+### BUG-0226: A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made {#bug_0226}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | defect |
+| Found | 2026-11-03 |
+| Recorded | 2026-11-03 |
+| How | Writing down the sequencer's report forwarding for phase 10 ([dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md), section 6.11) |
+| Impact | Reports produced while the leading sequencer's connection for reports to a gateway is down, and before it dies, reach no member. The first report of each command is probably recovered, when the gateway sends the command again and the new leader answers it from the WAL; later reports of the same order, such as a cancel's, are not, unless the member asks for a resend. Principle V8 |
+
+**What happens.** The leader writes on every record how far it has forwarded every report from the matching engine
+(`reports_forwarded_through`), and a follower discards the reports it kept while not leading once a record written at
+least 100 milliseconds later says they were forwarded. Two kinds of report the leader holds instead of sending are
+treated differently:
+
+- a report held because its member's session has not been announced (`hold_report_if_sessions_unknown`) holds the
+  position back: `held_reports_oldest_position_` is taken into account, so the follower keeps its copy;
+- a report held because the leader has no connection for reports to the member's gateway
+  (`hold_report_for_gateway`, BUG-0202) does not: `send_er_to_origin_gateway` returns after holding it, and
+  `forward_report_from_engine` moves `latest_report_seen_` past it, so the position says it was forwarded.
+
+A sequencer that stops leading discards both kinds, "because the new leader sends the reports itself", as the BUG-0202
+entry says. The new leader sends the reports its kept store still holds; a report held for a gateway for more than
+100 milliseconds has been discarded from that store.
+
+Found by reading the code; not reproduced.
+
+**What is wanted.** A report held for a gateway holds back the position the leader says it has forwarded through, as a
+report held for an unannounced session does. A scenario holds a gateway's connection for reports down, as scenario
+81 does, kills the leader while reports are held, and requires every report to reach the member; it is made to fail on
+purpose without the fix.
+
+**Principles.** V8: every report the matching engine produces reaches the member.
+
 ### BUG-0225: A matching engine that becomes a follower before it has asked to follow the WAL announces that it follows, but applies nothing {#bug_0225}
 
 | | |
@@ -228,6 +264,11 @@ reading the code and has not been reproduced.
 **What is wanted.** An engine that is a Follower always follows the WAL: becoming a Follower by either way above asks
 to follow, as a follower that stops leading does. Scenario 24 checks that the restarted engine catches up and applies
 the commands sent after it restarted, and is made to fail on purpose without the fix.
+
+For the second way, the fix must also establish what the leading sequencer does with the catch-up to lead it is still
+serving: when the reading thread hands that engine over, `engine_handed_over` routes orders to it
+(`EngineOrderRouting::caught_up_to_lead`) although the engine has since announced that it follows, and an engine
+that follows discards the orders it is sent by routing. This has not been checked.
 
 **Principles.** V11: a loss of resilience is not a loss of service, and is reported.
 
