@@ -33,6 +33,7 @@
 
 #include "EngineReportSending.hpp"
 #include "FixOrderLimits.hpp"
+#include "FollowerReportComparison.hpp"
 #include "GatewayIds.hpp"
 #include "HeldEngineReport.hpp"
 #include "MatchingEngineConfiguration.hpp"
@@ -243,6 +244,24 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // to the member's gateway, and the other keeps it in case it takes the lead.
     EngineReportSending report_sending_{config_.ha_enabled, report_sending_links_, get_logger()};
 
+    // How FollowerReportComparison acts on what it finds.
+    class ReportComparisonLinks : public FollowerReportComparisonLinksInterface {
+      public:
+        explicit ReportComparisonLinks(MatchingEngineThread& owner) : owner_(owner) {}
+        void stop_leading_for_good(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason) override;
+        void difference_found() override;
+        void kept_reports_sent(int64_t sent, int64_t reported_through) override;
+
+      private:
+        MatchingEngineThread& owner_;
+    };
+    ReportComparisonLinks report_comparison_links_{*this};
+    // The reports of the commands this instance applies while following the WAL, kept and compared with the leader's, and
+    // whether this instance has refused to lead (section 6.3 of docs/venue/dividing_the_sequencer_and_matching_engine.md).
+    FollowerReportComparison report_comparison_{report_comparison_links_, get_logger()};
+    // How many reports this instance produced while following that differ from the leader's of the same command.
+    pubsub_itc_fw::CounterHandle follower_report_differences_counter_;
+
     // What makes the OrderID and ExecID values, from the secret in identifiers.secret_file. Read when the thread is
     // constructed, so that an engine whose secret cannot be read does not start.
     ReportIdentifiers report_identifiers_{ReportIdentifiers::read_secret_file(config_.identifier_secret_file)};
@@ -371,31 +390,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // The reports of the present catch-up that were not sent, because the WAL already holds them.
     int64_t reconciliation_reports_left_out_{0};
 
-    // The reports of the commands this instance has applied as a follower of the WAL, which it does not send, kept until
-    // the WAL holds the leader's reports of the same commands (docs/availability/both_engines_apply_the_wal.md, section 3).
-    // A report record answering command N means the WAL holds every report of every command before N, so the kept
-    // reports of those commands are dropped when it arrives. The rest are those of the few commands the leader is still
-    // answering; on taking the lead, this instance sends those of them the WAL lacks, each marked as a possible repeat.
-    // In the order of their commands, which is the order they were applied in.
-    std::deque<HeldEngineReport> kept_reports_;
-    // Passing this many means the leading engine has had no report written for that many commands.
-    static constexpr size_t max_kept_reports_ = 100000;
-    bool kept_reports_overflowed_{false};
-    // The first command whose reports this instance keeps: the one after the position its follow request named. A
-    // leader's report of an earlier command has nothing kept to be compared with.
-    int64_t keeping_from_{0};
-    // The number of the last report record compared with this instance's kept reports. An answer to a request made again
-    // starts after the last command applied, so it sends again the report records of that command that come after it in
-    // the WAL; one numbered at or below this has been accounted for already.
-    int64_t last_report_record_accounted_{0};
-    // The highest command a report of has been compared with this instance's, so that a report of an earlier command,
-    // written again into the WAL by a sequencer that took the lead, is recognised as one accounted for already.
-    int64_t highest_command_compared_{0};
-    // Whether this instance has found, while following, that it cannot be trusted to lead (refuse_to_lead), and how
-    // many differences from the leader's reports it has found.
-    bool refused_to_lead_{false};
-    int64_t report_differences_{0};
-    pubsub_itc_fw::CounterHandle follower_report_differences_counter_;
     // Whether reports are held until this instance knows whether it serves: it is catching up, with high availability
     // on, for a purpose other than leading. An instance that is about to learn its peer leads would otherwise report
     // every recovered order to the member that placed it and then serve nobody. Reporting is an act, and BUG-0064's
@@ -566,19 +560,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     /// Keeps @p report, of command @p seq_no for @p session, until the WAL holds the leader's reports of that command.
     void keep_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t seq_no, const fix_common::SessionIdentity& session);
-
-    /// A report record answering command @p command has arrived, the leader's report as @p size bytes at @p bytes: it is
-    /// compared with this instance's kept report of the same command, and the kept reports of every command before it
-    /// are dropped, each that the leader sent no report for being a difference (docs/availability/both_engines_apply_the_wal.md,
-    /// section 4).
-    void account_for_leader_report(int64_t command, const uint8_t* bytes, size_t size);
-
-    /// Says that this instance's report of @p command and the leader's differ, as @p reason says.
-    void report_difference(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason);
-
-    /// From now on this instance does not lead until it is restarted, and its region is marked unusable so that,
-    /// restarted, it rebuilds its book from the WAL (decision 3 of docs/availability/both_engines_apply_the_wal.md).
-    void refuse_to_lead(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason, const char* why);
 
     /// Taking the lead: sends the kept reports of every command after @p reported_through, the last command the WAL holds
     /// every report of, and drops the rest.

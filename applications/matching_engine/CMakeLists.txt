@@ -1,6 +1,7 @@
 add_executable(matching_engine
         EngineReportSending.cpp
         Ff1Cipher.cpp
+        FollowerReportComparison.cpp
         MatchingEngineConfigurationLoader.cpp
         MatchingEngineStateMachine.cpp
         MatchingEngineThread.cpp
@@ -26,6 +27,7 @@ add_dependencies(matching_engine fix_orders_generated matching_engine_replicatio
 target_sources(matching_engine PRIVATE
         EngineReportSending.hpp
         Ff1Cipher.hpp
+        FollowerReportComparison.hpp
         HeldEngineReport.hpp
         MatchingEngineConfiguration.hpp
         MatchingEngineConfigurationLoader.hpp
@@ -111,7 +113,9 @@ add_executable(matching_engine_tests
         tests/MatchingEngineStateMachineFuzzTest.cpp
         tests/ReportIdentifiersTest.cpp
         tests/EngineReportSendingTest.cpp
+        tests/FollowerReportComparisonTest.cpp
         EngineReportSending.cpp
+        FollowerReportComparison.cpp
         Ff1Cipher.cpp
         MatchingEngineStateMachine.cpp
         OrderBook.cpp

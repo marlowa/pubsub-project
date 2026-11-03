@@ -194,7 +194,8 @@ instance is doing.
 The last situation is a defect: see "Found" below.
 
 `refused_to_lead_` is separate from the situation: an instance that has refused to lead goes on doing what it was
-doing, and no longer asks for a lease. It stays a separate true-or-false member in `EngineRole`.
+doing, and no longer asks for a lease. It is held by `FollowerReportComparison` (section 6.3), through which every
+cause of refusing goes.
 
 With high availability off, the single instance is in none of these. It is Unknown, applies every command it is
 sent, and catches up once, when the first sequencer connects, asking as one that is to lead.
@@ -292,8 +293,9 @@ The first difference makes the instance refuse to lead (`refuse_to_lead`): it st
 region unusable. The situation is one member, `refused_to_lead_`, which never goes back. On taking the lead, the kept
 reports of commands after the last the WAL holds every report of are sent (section 6.2), and the rest dropped.
 
-When more than 100,000 reports are kept, later ones are not kept, which is said once at Error, and a missing report is
-then no longer counted as a difference.
+When 100,000 reports are kept, later ones are not kept: the first time, that is said at Error and the instance
+refuses to lead (KeptReportsFull), and from then on a missing report is no longer counted as a difference. A void
+learned after applying a command it names also makes the instance refuse to lead (AppliedVoidedCommand).
 
 ### 6.4 Catching up (`EngineCatchUp`)
 
@@ -655,6 +657,16 @@ engine first (decision 2, option A).
    has twelve tests, and six faults put in on purpose were each caught. Both full suites pass: 99 of 99 with the
    primary engine first, and 38 of 38 with the secondary engine first.
 3. `FollowerReportComparison`.
+
+   **As built.** `FollowerReportComparison` (`applications/matching_engine/FollowerReportComparison.hpp`) holds the
+   reports kept while following, the comparison with the leader's, the count of differences, and whether the instance
+   has refused to lead; every cause of refusing goes through it, including a void learned too late, which the thread
+   reports. The thread encodes each report to keep, unless there is no room, and implements
+   `FollowerReportComparisonLinksInterface`, which stops the instance asking for a lease, marks its region unusable,
+   counts a difference, and raises the test events `FollowerCannotLead` and `KeptReportsSent`. On taking the lead,
+   the kept reports the WAL lacks are handed to `EngineReportSending`. The part's Quill log lines begin with its name.
+   `FollowerReportComparisonTest` has eleven tests, and seven faults put in on purpose were each caught. Both full
+   suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 4. `EngineCatchUp`.
 5. `EngineRole`, with its one state.
 6. `DiedApplyingCheck` and `PeerSettingsCheck`, and what is left of `MatchingEngineThread` reduced to its connections,

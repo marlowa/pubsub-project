@@ -533,9 +533,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
             ++reconciliation_records_seen_;
             catch_up_tally_.offer(message.seq_no());
         }
-        if (keeps_its_reports() && envelope.has_answers_seq_no && message.seq_no() > last_report_record_accounted_) {
-            last_report_record_accounted_ = message.seq_no();
-            account_for_leader_report(envelope.answers_seq_no, envelope.payload.data, envelope.payload.size);
+        if (keeps_its_reports() && envelope.has_answers_seq_no) {
+            report_comparison_.leader_report(message.seq_no(), envelope.answers_seq_no, envelope.payload.data, envelope.payload.size, reports_in_wal_through_);
         }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "MatchingEngineThread: ExecutionReport envelope on connection {} -- not applied (the engine produces reports and applies none)",
@@ -1162,132 +1161,50 @@ bool MatchingEngineThread::keeps_its_reports() const {
 }
 
 void MatchingEngineThread::keep_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t seq_no, const fix_common::SessionIdentity& session) {
-    if (kept_reports_.size() >= max_kept_reports_) {
-        if (!kept_reports_overflowed_) {
-            kept_reports_overflowed_ = true;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                       "MatchingEngineThread: following the WAL, {} reports are kept that the WAL does not yet hold the leader's of, which is as many as are "
-                       "kept -- the leading engine has had no report written for that many commands. Later reports are not kept, so this instance can no "
-                       "longer send every report the WAL lacks if it takes the lead",
-                       kept_reports_.size());
-            refuse_to_lead(seq_no, pubsub_itc_fw_app::FollowerCannotLeadReason::KeptReportsFull, "it kept as many reports as it has room for");
-        }
-        return;
-    }
-    size_t bytes_written = 0;
-    size_t bytes_needed = 0;
-    static_cast<void>(pubsub_itc_fw_app::encode(report, nullptr, 0, bytes_written, bytes_needed));
     HeldEngineReport kept;
-    kept.payload.resize(bytes_needed);
-    if (!pubsub_itc_fw_app::encode(report, kept.payload.data(), kept.payload.size(), bytes_written, bytes_needed)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: failed to encode a report to keep ({} bytes needed)", bytes_needed);
-        return;
-    }
-    kept.payload.resize(bytes_written);
     kept.seq_no = seq_no;
     kept.session = session;
     // Sent, if ever, by an instance taking the lead after the leader that may have sent it already.
     kept.poss_resend = true;
-    kept_reports_.push_back(std::move(kept));
-}
-
-void MatchingEngineThread::account_for_leader_report(int64_t command, const uint8_t* bytes, size_t size) {
-    // A sequencer that takes the lead writes the reports it kept while following, so a report the WAL holds already may
-    // be written again. One of a command before every report still kept was accounted for when it first came: the
-    // leading engine sends every report of a command before it applies the next, so no report of an earlier command
-    // can arrive for the first time after a later command's.
-    if (command < highest_command_compared_) {
-        return;
-    }
-    highest_command_compared_ = command;
-    // A report of a later command means the leader sent no more of the earlier ones: any of those this instance kept and
-    // was not matched is one the leader did not send.
-    while (!kept_reports_.empty() && kept_reports_.front().seq_no < command) {
-        if (!kept_reports_.front().compared) {
-            report_difference(kept_reports_.front().seq_no, pubsub_itc_fw_app::FollowerCannotLeadReason::ReportNotSent);
+    // Not encoded when there is no room for it: the part then only says that the store is full.
+    if (report_comparison_.has_room()) {
+        size_t bytes_written = 0;
+        size_t bytes_needed = 0;
+        static_cast<void>(pubsub_itc_fw_app::encode(report, nullptr, 0, bytes_written, bytes_needed));
+        kept.payload.resize(bytes_needed);
+        if (!pubsub_itc_fw_app::encode(report, kept.payload.data(), kept.payload.size(), bytes_written, bytes_needed)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: failed to encode a report to keep ({} bytes needed)",
+                       bytes_needed);
+            return;
         }
-        kept_reports_.pop_front();
+        kept.payload.resize(bytes_written);
     }
-    // The leader's reports of one command arrive in the order it produced them, as this instance's were kept.
-    for (HeldEngineReport& kept : kept_reports_) {
-        if (kept.seq_no != command) {
-            break;
-        }
-        if (kept.compared) {
-            if (kept.payload.size() == size && std::memcmp(kept.payload.data(), bytes, size) == 0) {
-                return; // a report compared already, written again
-            }
-            continue;
-        }
-        kept.compared = true;
-        if (kept.payload.size() != size || std::memcmp(kept.payload.data(), bytes, size) != 0) {
-            report_difference(command, pubsub_itc_fw_app::FollowerCannotLeadReason::ReportDiffers);
-        }
-        return;
-    }
-    // Nothing kept to compare with. Expected for a command whose reports this instance does not keep: one the WAL held
-    // every report of when it began following, one before it began, or one after its kept reports were full.
-    if (command > reports_in_wal_through_ && command >= keeping_from_ && !kept_reports_overflowed_) {
-        report_difference(command, pubsub_itc_fw_app::FollowerCannotLeadReason::ReportNotProduced);
-    }
-}
-
-void MatchingEngineThread::report_difference(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason) {
-    ++report_differences_;
-    follower_report_differences_counter_.increment();
-    if (refused_to_lead_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: following the WAL, another difference from the leader at command {}",
-                   command);
-        return;
-    }
-    const char* const what = reason == pubsub_itc_fw_app::FollowerCannotLeadReason::ReportDiffers ? "the leader's report of it differs from this instance's"
-                             : reason == pubsub_itc_fw_app::FollowerCannotLeadReason::ReportNotProduced
-                                 ? "the leader sent a report of it that this instance did not produce"
-                                 : "this instance produced a report of it that the leader did not send";
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "MatchingEngineThread: following the WAL, command {}: {}. The two engines did not apply the same command alike, so this instance's book "
-               "may differ from the one the members were told of",
-               command, what);
-    refuse_to_lead(command, reason, "its reports differ from the leader's");
-}
-
-void MatchingEngineThread::refuse_to_lead(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason, const char* why) {
-    if (refused_to_lead_) {
-        return;
-    }
-    refused_to_lead_ = true;
-    if (lease_agent_.has_value()) {
-        lease_agent_->stop_asking_to_lead();
-    }
-    order_book_.mark_unusable();
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "MatchingEngineThread: this instance does not lead, because {} -- it no longer asks for a lease, and goes on following, so that the "
-               "venue has no standby it can trust until this instance is restarted. Its region is marked unusable, so that, restarted, it rebuilds "
-               "its book from the WAL. The leader trades on (V11)",
-               why);
-    if (test_events_.has_value()) {
-        test_events_->send_event(pubsub_itc_fw_app::FollowerCannotLead::message_pdu_id, pubsub_itc_fw_app::FollowerCannotLead{command, reason});
-    }
+    report_comparison_.keep(std::move(kept));
 }
 
 void MatchingEngineThread::send_kept_reports_after(int64_t reported_through) {
-    int64_t sent = 0;
-    for (HeldEngineReport& kept : kept_reports_) {
-        if (kept.seq_no > reported_through) {
-            report_sending_.hold(std::move(kept));
-            ++sent;
-        }
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: taking the lead -- sending {} report(s) kept while following, of commands after {}, the last the WAL holds every "
-               "report of, and dropping {} the WAL holds",
-               sent, reported_through, static_cast<int64_t>(kept_reports_.size()) - sent);
-    if (test_events_.has_value()) {
-        test_events_->send_event(pubsub_itc_fw_app::KeptReportsSent::message_pdu_id, pubsub_itc_fw_app::KeptReportsSent{sent, reported_through});
-    }
-    kept_reports_.clear();
-    kept_reports_overflowed_ = false;
+    static_cast<void>(report_comparison_.take_reports_after(reported_through, [this](HeldEngineReport&& kept) { report_sending_.hold(std::move(kept)); }));
     report_sending_.send_held_on_the_connections_up(epoch_);
+}
+
+void MatchingEngineThread::ReportComparisonLinks::stop_leading_for_good(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason) {
+    if (owner_.lease_agent_.has_value()) {
+        owner_.lease_agent_->stop_asking_to_lead();
+    }
+    owner_.order_book_.mark_unusable();
+    if (owner_.test_events_.has_value()) {
+        owner_.test_events_->send_event(pubsub_itc_fw_app::FollowerCannotLead::message_pdu_id, pubsub_itc_fw_app::FollowerCannotLead{command, reason});
+    }
+}
+
+void MatchingEngineThread::ReportComparisonLinks::difference_found() {
+    owner_.follower_report_differences_counter_.increment();
+}
+
+void MatchingEngineThread::ReportComparisonLinks::kept_reports_sent(int64_t sent, int64_t reported_through) {
+    if (owner_.test_events_.has_value()) {
+        owner_.test_events_->send_event(pubsub_itc_fw_app::KeptReportsSent::message_pdu_id, pubsub_itc_fw_app::KeptReportsSent{sent, reported_through});
+    }
 }
 
 bool MatchingEngineThread::following_the_wal() const {
@@ -1780,8 +1697,8 @@ void MatchingEngineThread::handle_follow_started(const pubsub_itc_fw::EventMessa
     catch_up_connection_ = message.connection_id();
     catch_up_tally_ = pubsub_itc_fw::CatchUpTally(started.after_seq_no);
     reports_in_wal_through_ = started.application_value;
-    if (follows_the_wal_ && kept_reports_.empty()) {
-        keeping_from_ = started.after_seq_no + 1;
+    if (follows_the_wal_) {
+        report_comparison_.start_keeping_after(started.after_seq_no);
     }
     if (reconciling_to_lead()) {
         send_kept_reports_after(reports_in_wal_through_);
@@ -2052,8 +1969,8 @@ void MatchingEngineThread::handle_voided_commands(const pubsub_itc_fw::EventMess
         const MatchingEngineStateMachine::VoidLearned learned = state_machine_.learn_void(
             fix_common::VoidedRange{voided.void_seq_no, voided.first_seq_no, voided.last_seq_no, voided.new_orders_only, voided.reason});
         if (learned == MatchingEngineStateMachine::VoidLearned::after_applying_some) {
-            refuse_to_lead(voided.void_seq_no, pubsub_itc_fw_app::FollowerCannotLeadReason::AppliedVoidedCommand,
-                           "it applied a command before it was told that a later command in the WAL voided it");
+            report_comparison_.refuse_to_lead(voided.void_seq_no, pubsub_itc_fw_app::FollowerCannotLeadReason::AppliedVoidedCommand,
+                                              "it applied a command before it was told that a later command in the WAL voided it");
         }
     }
     if (died_applying_question_ == DiedApplyingQuestion::asking_sequencers &&
@@ -2069,8 +1986,8 @@ void MatchingEngineThread::handle_voided_commands(const pubsub_itc_fw::EventMess
 void MatchingEngineThread::apply_void_commands_command(const pubsub_itc_fw_app::VoidCommandsView& command, int64_t sequence_number, CommandSource source) {
     const MatchingEngineStateMachine::VoidCommandsApplied result = state_machine_.apply_void_commands(command, sequence_number, source);
     if (result.learned_too_late) {
-        refuse_to_lead(sequence_number, pubsub_itc_fw_app::FollowerCannotLeadReason::AppliedVoidedCommand,
-                       "it reached a void without having been told of it, after applying the commands it names");
+        report_comparison_.refuse_to_lead(sequence_number, pubsub_itc_fw_app::FollowerCannotLeadReason::AppliedVoidedCommand,
+                                          "it reached a void without having been told of it, after applying the commands it names");
     }
 }
 

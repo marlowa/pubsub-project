@@ -536,7 +536,8 @@ recommended: the matching engine is divided first, and the sequencer's replay mo
 
 Step 1 is done: the states of both programs are written down, as the code is now, in section 6 of the design. It
 found [BUG-0225](bug_list.md#bug_0225) and [BUG-0226](bug_list.md#bug_0226). Step 2 is done: the matching engine's
-report sending is the part `EngineReportSending`. Step 3 is next.
+report sending is the part `EngineReportSending`. Step 3 is done: the comparison of the reports kept while following, and
+the refusal to lead, are the part `FollowerReportComparison`. Step 4 is next.
 
 ### Framework fixes done alongside the phases
 
