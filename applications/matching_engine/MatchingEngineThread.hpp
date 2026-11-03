@@ -31,8 +31,10 @@
 #include <matching_engine_test_events.hpp>
 #include <replication_messages.hpp>
 
+#include "EngineReportSending.hpp"
 #include "FixOrderLimits.hpp"
 #include "GatewayIds.hpp"
+#include "HeldEngineReport.hpp"
 #include "MatchingEngineConfiguration.hpp"
 #include "MatchingEngineStateMachine.hpp"
 #include "OrderBook.hpp"
@@ -152,12 +154,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // for from the larger of this and the last command applied since.
     int64_t last_replicated_seq_no_{0};
 
-    // ConnectionIDs of the outbound connections to the sequencer ER inbound listeners.
-    // ERs are sent to all valid connections. The leader routes them to the gateway;
-    // the follower discards. This ensures ERs reach whichever sequencer is currently leader.
-    pubsub_itc_fw::ConnectionID sequencer_er_conn_id_;
-    pubsub_itc_fw::ConnectionID sequencer_er_secondary_conn_id_;
-
     // Order book keyed by (session identity, cl_ord_id).
     // Built by applying the WAL's commands, whether this instance leads or follows.
     //
@@ -229,6 +225,24 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     };
     EngineOutputs engine_outputs_{*this};
 
+    // How EngineReportSending sends a report and tells the test.
+    class ReportSendingLinks : public EngineReportSendingLinksInterface {
+      public:
+        explicit ReportSendingLinks(MatchingEngineThread& owner) : owner_(owner) {}
+        void send_report(const pubsub_itc_fw::ConnectionID& connection, int64_t seq_no, const pubsub_itc_fw_app::WalRecord& envelope) override;
+        void reports_held(int64_t count) override;
+        void reports_released(pubsub_itc_fw_app::ReleaseReason reason, int64_t count) override;
+        void reports_discarded(int64_t count) override;
+
+      private:
+        MatchingEngineThread& owner_;
+    };
+    ReportSendingLinks report_sending_links_{*this};
+    // Sends each report to both sequencers, numbered, or holds it (section 6.2 of
+    // docs/venue/dividing_the_sequencer_and_matching_engine.md). Each report goes to both: the leading sequencer routes it
+    // to the member's gateway, and the other keeps it in case it takes the lead.
+    EngineReportSending report_sending_{config_.ha_enabled, report_sending_links_, get_logger()};
+
     // What makes the OrderID and ExecID values, from the secret in identifiers.secret_file. Read when the thread is
     // constructed, so that an engine whose secret cannot be read does not start.
     ReportIdentifiers report_identifiers_{ReportIdentifiers::read_secret_file(config_.identifier_secret_file)};
@@ -251,13 +265,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // set_epoch(), which also writes it to disk. A restart that forgets the
     // epoch lets this node claim a generation the venue has already spent.
     int32_t epoch_{0};
-    // How many reports this instance has sent to the sequencers while leading under epoch_, so that
-    // each carries its position in the engine's reports (report_engine_epoch, report_number). Counted
-    // from 1, and from 1 again under each new epoch.
-    int64_t report_number_{0};
-    int32_t report_number_epoch_{0};
-    // Gives a report about to be sent its position in the reports this engine sends.
-    void number_report(pubsub_itc_fw_app::WalRecord& envelope);
 
     // Where the epoch outlives the process. Read once at startup, rewritten
     // whenever the epoch moves.
@@ -364,52 +371,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // The reports of the present catch-up that were not sent, because the WAL already holds them.
     int64_t reconciliation_reports_left_out_{0};
 
-    // A report produced by a catch-up done at startup, held until this instance knows whether it
-    // is going to serve anybody.
-    //
-    // The engine catches up before it has been told what it may do -- that is the whole point of
-    // doing it at the first sequencer connection -- so an instance that is about to learn its peer
-    // leads would otherwise report every recovered order to the member that placed it and then
-    // serve nobody. Reporting is an act, and BUG-0064's fifth trap says being current and being
-    // entitled to act are separate things. So the reports wait: released if this instance adopts
-    // the leader role, discarded if it becomes a follower, in which case the leader has already
-    // answered those members.
-    //
-    // The encoded bytes are held rather than the ExecutionReport, whose string fields point into
-    // the decode arena and do not outlive the record that produced them.
-    struct HeldReport {
-        std::vector<uint8_t> payload; ///< the encoded ExecutionReport
-        int64_t seq_no{0};            ///< echoed in the transport header, as a live report's is
-        fix_common::SessionIdentity session;
-        bool poss_resend{false};
-        /// The number the report was given when first sent, kept so that each sequencer sees the same.
-        bool numbered{false};
-        int32_t report_engine_epoch{0};
-        int64_t report_number{0};
-        /// Which connections the report has been sent on; it is kept until it has been sent on each.
-        bool sent_to_primary{false};
-        bool sent_to_secondary{false};
-        /// For a report kept while following: whether the leader's report of the same command has been compared with it.
-        bool compared{false};
-    };
-    std::vector<HeldReport> held_reports_;
-
-    // What a held report costs is its encoded size, a few hundred bytes, and a catch-up is
-    // bounded by the venue's retained log rather than by anything this instance controls. Past
-    // this many the reports are sent as they were before, and the reason is logged once: a
-    // member that already holds the report can discard a duplicate, and one that never receives
-    // it cannot recover from the absence. Answering is worth more than tidiness, which is the
-    // same ordering BUG-0009 settled.
-    static constexpr size_t max_held_reports_ = 50000;
-    bool held_reports_overflowed_{false};
-
     // The reports of the commands this instance has applied as a follower of the WAL, which it does not send, kept until
     // the WAL holds the leader's reports of the same commands (docs/availability/both_engines_apply_the_wal.md, section 3).
     // A report record answering command N means the WAL holds every report of every command before N, so the kept
     // reports of those commands are dropped when it arrives. The rest are those of the few commands the leader is still
     // answering; on taking the lead, this instance sends those of them the WAL lacks, each marked as a possible repeat.
     // In the order of their commands, which is the order they were applied in.
-    std::deque<HeldReport> kept_reports_;
+    std::deque<HeldEngineReport> kept_reports_;
     // Passing this many means the leading engine has had no report written for that many commands.
     static constexpr size_t max_kept_reports_ = 100000;
     bool kept_reports_overflowed_{false};
@@ -428,19 +396,11 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     bool refused_to_lead_{false};
     int64_t report_differences_{0};
     pubsub_itc_fw::CounterHandle follower_report_differences_counter_;
-    // Whether reports are being held because there is no connection to a sequencer to send them on
-    // (docs/bug_list.md, BUG-0120). Logged when it starts, and cleared when they are sent.
-    bool waiting_for_report_connection_{false};
-    // Sends the reports held when a connection for reports is established, unless this instance is
-    // still waiting to be told whether it may serve.
-    void release_reports_held_for_a_connection();
-
+    // Whether reports are held until this instance knows whether it serves: it is catching up, with high availability
+    // on, for a purpose other than leading. An instance that is about to learn its peer leads would otherwise report
+    // every recovered order to the member that placed it and then serve nobody. Reporting is an act, and BUG-0064's
+    // fifth trap says being current and being entitled to act are separate things.
     [[nodiscard]] bool holding_reports_until_entitled() const;
-    void release_held_reports();
-    // Sends each held report on each of the named connections it has not yet been sent on, and drops
-    // those sent on every connection there is.
-    void send_held_reports(bool to_primary, bool to_secondary);
-    void discard_held_reports(const char* reason);
 
     // Establishes that the catch-up was complete before this instance acts on it (R-0101).
     //

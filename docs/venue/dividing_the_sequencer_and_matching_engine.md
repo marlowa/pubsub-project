@@ -643,6 +643,17 @@ engine first (decision 2, option A).
    to settle: the two definitions of the time without an engine (section 6.9), and the work on stopping leading split
    across two branches that always happen together (section 6.7).
 2. `EngineReportSending`.
+
+   **As built.** `EngineReportSending` (`applications/matching_engine/EngineReportSending.hpp`) holds the two
+   connections for reports, the reports held and the numbering, and makes the decisions of section 6.2. The thread
+   encodes each report, hands it over with whether the instance is holding until it knows whether it serves, and times
+   the acknowledgement of a new order when the part says it was sent. It implements
+   `EngineReportSendingLinksInterface`, which sends a report on a connection and raises the test events `ReportsHeld`,
+   `ReportsReleased` and `ReportsDiscarded`. The held report is `HeldEngineReport`, in a header of its own, because the
+   reports kept while following (step 3) are the same. The one overflow flag became two, one for each kind of holding,
+   so that reaching both limits says both. The part's Quill log lines begin with its name. `EngineReportSendingTest`
+   has twelve tests, and six faults put in on purpose were each caught. Both full suites pass: 99 of 99 with the
+   primary engine first, and 38 of 38 with the secondary engine first.
 3. `FollowerReportComparison`.
 4. `EngineCatchUp`.
 5. `EngineRole`, with its one state.

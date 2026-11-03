@@ -82,8 +82,6 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     , config_(config)
     , ha_enabled_(config.ha_enabled)
     , is_primary_(!config.ha_enabled || config.ha_role == "primary")
-    , sequencer_er_conn_id_{}
-    , sequencer_er_secondary_conn_id_{}
     , order_book_(&book_growth_reporter_)
     , epoch_store_(config.epoch_state_file)
     , lease_promise_store_(config.epoch_state_file + ".lease_promise", pubsub_itc_fw::LeasePromiseStore::current_boot_id()) {
@@ -253,15 +251,15 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
     const std::string peer_inbound_svc = "inbound:" + std::to_string(config_.peer_listen_port);
 
     if (svc == "sequencer_er") {
-        sequencer_er_conn_id_ = id;
+        report_sending_.connection_established(EngineReportSending::Sequencer::primary, id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: primary sequencer ER connection {} established", id.get_value());
         announce_role();
-        release_reports_held_for_a_connection();
+        report_sending_.release_for_connection(epoch_, holding_reports_until_entitled());
     } else if (svc == "sequencer_er_secondary") {
-        sequencer_er_secondary_conn_id_ = id;
+        report_sending_.connection_established(EngineReportSending::Sequencer::secondary, id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer ER connection {} established", id.get_value());
         announce_role();
-        release_reports_held_for_a_connection();
+        report_sending_.release_for_connection(epoch_, holding_reports_until_entitled());
     } else if (svc == "me_peer") {
         // Our dial to the peer's listener, for the lease requests between the pair, the role announcements and the
         // settings check.
@@ -332,12 +330,12 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
                    "MatchingEngineThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
         return;
     }
-    if (id == sequencer_er_conn_id_) {
-        sequencer_er_conn_id_ = pubsub_itc_fw::ConnectionID{};
+    if (id == report_sending_.connection(EngineReportSending::Sequencer::primary)) {
+        report_sending_.connection_lost(EngineReportSending::Sequencer::primary);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: primary sequencer ER connection {} lost: {}", id.get_value(),
                    reason);
-    } else if (id == sequencer_er_secondary_conn_id_) {
-        sequencer_er_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
+    } else if (id == report_sending_.connection(EngineReportSending::Sequencer::secondary)) {
+        report_sending_.connection_lost(EngineReportSending::Sequencer::secondary);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: secondary sequencer ER connection {} lost: {}", id.get_value(),
                    reason);
     } else if (id == outbound_peer_conn_id_) {
@@ -716,129 +714,6 @@ bool MatchingEngineThread::holding_reports_until_entitled() const {
     return ha_enabled_ && ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead();
 }
 
-void MatchingEngineThread::release_held_reports() {
-    if (held_reports_.empty()) {
-        held_reports_overflowed_ = false;
-        waiting_for_report_connection_ = false;
-        return;
-    }
-    // With no connection to a sequencer the reports would go nowhere, so they stay held until one is
-    // established, when this is called again.
-    const bool to_primary = sequencer_er_conn_id_.is_valid();
-    const bool to_secondary = sequencer_er_secondary_conn_id_.is_valid();
-    if (!to_primary && !to_secondary) {
-        return;
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: releasing {} report(s) held while this instance was becoming current -- it now serves, so the members who placed "
-               "those orders are told",
-               held_reports_.size());
-    if (test_events_.has_value()) {
-        test_events_->send_event(pubsub_itc_fw_app::ReportsReleased::message_pdu_id,
-                                 pubsub_itc_fw_app::ReportsReleased{pubsub_itc_fw_app::ReleaseReason::NowServes, static_cast<int64_t>(held_reports_.size())});
-    }
-    send_held_reports(to_primary, to_secondary);
-}
-
-void MatchingEngineThread::send_held_reports(bool to_primary, bool to_secondary) {
-    // Each report goes to each sequencer, as a report sent at once does, but a connection may come up
-    // after the others: so each held report records which connections it has been sent on, is sent on
-    // each as it becomes available, and is kept until it has been sent on every connection there is.
-    // It keeps the number it was given when first sent, so that both sequencers see the same number
-    // for it (docs/bug_list.md, BUG-0120).
-    for (HeldReport& held : held_reports_) {
-        pubsub_itc_fw_app::WalRecord envelope{};
-        envelope.seq_no = held.seq_no;
-        envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
-        envelope.payload.data = held.payload.data();
-        envelope.payload.size = held.payload.size();
-        envelope.has_sender_comp_id = !held.session.empty();
-        envelope.sender_comp_id = held.session.comp_id_view();
-        envelope.has_origin_gateway_id = !held.session.empty();
-        envelope.origin_gateway_id = held.session.protocol;
-        envelope.poss_resend = held.poss_resend;
-        if (held.numbered) {
-            envelope.has_report_engine_epoch = true;
-            envelope.report_engine_epoch = held.report_engine_epoch;
-            envelope.has_report_number = true;
-            envelope.report_number = held.report_number;
-        } else {
-            number_report(envelope);
-            held.numbered = true;
-            held.report_engine_epoch = envelope.report_engine_epoch;
-            held.report_number = envelope.report_number;
-        }
-        if (to_primary && !held.sent_to_primary) {
-            send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, held.seq_no, envelope);
-            held.sent_to_primary = true;
-        }
-        if (to_secondary && !held.sent_to_secondary) {
-            send_pdu(sequencer_er_secondary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, held.seq_no, envelope);
-            held.sent_to_secondary = true;
-        }
-    }
-    // Without high availability there is only the one sequencer to tell.
-    const bool secondary_expected = ha_enabled_;
-    held_reports_.erase(
-        std::remove_if(held_reports_.begin(), held_reports_.end(),
-                       [secondary_expected](const HeldReport& held) { return held.sent_to_primary && (held.sent_to_secondary || !secondary_expected); }),
-        held_reports_.end());
-    if (held_reports_.empty()) {
-        held_reports_overflowed_ = false;
-        waiting_for_report_connection_ = false;
-    }
-}
-
-void MatchingEngineThread::release_reports_held_for_a_connection() {
-    // Reports held while this instance waits to be told whether it may serve stay held until it is
-    // told. Any others go now: those held for want of a connection, and those an instance was told it
-    // may serve while it had no connection to send them on.
-    if (held_reports_.empty() || holding_reports_until_entitled()) {
-        return;
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: a connection to a sequencer for reports is established -- sending {} report(s) held without one", held_reports_.size());
-    if (test_events_.has_value()) {
-        test_events_->send_event(
-            pubsub_itc_fw_app::ReportsReleased::message_pdu_id,
-            pubsub_itc_fw_app::ReportsReleased{pubsub_itc_fw_app::ReleaseReason::ConnectionMade, static_cast<int64_t>(held_reports_.size())});
-    }
-    send_held_reports(sequencer_er_conn_id_.is_valid(), sequencer_er_secondary_conn_id_.is_valid());
-}
-
-void MatchingEngineThread::number_report(pubsub_itc_fw_app::WalRecord& envelope) {
-    // Where this report stands in the reports this engine sends, so that the leading sequencer can
-    // say how far it has forwarded them and a follower can discard the copies it keeps
-    // (docs/bug_list.md, BUG-0116). Numbered as it is sent, so the numbers follow the order the
-    // sequencers receive the reports in. A new leadership numbers from 1 again under its higher epoch.
-    if (report_number_epoch_ != epoch_) {
-        report_number_epoch_ = epoch_;
-        report_number_ = 0;
-    }
-    envelope.has_report_engine_epoch = true;
-    envelope.report_engine_epoch = epoch_;
-    envelope.has_report_number = true;
-    envelope.report_number = ++report_number_;
-}
-
-void MatchingEngineThread::discard_held_reports(const char* reason) {
-    if (held_reports_.empty()) {
-        held_reports_overflowed_ = false;
-        return;
-    }
-    // Said plainly rather than dropped quietly. These are reports a member would have received
-    // had this instance gone the other way, and an operator reconciling a member's day against
-    // this log should be able to see that they were not sent, and why.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: discarding {} held report(s) -- {}", held_reports_.size(), reason);
-    if (test_events_.has_value()) {
-        test_events_->send_event(pubsub_itc_fw_app::ReportsDiscarded::message_pdu_id,
-                                 pubsub_itc_fw_app::ReportsDiscarded{static_cast<int64_t>(held_reports_.size())});
-    }
-    held_reports_.clear();
-    held_reports_.shrink_to_fit();
-    held_reports_overflowed_ = false;
-}
-
 void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, const fix_common::SessionIdentity& session,
                                                 ReportIsRepeat repeat) {
     // Encode the ER, then wrap it in a WalRecord envelope. The echoed seq_no travels in
@@ -864,106 +739,40 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
         return;
     }
 
-    // Held rather than sent while this instance is becoming current without having been told it
-    // may serve. See held_reports_ for why, and release_held_reports for what happens next.
-    if (holding_reports_until_entitled()) {
-        if (held_reports_.size() < max_held_reports_) {
-            HeldReport held;
-            held.payload.assign(er_encode_buffer_.begin(), er_encode_buffer_.begin() + static_cast<std::ptrdiff_t>(bytes_written));
-            held.seq_no = seq_no;
-            held.session = session;
-            held.poss_resend = repeat == ReportIsRepeat::yes;
-            held_reports_.push_back(std::move(held));
-            return;
-        }
-        if (!held_reports_overflowed_) {
-            held_reports_overflowed_ = true;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "MatchingEngineThread: {} reports held while waiting to be told what this instance may do, which is as many as are kept -- the rest "
-                       "are sent as they are produced. A member may receive a report for an order this instance never serves; it is marked as a possible "
-                       "repeat and can be discarded, which is the lesser harm",
-                       held_reports_.size());
-        }
-    }
-
-    // Held, too, while there is no connection to a sequencer to send it on: the order it reports is in
-    // the sequencer's log and on this book, so the member must be told once a connection exists.
-    if (!sequencer_er_conn_id_.is_valid() && !sequencer_er_secondary_conn_id_.is_valid()) {
-        if (!waiting_for_report_connection_) {
-            waiting_for_report_connection_ = true;
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                           "MatchingEngineThread: no connection to a sequencer for reports -- acting on orders and holding their reports until one is "
-                           "established");
-            if (test_events_.has_value()) {
-                test_events_->send_event(pubsub_itc_fw_app::ReportsHeld::message_pdu_id,
-                                         pubsub_itc_fw_app::ReportsHeld{static_cast<int64_t>(held_reports_.size()) + 1});
-            }
-        }
-        if (held_reports_.size() < max_held_reports_) {
-            HeldReport held;
-            held.payload.assign(er_encode_buffer_.begin(), er_encode_buffer_.begin() + static_cast<std::ptrdiff_t>(bytes_written));
-            held.seq_no = seq_no;
-            held.session = session;
-            held.poss_resend = repeat == ReportIsRepeat::yes;
-            held_reports_.push_back(std::move(held));
-        } else if (!held_reports_overflowed_) {
-            held_reports_overflowed_ = true;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                       "MatchingEngineThread: {} reports held with no connection to a sequencer, which is as many as are kept -- later reports are "
-                       "lost until a connection is established",
-                       held_reports_.size());
-        }
+    // Sent to both sequencers, or held: while this instance is becoming current without having been told it may serve,
+    // or while there is no connection for reports. Only a report sent now is timed.
+    const EngineReportSending::Report report{
+        er_encode_buffer_.data(), bytes_written, seq_no, &session, repeat == ReportIsRepeat::yes, has_current_order_ingress_ns_, current_order_ingress_ns_};
+    if (!report_sending_.send(report, epoch_, holding_reports_until_entitled())) {
         return;
     }
-
-    pubsub_itc_fw_app::WalRecord envelope{};
-    envelope.seq_no = seq_no;
-    envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
-    envelope.payload.data = er_encode_buffer_.data();
-    envelope.payload.size = bytes_written;
-    envelope.has_sender_comp_id = !session.empty();
-    envelope.sender_comp_id = session.comp_id_view();
-    envelope.has_origin_gateway_id = !session.empty();
-    envelope.origin_gateway_id = session.protocol;
-    envelope.poss_resend = repeat == ReportIsRepeat::yes;
-
-    // The time the gateway read the order that caused this report, sent back with it so the
-    // sequencer can time its own handling of the return leg. Absent for every report with no
-    // client order behind it, which is what has_current_order_ingress_ns_ records.
-    //
-    // This is not how the gateway learns the time. The sequencer keeps its own copy, filed
-    // under the order's sequence number, and writes that onto the report it forwards --
-    // overwriting whatever arrives here. That copy stays the authoritative one because it
-    // survives cases this one cannot, such as a report for an order placed before the
-    // matching engine now running had started.
-    envelope.has_gateway_ingress_ns = has_current_order_ingress_ns_;
-    envelope.gateway_ingress_ns = current_order_ingress_ns_;
-
-    number_report(envelope);
-
-    if (sequencer_er_conn_id_.is_valid()) {
-        // A member is waiting for this: it is the report on its way back to them.
-        send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope,
-                 pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
-    }
-    if (sequencer_er_secondary_conn_id_.is_valid()) {
-        send_pdu(sequencer_er_secondary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope,
-                 pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
-    }
-
-    // The order has now been matched and its acknowledgement handed to the reactor, so this
-    // is the moment the matching engine is finished with it.
-    //
-    // Only an acknowledgement of a new order is timed, and that restriction is what makes
-    // reading the remembered time safe rather than merely likely to be right. This function
-    // is reached for every report the state machine produces -- reports that a halt has
-    // cancelled an order, reports from a catch-up, refusals -- and only an acknowledgement of
-    // a new order has a client order behind it whose start time could be meant. Every other
-    // report carries a status other than New, so none of them reaches the line below,
-    // whether or not an order happens to be being handled at the time.
     if (er.ord_status == pubsub_itc_fw_app::OrdStatus::New) {
         order_path_metrics::observe_checkpoint(er_out_elapsed_histogram_, has_current_order_ingress_ns_, current_order_ingress_ns_,
                                                config_.wall_clock->now_ns());
+    }
+}
+
+void MatchingEngineThread::ReportSendingLinks::send_report(const pubsub_itc_fw::ConnectionID& connection, int64_t seq_no,
+                                                           const pubsub_itc_fw_app::WalRecord& envelope) {
+    owner_.send_pdu(connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope,
+                    pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
+}
+
+void MatchingEngineThread::ReportSendingLinks::reports_held(int64_t count) {
+    if (owner_.test_events_.has_value()) {
+        owner_.test_events_->send_event(pubsub_itc_fw_app::ReportsHeld::message_pdu_id, pubsub_itc_fw_app::ReportsHeld{count});
+    }
+}
+
+void MatchingEngineThread::ReportSendingLinks::reports_released(pubsub_itc_fw_app::ReleaseReason reason, int64_t count) {
+    if (owner_.test_events_.has_value()) {
+        owner_.test_events_->send_event(pubsub_itc_fw_app::ReportsReleased::message_pdu_id, pubsub_itc_fw_app::ReportsReleased{reason, count});
+    }
+}
+
+void MatchingEngineThread::ReportSendingLinks::reports_discarded(int64_t count) {
+    if (owner_.test_events_.has_value()) {
+        owner_.test_events_->send_event(pubsub_itc_fw_app::ReportsDiscarded::message_pdu_id, pubsub_itc_fw_app::ReportsDiscarded{count});
     }
 }
 
@@ -1116,7 +925,7 @@ void MatchingEngineThread::adopt_leader_role() {
 
     // This instance is going to serve, so anything it caught up on and held back is owed to the
     // members who placed those orders.
-    release_held_reports();
+    report_sending_.release_now_serving(epoch_);
 }
 
 void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) {
@@ -1339,7 +1148,7 @@ void MatchingEngineThread::enter_follower_state() {
     }
     // Anything held back from a catch-up is not this instance's to send: it serves nobody, and
     // the leader answered those members from its own catch-up.
-    discard_held_reports("this instance is a follower and serves nobody");
+    report_sending_.discard("this instance is a follower and serves nobody");
 
     announce_role();
     if (ha_enabled_ && previous == MeRole::Leader) {
@@ -1368,7 +1177,7 @@ void MatchingEngineThread::keep_report(const pubsub_itc_fw_app::ExecutionReport&
     size_t bytes_written = 0;
     size_t bytes_needed = 0;
     static_cast<void>(pubsub_itc_fw_app::encode(report, nullptr, 0, bytes_written, bytes_needed));
-    HeldReport kept;
+    HeldEngineReport kept;
     kept.payload.resize(bytes_needed);
     if (!pubsub_itc_fw_app::encode(report, kept.payload.data(), kept.payload.size(), bytes_written, bytes_needed)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: failed to encode a report to keep ({} bytes needed)", bytes_needed);
@@ -1400,7 +1209,7 @@ void MatchingEngineThread::account_for_leader_report(int64_t command, const uint
         kept_reports_.pop_front();
     }
     // The leader's reports of one command arrive in the order it produced them, as this instance's were kept.
-    for (HeldReport& kept : kept_reports_) {
+    for (HeldEngineReport& kept : kept_reports_) {
         if (kept.seq_no != command) {
             break;
         }
@@ -1463,9 +1272,9 @@ void MatchingEngineThread::refuse_to_lead(int64_t command, pubsub_itc_fw_app::Fo
 
 void MatchingEngineThread::send_kept_reports_after(int64_t reported_through) {
     int64_t sent = 0;
-    for (HeldReport& kept : kept_reports_) {
+    for (HeldEngineReport& kept : kept_reports_) {
         if (kept.seq_no > reported_through) {
-            held_reports_.push_back(std::move(kept));
+            report_sending_.hold(std::move(kept));
             ++sent;
         }
     }
@@ -1478,9 +1287,7 @@ void MatchingEngineThread::send_kept_reports_after(int64_t reported_through) {
     }
     kept_reports_.clear();
     kept_reports_overflowed_ = false;
-    if (!held_reports_.empty() && (sequencer_er_conn_id_.is_valid() || sequencer_er_secondary_conn_id_.is_valid())) {
-        send_held_reports(sequencer_er_conn_id_.is_valid(), sequencer_er_secondary_conn_id_.is_valid());
-    }
+    report_sending_.send_held_on_the_connections_up(epoch_);
 }
 
 bool MatchingEngineThread::following_the_wal() const {
@@ -1567,7 +1374,9 @@ void MatchingEngineThread::announce_role() {
     // saying so, instead of waiting on arbitration that a recently started arbiter
     // will decline. Both connections to the peer are held permanently, so whichever
     // one is up carries it.
-    for (const pubsub_itc_fw::ConnectionID& conn : {sequencer_er_conn_id_, sequencer_er_secondary_conn_id_, outbound_peer_conn_id_, inbound_peer_conn_id_}) {
+    for (const pubsub_itc_fw::ConnectionID& conn :
+         {report_sending_.connection(EngineReportSending::Sequencer::primary), report_sending_.connection(EngineReportSending::Sequencer::secondary),
+          outbound_peer_conn_id_, inbound_peer_conn_id_}) {
         if (conn.is_valid()) {
             send_pdu(conn, pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id, 0, announcement);
         }

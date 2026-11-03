@@ -1,4 +1,5 @@
 add_executable(matching_engine
+        EngineReportSending.cpp
         Ff1Cipher.cpp
         MatchingEngineConfigurationLoader.cpp
         MatchingEngineStateMachine.cpp
@@ -23,7 +24,9 @@ add_dependencies(matching_engine fix_orders_generated matching_engine_replicatio
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(matching_engine PRIVATE
+        EngineReportSending.hpp
         Ff1Cipher.hpp
+        HeldEngineReport.hpp
         MatchingEngineConfiguration.hpp
         MatchingEngineConfigurationLoader.hpp
         MatchingEngineStateMachine.hpp
@@ -107,6 +110,8 @@ add_executable(matching_engine_tests
         tests/MatchingEngineStateMachineTest.cpp
         tests/MatchingEngineStateMachineFuzzTest.cpp
         tests/ReportIdentifiersTest.cpp
+        tests/EngineReportSendingTest.cpp
+        EngineReportSending.cpp
         Ff1Cipher.cpp
         MatchingEngineStateMachine.cpp
         OrderBook.cpp
