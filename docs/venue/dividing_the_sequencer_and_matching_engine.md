@@ -2,7 +2,7 @@
 
 This is the design for phase 10 of the [recovery plan](../recovery_plan.md): dividing what is left of
 `SequencerThread` and `MatchingEngineThread` into parts, each with one job and its own state, all still run by the
-same single thread. Behaviour does not change. Section 10 holds the decisions for Andrew.
+same single thread. Behaviour does not change. Section 10 holds its decisions, which Andrew took on 3 November 2026, each as recommended.
 
 ## 1. Why
 
@@ -214,6 +214,8 @@ every function able to change every member, so it solves none of the three probl
 
 **Recommendation: yes.**
 
+**Decided** on 3 November 2026: yes.
+
 ### Decision 2. Which program is divided first? (Choose one.)
 
 - **A. The matching engine first.** It is the smaller, so the pattern is settled on less code. And its role, held in
@@ -222,6 +224,8 @@ every function able to change every member, so it solves none of the three probl
 - **B. The sequencer first.** It is the larger, and holds the venue's own business, so more is gained sooner.
 
 **Recommendation: A.**
+
+**Decided** on 3 November 2026: A.
 
 ### Decision 3. What happens to the sequencer's replay mode? (Choose one.)
 
@@ -237,6 +241,8 @@ in it, with their original times, so that the engine produces the same reports a
 
 **Recommendation: A**, unless you use it. It is a removal of a feature, which is why it is a question.
 
+**Decided** on 3 November 2026: A.
+
 ### Decision 4. Does each part have unit tests of its own, besides the whole suite passing? (Yes or no.)
 
 The whole suite shows that behaviour has not changed. Unit tests of a part show that each of its moves does what its
@@ -244,3 +250,5 @@ table says, including moves the scenarios reach rarely or never, and they are wh
 They add to each step the time to write them.
 
 **Recommendation: yes.**
+
+**Decided** on 3 November 2026: yes.
