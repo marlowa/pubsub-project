@@ -1,4 +1,5 @@
 add_executable(matching_engine
+        DiedApplyingCheck.cpp
         EngineCatchUp.cpp
         EngineReportSending.cpp
         EngineRole.cpp
@@ -9,6 +10,7 @@ add_executable(matching_engine
         MatchingEngineThread.cpp
         MatchingEngine.cpp
         OrderBook.cpp
+        PeerSettingsCheck.cpp
         ReportIdentifiers.cpp
 )
 
@@ -27,6 +29,7 @@ add_dependencies(matching_engine fix_orders_generated matching_engine_replicatio
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(matching_engine PRIVATE
+        DiedApplyingCheck.hpp
         EngineCatchUp.hpp
         EngineReportSending.hpp
         EngineRole.hpp
@@ -40,6 +43,7 @@ target_sources(matching_engine PRIVATE
         MatchingEngine.hpp
         OrderBook.hpp
         OrderEntry.hpp
+        PeerSettingsCheck.hpp
         ReportIdentifiers.hpp
 )
 
@@ -120,6 +124,9 @@ add_executable(matching_engine_tests
         tests/FollowerReportComparisonTest.cpp
         tests/EngineCatchUpTest.cpp
         tests/EngineRoleTest.cpp
+        tests/DiedApplyingCheckTest.cpp
+        tests/PeerSettingsCheckTest.cpp
+        DiedApplyingCheck.cpp
         EngineCatchUp.cpp
         EngineRole.cpp
         EngineReportSending.cpp
@@ -127,6 +134,7 @@ add_executable(matching_engine_tests
         Ff1Cipher.cpp
         MatchingEngineStateMachine.cpp
         OrderBook.cpp
+        PeerSettingsCheck.cpp
         ReportIdentifiers.cpp
 )
 

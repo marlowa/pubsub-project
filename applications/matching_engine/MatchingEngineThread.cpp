@@ -164,6 +164,8 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     } else {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: HA disabled -- single instance, no arbitration and no peer");
     }
+    peer_settings_check_.emplace(static_cast<int64_t>(order_book_.region_capacity()), report_identifiers_.secret_fingerprint(), peer_instance_id(),
+                                 config_.identifier_secret_file, settings_links_, get_logger());
 }
 
 void MatchingEngineThread::on_initial_event() {
@@ -230,7 +232,7 @@ void MatchingEngineThread::on_app_ready_event() {
         connect_to_service("arbiter_secondary");
     }
 
-    begin_died_applying_question();
+    died_applying_check_.begin(ha_enabled_);
 }
 
 void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
@@ -265,7 +267,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         outbound_peer_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: connection {} to the peer engine established", id.get_value());
         send_engine_settings();
-        ask_peer_whether_applied();
+        died_applying_check_.peer_connected();
         // Tell the peer what this instance is as soon as there is a link to tell it
         // on. An instance that has just restarted is sitting in Unknown waiting for
         // arbitration, and a leader saying so here lets it settle immediately rather
@@ -281,7 +283,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // The peer's dial to us, which carries the same as ours.
         inbound_peer_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: connection {} from the peer engine established", id.get_value());
-        ask_peer_whether_applied();
+        died_applying_check_.peer_connected();
         // Tell the peer what this instance is as soon as there is a link to tell it
         // on. An instance that has just restarted is sitting in Unknown waiting for
         // arbitration, and a leader saying so here lets it settle immediately rather
@@ -291,9 +293,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // An inbound order connection from a sequencer, alike for either configured role.
         sequencer_order_conn_ids_.insert(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} established", id.get_value());
-        if (died_applying_question_ == DiedApplyingQuestion::asking_sequencers) {
-            send_void_request();
-        }
+        died_applying_check_.sequencer_connected();
         if (role_.role() == MeRole::Reconciling) {
             // Either reconciliation was begun before any sequencer had dialled in, so the request
             // could not be sent, and sending it now is what keeps that from stranding the venue
@@ -551,7 +551,7 @@ void MatchingEngineThread::apply_command(const pubsub_itc_fw::EventMessage& mess
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
     // Recorded before anything is applied, and cleared only after the command's reports are sent, so that a process that
-    // dies anywhere in between leaves the command in the region for the next one to find (died_applying_).
+    // dies anywhere in between leaves the command in the region for the next one to find (DiedApplyingCheck).
     order_book_.set_applying(message.seq_no());
 
     if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
@@ -630,7 +630,7 @@ void MatchingEngineThread::die_if_named(const pubsub_itc_fw_app::NewOrderSingleV
     if (sequence_number <= state_machine_.highest_applied() || state_machine_.voids().voiding(sequence_number, fix_common::VoidedKind::new_order) != nullptr) {
         return;
     }
-    if (config_.test_events.die_applying_once && died_applying_ == sequence_number) {
+    if (config_.test_events.die_applying_once && died_applying_check_.command() == sequence_number) {
         return;
     }
     // Written straight to the standard error: the Quill log is written by a thread of its own, which the abort stops.
@@ -797,17 +797,12 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
 
     if (id == peer_answer_timer_id_) {
         peer_answer_timer_id_ = pubsub_itc_fw::TimerID{};
-        if (died_applying_question_ == DiedApplyingQuestion::asking_peer) {
-            ask_for_void("the peer engine did not say within a lease period which commands it has applied");
-        }
+        died_applying_check_.peer_answer_timer_fired();
         return;
     }
 
     if (id == void_request_timer_id_) {
-        // A request lost to a change of sequencer leader, or made before any sequencer led, is asked for again.
-        if (died_applying_question_ == DiedApplyingQuestion::asking_sequencers) {
-            send_void_request();
-        }
+        died_applying_check_.void_request_timer_fired();
         return;
     }
 
@@ -901,7 +896,9 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
             // The lease settles the role. An instance that is not already leading catches up from
             // the WAL before it acts on it, whatever it has done so far.
             become_leader_when_current();
-            static_cast<void>(bar_peer_if_settings_differ());
+            if (peer_settings_check_.has_value()) {
+                static_cast<void>(peer_settings_check_->bar_peer_if_settings_differ());
+            }
             break;
         case pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading:
             // Stops matching at once, whatever it was doing, and tells the sequencers so they stop
@@ -996,11 +993,12 @@ void MatchingEngineThread::report_present_state() {
     if (halt_reason_.has_value()) {
         test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{*halt_reason_});
     }
-    if (peer_settings_known_ && peer_settings_differ_) {
-        report_settings_differ_from_peer();
+    if (peer_settings_check_.has_value()) {
+        peer_settings_check_->report_present_state();
     }
-    if (died_applying_outcome_.has_value()) {
-        test_events_->send_event(pubsub_itc_fw_app::DiedApplying::message_pdu_id, pubsub_itc_fw_app::DiedApplying{died_applying_, *died_applying_outcome_});
+    if (died_applying_check_.outcome().has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::DiedApplying::message_pdu_id,
+                                 pubsub_itc_fw_app::DiedApplying{died_applying_check_.command(), *died_applying_check_.outcome()});
     }
     if (role_.role() == MeRole::Reconciling) {
         report_catch_up(pubsub_itc_fw_app::CatchUpStage::Started, catch_up_.position(), 0);
@@ -1304,7 +1302,7 @@ void MatchingEngineThread::recover_open_orders(bool region_existed) {
     // it is not applied again, so there is nothing to ask.
     const int64_t applying = order_book_.applying_when_opened();
     if (applying > found.published) {
-        died_applying_ = applying;
+        died_applying_check_.died_applying(applying);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                    "MatchingEngineThread: the process before this one died applying command seq={} -- asking whether the peer engine applied it, and if "
                    "not, for it to be voided, before catching up (docs/availability/voided_commands.md, section 4)",
@@ -1351,8 +1349,8 @@ void MatchingEngineThread::begin_reconciliation() {
 
 EngineCatchUp::RequestContext MatchingEngineThread::catch_up_context() const {
     EngineCatchUp::RequestContext context{};
-    context.may_ask = died_applying_question_ == DiedApplyingQuestion::none;
-    context.died_applying = died_applying_;
+    context.may_ask = !died_applying_check_.open();
+    context.died_applying = died_applying_check_.command();
     context.to_lead = role_.catching_up_to_lead();
     context.highest_applied = state_machine_.highest_applied();
     return context;
@@ -1420,78 +1418,9 @@ void MatchingEngineThread::handle_engine_settings(const pubsub_itc_fw::EventMess
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode EngineSettings -- dropping");
         return;
     }
-    const auto own_region_capacity = static_cast<int64_t>(order_book_.region_capacity());
-    const bool differed = peer_settings_known_ && peer_settings_differ_;
-    peer_settings_known_ = true;
-    peer_region_capacity_ = settings.order_book_region_capacity;
-    peer_secret_fingerprint_ = settings.identifier_secret_fingerprint;
-    const bool secrets_differ = peer_secret_fingerprint_ != report_identifiers_.secret_fingerprint();
-    peer_settings_differ_ = peer_region_capacity_ != own_region_capacity || secrets_differ;
-    if (peer_region_capacity_ != own_region_capacity) {
-        // The open-order region's capacity decides when an order is refused because the venue holds as many as it can,
-        // so two engines with different capacities apply the same commands differently once one of them is full.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "MatchingEngineThread: the peer, instance {}, holds up to {} open order(s) and this instance up to {} -- the two would apply the same "
-                   "commands differently, so whichever of them leads says that the other may not lead",
-                   settings.instance_id, peer_region_capacity_, own_region_capacity);
+    if (peer_settings_check_.has_value()) {
+        peer_settings_check_->peer_settings_arrived(settings.instance_id, settings.order_book_region_capacity, settings.identifier_secret_fingerprint);
     }
-    if (secrets_differ) {
-        // The secret the identifiers' keys are derived from: two engines with different secrets give the same report
-        // different ExecIDs, so a member would be told of one event under two names after a failover.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "MatchingEngineThread: the peer, instance {}, holds a different identifier secret from this instance's ({}) -- the two would name the "
-                   "same reports differently, so whichever of them leads says that the other may not lead. Copy the one secret file to both",
-                   settings.instance_id, config_.identifier_secret_file);
-    }
-    if (!peer_settings_differ_ && differed) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: the peer, instance {}, is now configured as this instance is (up to {} open order(s))", settings.instance_id,
-                   own_region_capacity);
-    }
-    // Reported whether or not this instance leads, so that the test learns the follower knows of the difference too,
-    // and only once: bar_peer_if_settings_differ reports it when it bars the peer.
-    if (!bar_peer_if_settings_differ() && peer_settings_differ_) {
-        report_settings_differ_from_peer();
-    }
-}
-
-void MatchingEngineThread::report_settings_differ_from_peer() {
-    if (!test_events_.has_value()) {
-        return;
-    }
-    const bool barred_peer = lease_agent_.has_value() && lease_agent_->leading() && !lease_agent_->says_peer_may_lead();
-    test_events_->send_event(pubsub_itc_fw_app::SettingsDifferFromPeer::message_pdu_id,
-                             pubsub_itc_fw_app::SettingsDifferFromPeer{peer_instance_id(), static_cast<int64_t>(order_book_.region_capacity()),
-                                                                       peer_region_capacity_, barred_peer,
-                                                                       peer_secret_fingerprint_ != report_identifiers_.secret_fingerprint()});
-}
-
-bool MatchingEngineThread::bar_peer_if_settings_differ() {
-    if (!lease_agent_.has_value() || !lease_agent_->leading() || !peer_settings_known_) {
-        return false;
-    }
-    // Already saying what it should, so there is nothing to record or send.
-    if (peer_settings_differ_ != lease_agent_->says_peer_may_lead()) {
-        return false;
-    }
-    // Recorded by a majority of the voters, as rule 11's statement is, so that the peer is refused a lease even after
-    // this instance has gone; and lifted once the peer says it is configured as this instance is.
-    if (peer_settings_differ_) {
-        lease_agent_->say_peer_may_not_lead(std::chrono::steady_clock::now());
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "MatchingEngineThread: leading, and saying that the peer, instance {}, may not lead -- it holds up to {} open order(s) and this instance "
-                   "up to {}, and its identifier secret is {} this instance's. Trading continues here; if this instance stops, no engine leads until "
-                   "the two are configured alike",
-                   peer_instance_id(), peer_region_capacity_, order_book_.region_capacity(),
-                   peer_secret_fingerprint_ == report_identifiers_.secret_fingerprint() ? "the same as" : "different from");
-        report_settings_differ_from_peer();
-        return true;
-    }
-    lease_agent_->say_peer_may_lead(std::chrono::steady_clock::now());
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: leading, and saying that the peer, instance {}, may lead again -- it is configured as this instance is",
-               peer_instance_id());
-    return false;
 }
 
 void MatchingEngineThread::handle_engine_position_query(const pubsub_itc_fw::EventMessage& message) {
@@ -1784,14 +1713,8 @@ void MatchingEngineThread::handle_voided_commands(const pubsub_itc_fw::EventMess
                                               "it applied a command before it was told that a later command in the WAL voided it");
         }
     }
-    if (died_applying_question_ == DiedApplyingQuestion::asking_sequencers &&
-        state_machine_.voids().voiding(died_applying_, fix_common::VoidedKind::cancel) != nullptr) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "MatchingEngineThread: command seq={}, which the process before this one died applying, is voided -- it is answered with a rejection, "
-                   "and this instance asks to be caught up",
-                   died_applying_);
-        settle_died_applying(pubsub_itc_fw_app::DiedApplyingOutcome::Voided);
-    }
+    died_applying_check_.voids_learned(died_applying_check_.command() != 0 &&
+                                       state_machine_.voids().voiding(died_applying_check_.command(), fix_common::VoidedKind::cancel) != nullptr);
 }
 
 void MatchingEngineThread::apply_void_commands_command(const pubsub_itc_fw_app::VoidCommandsView& command, int64_t sequence_number, CommandSource source) {
@@ -1800,36 +1723,6 @@ void MatchingEngineThread::apply_void_commands_command(const pubsub_itc_fw_app::
         report_comparison_.refuse_to_lead(sequence_number, pubsub_itc_fw_app::FollowerCannotLeadReason::AppliedVoidedCommand,
                                           "it reached a void without having been told of it, after applying the commands it names");
     }
-}
-
-void MatchingEngineThread::begin_died_applying_question() {
-    if (died_applying_ == 0) {
-        return;
-    }
-    if (!ha_enabled_) {
-        ask_for_void("high availability is off, so there is no peer engine to ask");
-        return;
-    }
-    died_applying_question_ = DiedApplyingQuestion::asking_peer;
-    peer_answer_timer_id_ = start_one_off_timer(config_.lease.period);
-    ask_peer_whether_applied();
-}
-
-void MatchingEngineThread::ask_peer_whether_applied() {
-    if (died_applying_question_ != DiedApplyingQuestion::asking_peer || peer_asked_whether_applied_) {
-        return;
-    }
-    const pubsub_itc_fw::ConnectionID peer = outbound_peer_conn_id_.is_valid() ? outbound_peer_conn_id_ : inbound_peer_conn_id_;
-    if (!peer.is_valid()) {
-        return; // asked when a connection to the peer is made
-    }
-    send_pdu(peer, pubsub_itc_fw_app::AppliedThroughQuery::message_pdu_id, 0,
-             pubsub_itc_fw_app::AppliedThroughQuery{static_cast<int64_t>(config_.instance_id)});
-    peer_asked_whether_applied_ = true;
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: asked the peer engine on connection {} which commands it has applied, to learn whether command seq={} is what killed "
-               "the process before this one",
-               peer.get_value(), died_applying_);
 }
 
 void MatchingEngineThread::handle_applied_through_query(const pubsub_itc_fw::EventMessage& message) {
@@ -1859,46 +1752,7 @@ void MatchingEngineThread::handle_applied_through(const pubsub_itc_fw::EventMess
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode AppliedThrough -- dropping");
         return;
     }
-    if (died_applying_question_ != DiedApplyingQuestion::asking_peer) {
-        return; // the lease period ran out first, and the sequencers have been asked
-    }
-    if (answer.highest_applied < died_applying_) {
-        ask_for_void(answer.highest_applied == died_applying_ - 1 ? "the peer engine has applied every command before it and not it"
-                                                                  : "the peer engine has not applied it");
-        return;
-    }
-    // The two engines apply the same commands in the same way, so the command did not kill the process before this one:
-    // the peer applied it and lived.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-               "MatchingEngineThread: the peer engine has applied through seq={}, including command seq={}, which the process before this one died "
-               "applying -- so the command did not cause the death, and it is applied as usual",
-               answer.highest_applied, died_applying_);
-    settle_died_applying(pubsub_itc_fw_app::DiedApplyingOutcome::PeerAppliedIt);
-}
-
-void MatchingEngineThread::ask_for_void(const char* why) {
-    died_applying_question_ = DiedApplyingQuestion::asking_sequencers;
-    if (peer_answer_timer_id_.is_valid()) {
-        cancel_timer(peer_answer_timer_id_);
-        peer_answer_timer_id_ = pubsub_itc_fw::TimerID{};
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "MatchingEngineThread: asking the leading sequencer to void command seq={}, which the process before this one died applying, because {} "
-               "(docs/availability/voided_commands.md, section 4.2)",
-               died_applying_, why);
-    send_void_request();
-    void_request_timer_id_ = start_recurring_timer(void_request_interval);
-}
-
-void MatchingEngineThread::send_void_request() {
-    pubsub_itc_fw_app::VoidRequest request{};
-    request.instance_id = static_cast<int64_t>(config_.instance_id);
-    request.epoch = epoch_;
-    request.seq_no = died_applying_;
-    // To every sequencer order connection, as a halt request is: only the leading sequencer acts on it.
-    for (const auto& conn_id : sequencer_order_conn_ids_) {
-        send_pdu(conn_id, pubsub_itc_fw_app::VoidRequest::message_pdu_id, 0, request);
-    }
+    died_applying_check_.peer_answered(answer.highest_applied);
 }
 
 void MatchingEngineThread::handle_void_declined(const pubsub_itc_fw::EventMessage& message) {
@@ -1911,31 +1765,82 @@ void MatchingEngineThread::handle_void_declined(const pubsub_itc_fw::EventMessag
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode VoidDeclined -- dropping");
         return;
     }
-    if (died_applying_question_ != DiedApplyingQuestion::asking_sequencers || declined.seq_no != died_applying_) {
-        return;
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "MatchingEngineThread: the leading sequencer will not void command seq={}, which the process before this one died applying ({}) -- it is "
-               "applied as usual, and if it kills this process too, the supervisor does not restart it again",
-               died_applying_, pubsub_itc_fw_app::to_string(declined.reason));
-    settle_died_applying(pubsub_itc_fw_app::DiedApplyingOutcome::Declined);
+    died_applying_check_.declined(declined.seq_no, declined.reason);
 }
 
-void MatchingEngineThread::settle_died_applying(pubsub_itc_fw_app::DiedApplyingOutcome outcome) {
-    died_applying_question_ = DiedApplyingQuestion::none;
-    died_applying_outcome_ = outcome;
-    for (pubsub_itc_fw::TimerID* timer : {&peer_answer_timer_id_, &void_request_timer_id_}) {
-        if (timer->is_valid()) {
-            cancel_timer(*timer);
-            *timer = pubsub_itc_fw::TimerID{};
-        }
+pubsub_itc_fw::ConnectionID MatchingEngineThread::DiedApplyingLinks::ask_peer_which_commands_it_applied() {
+    const pubsub_itc_fw::ConnectionID peer = owner_.outbound_peer_conn_id_.is_valid() ? owner_.outbound_peer_conn_id_ : owner_.inbound_peer_conn_id_;
+    if (peer.is_valid()) {
+        owner_.send_pdu(peer, pubsub_itc_fw_app::AppliedThroughQuery::message_pdu_id, 0,
+                        pubsub_itc_fw_app::AppliedThroughQuery{static_cast<int64_t>(owner_.config_.instance_id)});
     }
-    if (test_events_.has_value()) {
-        test_events_->send_event(pubsub_itc_fw_app::DiedApplying::message_pdu_id, pubsub_itc_fw_app::DiedApplying{died_applying_, outcome});
+    return peer;
+}
+
+void MatchingEngineThread::DiedApplyingLinks::start_peer_answer_timer() {
+    owner_.peer_answer_timer_id_ = owner_.start_one_off_timer(owner_.config_.lease.period);
+}
+
+void MatchingEngineThread::DiedApplyingLinks::stop_peer_answer_timer() {
+    if (owner_.peer_answer_timer_id_.is_valid()) {
+        owner_.cancel_timer(owner_.peer_answer_timer_id_);
+        owner_.peer_answer_timer_id_ = pubsub_itc_fw::TimerID{};
+    }
+}
+
+void MatchingEngineThread::DiedApplyingLinks::send_void_request(int64_t command) {
+    pubsub_itc_fw_app::VoidRequest request{};
+    request.instance_id = static_cast<int64_t>(owner_.config_.instance_id);
+    request.epoch = owner_.epoch_;
+    request.seq_no = command;
+    // To every sequencer order connection, as a halt request is: only the leading sequencer acts on it.
+    for (const auto& conn_id : owner_.sequencer_order_conn_ids_) {
+        owner_.send_pdu(conn_id, pubsub_itc_fw_app::VoidRequest::message_pdu_id, 0, request);
+    }
+}
+
+void MatchingEngineThread::DiedApplyingLinks::start_void_request_timer() {
+    owner_.void_request_timer_id_ = owner_.start_recurring_timer(void_request_interval);
+}
+
+void MatchingEngineThread::DiedApplyingLinks::stop_void_request_timer() {
+    if (owner_.void_request_timer_id_.is_valid()) {
+        owner_.cancel_timer(owner_.void_request_timer_id_);
+        owner_.void_request_timer_id_ = pubsub_itc_fw::TimerID{};
+    }
+}
+
+void MatchingEngineThread::DiedApplyingLinks::settled(int64_t command, pubsub_itc_fw_app::DiedApplyingOutcome outcome) {
+    if (owner_.test_events_.has_value()) {
+        owner_.test_events_->send_event(pubsub_itc_fw_app::DiedApplying::message_pdu_id, pubsub_itc_fw_app::DiedApplying{command, outcome});
     }
     // A catch-up begun while the question was open asked for nothing; it is asked for now.
-    if (role_.role() == MeRole::Reconciling && !catch_up_.request_sent() && !sequencer_order_conn_ids_.empty()) {
-        send_follow_request();
+    if (owner_.role_.role() == MeRole::Reconciling && !owner_.catch_up_.request_sent() && !owner_.sequencer_order_conn_ids_.empty()) {
+        owner_.send_follow_request();
+    }
+}
+
+bool MatchingEngineThread::SettingsLinks::leading() const {
+    return owner_.lease_agent_.has_value() && owner_.lease_agent_->leading();
+}
+
+bool MatchingEngineThread::SettingsLinks::says_peer_may_lead() const {
+    return owner_.lease_agent_.has_value() && owner_.lease_agent_->says_peer_may_lead();
+}
+
+void MatchingEngineThread::SettingsLinks::say_peer_may_not_lead() {
+    owner_.lease_agent_->say_peer_may_not_lead(std::chrono::steady_clock::now());
+}
+
+void MatchingEngineThread::SettingsLinks::say_peer_may_lead() {
+    owner_.lease_agent_->say_peer_may_lead(std::chrono::steady_clock::now());
+}
+
+void MatchingEngineThread::SettingsLinks::settings_differ(int64_t own_capacity, int64_t peer_capacity, bool barred_peer, bool secrets_differ) {
+    if (owner_.test_events_.has_value()) {
+        owner_.test_events_->send_event(
+            pubsub_itc_fw_app::SettingsDifferFromPeer::message_pdu_id,
+            pubsub_itc_fw_app::SettingsDifferFromPeer{owner_.peer_instance_id(), own_capacity, peer_capacity, barred_peer, secrets_differ});
     }
 }
 

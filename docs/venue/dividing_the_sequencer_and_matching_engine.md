@@ -702,6 +702,29 @@ engine first (decision 2, option A).
    Both full suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 6. `DiedApplyingCheck` and `PeerSettingsCheck`, and what is left of `MatchingEngineThread` reduced to its connections,
    timers and the handing on of events.
+
+   **As built.** `DiedApplyingCheck` (`applications/matching_engine/DiedApplyingCheck.hpp`) holds the question of
+   section 6.5, already one state, with the command and the outcome; the thread implements
+   `DiedApplyingCheckLinksInterface`, which asks the peer, starts and stops the two timers, sends `VoidRequest`, and,
+   when the question is settled, raises `DiedApplying` and asks for a catch-up that was waiting. `PeerSettingsCheck`
+   (`applications/matching_engine/PeerSettingsCheck.hpp`) holds what the peer last said it is configured with, compares
+   it, and bars a peer whose settings differ; the thread implements `PeerSettingsCheckLinksInterface`, which reaches
+   the lease agent and raises `SettingsDifferFromPeer`. It is made at the end of the constructor, once the open-order
+   region's capacity is known. `DiedApplyingCheckTest` has ten tests and `PeerSettingsCheckTest` seven, and ten faults
+   put in on purpose were each caught.
+
+   **The lease agent and the epoch stay in the thread.** `PairLeaseAgent` is already the library's own part for
+   deciding which instance leads; the thread only connects it to the peer and the arbiters, keeps its epoch on disk,
+   and passes on what it decides to `EngineRole`. Moving it into `EngineRole` would move that connecting, not a job.
+
+   **What is left in `MatchingEngineThread`**: its connections and timers; the metric handles and the test event
+   channel; the lease agent, the epoch and their stores; the parts, each with the links class that connects it; and
+   a few small things. Two of those last only while one command is handled: the gateway's time for the order being
+   applied, and whether it came as a follower of the WAL. One is a count for the Quill log. Three are kept only so
+   that a test that connects late is told where the instance stands: why the region was unusable, why trading is
+   halted, and the position the instance resumed leading from. And two serve test hooks. The thread's source and
+   header together went from 3,193 lines before this phase to 2,467. Both full suites pass: 99 of 99 with the primary
+   engine first, and 38 of 38 with the secondary engine first.
 7. `VenueStateFromTheWal`.
 8. `MemberSessions`.
 9. `ReportForwarding`.

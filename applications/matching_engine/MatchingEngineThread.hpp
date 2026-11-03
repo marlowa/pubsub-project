@@ -31,6 +31,7 @@
 #include <matching_engine_test_events.hpp>
 #include <replication_messages.hpp>
 
+#include "DiedApplyingCheck.hpp"
 #include "EngineCatchUp.hpp"
 #include "EngineReportSending.hpp"
 #include "EngineRole.hpp"
@@ -44,6 +45,7 @@
 #include "OrderBookMetricsReporter.hpp"
 #include "OrderEntry.hpp"
 #include "OrderKey.hpp"
+#include "PeerSettingsCheck.hpp"
 #include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
 #include <pubsub_itc_fw/EpochStore.hpp>
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
@@ -506,15 +508,27 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // (docs/availability/deterministic_matching_engine.md, section 5). Sent to the peer when this instance's
     // connection to the peer's listener is established.
     void send_engine_settings();
-    // The peer's settings arrived: compared with this instance's, and acted on by bar_peer_if_settings_differ.
+    // The peer's settings arrived: given to PeerSettingsCheck.
     void handle_engine_settings(const pubsub_itc_fw::EventMessage& message);
-    // While this instance leads, says that its peer may not lead if the peer's settings differ from its own, and that
-    // it may lead again if they no longer differ. Called when the peer's settings arrive and when this instance takes
-    // the lead. Returns whether it has just said its peer may not lead, which it reports to the test.
-    [[nodiscard]] bool bar_peer_if_settings_differ();
-    // Tells the test, if one started this instance, that the peer's settings differ, and whether this instance, leading,
-    // has said its peer may not lead.
-    void report_settings_differ_from_peer();
+
+    // How PeerSettingsCheck acts through the lease agent and tells the test.
+    class SettingsLinks : public PeerSettingsCheckLinksInterface {
+      public:
+        explicit SettingsLinks(MatchingEngineThread& owner) : owner_(owner) {}
+        [[nodiscard]] bool leading() const override;
+        [[nodiscard]] bool says_peer_may_lead() const override;
+        void say_peer_may_not_lead() override;
+        void say_peer_may_lead() override;
+        void settings_differ(int64_t own_capacity, int64_t peer_capacity, bool barred_peer, bool secrets_differ) override;
+
+      private:
+        MatchingEngineThread& owner_;
+    };
+    SettingsLinks settings_links_{*this};
+    // The settings the two engines of a pair must share, compared (section 6.6 of
+    // docs/venue/dividing_the_sequencer_and_matching_engine.md). Made at the end of the constructor, once the open-order
+    // region is open and its capacity known.
+    std::optional<PeerSettingsCheck> peer_settings_check_;
 
     // Applies a CancelBook command, and tells the test what it cancelled.
     void apply_cancel_book_command(const pubsub_itc_fw_app::CancelBookView& command, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
@@ -533,14 +547,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // The position the last catch-up before leading reached, which the test is told when this instance resumes.
     int64_t resumed_through_{0};
 
-    // The peer's open-order region capacity and the fingerprint of its identifier secret, as it last said, and whether
-    // either differs from this instance's. Kept when the connection to the peer is lost: a peer that restarts says again
-    // what it is configured with.
-    bool peer_settings_known_{false};
-    int64_t peer_region_capacity_{0};
-    int64_t peer_secret_fingerprint_{0};
-    bool peer_settings_differ_{false};
-
     /**
      * @brief Whether the engine can say what it is holding.
      *
@@ -557,7 +563,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // Applies one command from the WAL: a new order, a cancel, a CancelBook, a TechnicalEvent or a VoidCommands. Records in
     // the region that the command is being applied before it applies it, and that none is once it has applied it and
-    // sent its reports, so that a process that dies applying it is known to have done so (died_applying_).
+    // sent its reports, so that a process that dies applying it is known to have done so (DiedApplyingCheck).
     void apply_command(const pubsub_itc_fw::EventMessage& message, const pubsub_itc_fw_app::WalRecordView& envelope, pubsub_itc_fw::BumpAllocator& arena);
 
     // Aborts the process if a test named this order's ClOrdID in [test_events] die_applying_cl_ord_id, and the order is
@@ -573,42 +579,35 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // ---- A command the process before this one died applying (docs/availability/voided_commands.md, section 4) ----
 
-    // Where this instance has got to in deciding whether to ask for the command it died applying to be voided. Until the
-    // question is settled it asks to be caught up by nobody, because the catch-up would apply the command again.
-    enum class DiedApplyingQuestion {
-        none,             ///< it did not die applying a command, or the question is settled
-        asking_peer,      ///< waiting, for at most a lease period, for its peer to say the highest command it has applied
-        asking_sequencers ///< asking the leading sequencer, every second, to void the command
+    // How DiedApplyingCheck asks its questions.
+    class DiedApplyingLinks : public DiedApplyingCheckLinksInterface {
+      public:
+        explicit DiedApplyingLinks(MatchingEngineThread& owner) : owner_(owner) {}
+        pubsub_itc_fw::ConnectionID ask_peer_which_commands_it_applied() override;
+        void start_peer_answer_timer() override;
+        void stop_peer_answer_timer() override;
+        void send_void_request(int64_t command) override;
+        void start_void_request_timer() override;
+        void stop_void_request_timer() override;
+        void settled(int64_t command, pubsub_itc_fw_app::DiedApplyingOutcome outcome) override;
+
+      private:
+        MatchingEngineThread& owner_;
     };
-    DiedApplyingQuestion died_applying_question_{DiedApplyingQuestion::none};
-    // The command the region recorded as being applied when this process found it, if the process before died applying
-    // it; zero otherwise.
-    int64_t died_applying_{0};
-    // How the question was settled, kept for the test, which may connect after it was (report_present_state).
-    std::optional<pubsub_itc_fw_app::DiedApplyingOutcome> died_applying_outcome_;
-    // Whether the peer has been asked, which is done once, on the first connection to it.
-    bool peer_asked_whether_applied_{false};
+    DiedApplyingLinks died_applying_links_{*this};
+    // Whether to ask for the command the previous process died applying to be voided (section 6.5 of
+    // docs/venue/dividing_the_sequencer_and_matching_engine.md). Until the question is settled, no catch-up is asked for.
+    DiedApplyingCheck died_applying_check_{died_applying_links_, get_logger()};
     pubsub_itc_fw::TimerID peer_answer_timer_id_{};
     pubsub_itc_fw::TimerID void_request_timer_id_{};
     static constexpr std::chrono::seconds void_request_interval{1};
 
-    // Begins the question, when the application is ready: asks the peer, or, with high availability off, the sequencers.
-    void begin_died_applying_question();
-    // Asks the peer for the highest command it has applied, on whichever connection to it is up, if there is one and it
-    // has not been asked yet.
-    void ask_peer_whether_applied();
     // The peer asks for the highest command this instance has applied (AppliedThroughQuery): it is told.
     void handle_applied_through_query(const pubsub_itc_fw::EventMessage& message);
-    // The peer's answer (AppliedThrough).
+    // The peer's answer (AppliedThrough): given to DiedApplyingCheck.
     void handle_applied_through(const pubsub_itc_fw::EventMessage& message);
-    // Stops waiting for the peer, and asks the sequencers to void the command.
-    void ask_for_void(const char* why);
-    // Sends VoidRequest on every sequencer order connection; only the leading sequencer acts on it.
-    void send_void_request();
-    // The leading sequencer will not void the command (VoidDeclined).
+    // The leading sequencer will not void the command (VoidDeclined): given to DiedApplyingCheck.
     void handle_void_declined(const pubsub_itc_fw::EventMessage& message);
-    // Settles the question, says so, and asks to be caught up if a catch-up was waiting for it.
-    void settle_died_applying(pubsub_itc_fw_app::DiedApplyingOutcome outcome);
 };
 
 } // namespaces
