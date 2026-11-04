@@ -1,49 +1,8 @@
 # Restoring the design: what is wrong, and the plan {#recovery_plan}
 
-> **Status: agreed, 9 October 2026.** Each phase ends with a review at which Andrew decides whether
-> the next one starts. Phase 1, agreeing the design principles, is finished: Andrew agreed them on
-> 11 October 2026. Phase 2, making the build enforce the framework principles, is finished: Andrew
-> agreed its results on 12 October 2026. Phases 3 to 9 follow the order of work in
-> [ha_library_boundary.md](availability/ha_library_boundary.md), which Andrew agreed on 12 October 2026:
-> the high availability machinery moves from the applications into the library, one step at a time.
-> Phase 3's three steps are done, and [BUG-0147](bug_list.md#bug_0147), which step 3 made strike more
-> often, is fixed (decision 4 in [lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md)).
-> The order's round trip is unchanged by phase 3, measured before and after (section 6.4 of that design).
-> Phase 3 is finished: Andrew reviewed it on 13 October 2026 and asked for
-> [BUG-0148](bug_list.md#bug_0148), which made scenario 40 fail at random, to be fixed before phase 4
-> starts, so that every later phase starts from a run in which every high availability scenario passes.
-> It is fixed, and all 73 scenarios pass. Phase 4's design,
-> [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md), was agreed on
-> 13 October 2026. Its three steps are done: the sequencer's thread is the only one that writes its WAL,
-> and the two locks of [BUG-0124](bug_list.md#bug_0124) are gone; the library's replicated WAL is built
-> and tested on its own; and the sequencer uses it. All 74 scenarios pass, and the order's round trip is
-> unchanged. Phase 4 is finished: Andrew reviewed it on 14 October 2026 and asked for phase 5's design
-> next. Phase 5's design, [following_the_wal.md](availability/following_the_wal.md), was agreed on
-> 14 October 2026. Its step 1 is built: the library's way of following a WAL, tested on its own. Its
-> step 2 is built: the follower sequencer is repaired through the reading thread, and the venue goes on
-> answering orders while a follower that missed 1.2 million records catches up
-> ([BUG-0155](bug_list.md#bug_0155) is fixed). The lock-free allocators and queues, and the hand-over of
-> a follower, are now specified in TLA+ and checked with TLC
-> ([BUG-0162](bug_list.md#bug_0162), [framework/tla/findings.md](framework/tla/findings.md)). Its step 3 is
-> built: the matching engine is caught up by the reading thread, and uses the library's messages to ask. Its
-> step 4 is built: the matching engine publishers follow the WAL through the library, are sent only committed
-> records, once each, by the leading sequencer only ([BUG-0153](bug_list.md#bug_0153) and
-> [BUG-0156](bug_list.md#bug_0156) are fixed). Its step 5 is built: the build refuses any read of the WAL in
-> the sequencer that is not in a named table of permitted reads, each with its reason
-> ([BUG-0133](bug_list.md#bug_0133) is fixed). Phase 5 is finished: Andrew reviewed it on 20 October 2026,
-> with [BUG-0176](bug_list.md#bug_0176), a far-back catch-up of the matching engine flooding the leader with
-> repeated reports, left open, and [BUG-0171](bug_list.md#bug_0171) to be taken further by keeping each record's
-> bytes in memory until it is committed. Phase 6 is finished: a channel of test events, so that the high
-> availability tests no longer read the wording of Quill log messages; every check is moved onto test events,
-> what a member receives, or the WAL files, and with every `TEST CONTRACT` message reworded on purpose, except the
-> three operator messages decision 8 keeps, the scenarios still pass
-> ([test_events.md](availability/test_events.md), section 4.17). Andrew reviewed it on 20 October 2026. In the
-> review of phases 7 and 8 the same day, Andrew agreed that phase 7 goes ahead as written. He agreed phase 8 on
-> 24 October 2026, once it was written out in full. Phase 7 is finished: the matching engine takes no decision
-> alone, every decision is a command in the WAL, and both engines run on the same WAL give the reports a replay gives
-> ([deterministic_matching_engine.md](availability/deterministic_matching_engine.md)); a catch-up from far back sends
-> no report the WAL already holds ([far_back_catch_up.md](availability/far_back_catch_up.md)). Andrew closed it on
-> 27 October 2026. Phase 8 is under way.
+> **Status.** The plan was agreed on 9 October 2026. Each phase ends with a review at which Andrew decides
+> whether the next one starts. Phases 1 to 9 are finished; each is listed, with its date and result, under
+> "Already done" at the end. Phase 10 is under way: steps 1 to 15 are done, and step 16 is next.
 
 ## In one page
 
@@ -140,12 +99,14 @@ These apply to every phase below.
   written.
 - **One phase at a time.** A phase ends with a review. The next phase does not start until Andrew says
   so.
-- **No new features and no bug fixes outside the plan**, unless a defect is found that loses or
-  duplicates orders, in which case it is raised with Andrew first.
+- **No feature, and no bug fix, that the plan does not include**, unless a defect is found that loses or
+  duplicates orders, in which case it is raised with Andrew first. A feature agreed as part of a phase, such as the
+  operator's halt and lift in phase 8, is part of the plan.
 - **Every change is checked against the principles** in [design_principles.md](design_principles.md). A
   change that would break a principle, or needs a new one, is a design question and is raised as one.
-- **The tests decide.** The whole test suite, including the high-availability scenarios, passes at the
-  end of every phase. A new check is made to fail on purpose before it is trusted.
+- **The tests decide.** At the end of every phase, the whole test suite, including the high-availability
+  scenarios, passes, or every failure is explained and recorded in the bug list and Andrew agrees to close the phase
+  with it. A new check is made to fail on purpose before it is trusted.
 - **Measure what matters.** Any phase that touches the order path measures the order's round trip
   before and after, by the method in `docs/operations/latency_findings.md`.
 - **A starting point is kept.** The code as it stood when this plan was written is tagged
@@ -253,6 +214,12 @@ promise recorder's locks are removed from the phase 2 list of exceptions.
 **Design:** [lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md), agreed 12
 October 2026.
 
+Done: the three steps are built, and [BUG-0147](bug_list.md#bug_0147), which step 3 made strike more often, is fixed
+(decision 4 in the design). The order's round trip is unchanged, measured before and after (section 6.4 of the
+design). Andrew reviewed the phase on 13 October 2026 and asked for [BUG-0148](bug_list.md#bug_0148), which made
+scenario 40 fail at random, to be fixed before phase 4 started, so that every later phase starts from a run in which
+every high availability scenario passes. It is fixed, and all 73 scenarios then passed.
+
 ### Phase 4. The library's replicated WAL, with one writing thread
 
 **For:** the order path back to its intended design: one thread owns the sequencer's WAL.
@@ -271,7 +238,9 @@ and after.
 **Design:** [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md), agreed
 13 October 2026.
 
-Done: Andrew agreed its results on 14 October 2026.
+Done: the three steps are built. The sequencer's thread is the only one that writes its WAL, the two locks of
+[BUG-0124](bug_list.md#bug_0124) are gone, and the sequencer uses the library's replicated WAL, which is tested on its
+own. All 74 scenarios pass, and the order's round trip is unchanged. Andrew agreed its results on 14 October 2026.
 
 ### Phase 5. Following the WAL
 
@@ -285,6 +254,18 @@ WAL on the thread that sequences orders ([BUG-0133](bug_list.md#bug_0133)).
 on the sequencer's thread, and the high availability scenarios pass.
 
 **Design:** [following_the_wal.md](availability/following_the_wal.md), agreed 14 October 2026.
+
+Done: the five steps are built. The follower sequencer is repaired through the reading thread, and the venue goes on
+answering orders while a follower that missed 1.2 million records catches up ([BUG-0155](bug_list.md#bug_0155) is
+fixed). The matching engine is caught up by the reading thread, and uses the library's messages to ask. The
+publishers follow the WAL through the library, are sent only committed records, once each, by the leading sequencer
+only ([BUG-0153](bug_list.md#bug_0153) and [BUG-0156](bug_list.md#bug_0156) are fixed). The build refuses any read of
+the WAL in the sequencer that is not in a named table of permitted reads, each with its reason. Alongside, the
+lock-free allocators and queues and the hand-over of a follower are specified in TLA+ and checked with TLC
+([BUG-0162](bug_list.md#bug_0162), [framework/tla/findings.md](framework/tla/findings.md)). Andrew reviewed the phase
+on 20 October 2026, with [BUG-0176](bug_list.md#bug_0176), a far-back catch-up of the matching engine flooding the
+leader with repeated reports, left open, and [BUG-0171](bug_list.md#bug_0171) to be taken further by keeping each
+record's bytes in memory until it is committed.
 
 ### Phase 6. Test events instead of Quill log wording
 
@@ -312,6 +293,10 @@ and changing the wording of any Quill message cannot make a test pass or fail.
 **Design:** [test_events.md](availability/test_events.md), with its inventory
 [test_events_inventory.md](availability/test_events_inventory.md), agreed 18 October 2026. It starts from Copilot's
 proposal, which Andrew supplied.
+
+Done: every check is moved onto test events, what a member receives, or the WAL files. With every `TEST CONTRACT`
+message reworded on purpose, except the three operator messages the design's decision 8 keeps, the scenarios still
+pass ([test_events.md](availability/test_events.md), section 4.17). Andrew reviewed the phase on 20 October 2026.
 
 ### Phase 7. Make the matching engine deterministic
 
