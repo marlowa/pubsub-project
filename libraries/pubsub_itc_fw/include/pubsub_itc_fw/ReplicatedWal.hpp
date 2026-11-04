@@ -183,6 +183,14 @@ struct ReplicatedWalConfiguration {
     LeaseTiming lease{};
     /// Where to record how long each write to the WAL takes. Left as constructed, nothing is recorded.
     HistogramHandle wal_append_histogram{};
+    /// Where to record how long recording a new epoch on disk takes, in milliseconds (BUG-0228). Left as constructed,
+    /// nothing is recorded.
+    HistogramHandle epoch_record_milliseconds{};
+    /// Where to record how much of the lease was left, in milliseconds, when this instance acted on taking the lead,
+    /// after recording its new epoch; zero if none was. Left as constructed, nothing is recorded.
+    HistogramHandle lease_left_when_leading_milliseconds{};
+    /// What the lease agent records: how long the promise record's background writes take, and how many leases ran out.
+    LeaseMetrics lease_metrics{};
     /// Set to 1 while this instance leads and commits records without waiting for its follower, whatever the reason:
     /// no follower is connected, the follower's WAL is not yet known to agree with this one, the follower is being
     /// sent records it missed, or it is too far behind. Set to 0 otherwise, which includes every instance that follows

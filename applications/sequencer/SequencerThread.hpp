@@ -16,6 +16,7 @@
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/FixedCapacityRingBuffer.hpp>
 #include <pubsub_itc_fw/GaugeHandle.hpp>
@@ -414,6 +415,12 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // 1 while this sequencer leads and commits orders without waiting for its follower, for any reason.
     // Registered here and set by the replicated WAL.
     pubsub_itc_fw::GaugeHandle running_alone_gauge_;
+    // How changes of leader go when the disk is slow (BUG-0228): recording the epoch, the lease left on acting, the lease
+    // promise record's background writes, and the leases that ran out. Registered here and recorded by the replicated WAL.
+    pubsub_itc_fw::HistogramHandle epoch_record_histogram_;
+    pubsub_itc_fw::HistogramHandle lease_left_when_leading_histogram_;
+    pubsub_itc_fw::HistogramHandle promise_record_histogram_;
+    pubsub_itc_fw::CounterHandle leases_run_out_counter_;
 
     /**
      * @brief Whether an engine leads that orders can be sent to: the order connection goes to an engine that neither

@@ -30,10 +30,12 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <prometheus/counter.h>
 #include <prometheus/gauge.h>
 
 #include <pubsub_itc_fw/BackgroundPromiseRecorderInterface.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/GaugeHandle.hpp>
 #include <pubsub_itc_fw/LeasePromiseRecorderInterface.hpp>
@@ -41,6 +43,7 @@
 #include <pubsub_itc_fw/LeaseVoter.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReplicatedWal.hpp>
+#include <pubsub_itc_fw/SingleWriterHistogram.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
@@ -267,6 +270,11 @@ class Pair {
         configuration.lease = timing_;
         running_alone_gauges_[i].Set(0.0);
         configuration.running_alone_gauge = GaugeHandle{&running_alone_gauges_[i]};
+        epoch_record_histograms_[i] = std::make_unique<SingleWriterHistogram>(std::vector<double>{1, 10, 100, 1000});
+        lease_left_histograms_[i] = std::make_unique<SingleWriterHistogram>(std::vector<double>{1, 10, 100, 1000});
+        configuration.epoch_record_milliseconds = HistogramHandle{epoch_record_histograms_[i].get()};
+        configuration.lease_left_when_leading_milliseconds = HistogramHandle{lease_left_histograms_[i].get()};
+        configuration.lease_metrics.leases_run_out = CounterHandle{&leases_run_out_[i]};
         if (command_identity_ != nullptr) {
             configuration.command_identity = command_identity_;
             configuration.identifiers_reserved = 1000;
@@ -533,6 +541,16 @@ class Pair {
         return running_alone_gauges_[i].Value();
     }
 
+    // How many epochs instance @p i has recorded, and how long they took in all, in milliseconds.
+    [[nodiscard]] prometheus::ClientMetric::Histogram epoch_records(int i) const {
+        return epoch_record_histograms_[i]->collect().histogram;
+    }
+
+    // How many times instance @p i acted on taking the lead, and the lease it had left each time, in all, in milliseconds.
+    [[nodiscard]] prometheus::ClientMetric::Histogram lease_left_when_leading(int i) const {
+        return lease_left_histograms_[i]->collect().histogram;
+    }
+
     LeaseTiming timing_{};
     Clock::time_point now_{};
     std::vector<std::string> log_;
@@ -556,6 +574,9 @@ class Pair {
     const CommandIdentityInterface* command_identity_{nullptr};
     // What each instance sets its running_alone_gauge to.
     prometheus::Gauge running_alone_gauges_[2];
+    std::unique_ptr<SingleWriterHistogram> epoch_record_histograms_[2];
+    std::unique_ptr<SingleWriterHistogram> lease_left_histograms_[2];
+    prometheus::Counter leases_run_out_[2];
 };
 
 TEST(ReplicatedWalTest, AnInstanceRunningAloneLeadsAtOnceAndCommitsEachRecordOnceWritten) {
@@ -567,6 +588,35 @@ TEST(ReplicatedWalTest, AnInstanceRunningAloneLeadsAtOnceAndCommitsEachRecordOnc
     EXPECT_EQ(pair.events_[0].committed, 1);
     EXPECT_EQ(pair.wals_[0]->next_seq_no(), 2);
     EXPECT_EQ(pair.running_alone_gauge(0), 0.0) << "an instance with HA off has no follower to be without";
+}
+
+TEST(ReplicatedWalTest, RecordingTheEpochIsTimedAndAnInstanceRunningAloneRecordsNoLeaseLeft) {
+    Pair pair("replicated_wal_epoch_metrics_alone");
+    pair.start(0, /*ha_enabled=*/false);
+    ASSERT_EQ(pair.wals_[0]->role(), ReplicaRole::leader);
+    EXPECT_EQ(pair.epoch_records(0).sample_count, 1U) << "the epoch it leads at is recorded once";
+    EXPECT_EQ(pair.lease_left_when_leading(0).sample_count, 0U) << "an instance running alone holds no lease";
+}
+
+TEST(ReplicatedWalTest, TheInstanceThatTakesTheLeadRecordsTheLeaseItHadLeftAfterRecordingItsEpoch) {
+    Pair pair("replicated_wal_epoch_metrics_pair");
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    EXPECT_GE(pair.epoch_records(0).sample_count, 1U);
+    const prometheus::ClientMetric::Histogram left = pair.lease_left_when_leading(0);
+    ASSERT_EQ(left.sample_count, 1U) << "it took the lead once";
+    EXPECT_GT(left.sample_sum, 0.0) << "an epoch recorded on an idle disk leaves most of the lease";
+    EXPECT_EQ(pair.lease_left_when_leading(1).sample_count, 0U) << "the instance that follows never acted on a lease";
+}
+
+TEST(ReplicatedWalTest, TheLeaseAgentIsGivenTheMetricsInTheConfiguration) {
+    Pair pair("replicated_wal_lease_metrics");
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    pair.disconnect();
+    pair.arbiter_up_ = false;
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::follower)) << "a leader cut off from both voters stops leading";
+    EXPECT_EQ(pair.leases_run_out_[0].Value(), 1.0) << "the lease that ran out is counted through the configuration";
 }
 
 TEST(ReplicatedWalTest, OpeningTheWalShowsTheApplicationEveryRecordItHoldsInOrder) {

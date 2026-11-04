@@ -11,7 +11,9 @@
 #include <utility>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
@@ -27,6 +29,19 @@
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 
 namespace pubsub_itc_fw {
+
+/**
+ * @brief Where a PairLeaseAgent records how its leases go (docs/bug_list.md, BUG-0228). A handle left as constructed
+ *        records nothing.
+ *
+ * Each is recorded on the thread that owns the agent, which is the one writer a SingleWriterHistogram requires.
+ */
+struct LeaseMetrics {
+    /// How long each write of the lease promise record in the background took, in milliseconds.
+    HistogramHandle promise_record_milliseconds{};
+    /// How many times this instance stopped leading because its lease ran out.
+    CounterHandle leases_run_out{};
+};
 
 /**
  * @brief Everything an instance of a pair does to decide whether it leads, apart from reaching the other voters.
@@ -179,6 +194,7 @@ class PairLeaseAgent {
             participant_.stop(now, wait_before_asking_again());
         }
         if (participant_.stop_if_lease_ran_out(now)) {
+            metrics_.leases_run_out.increment();
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                        "{}: lease ran out -- neither the peer nor {} renewed it in time, so this instance stops leading (epoch={})", owner_name_,
                        third_voter_name_, participant_.epoch());
@@ -389,6 +405,11 @@ class PairLeaseAgent {
     }
 
     /// When this instance's latest lease runs out, as it counts it: somewhat earlier than the voters count it.
+    /// Where to record how the leases go. Called once, before the first tick.
+    void record_metrics_to(const LeaseMetrics& metrics) {
+        metrics_ = metrics;
+    }
+
     [[nodiscard]] Clock::time_point lease_expires_at() const {
         return participant_.lease_expires_at();
     }
@@ -601,6 +622,7 @@ class PairLeaseAgent {
         }
         background_in_flight_ = false;
         const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - background_started_at_);
+        metrics_.promise_record_milliseconds.observe(static_cast<double>(took.count()));
         if (took >= slow_promise_record_write) {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                        "{}: writing the lease promise record in the background took {} ms -- until it finished, this instance refused any promise the "
@@ -711,6 +733,7 @@ class PairLeaseAgent {
     }
 
     std::string owner_name_;
+    LeaseMetrics metrics_{};
     pubsub_itc_fw::QuillLogger& logger_;
     LeaseLinksInterface& links_;
     int32_t pair_id_;

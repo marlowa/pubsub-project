@@ -101,6 +101,7 @@ int64_t ReplicatedWal::open(Clock::time_point now) {
     lease_agent_.emplace(configuration_.owner_name, logger_, lease_links_, configuration_.pair_id, configuration_.instance_id, peer_id,
                          configuration_.third_voter_id, configuration_.third_voter_name, configuration_.lease, now, epoch_,
                          PeerStatementsFlag{PeerStatementsFlag::SayWhetherPeerMayLead});
+    lease_agent_->record_metrics_to(configuration_.lease_metrics);
     if (test_events_ != nullptr) {
         lease_agent_->report_test_events_to(*test_events_);
     }
@@ -746,12 +747,20 @@ void ReplicatedWal::on_acknowledgement_watch(Clock::time_point now) {
 }
 
 void ReplicatedWal::act_on(PairLeaseAgent::Change change, Clock::time_point now) {
-    // Whatever happened, the highest epoch this instance knows may have risen, and it is kept on disk.
+    // Whatever happened, the highest epoch this instance knows may have risen, and it is kept on disk. How long that took
+    // is measured on the steady clock and added to @p now, which is the lease's clock, so that the lease left is right
+    // whichever clock the caller keeps time by.
+    const Clock::time_point recording_began = Clock::now();
     set_epoch(lease_agent_->highest_epoch());
+    const Clock::duration spent_recording = Clock::now() - recording_began;
     switch (change) {
-        case PairLeaseAgent::Change::BecameLeader:
+        case PairLeaseAgent::Change::BecameLeader: {
+            // How much of the lease is left now that the epoch is recorded, which may have waited for the disk.
+            const double left = std::chrono::duration<double, std::milli>(lease_agent_->lease_expires_at() - (now + spent_recording)).count();
+            configuration_.lease_left_when_leading_milliseconds.observe(left > 0.0 ? left : 0.0);
             change_role(ReplicaRole::leader, now);
             break;
+        }
         case PairLeaseAgent::Change::StoppedLeading:
         case PairLeaseAgent::Change::AgreedPeerLeads:
             change_role(ReplicaRole::follower, now);
@@ -1006,7 +1015,10 @@ void ReplicatedWal::set_epoch(int32_t new_epoch) {
     epoch_ = new_epoch;
     // Written before the new epoch is acted on, so that a crash in between cannot bring the instance back
     // believing it still owns a generation it has spent.
-    if (!epoch_store_.store(epoch_)) {
+    const Clock::time_point recording_began = Clock::now();
+    const bool recorded = epoch_store_.store(epoch_);
+    configuration_.epoch_record_milliseconds.observe(std::chrono::duration<double, std::milli>(Clock::now() - recording_began).count());
+    if (!recorded) {
         // Carry on in the new generation regardless. Stopping would take out an instance that is otherwise
         // healthy, and the epoch in memory is still right for as long as this process lives. What is lost
         // is the guarantee across a restart, and that is worth an alert.

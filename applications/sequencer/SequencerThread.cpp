@@ -135,6 +135,20 @@ void SequencerThread::on_initial_event() {
         "sequencer_thread", "sequencer_running_alone",
         "1 while this sequencer leads and commits orders without waiting for its follower: no follower is connected, the follower is being brought "
         "up to date, or it is too far behind. A loss of resilience. Expected to be 0, apart from a few seconds after a start or a change of leader");
+    // How changes of leader go when the disk is slow (BUG-0228). Each is recorded on this thread, its one writer.
+    const std::vector<double> lease_milliseconds_buckets{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000};
+    epoch_record_histogram_ = get_reactor().metrics().register_histogram(
+        "sequencer_thread", "sequencer_epoch_record_milliseconds",
+        "Milliseconds taken to record a new epoch on disk, on this thread, before the new generation is acted on", lease_milliseconds_buckets);
+    lease_left_when_leading_histogram_ = get_reactor().metrics().register_histogram(
+        "sequencer_thread", "sequencer_lease_left_when_leading_milliseconds",
+        "Milliseconds of the lease left when this instance acted on taking the lead, after recording its epoch; 0 if none was left",
+        lease_milliseconds_buckets);
+    promise_record_histogram_ =
+        get_reactor().metrics().register_histogram("sequencer_thread", "sequencer_promise_record_milliseconds",
+                                                   "Milliseconds each background write of the lease promise record took", lease_milliseconds_buckets);
+    leases_run_out_counter_ = get_reactor().metrics().register_counter("sequencer_thread", "sequencer_leases_run_out_total",
+                                                                       "Times this instance stopped leading because its lease ran out. Expected to be 0");
 
     // The WAL, kept on both instances of the pair, and the deciding of which instance leads. Opening it
     // reads every record, discards any after a gap, and recovers the epoch; with HA off, this instance
@@ -158,6 +172,10 @@ void SequencerThread::on_initial_event() {
     wal_configuration.lease = config_.lease;
     wal_configuration.wal_append_histogram = wal_append_histogram_;
     wal_configuration.running_alone_gauge = running_alone_gauge_;
+    wal_configuration.epoch_record_milliseconds = epoch_record_histogram_;
+    wal_configuration.lease_left_when_leading_milliseconds = lease_left_when_leading_histogram_;
+    wal_configuration.lease_metrics.promise_record_milliseconds = promise_record_histogram_;
+    wal_configuration.lease_metrics.leases_run_out = leases_run_out_counter_;
     // The WAL keeps a record of the commands it holds, with high availability on or off, so that the leader writes a
     // command into the WAL at most once, and refuses a member that uses an identifier again
     // (docs/availability/one_check_against_sequencing_twice.md).

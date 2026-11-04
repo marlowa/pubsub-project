@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <prometheus/counter.h>
 
 #include <lease_messages.hpp>
 #include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
@@ -30,6 +31,7 @@
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
 #include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/SingleWriterHistogram.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <test_events.hpp>
 
@@ -388,6 +390,10 @@ TEST_F(PairLeaseAgentTest, TheArbiterBeingDownDoesNotStopTheLeader) {
 }
 
 TEST_F(PairLeaseAgentTest, ALeaderCutOffFromBothVotersStopsLeading) {
+    prometheus::Counter leases_run_out;
+    pubsub_itc_fw::LeaseMetrics metrics{};
+    metrics.leases_run_out = pubsub_itc_fw::CounterHandle{&leases_run_out};
+    agents_[0]->record_metrics_to(metrics);
     for (int i = 0; i < 40; ++i) {
         step();
     }
@@ -400,6 +406,7 @@ TEST_F(PairLeaseAgentTest, ALeaderCutOffFromBothVotersStopsLeading) {
     EXPECT_FALSE(agents_[0]->acting(now_));
     EXPECT_EQ(changes_[0].back(), pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading);
     EXPECT_EQ(reported(0, pubsub_itc_fw::LeaseChange::RanOut), 1);
+    EXPECT_EQ(leases_run_out.Value(), 1.0) << "the lease that ran out is counted";
 }
 
 TEST_F(PairLeaseAgentTest, TheFollowerTakesOverWhenTheLeaderIsCutOff) {
@@ -723,6 +730,10 @@ TEST_F(PairLeaseAgentTest, WithTheArbiterDownARestartedFormerLeaderLeavesThePeer
 TEST_F(PairLeaseAgentTest, ASlowRecordWrittenInTheBackgroundDoesNotHoldUpTheLeaseThread) {
     kept_[0].delay = std::chrono::milliseconds{200};
     kept_[1].delay = std::chrono::milliseconds{200};
+    pubsub_itc_fw::SingleWriterHistogram promise_record_milliseconds(std::vector<double>{100, 1000});
+    pubsub_itc_fw::LeaseMetrics metrics{};
+    metrics.promise_record_milliseconds = pubsub_itc_fw::HistogramHandle{&promise_record_milliseconds};
+    agents_[0]->record_metrics_to(metrics);
     int records_before_measuring = 0;
     std::chrono::steady_clock::duration longest_step{};
     {
@@ -749,6 +760,9 @@ TEST_F(PairLeaseAgentTest, ASlowRecordWrittenInTheBackgroundDoesNotHoldUpTheLeas
     EXPECT_GE(kept_[0].records_written + kept_[1].records_written - records_before_measuring, 4)
         << "the records were not refreshed in the background while the leader renewed";
     EXPECT_EQ(std::count(changes_[0].begin(), changes_[0].end(), pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader), 1);
+    const prometheus::ClientMetric::Histogram recorded = promise_record_milliseconds.collect().histogram;
+    EXPECT_GE(recorded.sample_count, 2U) << "each background write of the leader's record is timed";
+    EXPECT_GE(recorded.sample_sum / static_cast<double>(recorded.sample_count), 200.0) << "each write is delayed 200 ms";
 }
 
 // The same slow record, written by a recorder that writes on the calling thread, does hold up the lease
