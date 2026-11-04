@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 228 |
-| Open | 83 (60 defects, 23 tasks) |
+| Bugs recorded | 229 |
+| Open | 84 (60 defects, 24 tasks) |
 | Closed | 145 |
-| Next id | BUG-0229 |
+| Next id | BUG-0230 |
 
 ## Open bugs by severity
 
-17 high, 50 medium, 16 low.
+17 high, 51 medium, 16 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -80,6 +80,7 @@
 | [BUG-0225](#bug_0225) | medium | defect | A matching engine that becomes a follower before it has asked to follow the WAL announces that it follows, but applies nothing |
 | [BUG-0226](#bug_0226) | medium | defect | A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made |
 | [BUG-0228](#bug_0228) | medium | defect | A slow sync when a sequencer records its new epoch can use up the lease it has just been granted, so it stops leading as it starts |
+| [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -192,6 +193,29 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0229: The functional specification has not been checked against the code, and specifies recovery far more than normal operation {#bug_0229}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-11-04 |
+| Recorded | 2026-11-04 |
+| How | Copilot's reading of `docs/book`, which found the high availability chapter describing the matching engine's follower as phase 8 replaced it (the correction is commit 78f46d3); and a count of its requirement blocks |
+| Impact | A reader may rely on a statement in the book that the code no longer makes true, as the chapter's description of the follower engine was until 4 November 2026; and the book says little of what a member sees in ordinary trading |
+
+**What is wanted.**
+
+1. **The book audited against the code**, as the other documents are (`doc-audit-progress.txt`), chapter by chapter.
+   A statement of fact that the code does not bear out is corrected; a requirement the code does not meet is reported,
+   not changed to match the code. Andrew has decided to leave this for now; it is recorded here so that it is not
+   forgotten.
+2. **The ordinary order lifecycle specified**, as `docs/book/functional_coverage_map.md` recommends: the contract a
+   member sees from a request to its reply, covering acceptance, refusal, cancellation, a ClOrdID used again, sessions
+   and reports, without inventing features the venue does not have. Of the 157 requirement blocks, 131 are in the high
+   availability chapter. After that: authentication and administration, trading state, and the framework's promises
+   to those who use it. This too waits, by Andrew's decision.
 
 ### BUG-0228: A slow sync when a sequencer records its new epoch can use up the lease it has just been granted, so it stops leading as it starts {#bug_0228}
 

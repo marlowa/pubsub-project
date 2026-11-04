@@ -128,7 +128,8 @@ top level of `docs/`: `roadmap.md`
 Doxygen pages at the top of `docs/`: `architecture_map.dox`, `architecture_map_howto.dox`,
 `dsl_design.dox`, `groups.dox`
 
-The LaTeX book under `docs/book/` (the functional specification): `book.tex`, `glossary.tex`,
+The LaTeX book under `docs/book/` (the functional specification; its audit is recorded as BUG-0229 and waits, by
+Andrew's decision of 4 November 2026): `book.tex`, `glossary.tex`,
 `references.bib`, `functional_coverage_map.md`, `introduction.tex` and
 `build_release_deployment.tex` (written, not audited), and the chapters `applications`
 (MEP section written, not audited),
