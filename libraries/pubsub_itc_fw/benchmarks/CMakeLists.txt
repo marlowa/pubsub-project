@@ -88,3 +88,28 @@ message(STATUS "  Added benchmark: command_check_cost")
 install(TARGETS command_check_cost
     RUNTIME DESTINATION bin_benchmarks
 )
+
+# -----------------------------------------------------------------------------
+# epoch_store_cost: how long recording a new epoch takes, with the disk idle and while another thread writes large
+# files beside it, and two other ways of recording it, reporting the tail rather than the mean (BUG-0228).
+add_executable(epoch_store_cost
+    src/EpochStoreCost.cpp
+)
+
+target_link_libraries(epoch_store_cost PRIVATE
+    pubsub_itc_fw
+    benchmark::benchmark
+    pthread
+)
+
+# No -O optimisation level here, for the reason given for prometheus_observe_overhead above.
+target_compile_options(epoch_store_cost PRIVATE
+    -g
+    -fno-omit-frame-pointer
+)
+
+message(STATUS "  Added benchmark: epoch_store_cost")
+
+install(TARGETS epoch_store_cost
+    RUNTIME DESTINATION bin_benchmarks
+)

@@ -271,6 +271,27 @@ own, and for far longer than the about 5 seconds start-up is meant to take.
 4. **The start-up stall found.** Which call holds the sequencer's thread in the journal at start-up, by sampling the
    thread's kernel stack (`/proc/<pid>/task/<tid>/stack`, which needs root) or with `perf trace` on the system calls.
 
+**Measured with the benchmark.** `epoch_store_cost` (`libraries/pubsub_itc_fw/benchmarks/src/EpochStoreCost.cpp`),
+run on 4 November 2026, 200 records of the epoch for each line, with the load a thread writing 512 MiB files one after
+another, measured once it had written 2 GiB. Times in milliseconds, median / 99th percentile / longest:
+
+| How it is recorded | Load | On `/mnt/sda2` (BX500) | On `/nvme` (Crucial P310) |
+|--------------------|------|------------------------|---------------------------|
+| `EpochStore::store` | none | 2.2 / 4.8 / 48 | 3.9 / 4.5 / 68 |
+| `EpochStore::store` | on the same disk | 1.9 / 132 / 157 | 3.7 / 27 / 40 |
+| `EpochStore::store` | on the other disk | 1.9 / 2.2 / 4.9 | 3.9 / 5.2 / 68 |
+| `fdatasync` in place | none | 0.44 / 1.3 / 7.3 | 0.90 / 0.92 / 4.4 |
+| `fdatasync` in place | on the same disk | 0.38 / 53 / 58 | 0.90 / 14 / 18 |
+| `O_DSYNC` in place | none | 0.43 / 0.63 / 1.7 | 0.89 / 0.97 / 4.2 |
+| `O_DSYNC` in place | on the same disk | 0.43 / 58 / 59 | 0.95 / 18 / 27 |
+
+Writing on the same disk makes the tail 27 times longer on the BX500 and 6 times on the P310; writing on the other
+disk makes no difference. Writing in place, without the rename and the sync of the directory, halves the tail or
+better, but does not remove it. The BX500 stays slow after the writing stops: the last measurement taken on it, with the
+load moved to `/nvme`, had a median of 51 ms, while `iostat` showed it 99 per cent busy with nothing of the venue's
+writing to it. This load produces a tail of 157 ms at most, not the 3.2 seconds of the failed scenario, so it shows
+the effect but not its whole size.
+
 **Principles.** F4: the exception for recording a new epoch says nothing of the lease, which keeps running while the
 thread waits.
 
