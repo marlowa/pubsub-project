@@ -217,6 +217,23 @@ went looking.
    availability chapter. After that: authentication and administration, trading state, and the framework's promises
    to those who use it. This too waits, by Andrew's decision.
 
+   **A proposed outline for the chapter**, from Copilot's reading, kept here for when the work starts:
+
+   1. Purpose and shared behaviour: the order behaviour members get through both gateways.
+   2. Starting and keeping an order-entry session: establishing it and tracking message sequence numbers; resending
+      messages and filling sequence gaps; what a gap fill says, and what it does not say about the state of orders.
+   3. Submitting a new order: order identifiers and the order's required details; validation, and the answer.
+   4. Accepting or rejecting an order: the report for an accepted order; the report, and its reason, for a rejected one.
+   5. Reporting an order's state: what each report means, and how a report names the order and the request.
+   6. Cancelling an order: how the cancel names the request and the original order; the confirmation of the cancel,
+      or its rejection.
+   7. Executions and fills: an order's acknowledgement told apart from a trade, and a plain statement that the matching
+      engine does not match orders, so reports no fill. Every report it sends has a cumulative quantity of 0
+      (`MatchingEngineStateMachine.cpp`), and [matching_engine.md](venue/matching_engine.md) says no order is ever
+      filled.
+   8. Checking the behaviour through both gateways: the same order, rejection, cancellation and reporting outcomes
+      through FIX and through the binary gateway.
+
 ### BUG-0228: A slow sync when a sequencer records its new epoch can use up the lease it has just been granted, so it stops leading as it starts {#bug_0228}
 
 | | |
