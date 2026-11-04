@@ -2,7 +2,8 @@
 
 > **Status.** The plan was agreed on 9 October 2026. Each phase ends with a review at which Andrew decides
 > whether the next one starts. Phases 1 to 9 are finished; each is listed, with its date and result, under
-> "Already done" at the end. Phase 10 is under way: steps 1 to 15 are done, and step 16 is next.
+> "Already done" at the end. Phase 10 is under way: on 4 November 2026, steps 1 to 15 are done, and step 16 is
+> next.
 
 ## In one page
 
@@ -25,7 +26,8 @@ again.
 4. The way of working has been to fix defects one at a time, each where it showed up, without
    checking the fix against the design as a whole. That is what produced the first three.
 
-**The plan.** Stop adding features and fixing bugs. Write the design principles down and agree them.
+**The plan.** Stop adding features and fixing bugs, except those the agreed phases include. Write the design
+principles down and agree them.
 Make the build enforce the principles it can. Then repair the design in a fixed order, one phase at a time,
 by moving the high availability machinery out of the sequencer and the matching engine and into the
 library, each phase reviewed before the next begins. Only after that, go back to the bug list, judging
@@ -600,7 +602,7 @@ not the aim. Gaps found along the way are recorded, not fixed within the phase. 
 ## What waits until the plan is finished
 
 - **OAR**, the external publishing of the venue's events, whose design is otherwise ready.
-- **New features of any kind.**
+- **Features not included in the agreed phases.**
 - **The bug list**, except as phase 12 describes.
 - **The documentation audit of documents the plan does not touch**, which can carry on alongside,
   since it changes no code.
