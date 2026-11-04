@@ -1318,7 +1318,10 @@ _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.hpp', 'handed_over_engines_', _DEFINITION),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_undelivered_reports_request', _RESENDS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_session_replay_request', _RESENDS),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::find_logged_command', _DUPLICATE_CHECK),
+    ('applications/sequencer/CommandChecks.cpp', 'CommandChecks::find', _DUPLICATE_CHECK),
+    ('applications/sequencer/CommandChecks.hpp', 'find_command', _DEFINITION),
+    ('applications/sequencer/SequencerThread.cpp', 'CommandLinks::find_command', _DUPLICATE_CHECK),
+    ('applications/sequencer/SequencerThread.hpp', 'find_command', _DEFINITION),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::first_report_answering', _ANSWER_FROM_WAL),
     ('applications/sequencer/SequencerThread.hpp', 'handed_over_publishers_', _DEFINITION),
 ]

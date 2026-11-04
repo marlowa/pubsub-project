@@ -827,6 +827,21 @@ engine first (decision 2, option A).
     and read only during one. Both full suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary
     engine first.
 13. `CommandChecks`.
+
+    **As built.** `CommandChecks` (`applications/sequencer/CommandChecks.hpp`) holds the counts of the checks, whether a
+    command has been sent again or refused since the last summary and when the last was, and the buffer the identity of
+    a command is written into. It makes the decisions of section 6.13: it writes the command's identity, has the
+    replicated WAL look it up, and says whether the thread is to give the command a number. A command the WAL already
+    holds is answered from the WAL if it was sent again, and refused if it was not; the part logs and counts each, and
+    logs the summary a minute after the last command sent again or refused, or when this instance stops leading. The
+    thread implements `CommandChecksLinksInterface`, which looks a command up in the replicated WAL, answers a command
+    sent again with the first report of it the WAL holds, sends `CommandRefused` and raises `IdentifierRefused`, and
+    reads the replicated WAL's own counts. Reading the WAL forward for the report answering a command stays in the
+    thread, with the other reads of the WAL on that thread, so that the list of them in `scripts/check_standards.py`
+    stays short: the list now names `CommandChecks::find` and the thread's `CommandLinks::find_command` in place of the
+    function they replace. The part's Quill log lines begin with its name. `CommandChecksTest` has twelve tests, and
+    thirteen faults put in on purpose were each caught. Both full suites pass: 99 of 99 with the primary engine first, and
+    38 of 38 with the secondary engine first.
 14. `HaltAndVoidRequests`.
 15. `ServingWalFollowers`, and what is left of `SequencerThread` reduced to its connections, timers and the handing on
     of events.
