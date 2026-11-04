@@ -101,9 +101,8 @@ This library is intended for low latency environments rather than ultra-low ones
 
 \textbf{This system is active-passive} for every component that must be
 singular: the sequencer, the matching engine and the arbiter. Each of those runs
-as a pair, one instance the leader and the other the follower. The follower does
-none of the venue's work while it holds that role, and nothing it holds reaches a
-member until it becomes the leader.
+as a pair, one instance the leader and the other the follower. Nothing the
+follower produces reaches a member until it becomes the leader.
 
 \begin{itemize}[nosep]
   \item \textbf{The leader does the work.} The sequencer assigns each order a
@@ -112,19 +111,23 @@ member until it becomes the leader.
         execution report for it.
   \item \textbf{The leader replicates continuously.} The sequencer streams every
         log record to its follower. The follower writes each record to a log of
-        its own and acknowledges it. The matching engine's follower keeps a
-        replica of the orders it holds open, taken from the same stream.
-  \item \textbf{The follower acts on nothing.} It forwards no order, issues no
-        execution report and answers no gateway. While it holds that role it
-        processes no traffic at all.
-  \item \textbf{On failure the follower is promoted.} The arbiter tells it that
-        it now leads. It brings itself up to date from whatever it has replicated
-        but not applied, and then begins acting.
+        its own and acknowledges it. The matching engine's follower is sent every
+        record of the leading sequencer's log too, and applies each command in
+        it, as the leader does, so that it holds the same book.
+  \item \textbf{The follower answers no one.} The follower sequencer forwards no
+        order and answers no gateway. The follower matching engine produces the
+        same execution reports as the leader, and checks them against the
+        leader's, but sends none to a member.
+  \item \textbf{On failure the follower is promoted.} It is granted the lead by
+        a majority of the instances that vote on which of the pair leads. It
+        brings itself up to date from whatever it holds but has not applied, and
+        then begins acting.
 \end{itemize}
 
 That is the pattern \cref{subsec:ha_architectural_patterns} describes as
-active-passive. At no moment do two instances process the same traffic, and no
-transaction is ever handled by more than one instance at a time.
+active-passive in what reaches a member: at no moment do two instances answer the
+same command. The two matching engines both apply every command, but only the
+one that leads sends its reports.
 
 An arbitration service and a witness decide which instance may act. Together they
 stop both instances believing they lead at the same time.
