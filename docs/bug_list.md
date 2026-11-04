@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 227 |
-| Open | 82 (59 defects, 23 tasks) |
+| Bugs recorded | 228 |
+| Open | 83 (60 defects, 23 tasks) |
 | Closed | 145 |
-| Next id | BUG-0228 |
+| Next id | BUG-0229 |
 
 ## Open bugs by severity
 
-17 high, 49 medium, 16 low.
+17 high, 50 medium, 16 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -79,6 +79,7 @@
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0225](#bug_0225) | medium | defect | A matching engine that becomes a follower before it has asked to follow the WAL announces that it follows, but applies nothing |
 | [BUG-0226](#bug_0226) | medium | defect | A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made |
+| [BUG-0228](#bug_0228) | medium | defect | A slow sync when a sequencer records its new epoch can use up the lease it has just been granted, so it stops leading as it starts |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -191,6 +192,63 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0228: A slow sync when a sequencer records its new epoch can use up the lease it has just been granted, so it stops leading as it starts {#bug_0228}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-04 |
+| Recorded | 2026-11-04 |
+| How | `ha_test.py` scenario 80 failed once in the full suite for phase 10 step 15; logs kept in `tmp/ha_test_failures/20261104-094717-scenario-80-catch_up_survives_second_connection`. Then scenario 80 run alone six times with `iostat` and `scripts/thread_offcpu.py` attached to the primary sequencer's `SequencerThread`; output in `tmp/perf_s15/` |
+| Impact | Under heavy load on the disk, a sequencer granted a lease can stop leading before it has led, again and again, and a matching engine being caught up by it has its catch-up stopped each time. In scenario 80 the engine was not caught up within 10 seconds. No order is lost: an instance that stops leading writes nothing more, and the next leader serves the engine |
+
+**What happens.** Principle F4 allows two waits for the disk on the sequencer's thread, while it changes role, and
+recording a new epoch is one of them: `ReplicatedWal` calls `EpochStore::store`, which writes the epoch to a temporary
+file, syncs it with `fsync`, and renames it into place, before the new generation is acted on. The exception rests on
+the instance handling no orders meanwhile. But the lease the instance has just been granted keeps running while it
+waits, and nothing bounds the wait against it.
+
+In the failed run, the primary sequencer was granted a lease at 09:47:02.656. Its thread was then blocked for 3.2
+seconds; the reactor said "callback not finished yet" six times, and the lease promise record, written in the
+background, took 3,502 ms. The thread acted on the new epoch at 09:47:05.458, said the lease had run out at
+09:47:06.158, and stopped leading. The same happened at the next two grants, until the scenario's limit passed.
+
+**Why the sync was slow.** The disk holding `/mnt/sda1` and `/mnt/sda2`, a Crucial BX500 SATA SSD with no memory
+cache of its own, writes about 120 MB a second until its fast cache is full and then about 20 MB a second at full
+load. Scenario 80 damages the matching engine's open-order region on purpose, and the restarted engine creates a new
+one of 496 MB with every block allocated ([BUG-0071](#bug_0071)). In two of the six runs alone that took 24.9 and 34.5
+seconds, against about 2 in the others; `iostat` showed the disk 96 to 106 per cent busy, each write taking 270 to
+490 ms and each flush up to 694 ms. `epoch.state` is on `/mnt/sda2` and the region on `/mnt/sda1`, but both are on the
+one disk, and share its queue.
+
+In the run where the sampler was attached during such a collapse, `SequencerThread` was in uninterruptible sleep, in
+the kernel, for 11.15 seconds, as the sequencer started on a WAL just cleared. The kernel functions it waited in were
+`jbd2_log_wait_commit` (102 samples), waiting for the ext4 journal to commit, and `do_get_write_access` (73), waiting
+for the journal's leave to change metadata. That stall was at start-up, not at a change of role, and the sampler does
+not say which call in the sequencer was waiting; it shows that the thread waits in the journal, not on a lock of its
+own, and for far longer than the about 5 seconds start-up is meant to take.
+
+**What is wanted.**
+
+1. **The wait bounded by the lease.** Either the epoch recorded before the lease is asked for, so that the sync does
+   not run against a lease already granted, or the instance that has just been granted a lease declines to act on it,
+   and asks again, when it cannot record the epoch within some part of it. Which is safe has to be worked out against
+   the TLA+ model of leases before any change.
+2. **Four metrics**, each recorded by one thread, as `SingleWriterHistogram` requires: how long recording the epoch
+   takes, a histogram, on the sequencer's thread; how long the lease promise record's background write takes, a
+   histogram, on the sequencer's thread, where `PairLeaseAgent` already works out the time; how much of the lease was
+   left when the instance acted on it, a histogram, on the sequencer's thread; and how many times leadership was lost
+   because the lease ran out, a counter, on the sequencer's thread.
+3. **A Google Benchmark of `EpochStore::store`**, on the filesystem that holds the WALs, given as an argument, that
+   reports the median, the 99th and 99.9th percentiles and the worst, not the mean: with the filesystem idle; while
+   another thread appends to a mapped WAL on it; and with that WAL on another filesystem. Then the same for `fdatasync`
+   in place of `fsync`, and for `pwrite` in place to a file opened with `O_DSYNC`, without the rename.
+4. **The start-up stall found.** Which call holds the sequencer's thread in the journal at start-up, by sampling the
+   thread's kernel stack (`/proc/<pid>/task/<tid>/stack`, which needs root) or with `perf trace` on the system calls.
+
+**Principles.** F4: the exception for recording a new epoch says nothing of the lease, which keeps running while the
+thread waits.
 
 ### BUG-0227: An operator whose request to lift the halt cannot be written is told that reports are outstanding {#bug_0227}
 
