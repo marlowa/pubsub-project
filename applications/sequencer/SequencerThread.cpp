@@ -1142,63 +1142,32 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     reports_.report_seen(position);
 }
 
-std::chrono::steady_clock::time_point SequencerThread::kept_reports_needed_from() const {
-    // Before this instance has granted any request, no leader has been seen forwarding anything, so
-    // every kept report may be needed.
-    if (last_granted_to_leader_ == std::chrono::steady_clock::time_point{}) {
-        return std::chrono::steady_clock::time_point::min();
-    }
-    return last_granted_to_leader_ - config_.lease.period - config_.lease.drift_allowance;
-}
-
 void SequencerThread::keep_report_from_engine(const pubsub_itc_fw::EventMessage& message) {
-    const std::chrono::steady_clock::time_point needed_from = kept_reports_needed_from();
-    kept_reports_.discard_received_before(needed_from);
-    // Where the report stands in the engine's reports, so that it can be discarded once the leader
-    // has said it forwarded it.
+    // Where the report stands in the engine's reports, so that it can be discarded once the leader has said it forwarded
+    // it.
     std::optional<EngineReportPosition> position;
-    {
-        auto& arena_buf = decode_arena_buffer();
-        pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-        size_t arena_bytes_needed = 0;
-        size_t bytes_consumed = 0;
-        pubsub_itc_fw_app::WalRecordView view{};
-        if (pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed) &&
-            view.has_report_engine_epoch && view.has_report_number) {
-            position = EngineReportPosition{view.report_engine_epoch, view.report_number};
-        }
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::WalRecordView view{};
+    if (pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed) &&
+        view.has_report_engine_epoch && view.has_report_number) {
+        position = EngineReportPosition{view.report_engine_epoch, view.report_number};
     }
-    kept_reports_.keep(message.seq_no(), message.payload(), static_cast<size_t>(message.payload_size()), std::chrono::steady_clock::now(), needed_from,
-                       position);
-
-    if (kept_reports_.lost() != kept_reports_lost_reported_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: the store of reports kept in case this instance takes the lead is full, and {} report(s) still needed have "
-                   "been overwritten. If this instance takes the lead now, those reports reach their members only if the leader forwarded them "
-                   "before it stopped",
-                   kept_reports_.lost() - kept_reports_lost_reported_);
-        kept_reports_lost_reported_ = kept_reports_.lost();
-        kept_reports_lost_gauge_.set(static_cast<double>(kept_reports_.lost()));
-    }
+    kept_reports_.keep(message.seq_no(), message.payload(), static_cast<size_t>(message.payload_size()), position, std::chrono::steady_clock::now());
 }
 
-void SequencerThread::forward_kept_reports() {
-    kept_reports_.discard_received_before(kept_reports_needed_from());
-    // on_role_changed, just before this on taking the lead, discarded what the old leader said it
-    // forwarded; this says how many.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: taking the lead -- {} kept report(s) discarded because the old leader said it had forwarded them",
-               kept_reports_discarded_as_forwarded_);
-    const size_t count = kept_reports_.count();
-    const size_t bytes = kept_reports_.bytes_used();
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: taking the lead -- forwarding {} kept report(s) ({} bytes), each marked as a possible repeat", count, bytes);
-    report(pubsub_itc_fw_app::KeptReportsForwarded{static_cast<int64_t>(kept_reports_discarded_as_forwarded_), static_cast<int64_t>(count),
-                                                   static_cast<int64_t>(bytes)});
-    kept_reports_discarded_as_forwarded_ = 0;
-    kept_reports_.take_all([this](int64_t er_seq_no, const uint8_t* report, size_t size) {
-        forward_report_from_engine(report, size, er_seq_no, ReportSource::kept_while_not_leading);
-    });
+void SequencerThread::KeptReportLinks::forward_kept_report(int64_t er_seq_no, const uint8_t* bytes, size_t size) {
+    owner_.forward_report_from_engine(bytes, size, er_seq_no, ReportSource::kept_while_not_leading);
+}
+
+void SequencerThread::KeptReportLinks::kept_reports_lost(int64_t total) {
+    owner_.kept_reports_lost_gauge_.set(static_cast<double>(total));
+}
+
+void SequencerThread::KeptReportLinks::kept_reports_forwarded(int64_t discarded_as_forwarded, int64_t count, int64_t bytes) {
+    owner_.report(pubsub_itc_fw_app::KeptReportsForwarded{discarded_as_forwarded, count, bytes});
 }
 
 void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
@@ -1259,9 +1228,8 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         if (awaiting_engine_position_ && now - engine_position_asked_at_ >= engine_position_ask_interval) {
             ask_engine_for_position();
         }
-        if (role_ != pubsub_itc_fw_app::Role::leader && now - kept_reports_discarded_at_ >= kept_reports_discard_interval) {
-            kept_reports_discarded_at_ = now;
-            discard_kept_reports_the_leader_forwarded();
+        if (role_ != pubsub_itc_fw_app::Role::leader) {
+            kept_reports_.tick(now);
         }
         replicated_wal_->take_record_of_commands_if_built();
         if (commands_checked_since_summary_ && now - last_command_checked_at_ >= command_check_summary_idle_limit) {
@@ -1487,12 +1455,12 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
         // Every record this instance wrote while it followed was noted as it was written, so the record
         // of identifiers already holds every command in the log. What the old leader said it forwarded
         // is acted on now, so that the kept reports forwarded below are only those it may not have.
-        discard_kept_reports_the_leader_forwarded();
+        kept_reports_.discard_those_the_leader_forwarded();
 
         // The previous leader may have died holding reports it had not forwarded. This instance
         // kept every report the engine sent it, so it forwards them all now
         // (docs/availability/change_of_sequencer_leader.md, section 4.4).
-        forward_kept_reports();
+        kept_reports_.forward_all();
 
         // After the kept reports, and on the same connections, so that a gateway has the answers to
         // the commands it holds before it is told to send them again, and sends again only those still
@@ -1647,7 +1615,10 @@ void SequencerThread::SequencerReplicatedWalEvents::written_as_follower(int64_t 
         PUBSUB_LOG_STR(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: a replicated record did not decode as a WalRecord");
         return;
     }
-    owner_.note_forwarded_sample(entry.wall_time_ns, view);
+    owner_.kept_reports_.leader_record_written(entry.wall_time_ns, view.has_reports_forwarded_through_epoch && view.has_reports_forwarded_through_number
+                                                                       ? std::optional<EngineReportPosition>{EngineReportPosition{
+                                                                             view.reports_forwarded_through_epoch, view.reports_forwarded_through_number}}
+                                                                       : std::nullopt);
     // A follower tells the gateways nothing, so a change in whether trading is halted is only kept, for when this
     // instance leads.
     static_cast<void>(owner_.venue_state_.note_record(seq_no, record_of(view), VenueStateFromTheWal::How::written_as_follower));
@@ -1722,7 +1693,7 @@ void SequencerThread::send_voids_committed_through(int64_t seq_no) {
 
 void SequencerThread::SequencerReplicatedWalEvents::granted_lease_to_peer(std::chrono::steady_clock::time_point at) {
     // The peer now leads, and forwards the engine's reports, until at least a lease period from now.
-    owner_.last_granted_to_leader_ = at;
+    owner_.kept_reports_.granted_lease_to_leader(at);
 }
 
 void SequencerThread::send_status_query(const pubsub_itc_fw::ConnectionID& conn_id) {
@@ -2678,41 +2649,6 @@ void SequencerThread::stamp_reports_forwarded_through(pubsub_itc_fw_app::WalReco
     envelope.reports_forwarded_through_epoch = through.has_value() ? through->epoch : 0;
     envelope.has_reports_forwarded_through_number = through.has_value();
     envelope.reports_forwarded_through_number = through.has_value() ? through->number : 0;
-}
-
-void SequencerThread::note_forwarded_sample(int64_t written_ns, const pubsub_itc_fw_app::WalRecordView& view) {
-    latest_record_written_ns_ = std::max(latest_record_written_ns_, written_ns);
-    if (!view.has_reports_forwarded_through_epoch || !view.has_reports_forwarded_through_number) {
-        return;
-    }
-    const EngineReportPosition through{view.reports_forwarded_through_epoch, view.reports_forwarded_through_number};
-    // Only a change is worth keeping: the samples say when the leader's position moved.
-    if (forwarded_samples_count_ > 0) {
-        const ForwardedSample& newest = forwarded_samples_[(forwarded_samples_head_ + forwarded_samples_count_ - 1) % forwarded_sample_capacity];
-        if (!through.is_after(newest.through)) {
-            return;
-        }
-    }
-    if (forwarded_samples_count_ == forwarded_sample_capacity) {
-        forwarded_samples_head_ = (forwarded_samples_head_ + 1) % forwarded_sample_capacity;
-        --forwarded_samples_count_;
-    }
-    forwarded_samples_[(forwarded_samples_head_ + forwarded_samples_count_) % forwarded_sample_capacity] = ForwardedSample{written_ns, through};
-    ++forwarded_samples_count_;
-}
-
-void SequencerThread::discard_kept_reports_the_leader_forwarded() {
-    const int64_t cutoff_ns = latest_record_written_ns_ - std::chrono::duration_cast<std::chrono::nanoseconds>(reports_forwarded_delay).count();
-    // The newest sample written at or before the cutoff is the one that applies; older ones are no
-    // longer needed.
-    while (forwarded_samples_count_ >= 2 && forwarded_samples_[(forwarded_samples_head_ + 1) % forwarded_sample_capacity].written_ns <= cutoff_ns) {
-        forwarded_samples_head_ = (forwarded_samples_head_ + 1) % forwarded_sample_capacity;
-        --forwarded_samples_count_;
-    }
-    if (forwarded_samples_count_ == 0 || forwarded_samples_[forwarded_samples_head_].written_ns > cutoff_ns) {
-        return;
-    }
-    kept_reports_discarded_as_forwarded_ += static_cast<int64_t>(kept_reports_.discard_through(forwarded_samples_[forwarded_samples_head_].through));
 }
 
 void SequencerThread::ask_engine_for_position() {

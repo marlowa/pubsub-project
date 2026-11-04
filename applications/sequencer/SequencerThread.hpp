@@ -41,7 +41,7 @@
 #include "EngineReportPosition.hpp"
 #include "EngineRoutedStamp.hpp"
 #include "GatewayIds.hpp"
-#include "KeptReportStore.hpp"
+#include "KeptReports.hpp"
 #include "MemberSessions.hpp"
 #include "RecoveryLimitRule.hpp"
 #include "ReportForwarding.hpp"
@@ -540,39 +540,26 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void release_held_orders_to_the_leading_engine(int64_t acknowledged_seq_no);
     void discard_held_orders();
 
-    // The reports from the matching engine kept while this instance is not leading, so that it can
-    // forward them if it takes the lead (docs/availability/change_of_sequencer_leader.md, section 4.4).
-    //
-    // How much the store must hold: a follower grants its leader's request once every renewal
-    // interval, and keeps the reports that arrived up to a lease period plus the drift allowance
-    // before the last grant. When the leader dies, the store therefore holds up to a renewal
-    // interval plus a lease period plus the drift allowance of reports, 4.25 seconds with the usual
-    // timings. At the highest rate measured on this venue, about 34,000 orders a second, and taking
-    // one and a half reports an order, that is about 212,000 reports. The store holds up to
-    // 262,144, and 128 MiB of their bytes, which allows an average of 512 bytes a report. Both are
-    // allocated once, when the sequencer starts.
-    static constexpr size_t kept_report_capacity_bytes = 128U * 1024U * 1024U;
-    static constexpr size_t kept_report_capacity_reports = 262144;
-    KeptReportStore kept_reports_{kept_report_capacity_bytes, kept_report_capacity_reports};
+    // How KeptReports forwards a kept report and tells the test.
+    class KeptReportLinks : public KeptReportsLinksInterface {
+      public:
+        explicit KeptReportLinks(SequencerThread& owner) : owner_(owner) {}
+        void forward_kept_report(int64_t er_seq_no, const uint8_t* bytes, size_t size) override;
+        void kept_reports_lost(int64_t total) override;
+        void kept_reports_forwarded(int64_t discarded_as_forwarded, int64_t count, int64_t bytes) override;
 
-    // When this instance last granted its peer's request to lead. The peer leads, and forwards the
-    // reports it receives, for a lease period after each grant, so a kept report that arrived more
-    // than a lease period plus the drift allowance before this time was forwarded and is no longer
-    // needed. Reports age only against this time, not against the clock: once the leader stops
-    // asking, because it has died, nothing more ages however long the change of leader takes.
-    std::chrono::steady_clock::time_point last_granted_to_leader_{};
-
-    // The number of kept reports lost when this instance last said so, so that a loss is reported
-    // when it happens rather than for every report lost after it.
-    int64_t kept_reports_lost_reported_{0};
+      private:
+        SequencerThread& owner_;
+    };
+    KeptReportLinks kept_report_links_{*this};
+    // The reports from the matching engine kept while this instance does not lead, so that it can forward them if it
+    // takes the lead, and the discarding of those no longer needed (section 6.16 of
+    // docs/venue/dividing_the_sequencer_and_matching_engine.md).
+    KeptReports kept_reports_{config_.lease.period, config_.lease.drift_allowance, kept_report_links_, get_logger()};
+    // The count of kept reports lost because the store was full, which KeptReports keeps.
     pubsub_itc_fw::GaugeHandle kept_reports_lost_gauge_;
-
-    // How long before the last grant to the leader a kept report must have arrived to be no longer needed.
-    [[nodiscard]] std::chrono::steady_clock::time_point kept_reports_needed_from() const;
     // Keeps a copy of a report from the matching engine, received while this instance is not leading.
     void keep_report_from_engine(const pubsub_itc_fw::EventMessage& message);
-    // On taking the lead: forwards every kept report to its member's gateway, marked as a possible repeat, and empties the store.
-    void forward_kept_reports();
 
     // From taking the lead until the leading matching engine says the highest order it has acted
     // on. Meanwhile new orders are written and replicated but wait, held or in the log, so that the
@@ -600,10 +587,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_engine_position(const pubsub_itc_fw::EventMessage& message);
     void stop_awaiting_engine_position(const char* reason);
     void release_orders_that_waited_for_the_engine();
-
-    // As a follower: when the kept reports the leader has said it forwarded were last discarded.
-    std::chrono::steady_clock::time_point kept_reports_discarded_at_{};
-    static constexpr std::chrono::milliseconds kept_reports_discard_interval{1000};
 
     // The facts read from the WAL, which every instance keeps whether it leads or follows: whether trading is halted, the
     // voided commands, the trading date, and the highest command a report answers (section 6.10 of
@@ -737,27 +720,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // Writes on @p envelope how far this leader has forwarded every report from the engine, for a follower to read
     // (docs/bug_list.md, BUG-0116).
     void stamp_reports_forwarded_through(pubsub_itc_fw_app::WalRecord& envelope) const;
-
-    // What a follower reads back from its leader's records. The leader's "forwarded" means handed to
-    // its connection to the gateway, not received there, and a report still in the leader's send
-    // buffers when its machine or network fails is lost. So a follower discards only the kept reports
-    // covered by the position on records written at least reports_forwarded_delay before the latest
-    // record it holds, both times by the leader's clock.
-    struct ForwardedSample {
-        int64_t written_ns{0};
-        EngineReportPosition through{};
-    };
-    static constexpr std::chrono::milliseconds reports_forwarded_delay{100};
-    static constexpr size_t forwarded_sample_capacity = 4096;
-    std::vector<ForwardedSample> forwarded_samples_ = std::vector<ForwardedSample>(forwarded_sample_capacity);
-    size_t forwarded_samples_head_{0};
-    size_t forwarded_samples_count_{0};
-    int64_t latest_record_written_ns_{0};
-    int64_t kept_reports_discarded_as_forwarded_{0};
-    // Notes the position a record read from the log carries, and when the leader wrote it.
-    void note_forwarded_sample(int64_t written_ns, const pubsub_itc_fw_app::WalRecordView& view);
-    // Discards the kept reports the leader had forwarded at least reports_forwarded_delay before the latest record.
-    void discard_kept_reports_the_leader_forwarded();
 
     // Where a report about to be forwarded came from.
     enum class ReportSource {

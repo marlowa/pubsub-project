@@ -773,6 +773,17 @@ engine first (decision 2, option A).
    `ReportForwardingTest` has fourteen tests, and nine faults put in on purpose were each caught. Both full suites pass:
    99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 10. `KeptReportStore`, extended.
+
+    **As built.** A new part, `KeptReports` (`applications/sequencer/KeptReports.hpp`), owns a `KeptReportStore`,
+    rather than the store being extended: the store stays the plain container it is, with its tests, and the part holds
+    the timing that decides when a kept report is no longer needed. That is the last grant to the leader, the samples
+    of the position the leader's records say it forwarded reports through, the latest record's time, and the counts.
+    It makes the decisions of section 6.16, and on taking the lead it forwards what is still needed through
+    `KeptReportsLinksInterface`, which hands each report back to `forward_report_from_engine` as one kept while not
+    leading, sets the gauge of reports lost, and raises `KeptReportsForwarded`. The thread decodes each report's
+    position before handing it over. The part's Quill log lines begin with its name. `KeptReportsTest` has seven tests,
+    and six faults put in on purpose were each caught. Both full suites pass: 99 of 99 with the primary engine first, and
+    38 of 38 with the secondary engine first.
 11. `OrderRelease`.
 12. `EnginePresence`.
 13. `CommandChecks`.

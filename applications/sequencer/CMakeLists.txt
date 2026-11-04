@@ -1,5 +1,6 @@
 add_executable(sequencer
         SequencerConfigurationLoader.cpp
+        KeptReports.cpp
         MemberSessions.cpp
         ReportForwarding.cpp
         SequencerThread.cpp
@@ -24,6 +25,7 @@ add_dependencies(sequencer fix_orders_generated leader_follower_generated sequen
 target_sources(sequencer PRIVATE
         EngineAbsenceRule.hpp
         EngineRoutedStamp.hpp
+        KeptReports.hpp
         MemberSessions.hpp
         ReportForwarding.hpp
         SequencerConfiguration.hpp
@@ -102,6 +104,8 @@ add_executable(sequencer_tests
         tests/VenueStateFromTheWalTest.cpp
         tests/MemberSessionsTest.cpp
         tests/ReportForwardingTest.cpp
+        tests/KeptReportsTest.cpp
+        KeptReports.cpp
         MemberSessions.cpp
         ReportForwarding.cpp
         SequencerConfigurationLoader.cpp
