@@ -294,10 +294,14 @@ def watch(threads: list[Thread], hz: int, seconds: float, min_stall_ms: float,
             if previous is None:
                 continue
 
-            wall_ms = (current[0] - previous[0]) * 1000
             run_ms = (current[2] - previous[2]) / 1e6
             wait_ms = (current[3] - previous[3]) / 1e6
-            off = run_ms < wall_ms * 0.2   # barely ran during this interval
+            # Off the cpu means the thread did not run at all during this interval. A rule such as "ran for less than
+            # a fifth of the interval" joins up the short sleeps of an idle event-driven thread, which wakes for a few
+            # microseconds at a time, into one long apparent stall: an idle sequencer at start-up was reported as off
+            # the cpu for 11 seconds while its cpu time kept rising throughout. A thread that is blocked, or ready to
+            # run and not given a cpu, runs for no time at all.
+            off = run_ms == 0.0
 
             wchan = thread.where() if current[1] == "D" else ""
             if out:

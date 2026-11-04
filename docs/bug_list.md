@@ -262,12 +262,28 @@ seconds, against about 2 in the others; `iostat` showed the disk 96 to 106 per c
 490 ms and each flush up to 694 ms. `epoch.state` is on `/mnt/sda2` and the region on `/mnt/sda1`, but both are on the
 one disk, and share its queue.
 
-In the run where the sampler was attached during such a collapse, `SequencerThread` was in uninterruptible sleep, in
-the kernel, for 11.15 seconds, as the sequencer started on a WAL just cleared. The kernel functions it waited in were
-`jbd2_log_wait_commit` (102 samples), waiting for the ext4 journal to commit, and `do_get_write_access` (73), waiting
-for the journal's leave to change metadata. That stall was at start-up, not at a change of role, and the sampler does
-not say which call in the sequencer was waiting; it shows that the thread waits in the journal, not on a lock of its
-own, and for far longer than the about 5 seconds start-up is meant to take.
+In the run in which the disk collapsed, `scripts/thread_offcpu.py`, attached to the primary sequencer's
+`SequencerThread`, found it not running at all, in uninterruptible sleep, at three times:
+
+- at start-up, while both matching engines created their regions: three waits of 0.10 to 0.24 seconds, in
+  `jbd2_log_wait_commit`, which waits for the ext4 journal to commit;
+- while the 200,000 baseline orders were being sequenced: one wait of 0.37 seconds, in `do_get_write_access`, which
+  waits for the journal before metadata can be changed. This is a wait on the order path;
+- while the restarted engine created its region again: nine waits of 0.12 to 2.18 seconds, in `do_get_write_access`,
+  in `folio_wait_bit_common`, which waits for a page to be written, and in `jbd2_log_wait_commit`.
+
+In the two runs in which the disk did not collapse, the thread never went 100 ms without running.
+
+The sequencer's thread does not stop for 11 seconds at start-up, although `scripts/thread_offcpu.py` once reported
+that it did in each of those three runs. The thread's processor time, which the same samples record, rises throughout
+each of those 11 seconds. A rule that counts as off the processor every sample in which the thread ran for less than a
+fifth of the interval joins up the short wakings of an idle thread into one apparent stall. The tool counts only the
+samples in which the thread did not run at all; it is checked against a thread that wakes every 20 milliseconds, which
+it does not report, and one that sleeps for 2 seconds at a time, which it does. The figures above are read from the
+recorded samples by that rule. Recorded again with `perf record -e context-switches --switch-events -g`, attached to
+every thread of both sequencers from start-up, which records the kernel's and the program's stack each time a thread
+leaves the processor, the longest time either `SequencerThread` was off the processor in a run of scenario 80 without
+a collapse was 13 ms.
 
 **What is wanted.**
 
@@ -284,16 +300,13 @@ own, and for far longer than the about 5 seconds start-up is meant to take.
    reports the median, the 99th and 99.9th percentiles and the worst, not the mean: with the filesystem idle; while
    another thread appends to a mapped WAL on it; and with that WAL on another filesystem. Then the same for `fdatasync`
    in place of `fsync`, and for `pwrite` in place to a file opened with `O_DSYNC`, without the rename.
-4. **The start-up stall found.** Which call holds the sequencer's thread in the journal at start-up, by sampling the
-   thread's kernel stack (`/proc/<pid>/task/<tid>/stack`, which needs root) or with `perf trace` on the system calls.
-
 **Done so far.** Points 2 and 3 are built: the four metrics, for the sequencer and the matching engine, and the
 benchmark below. Recording the epoch is done for both programs by `EpochRecording`, which also warns when a record takes
 more than a quarter of the lease, says at Error when a slow record before taking the lead is the probable cause of
 stopping leading, and checks at start-up how fast the disk syncs, with a gauge. The lease agent says when its thread was
 held up before the lease ran out. The development environment's lease period is 5000 ms, with the reason in
 `environments/dev.toml`. Point 1, recording the epoch before the lease is asked for, waits for a design that Andrew
-is to discuss first. Point 4 is not started.
+is to discuss first. There is no stall at start-up to find; the waits that do happen are listed above, and all are in the kernel's journal.
 
 **Measured with the benchmark.** `epoch_store_cost` (`libraries/pubsub_itc_fw/benchmarks/src/EpochStoreCost.cpp`),
 run on 4 November 2026, 200 records of the epoch for each line, with the load a thread writing 512 MiB files one after
