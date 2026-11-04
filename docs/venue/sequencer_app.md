@@ -11,7 +11,7 @@ Two instances run from one binary, `bin/sequencer`: `sequencer_primary` (instanc
 file supplies.
 
 ```
-sequencer <logfile> <config.toml> [--replay]
+sequencer <logfile> <config.toml>
 ```
 
 ## Startup
@@ -44,15 +44,6 @@ See [Deciding leadership by majority, with leases](../availability/majority_leas
 numbering carries on from there, and starts writing a snapshot of the log's position every 30
 seconds. With high availability on, it also fills its table of the command identifiers in the log,
 in the background (see [Sequencer Design](sequencer.md)).
-
-## Replay mode
-
-`--replay` is an offline tool, run against a copy of a log. The sequencer reads every record in the
-log, ignoring the snapshot, becomes leader without recording a new epoch (so it cannot overwrite the
-epoch of a live instance sharing the directory), connects only to the matching engine, and once both
-its connections to the engine are up sends it every order and cancel in the log with its original
-time of sequencing. The engine then produces the same reports, with the same times, as the original
-run.
 
 ## Ports
 

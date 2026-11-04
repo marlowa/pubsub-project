@@ -119,76 +119,74 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     // the records it lacks as ReplicatedRecord messages, exactly as the replicated WAL sends new ones. With high
     // availability off as well, so that every catch-up is paced by what the follower's connection takes and is off the
     // sequencer's thread, whatever the configuration (docs/availability/far_back_catch_up.md, section 4).
-    if (!config_.replay_mode) {
-        // In the order of their numbers: SequencerThread::peer_converter, SequencerThread::engine_converter, then
-        // SequencerThread::publisher_converter.
-        std::vector<pubsub_itc_fw::WalRecordConverter> converters;
-        converters.emplace_back([](int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& out) -> pubsub_itc_fw::ConvertedRecord {
-            pubsub_itc_fw::ReplicatedRecord record{};
-            record.seq_no = seq_no;
-            record.leader_epoch = entry.leader_epoch;
-            record.wall_time_ns = entry.wall_time_ns;
-            record.pdu_id = entry.pdu_id;
-            record.payload = pubsub_itc_fw::BytesView{entry.bytes, entry.size};
+    // In the order of their numbers: SequencerThread::peer_converter, SequencerThread::engine_converter, then
+    // SequencerThread::publisher_converter.
+    std::vector<pubsub_itc_fw::WalRecordConverter> converters;
+    converters.emplace_back([](int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& out) -> pubsub_itc_fw::ConvertedRecord {
+        pubsub_itc_fw::ReplicatedRecord record{};
+        record.seq_no = seq_no;
+        record.leader_epoch = entry.leader_epoch;
+        record.wall_time_ns = entry.wall_time_ns;
+        record.pdu_id = entry.pdu_id;
+        record.payload = pubsub_itc_fw::BytesView{entry.bytes, entry.size};
+        size_t written = 0;
+        size_t needed = 0;
+        static_cast<void>(pubsub_itc_fw::encode(record, nullptr, 0, written, needed));
+        out.resize(needed);
+        if (!pubsub_itc_fw::encode(record, out.data(), out.size(), written, needed)) {
+            out.clear();
+            return pubsub_itc_fw::ConvertedRecord::damaged();
+        }
+        out.resize(written);
+        return pubsub_itc_fw::ConvertedRecord::send(pubsub_itc_fw::ReplicatedRecord::message_pdu_id);
+    });
+    // A matching engine is sent each order and cancel as the same WalRecord the sequencer's thread
+    // would send it, and nothing else. A WalRecord that does not decode may have been an order, so it is
+    // found damaged: the engine is then not handed over, and the sequencer says why
+    // (SequencerThread::follower_cannot_be_served). The arena is the reading thread's own: only it calls this.
+    auto engine_arena = std::make_shared<std::vector<uint8_t>>(64 * 1024);
+    converters.emplace_back(
+        [engine_arena](int64_t /*seq_no*/, const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& out) -> pubsub_itc_fw::ConvertedRecord {
+            pubsub_itc_fw_app::WalRecord envelope{};
+            const EngineRecordFromWal found = engine_record_from_wal(entry.pdu_id, entry.bytes, entry.size, *engine_arena, envelope);
+            if (found == EngineRecordFromWal::NotDecodable) {
+                return pubsub_itc_fw::ConvertedRecord::damaged();
+            }
+            if (found != EngineRecordFromWal::ForEngine) {
+                return pubsub_itc_fw::ConvertedRecord::pass_over();
+            }
             size_t written = 0;
             size_t needed = 0;
-            static_cast<void>(pubsub_itc_fw::encode(record, nullptr, 0, written, needed));
+            static_cast<void>(pubsub_itc_fw_app::encode(envelope, nullptr, 0, written, needed));
             out.resize(needed);
-            if (!pubsub_itc_fw::encode(record, out.data(), out.size(), written, needed)) {
+            if (!pubsub_itc_fw_app::encode(envelope, out.data(), out.size(), written, needed)) {
                 out.clear();
                 return pubsub_itc_fw::ConvertedRecord::damaged();
             }
             out.resize(written);
-            return pubsub_itc_fw::ConvertedRecord::send(pubsub_itc_fw::ReplicatedRecord::message_pdu_id);
+            return pubsub_itc_fw::ConvertedRecord::send(pubsub_itc_fw_app::WalRecord::message_pdu_id);
         });
-        // A matching engine is sent each order and cancel as the same WalRecord the sequencer's thread
-        // would send it, and nothing else. A WalRecord that does not decode may have been an order, so it is
-        // found damaged: the engine is then not handed over, and the sequencer says why
-        // (SequencerThread::follower_cannot_be_served). The arena is the reading thread's own: only it calls this.
-        auto engine_arena = std::make_shared<std::vector<uint8_t>>(64 * 1024);
-        converters.emplace_back(
-            [engine_arena](int64_t /*seq_no*/, const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& out) -> pubsub_itc_fw::ConvertedRecord {
-                pubsub_itc_fw_app::WalRecord envelope{};
-                const EngineRecordFromWal found = engine_record_from_wal(entry.pdu_id, entry.bytes, entry.size, *engine_arena, envelope);
-                if (found == EngineRecordFromWal::NotDecodable) {
-                    return pubsub_itc_fw::ConvertedRecord::damaged();
-                }
-                if (found != EngineRecordFromWal::ForEngine) {
-                    return pubsub_itc_fw::ConvertedRecord::pass_over();
-                }
-                size_t written = 0;
-                size_t needed = 0;
-                static_cast<void>(pubsub_itc_fw_app::encode(envelope, nullptr, 0, written, needed));
-                out.resize(needed);
-                if (!pubsub_itc_fw_app::encode(envelope, out.data(), out.size(), written, needed)) {
-                    out.clear();
-                    return pubsub_itc_fw::ConvertedRecord::damaged();
-                }
-                out.resize(written);
-                return pubsub_itc_fw::ConvertedRecord::send(pubsub_itc_fw_app::WalRecord::message_pdu_id);
-            });
-        // A matching engine publisher is sent every record, as the WalRecord envelope the WAL holds.
-        converters.emplace_back(make_publisher_converter(64 * 1024));
-        pubsub_itc_fw::QueueConfiguration queue_configuration{};
-        queue_configuration.low_watermark = 1;
-        queue_configuration.high_watermark = 64;
-        pubsub_itc_fw::AllocatorConfiguration allocator_configuration{};
-        allocator_configuration.pool_name = "WalReadingPool";
-        allocator_configuration.objects_per_pool = config_.event_queue_pool_objects_per_slab;
-        allocator_configuration.initial_pools = 1;
-        // The last command the WAL holds every report of, told to a matching engine that is catching up so that it does
-        // not send those reports again (docs/availability/far_back_catch_up.md, section 2). Its own arena: only the
-        // reading thread calls it.
-        auto reports_arena = std::make_shared<std::vector<uint8_t>>(64 * 1024);
-        pubsub_itc_fw::WalApplicationValueReader fully_reported_reader =
-            [reports_arena](int64_t /*seq_no*/, const pubsub_itc_fw::WalEntryContents& entry) -> std::optional<int64_t> {
-            return fully_reported_through(entry.pdu_id, entry.bytes, entry.size, *reports_arena);
-        };
-        wal_reading_thread_ = pubsub_itc_fw::ApplicationThread::create<pubsub_itc_fw::WalReadingThread>(
-            *logger_, *reactor_, "WalReadingThread", SequencerThread::wal_reading_thread_id, queue_configuration, allocator_configuration,
-            pubsub_itc_fw::ThreadID{1}, config_.wal_directory, wal_positions_, std::move(converters), std::move(fully_reported_reader));
-        reactor_->register_thread(wal_reading_thread_);
-    }
+    // A matching engine publisher is sent every record, as the WalRecord envelope the WAL holds.
+    converters.emplace_back(make_publisher_converter(64 * 1024));
+    pubsub_itc_fw::QueueConfiguration queue_configuration{};
+    queue_configuration.low_watermark = 1;
+    queue_configuration.high_watermark = 64;
+    pubsub_itc_fw::AllocatorConfiguration allocator_configuration{};
+    allocator_configuration.pool_name = "WalReadingPool";
+    allocator_configuration.objects_per_pool = config_.event_queue_pool_objects_per_slab;
+    allocator_configuration.initial_pools = 1;
+    // The last command the WAL holds every report of, told to a matching engine that is catching up so that it does
+    // not send those reports again (docs/availability/far_back_catch_up.md, section 2). Its own arena: only the
+    // reading thread calls it.
+    auto reports_arena = std::make_shared<std::vector<uint8_t>>(64 * 1024);
+    pubsub_itc_fw::WalApplicationValueReader fully_reported_reader = [reports_arena](int64_t /*seq_no*/,
+                                                                                     const pubsub_itc_fw::WalEntryContents& entry) -> std::optional<int64_t> {
+        return fully_reported_through(entry.pdu_id, entry.bytes, entry.size, *reports_arena);
+    };
+    wal_reading_thread_ = pubsub_itc_fw::ApplicationThread::create<pubsub_itc_fw::WalReadingThread>(
+        *logger_, *reactor_, "WalReadingThread", SequencerThread::wal_reading_thread_id, queue_configuration, allocator_configuration,
+        pubsub_itc_fw::ThreadID{1}, config_.wal_directory, wal_positions_, std::move(converters), std::move(fully_reported_reader));
+    reactor_->register_thread(wal_reading_thread_);
 
     // Outbound connections are initiated from SequencerThread::on_app_ready_event()
     // via connect_to_service(). The ServiceRegistry is populated here.
@@ -254,16 +252,13 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (argc < 3 || argc > 4) {
-        std::cerr << "Usage: sequencer <logfile> <config.toml> [--replay]\n";
-        std::cerr << "  --replay  Read the WAL and replay all records to the matching engine,\n";
-        std::cerr << "            then exit.  No gateway or HA connections are opened.\n";
+    if (argc != 3) {
+        std::cerr << "Usage: sequencer <logfile> <config.toml>\n";
         return 1;
     }
 
     const std::string log_file = argv[1];
     const std::string config_file = argv[2];
-    const bool replay_mode = (argc == 4 && std::string(argv[3]) == "--replay");
 
     const std::string writable_error = pubsub_itc_fw::QuillLogger::ensure_log_file_writable(log_file);
     if (!writable_error.empty()) {
@@ -283,11 +278,6 @@ int main(int argc, char* argv[]) {
     } catch (const pubsub_itc_fw::ConfigurationException& ex) {
         PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "Sequencer: configuration error: {}", ex.what());
         return 1;
-    }
-
-    if (replay_mode) {
-        config.replay_mode = true;
-        PUBSUB_LOG_STR((*logger), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: --replay flag set -- WAL replay mode enabled");
     }
 
     logger->set_log_level(config.applog_level);

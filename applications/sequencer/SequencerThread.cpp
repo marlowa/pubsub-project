@@ -125,33 +125,6 @@ void SequencerThread::on_initial_event() {
                    "SequencerThread: could not read the CPU layout, so the log's helper thread stays where it lands: {}", helper_layout_error);
     }
 
-    if (config_.replay_mode) {
-        // Replay mode: read every record of the WAL into replay_buffer_, and write nothing.
-        // dispatch_replay_records() sends them to the ME once the ME connection is established.
-        int64_t recovered_seq = 0;
-        static_cast<void>(pubsub_itc_fw::WalReader::replay(
-            config_.wal_directory, pubsub_itc_fw::WalPosition{0, 0}, [this, &recovered_seq](int64_t seq_no, const void* payload, size_t size) {
-                const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
-                if (!contents.has_value()) {
-                    return;
-                }
-                ReplayRecord rec;
-                rec.seq_no = seq_no;
-                rec.pdu_id = contents->pdu_id;
-                rec.wall_time_ns = contents->wall_time_ns;
-                rec.payload.assign(contents->bytes, contents->bytes + contents->size);
-                replay_buffer_.push_back(std::move(rec));
-                recovered_seq = seq_no;
-            }));
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: replay mode -- WAL read complete: {} record(s), last seq_no={}",
-                   replay_buffer_.size(), recovered_seq);
-        // Start as leader so that send_pdu paths are active. Replay is an offline tool run against a
-        // copy of the WAL, sharing the WAL directory with the live sequencer, so it records no epoch: it
-        // uses epoch 1, and has no replicated WAL.
-        on_role_changed(pubsub_itc_fw_app::Role::leader, current_epoch());
-        return;
-    }
-
     // Registered before the replicated WAL is made, because it is given the handles. Each is a no-op
     // when metrics are disabled, and the application and component tokens come from configuration.
     if (!config_.wal_append_buckets.empty()) {
@@ -312,14 +285,6 @@ void SequencerThread::on_initial_event() {
 }
 
 void SequencerThread::on_app_ready_event() {
-    if (config_.replay_mode) {
-        // Replay mode: connect only to the matching engine; skip gateway, HA
-        // arbiters, and peer replication.
-        connect_to_service("matching_engine");
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: replay mode -- connecting to matching engine only");
-        return;
-    }
-
     if (test_events_.has_value()) {
         connect_to_service(std::string(pubsub_itc_fw::TestEventChannel::service_name));
     }
@@ -377,10 +342,6 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
                        id.get_value(), engine_routing_.active().get_value());
         }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: matching engine order connection {} established", id.get_value());
-        if (config_.replay_mode) {
-            replay_me_order_ready_ = true;
-            try_dispatch_replay();
-        }
     } else if (svc == "matching_engine_secondary") {
         engine_routing_.connected(me_secondary_instance_id, id, ClaimIfNothingRoutedFlag{ClaimIfNothingRoutedFlag::DoNotClaimIfNothingRouted});
         if (engine_routing_.active() == id) {
@@ -423,12 +384,6 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
                    id.get_value());
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound connection {} established ({})", id.get_value(), svc);
-        if (config_.replay_mode && svc == er_inbound_svc_) {
-            // The ME has connected to our ER port and can now receive ER PDUs
-            // back from the ME after we dispatch. Safe to send orders now.
-            replay_me_er_ready_ = true;
-            try_dispatch_replay();
-        }
     }
 
     // An engine connection that opens may be to an engine that already announced that it leads.
@@ -961,8 +916,7 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     // topic. Each ER gets its OWN seq_no (an order can emit several ERs -- New, Fill,
     // Canceled -- so they cannot share the order's seq). The stored/replicated/streamed
     // record is the WalRecord-wrapped ER; the routing conn id rides on the envelope
-    // (the MEP unwraps and publishes only the inner DD-derived ER). Replay skips ER
-    // records (dispatch_replay_records only re-sends NOS/OCR). NOTE: an ER driven by a
+    // (the MEP unwraps and publishes only the inner DD-derived ER). NOTE: an ER driven by a
     // sequenced order is forwarded to the gateway gated on the *order's* WalAck, not on
     // this ER record's own -- so at a failover instant a just-forwarded ER may be
     // missing from the new leader's WAL (an execution_reports-topic gap at the seam).
@@ -1603,98 +1557,6 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id
     }
 }
 
-// Replay mode dispatch
-
-void SequencerThread::try_dispatch_replay() {
-    if (replay_me_order_ready_ && replay_me_er_ready_) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: replay -- both ME connections ready, starting dispatch");
-        dispatch_replay_records();
-    }
-}
-
-void SequencerThread::dispatch_replay_records() {
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: replay -- dispatching {} record(s) to matching engine", replay_buffer_.size());
-
-    size_t dispatched = 0;
-    for (const auto& record : replay_buffer_) {
-        // Each stored record is a WalRecord envelope (Option B). Decode it, then
-        // re-send the envelope to the ME for NOS/OCR (the ME unwraps it and reads
-        // wall_time_ns as the sequencing time); ER envelopes are outputs, not
-        // inputs, and are not replayed to the ME.
-        if (record.pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- record seq={} is not a WalRecord (pdu_id={}) -- skipping",
-                       record.seq_no, record.pdu_id);
-            continue;
-        }
-
-        auto& arena_buf = decode_arena_buffer();
-        pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-        arena.reset();
-        size_t arena_bytes_needed = 0;
-        size_t bytes_consumed = 0;
-        pubsub_itc_fw_app::WalRecordView view{};
-        if (!pubsub_itc_fw_app::decode(view, record.payload.data(), record.payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: replay -- failed to decode envelope seq={} -- skipping",
-                       record.seq_no);
-            continue;
-        }
-
-        if (view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) &&
-            view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
-            continue;
-        }
-
-        pubsub_itc_fw_app::WalRecord envelope{};
-        envelope.seq_no = view.seq_no;
-        envelope.pdu_id = view.pdu_id;
-        envelope.payload = view.payload;
-        envelope.wall_time_ns = view.wall_time_ns;
-        envelope.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
-        envelope.gateway_session_conn_id = view.gateway_session_conn_id;
-        envelope.has_sender_comp_id = view.has_sender_comp_id;
-        envelope.sender_comp_id = view.sender_comp_id;
-        envelope.has_origin_gateway_id = view.has_origin_gateway_id;
-        envelope.origin_gateway_id = view.origin_gateway_id;
-        envelope.has_gateway_instance_id = view.has_gateway_instance_id;
-        envelope.gateway_instance_id = view.gateway_instance_id;
-
-        // gateway_ingress_ns is deliberately NOT carried across replay, even though the
-        // stored record has one. It records when a client's order was read off a socket,
-        // which for a replayed order was minutes or hours ago and has nothing to do with
-        // how long this ER took. Forwarding it would put every replayed order in the
-        // histogram's overflow bucket and drag the venue's tail latency with it -- an
-        // invented stall, reported at exactly the moment a failover makes people look.
-        // Leaving it absent costs a handful of observations after promotion and keeps
-        // every observation that is recorded a real measurement.
-
-        // Rebuild the routing map as the WAL is replayed, so ERs the matching engine emits
-        // for these orders after promotion reach the sessions that placed them.
-        //
-        // The identity is what is rebuilt, and it is the only part of the old routing entry
-        // that a replay could honestly restore. The connection ids in these records name
-        // sockets on a process that has since died -- that is why there is a promotion to
-        // replay after -- so a rebuilt address would be wrong by construction. The live
-        // addresses come from the gateways instead, as SessionBound PDUs, and a session
-        // that reconnects after the promotion re-announces itself.
-        if (view.has_sender_comp_id && !view.sender_comp_id.empty()) {
-            MemberSessions::OriginSession origin;
-            origin.identity =
-                fix_common::SessionIdentity::make(view.sender_comp_id, view.has_origin_gateway_id ? view.origin_gateway_id : gateway_ids::default_when_absent);
-            // has_ingress_ns stays false for the reason above.
-            sessions_.order_placed(view.seq_no, origin);
-        }
-
-        send_pdu(engine_routing_.active(), pubsub_itc_fw_app::WalRecord::message_pdu_id, record.seq_no, envelope);
-        ++dispatched;
-    }
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: replay complete -- {}/{} record(s) dispatched to matching engine", dispatched,
-               replay_buffer_.size());
-
-    replay_buffer_.clear();
-    replay_buffer_.shrink_to_fit();
-}
-
 // WAL replication helpers (Slice 7)
 
 void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord& envelope) {
@@ -1980,7 +1842,7 @@ void SequencerThread::OrderLinks::send_orders_that_waited_in_the_wal(int64_t fir
 }
 
 void SequencerThread::check_engine_absence() {
-    if (config_.replay_mode || !replicated_wal_.has_value()) {
+    if (!replicated_wal_.has_value()) {
         return;
     }
     presence_.check_absence(config_.wall_clock->now_ns(), std::chrono::steady_clock::now());

@@ -371,14 +371,6 @@ struct SequencerConfiguration {
      *  to drive timestamps from WAL records during replay. */
     std::shared_ptr<pubsub_itc_fw::WallClock> wall_clock{std::make_shared<pubsub_itc_fw::SystemWallClock>()};
 
-    // Replay mode  (set by the --replay command-line flag)
-
-    /** @brief When true, the sequencer reads the WAL and replays all records
-     *  to the matching engine instead of accepting live gateway connections.
-     *  HA, gateway, arbiter, and peer connections are skipped.  The WAL
-     *  snapshot timer is suppressed.  Set via the --replay command-line flag. */
-    bool replay_mode{false};
-
     /**
      * @brief This process's Prometheus scrape endpoint; see docs/operations/metrics.md.
      *

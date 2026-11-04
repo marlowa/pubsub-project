@@ -100,7 +100,7 @@ the leader has forwarded, and the follower discards what it holds up to that poi
 2. **Gives the report a sequence number of its own and writes it to the log**, sends it to the
    follower and streams it to downstream subscribers, as for a command. An order can have several
    reports, so they cannot share the order's number.
-3. **Waits for the follower before releasing it** (`pending_er_`). A report is released to the
+3. **Waits for the follower before releasing it** (`ReportForwarding`, which holds the reports waiting). A report is released to the
    gateway only once the follower has acknowledged the record of the order it answers, so a member is
    never told of an execution the follower does not know the order for. A report with no originating
    order waits instead for the acknowledgement of its own record. When no follower keeps up, the
@@ -160,13 +160,13 @@ halts, the orders open at the time are cancelled, each member told, and the orde
 rejected. The rule is about the venue, not one engine, so the leading sequencer measures it, because it
 routes orders only to the engine that leads and so knows when it has none to route to. About once a
 second, and whenever it takes the lead, it notes whether it has an engine to route to
-(`EngineAbsenceRule`, `SequencerThread::check_engine_absence`).
+(`EngineAbsenceRule`, held by `EnginePresence`, which `EnginePresence::check_absence` asks).
 
 The limit is `[recovery] automatic_recovery_limit_seconds` (10 seconds). In the same check, the
 leading sequencer adds to the time it has had no engine how long the catch-up under way will still
 take, worked out from how far its reading thread has sent the catch-up and how fast that moved over
 the last second (`RecoveryLimitRule`). When the two together pass the limit, or the time so far alone
-does, it writes three commands into the WAL, in order (`SequencerThread::write_recovery_halt`):
+does, it writes three commands into the WAL, in order (`HaltAndVoidRequests::recovery_halt`):
 
 - a `VoidCommands` naming the new orders it holds, which no engine has been sent, with the reason
   `HeldWhenTradingHalted`, so that the engine that next leads rejects each instead of applying it.
@@ -297,7 +297,7 @@ sequencer when it rejoins, a matching engine when it starts or is promoted, and 
 publishers. Each is served by the leader's reading thread (`WalReadingThread`), so that the thread that
 sequences orders does not stop while records are read
 ([following_the_wal.md](../availability/following_the_wal.md)). The sequencer's own thread still reads the
-log in a few named cases: replay mode; resends and requests for undelivered reports
+WAL in a few named cases: resends and requests for undelivered reports
 ([BUG-0113](../bug_list.md#bug_0113)); the duplicate check ([BUG-0122](../bug_list.md#bug_0122)); records
 read back, once each, for publishers already caught up ([BUG-0171](../bug_list.md#bug_0171)); and orders counted as deferred
 while no matching engine is connected ([BUG-0174](../bug_list.md#bug_0174)). Check 30 of
@@ -306,14 +306,27 @@ while no matching engine is connected ([BUG-0174](../bug_list.md#bug_0174)). Che
 
 ---
 
-## Replay mode
+## How the code is divided
 
-`sequencer <logfile> <config.toml> --replay` reads the whole log, connects to the matching engine
-only, waits until both its connections to the engine are up, and sends the engine every order and
-cancel in the log, each carrying its original time of sequencing, so the engine produces the same
-reports with the same times. Reports in the log are not sent; they are outputs, not inputs. The time
-each order was read by its gateway is not sent, so replayed orders do not appear in the latency
-metrics.
+`SequencerThread` holds the sequencer's connections and timers, decodes each message, writes records into the WAL,
+and hands each event to the part it belongs to. Each part is a class that owns the state of one job, runs on the
+sequencer's one thread, and asks for what it cannot do itself through an interface the thread implements, so that it
+can be tested on its own with a recording stand-in for the thread. Every part's Quill log lines begin with its name.
+
+| Part | Its job |
+|------|---------|
+| `VenueStateFromTheWal` | The facts the sequencer reads from the WAL: whether trading is halted, the highest command a report answers, the voids, and the trading date |
+| `MemberSessions` | Where each member session is connected, how far its numbering has got, and which session placed each order |
+| `ReportForwarding` | Sending each report from the matching engine to its gateway once its record is committed, and holding it while the session or the gateway's connection is not there |
+| `KeptReports` | The reports a follower keeps in case it takes the lead, and when each is no longer needed |
+| `OrderRelease` | Holding each order until it may be sent to the leading matching engine, pausing reading from the gateways while too many wait, and the wait after taking the lead for the engine to say how far it has got |
+| `EnginePresence` | Whether a matching engine takes orders, what the gateways are told about taking orders, the limit on the recovery the venue does by itself, and the engine that said it leads |
+| `CommandChecks` | The check of each command against those already in the WAL: a ClOrdID used again is refused, and a command sent again is answered from the WAL |
+| `HaltAndVoidRequests` | The requests to halt trading or lift the halt, a matching engine's requests to halt or to void the command it died applying, and the halt written when the venue cannot recover by itself |
+| `ServingWalFollowers` | What this instance does for those that follow its WAL: the follower sequencer's catch-up, the publishers, and the matching engines caught up to lead or to follow |
+
+What each part holds, and the decisions it makes, are set out in sections 6.7 to 6.16 of
+[Dividing the sequencer and the matching engine into parts](dividing_the_sequencer_and_matching_engine.md).
 
 ---
 

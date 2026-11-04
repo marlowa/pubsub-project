@@ -1291,7 +1291,6 @@ _WAL_READERS = [
 ]
 _WAL_READER_RES = [re.compile(pattern) for pattern, _what in _WAL_READERS]
 
-_REPLAY_MODE = 'replay mode, which runs with nothing else and sequences nothing'
 _RESENDS = 'a resend or a request for undelivered reports: BUG-0113, which moves them to a recovery service'
 _ANSWER_FROM_WAL = ('the answer to a command sent again whose original the WAL holds: reads forward from the original, through '
                     'committed records only and at most 4,096 of them, for the first report answering it '
@@ -1309,7 +1308,6 @@ _DEFINITION = 'where the reader itself is declared or defined; each use of it is
 
 # Each entry: (path relative to the project root, where, why), as for _PERMITTED_LOCKS.
 _PERMITTED_WAL_READS = [
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::on_initial_event', _REPLAY_MODE),
     ('applications/sequencer/SequencerThread.cpp', 'HaltLinks::command_in_wal_at', _VOID_REQUEST),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::command_in_wal_at', _VOID_REQUEST),
     ('applications/sequencer/SequencerThread.hpp', 'command_in_wal_at', _DEFINITION),

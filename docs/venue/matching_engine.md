@@ -19,8 +19,8 @@ The sequencer sends each command wrapped in a `WalRecord` envelope (PDU id 103),
 field says what is inside: a `NewOrderSingle` (1000) or an `OrderCancelRequest` (1001). The envelope
 also carries the identity of the session that placed the command (its comp id and gateway protocol),
 the time the sequencer sequenced it, and the time the gateway read it from the member.
-`MatchingEngineThread::on_framework_pdu_message()` unwraps the envelope and calls
-`handle_new_order_single()` or `handle_order_cancel_request()`.
+`MatchingEngineThread::on_framework_pdu_message()` unwraps the envelope and hands the command to
+`MatchingEngineStateMachine`, which applies it (`apply_new_order` or `apply_cancel`).
 
 An order is identified on the book by its session and its `ClOrdID` together (`OrderKey`), so two
 members, or the same comp id through the two gateway protocols, can use the same `ClOrdID` without
@@ -201,6 +201,45 @@ The preprod, prod and test-1 environment files define a single engine, named `ma
 whose configuration file is `etc/matching_engine/matching_engine.toml`. The build installs no
 template of that name: it installs only `matching_engine_primary.toml` and
 `matching_engine_secondary.toml`.
+
+## Replaying a WAL to debug the engine
+
+A sequencer's WAL holds every command the venue accepted, in order, and every report the engine that led sent back. The
+engine is deterministic: given the same commands in the same order, it produces the same reports. So a copy of the
+WAL from a production day is enough to reproduce, offline, what the engine did that day.
+
+`bin/wal_replay_check` does this. It reads the WAL, applies every command to a fresh `MatchingEngineStateMachine`,
+and compares each report it produces with the first copy of that report in the WAL, field by field. The first command
+whose reports differ is named:
+
+```
+wal_replay_check --wal <WAL directory> --region-capacity <records> --secret-file <file> --work-dir <directory>
+```
+
+`--region-capacity` and `--secret-file` must be those of the engines that led, because both change what the engine
+produces. Give it a copy of the WAL directory rather than production's own. How it works, and what it does not
+compare, are in [deterministic_matching_engine.md](../availability/deterministic_matching_engine.md), section 7.
+`ha_test.py` runs it after every scenario that passes.
+
+## How the code is divided
+
+`MatchingEngineThread` holds the engine's connections and timers, decodes each message, and hands each event to the
+part it belongs to. `MatchingEngineStateMachine` applies each command to the book. The other parts are classes in the
+same way as the sequencer's: each owns the state of one job, runs on the engine's one thread, asks for what it cannot
+do itself through an interface the thread implements, and is tested on its own. Every part's Quill log lines begin
+with its name.
+
+| Part | Its job |
+|------|---------|
+| `EngineRole` | The engine's role, held as one situation: not yet known, being caught up and for what (to become current, to lead, or to follow again), following, or leading; and whether it has refused to lead because its reports differ from the leader's |
+| `EngineCatchUp` | Asking the leading sequencer to catch the engine up, and checking that it was sent every record it was told of |
+| `EngineReportSending` | The engine's two connections for reports, the reports held while it does not yet know whether it serves, and their numbering |
+| `FollowerReportComparison` | Comparing the reports of the commands a following engine applies with the reports the WAL holds from the leader |
+| `DiedApplyingCheck` | A command the previous process died applying, found at start-up: the peer engine is asked whether it applied it, and if not the sequencers are asked to void it |
+| `PeerSettingsCheck` | Whether the peer engine has the same region capacity and the same secret for identifiers; while they differ, the engine that leads says its peer may not lead |
+
+What each part holds, and the decisions it makes, are set out in sections 6.1 to 6.6 of
+[Dividing the sequencer and the matching engine into parts](dividing_the_sequencer_and_matching_engine.md).
 
 ## See Also
 

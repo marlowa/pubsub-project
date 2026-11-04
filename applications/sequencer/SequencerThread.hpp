@@ -290,7 +290,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // The sequencer's write-ahead log, kept on both instances of the pair, and the deciding of which
     // instance leads: the library's replicated WAL (docs/availability/replicated_wal_in_the_library.md).
-    // Constructed at the initial event, except in replay mode, which reads the log and writes nothing.
+    // Constructed at the initial event.
     std::optional<pubsub_itc_fw::ReplicatedWal> replicated_wal_;
 
     // The component's background cores, from the CPU layout, for the helper threads this thread starts;
@@ -334,7 +334,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // docs/venue/dividing_the_sequencer_and_matching_engine.md).
     ServingWalFollowers serving_{ServingWalFollowers::Converters{peer_converter, engine_converter, publisher_converter}, serving_links_, get_logger()};
 
-    // The epoch the sequencer stamps on what it sends: the replicated WAL's, or 1 in replay mode.
+    // The epoch the sequencer stamps on what it sends: the replicated WAL's, or 1 before it is made.
     [[nodiscard]] int32_t current_epoch() const {
         return replicated_wal_.has_value() ? replicated_wal_->epoch() : 1;
     }
@@ -370,23 +370,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_peer_status_response(const pubsub_itc_fw::EventMessage& message);
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-
-    // Replay mode helpers.
-    //
-    // replay_buffer_ accumulates records during WAL replay in on_initial_event().
-    // dispatch_replay_records() sends them to the ME once the ME connection is up.
-    struct ReplayRecord {
-        int64_t seq_no{};
-        int16_t pdu_id{};
-        int64_t wall_time_ns{};
-        std::vector<uint8_t> payload;
-    };
-
-    std::vector<ReplayRecord> replay_buffer_;
-    bool replay_me_order_ready_{false}; // outbound sequencer->ME order connection up
-    bool replay_me_er_ready_{false};    // inbound ME->sequencer ER connection up
-    void try_dispatch_replay();         // dispatches once both flags are set
-    void dispatch_replay_records();
 
     // WalRecord doubles as the pipeline envelope (Option B): the WAL, the follower's copy of it and the
     // external-subscriber stream all carry the stamped WalRecord, so leader and follower WALs stay
