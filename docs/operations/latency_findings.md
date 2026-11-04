@@ -407,6 +407,25 @@ A third session of the new engine was slower, with a median of 108.2 and 110.4 �
 reached, and the two sessions of the same binary either side of it were as fast as the old engine, so it is a variation
 between sessions, not a cost of the code. It is why a comparison takes more than one session of each arm.
 
+### Dividing the sequencer into parts costs nothing measurable
+
+Steps 7 to 16 of [dividing_the_sequencer_and_matching_engine.md](../venue/dividing_the_sequencer_and_matching_engine.md)
+moved nine parts out of `SequencerThread`, among them the holding and releasing of orders and the check of each
+command against the WAL, which every order passes through, reached through interfaces, so through virtual calls on the
+order path. Measured on 4 November 2026 with the machine in measuring mode, by the method above: one deployment, with
+only the sequencer binary differing between the two arms, the sequencer built from the code before step 7 (fd3769e)
+against the sequencer after step 16 (8ef21af), both loading the same library, in six sessions taken in turn (old, new,
+old, new, old, new), each with cleared WALs, a warm-up run that was discarded, and two runs of 6000 orders at 100 a
+second, nine in ten cancelled.
+
+| Sequencer | Round trip, median | 90th percentile | Sequencer's own time, order in to order out (mean) |
+|-----------|--------------------|-----------------|-----------------------------------------------------|
+| before step 7, three sessions | 101.3 to 104.9 µs | 112.3 to 113.4 µs | 40.6 to 42.0 µs |
+| after step 16, three sessions | 100.3 to 104.8 µs | 112.1 to 113.1 µs | 40.4 to 41.1 µs |
+
+The medians average 103.2 µs before and 102.8 µs after. Both arms drift down by about 4 µs from the first session to
+the last, so the difference between them is within the variation between sessions, not a cost or a saving of the code.
+
 ## Ruled out by measurement
 
 ### Looking for work more often

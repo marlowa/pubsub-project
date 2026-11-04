@@ -895,13 +895,16 @@ engine first (decision 2, option A).
 16. Replay mode, as decision 3 says; the round trip measured again; the sequencer and matching engine documents brought
     up to date.
 
-    **As built, so far.** Replay mode is removed, as decision 3 chose: the `--replay` flag, the buffer of records and
+    **As built.** Replay mode is removed, as decision 3 chose: the `--replay` flag, the buffer of records and
     the two flags beside it, the special cases for it at start-up and in the absence check, and its entry in the list of
     reads of the WAL in `scripts/check_standards.py`. A WAL is replayed to debug the matching engine with
     `wal_replay_check`, which the matching engine document now describes. The sequencer and matching engine documents
     each list their parts, and five names in them that had moved or gone are corrected. Both full suites pass: 99 of
-    99 with the primary engine first, and 38 of 38 with the secondary engine first. The round trip is still to be
-    measured.
+    99 with the primary engine first, and 38 of 38 with the secondary engine first. The order's round trip, measured
+    against the sequencer before step 7 in six sessions taken in turn, is unchanged: a median of 102.8 µs on average
+    after, against 103.2 µs before, within the variation between sessions
+    ([latency_findings.md](../operations/latency_findings.md), "Dividing the sequencer into parts costs nothing
+    measurable").
 
 ## 10. Decisions
 

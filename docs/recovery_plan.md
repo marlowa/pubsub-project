@@ -2,8 +2,8 @@
 
 > **Status.** The plan was agreed on 9 October 2026. Each phase ends with a review at which Andrew decides
 > whether the next one starts. Phases 1 to 9 are finished; each is listed, with its date and result, under
-> "Already done" at the end. Phase 10 is under way: on 4 November 2026, steps 1 to 15 are done, and step 16 is
-> next.
+> "Already done" at the end. Phase 10's sixteen steps are done, on 4 November 2026, and it awaits Andrew's
+> review.
 
 ## In one page
 
@@ -543,11 +543,11 @@ design divides the work into sixteen steps, each followed by the developer loop 
 16. replay mode removed, the order's round trip measured again, and the sequencer and matching engine documents
     brought up to date.
 
-Steps 1 to 15 are done: the matching engine is divided, and the sequencer is divided into its facts read from the WAL,
-its member sessions, its report forwarding, its reports kept while not leading, its holding and releasing of orders,
-whether a matching engine takes orders, its checks of each command against the WAL, its requests to halt trading or
-void commands, and its serving of those that follow the WAL. Step 1 found [BUG-0225](bug_list.md#bug_0225) and
-[BUG-0226](bug_list.md#bug_0226); step 14 found [BUG-0227](bug_list.md#bug_0227). Step 16 is next.
+All sixteen steps are done: the matching engine and the sequencer are each divided into parts, the sequencer's replay
+mode is removed, and the order's round trip, measured after the engine's steps and again after the sequencer's, is
+unchanged by either. Step 1 found [BUG-0225](bug_list.md#bug_0225) and [BUG-0226](bug_list.md#bug_0226), step 14
+found [BUG-0227](bug_list.md#bug_0227), and step 15's suite found [BUG-0228](bug_list.md#bug_0228). The phase awaits
+Andrew's review.
 
 ### Framework fixes done alongside the phases
 
