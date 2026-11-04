@@ -8,6 +8,7 @@ add_executable(sequencer
         OrderRelease.cpp
         ReportForwarding.cpp
         SequencerThread.cpp
+        ServingWalFollowers.cpp
         Sequencer.cpp
         VenueStateFromTheWal.cpp
 )
@@ -39,6 +40,7 @@ target_sources(sequencer PRIVATE
         SequencerConfiguration.hpp
         SequencerConfigurationLoader.hpp
         SequencerThread.hpp
+        ServingWalFollowers.hpp
         Sequencer.hpp
         TradingHaltState.hpp
         VenueStateFromTheWal.hpp
@@ -117,6 +119,7 @@ add_executable(sequencer_tests
         tests/EnginePresenceTest.cpp
         tests/CommandChecksTest.cpp
         tests/HaltAndVoidRequestsTest.cpp
+        tests/ServingWalFollowersTest.cpp
         CommandChecks.cpp
         EnginePresence.cpp
         HaltAndVoidRequests.cpp
@@ -125,6 +128,7 @@ add_executable(sequencer_tests
         MemberSessions.cpp
         ReportForwarding.cpp
         SequencerConfigurationLoader.cpp
+        ServingWalFollowers.cpp
         VenueStateFromTheWal.cpp
 )
 

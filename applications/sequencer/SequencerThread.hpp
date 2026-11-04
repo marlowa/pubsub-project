@@ -50,6 +50,7 @@
 #include "SeqNumRanges.hpp"
 #include "SequencerCommandIdentity.hpp"
 #include "SequencerConfiguration.hpp"
+#include "ServingWalFollowers.hpp"
 #include "SessionIdentity.hpp"
 #include "TradingHaltState.hpp"
 #include "VenueStateFromTheWal.hpp"
@@ -202,9 +203,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::HistogramHandle er_in_elapsed_histogram_;
     pubsub_itc_fw::HistogramHandle er_out_elapsed_histogram_;
 
-    // The matching engine publishers that have been caught up and handed over to new records, each sent every
-    // record as it is committed, read back from the WAL (docs/availability/following_the_wal.md, section 4.3).
-    // Until a publisher is handed over, the reading thread sends it what it lacks.
+    // How a record is sent to a matching engine publisher, or to a matching engine that follows the WAL, once it has been
+    // caught up and handed over (ServingWalFollowers).
     class SequencerPublisherLinks : public pubsub_itc_fw::WalHandedOverFollowersLinksInterface {
       public:
         explicit SequencerPublisherLinks(SequencerThread& owner) : owner_(owner) {}
@@ -214,10 +214,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         SequencerThread& owner_;
     };
     SequencerPublisherLinks publisher_links_{*this};
-    std::optional<pubsub_itc_fw::WalHandedOverFollowers> handed_over_publishers_;
-    // The matching engines that follow the WAL rather than lead, once caught up: each is sent every record as it is
-    // committed, as a publisher is, and applies the commands among them (docs/availability/both_engines_apply_the_wal.md).
-    std::optional<pubsub_itc_fw::WalHandedOverFollowers> handed_over_engines_;
 
     // The test events this thread sends, when a test started this instance (docs/availability/test_events.md).
     class SequencerTestEventLinks : public pubsub_itc_fw::TestEventLinksInterface {
@@ -297,84 +293,46 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // Constructed at the initial event, except in replay mode, which reads the log and writes nothing.
     std::optional<pubsub_itc_fw::ReplicatedWal> replicated_wal_;
 
-    // Following the WAL (docs/availability/following_the_wal.md). The records a rejoining follower
-    // sequencer lacks are read from the WAL and sent by the reading thread, not on this thread; this is
-    // the replicated WAL's catch-up, the service's links to the reading thread, and what the service
-    // tells this thread.
-    class SequencerWalFollowing : public pubsub_itc_fw::PeerCatchUpInterface,
-                                  public pubsub_itc_fw::WalFollowerLinksInterface,
-                                  public pubsub_itc_fw::WalFollowerEventsInterface {
+    // The component's background cores, from the CPU layout, for the helper threads this thread starts;
+    // empty when no layout was read.
+    std::vector<pubsub_itc_fw::CpuId> background_cores_;
+    // Publishes the last order released (released_through) as the limit a matching engine is served up to.
+    void publish_released_position();
+
+    // The number of a record in the WAL the reading thread could not read, which stops a follower being caught up past it,
+    // while it stands; 0 when there is none (ServingWalFollowers).
+    pubsub_itc_fw::GaugeHandle damaged_record_gauge_;
+    pubsub_itc_fw::WalFollowingPositions& wal_positions_;
+
+    class ServingLinks : public ServingWalFollowersLinksInterface {
       public:
-        explicit SequencerWalFollowing(SequencerThread& owner) : owner_(owner) {}
-        // PeerCatchUpInterface
-        void start_peer_catch_up(int64_t after_seq_no) override;
-        void stop_peer_catch_up() override;
-        [[nodiscard]] bool reading_has_stopped() const override;
-        // WalFollowerLinksInterface
+        explicit ServingLinks(SequencerThread& owner) : owner_(owner) {}
         void send_to_reading_thread(std::unique_ptr<pubsub_itc_fw::WalReadingCommand> command) override;
         void send_declined(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalFollowDeclined& declined) override;
         void send_caught_up(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalFollowCaughtUp& caught_up) override;
         void send_leader_changed(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalLeaderChanged& changed) override;
-        // WalFollowerEventsInterface
-        void follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through, int64_t records_sent,
-                                  pubsub_itc_fw::WalPosition resume_at) override;
-        void hand_over_falling_behind(const pubsub_itc_fw::ConnectionID& follower) override;
-        void follower_progress(const pubsub_itc_fw::ConnectionID& follower, int64_t sent_through) override;
-        void follower_cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no) override;
-        void declined_while_not_leading(const pubsub_itc_fw::ConnectionID& follower) override;
-        void reading_stopped() override;
+        [[nodiscard]] pubsub_itc_fw::ConnectionID peer_connection() const override;
+        [[nodiscard]] bool is_publisher_connection(const pubsub_itc_fw::ConnectionID& connection) const override;
+        [[nodiscard]] int64_t first_seq_no_held() const override;
+        void publish_released_position() override;
+        void pause_for_hand_over() override;
+        void end_pause_for_hand_over() override;
+        void peer_caught_up(int64_t through) override;
+        void peer_catch_up_stopped() override;
+        void engine_catch_up_progress(const pubsub_itc_fw::ConnectionID& connection, int64_t sent_through) override;
+        void engine_catch_up_ended(const pubsub_itc_fw::ConnectionID& connection) override;
+        void engine_handed_over(const pubsub_itc_fw::ConnectionID& connection, int64_t through, int64_t records_sent, bool answers_catch_up_request) override;
+        void engine_caught_up_to_lead(const pubsub_itc_fw::ConnectionID& connection) override;
+        void set_damaged_record_gauge(int64_t seq_no) override;
 
       private:
         SequencerThread& owner_;
-        // The connection the follower sequencer is being sent its missing records on, while it is.
-        pubsub_itc_fw::ConnectionID catch_up_connection_;
     };
-    SequencerWalFollowing wal_following_{*this};
-
-    // A matching engine's connection that the reading thread is serving, and why. While it is, this
-    // thread sends that engine no order itself: an order released meanwhile is at or below the limit the
-    // reading thread serves up to, and the reading thread sends it (following_the_wal.md, section 5.3).
-    struct EngineServing {
-        // Whether the engine asked to be caught up with WalFollowRequest, and so is sent WalFollowCaughtUp
-        // when it is handed over; otherwise it is being sent orders it lacks.
-        bool answers_catch_up_request{false};
-        // For a catch-up request: whether the engine asked to lead, and so has the orders routed to it
-        // once it is caught up.
-        bool asking_to_lead{false};
-        // For a catch-up request from an engine that is not to lead: it is sent every record, not only commands, and
-        // once caught up is sent each record as it is committed (handed_over_engines_).
-        bool follows_the_wal{false};
-        // For a catch-up request: the start of the answer, which the reading thread sends before the first record, and
-        // whose request number WalFollowCaughtUp echoes. It carries the last command the WAL holds every report of,
-        // which the reading thread reads from the WAL.
-        std::optional<pubsub_itc_fw::WalFollowStart> started;
-    };
-    std::unordered_map<int, EngineServing> engine_servings_;
-    // The component's background cores, from the CPU layout, for the helper threads this thread starts;
-    // empty when no layout was read.
-    std::vector<pubsub_itc_fw::CpuId> background_cores_;
-    // Has the reading thread serve @p engine from the record after @p after_seq_no, up to the last order released.
-    void serve_engine(const pubsub_itc_fw::ConnectionID& engine, int64_t after_seq_no, EngineServing serving);
-    // The engine the reading thread was serving has been handed over at @p through.
-    void engine_handed_over(const pubsub_itc_fw::ConnectionID& engine, int64_t through, int64_t records_sent, pubsub_itc_fw::WalPosition resume_at,
-                            EngineServing serving);
-    // Whether the engine orders are routed to follows the WAL instead, and so is sent every command as a follower.
-    [[nodiscard]] bool routed_engine_follows_the_wal() const;
-    // Publishes the last order released (released_through) as the limit a matching engine is served up to.
-    void publish_released_position();
-
-    // A record in the WAL that the reading thread could not read, which stops a follower being caught up
-    // past it. Said as an Error the first time it stops each kind of follower, and as Info when the same
-    // follower asks again and is refused again; and shown, as long as it stands, by a gauge holding the
-    // record's number, which is 0 when there is none.
-    std::unordered_set<std::string> damaged_records_reported_;
-    int64_t damaged_record_standing_{0};
-    pubsub_itc_fw::GaugeHandle damaged_record_gauge_;
-    void report_follower_cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no, const std::string& which_follower);
-    // A follower has been handed over through @p through: a damaged record at or before it no longer stands.
-    void note_handed_over_through(int64_t through);
-    pubsub_itc_fw::WalFollowingPositions& wal_positions_;
-    std::optional<pubsub_itc_fw::WalFollowerService> wal_follower_service_;
+    ServingLinks serving_links_{*this};
+    // What this instance does for those that follow its WAL: the follower sequencer's catch-up, the publishers, and the
+    // matching engines being caught up or following the WAL (section 6.15 of
+    // docs/venue/dividing_the_sequencer_and_matching_engine.md).
+    ServingWalFollowers serving_{ServingWalFollowers::Converters{peer_converter, engine_converter, publisher_converter}, serving_links_, get_logger()};
 
     // The epoch the sequencer stamps on what it sends: the replicated WAL's, or 1 in replay mode.
     [[nodiscard]] int32_t current_epoch() const {
@@ -654,11 +612,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // leads, otherwise caught up from the position it gives, up to the last record committed, and then sent
     // each record as it is committed.
     void handle_publisher_follow_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    // Sends every publisher that has been handed over each record committed through @p seq_no.
-    void send_committed_records_to_publishers(int64_t seq_no);
-    // Sends each matching engine that follows the WAL, once handed over, every record up to the position released, so that
-    // it applies no order before the leading engine is sent it (docs/availability/voided_commands.md, section 5.1).
-    void send_released_records_to_follower_engines();
     // Whether @p connection is a matching engine publisher's.
     [[nodiscard]] bool is_publisher_connection(const pubsub_itc_fw::ConnectionID& connection) const {
         return connection.service_name() == wal_subscriber_inbound_svc_;

@@ -1284,8 +1284,8 @@ _WAL_READERS = [
     (r'\bWalReader\b', 'the library class that reads every record of the WAL from a position'),
     (r'\bWalCursor\b', 'the library class that reads the WAL one record at a time'),
     (r'\bWalHandedOverFollowers\b', 'the library class that reads committed records back for followers already handed over'),
-    (r'\bhanded_over_publishers_->send_to(?:_all)?\b', 'the sequencer member holding a WalHandedOverFollowers, sending records it reads'),
-    (r'\bhanded_over_engines_->send_to(?:_all)?\b', 'the sequencer member holding a WalHandedOverFollowers, sending records it reads'),
+    (r'\bhanded_over_publishers_->send_to(?:_all)?\b', 'the member of ServingWalFollowers holding a WalHandedOverFollowers, sending records it reads'),
+    (r'\bhanded_over_engines_->send_to(?:_all)?\b', 'the member of ServingWalFollowers holding a WalHandedOverFollowers, sending records it reads'),
     (r'\b(?:holds|find)_command\s*\(', 'the replicated WAL\'s check of whether, and where, it holds a command, which reads one record, or searches the WAL'),
     (r'\bcommand_in_wal_at\s*\(', 'the sequencer function that reads one record back from the WAL on its own thread'),
 ]
@@ -1315,9 +1315,9 @@ _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.hpp', 'command_in_wal_at', _DEFINITION),
     ('applications/sequencer/HaltAndVoidRequests.cpp', 'HaltAndVoidRequests::void_request', _VOID_REQUEST),
     ('applications/sequencer/HaltAndVoidRequests.hpp', 'command_in_wal_at', _DEFINITION),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_committed_records_to_publishers', _PUBLISHERS),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_released_records_to_follower_engines', _FOLLOWER_ENGINES),
-    ('applications/sequencer/SequencerThread.hpp', 'handed_over_engines_', _DEFINITION),
+    ('applications/sequencer/ServingWalFollowers.cpp', 'ServingWalFollowers::send_committed_to_publishers', _PUBLISHERS),
+    ('applications/sequencer/ServingWalFollowers.cpp', 'ServingWalFollowers::send_released_to_follower_engines', _FOLLOWER_ENGINES),
+    ('applications/sequencer/ServingWalFollowers.hpp', 'handed_over_engines_', _DEFINITION),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_undelivered_reports_request', _RESENDS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_session_replay_request', _RESENDS),
     ('applications/sequencer/CommandChecks.cpp', 'CommandChecks::find', _DUPLICATE_CHECK),
@@ -1325,7 +1325,7 @@ _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.cpp', 'CommandLinks::find_command', _DUPLICATE_CHECK),
     ('applications/sequencer/SequencerThread.hpp', 'find_command', _DEFINITION),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::first_report_answering', _ANSWER_FROM_WAL),
-    ('applications/sequencer/SequencerThread.hpp', 'handed_over_publishers_', _DEFINITION),
+    ('applications/sequencer/ServingWalFollowers.hpp', 'handed_over_publishers_', _DEFINITION),
 ]
 
 # Entries of _PERMITTED_WAL_READS that matched at least one read in this run (see report_unused_permitted_wal_reads).

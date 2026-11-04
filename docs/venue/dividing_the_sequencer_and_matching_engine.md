@@ -861,6 +861,37 @@ engine first (decision 2, option A).
     suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 15. `ServingWalFollowers`, and what is left of `SequencerThread` reduced to its connections, timers and the handing on
     of events.
+
+    **As built.** `ServingWalFollowers` (`applications/sequencer/ServingWalFollowers.hpp`) holds the reading thread's
+    service (`WalFollowerService`), the publishers and the matching engines that follow the WAL once handed over, the
+    connection the follower sequencer is being caught up on, the matching engines being served and why, and the
+    damaged records that stop one being caught up. It makes the decisions of section 6.15. It is itself what the
+    replicated WAL and the service call: it implements the library's `PeerCatchUpInterface` and
+    `WalFollowerEventsInterface`, which the thread's nested class `SequencerWalFollowing` implemented before. The three
+    true-or-false members of a matching engine being served are one kind, `ServingWalFollowers::EngineKind`: sent the
+    orders it lacks, caught up to lead, or caught up to follow. The thread implements `ServingWalFollowersLinksInterface`,
+    which includes the library's `WalFollowerLinksInterface` for sending to the reading thread and sending messages,
+    and which gives the part the peer connection and whether a connection is a publisher's, publishes the position
+    released, pauses and resumes reading for a hand-over, tells the replicated WAL and `EnginePresence` how a catch-up
+    went, raises `EngineHandedOver`, routes orders to an engine caught up to lead, and sets the gauge of the damaged
+    record. The thread keeps the decoding of each request to follow, and builds the start of the answer to an engine.
+    The list of reads of the WAL in `scripts/check_standards.py` names the part's two functions that send records to
+    those handed over, and its two members that hold them, in place of the thread's. The part's Quill log lines begin
+    with its name. `ServingWalFollowersTest` has ten tests, run against a real WAL in a scratch directory and the real
+    service, and eighteen faults put in on purpose were each caught. The full suite with the secondary engine first
+    passes, 38 of 38. With the primary engine first, 98 of 99 pass: scenario 80 failed once, because the disk holding the
+    WALs and the engine's region wrote about 20 MB a second at full load while the engine created its 496 MB region,
+    and the sequencer's record of its new epoch, written with `fsync` on its own thread, waited 3.2 seconds behind it,
+    longer than the lease. Run alone three times on the same build, scenario 80 passes each time.
+
+    **What is left of the thread.** `SequencerThread.cpp` is 3,121 lines, from 4,559 before this phase, and its header
+    717, from 1,205. What remains is what the step meant to leave: the connections, the timers, the decoding of each
+    message, the writing of records into the WAL, and the handing of each event to the part it belongs to. Two larger
+    pieces remain that this phase does not move, because other work removes them: the answers to a member's request
+    for its reports again (`handle_session_replay_request`, `handle_undelivered_reports_request`), which
+    [BUG-0113](../bug_list.md#bug_0113) moves to a recovery service, and replay mode, which step 16 removes. The first
+    half of forwarding a report also stays, as step 9's note says, because it writes the report's own record into the
+    WAL.
 16. Replay mode, as decision 3 says; the round trip measured again; the sequencer and matching engine documents brought
     up to date.
 
