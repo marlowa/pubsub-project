@@ -1,9 +1,8 @@
 # Restoring the design: what is wrong, and the plan {#recovery_plan}
 
 > **Status.** The plan was agreed on 9 October 2026. Each phase ends with a review at which Andrew decides
-> whether the next one starts. Phases 1 to 9 are finished; each is listed, with its date and result, under
-> "Already done" at the end. Phase 10's sixteen steps are done, on 4 November 2026, and it awaits Andrew's
-> review.
+> whether the next one starts. Phases 1 to 10 are finished; each is listed, with its date and result, under
+> "Already done" at the end.
 
 ## In one page
 
@@ -546,8 +545,8 @@ design divides the work into sixteen steps, each followed by the developer loop 
 All sixteen steps are done: the matching engine and the sequencer are each divided into parts, the sequencer's replay
 mode is removed, and the order's round trip, measured after the engine's steps and again after the sequencer's, is
 unchanged by either. Step 1 found [BUG-0225](bug_list.md#bug_0225) and [BUG-0226](bug_list.md#bug_0226), step 14
-found [BUG-0227](bug_list.md#bug_0227), and step 15's suite found [BUG-0228](bug_list.md#bug_0228). The phase awaits
-Andrew's review.
+found [BUG-0227](bug_list.md#bug_0227), and step 15's suite found [BUG-0228](bug_list.md#bug_0228). Andrew closed
+the phase on 4 November 2026.
 
 ### Framework fixes done alongside the phases
 
@@ -628,3 +627,6 @@ not the aim. Gaps found along the way are recorded, not fixed within the phase. 
 - Phase 9: the leader checks every command against sequencing it twice, in one check, at a measured cost of
   295 nanoseconds at the median, and the gateways' keeping and sending again of unanswered commands is in the
   library; every point of its finish condition was met when step 6 was built, on 3 November 2026.
+- Phase 10: the sequencer and the matching engine are each divided into parts, each part with its own unit tests,
+  the sequencer's replay mode is removed, and the order's round trip is unchanged; Andrew closed the phase on
+  4 November 2026.
