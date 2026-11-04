@@ -329,6 +329,25 @@ load moved to `/nvme`, had a median of 51 ms, while `iostat` showed it 99 per ce
 writing to it. This load produces a tail of 157 ms at most, not the 3.2 seconds of the failed scenario, so it shows
 the effect but not its whole size.
 
+**Measured in the venue.** On 4 November 2026, with the lease at 3000 ms, scenario 80 was run six times with the WALs,
+the epoch files and the arbiters' lease promise records on `/mnt/sda2`, which shares the BX500 with the open-order
+regions on `/mnt/sda1`, and six times with them on `/nvme`, a Crucial P310 of their own; the regions were on
+`/mnt/sda1` in both. Each run started from cleared WALs. Output in `tmp/bug0228_nvme/`.
+
+| | On `/mnt/sda2` | On `/nvme` |
+|---|---|---|
+| Runs of scenario 80 passed | 4 of 6 | 6 of 6 |
+| Runs in which the region took more than 20 seconds to create again | not known: the two failures stopped before it was timed | 2 (23.9 and 29.0 seconds) |
+| Longest record of an epoch | 4,752 ms by the primary sequencer, and 5,282 ms in a matching engine's check at start-up | under 6 ms |
+| Times a lease agent's thread was held up | 7, in the arbiters and the sequencer, the longest 9,052 ms in an arbiter | none |
+| Times an instance stopped leading because recording its epoch was slow | 2 | none |
+
+Both full suites then passed with the files on `/nvme` and the lease at 3000 ms: 99 of 99, and 38 of 38 with the
+secondary matching engine started first. The P310 is slower than the BX500 at the median, about 4 ms against 2 ms,
+which is of no consequence against a lease of 3000 ms; what costs the lead is the longest records, and those come from
+sharing a disk with a region being created. A lease of 5000 ms would not have kept the lead on `/mnt/sda2` either, since
+an arbiter's lease thread there was held up for 9 seconds.
+
 **Principles.** F4: the exception for recording a new epoch says nothing of the lease, which keeps running while the
 thread waits.
 
