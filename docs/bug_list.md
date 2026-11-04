@@ -217,7 +217,10 @@ went looking.
    availability chapter. After that: authentication and administration, trading state, and the framework's promises
    to those who use it. This too waits, by Andrew's decision.
 
-   **A proposed outline for the chapter**, from Copilot's reading, kept here for when the work starts:
+   **A proposed outline for the chapter**, from Copilot's reading, kept here for when the work starts. The venue is an
+   example built on the framework, not a full trading system: the gateways do little checking of an order, and the
+   matching engine does no matching, by design. So the chapter specifies what the example venue does, and has no
+   section on executions or fills.
 
    1. Purpose and shared behaviour: the order behaviour members get through both gateways.
    2. Starting and keeping an order-entry session: establishing it and tracking message sequence numbers; resending
@@ -227,11 +230,7 @@ went looking.
    5. Reporting an order's state: what each report means, and how a report names the order and the request.
    6. Cancelling an order: how the cancel names the request and the original order; the confirmation of the cancel,
       or its rejection.
-   7. Executions and fills: an order's acknowledgement told apart from a trade, and a plain statement that the matching
-      engine does not match orders, so reports no fill. Every report it sends has a cumulative quantity of 0
-      (`MatchingEngineStateMachine.cpp`), and [matching_engine.md](venue/matching_engine.md) says no order is ever
-      filled.
-   8. Checking the behaviour through both gateways: the same order, rejection, cancellation and reporting outcomes
+   7. Checking the behaviour through both gateways: the same order, rejection, cancellation and reporting outcomes
       through FIX and through the binary gateway.
 
 ### BUG-0228: A slow sync when a sequencer records its new epoch can use up the lease it has just been granted, so it stops leading as it starts {#bug_0228}
