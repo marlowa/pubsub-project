@@ -304,8 +304,9 @@ a collapse was 13 ms.
 benchmark below. Recording the epoch is done for both programs by `EpochRecording`, which also warns when a record takes
 more than a quarter of the lease, says at Error when a slow record before taking the lead is the probable cause of
 stopping leading, and checks at start-up how fast the disk syncs, with a gauge. The lease agent says when its thread was
-held up before the lease ran out. The development environment's lease period is 5000 ms, with the reason in
-`environments/dev.toml`. Point 1, recording the epoch before the lease is asked for, waits for a design that Andrew
+held up before the lease ran out. On the development machine the WALs, the epoch files and the lease promise records are on `/nvme`, an NVMe SSD of
+their own, set by `PUBSUB_WAL_ROOT` in the build scripts, and the lease period is 3000 ms, as in the other
+environments, with the reason in `environments/dev.toml`. Point 1, recording the epoch before the lease is asked for, waits for a design that Andrew
 is to discuss first. There is no stall at start-up to find; the waits that do happen are listed above, and all are in the kernel's journal.
 
 **Measured with the benchmark.** `epoch_store_cost` (`libraries/pubsub_itc_fw/benchmarks/src/EpochStoreCost.cpp`),

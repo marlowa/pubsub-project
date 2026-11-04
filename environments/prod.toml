@@ -308,8 +308,8 @@ ha_only = false
 # 3000 assumes a disk that syncs well inside it: an instance records its new epoch on disk, with a
 # sync, while the lease it has just been granted runs, and stops leading as it starts if the sync
 # takes longer. Each component says at start-up how long its disk takes, and warns if it is too
-# slow for this period (docs/bug_list.md, BUG-0228). The development environment uses a longer
-# period for that reason.
+# slow for this period (docs/bug_list.md, BUG-0228). The disk holding the WALs and the small
+# synced files must not also hold the matching engines' open-order regions.
 lease_period_milliseconds = 3000
 lease_drift_allowance_milliseconds = 250
 lease_renewal_interval_milliseconds = 1000

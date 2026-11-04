@@ -5692,8 +5692,14 @@ def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     sequencer_config = launched_configs[sequencer]
-    wal_copy = work / "wal"
-    shutil.copytree(sequencer_config.parent / installed_toml_section_value(sequencer_config, "wal", "directory"), wal_copy)
+    sequencer_wal = sequencer_config.parent / installed_toml_section_value(sequencer_config, "wal", "directory")
+    # The copy of the WAL goes beside the sequencer's own WAL, on the disk PUBSUB_WAL_ROOT names, and the regions the
+    # engines rebuild stay in the work directory under the install. A sync on the disk holding a region being created
+    # waits behind the region's data, which on the development machine's SATA SSD takes seconds (docs/bug_list.md,
+    # BUG-0228), and the sequencer started on the copy records its epoch on the copy's disk.
+    wal_copy = sequencer_wal.parent / "engines_on_the_wal_wal"
+    shutil.rmtree(wal_copy, ignore_errors=True)
+    shutil.copytree(sequencer_wal, wal_copy)
     _, damage, last_record = wal_problems(wal_copy)
     if damage:
         die(f"engines on the WAL: the copy of {sequencer}'s WAL is damaged: {damage}")
@@ -5767,6 +5773,7 @@ def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_
             f"{result.returncode}). An engine catching up is not deterministic, or not as the engine that served was.")
     log(f"  engines on the WAL: {len(runs)} runs agree with each other and with the WAL ({time.monotonic() - started:.0f}s)")
     shutil.rmtree(work, ignore_errors=True)
+    shutil.rmtree(wal_copy, ignore_errors=True)
 
 
 def check_write_ahead_logs_in_order(prefix: Path) -> None:

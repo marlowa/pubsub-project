@@ -17,14 +17,16 @@ fi
 case "${PLATFORM_ID}" in
     linuxmint22*)
         export THIRDPARTY_DIR=/home/marlowa/mystuff/thirdparty
-        # Where the write-ahead logs go. A device of their own, mounted lazytime, which is what
-        # removed stalls of hundreds of milliseconds on the sequencer -- see
-        # docs/operations/filesystem_requirements.md. Set here rather than in dev.toml because
+        # Where the write-ahead logs and the small synced files go: a disk of their own, an NVMe SSD
+        # mounted lazytime, separate from the disk holding the matching engines' open-order regions.
+        # Sharing a disk with a region being created held a sync for up to 5 seconds, so that an
+        # instance lost the lead as it took it -- see docs/operations/filesystem_requirements.md
+        # and docs/bug_list.md, BUG-0228. Set here rather than in dev.toml because
         # dev.toml serves this platform AND the Rocky/RHEL8 container, where the path does not
         # exist. Only set when the directory is really there, so that a machine without that
         # disk still builds: deploy.py then falls back to the install directory.
-        if [ -d /mnt/sda2/mystuff2 ]; then
-            export PUBSUB_WAL_ROOT=/mnt/sda2/mystuff2
+        if [ -d /nvme/mystuff2 ]; then
+            export PUBSUB_WAL_ROOT=/nvme/mystuff2
         else
             unset PUBSUB_WAL_ROOT
         fi

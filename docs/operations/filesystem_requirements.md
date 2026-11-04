@@ -138,18 +138,18 @@ moved, no filesystem is unmounted, and processes with files open are unaffected.
 
 ```
 # as root
-mount -o remount,lazytime /mnt/sda2          # the filesystem holding the log
-findmnt -no SOURCE,OPTIONS /mnt/sda2         # confirm: expect rw,lazytime,relatime
+mount -o remount,lazytime /nvme              # the filesystem holding the log
+findmnt -no SOURCE,OPTIONS /nvme             # confirm: expect rw,lazytime,relatime
 ```
 
 A remount does **not** survive a reboot. To make it permanent, add `lazytime` to that
 filesystem's options in `/etc/fstab`:
 
 ```
-/dev/sda2  /mnt/sda2  ext4  defaults,lazytime  0  2
+/dev/nvme0n1p1  /nvme  ext4  defaults,lazytime  0  2
 ```
 
-then `mount -o remount /mnt/sda2` to apply it, or verify at the next boot with `findmnt`.
+then `mount -o remount /nvme` to apply it, or verify at the next boot with `findmnt`.
 
 The sequencer checks this at startup and says what it found. If the option is missing it logs a
 warning naming the directory and the options actually in force. It is a warning rather than a
@@ -175,7 +175,7 @@ open-order regions in the install directory, on a different filesystem
 ([Keep the large file away from the small synced files](#fs_keep_regions_apart)). It says so:
 
 ```
-PUBSUB_WAL_ROOT is set: write-ahead logs and the venue's small state files go under /mnt/sda2/mystuff2; open-order regions do not
+PUBSUB_WAL_ROOT is set: write-ahead logs and the venue's small state files go under /nvme/mystuff2; open-order regions do not
 ```
 
 The variable is named for the write-ahead logs, but also covers the small state files. If one of
@@ -278,15 +278,31 @@ runs, the first straight after a build (when the earlier failure happened), reco
 write of 50 ms or more, no lease running out, and no lease-handling callback overrunning**, while the
 engine created a fresh region at every start.
 
-**The rule.** The open-order regions go on a different filesystem from the write-ahead logs and the
-small synced files. `deploy.py` does this: with `PUBSUB_WAL_ROOT` set, the write-ahead logs, epoch
+**A different filesystem on the same disk is not enough.** Two filesystems on one disk share its queue
+of writes, and a disk that is slow under sustained writing makes every sync on it wait. The BX500 that
+holds `/mnt/sda1` has no memory cache of its own, writes about 120 MB a second until its small fast cache
+is full, and then about 20 MB a second. Measured on 2026-11-04 with high availability scenario 80, which
+makes a matching engine create its region again, six runs each, a lease of 3000 ms, and the regions on
+`/mnt/sda1`:
+
+| | Small synced files on `/mnt/sda2`, the same disk | On `/nvme`, a disk of their own |
+|---|---|---|
+| Runs passed | 4 of 6 | 6 of 6 |
+| Longest record of an epoch | 5,282 ms | under 6 ms |
+| Longest a lease agent's thread was held up | 9,052 ms, in an arbiter | not held up |
+
+Two of the runs on `/nvme` were ones in which the BX500 took more than 20 seconds to create the region;
+the records on `/nvme` were unaffected. Details are in [BUG-0228](../bug_list.md#bug_0228).
+
+**The rule.** The open-order regions go on a different disk from the write-ahead logs and the small
+synced files, not only a different filesystem. `deploy.py` does this: with `PUBSUB_WAL_ROOT` set, the write-ahead logs, epoch
 files and promise records go under it, and the regions stay in the install directory. On the
 development machine that is:
 
 | File | Where | Filesystem |
 |---|---|---|
-| Write-ahead logs, epoch files, promise records | `/mnt/sda2/mystuff2/var` | `/mnt/sda2`, mounted `lazytime` |
-| Open-order regions | `installed/var` | `/mnt/sda1` |
+| Write-ahead logs, epoch files, promise records | `/nvme/mystuff2/var` | `/nvme`, mounted `lazytime`, on a Crucial P310 NVMe SSD |
+| Open-order regions | `installed/var` | `/mnt/sda1`, on a Crucial BX500 SATA SSD |
 
 **What this does not settle.** The region's own filesystem is not mounted `lazytime` on the development
 machine, so the matching engine is still exposed to the timestamp traffic described in
