@@ -20,10 +20,11 @@ namespace matching_engine {
 /**
  * @brief Configuration for the matching engine application.
  *
- * The matching engine accepts sequenced order PDUs from the sequencer,
- * matches them, and sends ExecutionReport PDUs back to the sequencer's
- * ER inbound listener. The sequencer then forwards ERs to the gateway.
- * All traffic flows through the sequencer in both directions.
+ * The matching engine accepts sequenced orders and cancels from the sequencer, keeps them on its book
+ * until they are cancelled, and sends an execution report for each back to the sequencer's listener for
+ * reports, which forwards it to the gateway. It does no matching, by design: the venue is an example built
+ * on the framework (docs/venue/matching_engine.md). All traffic flows through the sequencer in both
+ * directions.
  */
 struct MatchingEngineConfiguration {
     // Inbound -- sequenced order PDUs from the sequencer
