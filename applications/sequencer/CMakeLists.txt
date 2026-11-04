@@ -1,6 +1,7 @@
 add_executable(sequencer
         SequencerConfigurationLoader.cpp
         MemberSessions.cpp
+        ReportForwarding.cpp
         SequencerThread.cpp
         Sequencer.cpp
         VenueStateFromTheWal.cpp
@@ -24,6 +25,7 @@ target_sources(sequencer PRIVATE
         EngineAbsenceRule.hpp
         EngineRoutedStamp.hpp
         MemberSessions.hpp
+        ReportForwarding.hpp
         SequencerConfiguration.hpp
         SequencerConfigurationLoader.hpp
         SequencerThread.hpp
@@ -99,7 +101,9 @@ add_executable(sequencer_tests
         tests/TradingHaltStateTest.cpp
         tests/VenueStateFromTheWalTest.cpp
         tests/MemberSessionsTest.cpp
+        tests/ReportForwardingTest.cpp
         MemberSessions.cpp
+        ReportForwarding.cpp
         SequencerConfigurationLoader.cpp
         VenueStateFromTheWal.cpp
 )

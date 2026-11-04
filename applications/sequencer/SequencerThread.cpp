@@ -343,8 +343,6 @@ void SequencerThread::on_app_ready_event() {
     }
     for (const auto& endpoint : config_.gateway_endpoints) {
         connect_to_service(endpoint.service_name());
-        gateway_announcements_[gateway_key(endpoint.protocol, endpoint.instance)] = GatewayAnnouncement{};
-        reports_held_for_gateways_.try_emplace(gateway_key(endpoint.protocol, endpoint.instance), held_report_capacity_bytes, held_report_capacity_reports);
     }
     connect_to_service("matching_engine");
     if (config_.ha_enabled) {
@@ -369,10 +367,9 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
     const auto endpoint = std::find_if(config_.gateway_endpoints.begin(), config_.gateway_endpoints.end(),
                                        [&svc](const auto& candidate) { return candidate.service_name() == svc; });
     if (endpoint != config_.gateway_endpoints.end()) {
-        gateway_conn_ids_[gateway_key(endpoint->protocol, endpoint->instance)] = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway protocol={} instance={} connection {} established",
                    endpoint->protocol, endpoint->instance, id.get_value());
-        send_reports_held_for_gateway(endpoint->protocol, endpoint->instance, id);
+        reports_.gateway_connected(endpoint->protocol, endpoint->instance, id);
         // Tell it the acceptance state straight away. A transition-only design gets exactly
         // this case wrong: a gateway starting during an outage would otherwise assume the
         // venue was fine, which is the default that caused BUG-0009 in the first place.
@@ -490,21 +487,10 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
         leading_engine_announced_on_ = pubsub_itc_fw::ConnectionID{};
         note_whether_an_engine_takes_orders();
     }
-    // A gateway whose link was lost may hold sessions this instance has not been told of by the time it comes up again.
-    for (auto& [gateway, announcement] : gateway_announcements_) {
-        if (announcement.announced && announcement.link == id) {
-            announcement.announced = false;
-            announcement.link = pubsub_itc_fw::ConnectionID{};
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: gateway id {} lost the link it announced its sessions on -- its sessions are not known until it announces again",
-                       gateway);
-        }
-    }
-    const auto lost_gateway = std::find_if(gateway_conn_ids_.begin(), gateway_conn_ids_.end(), [&id](const auto& entry) { return entry.second == id; });
-    if (lost_gateway != gateway_conn_ids_.end()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway id {} connection {} lost: {}", lost_gateway->first,
-                   id.get_value(), reason);
-        gateway_conn_ids_.erase(lost_gateway);
+    const std::optional<ReportForwarding::GatewayKey> lost_gateway = reports_.connection_lost(id);
+    if (lost_gateway.has_value()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway id {} connection {} lost: {}", *lost_gateway, id.get_value(),
+                   reason);
     } else if (engine_routing_.is_engine_connection(id)) {
         if (wal_follower_service_.has_value()) {
             wal_follower_service_->on_connection_lost(id);
@@ -1027,8 +1013,8 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
                 routing_gateway_instance = destination->instance;
             } else {
                 // The session is not connected anywhere, so the report has nowhere to go. It is
-                // counted as dropped where it would have been sent, below, or when it is taken
-                // from pending_er_; by then the session may be connected again.
+                // counted as dropped where it would have been sent, below, or when ReportForwarding
+                // sends it after its record is committed; by then the session may be connected again.
             }
         }
     }
@@ -1091,43 +1077,21 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
 
     append_envelope_to_wal(envelope);
 
-    // Which WalAck releases this ER to the gateway.
+    // Which record must be committed before this report goes to the gateway.
     //
-    // Ordinarily it is the *order's* WAL entry: do not tell a client its order
-    // executed until the follower has durably committed the order itself.
+    // Ordinarily it is the order's record: a member is not told its order executed until the follower holds the order.
     //
-    // An ER with no originating order sequence cannot use that rule. The
-    // cancel-on-failover ERs a promoted matching engine emits carry seq_no 0,
-    // because they are generated on promotion rather than driven by a sequenced
-    // order. Gating those on seq_no 0 waited for a WalAck that can never arrive:
-    // every one was parked in pending_er_ forever -- never delivered, never
-    // dropped, and traced only by the Debug line below. Worse, pending_er_ is
-    // keyed on the gate sequence, so all of them collided on key 0 and only the
-    // first was even retained; the rest were discarded outright. The whole book
-    // was cancelled and no client was ever told.
-    //
-    // They gate on the ER record's own WAL sequence instead. The follower acks
-    // every WalRecord it receives (see handle_peer_wal_record), so er_wal_seq is
-    // acked exactly as an order's seq_no is, and it is unique per ER so the keys
-    // no longer collide. This is strictly the stronger guarantee -- the client
-    // learns of the cancel only once the backup holds the cancel record itself --
-    // and it is the "full two-tier commit of ERs" noted above, applied to the one
-    // case that had no working gate at all.
-    //
-    // A report that repeats one already sent needs the same treatment, for the same reason
-    // arrived at from the other direction. It names the sequence of an order the venue took
-    // earlier, and that order's WalAck came and was consumed at the time -- so gating on it
-    // waits for an acknowledgement that is in the past and never comes again. Every report
-    // a matching engine sends out of a catch-up is such a report, which is what the mark on
-    // the envelope says. Without this an order no engine had applied, which the catch-up exists to answer, is
-    // applied, reported, and then parked in pending_er_ -- answered everywhere except at
-    // the member.
+    // A report that answers no order has no order's record to wait for: the reports cancelling the book that a promoted
+    // matching engine sends carry seq_no 0. A report that repeats one already sent, as every report from a catch-up
+    // does, names an order whose record was committed long ago, so waiting for that record would not wait at all. Both
+    // wait for the report's own record instead, which is unique to the report, so that the member learns of it only once
+    // the follower holds the report's record.
     const bool gate_on_own_record = (er_seq_no == 0) || possible_repeat;
     const int64_t gate_seq_no = gate_on_own_record ? er_wal_seq : er_seq_no;
 
     // The report as it would wait, for the follower or for its session to be announced.
     auto as_pending = [&]() {
-        PendingEr pending{};
+        ReportForwarding::Pending pending{};
         pending.pdu_id = inbound.pdu_id;
         pending.seq_no = er_seq_no;
         pending.payload.assign(inbound.payload.data, inbound.payload.data + inbound.payload.size);
@@ -1147,7 +1111,7 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     // Sent now, unless its session is not known: then it is held until the session is announced, or dropped.
     auto send_now = [&]() {
         if (!has_routing_conn && !routing_identity.empty()) {
-            if (hold_report_if_sessions_unknown(as_pending())) {
+            if (reports_.hold_for_unannounced_session(as_pending())) {
                 if (erase_routing_entry) {
                     sessions_.order_ended(er_seq_no);
                 }
@@ -1155,7 +1119,7 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
             }
             sessions_.report_dropped_unbound(routing_identity, er_seq_no);
         }
-        send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
+        reports_.send_to_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
         sessions_.report_forwarded(routing_identity);
         if (erase_routing_entry) {
             sessions_.order_ended(er_seq_no);
@@ -1170,14 +1134,12 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
         // WalAck not yet received; buffer the inner (unwrapped) ER until it arrives.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck seq={} from follower", er_seq_no,
                    gate_seq_no);
-        pending_er_.emplace(gate_seq_no, as_pending());
+        reports_.wait_for_commit(gate_seq_no, as_pending());
     }
 
     // Handled, whether forwarded, waiting, or dropped: reports_forwarded_through() accounts for the
     // ones still waiting.
-    if (position.has_value() && (!latest_report_seen_.has_value() || position->is_after(*latest_report_seen_))) {
-        latest_report_seen_ = position;
-    }
+    reports_.report_seen(position);
 }
 
 std::chrono::steady_clock::time_point SequencerThread::kept_reports_needed_from() const {
@@ -1518,14 +1480,7 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
     }
     // Reports held for sessions not yet announced are the new leader's to send: it forwards what it kept while following.
     if (stops_leading) {
-        held_reports_.discard_all();
-        held_reports_left_the_room();
-        reports_held_since_sessions_known_ = false;
-        // Likewise the reports held for a gateway with no connection: they are in the WAL, and the new leader sends them.
-        for (auto& [gateway, held] : reports_held_for_gateways_) {
-            held.discard_all();
-        }
-        gateways_holding_reports_.clear();
+        reports_.stopped_leading();
     }
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
@@ -1668,7 +1623,7 @@ void SequencerThread::SequencerReplicatedWalEvents::committed_through(int64_t se
     // The orders and the reports waiting for these records may now go: the orders to the matching
     // engine, in order, and the reports to their gateways.
     owner_.release_held_orders_to_the_leading_engine(seq_no);
-    owner_.forward_pending_er_through(seq_no);
+    owner_.reports_.deliver_committed_through(seq_no);
     // Last, after the order path's own work: the matching engines that follow the WAL are sent the records released, and
     // the publishers the records just committed.
     owner_.send_released_records_to_follower_engines();
@@ -2661,7 +2616,7 @@ void SequencerThread::answer_from_wal(const pubsub_itc_fw_app::WalRecordView& in
     envelope.poss_resend = true;
     // Not timed: the report says nothing about how long the order path takes.
     const bool is_new_order_ack = false;
-    send_er_to_origin_gateway(protocol, destination->instance, 0, envelope, is_new_order_ack);
+    reports_.send_to_gateway(protocol, destination->instance, 0, envelope, is_new_order_ack);
     ++commands_answered_from_wal_;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: command ClOrdID={} from comp_id='{}' sent again is answered by the report the WAL holds as record {}, forwarded "
@@ -2717,29 +2672,8 @@ void SequencerThread::summarise_command_checks(const char* reason) {
     commands_refused_reused_identifier_ = 0;
 }
 
-std::optional<EngineReportPosition> SequencerThread::reports_forwarded_through() const {
-    if (!latest_report_seen_.has_value()) {
-        return std::nullopt;
-    }
-    // A report still waiting for an acknowledgement has not been forwarded, and neither has anything
-    // after it as far as a follower can tell, so the position stops just before the oldest waiting.
-    std::optional<EngineReportPosition> oldest_waiting;
-    for (const auto& [gate, pending] : pending_er_) {
-        if (pending.position.has_value() && (!oldest_waiting.has_value() || oldest_waiting->is_after(*pending.position))) {
-            oldest_waiting = pending.position;
-        }
-    }
-    // A report held until its session is announced has not been forwarded either. This is done for every record
-    // written, so the held reports are not read here: a position at or before every one of them is kept as they come
-    // and go (held_reports_oldest_position_).
-    if (held_reports_oldest_position_.has_value() && (!oldest_waiting.has_value() || oldest_waiting->is_after(*held_reports_oldest_position_))) {
-        oldest_waiting = held_reports_oldest_position_;
-    }
-    return oldest_waiting.has_value() ? oldest_waiting->just_before() : latest_report_seen_;
-}
-
 void SequencerThread::stamp_reports_forwarded_through(pubsub_itc_fw_app::WalRecord& envelope) const {
-    const std::optional<EngineReportPosition> through = reports_forwarded_through();
+    const std::optional<EngineReportPosition> through = reports_.forwarded_through();
     envelope.has_reports_forwarded_through_epoch = through.has_value();
     envelope.reports_forwarded_through_epoch = through.has_value() ? through->epoch : 0;
     envelope.has_reports_forwarded_through_number = through.has_value();
@@ -2954,132 +2888,6 @@ void SequencerThread::discard_held_orders() {
     }
 }
 
-void SequencerThread::forward_pending_er_through(int64_t seq_no) {
-    // Every report waiting on a record committed through seq_no may now go, in the order of the records.
-    const auto covered_end = pending_er_.upper_bound(seq_no);
-    for (auto it = pending_er_.begin(); it != covered_end; ++it) {
-        forward_pending_er(it->second);
-    }
-    pending_er_.erase(pending_er_.begin(), covered_end);
-}
-
-void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope,
-                                                bool is_new_order_ack) {
-    const pubsub_itc_fw::ConnectionID* connection = gateway_connection(protocol, instance);
-    if (connection == nullptr) {
-        // Distinguish "configured but not currently connected", which is transient and
-        // resolves when the gateway reconnects, from "never configured", which never
-        // resolves and means a gateway is submitting orders whose reports can go nowhere.
-        // The second is a deployment error worth naming loudly and exactly once per pair,
-        // rather than once per report -- a busy gateway would otherwise flood the log with
-        // the same misconfiguration.
-        const bool configured = std::any_of(config_.gateway_endpoints.begin(), config_.gateway_endpoints.end(), [protocol, instance](const auto& endpoint) {
-            return endpoint.protocol == protocol && endpoint.instance == instance;
-        });
-        if (!configured && unknown_gateways_warned_.insert(gateway_key(protocol, instance)).second) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                       "SequencerThread: orders received from gateway protocol={} instance={}, which is not in this sequencer's [[gateway]] "
-                       "configuration -- its execution reports cannot be delivered anywhere. Check the gateway's instance_id against the "
-                       "sequencer's endpoints.",
-                       protocol, instance);
-        }
-        if (configured && hold_report_for_gateway(protocol, instance, er_seq_no, envelope)) {
-            return;
-        }
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway protocol={} instance={} not connected -- dropping ER seq={}",
-                   protocol, instance, er_seq_no);
-        report(pubsub_itc_fw_app::ReportDroppedGatewayNotConnected{protocol, instance, er_seq_no});
-        return;
-    }
-    // A member is waiting for this: it is the report on its way back to them.
-    send_pdu(*connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope,
-             pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
-
-    // The last checkpoint this component contributes, recorded here rather than at each of
-    // the three call sites because this is the one place a report leaves for a gateway. Two
-    // of those sites are the immediate path and the wait-for-follower path, and the third is
-    // a report released long after the fact; a checkpoint written out at each would be three
-    // chances to record a different thing.
-    //
-    // After the send, so that the stage it closes includes handing the report to the reactor.
-    // Nothing is recorded when the report never left: the early returns above are a gateway
-    // that is not connected, and a report that was dropped is not a stage that was fast.
-    if (is_new_order_ack) {
-        order_path_metrics::observe_checkpoint(er_out_elapsed_histogram_, envelope.has_gateway_ingress_ns, envelope.gateway_ingress_ns,
-                                               config_.wall_clock->now_ns());
-    }
-}
-
-bool SequencerThread::hold_report_for_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope) {
-    if (role_ != pubsub_itc_fw_app::Role::leader) {
-        return false;
-    }
-    const GatewayKey gateway = gateway_key(protocol, instance);
-    const auto store = reports_held_for_gateways_.find(gateway);
-    if (store == reports_held_for_gateways_.end()) {
-        return false;
-    }
-    // Encoded as it would have been sent, after the sequence number its transport header carries, so that sending it
-    // later is a send of these bytes. Measure, then fit, as the WAL's encoding does.
-    size_t bytes_written = 0;
-    size_t bytes_needed = 0;
-    [[maybe_unused]] const bool measured = pubsub_itc_fw_app::encode(envelope, nullptr, 0, bytes_written, bytes_needed);
-    if (held_envelope_encoding_.size() < sizeof(er_seq_no) + bytes_needed) {
-        held_envelope_encoding_.resize(sizeof(er_seq_no) + bytes_needed);
-    }
-    std::memcpy(held_envelope_encoding_.data(), &er_seq_no, sizeof(er_seq_no));
-    if (!pubsub_itc_fw_app::encode(envelope, held_envelope_encoding_.data() + sizeof(er_seq_no), held_envelope_encoding_.size() - sizeof(er_seq_no),
-                                   bytes_written, bytes_needed)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "SequencerThread: failed to encode ER seq={} for gateway protocol={} instance={} to hold it ({} bytes needed) -- dropping it", er_seq_no,
-                   protocol, instance, bytes_needed);
-        return false;
-    }
-    const fix_common::SessionIdentity identity =
-        fix_common::SessionIdentity::make(envelope.has_sender_comp_id ? envelope.sender_comp_id : std::string_view{}, protocol);
-    store->second.hold(identity, held_envelope_encoding_.data(), sizeof(er_seq_no) + bytes_written);
-    if (gateways_holding_reports_.insert(gateway).second) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: gateway protocol={} instance={} has no connection for reports from this instance -- ER seq={} held, and every report "
-                   "for it after this, until the connection is made",
-                   protocol, instance, er_seq_no);
-        report(pubsub_itc_fw_app::ReportsHeldForGateway{protocol, instance, er_seq_no});
-    } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} for gateway protocol={} instance={} held", er_seq_no, protocol,
-                   instance);
-    }
-    return true;
-}
-
-void SequencerThread::send_reports_held_for_gateway(int16_t protocol, int16_t instance, const pubsub_itc_fw::ConnectionID& connection) {
-    const GatewayKey gateway = gateway_key(protocol, instance);
-    gateways_holding_reports_.erase(gateway);
-    const auto store = reports_held_for_gateways_.find(gateway);
-    if (store == reports_held_for_gateways_.end() || store->second.count() == 0) {
-        return;
-    }
-    // Sent as they were encoded, oldest first. Not timed: a report that waited for a connection says nothing about how
-    // long the path takes.
-    const size_t sent = store->second.take_all([this, &connection](const fix_common::SessionIdentity&, const uint8_t* bytes, size_t size) {
-        int64_t er_seq_no = 0;
-        std::memcpy(&er_seq_no, bytes, sizeof(er_seq_no));
-        send_pdu_payload(connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, bytes + sizeof(er_seq_no), size - sizeof(er_seq_no));
-    });
-    int64_t& dropped_reported = gateway_held_reports_dropped_reported_[gateway];
-    const int64_t dropped = store->second.dropped_for_room() - dropped_reported;
-    dropped_reported = store->second.dropped_for_room();
-    if (dropped > 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "SequencerThread: {} report(s) held for gateway protocol={} instance={} were dropped to make room while it had no connection for "
-                   "reports; their members are not told of them",
-                   dropped, protocol, instance);
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: gateway protocol={} instance={} connection for reports made -- sent it {} report(s) held until it was", protocol, instance,
-               sent);
-    report(pubsub_itc_fw_app::ReportsSentToGateway{protocol, instance, static_cast<int64_t>(sent), dropped});
-}
-
 void SequencerThread::note_whether_an_engine_takes_orders() {
     if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value()) {
         return;
@@ -3221,11 +3029,7 @@ void SequencerThread::send_order_acceptance(const pubsub_itc_fw::ConnectionID& c
 }
 
 void SequencerThread::broadcast_order_acceptance() {
-    for (const auto& [gateway, conn_id] : gateway_conn_ids_) {
-        if (conn_id.is_valid()) {
-            send_order_acceptance(conn_id);
-        }
-    }
+    reports_.for_each_gateway_connection([this](const pubsub_itc_fw::ConnectionID& conn_id) { send_order_acceptance(conn_id); });
 }
 
 void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -3254,7 +3058,7 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
 
     const MemberSessions::Bound bound = sessions_.bind(identity, destination, view.still_connected);
     if (bound.still_connected) {
-        send_held_reports(identity);
+        reports_.send_held_for_session(identity);
         return;
     }
     // Reports held for this session until it was announced. A FIX member that logs on asks, once its numbering is
@@ -3262,19 +3066,9 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
     // sent from the WAL; the held ones are among them, so sending them here as well would give the member each one
     // twice. The binary gateway asks for no such thing, so a binary member is sent them here.
     if (identity.protocol == gateway_ids::fix_order_gateway) {
-        const size_t discarded = held_reports_.release(identity, [](const uint8_t*, size_t) {});
-        if (discarded > 0) {
-            held_reports_left_the_room();
-        }
-        if (discarded > 0) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: session comp_id='{}' protocol={} logged on -- {} report(s) held for it are left to the reports it asks for once "
-                       "established",
-                       identity.comp_id_view(), identity.protocol, discarded);
-            report(pubsub_itc_fw_app::HeldReportsReleased{identity.comp_id_view(), identity.protocol, 0, static_cast<int64_t>(discarded)});
-        }
+        static_cast<void>(reports_.release_held_for_session(identity));
     } else {
-        send_held_reports(identity);
+        reports_.send_held_for_session(identity);
     }
     const std::optional<MemberSessions::Resume> resumed =
         sessions_.resume(identity, view.reset_seq_nums, bound.previous_session_died, role_ == pubsub_itc_fw_app::Role::leader, replicated_wal_->last_seq_no());
@@ -3446,7 +3240,7 @@ void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::Ev
         envelope.poss_resend = report.poss_resend || possible_repeat;
         // Not timed: a report waiting while its member was away says nothing about how long the path takes.
         const bool is_new_order_ack = false;
-        send_er_to_origin_gateway(identity.protocol, destination->instance, 0, envelope, is_new_order_ack);
+        reports_.send_to_gateway(identity.protocol, destination->instance, 0, envelope, is_new_order_ack);
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: session comp_id='{}' protocol={} bound again -- sent it {} report(s) produced while it had no connection (log records {} to "
@@ -3455,174 +3249,75 @@ void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::Ev
     report(pubsub_itc_fw_app::UndeliveredReportsSent{identity.comp_id_view(), identity.protocol, static_cast<int64_t>(found.size())});
 }
 
-namespace {
-
-// The fixed part of a held report, written before its payload and its ClOrdID.
-struct HeldReportHeader {
-    int64_t seq_no{0};
-    int64_t log_seq_no{0};
-    int64_t gateway_ingress_ns{0};
-    int64_t position_number{0};
-    int32_t position_epoch{0};
-    uint32_t payload_size{0};
-    uint32_t cl_ord_id_size{0};
-    int16_t pdu_id{0};
-    uint8_t has_position{0};
-    uint8_t has_gateway_ingress_ns{0};
-    uint8_t is_new_order_ack{0};
-    uint8_t poss_resend{0};
-};
-
-} // un-named namespace
-
-SequencerThread::PendingEr SequencerThread::decode_held_report(const uint8_t* bytes, size_t size) {
-    HeldReportHeader header{};
-    if (size < sizeof(header)) {
-        throw pubsub_itc_fw::PreconditionAssertion("SequencerThread: a held report is shorter than its header", __FILE__, __LINE__);
-    }
-    std::memcpy(&header, bytes, sizeof(header));
-    if (sizeof(header) + header.payload_size + header.cl_ord_id_size != size) {
-        throw pubsub_itc_fw::PreconditionAssertion("SequencerThread: a held report's sizes do not add up", __FILE__, __LINE__);
-    }
-    PendingEr pending{};
-    pending.pdu_id = header.pdu_id;
-    pending.seq_no = header.seq_no;
-    pending.log_seq_no = header.log_seq_no;
-    pending.has_gateway_ingress_ns = header.has_gateway_ingress_ns != 0;
-    pending.gateway_ingress_ns = header.gateway_ingress_ns;
-    pending.is_new_order_ack = header.is_new_order_ack != 0;
-    pending.poss_resend = header.poss_resend != 0;
-    if (header.has_position != 0) {
-        pending.position = EngineReportPosition{header.position_epoch, header.position_number};
-    }
-    const uint8_t* payload = bytes + sizeof(header);
-    pending.payload.assign(payload, payload + header.payload_size);
-    pending.cl_ord_id.assign(reinterpret_cast<const char*>(payload + header.payload_size), header.cl_ord_id_size);
-    // The routing entry was dealt with when the report was held.
-    pending.erase_routing_entry = false;
-    return pending;
+void SequencerThread::ReportLinks::send_report(const pubsub_itc_fw::ConnectionID& connection, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope) {
+    owner_.send_pdu(connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope,
+                    pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
 }
 
-int32_t SequencerThread::gateways_not_announced() const {
-    int32_t not_announced = 0;
-    for (const auto& [gateway, announcement] : gateway_announcements_) {
-        if (!announcement.announced) {
-            ++not_announced;
-        }
-    }
-    return not_announced;
+void SequencerThread::ReportLinks::send_encoded_report(const pubsub_itc_fw::ConnectionID& connection, int64_t er_seq_no, const uint8_t* bytes, size_t size) {
+    owner_.send_pdu_payload(connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, bytes, size);
 }
 
-bool SequencerThread::hold_report_if_sessions_unknown(const PendingEr& pending) {
-    if (role_ != pubsub_itc_fw_app::Role::leader || config_.test_events.expects_no_session_for(pending.identity.comp_id_view())) {
-        return false;
-    }
-    const int32_t not_announced = gateways_not_announced();
-    if (not_announced == 0) {
-        return false;
-    }
-    HeldReportHeader header{};
-    header.seq_no = pending.seq_no;
-    header.log_seq_no = pending.log_seq_no;
-    header.gateway_ingress_ns = pending.gateway_ingress_ns;
-    header.has_gateway_ingress_ns = pending.has_gateway_ingress_ns ? 1 : 0;
-    header.has_position = pending.position.has_value() ? 1 : 0;
-    header.position_epoch = pending.position.has_value() ? pending.position->epoch : 0;
-    header.position_number = pending.position.has_value() ? pending.position->number : 0;
-    header.payload_size = static_cast<uint32_t>(pending.payload.size());
-    header.cl_ord_id_size = static_cast<uint32_t>(pending.cl_ord_id.size());
-    header.pdu_id = pending.pdu_id;
-    header.is_new_order_ack = pending.is_new_order_ack ? 1 : 0;
-    header.poss_resend = pending.poss_resend ? 1 : 0;
-    held_report_encoding_.resize(sizeof(header) + pending.payload.size() + pending.cl_ord_id.size());
-    std::memcpy(held_report_encoding_.data(), &header, sizeof(header));
-    std::memcpy(held_report_encoding_.data() + sizeof(header), pending.payload.data(), pending.payload.size());
-    std::memcpy(held_report_encoding_.data() + sizeof(header) + pending.payload.size(), pending.cl_ord_id.data(), pending.cl_ord_id.size());
-    held_reports_.hold(pending.identity, held_report_encoding_.data(), held_report_encoding_.size());
-    if (pending.position.has_value() && (!held_reports_oldest_position_.has_value() || held_reports_oldest_position_->is_after(*pending.position))) {
-        held_reports_oldest_position_ = pending.position;
-    }
-
-    if (!reports_held_since_sessions_known_) {
-        reports_held_since_sessions_known_ = true;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: ER seq_no={} for session comp_id='{}' protocol={} held -- {} gateway instance(s) have not yet announced their "
-                   "sessions, so it may be connected after all. Held reports are sent when their session is announced, and dropped once every "
-                   "gateway instance has announced",
-                   pending.seq_no, pending.identity.comp_id_view(), pending.identity.protocol, not_announced);
-        report(pubsub_itc_fw_app::ReportsHeld{pending.identity.comp_id_view(), pending.identity.protocol, not_announced});
-    } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq_no={} for session comp_id='{}' protocol={} held", pending.seq_no,
-                   pending.identity.comp_id_view(), pending.identity.protocol);
-    }
-    if (held_reports_.dropped_for_room() != held_reports_dropped_reported_ && !held_reports_dropping_) {
-        // Said once, when the dropping starts; the total is said when reports next leave the room.
-        held_reports_dropping_ = true;
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: the room for reports held until their sessions are announced is full, and the oldest held reports are being "
-                       "dropped to make room; their members are not told of them");
-    }
-    held_reports_dropped_gauge_.set(static_cast<double>(held_reports_.dropped_for_room()));
-    return true;
+void SequencerThread::ReportLinks::acknowledgement_sent(const pubsub_itc_fw_app::WalRecord& envelope) {
+    order_path_metrics::observe_checkpoint(owner_.er_out_elapsed_histogram_, envelope.has_gateway_ingress_ns, envelope.gateway_ingress_ns,
+                                           owner_.config_.wall_clock->now_ns());
 }
 
-void SequencerThread::held_reports_left_the_room() {
-    held_reports_oldest_position_.reset();
-    held_reports_.for_each_held([this](const fix_common::SessionIdentity&, const uint8_t* bytes, size_t size) {
-        const PendingEr held = decode_held_report(bytes, size);
-        if (held.position.has_value() && (!held_reports_oldest_position_.has_value() || held_reports_oldest_position_->is_after(*held.position))) {
-            held_reports_oldest_position_ = held.position;
-        }
-    });
-    if (held_reports_dropping_) {
-        held_reports_dropping_ = false;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: {} held report(s) were dropped to make room while the room for reports held until their sessions are announced "
-                   "was full; their members are not told of them",
-                   held_reports_.dropped_for_room() - held_reports_dropped_reported_);
-        held_reports_dropped_reported_ = held_reports_.dropped_for_room();
-    }
+bool SequencerThread::ReportLinks::leading() const {
+    return owner_.role_ == pubsub_itc_fw_app::Role::leader;
 }
 
-void SequencerThread::send_held_reports(const fix_common::SessionIdentity& identity) {
-    if (held_reports_.count() == 0) {
-        return;
-    }
-    // Decoded into a list first: forward_pending_er must not be called while the store is being walked.
-    std::vector<PendingEr> to_send;
-    held_reports_.release(identity, [&to_send](const uint8_t* bytes, size_t size) { to_send.push_back(decode_held_report(bytes, size)); });
-    if (to_send.empty()) {
-        return;
-    }
-    held_reports_left_the_room();
-    for (PendingEr& pending : to_send) {
-        pending.identity = identity;
-        forward_pending_er(pending);
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: session comp_id='{}' protocol={} announced -- sent it {} report(s) held until it was", identity.comp_id_view(),
-               identity.protocol, to_send.size());
-    report(pubsub_itc_fw_app::HeldReportsReleased{identity.comp_id_view(), identity.protocol, static_cast<int64_t>(to_send.size()), 0});
+bool SequencerThread::ReportLinks::expects_no_session_for(std::string_view comp_id) const {
+    return owner_.config_.test_events.expects_no_session_for(comp_id);
 }
 
-void SequencerThread::drop_held_reports_for_sessions_connected_nowhere() {
-    reports_held_since_sessions_known_ = false;
-    if (held_reports_.count() == 0) {
-        return;
+const fix_common::SessionDestination* SequencerThread::ReportLinks::destination(const fix_common::SessionIdentity& identity) const {
+    return owner_.sessions_.destination(identity);
+}
+
+void SequencerThread::ReportLinks::report_forwarded(const fix_common::SessionIdentity& identity) {
+    owner_.sessions_.report_forwarded(identity);
+}
+
+void SequencerThread::ReportLinks::report_dropped_unbound(const fix_common::SessionIdentity& identity, int64_t er_seq_no) {
+    owner_.sessions_.report_dropped_unbound(identity, er_seq_no);
+}
+
+void SequencerThread::ReportLinks::order_ended(int64_t seq_no) {
+    owner_.sessions_.order_ended(seq_no);
+}
+
+void SequencerThread::ReportLinks::reports_held(const fix_common::SessionIdentity& identity, int32_t gateways_not_announced) {
+    owner_.report(pubsub_itc_fw_app::ReportsHeld{identity.comp_id_view(), identity.protocol, gateways_not_announced});
+}
+
+void SequencerThread::ReportLinks::held_reports_released(std::string_view comp_id, int16_t protocol, int64_t sent, int64_t dropped) {
+    owner_.report(pubsub_itc_fw_app::HeldReportsReleased{comp_id, protocol, sent, dropped});
+}
+
+void SequencerThread::ReportLinks::report_dropped_gateway_not_connected(int16_t protocol, int16_t instance, int64_t er_seq_no) {
+    owner_.report(pubsub_itc_fw_app::ReportDroppedGatewayNotConnected{protocol, instance, er_seq_no});
+}
+
+void SequencerThread::ReportLinks::reports_held_for_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no) {
+    owner_.report(pubsub_itc_fw_app::ReportsHeldForGateway{protocol, instance, er_seq_no});
+}
+
+void SequencerThread::ReportLinks::reports_sent_to_gateway(int16_t protocol, int16_t instance, int64_t sent, int64_t dropped) {
+    owner_.report(pubsub_itc_fw_app::ReportsSentToGateway{protocol, instance, sent, dropped});
+}
+
+void SequencerThread::ReportLinks::held_reports_dropped(int64_t total) {
+    owner_.held_reports_dropped_gauge_.set(static_cast<double>(total));
+}
+
+std::vector<std::pair<int16_t, int16_t>> SequencerThread::configured_gateways(const SequencerConfiguration& config) {
+    std::vector<std::pair<int16_t, int16_t>> gateways;
+    gateways.reserve(config.gateway_endpoints.size());
+    for (const auto& endpoint : config.gateway_endpoints) {
+        gateways.emplace_back(endpoint.protocol, endpoint.instance);
     }
-    std::vector<std::pair<fix_common::SessionIdentity, int64_t>> dropped;
-    held_reports_.take_all([&dropped](const fix_common::SessionIdentity& identity, const uint8_t* bytes, size_t size) {
-        dropped.emplace_back(identity, decode_held_report(bytes, size).seq_no);
-    });
-    held_reports_left_the_room();
-    for (const auto& [identity, seq_no] : dropped) {
-        sessions_.report_dropped_unbound(identity, seq_no);
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: every gateway instance has announced its sessions -- {} held report(s) were for sessions connected nowhere, and are "
-               "dropped",
-               dropped.size());
-    report(pubsub_itc_fw_app::HeldReportsReleased{std::string_view{}, 0, 0, static_cast<int64_t>(dropped.size())});
+    return gateways;
 }
 
 void SequencerThread::handle_sessions_announced(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -3636,23 +3331,7 @@ void SequencerThread::handle_sessions_announced(const pubsub_itc_fw::ConnectionI
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode SessionsAnnounced -- dropping");
         return;
     }
-    const auto found = gateway_announcements_.find(gateway_key(view.gateway_protocol_id, view.gateway_instance_id));
-    if (found == gateway_announcements_.end()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: SessionsAnnounced from gateway protocol={} instance={}, which is not in this instance's configuration -- ignored",
-                   view.gateway_protocol_id, view.gateway_instance_id);
-        return;
-    }
-    found->second.announced = true;
-    found->second.link = conn_id;
-    const int32_t not_announced = gateways_not_announced();
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: gateway protocol={} instance={} has announced its {} session(s) on connection {}; {} configured gateway instance(s) "
-               "have not",
-               view.gateway_protocol_id, view.gateway_instance_id, view.sessions_announced, conn_id.get_value(), not_announced);
-    if (not_announced == 0) {
-        drop_held_reports_for_sessions_connected_nowhere();
-    }
+    reports_.sessions_announced(view.gateway_protocol_id, view.gateway_instance_id, conn_id, view.sessions_announced);
 }
 
 void SequencerThread::handle_session_sequence_update(const pubsub_itc_fw::EventMessage& message) {
@@ -3879,55 +3558,6 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
                "SequencerThread: SessionReplayComplete id={} comp_id='{}' records={} last_seq_no={} truncated={} scanned_in_ms={} segments_read={} of {}",
                view.request_id, identity.comp_id_view(), record_count, last_seq_no, truncated, elapsed_ns / 1000000, segments_read, segments.size());
     report(pubsub_itc_fw_app::ReplayAnswered{static_cast<int64_t>(view.request_id), identity.comp_id_view(), static_cast<int64_t>(record_count), truncated});
-}
-
-void SequencerThread::forward_pending_er(const PendingEr& pending) {
-    // Wrap the buffered raw ER in a WalRecord envelope and forward it to wherever its
-    // session is NOW. The address is resolved here rather than when the ER was buffered,
-    // and the difference is the point: this path exists because delivery waited for the
-    // follower's ack, and a member can reconnect -- to its backup gateway, after exactly
-    // the failure this system is built for -- inside that wait.
-    // pending.payload is alive for this call; the envelope's BytesView borrows it.
-    const fix_common::SessionDestination* destination = pending.identity.empty() ? nullptr : sessions_.destination(pending.identity);
-    if (destination == nullptr && !pending.identity.empty()) {
-        if (hold_report_if_sessions_unknown(pending)) {
-            if (pending.erase_routing_entry) {
-                sessions_.order_ended(pending.seq_no);
-            }
-            return;
-        }
-        sessions_.report_dropped_unbound(pending.identity, pending.seq_no);
-    }
-
-    pubsub_itc_fw_app::WalRecord envelope{};
-    envelope.seq_no = pending.log_seq_no;
-    envelope.pdu_id = pending.pdu_id;
-    envelope.payload.data = pending.payload.data();
-    envelope.payload.size = pending.payload.size();
-    envelope.has_gateway_session_conn_id = destination != nullptr;
-    envelope.gateway_session_conn_id = destination != nullptr ? destination->conn_id : 0;
-    envelope.has_origin_gateway_id = destination != nullptr;
-    envelope.origin_gateway_id = pending.identity.protocol;
-    envelope.has_gateway_instance_id = destination != nullptr;
-    envelope.gateway_instance_id = destination != nullptr ? destination->instance : gateway_ids::first_instance;
-    envelope.has_gateway_ingress_ns = pending.has_gateway_ingress_ns;
-    envelope.gateway_ingress_ns = pending.gateway_ingress_ns;
-    envelope.has_sender_comp_id = !pending.identity.empty();
-    envelope.sender_comp_id = pending.identity.comp_id_view();
-    envelope.has_cl_ord_id = !pending.cl_ord_id.empty();
-    envelope.cl_ord_id = pending.cl_ord_id;
-    envelope.poss_resend = pending.poss_resend;
-
-    if (destination != nullptr) {
-        send_er_to_origin_gateway(pending.identity.protocol, destination->instance, pending.seq_no, envelope, pending.is_new_order_ack);
-        sessions_.report_forwarded(pending.identity);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: buffered ER seq={} forwarded to protocol={} instance={}", pending.seq_no,
-                   pending.identity.protocol, destination->instance);
-    }
-
-    if (pending.erase_routing_entry) {
-        sessions_.order_ended(pending.seq_no);
-    }
 }
 
 // Matching engine publishers (docs/availability/following_the_wal.md, section 4.3)

@@ -759,6 +759,19 @@ engine first (decision 2, option A).
    `MemberSessionsTest` has thirteen tests, and nine faults put in on purpose were each caught. Both full suites pass:
    99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 9. `ReportForwarding`.
+
+   **As built.** `ReportForwarding` (`applications/sequencer/ReportForwarding.hpp`) holds the reports waiting for their
+   record to be committed, the reports held for unannounced sessions and for gateways with no connection for reports,
+   which gateways have announced their sessions, the gateway connections, and how far reports have been forwarded. It
+   makes the decisions of section 6.11: sending a report to its gateway, holding it, waiting for its record, sending
+   the waiting reports once their records are committed, and discarding what is held when this instance stops leading.
+   The first half of `forward_report_from_engine` stays in the thread, because it writes the report's own record into
+   the WAL: it works out whose report it is, from `MemberSessions`, writes the record, and then hands the report to the
+   part, to send now or to wait. The thread implements `ReportForwardingLinksInterface`, which sends a report, times the
+   acknowledgement of a new order, reaches `MemberSessions`, and raises the test events of holding and releasing.
+   BUG-0226 is kept as it is, and a test pins it. The part's Quill log lines begin with its name.
+   `ReportForwardingTest` has fourteen tests, and nine faults put in on purpose were each caught. Both full suites pass:
+   99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 10. `KeptReportStore`, extended.
 11. `OrderRelease`.
 12. `EnginePresence`.

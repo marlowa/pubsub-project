@@ -44,6 +44,7 @@
 #include "KeptReportStore.hpp"
 #include "MemberSessions.hpp"
 #include "RecoveryLimitRule.hpp"
+#include "ReportForwarding.hpp"
 #include "ReportsHeldForUnknownSessions.hpp"
 #include "SeqNumRanges.hpp"
 #include "SequencerCommandIdentity.hpp"
@@ -124,35 +125,39 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     const std::string er_inbound_svc_;
     const std::string wal_subscriber_inbound_svc_;
 
-    // Outbound gateway connections for ER forwarding, keyed by (protocol, instance).
-    //
-    // More than one gateway feeds the same book -- the ASCII FIX one and the binary one --
-    // and each may run as several instances, so neither axis identifies a process on its
-    // own. Protocol says which wire format the report is encoded in; instance says which
-    // process to send it to. See fix_common/GatewayIds.hpp and docs/availability/gateway_ha.md.
-    //
-    // Packed into one integer key rather than a std::pair so the map needs no custom hash.
-    using GatewayKey = int32_t;
+    // How ReportForwarding sends reports, reaches the member sessions, and tells the test.
+    class ReportLinks : public ReportForwardingLinksInterface {
+      public:
+        explicit ReportLinks(SequencerThread& owner) : owner_(owner) {}
+        void send_report(const pubsub_itc_fw::ConnectionID& connection, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope) override;
+        void send_encoded_report(const pubsub_itc_fw::ConnectionID& connection, int64_t er_seq_no, const uint8_t* bytes, size_t size) override;
+        void acknowledgement_sent(const pubsub_itc_fw_app::WalRecord& envelope) override;
+        [[nodiscard]] bool leading() const override;
+        [[nodiscard]] bool expects_no_session_for(std::string_view comp_id) const override;
+        [[nodiscard]] const fix_common::SessionDestination* destination(const fix_common::SessionIdentity& identity) const override;
+        void report_forwarded(const fix_common::SessionIdentity& identity) override;
+        void report_dropped_unbound(const fix_common::SessionIdentity& identity, int64_t er_seq_no) override;
+        void order_ended(int64_t seq_no) override;
+        void reports_held(const fix_common::SessionIdentity& identity, int32_t gateways_not_announced) override;
+        void held_reports_released(std::string_view comp_id, int16_t protocol, int64_t sent, int64_t dropped) override;
+        void report_dropped_gateway_not_connected(int16_t protocol, int16_t instance, int64_t er_seq_no) override;
+        void reports_held_for_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no) override;
+        void reports_sent_to_gateway(int16_t protocol, int16_t instance, int64_t sent, int64_t dropped) override;
+        void held_reports_dropped(int64_t total) override;
 
-    /** @brief Packs (protocol, instance) into the key gateway_conn_ids_ is indexed by. */
-    static constexpr GatewayKey gateway_key(int16_t protocol, int16_t instance) {
-        return (static_cast<GatewayKey>(protocol) << 16) | static_cast<GatewayKey>(static_cast<uint16_t>(instance));
-    }
-
-    std::unordered_map<GatewayKey, pubsub_itc_fw::ConnectionID> gateway_conn_ids_;
-
-    // (protocol, instance) pairs already reported as absent from the configuration.
-    // Keeps the deployment-error message to once per pair rather than once per report.
-    std::unordered_set<GatewayKey> unknown_gateways_warned_;
-
-    /** @brief The connection for a gateway instance, or nullptr when it is not connected. */
-    const pubsub_itc_fw::ConnectionID* gateway_connection(int16_t protocol, int16_t instance) const {
-        auto it = gateway_conn_ids_.find(gateway_key(protocol, instance));
-        if (it == gateway_conn_ids_.end() || !it->second.is_valid()) {
-            return nullptr;
-        }
-        return &it->second;
-    }
+      private:
+        SequencerThread& owner_;
+    };
+    ReportLinks report_links_{*this};
+    // The configured gateway instances, as protocol and instance.
+    static std::vector<std::pair<int16_t, int16_t>> configured_gateways(const SequencerConfiguration& config);
+    // Getting each report from the matching engine to its member's gateway: the reports waiting for their record to be
+    // committed, held for unannounced sessions, or held for gateways with no connection for reports, the gateway
+    // connections, and how far reports have been forwarded (section 6.11 of
+    // docs/venue/dividing_the_sequencer_and_matching_engine.md).
+    ReportForwarding reports_{configured_gateways(config_), report_links_, get_logger()};
+    // The count of reports held for unannounced sessions that were dropped to make room, which ReportForwarding keeps.
+    pubsub_itc_fw::GaugeHandle held_reports_dropped_gauge_;
 
     // Which of this sequencer's order connections to the matching engines carries orders: the one to
     // the instance that leads, as the engines' announcements and requests to catch up establish. It
@@ -401,118 +406,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::TimerID acknowledgement_watch_timer_id_{};
     pubsub_itc_fw::TimerID engine_absence_timer_id_{};
 
-    // WAL replication state (Slice 7).
-    //
-    // An ExecutionReport from the ME is held here until the follower has
-    // confirmed it wrote the corresponding WAL entry.  The gateway only sees
-    // the ER once the follower has durably committed it.
-    struct PendingEr {
-        int16_t pdu_id{};
-        int64_t seq_no{};
-        std::vector<uint8_t> payload; // copy of the raw encoded ER from ME
-        // The ClOrdID of the command the report answers, copied onto the envelope for the gateway.
-        std::string cl_ord_id;
-        // The report's own sequence number in the log, carried on the envelope as a report sent at
-        // once carries it, so that a gateway knows how far a member has been served.
-        int64_t log_seq_no{0};
-        // Where the report stands in the engine's reports. While it waits here, the leader has not
-        // forwarded every report up to it, which is what reports_forwarded_through() says.
-        std::optional<EngineReportPosition> position;
-        // Whose report this is. Deliberately the identity and not a resolved destination:
-        // this record exists precisely because delivery is being deferred until the
-        // follower acks, and a session can reconnect during that wait -- which is the case
-        // a gateway failover produces. Resolving the address when the ER was buffered would
-        // send it to whichever connection was current a moment before the failover.
-        fix_common::SessionIdentity identity;
-        // The originating gateway's ingress stamp, carried through the WalAck wait so the
-        // gateway still gets it when the ER is released. Buffering here is the live HA
-        // path, so dropping it would leave the round-trip metric empty in exactly the
-        // configuration the venue actually runs.
-        bool has_gateway_ingress_ns{false};
-        int64_t gateway_ingress_ns{0};
-        // Whether this is the report that acknowledges a new order, which is the only kind
-        // the order-path checkpoints record. Carried through the wait for the same reason
-        // the ingress stamp above is: the buffered path is the live HA path, so a value
-        // dropped here is a value missing in the configuration the venue actually runs --
-        // and a checkpoint missing on one leg of the path is worse than no checkpoint at
-        // all, because the difference against its neighbour reads as a stage taking no time.
-        bool is_new_order_ack{false};
-        // Whether this report repeats one the member may already hold. Carried through the
-        // wait for the same reason the ingress stamp is: the buffered path is the live HA
-        // path, so a mark dropped here is a mark the member never sees in the configuration
-        // the venue actually runs. See R-0122.
-        bool poss_resend{false};
-        bool erase_routing_entry{false};
-    };
-
-    // Reports waiting for the follower to acknowledge the record they depend on, keyed by that
-    // record's sequence number and ordered by it, so that an acknowledgement releases every report
-    // it covers from the front. More than one report may wait on one record.
-    std::multimap<int64_t, PendingEr> pending_er_;
-
-    // Reports held while this instance leads and some gateway instance has not yet announced its sessions, for
-    // sessions it does not know of; docs/availability/reports_held_until_sessions_are_announced.md. The room is
-    // allocated once. Holding lasts from taking the lead until the gateways have announced, normally under a second.
-    static constexpr size_t held_report_capacity_bytes = 16U * 1024U * 1024U;
-    static constexpr size_t held_report_capacity_reports = 32768;
-    ReportsHeldForUnknownSessions held_reports_{held_report_capacity_bytes, held_report_capacity_reports};
-    // Whether a report has been held since the sessions were last known, so that ReportsHeld is sent once.
-    bool reports_held_since_sessions_known_{false};
-    // How many held reports had been dropped to make room when the dropping was last logged, which is when it started:
-    // it is said once when the room fills, and again with the total when reports next leave the room, not for each one.
-    int64_t held_reports_dropped_reported_{0};
-    bool held_reports_dropping_{false};
-    // A position at or before that of every held report that has one, or none if none does. It is lowered as each report
-    // is held and worked out afresh when reports leave the room for their sessions, so that saying how far the reports
-    // have been forwarded, which is done for every record written, does not read every held report. A report dropped
-    // to make room leaves it where it is: lower than the true oldest is safe, since it only makes a follower keep its
-    // copies of reports for longer.
-    std::optional<EngineReportPosition> held_reports_oldest_position_;
-    // Works out held_reports_oldest_position_ afresh from the reports held, and says how many were dropped while the
-    // room was full, if any were.
-    void held_reports_left_the_room();
-    pubsub_itc_fw::GaugeHandle held_reports_dropped_gauge_;
-    // A PendingEr written into bytes to be held, kept so that holding reuses its storage.
-    std::vector<uint8_t> held_report_encoding_;
-
-    // For each configured gateway instance, whether it has announced its sessions on its present link to this
-    // instance (SessionsAnnounced), and that link, which is how its loss is recognised.
-    struct GatewayAnnouncement {
-        bool announced{false};
-        pubsub_itc_fw::ConnectionID link{};
-    };
-    std::unordered_map<GatewayKey, GatewayAnnouncement> gateway_announcements_;
-
-    // How many configured gateway instances have not announced their sessions on their present link.
-    [[nodiscard]] int32_t gateways_not_announced() const;
-    // Holds @p pending if this instance leads, some gateway instance has not announced, and its session is not one a
-    // test expects to have none. Returns whether it was held.
-    bool hold_report_if_sessions_unknown(const PendingEr& pending);
-    // Sends every report held for @p identity, oldest first, to where it is now connected.
-    void send_held_reports(const fix_common::SessionIdentity& identity);
-    // Every gateway instance has announced: every report still held is for a session connected nowhere, and is dropped.
-    void drop_held_reports_for_sessions_connected_nowhere();
+    // A gateway instance has announced its sessions on its present link to this instance (SessionsAnnounced): given to
+    // ReportForwarding.
     void handle_sessions_announced(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    // A held report read back from the bytes hold_report_if_sessions_unknown wrote.
-    static PendingEr decode_held_report(const uint8_t* bytes, size_t size);
-
-    // Reports held while this instance leads for a configured gateway instance it has no connection for reports to,
-    // each as the envelope it would have sent, and sent once the connection is made (BUG-0202). One store for each
-    // configured gateway instance, made when the connections are first asked for; the room is allocated then. The
-    // connection is retried every two seconds, so a store holds what a gateway's members are sent in that time.
-    std::unordered_map<GatewayKey, ReportsHeldForUnknownSessions> reports_held_for_gateways_;
-    // The gateway instances reports have been held for since their connection for reports was last up, so that
-    // ReportsHeldForGateway is sent once each time holding begins.
-    std::unordered_set<GatewayKey> gateways_holding_reports_;
-    // How many reports held for each gateway instance had been dropped to make room when they were last sent.
-    std::unordered_map<GatewayKey, int64_t> gateway_held_reports_dropped_reported_;
-    // An envelope written into bytes to be held, kept so that holding reuses its storage.
-    std::vector<uint8_t> held_envelope_encoding_;
-    // Holds @p envelope, a report for gateway @p protocol and @p instance, if this instance leads and the gateway is
-    // configured. Returns whether it was held.
-    bool hold_report_for_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope);
-    // The connection for reports to gateway @p protocol and @p instance was made: sends it every report held for it.
-    void send_reports_held_for_gateway(int16_t protocol, int16_t instance, const pubsub_itc_fw::ConnectionID& connection);
 
     // Warn when the log has grown past this without anything having been reclaimed. Not a
     // limit: nothing is deleted on reaching it. It exists because the venue currently cannot
@@ -643,8 +539,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     /// that follow the WAL.
     void release_held_orders_to_the_leading_engine(int64_t acknowledged_seq_no);
     void discard_held_orders();
-    /// Forwards every waiting report whose record is committed through @p seq_no.
-    void forward_pending_er_through(int64_t seq_no);
 
     // The reports from the matching engine kept while this instance is not leading, so that it can
     // forward them if it takes the lead (docs/availability/change_of_sequencer_leader.md, section 4.4).
@@ -840,13 +734,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // Logs what the checks since the last summary found, and gives back the memory of any search of the WAL.
     void summarise_command_checks(const char* reason);
 
-    // The latest report from the engine this instance has handled while leading: forwarded, waiting
-    // for an acknowledgement, or dropped because its session was not connected.
-    std::optional<EngineReportPosition> latest_report_seen_;
-    // The position up to which this leader has forwarded every report from the engine: the latest
-    // seen, or just before the oldest still waiting for an acknowledgement. Written on every record
-    // this leader writes, for a follower to read (docs/bug_list.md, BUG-0116).
-    [[nodiscard]] std::optional<EngineReportPosition> reports_forwarded_through() const;
+    // Writes on @p envelope how far this leader has forwarded every report from the engine, for a follower to read
+    // (docs/bug_list.md, BUG-0116).
     void stamp_reports_forwarded_through(pubsub_itc_fw_app::WalRecord& envelope) const;
 
     // What a follower reads back from its leader's records. The leader's "forwarded" means handed to
@@ -882,22 +771,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // @p bytes is the report's WalRecord envelope as the engine sent it, and @p er_seq_no the
     // sequence number sent with it. The caller keeps @p bytes valid until this returns.
     void forward_report_from_engine(const uint8_t* bytes, size_t size, int64_t er_seq_no, ReportSource source);
-
-    void forward_pending_er(const PendingEr& pending);
-
-    /**
-     * @brief Sends an envelope-wrapped ER to the gateway the order originated from.
-     * @param[in] protocol Which client protocol (see fix_common/GatewayIds.hpp).
-     * @param[in] instance Which instance of that protocol, numbered from 1.
-     * @param[in] er_seq_no  Sequence number stamped on the transport header.
-     * @param[in] envelope   The WalRecord-wrapped ER.
-     *
-     * When that gateway instance is configured but this instance has no connection for reports
-     * to it, the ER is held and sent once the connection is made (BUG-0202). It is dropped,
-     * with a warning, only when the gateway instance is not configured, or this instance does
-     * not lead.
-     */
-    void send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope, bool is_new_order_ack);
 
     // A matching engine publisher asking to follow the WAL (WalFollowRequest): declined unless this instance
     // leads, otherwise caught up from the position it gives, up to the last record committed, and then sent
