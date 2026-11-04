@@ -745,6 +745,19 @@ engine first (decision 2, option A).
    `VenueStateFromTheWalTest` has eleven tests, and eight faults put in on purpose were each caught. Both full suites
    pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 8. `MemberSessions`.
+
+   **As built.** `MemberSessions` (`applications/sequencer/MemberSessions.hpp`) holds where each member's session is
+   bound, what the venue remembers of each session's numbering between connections, which session placed each order
+   still open, and the reports dropped because a session was connected nowhere. It makes the decisions of section 6.12:
+   recording a binding, working out the numbers a logon resumes from, keeping what a gateway reports at unbind and in
+   updates, never lowering them, and saying once which reports a member missed while away. The thread decodes each
+   message, holds and sends reports (section 6.11, step 9), sends `SessionBoundAck`, and reads the WAL for the reports a
+   member missed; it implements `MemberSessionsLinksInterface`, which reads the test's settings, sets the gauge of
+   reports dropped, and raises `ReportDroppedSessionNotConnected`, `SessionAnnouncedAgain` and `SessionUnboundRecorded`.
+   A logon is two calls, `bind` and then `resume`, with the reports held for the session dealt with between them, so
+   that a gateway is sent them before its `SessionBoundAck`, as before. The part's Quill log lines begin with its name.
+   `MemberSessionsTest` has thirteen tests, and nine faults put in on purpose were each caught. Both full suites pass:
+   99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 9. `ReportForwarding`.
 10. `KeptReportStore`, extended.
 11. `OrderRelease`.

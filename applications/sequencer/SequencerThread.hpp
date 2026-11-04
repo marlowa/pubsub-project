@@ -42,6 +42,7 @@
 #include "EngineRoutedStamp.hpp"
 #include "GatewayIds.hpp"
 #include "KeptReportStore.hpp"
+#include "MemberSessions.hpp"
 #include "RecoveryLimitRule.hpp"
 #include "ReportsHeldForUnknownSessions.hpp"
 #include "SeqNumRanges.hpp"
@@ -934,155 +935,26 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     [[nodiscard]] bool stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload,
                                                size_t pdu_size, int64_t wall_time_ns);
 
-    // Which client session an order came from. The identity, not the address: where its
-    // reports go is looked up separately, at the moment of sending, so that a session which
-    // has reconnected somewhere else in the meantime is still reachable.
-    struct OriginSession {
-        fix_common::SessionIdentity identity;
+    // How MemberSessions counts and tells the test.
+    class SessionLinks : public MemberSessionsLinksInterface {
+      public:
+        explicit SessionLinks(SequencerThread& owner) : owner_(owner) {}
+        [[nodiscard]] bool expects_no_session_for(std::string_view comp_id) const override;
+        void reports_dropped_unbound(int64_t total) override;
+        void report_dropped(const fix_common::SessionIdentity& identity, int64_t er_seq_no) override;
+        void session_announced_again(const fix_common::SessionIdentity& identity, const fix_common::SessionDestination& destination) override;
+        void session_unbound(const fix_common::SessionIdentity& identity, int16_t instance, int32_t connection) override;
 
-        // Wall-clock nanoseconds at which the gateway read the order off the client socket.
-        // Carried here purely so it can be stamped back onto the ER envelope: the gateway
-        // measures its own round trip, and nothing in the sequencer reads this value.
-        //
-        // It rides with the routing data rather than in a map of its own because it has
-        // exactly the same lifetime and the same key -- a second map would be a second
-        // thing to insert into, erase from and rebuild on replay, with no way to notice
-        // when the two drifted apart.
-        //
-        // has_ingress_ns false means the order arrived without one -- a WAL replay, or a
-        // gateway that does not stamp. It is a separate flag rather than a zero sentinel
-        // so an absent stamp cannot be mistaken for an epoch-zero one.
-        bool has_ingress_ns{false};
-        int64_t gateway_ingress_ns{0};
+      private:
+        SequencerThread& owner_;
     };
-
-    // seq_no -> the session that placed the order.
-    // Keyed by the sequence number assigned to each NOS/OCR (globally unique, unlike
-    // ClOrdID which is only unique per client session). Populated on each sequenced
-    // NOS/OCR; rebuilt from WAL replay on startup.
-    //
-    // This used to hold the originating *connection* and its reports were addressed
-    // straight at it. That made a report undeliverable the moment the socket closed, and
-    // undeliverable to the right member even after it came back, because the connection id
-    // it named was gateway-local and renumbered on reconnect. Holding the identity and
-    // resolving the address at send time is what lets a reconnect -- to the same instance
-    // or to the member's backup -- inherit reports for orders it placed on the old one.
-    std::unordered_map<int64_t, OriginSession> seq_no_to_session_;
-
-    // session identity -> where that session's reports go right now.
-    //
-    // Maintained from the SessionBound and SessionUnbound PDUs the gateways send as
-    // sessions come and go, which is the only way the sequencer can know: it listens on one
-    // port and accepts, so it cannot tell instances apart from a connection alone, and a
-    // member that reconnects and sends no order would otherwise never announce itself.
-    //
-    // An absent entry means the session is not connected anywhere. Its reports have nowhere
-    // to go and are dropped, exactly as they were before -- making them replayable instead
-    // is step 6, and it is deliberately not smuggled in here.
-    std::unordered_map<fix_common::SessionIdentity, fix_common::SessionDestination, fix_common::SessionIdentityHash> session_destinations_;
-
-    // Every session that has had a report dropped, because it was connected nowhere, since it was
-    // last connected. The first report dropped for a session is logged as a Warning and the rest at
-    // Debug, so that a member left untold shows once in the Quill log rather than once per report.
-    // A session leaves this set when it is connected again.
-    std::unordered_set<fix_common::SessionIdentity, fix_common::SessionIdentityHash> sessions_with_reports_dropped_;
-    // How many reports have been dropped because their session was connected nowhere.
-    int64_t reports_dropped_unbound_{0};
+    SessionLinks session_links_{*this};
+    // Which gateway connection each member's session is bound to, what the venue remembers about each session between
+    // connections, and which session placed each order still open (section 6.12 of
+    // docs/venue/dividing_the_sequencer_and_matching_engine.md).
+    MemberSessions sessions_{session_links_, get_logger()};
+    // The count of reports dropped because their session was connected nowhere, which MemberSessions keeps.
     pubsub_itc_fw::GaugeHandle reports_dropped_unbound_gauge_;
-    // Counts and logs a report dropped because its session, @p identity, is connected nowhere.
-    void note_report_dropped_unbound(const fix_common::SessionIdentity& identity, int64_t er_seq_no);
-
-    /**
-     * @brief What the venue remembers about a session between connections.
-     *
-     * Sequence numbers belong to the session, not to the connection carrying it, so a
-     * gateway that has just taken a session on has no way to know where it had reached.
-     * The sequencer does, because every instance of every protocol binds through it -- and
-     * this is the state that makes a reconnect a continuation rather than a reset.
-     *
-     * The numbers are *reported* by the gateway at unbind rather than counted here. They
-     * have to be: the FIX outbound number counts every message sent to the member,
-     * including the heartbeats and session-level rejects the sequencer never sees. So this
-     * is as current as the last clean unbind, and a killed gateway leaves it behind --
-     * which the member's own ResendRequest is what resolves.
-     *
-     * Kept separately from session_destinations_ because the lifetimes differ: a
-     * destination is erased the moment a session disconnects, whereas this must outlive
-     * exactly that event to be of any use.
-     */
-    struct SessionSequenceState {
-        /// Highest position the gateway has reported. Never lowered.
-        int32_t outbound_seq_num{1};
-
-        /// Execution reports forwarded to this session since that report arrived.
-        ///
-        /// Each one consumed an outbound sequence number at the gateway, so this is how much
-        /// the reported figure is known to be behind. Exact, because the sequencer resolves a
-        /// destination for every report it sends -- and reports are the bulk of what a member
-        /// is sent. What it cannot see is the admin traffic (heartbeats, rejects), which is
-        /// what the allowance below covers.
-        int32_t ers_since_report{0};
-
-        /**
-         * @brief Highest position the gateway has reported for what the member SENDS it.
-         *
-         * The counterpart of `outbound_seq_num`, and **resumed differently from it**, which is
-         * the trap of having the two side by side.
-         *
-         * `outbound_seq_num` is handed back deliberately high after an unclean death: too low
-         * sends the member a number below what it expects, which FIX requires it to treat as
-         * fatal. Every term of that reverses here. Resuming this one too high makes the venue
-         * treat a member that has done nothing wrong as having gone backwards, which is equally
-         * fatal and this time to the innocent party. So it is handed back exactly as reported,
-         * with no allowance and nothing added for what the sequencer has seen since -- the
-         * reported figure is already a lower bound, because a member can only have sent more.
-         *
-         * Nothing reads it yet; see docs/fix/inbound_sequence_checking.md and BUG-0038.
-         */
-        int32_t inbound_seq_num{1};
-
-        /**
-         * @brief Which of this session's outbound numbers held an execution report.
-         *
-         * Reported by the gateway, for the same reason the number above it is: the sequencer
-         * cannot derive it. The FIX numbering covers every message the member was sent, and
-         * the heartbeats, Logons and rejects among them never come near the sequencer.
-         *
-         * Held here rather than in the gateway because a resend is served by whichever
-         * instance holds the session *now*, which after a failover is not the instance that
-         * sent the messages being asked about. A record kept in the gateway is empty in
-         * exactly the case it exists for. See docs/availability/resend_provenance.md.
-         */
-        std::vector<fix_common::SeqNumRange> report_seq_nums;
-
-        /**
-         * @brief The log sequence number of the last execution report the member was delivered,
-         * as its gateway last reported it: exactly, when the session unbound, or as of the last
-         * sequence update, when the gateway died without unbinding it. Never lowered.
-         */
-        int64_t last_report_delivered{0};
-
-        /**
-         * @brief The last record in the log when the session bound again: reports logged after it
-         * were forwarded live, so only those up to it can have been missed. Zero until the session
-         * binds again after an unbind, and zero again once the missed reports have been sent.
-         */
-        int64_t bound_at_log_seq_no{0};
-
-        /// Whether the member's previous gateway died without unbinding it, so last_report_delivered
-        /// may be behind and the reports sent from the log must be marked as possible repeats.
-        bool delivered_figure_may_be_behind{false};
-    };
-
-    /// Added when resuming a session whose gateway died without reporting.
-    ///
-    /// Covers the admin messages the sequencer never sees. Small, because a report is only
-    /// seconds old, and heartbeats are the main thing it misses. Erring high is deliberate:
-    /// resuming ABOVE the true position leaves a gap the member closes with a ResendRequest,
-    /// whereas resuming below sends it a sequence number lower than it expects, which FIX
-    /// requires it to treat as fatal. The two errors are not symmetrical.
-    static constexpr int32_t unclean_resume_admin_allowance = 64;
-    std::unordered_map<fix_common::SessionIdentity, SessionSequenceState, fix_common::SessionIdentityHash> session_sequence_state_;
 
     /**
      * @brief How often the venue says out loud that no matching engine leads while it holds orders.
@@ -1153,15 +1025,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_undelivered_reports_request(const pubsub_itc_fw::EventMessage& message);
     void handle_session_sequence_update(const pubsub_itc_fw::EventMessage& message);
 
-    /// Records that one execution report was sent to this session, so a resume after an
-    /// unclean death can account for what the gateway sent since its last report.
-    void note_report_forwarded(const fix_common::SessionIdentity& identity);
-
     /// Records a single replay may return before it truncates, when the caller names no cap.
     static constexpr int32_t default_replay_max_records = 10000;
-
-    // Resolves where a session's reports go, or nullptr when it is not bound anywhere.
-    const fix_common::SessionDestination* session_destination(const fix_common::SessionIdentity& identity) const;
 };
 
 } // namespaces

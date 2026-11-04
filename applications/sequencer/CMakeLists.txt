@@ -1,5 +1,6 @@
 add_executable(sequencer
         SequencerConfigurationLoader.cpp
+        MemberSessions.cpp
         SequencerThread.cpp
         Sequencer.cpp
         VenueStateFromTheWal.cpp
@@ -22,6 +23,7 @@ add_dependencies(sequencer fix_orders_generated leader_follower_generated sequen
 target_sources(sequencer PRIVATE
         EngineAbsenceRule.hpp
         EngineRoutedStamp.hpp
+        MemberSessions.hpp
         SequencerConfiguration.hpp
         SequencerConfigurationLoader.hpp
         SequencerThread.hpp
@@ -96,6 +98,8 @@ add_executable(sequencer_tests
         tests/VoidFromWalTest.cpp
         tests/TradingHaltStateTest.cpp
         tests/VenueStateFromTheWalTest.cpp
+        tests/MemberSessionsTest.cpp
+        MemberSessions.cpp
         SequencerConfigurationLoader.cpp
         VenueStateFromTheWal.cpp
 )
