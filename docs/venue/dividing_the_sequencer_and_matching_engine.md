@@ -456,9 +456,8 @@ second, and when a record that changes whether trading is halted is written.
 **The limit on automatic recovery** measures a different absence: `engine_absence_` is told whether the order
 connection goes to any engine (`engine_routing_.active()` is valid), whether or not that engine is known to lead,
 follows the WAL, or is being caught up; and the stamp beside the WAL records when an engine was last routed to. So the
-venue keeps two clocks of the time without an engine, by two definitions. The design keeps both, in one part, each
-with a comment saying which question it answers; whether the two definitions should be one is a question for the
-design of that part, in step 12, not a change made by moving the code.
+venue keeps two clocks of the time without an engine, by two definitions. Both are kept, in one part, each documented
+with the question it answers; step 12's note in section 9 says why they are not made one.
 
 ### 6.10 The facts read from the WAL (`VenueStateFromTheWal`)
 
@@ -799,6 +798,34 @@ engine first (decision 2, option A).
     in on purpose were each caught. Both full suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the
     secondary engine first.
 12. `EnginePresence`.
+
+    **As built.** `EnginePresence` (`applications/sequencer/EnginePresence.hpp`) holds whether a matching engine takes
+    orders and since when none has, the orders and cancels held meanwhile, what the gateways are told about taking
+    orders, the limit on the recovery the venue does by itself (`EngineAbsenceRule`, `EngineRoutedStamp`,
+    `RecoveryLimitRule`, and how far the catch-up of an engine that asked to be caught up has been sent), and the engine
+    that said it leads. It makes the decisions of section 6.9. The members `no_engine_since_` and
+    `an_engine_took_orders_` are one state, `EnginePresence::EngineForOrders`: not noted, an engine takes orders, no
+    engine yet, or no engine since one did. What the gateways are told is not part of that state, because it depends on
+    whether trading is halted as well, which the WAL decides; the part works it out again from both, as before.
+
+    The two measures of the absence of an engine stay two, and the part's documentation says which question each
+    answers. The first asks whether an order arriving now can be sent on, and decides whether the gateways are told to
+    refuse new orders. The second asks how long the venue has been without any engine that could be made to trade,
+    including one that is still being caught up, and decides whether the venue has passed the longest recovery it does
+    by itself. They are different questions, and making them one would change one of the two behaviours.
+
+    Two members that section 4 lists for this part stay in the thread. `engine_routing_` is already a class of its own,
+    `EngineOrderRouting`, which sending orders and serving engines use as much as this part does. `engine_servings_`
+    belongs with serving those that follow the WAL, step 15. Whether an engine takes orders reads both, so it stays in
+    the thread as well. The thread implements `EnginePresenceLinksInterface`, which says whether this instance leads,
+    whether an engine takes orders, whether any engine is routed to, whether the WAL holds records, and whether trading
+    is halted and why; tells every gateway; raises `EngineTakesOrdersAgain`; and writes the commands that halt trading
+    when the venue cannot recover by itself. The thread still builds and sends the OrderAcceptance message, because it
+    carries this leadership's epoch. The part's Quill log lines begin with its name. `EnginePresenceTest` has sixteen
+    tests, and thirteen faults put in on purpose were each caught. A fourteenth, counting an order held while an engine
+    takes orders, cannot be seen from outside the part: the count is set to zero when a time without an engine begins,
+    and read only during one. Both full suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary
+    engine first.
 13. `CommandChecks`.
 14. `HaltAndVoidRequests`.
 15. `ServingWalFollowers`, and what is left of `SequencerThread` reduced to its connections, timers and the handing on

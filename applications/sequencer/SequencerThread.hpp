@@ -35,16 +35,14 @@
 #include <pubsub_itc_fw/WalFollowing.hpp>
 #include <pubsub_itc_fw/WalHandedOverFollowers.hpp>
 
-#include "EngineAbsenceRule.hpp"
 #include "EngineOrderRouting.hpp"
+#include "EnginePresence.hpp"
 #include "EngineRecordFromWal.hpp"
 #include "EngineReportPosition.hpp"
-#include "EngineRoutedStamp.hpp"
 #include "GatewayIds.hpp"
 #include "KeptReports.hpp"
 #include "MemberSessions.hpp"
 #include "OrderRelease.hpp"
-#include "RecoveryLimitRule.hpp"
 #include "ReportForwarding.hpp"
 #include "ReportsHeldForUnknownSessions.hpp"
 #include "SeqNumRanges.hpp"
@@ -166,22 +164,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // catch up from either engine is always recognised (BUG-0108). See EngineOrderRouting.hpp.
     EngineOrderRouting engine_routing_;
 
-    // How long the venue has had no matching engine that can trade, for the limit on automatic recovery below.
-    // EngineAbsenceRule measures it; the stamp beside the WAL says when this process last knew of an engine it routed
-    // to, for when the whole venue was down. Checked on engine_absence_timer_id_ about once a second.
-    EngineAbsenceRule engine_absence_;
-    EngineRoutedStamp engine_routed_stamp_;
+    // How often the absence of a matching engine is checked (EnginePresence::check_absence).
     static constexpr std::chrono::seconds engine_absence_check_interval{1};
-
-    // The longest recovery the venue does by itself: while no engine is routed to, when that time and how long the
-    // catch-up under way will still take together pass the limit, the leading sequencer voids the orders it holds,
-    // cancels the book and halts trading, and tells the gateways to refuse orders with the reason
-    // (docs/availability/far_back_catch_up.md, section 5; docs/availability/voided_commands.md, section 5.3). RecoveryLimitRule decides when, given the absence
-    // engine_absence_ measures and the progress of the engine's catch-up, which the reading thread reports. Checked with the absence.
-    RecoveryLimitRule recovery_limit_{std::chrono::seconds(config_.automatic_recovery_limit_seconds)};
-    // How far the catch-up of a matching engine that asked to be caught up has been sent, while one is under way.
-    std::optional<RecoveryLimitRule::CatchUpProgress> engine_catch_up_progress_;
-    pubsub_itc_fw::ConnectionID engine_catch_up_connection_{};
 
     // ConnectionIDs of the outbound peer and arbiter connections.
     pubsub_itc_fw::ConnectionID peer_conn_id_;
@@ -556,9 +540,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] size         How many bytes.
      */
     void write_own_command(int16_t inner_pdu_id, const uint8_t* bytes, size_t size);
-    // Stamps the time if an engine is routed to, tells engine_absence_ whether one is, and halts trading if no engine
-    // could be trading within the limit on automatic recovery. Called on engine_absence_timer_id_, and when this instance
-    // takes the lead.
+    // The absence check of EnginePresence: called on engine_absence_timer_id_, and when this instance takes the lead.
     void check_engine_absence();
 
     /**
@@ -568,7 +550,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      * Writes three commands, in this order: a VoidCommands naming every new order held, so that the engine that next
      * leads rejects each instead of applying it; a CancelBook that cancels every order on the book, each reported to its
      * member; and a TechnicalEvent that halts trading. They are held like the orders before them, and sent to the engine
-     * that next leads, in order. Then tells the gateways the venue is not accepting orders, with the reason.
+     * that next leads, in order. Then tells the gateways the venue is not accepting orders, with the reason. Called by
+     * EnginePresence, which decides when.
      */
     void write_recovery_halt(int64_t now_ns);
     // Writes the VoidCommands of write_recovery_halt, if any order or cancel is held; voids only commands no engine has
@@ -605,13 +588,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // this thread, from the start of the segment holding the record; done only for a VoidRequest, which comes after an
     // engine has died.
     [[nodiscard]] CommandInRecord command_in_wal_at(int64_t seq_no, bool& found);
-
-    // The matching engine instance that last announced that it leads, and the connection it announced it on, while that
-    // connection is up; 0 and none otherwise. EngineOrderRouting remembers the last leader after its process dies, so
-    // that orders go to it again when it reconnects; this does not, because a void must not be refused on the strength
-    // of an engine that has died. Cleared when that instance announces that it follows, or the connection is lost.
-    int64_t leading_engine_instance_{0};
-    pubsub_itc_fw::ConnectionID leading_engine_announced_on_{};
 
     // Whether a command has been sent again or refused since the last summary of checks, and when the last was. The
     // summary is logged a minute after the last, or when this instance stops leading.
@@ -734,31 +710,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::GaugeHandle reports_dropped_unbound_gauge_;
 
     /**
-     * @brief How often the venue says out loud that no matching engine leads while it holds orders.
-     *
-     * Once per order would bury the condition in the Quill log rather than report it (BUG-0009 and
-     * docs/availability/order_acceptance.md).
-     */
-    static constexpr auto no_engine_warning_interval = std::chrono::seconds{5};
-
-    /// While this instance leads and no matching engine takes orders (an_engine_takes_orders), when that began; empty
-    /// while one does. A steady clock, because this measures an interval: a change to the wall clock must not change how
-    /// long the venue believes it has had no engine.
-    std::optional<std::chrono::steady_clock::time_point> no_engine_since_;
-    /// The orders and cancels that arrived while no matching engine took orders, all of them held.
-    int64_t orders_held_without_an_engine_{0};
-    /// Whether an engine has taken orders since this instance began leading: false while the venue starts, so that the
-    /// time without one is told apart from a change of engine leader (EngineTakesOrdersAgain).
-    bool an_engine_took_orders_{false};
-    std::chrono::steady_clock::time_point last_no_engine_warning_{};
-
-    /**
      * @brief Notes whether a matching engine takes orders, and so when none has since, and says when one does again.
      *
      * Called wherever that can change: on each order held, when an engine connection is lost, on an engine's
      * announcement of its role, when an engine is handed over after a catch-up, and on the engine absence timer, about
-     * once a second. Each time no engine has led for orders_held_at_most_seconds, the gateways are told to refuse new
-     * orders (refresh_order_acceptance).
+     * once a second (EnginePresence::note_whether_an_engine_takes_orders).
      */
     void note_whether_an_engine_takes_orders();
 
@@ -766,27 +722,28 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     /// orders, and releases to it the orders held while none did.
     void engine_routing_changed();
 
-    /// How long no matching engine has taken orders, zero while one does.
-    [[nodiscard]] std::chrono::steady_clock::duration time_without_an_engine() const;
+    class PresenceLinks : public EnginePresenceLinksInterface {
+      public:
+        explicit PresenceLinks(SequencerThread& owner) : owner_(owner) {}
+        [[nodiscard]] bool leading() const override;
+        [[nodiscard]] bool an_engine_takes_orders() const override;
+        [[nodiscard]] bool an_engine_is_routed_to() const override;
+        [[nodiscard]] bool wal_holds_records() const override;
+        [[nodiscard]] bool trading_halted() const override;
+        [[nodiscard]] bool halted_for_a_recovery_too_long() const override;
+        void tell_every_gateway() override;
+        void engine_takes_orders_again(int64_t without_ms, int64_t orders_held, bool one_had_before) override;
+        void write_recovery_halt(int64_t now_ns) override;
 
-    /**
-     * @brief What the venue is currently telling its gateways about taking new orders: Accepting, or why not.
-     *
-     * Starts Accepting: a sequencer that has just come up and has not yet failed to forward
-     * anything is accepting. Moved only by refresh_order_acceptance(), and reset when this
-     * instance stops leading.
-     */
-    pubsub_itc_fw_app::OrderAcceptanceReason order_acceptance_{pubsub_itc_fw_app::OrderAcceptanceReason::Accepting};
-    // What order_acceptance_ should be now, from how long no matching engine has led and whether trading is halted.
-    [[nodiscard]] pubsub_itc_fw_app::OrderAcceptanceReason order_acceptance_now() const;
-
-    /**
-     * @brief Recomputes acceptance from how long no matching engine has led, and from whether trading is halted
-     *        (order_acceptance_now).
-     *
-     * @return true if the state changed, in which case every connected gateway has been told.
-     */
-    bool refresh_order_acceptance();
+      private:
+        SequencerThread& owner_;
+    };
+    PresenceLinks presence_links_{*this};
+    // Whether a matching engine takes orders and since when none has, what the gateways are told about taking orders, the
+    // limit on the recovery the venue does by itself, and the engine that said it leads (section 6.9 of
+    // docs/venue/dividing_the_sequencer_and_matching_engine.md).
+    EnginePresence presence_{std::chrono::seconds{config_.orders_held_at_most_seconds}, std::chrono::seconds{config_.automatic_recovery_limit_seconds},
+                             presence_links_, get_logger()};
 
     /// Sends the current acceptance state to one gateway connection.
     void send_order_acceptance(const pubsub_itc_fw::ConnectionID& conn_id);

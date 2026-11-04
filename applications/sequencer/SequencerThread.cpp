@@ -222,20 +222,7 @@ void SequencerThread::on_initial_event() {
     // The last time this process knew of a matching engine it routed orders to, which measures how long the venue was
     // without one when the whole venue was down; no earlier than the first record, before which there was nothing to
     // recover (EngineAbsenceRule).
-    if (!engine_routed_stamp_.open(config_.wal_directory)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: cannot open {}/{} -- after the whole venue was down, how long it was without a matching engine is measured from "
-                   "the first record in the WAL, which may be longer than it was",
-                   config_.wal_directory, EngineRoutedStamp::file_name);
-    }
-    const int64_t first_record_ns = replicated_wal_->wal().first_wall_time_ns().value_or(0);
-    engine_absence_.started(engine_routed_stamp_.stamped_at_ns(), first_record_ns);
-    if (engine_absence_.absence_began_ns() != 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: this process last knew of a matching engine it routed orders to {} s ago; if this instance leads before one is routed "
-                   "to and that is longer than the {} s the venue recovers by itself, it halts trading and cancels the book (R-0117)",
-                   (config_.wall_clock->now_ns() - engine_absence_.absence_began_ns()) / 1000000000, config_.automatic_recovery_limit_seconds);
-    }
+    presence_.started(config_.wal_directory, replicated_wal_->wal().first_wall_time_ns().value_or(0), config_.wall_clock->now_ns());
     engine_absence_timer_id_ = start_recurring_timer(engine_absence_check_interval);
 
     wal_snapshot_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.snapshot_interval_seconds));
@@ -373,9 +360,9 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         // Tell it the acceptance state straight away. A transition-only design gets exactly
         // this case wrong: a gateway starting during an outage would otherwise assume the
         // venue was fine, which is the default that caused BUG-0009 in the first place.
-        // refresh_order_acceptance() broadcasts when it changes anything, and this connection
-        // is already in the map by then, so sending again here would duplicate it.
-        if (!refresh_order_acceptance()) {
+        // EnginePresence::refresh_order_acceptance tells every gateway when it changes anything, and this connection
+        // is already known by then, so sending again here would duplicate it.
+        if (!presence_.refresh_order_acceptance(std::chrono::steady_clock::now())) {
             send_order_acceptance(id);
         }
     } else if (svc == "matching_engine") {
@@ -471,17 +458,11 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
                    "SequencerThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
         return;
     }
-    if (leading_engine_announced_on_.is_valid() && id == leading_engine_announced_on_) {
+    if (const std::optional<int64_t> instance = presence_.connection_lost(id); instance.has_value()) {
         // The engine that said it leads has gone, or at least the connection it said so on has: it is no longer taken to
         // lead when a void is asked for, and is sent no orders until it is caught up to lead or says so again, so that a
         // restarted process is not sent orders on its predecessor's word (docs/availability/voided_commands.md, 5.1).
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: the connection matching engine instance {} announced that it leads on is lost -- it is not taken to lead until it says "
-                   "so again",
-                   leading_engine_instance_);
-        engine_routing_.leader_announcement_lost(leading_engine_instance_);
-        leading_engine_instance_ = 0;
-        leading_engine_announced_on_ = pubsub_itc_fw::ConnectionID{};
+        engine_routing_.leader_announcement_lost(*instance);
         note_whether_an_engine_takes_orders();
     }
     const std::optional<ReportForwarding::GatewayKey> lost_gateway = reports_.connection_lost(id);
@@ -496,10 +477,7 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
         if (handed_over_engines_.has_value()) {
             handed_over_engines_->remove(id);
         }
-        if (id == engine_catch_up_connection_) {
-            engine_catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
-            engine_catch_up_progress_.reset();
-        }
+        presence_.catch_up_ended(id);
         const bool carried_orders = engine_routing_.active() == id;
         engine_routing_.lost(id);
         note_whether_an_engine_takes_orders();
@@ -851,9 +829,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         orders_.hold(envelope, message.slab_id(), message.payload());
         release_held_orders_through(replicated_wal_->committed_through());
         note_whether_an_engine_takes_orders();
-        if (no_engine_since_.has_value()) {
-            ++orders_held_without_an_engine_;
-        }
+        presence_.order_held();
         return; // The payload is released when the held order is sent on, or at once if it waits in the log.
 
     } else if (is_er_pdu) {
@@ -1334,8 +1310,7 @@ void SequencerThread::SequencerWalFollowing::follower_progress(const pubsub_itc_
     if (serving == owner_.engine_servings_.end() || !serving->second.answers_catch_up_request) {
         return;
     }
-    owner_.engine_catch_up_connection_ = follower;
-    owner_.engine_catch_up_progress_ = RecoveryLimitRule::CatchUpProgress{sent_through, owner_.orders_.released_through()};
+    owner_.presence_.catch_up_progress(follower, RecoveryLimitRule::CatchUpProgress{sent_through, owner_.orders_.released_through()});
 }
 
 void SequencerThread::SequencerWalFollowing::follower_cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no) {
@@ -1462,22 +1437,13 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
         // anything new is sequenced.
         check_engine_absence();
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
-        // Another instance leads, so the venue was not down as a whole: what this process found at start-up does not
-        // say how long the venue has been without a matching engine.
-        engine_absence_.another_instance_leads(config_.wall_clock->now_ns());
         if (commands_checked_since_summary_) {
             summarise_command_checks("this instance has stopped leading");
         }
         orders_.stopped_leading();
-        // A follower forwards nothing to a matching engine, so it holds nothing for one. Clearing the
-        // bookkeeping matters for what happens if this instance leads AGAIN: a time without an engine
-        // begun in a previous leadership would otherwise still be open, because the recovery that would
-        // have closed it happened while this instance was not the one watching for it. It would then be
-        // promoted already refusing orders, with a time measured from an outage that ended long ago.
-        no_engine_since_.reset();
-        orders_held_without_an_engine_ = 0;
-        an_engine_took_orders_ = false;
-        order_acceptance_ = pubsub_itc_fw_app::OrderAcceptanceReason::Accepting;
+        // Another instance leads, so the venue was not down as a whole; and a follower holds nothing for a matching
+        // engine, so the time without one is forgotten (EnginePresence::stopped_leading).
+        presence_.stopped_leading(config_.wall_clock->now_ns());
     }
 }
 
@@ -1881,7 +1847,7 @@ void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord&
     // a void of its own, sent to the engines once committed; and a member's command or a TechnicalEvent, for whether
     // trading is halted, which the gateways are told of when it changes.
     if (venue_state_.note_record(written_as, record_of(envelope), VenueStateFromTheWal::How::written_by_this_leader).halt_changed) {
-        refresh_order_acceptance();
+        presence_.refresh_order_acceptance(std::chrono::steady_clock::now());
     }
 }
 
@@ -1976,6 +1942,42 @@ void SequencerThread::OrderLinks::held_orders_full(int64_t first_seq_no) {
     owner_.report(pubsub_itc_fw_app::HeldOrdersFull{first_seq_no});
 }
 
+bool SequencerThread::PresenceLinks::leading() const {
+    return owner_.role_ == pubsub_itc_fw_app::Role::leader;
+}
+
+bool SequencerThread::PresenceLinks::an_engine_takes_orders() const {
+    return owner_.an_engine_takes_orders();
+}
+
+bool SequencerThread::PresenceLinks::an_engine_is_routed_to() const {
+    return owner_.engine_routing_.active().is_valid();
+}
+
+bool SequencerThread::PresenceLinks::wal_holds_records() const {
+    return owner_.replicated_wal_->wal().last_seq_no() > 0;
+}
+
+bool SequencerThread::PresenceLinks::trading_halted() const {
+    return owner_.venue_state_.trading_halt().halted();
+}
+
+bool SequencerThread::PresenceLinks::halted_for_a_recovery_too_long() const {
+    return owner_.venue_state_.trading_halt().latest()->reason == pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong;
+}
+
+void SequencerThread::PresenceLinks::tell_every_gateway() {
+    owner_.broadcast_order_acceptance();
+}
+
+void SequencerThread::PresenceLinks::engine_takes_orders_again(int64_t without_ms, int64_t orders_held, bool one_had_before) {
+    owner_.report(pubsub_itc_fw_app::EngineTakesOrdersAgain{without_ms, orders_held, one_had_before});
+}
+
+void SequencerThread::PresenceLinks::write_recovery_halt(int64_t now_ns) {
+    owner_.write_recovery_halt(now_ns);
+}
+
 void SequencerThread::release_held_orders_through(int64_t acknowledged_seq_no) {
     orders_.release_to_leading_engine(acknowledged_seq_no);
     send_released_records_to_follower_engines();
@@ -1996,23 +1998,7 @@ void SequencerThread::check_engine_absence() {
     if (config_.replay_mode || !replicated_wal_.has_value()) {
         return;
     }
-    const int64_t now_ns = config_.wall_clock->now_ns();
-    const bool engine_routed = engine_routing_.active().is_valid();
-    if (engine_routed) {
-        static_cast<void>(engine_routed_stamp_.write(now_ns));
-    }
-    engine_absence_.observe(engine_routed, now_ns);
-    const bool leads = role_ == pubsub_itc_fw_app::Role::leader;
-    const bool wal_holds_records = replicated_wal_->wal().last_seq_no() > 0;
-    if (recovery_limit_.halt_due(now_ns, engine_absence_.absence_began_ns(), leads, wal_holds_records, engine_catch_up_progress_)) {
-        write_recovery_halt(now_ns);
-    }
-    // Whether an engine takes orders, and how long none has: once none has for orders_held_at_most_seconds, the gateways
-    // are told to refuse new orders, whether or not any order arrives meanwhile.
-    note_whether_an_engine_takes_orders();
-    // Trading stays halted when an engine trades again, until a person lifts the halt; what changes is the reason the
-    // gateways are given, and with it that they pass cancels on (docs/availability/voided_commands.md, section 6.1).
-    refresh_order_acceptance();
+    presence_.check_absence(config_.wall_clock->now_ns(), std::chrono::steady_clock::now());
 }
 
 template <typename Command> bool SequencerThread::write_own_encoded_command(const Command& command, const char* name) {
@@ -2030,17 +2016,6 @@ template <typename Command> bool SequencerThread::write_own_encoded_command(cons
 }
 
 void SequencerThread::write_recovery_halt(int64_t now_ns) {
-    const std::optional<int64_t> estimate_ns = recovery_limit_.estimate_ns();
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "SequencerThread: no matching engine has been able to trade for {} s, and {} -- longer together than the {} s the venue recovers by "
-               "itself. Voiding the orders held, cancelling every order on the book and halting trading, and telling the gateways to refuse orders; "
-               "a person must lift the halt (R-0117, R-0023)",
-               (now_ns - engine_absence_.absence_began_ns()) / 1000000000,
-               estimate_ns.has_value() ? fmt::format("the catch-up under way will take about {} s more", *estimate_ns / 1000000000)
-                                       : std::string("no catch-up under way says when one will finish"),
-               config_.automatic_recovery_limit_seconds);
-    recovery_limit_.halt_written();
-
     // 1. The orders held: no engine has been sent them, so each is rejected by the engine that next leads, rather than
     // applied once trading has halted. The cancels among them are carried out.
     void_held_orders_at_the_halt();
@@ -2061,7 +2036,7 @@ void SequencerThread::write_recovery_halt(int64_t now_ns) {
     event.trading_day = trading_date_for(now_ns);
     event.reason = pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong;
     static_cast<void>(write_own_encoded_command(event, "TechnicalEvent"));
-    refresh_order_acceptance();
+    presence_.refresh_order_acceptance(std::chrono::steady_clock::now());
 }
 
 void SequencerThread::void_held_orders_at_the_halt() {
@@ -2322,7 +2297,7 @@ void SequencerThread::handle_void_request(const pubsub_itc_fw::ConnectionID& con
     }
     // An engine that leads has caught up past the command, so it applied it, and its reports of it may not be in the WAL
     // yet: one that took the lead from following sends the reports it kept only as it takes the lead.
-    if (leading_engine_announced_on_.is_valid() && leading_engine_instance_ != instance_id) {
+    if (presence_.another_engine_leads(instance_id)) {
         decline_void(conn_id, instance_id, seq_no, pubsub_itc_fw_app::VoidDeclinedReason::AnotherEngineLeads,
                      "the other matching engine leads, so it applied the command and lived");
         return;
@@ -2664,120 +2639,10 @@ bool SequencerThread::an_engine_takes_orders() const {
 }
 
 void SequencerThread::note_whether_an_engine_takes_orders() {
-    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value()) {
+    if (!replicated_wal_.has_value()) {
         return;
     }
-    const bool takes_orders = an_engine_takes_orders();
-    if (takes_orders && !no_engine_since_.has_value()) {
-        an_engine_took_orders_ = true;
-        return; // the usual case, on every order
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (!takes_orders) {
-        if (!no_engine_since_.has_value()) {
-            no_engine_since_ = now;
-            orders_held_without_an_engine_ = 0;
-            last_no_engine_warning_ = now;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: no matching engine takes orders -- every order and cancel is held, in the WAL, until one leads, and is then "
-                       "released to it. After {}s without one, the gateways are told to refuse new orders",
-                       config_.orders_held_at_most_seconds);
-            return;
-        }
-        // Evaluated each time, because the limit must take effect when it is passed, not at the next warning. Only the
-        // warning is limited in how often it is given.
-        const bool changed = refresh_order_acceptance();
-        if (now - last_no_engine_warning_ < no_engine_warning_interval) {
-            return;
-        }
-        last_no_engine_warning_ = now;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: still no matching engine takes orders after {}s -- {} order(s) and cancel(s) held so far",
-                   std::chrono::duration_cast<std::chrono::seconds>(time_without_an_engine()).count(), orders_held_without_an_engine_);
-        // Said again on the same interval while the venue is not accepting, so that a gateway that missed the change, or
-        // connected without one since, is told.
-        if (!changed && order_acceptance_ != pubsub_itc_fw_app::OrderAcceptanceReason::Accepting) {
-            broadcast_order_acceptance();
-        }
-        return;
-    }
-    if (!no_engine_since_.has_value()) {
-        return;
-    }
-    const auto without = std::chrono::duration_cast<std::chrono::milliseconds>(time_without_an_engine());
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: a matching engine takes orders again after {} ms without one -- the {} order(s) and cancel(s) held meanwhile are "
-               "released to it",
-               without.count(), orders_held_without_an_engine_);
-    report(pubsub_itc_fw_app::EngineTakesOrdersAgain{without.count(), orders_held_without_an_engine_, an_engine_took_orders_});
-    an_engine_took_orders_ = true;
-    no_engine_since_.reset();
-    orders_held_without_an_engine_ = 0;
-    // Accepting again is automatic, and deliberately so. Requiring an operator to re-enable acceptance
-    // was considered and rejected: BUG-0009 is precisely a case where nobody was watching, and a design
-    // whose recovery depends on the watching that has already failed is not safer. See
-    // docs/availability/order_acceptance.md.
-    refresh_order_acceptance();
-}
-
-std::chrono::steady_clock::duration SequencerThread::time_without_an_engine() const {
-    return no_engine_since_.has_value() ? std::chrono::steady_clock::now() - *no_engine_since_ : std::chrono::steady_clock::duration::zero();
-}
-
-pubsub_itc_fw_app::OrderAcceptanceReason SequencerThread::order_acceptance_now() const {
-    // Only the leader has an opinion worth sending; see send_order_acceptance.
-    if (role_ != pubsub_itc_fw_app::Role::leader) {
-        return pubsub_itc_fw_app::OrderAcceptanceReason::Accepting;
-    }
-    const bool held_too_long = time_without_an_engine() >= std::chrono::seconds{config_.orders_held_at_most_seconds};
-    if (venue_state_.trading_halt().halted()) {
-        // Halted because no engine could be trading within the longest recovery the venue does by itself, and still no
-        // engine trades: new orders and cancels are both refused, with that reason.
-        const bool for_recovery = venue_state_.trading_halt().latest()->reason == pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong;
-        if (for_recovery && !an_engine_takes_orders()) {
-            return pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong;
-        }
-        // Otherwise new orders are refused and cancels passed on, because the engine carries them out while trading is
-        // halted, unless no engine has led for longer than orders are held.
-        return held_too_long ? pubsub_itc_fw_app::OrderAcceptanceReason::NoMatchingEngine : pubsub_itc_fw_app::OrderAcceptanceReason::Halted;
-    }
-    return held_too_long ? pubsub_itc_fw_app::OrderAcceptanceReason::NoMatchingEngine : pubsub_itc_fw_app::OrderAcceptanceReason::Accepting;
-}
-
-bool SequencerThread::refresh_order_acceptance() {
-    // Evaluated where it is needed rather than on a timer of its own: when an order arrives, when a
-    // gateway connects, when a record that halts or lifts trading is written, and on the engine
-    // absence timer, about once a second.
-    const pubsub_itc_fw_app::OrderAcceptanceReason now = order_acceptance_now();
-    if (now == order_acceptance_) {
-        return false;
-    }
-    order_acceptance_ = now;
-
-    switch (now) {
-        case pubsub_itc_fw_app::OrderAcceptanceReason::Accepting:
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                           "SequencerThread: accepting orders again -- gateways told the venue can process what they are given");
-            break;
-        case pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong:
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                           "SequencerThread: no longer accepting orders or cancels -- trading is halted because no matching engine could be trading within "
-                           "the longest recovery the venue does by itself, and none trades yet");
-            break;
-        case pubsub_itc_fw_app::OrderAcceptanceReason::Halted:
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                           "SequencerThread: trading is halted -- gateways told to refuse new orders and to pass cancels on, which the matching engine "
-                           "carries out while halted, until a person lifts the halt");
-            break;
-        default:
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: no longer accepting orders -- no matching engine has led for {}s, the longest orders are held ({} order(s) and "
-                       "cancel(s) held). The orders held stay held, and are released to the engine that next leads; what stops is taking on new ones",
-                       std::chrono::duration_cast<std::chrono::seconds>(time_without_an_engine()).count(), orders_held_without_an_engine_);
-            break;
-    }
-    broadcast_order_acceptance();
-    return true;
+    presence_.note_whether_an_engine_takes_orders(std::chrono::steady_clock::now());
 }
 
 void SequencerThread::send_order_acceptance(const pubsub_itc_fw::ConnectionID& conn_id) {
@@ -2794,10 +2659,11 @@ void SequencerThread::send_order_acceptance(const pubsub_itc_fw::ConnectionID& c
     }
 
     pubsub_itc_fw_app::OrderAcceptance state{};
-    state.accepting = order_acceptance_ == pubsub_itc_fw_app::OrderAcceptanceReason::Accepting;
-    state.held_order_count = no_engine_since_.has_value() ? orders_held_without_an_engine_ : 0;
-    state.no_engine_for_seconds = static_cast<int32_t>(std::chrono::duration_cast<std::chrono::seconds>(time_without_an_engine()).count());
-    state.reason = order_acceptance_;
+    state.accepting = presence_.acceptance() == pubsub_itc_fw_app::OrderAcceptanceReason::Accepting;
+    state.held_order_count = presence_.orders_held_without_an_engine();
+    state.no_engine_for_seconds =
+        static_cast<int32_t>(std::chrono::duration_cast<std::chrono::seconds>(presence_.time_without_an_engine(std::chrono::steady_clock::now())).count());
+    state.reason = presence_.acceptance();
     state.has_leader_epoch = true;
     state.leader_epoch = current_epoch();
     send_pdu(conn_id, pubsub_itc_fw_app::OrderAcceptance::message_pdu_id, 0, state);
@@ -3422,13 +3288,7 @@ void SequencerThread::handle_role_announcement(const pubsub_itc_fw::ConnectionID
     const int32_t accepted_epoch = engine_routing_.announced_epoch();
     const EngineOrderRouting::AnnouncementOutcome outcome = engine_routing_.announced(announcement.instance_id, announcement.current_role, announcement.epoch);
     if (outcome != EngineOrderRouting::AnnouncementOutcome::RefusedAsBehind) {
-        if (announcement.current_role == pubsub_itc_fw_app::Role::leader) {
-            leading_engine_instance_ = announcement.instance_id;
-            leading_engine_announced_on_ = conn_id;
-        } else if (announcement.instance_id == leading_engine_instance_) {
-            leading_engine_instance_ = 0;
-            leading_engine_announced_on_ = pubsub_itc_fw::ConnectionID{};
-        }
+        presence_.engine_announced(announcement.instance_id, announcement.current_role == pubsub_itc_fw_app::Role::leader, conn_id);
     }
     switch (outcome) {
         case EngineOrderRouting::AnnouncementOutcome::RefusedAsBehind:
@@ -3580,10 +3440,7 @@ void SequencerThread::serve_engine(const pubsub_itc_fw::ConnectionID& engine, in
 
 void SequencerThread::engine_handed_over(const pubsub_itc_fw::ConnectionID& engine, int64_t through, int64_t records_sent, pubsub_itc_fw::WalPosition resume_at,
                                          EngineServing serving) {
-    if (engine == engine_catch_up_connection_) {
-        engine_catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
-        engine_catch_up_progress_.reset();
-    }
+    presence_.catch_up_ended(engine);
     note_handed_over_through(through);
     report(pubsub_itc_fw_app::EngineHandedOver{engine.get_value(), through, records_sent, serving.answers_catch_up_request});
     if (!serving.answers_catch_up_request) {

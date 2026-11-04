@@ -1,5 +1,6 @@
 add_executable(sequencer
         SequencerConfigurationLoader.cpp
+        EnginePresence.cpp
         KeptReports.cpp
         MemberSessions.cpp
         OrderRelease.cpp
@@ -25,6 +26,7 @@ add_dependencies(sequencer fix_orders_generated leader_follower_generated sequen
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(sequencer PRIVATE
         EngineAbsenceRule.hpp
+        EnginePresence.hpp
         EngineRoutedStamp.hpp
         KeptReports.hpp
         MemberSessions.hpp
@@ -108,6 +110,8 @@ add_executable(sequencer_tests
         tests/ReportForwardingTest.cpp
         tests/KeptReportsTest.cpp
         tests/OrderReleaseTest.cpp
+        tests/EnginePresenceTest.cpp
+        EnginePresence.cpp
         KeptReports.cpp
         OrderRelease.cpp
         MemberSessions.cpp
