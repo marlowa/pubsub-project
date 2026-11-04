@@ -785,6 +785,19 @@ engine first (decision 2, option A).
     and six faults put in on purpose were each caught. Both full suites pass: 99 of 99 with the primary engine first, and
     38 of 38 with the secondary engine first.
 11. `OrderRelease`.
+
+    **As built.** `OrderRelease` (`applications/sequencer/OrderRelease.hpp`) holds the orders held, the first order that
+    waited in the WAL, the gateway connections for orders and whether reading from them is paused, and the wait after
+    taking the lead for the engine's position. It makes the decisions of section 6.8. The two true-or-false members that
+    held the reading pause are one state, `OrderRelease::Reading`: reading, paused for held orders, or paused for a
+    hand-over. `HeldOrder` moved with it. The thread implements `OrderReleaseLinksInterface`, which reads the WAL's
+    positions, says whether an engine takes orders (step 12 moves that), sends a held order to the leading engine, has
+    the reading thread send what waited in the WAL or what an engine lacks, releases inbound buffers, pauses and resumes
+    reading, publishes the position released, and asks the engine for its position. Releasing held orders to the engines
+    that follow the WAL stays in the thread, after the part releases them to the leading engine, in the same order as
+    before. The part's Quill log lines begin with its name. `OrderReleaseTest` has twelve tests, and eleven faults put
+    in on purpose were each caught. Both full suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the
+    secondary engine first.
 12. `EnginePresence`.
 13. `CommandChecks`.
 14. `HaltAndVoidRequests`.

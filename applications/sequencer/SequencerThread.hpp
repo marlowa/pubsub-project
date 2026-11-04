@@ -43,6 +43,7 @@
 #include "GatewayIds.hpp"
 #include "KeptReports.hpp"
 #include "MemberSessions.hpp"
+#include "OrderRelease.hpp"
 #include "RecoveryLimitRule.hpp"
 #include "ReportForwarding.hpp"
 #include "ReportsHeldForUnknownSessions.hpp"
@@ -388,11 +389,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void note_handed_over_through(int64_t through);
     pubsub_itc_fw::WalFollowingPositions& wal_positions_;
     std::optional<pubsub_itc_fw::WalFollowerService> wal_follower_service_;
-    // While set, reading orders from the gateways is paused so that a follower's hand-over can finish:
-    // records were released faster than one round between the two threads (section 3.4 of the design).
-    bool paused_for_hand_over_{false};
-    void pause_order_reading_for_hand_over();
-    void end_pause_for_hand_over();
 
     // The epoch the sequencer stamps on what it sends: the replicated WAL's, or 1 in replay mode.
     [[nodiscard]] int32_t current_epoch() const {
@@ -456,67 +452,41 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // commits it. The envelope must already carry the number the replicated WAL gives next.
     void append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord& envelope);
 
-    // ---- Sending an order to the matching engine only once the follower holds it -------------
-    //
-    // While a follower is connected and keeping up, the leader appends each order to its log,
-    // sends the record to the follower, and holds the order until the follower acknowledges it;
-    // only then is the order sent to the matching engine. So the engine never acts on an order the
-    // follower does not hold, and a leader that dies leaves nothing on the book that the surviving
-    // log lacks. See docs/availability/change_of_sequencer_leader.md, part 4.2.
-    //
-    // A held order keeps the inbound message's own buffer, which the decoded envelope points into,
-    // and releases it once the order has been sent to the engine, so holding an order copies nothing
-    // and allocates nothing.
-    struct HeldOrder {
-        pubsub_itc_fw_app::WalRecord envelope;
-        pubsub_itc_fw::SlabHandle slab_id;
-        // The inbound message's bytes the envelope's payload points into, released once it is sent; null for a command
-        // this sequencer wrote itself, whose payload is held below instead.
-        const uint8_t* buffer{nullptr};
-        std::chrono::steady_clock::time_point held_at;
-        // The payload of a command this sequencer wrote itself (write_own_command), which no inbound message holds.
-        static constexpr size_t own_payload_capacity = 64;
-        std::array<uint8_t, own_payload_capacity> own_payload{};
-        size_t own_payload_size{0};
+    // How OrderRelease reads the WAL's positions, sends orders, and pauses reading from the gateways.
+    class OrderLinks : public OrderReleaseLinksInterface {
+      public:
+        explicit OrderLinks(SequencerThread& owner) : owner_(owner) {}
+        [[nodiscard]] int64_t committed_through() const override;
+        [[nodiscard]] int64_t last_seq_no() const override;
+        [[nodiscard]] bool waits_for_confirmation() const override;
+        [[nodiscard]] bool waits_for_follower() const override;
+        [[nodiscard]] bool leading() const override;
+        [[nodiscard]] bool an_engine_takes_orders() const override;
+        [[nodiscard]] pubsub_itc_fw::ConnectionID leading_engine_connection() const override;
+        void send_to_leading_engine(const HeldOrder& held) override;
+        void send_orders_that_waited_in_the_wal(int64_t first) override;
+        void release_through(int64_t committed_through) override;
+        void send_engine_orders_after(int64_t after) override;
+        void release_message(pubsub_itc_fw::SlabHandle slab_id, const uint8_t* buffer) override;
+        void pause_reading(const pubsub_itc_fw::ConnectionID& connection) override;
+        void resume_reading(const pubsub_itc_fw::ConnectionID& connection) override;
+        void released_position_moved(int64_t released_through) override;
+        void ask_engine_position(const pubsub_itc_fw::ConnectionID& connection, int64_t request_id) override;
+        void held_orders_full(int64_t first_seq_no) override;
+
+      private:
+        SequencerThread& owner_;
     };
-
-    // The orders held, at most SequencerConfiguration::orders_held_at_most, allocated once when the sequencer
-    // starts. An order is held until its record is committed and an engine leads to send it to
-    // (docs/availability/voided_commands.md, section 5.1).
-    pubsub_itc_fw::FixedCapacityRingBuffer<HeldOrder> held_orders_{config_.orders_held_at_most};
-
-    // Orders numbered from here on were written to the log and replicated but not held, because the
-    // storage above was full; zero when there are none. They are sent to the engine from the log
-    // when they are released, so the storage bounds memory without bounding how many orders can
-    // wait. While this is set, no later order is held either, so that orders are sent in order.
-    int64_t first_unheld_seq_{0};
-
-    // The connections gateways send orders on, and whether reading from them has been paused because
-    // orders are waiting faster than they are released (docs/availability/a_follower_behind_does_not_lead.md, 4.3).
-    std::vector<pubsub_itc_fw::ConnectionID> order_connection_ids_;
-    bool order_reading_paused_{false};
-
-    // Reading from the gateways is paused when three quarters of the storage for held orders is used
-    // while waiting for a voter's confirmation, leaving room for orders already read, and resumed when
-    // the held orders fall to a quarter. Orders that arrive with the storage full anyway wait in the log.
-    [[nodiscard]] size_t pause_order_reading_at() const {
-        return config_.orders_held_at_most * 3 / 4;
-    }
-    [[nodiscard]] size_t resume_order_reading_at() const {
-        return config_.orders_held_at_most / 4;
-    }
+    OrderLinks order_links_{*this};
+    // Holding each order until it may be sent to the leading matching engine, and sending it; reading from the gateways,
+    // paused while too many orders wait or while a follower is handed over; and the wait after taking the lead for the
+    // engine's position (section 6.8 of docs/venue/dividing_the_sequencer_and_matching_engine.md). The storage for the
+    // orders held, SequencerConfiguration::orders_held_at_most of them, is allocated once.
+    OrderRelease orders_{config_.orders_held_at_most, order_links_, get_logger()};
 
     // 1 while this sequencer leads and commits orders without waiting for its follower, for any reason.
     // Registered here and set by the replicated WAL.
     pubsub_itc_fw::GaugeHandle running_alone_gauge_;
-
-    void hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message);
-    /// Has the reading thread send the leading engine, in order, the orders numbered from @p first that waited in the log
-    /// rather than the storage.
-    void send_orders_that_waited_in_the_log(int64_t first);
-    /// The last record released to the engines: every order numbered at or below it has been sent to the leading engine,
-    /// and every record at or below it is committed. An engine is sent nothing above it.
-    [[nodiscard]] int64_t released_through() const;
 
     /**
      * @brief Whether an engine leads that orders can be sent to: the order connection goes to an engine that neither
@@ -526,19 +496,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      * it (docs/availability/voided_commands.md, section 5.1).
      */
     [[nodiscard]] bool an_engine_takes_orders() const;
-    /// Whether the storage for held orders is full of orders the follower sequencer has not acknowledged, so that it is
-    /// too far behind; orders held because no engine leads are committed, and say nothing about the follower.
-    [[nodiscard]] bool held_orders_wait_on_the_follower() const;
-    /// Pauses reading from the gateways while too many orders wait, and resumes it when they have drained.
-    void pause_or_resume_order_reading();
+    /// Sends @p held to the leading engine, unless the reading thread is sending the engine what it lacks.
     void send_held_order_to_matching_engine(const HeldOrder& held);
     /// Sends the leading engine every held order whose record is committed through @p acknowledged_seq_no, and then sends
     /// the engines that follow the WAL every record up to the position released.
     void release_held_orders_through(int64_t acknowledged_seq_no);
-    /// The first half of release_held_orders_through: sends the leading engine the held orders, and nothing to the engines
-    /// that follow the WAL.
-    void release_held_orders_to_the_leading_engine(int64_t acknowledged_seq_no);
-    void discard_held_orders();
 
     // How KeptReports forwards a kept report and tells the test.
     class KeptReportLinks : public KeptReportsLinksInterface {
@@ -561,31 +523,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // Keeps a copy of a report from the matching engine, received while this instance is not leading.
     void keep_report_from_engine(const pubsub_itc_fw::EventMessage& message);
 
-    // From taking the lead until the leading matching engine says the highest order it has acted
-    // on. Meanwhile new orders are written and replicated but wait, held or in the log, so that the
-    // engine is sent the orders this log holds and it never received before any later one
-    // (docs/availability/commands_during_a_change_of_leader.md, section 3.5).
-    //
-    // The engine is asked on a connection other than the one the previous leader used, so in
-    // principle an order that leader sent could still be on its way when the engine answers. It is
-    // not in practice: this instance leads only once the previous leader's lease has run out,
-    // seconds after it last sent anything, and the engine has long since read what was sent.
-    bool awaiting_engine_position_{false};
-    // The highest record this instance held when it took the lead: the orders the engine may lack.
-    int64_t held_at_takeover_{0};
-    int64_t engine_position_request_id_{0};
-    int engine_position_asks_{0};
-    std::chrono::steady_clock::time_point engine_position_asked_at_{};
-    // How long to wait for the engine's answer before asking again.
-    static constexpr std::chrono::milliseconds engine_position_ask_interval{1000};
-    // Which ask is logged as a Warning: the engine has then not answered for four seconds.
-    static constexpr int engine_position_asks_before_warning = 5;
-
-    // Asks the leading matching engine for the highest order it has acted on, or stops waiting if
-    // no engine is connected.
-    void ask_engine_for_position();
+    // The leading matching engine's answer to a new leader's question of the highest order it has acted on
+    // (EnginePosition): given to OrderRelease.
     void handle_engine_position(const pubsub_itc_fw::EventMessage& message);
-    void stop_awaiting_engine_position(const char* reason);
+    // The orders held while no engine took them, or while the engine's position was awaited, go now if their records are
+    // committed.
     void release_orders_that_waited_for_the_engine();
 
     // The facts read from the WAL, which every instance keeps whether it leads or follows: whether trading is halted, the

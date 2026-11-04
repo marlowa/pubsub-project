@@ -2,6 +2,7 @@ add_executable(sequencer
         SequencerConfigurationLoader.cpp
         KeptReports.cpp
         MemberSessions.cpp
+        OrderRelease.cpp
         ReportForwarding.cpp
         SequencerThread.cpp
         Sequencer.cpp
@@ -27,6 +28,7 @@ target_sources(sequencer PRIVATE
         EngineRoutedStamp.hpp
         KeptReports.hpp
         MemberSessions.hpp
+        OrderRelease.hpp
         ReportForwarding.hpp
         SequencerConfiguration.hpp
         SequencerConfigurationLoader.hpp
@@ -105,7 +107,9 @@ add_executable(sequencer_tests
         tests/MemberSessionsTest.cpp
         tests/ReportForwardingTest.cpp
         tests/KeptReportsTest.cpp
+        tests/OrderReleaseTest.cpp
         KeptReports.cpp
+        OrderRelease.cpp
         MemberSessions.cpp
         ReportForwarding.cpp
         SequencerConfigurationLoader.cpp
