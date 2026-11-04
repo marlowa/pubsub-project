@@ -41,6 +41,7 @@
 #include "EngineRecordFromWal.hpp"
 #include "EngineReportPosition.hpp"
 #include "GatewayIds.hpp"
+#include "HaltAndVoidRequests.hpp"
 #include "KeptReports.hpp"
 #include "MemberSessions.hpp"
 #include "OrderRelease.hpp"
@@ -544,51 +545,57 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // The absence check of EnginePresence: called on engine_absence_timer_id_, and when this instance takes the lead.
     void check_engine_absence();
 
-    /**
-     * @brief Halts trading because no engine could be trading within the longest recovery the venue does by itself
-     *        (docs/availability/voided_commands.md, section 5.3, R-0117).
-     *
-     * Writes three commands, in this order: a VoidCommands naming every new order held, so that the engine that next
-     * leads rejects each instead of applying it; a CancelBook that cancels every order on the book, each reported to its
-     * member; and a TechnicalEvent that halts trading. They are held like the orders before them, and sent to the engine
-     * that next leads, in order. Then tells the gateways the venue is not accepting orders, with the reason. Called by
-     * EnginePresence, which decides when.
-     */
+    // Halts trading because no engine could be trading within the longest recovery the venue does by itself
+    // (HaltAndVoidRequests::recovery_halt), then tells the gateways the venue is not accepting orders, with the reason.
+    // Called by EnginePresence, which decides when.
     void write_recovery_halt(int64_t now_ns);
-    // Writes the VoidCommands of write_recovery_halt, if any order or cancel is held; voids only commands no engine has
-    // been sent and no report in the WAL answers.
-    void void_held_orders_at_the_halt();
     // Encodes @p command and writes it with write_own_command. @return false, having logged why, if it cannot be encoded.
     template <typename Command> bool write_own_encoded_command(const Command& command, const char* name);
-    // A matching engine about to lead that cannot account for the orders the venue holds, asking for trading to be halted.
+    // A matching engine about to lead that cannot account for the orders the venue holds, asking for trading to be halted:
+    // decoded, and handed to HaltAndVoidRequests.
     void handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 
-    /**
-     * @brief An operator asking, over the listener for operators, for trading to be halted or the halt lifted
-     *        (docs/availability/voided_commands.md, section 6.2).
-     *
-     * Only the leader acts. To halt, it writes a TechnicalEvent that halts trading, with the reason DeclaredByOperator,
-     * and cancels nothing. To lift, it writes one that does not halt, with the reason LiftedByOperator, only if a matching
-     * engine leads and the WAL holds a report answering the last member's command before the halt; otherwise it declines,
-     * saying why. Every request is answered and logged at Warning with the operator's name.
-     */
+    // An operator asking, over the listener for operators, for trading to be halted or the halt lifted
+    // (docs/availability/voided_commands.md, section 6.2): decoded, and handed to HaltAndVoidRequests.
     void handle_operator_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, size_t size);
-    // Sends the operator's tool the answer, and logs it at Warning.
-    void answer_operator(const pubsub_itc_fw::ConnectionID& conn_id, std::string_view operator_name, pubsub_itc_fw_app::OperatorHaltOutcome outcome,
-                         int64_t technical_event_seq_no, const std::string& explanation);
-
     // A matching engine that died applying a command, and whose peer has not applied it, asking for it to be voided
-    // (docs/availability/voided_commands.md, section 4.3). Only the leader acts: it writes a VoidCommands command naming
-    // the command, if that is safe, answers with the voids if the command is voided already, and otherwise answers
-    // VoidDeclined.
+    // (docs/availability/voided_commands.md, section 4.3): decoded, and handed to HaltAndVoidRequests.
     void handle_void_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    // Answers a VoidRequest on @p conn_id with VoidDeclined, saying why at Error.
-    void decline_void(const pubsub_itc_fw::ConnectionID& conn_id, int64_t instance_id, int64_t seq_no, pubsub_itc_fw_app::VoidDeclinedReason reason,
-                      const char* why);
     // What the WAL holds at @p seq_no: a member's command, something else, or nothing (@p found false). Reads the WAL on
     // this thread, from the start of the segment holding the record; done only for a VoidRequest, which comes after an
     // engine has died.
     [[nodiscard]] CommandInRecord command_in_wal_at(int64_t seq_no, bool& found);
+
+    class HaltLinks : public HaltAndVoidRequestsLinksInterface {
+      public:
+        explicit HaltLinks(SequencerThread& owner) : owner_(owner) {}
+        [[nodiscard]] bool leading() const override;
+        [[nodiscard]] bool orders_routed_to(const pubsub_itc_fw::ConnectionID& connection) const override;
+        [[nodiscard]] bool an_engine_takes_orders() const override;
+        [[nodiscard]] bool another_engine_leads(int64_t instance_id) const override;
+        [[nodiscard]] const TradingHaltState& trading_halt() const override;
+        [[nodiscard]] int64_t highest_command_answered() const override;
+        [[nodiscard]] int64_t released_through() const override;
+        [[nodiscard]] int64_t last_seq_no() const override;
+        [[nodiscard]] int64_t next_seq_no() const override;
+        [[nodiscard]] int32_t trading_day(int64_t now_ns) override;
+        [[nodiscard]] bool voided_already(int64_t seq_no) const override;
+        [[nodiscard]] CommandInRecord command_in_wal_at(int64_t seq_no, bool& found) override;
+        bool write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) override;
+        bool write_void_commands(const pubsub_itc_fw_app::VoidCommands& command) override;
+        bool write_cancel_book(const pubsub_itc_fw_app::CancelBook& command) override;
+        void send_voids(const pubsub_itc_fw::ConnectionID& connection) override;
+        void decline_void(const pubsub_itc_fw::ConnectionID& connection, int64_t seq_no, pubsub_itc_fw_app::VoidDeclinedReason reason) override;
+        void answer_operator(const pubsub_itc_fw::ConnectionID& connection, pubsub_itc_fw_app::OperatorHaltOutcome outcome, int64_t technical_event_seq_no,
+                             const std::string& explanation) override;
+
+      private:
+        SequencerThread& owner_;
+    };
+    HaltLinks halt_links_{*this};
+    // The requests to halt trading or void commands, and the halt written when the venue cannot recover by itself
+    // (section 6.14 of docs/venue/dividing_the_sequencer_and_matching_engine.md).
+    HaltAndVoidRequests halts_{halt_links_, get_logger()};
 
     class CommandLinks : public CommandChecksLinksInterface {
       public:

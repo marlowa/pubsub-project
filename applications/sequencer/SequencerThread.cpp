@@ -1986,6 +1986,70 @@ pubsub_itc_fw::ReplicatedWal::CommandCheckCounts SequencerThread::CommandLinks::
     return owner_.replicated_wal_->command_check_counts();
 }
 
+bool SequencerThread::HaltLinks::leading() const {
+    return owner_.role_ == pubsub_itc_fw_app::Role::leader && owner_.replicated_wal_.has_value();
+}
+
+bool SequencerThread::HaltLinks::orders_routed_to(const pubsub_itc_fw::ConnectionID& connection) const {
+    return owner_.engine_routing_.active() == connection;
+}
+
+bool SequencerThread::HaltLinks::an_engine_takes_orders() const {
+    return owner_.an_engine_takes_orders();
+}
+
+bool SequencerThread::HaltLinks::another_engine_leads(int64_t instance_id) const {
+    return owner_.presence_.another_engine_leads(instance_id);
+}
+
+const TradingHaltState& SequencerThread::HaltLinks::trading_halt() const {
+    return owner_.venue_state_.trading_halt();
+}
+
+int64_t SequencerThread::HaltLinks::highest_command_answered() const {
+    return owner_.venue_state_.highest_command_answered();
+}
+
+int64_t SequencerThread::HaltLinks::released_through() const {
+    return owner_.orders_.released_through();
+}
+
+int64_t SequencerThread::HaltLinks::last_seq_no() const {
+    return owner_.replicated_wal_->last_seq_no();
+}
+
+int64_t SequencerThread::HaltLinks::next_seq_no() const {
+    return owner_.replicated_wal_->next_seq_no();
+}
+
+int32_t SequencerThread::HaltLinks::trading_day(int64_t now_ns) {
+    return owner_.trading_date_for(now_ns);
+}
+
+bool SequencerThread::HaltLinks::voided_already(int64_t seq_no) const {
+    return owner_.venue_state_.voids().voiding(seq_no, fix_common::VoidedKind::cancel) != nullptr;
+}
+
+CommandInRecord SequencerThread::HaltLinks::command_in_wal_at(int64_t seq_no, bool& found) {
+    return owner_.command_in_wal_at(seq_no, found);
+}
+
+bool SequencerThread::HaltLinks::write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) {
+    return owner_.write_own_encoded_command(event, "TechnicalEvent");
+}
+
+bool SequencerThread::HaltLinks::write_void_commands(const pubsub_itc_fw_app::VoidCommands& command) {
+    return owner_.write_own_encoded_command(command, "VoidCommands");
+}
+
+bool SequencerThread::HaltLinks::write_cancel_book(const pubsub_itc_fw_app::CancelBook& command) {
+    return owner_.write_own_encoded_command(command, "CancelBook");
+}
+
+void SequencerThread::HaltLinks::send_voids(const pubsub_itc_fw::ConnectionID& connection) {
+    owner_.send_voided_commands(connection);
+}
+
 void SequencerThread::release_held_orders_through(int64_t acknowledged_seq_no) {
     orders_.release_to_leading_engine(acknowledged_seq_no);
     send_released_records_to_follower_engines();
@@ -2024,47 +2088,8 @@ template <typename Command> bool SequencerThread::write_own_encoded_command(cons
 }
 
 void SequencerThread::write_recovery_halt(int64_t now_ns) {
-    // 1. The orders held: no engine has been sent them, so each is rejected by the engine that next leads, rather than
-    // applied once trading has halted. The cancels among them are carried out.
-    void_held_orders_at_the_halt();
-
-    // 2. Every order on the book, cancelled and reported to its member: they were locked out of their orders while no
-    // engine could trade, and the market moved meanwhile. Not halting here: the TechnicalEvent below halts.
-    pubsub_itc_fw_app::CancelBook cancel_book{};
-    cancel_book.reason = pubsub_itc_fw_app::CancelBookReason::RecoveryTooLong;
-    // Every order on the book: each was placed before this command.
-    cancel_book.orders_placed_through = std::numeric_limits<int64_t>::max();
-    static_cast<void>(write_own_encoded_command(cancel_book, "CancelBook"));
-
-    // 3. The halt itself.
-    pubsub_itc_fw_app::TechnicalEvent event{};
-    // The venue has only the open phase until the start and the end of the trading day are built.
-    event.phase = pubsub_itc_fw_app::TradingPhase::Open;
-    event.halted = true;
-    event.trading_day = trading_date_for(now_ns);
-    event.reason = pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong;
-    static_cast<void>(write_own_encoded_command(event, "TechnicalEvent"));
+    halts_.recovery_halt(now_ns);
     presence_.refresh_order_acceptance(std::chrono::steady_clock::now());
-}
-
-void SequencerThread::void_held_orders_at_the_halt() {
-    // Every command after the last one released has been sent to no engine: no engine is sent a record beyond the
-    // released position (docs/availability/voided_commands.md, section 5.1). Nor is any command at or below one a report
-    // in the WAL answers, because a report means an engine applied that command and went on.
-    const int64_t first = std::max(orders_.released_through(), venue_state_.highest_command_answered()) + 1;
-    const int64_t last = replicated_wal_->last_seq_no();
-    if (first > last) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: no order is held at the halt, so nothing is voided");
-        return;
-    }
-    // Only the new orders in the range: a held cancel applied late still does what its member asked, and every other
-    // command in it is applied as usual.
-    const pubsub_itc_fw_app::VoidCommands void_command{first, last, true, pubsub_itc_fw_app::VoidReason::HeldWhenTradingHalted};
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "SequencerThread: writing a VoidCommands for the new orders among commands seq={} to seq={}, held while no matching engine led -- the "
-               "engine that next leads rejects each, saying trading halted while it was waiting",
-               first, last);
-    static_cast<void>(write_own_encoded_command(void_command, "VoidCommands"));
 }
 
 void SequencerThread::handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -2077,35 +2102,7 @@ void SequencerThread::handle_halt_request(const pubsub_itc_fw::ConnectionID& con
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode HaltRequest -- dropping");
         return;
     }
-    // As for a cancel of the book: only the leader writes commands, and only for the engine orders are routed to. The
-    // engine asks again every second until it has applied a halt.
-    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value() || engine_routing_.active() != conn_id) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: HaltRequest from matching engine instance {} on connection {} -- not written: {}", request.instance_id,
-                   conn_id.get_value(), role_ != pubsub_itc_fw_app::Role::leader ? "this instance does not lead" : "orders are not routed to that engine");
-        return;
-    }
-    const int64_t now_ns = config_.wall_clock->now_ns();
-    pubsub_itc_fw_app::TechnicalEvent event{};
-    // The venue has only the open phase until the start and the end of the trading day are built.
-    event.phase = pubsub_itc_fw_app::TradingPhase::Open;
-    event.halted = true;
-    event.trading_day = trading_date_for(now_ns);
-    event.reason = request.reason;
-    // Measured, then encoded into a buffer of the size measured.
-    size_t bytes_written = 0;
-    size_t bytes_needed = 0;
-    static_cast<void>(pubsub_itc_fw_app::encode(event, nullptr, 0, bytes_written, bytes_needed));
-    std::vector<uint8_t> bytes(bytes_needed);
-    if (!pubsub_itc_fw_app::encode(event, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a TechnicalEvent needs {} bytes and could not be encoded", bytes_needed);
-        return;
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "SequencerThread: matching engine instance {} at epoch {} cannot account for the orders the venue holds -- writing a TechnicalEvent that "
-               "halts trading on trading day {} ({}); a person must lift it (R-0123, R-0023)",
-               request.instance_id, request.epoch, event.trading_day, pubsub_itc_fw_app::to_string(request.reason));
-    write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id), bytes.data(), bytes_written);
+    halts_.engine_halt_request(conn_id, request.instance_id, request.epoch, request.reason, config_.wall_clock->now_ns());
 }
 
 void SequencerThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& message) {
@@ -2160,92 +2157,16 @@ void SequencerThread::handle_operator_halt_request(const pubsub_itc_fw::Connecti
                    "SequencerThread: operator connection {} sent an OperatorHaltRequest that did not decode -- ignored", conn_id.get_value());
         return;
     }
-    // Copied: the request's bytes are committed, and the arena used again, before the answer is logged.
+    // Copied, so that nothing logged or answered points into the request's bytes, which are committed once it is dealt with.
     const std::string operator_name(request.operator_name);
-    const bool halt = request.halt;
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: operator {} asks for trading to be {}, on connection {}", operator_name,
-               halt ? "halted" : "no longer halted", conn_id.get_value());
-
-    // As for a matching engine's HaltRequest: only the leader writes commands.
-    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value()) {
-        answer_operator(conn_id, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::NotLeader, 0,
-                        "this sequencer does not lead, so it wrote nothing; the sequencer that leads acts on the request");
-        return;
-    }
-    const int64_t now_ns = config_.wall_clock->now_ns();
-    pubsub_itc_fw_app::TechnicalEvent event{};
-    // The venue has only the open phase until the start and the end of the trading day are built.
-    event.phase = pubsub_itc_fw_app::TradingPhase::Open;
-    event.trading_day = trading_date_for(now_ns);
-    if (halt) {
-        if (venue_state_.trading_halt().halted()) {
-            answer_operator(conn_id, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::AlreadyHalted, 0,
-                            fmt::format("trading is halted already, by the TechnicalEvent at seq={} ({}), so nothing was written",
-                                        venue_state_.trading_halt().latest()->seq_no,
-                                        pubsub_itc_fw_app::to_string(venue_state_.trading_halt().latest()->reason)));
-            return;
-        }
-        // Nothing is cancelled: an operator's halt keeps the book, and the operator's reasons are not the venue's to guess.
-        event.halted = true;
-        event.reason = pubsub_itc_fw_app::TechnicalEventReason::DeclaredByOperator;
-        const int64_t seq_no = replicated_wal_->next_seq_no();
-        if (!write_own_encoded_command(event, "TechnicalEvent")) {
-            answer_operator(conn_id, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::NotHalted, 0,
-                            "the TechnicalEvent could not be encoded, so nothing was written");
-            return;
-        }
-        answer_operator(conn_id, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::Halted, seq_no,
-                        fmt::format("wrote a TechnicalEvent at seq={} that halts trading on trading day {}: new orders are refused, cancels are carried "
-                                    "out, and no order is cancelled",
-                                    seq_no, event.trading_day));
-        return;
-    }
-
-    switch (venue_state_.trading_halt().may_lift(an_engine_takes_orders(), venue_state_.highest_command_answered())) {
-        case TradingHaltState::Lift::NotHalted:
-            answer_operator(conn_id, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::NotHalted, 0, "trading is not halted, so there is nothing to lift");
-            return;
-        case TradingHaltState::Lift::NoEngineLeads:
-            answer_operator(conn_id, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::NoEngineLeads, 0,
-                            fmt::format("no matching engine leads, so the halt at seq={} is not lifted: start a matching engine, wait for it to lead, and ask "
-                                        "again",
-                                        venue_state_.trading_halt().latest()->seq_no));
-            return;
-        case TradingHaltState::Lift::ReportsOutstanding:
-            // The leading engine has not yet answered every order and cancel written before the halt, so some member has not
-            // yet been sent its rejections and its cancels: the engine sends every report of a command before it applies the
-            // next.
-            answer_operator(conn_id, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::ReportsOutstanding, 0,
-                            fmt::format("the WAL holds no report yet answering seq={}, the last order or cancel before the halt at seq={} (the latest "
-                                        "command answered is seq={}), so the halt is not lifted: the leading engine is still working through the "
-                                        "orders the venue held. Ask again shortly",
-                                        venue_state_.trading_halt().latest()->last_members_command_before, venue_state_.trading_halt().latest()->seq_no,
-                                        venue_state_.highest_command_answered()));
-            return;
-        case TradingHaltState::Lift::Allowed:
-            break;
-    }
-    const TradingHaltState::TechnicalEventRecord halted_by = *venue_state_.trading_halt().latest();
-    event.halted = false;
-    event.reason = pubsub_itc_fw_app::TechnicalEventReason::LiftedByOperator;
-    const int64_t seq_no = replicated_wal_->next_seq_no();
-    if (!write_own_encoded_command(event, "TechnicalEvent")) {
-        answer_operator(conn_id, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::ReportsOutstanding, 0,
-                        "the TechnicalEvent could not be encoded, so nothing was written");
-        return;
-    }
-    answer_operator(conn_id, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::Lifted, seq_no,
-                    fmt::format("wrote a TechnicalEvent at seq={} that lifts the halt at seq={} ({}): new orders are accepted again", seq_no, halted_by.seq_no,
-                                pubsub_itc_fw_app::to_string(halted_by.reason)));
+    halts_.operator_request(conn_id, operator_name, request.halt, config_.wall_clock->now_ns());
 }
 
-void SequencerThread::answer_operator(const pubsub_itc_fw::ConnectionID& conn_id, std::string_view operator_name,
-                                      pubsub_itc_fw_app::OperatorHaltOutcome outcome, int64_t technical_event_seq_no, const std::string& explanation) {
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: answered operator {}: {} -- {}", operator_name,
-               pubsub_itc_fw_app::to_string(outcome), explanation);
+void SequencerThread::HaltLinks::answer_operator(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::OperatorHaltOutcome outcome,
+                                                 int64_t technical_event_seq_no, const std::string& explanation) {
     pubsub_itc_fw_app::OperatorHaltAnswer answer{};
     answer.outcome = outcome;
-    answer.halted = venue_state_.trading_halt().halted();
+    answer.halted = owner_.venue_state_.trading_halt().halted();
     answer.technical_event_seq_no = technical_event_seq_no;
     answer.explanation = explanation;
     // Encoded after a header of the size the framework puts in front of every message.
@@ -2254,7 +2175,7 @@ void SequencerThread::answer_operator(const pubsub_itc_fw::ConnectionID& conn_id
     size_t bytes_written = 0;
     size_t bytes_needed = 0;
     if (!pubsub_itc_fw_app::encode(answer, bytes.data() + header_size, bytes.size() - header_size, bytes_written, bytes_needed)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: an OperatorHaltAnswer needs {} bytes and could not be encoded",
+        PUBSUB_LOG(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: an OperatorHaltAnswer needs {} bytes and could not be encoded",
                    bytes_needed);
         return;
     }
@@ -2272,7 +2193,7 @@ void SequencerThread::answer_operator(const pubsub_itc_fw::ConnectionID& conn_id
     bytes[17] = static_cast<uint8_t>(pubsub_itc_fw::pdu_canary_value >> 16);
     bytes[18] = static_cast<uint8_t>(pubsub_itc_fw::pdu_canary_value >> 8);
     bytes[19] = static_cast<uint8_t>(pubsub_itc_fw::pdu_canary_value);
-    send_raw(conn_id, bytes.data(), static_cast<uint32_t>(header_size + bytes_written));
+    owner_.send_raw(conn_id, bytes.data(), static_cast<uint32_t>(header_size + bytes_written));
 }
 
 void SequencerThread::handle_void_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -2285,72 +2206,11 @@ void SequencerThread::handle_void_request(const pubsub_itc_fw::ConnectionID& con
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode VoidRequest -- dropping");
         return;
     }
-    const int64_t instance_id = request.instance_id;
-    const int64_t seq_no = request.seq_no;
-    // Only the leader writes commands. The engine asks again every second until it is answered.
-    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: VoidRequest for command seq={} from matching engine instance {} -- not acted on: this instance does not lead", seq_no,
-                   instance_id);
-        return;
-    }
-    // Both engines usually die on the same command, so both ask. The first request writes the void; the second is sent
-    // the voids, which name the command once its record is committed, and is asked again until then.
-    if (venue_state_.voids().voiding(seq_no, fix_common::VoidedKind::cancel) != nullptr) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: VoidRequest for command seq={} from matching engine instance {} -- voided already; sending the voids", seq_no,
-                   instance_id);
-        send_voided_commands(conn_id);
-        return;
-    }
-    // An engine that leads has caught up past the command, so it applied it, and its reports of it may not be in the WAL
-    // yet: one that took the lead from following sends the reports it kept only as it takes the lead.
-    if (presence_.another_engine_leads(instance_id)) {
-        decline_void(conn_id, instance_id, seq_no, pubsub_itc_fw_app::VoidDeclinedReason::AnotherEngineLeads,
-                     "the other matching engine leads, so it applied the command and lived");
-        return;
-    }
-    if (seq_no <= venue_state_.highest_command_answered()) {
-        decline_void(conn_id, instance_id, seq_no, pubsub_itc_fw_app::VoidDeclinedReason::AnsweredAlready,
-                     "the WAL holds a report answering it or a later command, so an engine applied it and went on, and its member may have been told");
-        return;
-    }
-    bool found = false;
-    const CommandInRecord command = command_in_wal_at(seq_no, found);
-    if (!found) {
-        decline_void(conn_id, instance_id, seq_no, pubsub_itc_fw_app::VoidDeclinedReason::NotInWal, "the WAL does not hold it");
-        return;
-    }
-    if (command != CommandInRecord::MembersCommand) {
-        // A command the sequencer wrote itself is not voided: that would leave open orders the venue meant to cancel, or
-        // trading open that it meant to halt, and no member could be told why. A person deals with a crash on one.
-        decline_void(conn_id, instance_id, seq_no, pubsub_itc_fw_app::VoidDeclinedReason::NotAMembersCommand,
-                     command == CommandInRecord::NotDecodable ? "its record did not decode" : "it is not a member's new order or cancel");
-        return;
-    }
-    const pubsub_itc_fw_app::VoidCommands void_command{seq_no, seq_no, false, pubsub_itc_fw_app::VoidReason::EngineDiedApplying};
-    // Measured, then encoded into a buffer of the size measured.
-    size_t bytes_written = 0;
-    size_t bytes_needed = 0;
-    static_cast<void>(pubsub_itc_fw_app::encode(void_command, nullptr, 0, bytes_written, bytes_needed));
-    std::vector<uint8_t> bytes(bytes_needed);
-    if (!pubsub_itc_fw_app::encode(void_command, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a VoidCommands needs {} bytes and could not be encoded", bytes_needed);
-        return;
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "SequencerThread: matching engine instance {} died applying command seq={}, and no engine applied it and went on -- writing a VoidCommands "
-               "command voiding it, so that every engine rejects it to its member instead of applying it (docs/availability/voided_commands.md, section 4)",
-               instance_id, seq_no);
-    write_own_command(static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id), bytes.data(), bytes_written);
+    halts_.void_request(conn_id, request.instance_id, request.seq_no);
 }
 
-void SequencerThread::decline_void(const pubsub_itc_fw::ConnectionID& conn_id, int64_t instance_id, int64_t seq_no,
-                                   pubsub_itc_fw_app::VoidDeclinedReason reason, const char* why) {
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "SequencerThread: matching engine instance {} died applying command seq={} and asked for it to be voided -- declined, because {} ({})",
-               instance_id, seq_no, why, pubsub_itc_fw_app::to_string(reason));
-    send_pdu(conn_id, pubsub_itc_fw_app::VoidDeclined::message_pdu_id, 0, pubsub_itc_fw_app::VoidDeclined{seq_no, reason});
+void SequencerThread::HaltLinks::decline_void(const pubsub_itc_fw::ConnectionID& connection, int64_t seq_no, pubsub_itc_fw_app::VoidDeclinedReason reason) {
+    owner_.send_pdu(connection, pubsub_itc_fw_app::VoidDeclined::message_pdu_id, 0, pubsub_itc_fw_app::VoidDeclined{seq_no, reason});
 }
 
 CommandInRecord SequencerThread::command_in_wal_at(int64_t seq_no, bool& found) {

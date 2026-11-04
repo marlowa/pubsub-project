@@ -558,8 +558,9 @@ design divides the work into sixteen steps, each followed by the developer loop 
 
 Steps 1 to 13 are done: the matching engine is divided, and the sequencer's facts read from the WAL, its member
 sessions, its report forwarding, its reports kept while not leading, its holding and releasing of orders, whether a
-matching engine takes orders, and its checks of each command against the WAL are parts. Step 1 found
-[BUG-0225](bug_list.md#bug_0225) and [BUG-0226](bug_list.md#bug_0226). Step 14 is next.
+matching engine takes orders, its checks of each command against the WAL, and its requests to halt trading or void
+commands are parts. Step 1 found [BUG-0225](bug_list.md#bug_0225) and [BUG-0226](bug_list.md#bug_0226); step 14 found
+[BUG-0227](bug_list.md#bug_0227). Step 15 is next.
 
 ### Framework fixes done alongside the phases
 

@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 226 |
-| Open | 81 (58 defects, 23 tasks) |
+| Bugs recorded | 227 |
+| Open | 82 (59 defects, 23 tasks) |
 | Closed | 145 |
-| Next id | BUG-0227 |
+| Next id | BUG-0228 |
 
 ## Open bugs by severity
 
-17 high, 49 medium, 15 low.
+17 high, 49 medium, 16 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -94,6 +94,7 @@
 | [BUG-0215](#bug_0215) | low | defect | `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds |
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client once logged on and exited without sending its baseline orders, failing scenario 22 |
+| [BUG-0227](#bug_0227) | low | defect | An operator whose request to lift the halt cannot be written is told that reports are outstanding |
 
 ---
 
@@ -191,12 +192,35 @@ went looking.
 
 ## Open
 
+### BUG-0227: An operator whose request to lift the halt cannot be written is told that reports are outstanding {#bug_0227}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-04 |
+| Recorded | 2026-11-04 |
+| How | Moving the sequencer's handling of requests to halt trading into a part of its own for phase 10 ([dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md), step 14) |
+| Impact | None in practice: a TechnicalEvent is a few fixed-size fields and always encodes. If it ever did not, the operator would be told the wrong reason the halt was not lifted |
+
+**What happens.** When an operator asks to lift the halt, every check passes, and the TechnicalEvent that lifts it cannot
+be encoded, `HaltAndVoidRequests::operator_request` answers with the outcome `ReportsOutstanding`, which tells the
+operator that the leading matching engine is still working through the orders the venue held. The explanation sent with
+it says, correctly, that the TechnicalEvent could not be encoded and nothing was written. The same failure when halting
+answers `NotHalted`, which is at least true.
+
+Found by reading the code; not reproduced, because encoding a TechnicalEvent cannot fail with the buffer the sequencer
+measures for it.
+
+**What is wanted.** An outcome that says nothing was written because the command could not be encoded, used for both the
+halt and the lift, so that a tool reading only the outcome is not misled.
+
+**Principles.** None broken; a message that misstates the venue's condition to a person.
+
 ### BUG-0226: A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made {#bug_0226}
 
 | | |
 |---|---|
 | Severity | medium |
-| Kind | defect |
 | Found | 2026-11-03 |
 | Recorded | 2026-11-03 |
 | How | Writing down the sequencer's report forwarding for phase 10 ([dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md), section 6.11) |
@@ -231,7 +255,6 @@ purpose without the fix.
 | | |
 |---|---|
 | Severity | medium |
-| Kind | defect |
 | Found | 2026-11-03 |
 | Recorded | 2026-11-03 |
 | How | Writing down the matching engine's role states for phase 10 ([dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md), section 6.1), and then seen in scenario 24 |
@@ -3807,7 +3830,6 @@ logs on many sessions together, repeated, which fails now some of the time.
 | | |
 |---|---|
 | Severity | medium |
-| Kind | defect |
 | Found | 2026-11-03 |
 | Recorded | 2026-11-03 |
 | Fixed | 2026-11-03 -- a cursor opens a segment by its number and lists the directory only when that segment does not exist; a reader of a few records asks the kernel for only the pages it reads; `Wal::scan_start_for` finds the segment by a binary search; and the read forward for a report starts at the command's own record |

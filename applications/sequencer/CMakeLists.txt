@@ -2,6 +2,7 @@ add_executable(sequencer
         SequencerConfigurationLoader.cpp
         CommandChecks.cpp
         EnginePresence.cpp
+        HaltAndVoidRequests.cpp
         KeptReports.cpp
         MemberSessions.cpp
         OrderRelease.cpp
@@ -30,6 +31,7 @@ target_sources(sequencer PRIVATE
         EngineAbsenceRule.hpp
         EnginePresence.hpp
         EngineRoutedStamp.hpp
+        HaltAndVoidRequests.hpp
         KeptReports.hpp
         MemberSessions.hpp
         OrderRelease.hpp
@@ -114,8 +116,10 @@ add_executable(sequencer_tests
         tests/OrderReleaseTest.cpp
         tests/EnginePresenceTest.cpp
         tests/CommandChecksTest.cpp
+        tests/HaltAndVoidRequestsTest.cpp
         CommandChecks.cpp
         EnginePresence.cpp
+        HaltAndVoidRequests.cpp
         KeptReports.cpp
         OrderRelease.cpp
         MemberSessions.cpp

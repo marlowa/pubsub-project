@@ -843,6 +843,22 @@ engine first (decision 2, option A).
     thirteen faults put in on purpose were each caught. Both full suites pass: 99 of 99 with the primary engine first, and
     38 of 38 with the secondary engine first.
 14. `HaltAndVoidRequests`.
+
+    **As built.** `HaltAndVoidRequests` (`applications/sequencer/HaltAndVoidRequests.hpp`) makes the decisions of
+    section 6.14: an operator's request to halt trading or lift the halt, a matching engine's request to halt, a
+    matching engine's request to void the command it died applying, and the halt written when no engine could be
+    trading within the longest recovery the venue does by itself. It holds no state of its own, as section 6.14 says:
+    it decides from the facts the WAL holds, from whether an engine takes orders, and from which engine orders are
+    routed to. The thread still decodes each request, because the decoding uses the thread's arena, and still encodes
+    and writes each command, and sends each answer. It implements `HaltAndVoidRequestsLinksInterface`, which gives the
+    part those facts, reads the one record a void request names, writes a TechnicalEvent, a VoidCommands or a
+    CancelBook as a command of the sequencer's own, sends the voids or VoidDeclined to an engine, and sends an operator
+    its answer. The part logs each request and each answer. The list of reads of the WAL in
+    `scripts/check_standards.py` names `HaltAndVoidRequests::void_request` and the thread's
+    `HaltLinks::command_in_wal_at` in place of `SequencerThread::handle_void_request`. Moving the code found
+    [BUG-0227](../bug_list.md#bug_0227), recorded and not fixed. The part's Quill log lines begin with its name.
+    `HaltAndVoidRequestsTest` has sixteen tests, and seventeen faults put in on purpose were each caught. Both full
+    suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 15. `ServingWalFollowers`, and what is left of `SequencerThread` reduced to its connections, timers and the handing on
     of events.
 16. Replay mode, as decision 3 says; the round trip measured again; the sequencer and matching engine documents brought

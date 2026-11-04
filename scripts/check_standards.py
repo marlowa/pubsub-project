@@ -1310,9 +1310,11 @@ _DEFINITION = 'where the reader itself is declared or defined; each use of it is
 # Each entry: (path relative to the project root, where, why), as for _PERMITTED_LOCKS.
 _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::on_initial_event', _REPLAY_MODE),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_void_request', _VOID_REQUEST),
+    ('applications/sequencer/SequencerThread.cpp', 'HaltLinks::command_in_wal_at', _VOID_REQUEST),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::command_in_wal_at', _VOID_REQUEST),
     ('applications/sequencer/SequencerThread.hpp', 'command_in_wal_at', _DEFINITION),
+    ('applications/sequencer/HaltAndVoidRequests.cpp', 'HaltAndVoidRequests::void_request', _VOID_REQUEST),
+    ('applications/sequencer/HaltAndVoidRequests.hpp', 'command_in_wal_at', _DEFINITION),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_committed_records_to_publishers', _PUBLISHERS),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_released_records_to_follower_engines', _FOLLOWER_ENGINES),
     ('applications/sequencer/SequencerThread.hpp', 'handed_over_engines_', _DEFINITION),
