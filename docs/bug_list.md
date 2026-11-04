@@ -287,6 +287,14 @@ own, and for far longer than the about 5 seconds start-up is meant to take.
 4. **The start-up stall found.** Which call holds the sequencer's thread in the journal at start-up, by sampling the
    thread's kernel stack (`/proc/<pid>/task/<tid>/stack`, which needs root) or with `perf trace` on the system calls.
 
+**Done so far.** Points 2 and 3 are built: the four metrics, for the sequencer and the matching engine, and the
+benchmark below. Recording the epoch is done for both programs by `EpochRecording`, which also warns when a record takes
+more than a quarter of the lease, says at Error when a slow record before taking the lead is the probable cause of
+stopping leading, and checks at start-up how fast the disk syncs, with a gauge. The lease agent says when its thread was
+held up before the lease ran out. The development environment's lease period is 5000 ms, with the reason in
+`environments/dev.toml`. Point 1, recording the epoch before the lease is asked for, waits for a design that Andrew
+is to discuss first. Point 4 is not started.
+
 **Measured with the benchmark.** `epoch_store_cost` (`libraries/pubsub_itc_fw/benchmarks/src/EpochStoreCost.cpp`),
 run on 4 November 2026, 200 records of the epoch for each line, with the load a thread writing 512 MiB files one after
 another, measured once it had written 2 GiB. Times in milliseconds, median / 99th percentile / longest:

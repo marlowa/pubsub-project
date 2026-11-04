@@ -147,6 +147,10 @@ void SequencerThread::on_initial_event() {
     promise_record_histogram_ =
         get_reactor().metrics().register_histogram("sequencer_thread", "sequencer_promise_record_milliseconds",
                                                    "Milliseconds each background write of the lease promise record took", lease_milliseconds_buckets);
+    disk_check_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "sequencer_disk_check_worst_milliseconds",
+        "The longest of the trial records of the epoch made at start-up, in milliseconds: how fast the WAL's disk syncs. Expected to be well under a "
+        "quarter of the lease");
     leases_run_out_counter_ = get_reactor().metrics().register_counter("sequencer_thread", "sequencer_leases_run_out_total",
                                                                        "Times this instance stopped leading because its lease ran out. Expected to be 0");
 
@@ -176,6 +180,7 @@ void SequencerThread::on_initial_event() {
     wal_configuration.lease_left_when_leading_milliseconds = lease_left_when_leading_histogram_;
     wal_configuration.lease_metrics.promise_record_milliseconds = promise_record_histogram_;
     wal_configuration.lease_metrics.leases_run_out = leases_run_out_counter_;
+    wal_configuration.disk_check_worst_milliseconds = disk_check_gauge_;
     // The WAL keeps a record of the commands it holds, with high availability on or off, so that the leader writes a
     // command into the WAL at most once, and refuses a member that uses an identifier again
     // (docs/availability/one_check_against_sequencing_twice.md).

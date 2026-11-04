@@ -18,7 +18,7 @@
 #include <pubsub_itc_fw/CommandIdentityInterface.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/CpuPinning.hpp>
-#include <pubsub_itc_fw/EpochStore.hpp>
+#include <pubsub_itc_fw/EpochRecording.hpp>
 #include <pubsub_itc_fw/GaugeHandle.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
@@ -191,6 +191,9 @@ struct ReplicatedWalConfiguration {
     HistogramHandle lease_left_when_leading_milliseconds{};
     /// What the lease agent records: how long the promise record's background writes take, and how many leases ran out.
     LeaseMetrics lease_metrics{};
+    /// Set, when the WAL is opened, to the longest of a few trial records of the epoch, in milliseconds: how fast the
+    /// WAL's disk syncs (EpochRecording::check_disk). Left as constructed, nothing is set.
+    GaugeHandle disk_check_worst_milliseconds{};
     /// Set to 1 while this instance leads and commits records without waiting for its follower, whatever the reason:
     /// no follower is connected, the follower's WAL is not yet known to agree with this one, the follower is being
     /// sent records it missed, or it is too far behind. Set to 0 otherwise, which includes every instance that follows
@@ -229,7 +232,7 @@ struct ReplicatedWalConfiguration {
  *   record; it discards what the leader does not hold, and the leader sends it everything after the
  *   point of agreement (docs/availability/follower_log_repair.md).
  * - **Who leads**, through a PairLeaseAgent (docs/availability/majority_leases.md). The epoch is kept on
- *   disk in an EpochStore and the promises in a LeasePromiseStore, both in the WAL's directory.
+ *   disk through EpochRecording, which times each record, and the promises in a LeasePromiseStore, both in the WAL's directory.
  *
  * Use: one thread, the one that owns this object, calls every function, and every call to the events
  * interface is made on it. Nothing here takes a lock or waits for another thread (principles F1 and F2
@@ -531,7 +534,7 @@ class ReplicatedWal {
     // discards records.
     LogEpochTable log_epochs_;
 
-    EpochStore epoch_store_;
+    EpochRecording epoch_recording_;
     LeasePromiseStore promise_store_;
     // Writes promise records on a thread of its own, when no recorder was given. Declared after the store
     // it writes to, so that it is destroyed first.

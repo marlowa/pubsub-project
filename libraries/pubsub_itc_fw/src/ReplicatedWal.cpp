@@ -35,9 +35,11 @@ ReplicatedWal::ReplicatedWal(ReplicatedWalConfiguration configuration, QuillLogg
     , links_(links)
     , lease_links_(lease_links)
     , events_(events)
-    , epoch_store_(configuration_.wal_directory + "/epoch.state")
+    , epoch_recording_(configuration_.wal_directory + "/epoch.state", configuration_.owner_name, logger)
     , promise_store_(configuration_.wal_directory + "/lease_promise.state", LeasePromiseStore::current_boot_id())
-    , promises_elsewhere_(std::move(promises_elsewhere)) {}
+    , promises_elsewhere_(std::move(promises_elsewhere)) {
+    epoch_recording_.measure_into(configuration_.epoch_record_milliseconds, configuration_.lease_left_when_leading_milliseconds);
+}
 
 int64_t ReplicatedWal::open(Clock::time_point now) {
     if (!configuration_.helper_cores.empty()) {
@@ -83,11 +85,14 @@ int64_t ReplicatedWal::open(Clock::time_point now) {
 
     // Recover the leadership generation before any lease is asked for. Without this the instance
     // starts at zero, and a pair restarted together would agree a generation already spent.
-    epoch_ = epoch_store_.load();
+    // How fast the WAL's disk syncs, said once at start-up, so that a disk too slow for the lease is known before it
+    // costs a change of leader (BUG-0228).
+    static_cast<void>(epoch_recording_.check_disk(configuration_.lease.period, configuration_.disk_check_worst_milliseconds));
+    epoch_ = epoch_recording_.load();
     if (epoch_ > 0) {
-        PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: recovered epoch={} from {}", configuration_.owner_name, epoch_, epoch_store_.path());
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: recovered epoch={} from {}", configuration_.owner_name, epoch_, epoch_recording_.path());
     } else {
-        PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: no stored epoch at {} -- starting from epoch 0", configuration_.owner_name, epoch_store_.path());
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: no stored epoch at {} -- starting from epoch 0", configuration_.owner_name, epoch_recording_.path());
     }
 
     if (!configuration_.ha_enabled) {
@@ -754,14 +759,16 @@ void ReplicatedWal::act_on(PairLeaseAgent::Change change, Clock::time_point now)
     set_epoch(lease_agent_->highest_epoch());
     const Clock::duration spent_recording = Clock::now() - recording_began;
     switch (change) {
-        case PairLeaseAgent::Change::BecameLeader: {
+        case PairLeaseAgent::Change::BecameLeader:
             // How much of the lease is left now that the epoch is recorded, which may have waited for the disk.
-            const double left = std::chrono::duration<double, std::milli>(lease_agent_->lease_expires_at() - (now + spent_recording)).count();
-            configuration_.lease_left_when_leading_milliseconds.observe(left > 0.0 ? left : 0.0);
+            epoch_recording_.acted_on_taking_the_lead(lease_agent_->lease_expires_at(), now + spent_recording);
             change_role(ReplicaRole::leader, now);
             break;
-        }
         case PairLeaseAgent::Change::StoppedLeading:
+            // Said at Error if a slow record of the epoch, before this instance acted on the lead, is the probable cause.
+            static_cast<void>(epoch_recording_.stopped_leading(configuration_.lease.period));
+            change_role(ReplicaRole::follower, now);
+            break;
         case PairLeaseAgent::Change::AgreedPeerLeads:
             change_role(ReplicaRole::follower, now);
             break;
@@ -1015,15 +1022,12 @@ void ReplicatedWal::set_epoch(int32_t new_epoch) {
     epoch_ = new_epoch;
     // Written before the new epoch is acted on, so that a crash in between cannot bring the instance back
     // believing it still owns a generation it has spent.
-    const Clock::time_point recording_began = Clock::now();
-    const bool recorded = epoch_store_.store(epoch_);
-    configuration_.epoch_record_milliseconds.observe(std::chrono::duration<double, std::milli>(Clock::now() - recording_began).count());
-    if (!recorded) {
+    if (!epoch_recording_.record(epoch_, configuration_.lease.period)) {
         // Carry on in the new generation regardless. Stopping would take out an instance that is otherwise
         // healthy, and the epoch in memory is still right for as long as this process lives. What is lost
         // is the guarantee across a restart, and that is worth an alert.
         PUBSUB_LOG(logger_, FwLogLevel::Error, "{}: epoch advanced {} -> {} but could not be written to {} -- a restart from here may reuse a spent generation",
-                   configuration_.owner_name, previous, epoch_, epoch_store_.path());
+                   configuration_.owner_name, previous, epoch_, epoch_recording_.path());
         return;
     }
     PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: epoch advanced {} -> {} (recorded)", configuration_.owner_name, previous, epoch_);

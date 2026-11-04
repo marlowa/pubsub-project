@@ -389,6 +389,19 @@ TEST_F(PairLeaseAgentTest, TheArbiterBeingDownDoesNotStopTheLeader) {
     EXPECT_TRUE(agents_[0]->acting(now_));
 }
 
+TEST_F(PairLeaseAgentTest, ALeaseThatRunsOutBecauseItsThreadWasHeldUpSaysSo) {
+    for (int i = 0; i < 40; ++i) {
+        step();
+    }
+    ASSERT_TRUE(agents_[0]->acting(now_));
+    // The thread that runs the lease does not tick for longer than the lease, as when it waits for a slow disk.
+    now_ += timing_.period + std::chrono::milliseconds{500};
+    record(0, agents_[0]->on_tick(now_));
+    EXPECT_FALSE(agents_[0]->acting(now_));
+    logger_.flush();
+    EXPECT_EQ(std::count_if(log_.begin(), log_.end(), [](const std::string& line) { return line.find("it was held up") != std::string::npos; }), 1);
+}
+
 TEST_F(PairLeaseAgentTest, ALeaderCutOffFromBothVotersStopsLeading) {
     prometheus::Counter leases_run_out;
     pubsub_itc_fw::LeaseMetrics metrics{};
@@ -407,6 +420,9 @@ TEST_F(PairLeaseAgentTest, ALeaderCutOffFromBothVotersStopsLeading) {
     EXPECT_EQ(changes_[0].back(), pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading);
     EXPECT_EQ(reported(0, pubsub_itc_fw::LeaseChange::RanOut), 1);
     EXPECT_EQ(leases_run_out.Value(), 1.0) << "the lease that ran out is counted";
+    logger_.flush();
+    EXPECT_EQ(std::count_if(log_.begin(), log_.end(), [](const std::string& line) { return line.find("it was held up") != std::string::npos; }), 0)
+        << "a thread that ticked throughout was not held up";
 }
 
 TEST_F(PairLeaseAgentTest, TheFollowerTakesOverWhenTheLeaderIsCutOff) {

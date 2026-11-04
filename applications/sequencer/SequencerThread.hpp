@@ -421,6 +421,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::HistogramHandle lease_left_when_leading_histogram_;
     pubsub_itc_fw::HistogramHandle promise_record_histogram_;
     pubsub_itc_fw::CounterHandle leases_run_out_counter_;
+    pubsub_itc_fw::GaugeHandle disk_check_gauge_;
 
     /**
      * @brief Whether an engine leads that orders can be sent to: the order connection goes to an engine that neither

@@ -47,7 +47,7 @@
 #include "OrderKey.hpp"
 #include "PeerSettingsCheck.hpp"
 #include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
-#include <pubsub_itc_fw/EpochStore.hpp>
+#include <pubsub_itc_fw/EpochRecording.hpp>
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
@@ -271,7 +271,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // Where the epoch outlives the process. Read once at startup, rewritten
     // whenever the epoch moves.
-    pubsub_itc_fw::EpochStore epoch_store_;
+    // The epoch on disk, each record of it timed (BUG-0228).
+    pubsub_itc_fw::EpochRecording epoch_recording_;
 
     // Where this instance's promises in deciding which instance leads outlive the process, until
     // the machine reboots. It lets a process restarted by its supervisor keep the lead it held.

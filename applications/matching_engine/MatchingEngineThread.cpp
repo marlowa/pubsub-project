@@ -83,7 +83,7 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     , ha_enabled_(config.ha_enabled)
     , is_primary_(!config.ha_enabled || config.ha_role == "primary")
     , order_book_(&book_growth_reporter_)
-    , epoch_store_(config.epoch_state_file)
+    , epoch_recording_(config.epoch_state_file, "MatchingEngineThread", logger)
     , lease_promise_store_(config.epoch_state_file + ".lease_promise", pubsub_itc_fw::LeasePromiseStore::current_boot_id()) {
     // Wired before the reserve below, so even the initial capacity is reported if it is
     // large. The book is the venue's biggest consumer of memory and was, until this,
@@ -151,15 +151,15 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
         // Recover the leadership generation before anything can elect. Without this
         // the node starts at zero, and a pair restarted together would agree on a
         // generation the venue has already used -- see pubsub_itc_fw::EpochStore.
-        epoch_ = epoch_store_.load();
+        epoch_ = epoch_recording_.load();
 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: HA enabled, starting as {} (instance_id={}, configured {}, epoch={})",
                    me_role_name(role_.role()), config_.instance_id, is_primary_ ? "primary" : "secondary", epoch_);
         if (epoch_ > 0) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: recovered epoch={} from {}", epoch_, epoch_store_.path());
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: recovered epoch={} from {}", epoch_, epoch_recording_.path());
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: no stored epoch at {} -- starting from epoch 0",
-                       epoch_store_.path());
+                       epoch_recording_.path());
         }
     } else {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: HA disabled -- single instance, no arbitration and no peer");
@@ -191,6 +191,32 @@ void MatchingEngineThread::on_app_ready_event() {
     book_metrics_timer_id_ = start_recurring_timer(book_metrics_sample_interval);
     publish_book_metrics();
 
+    // How changes of leader go when the disk is slow (BUG-0228). Each is recorded on this thread, its one writer.
+    const std::vector<double> lease_milliseconds_buckets{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000};
+    epoch_recording_.measure_into(
+        get_reactor().metrics().register_histogram("matching_engine_thread", "matching_engine_epoch_record_milliseconds",
+                                                   "Milliseconds taken to record a new epoch on disk, on this thread, before the new generation is acted on",
+                                                   lease_milliseconds_buckets),
+        get_reactor().metrics().register_histogram(
+            "matching_engine_thread", "matching_engine_lease_left_when_leading_milliseconds",
+            "Milliseconds of the lease left when this instance acted on taking the lead, after recording its epoch; 0 if none was left",
+            lease_milliseconds_buckets));
+    // How fast the disk holding the epoch syncs, said once at start-up (BUG-0228); only with high availability on, the
+    // only time the engine records an epoch.
+    if (ha_enabled_) {
+        static_cast<void>(epoch_recording_.check_disk(
+            config_.lease.period, get_reactor().metrics().register_gauge("matching_engine_thread", "matching_engine_disk_check_worst_milliseconds",
+                                                                         "The longest of the trial records of the epoch made at start-up, in milliseconds: "
+                                                                         "how fast the disk holding the epoch syncs. Expected to be well under a quarter of "
+                                                                         "the lease")));
+    }
+    pubsub_itc_fw::LeaseMetrics lease_metrics{};
+    lease_metrics.promise_record_milliseconds =
+        get_reactor().metrics().register_histogram("matching_engine_thread", "matching_engine_promise_record_milliseconds",
+                                                   "Milliseconds each background write of the lease promise record took", lease_milliseconds_buckets);
+    lease_metrics.leases_run_out = get_reactor().metrics().register_counter("matching_engine_thread", "matching_engine_leases_run_out_total",
+                                                                            "Times this instance stopped leading because its lease ran out. Expected to be 0");
+
     // Only when a test started this instance (docs/availability/test_events.md).
     if (config_.test_events.enabled) {
         test_events_.emplace(test_event_links_, config_.test_events.component, static_cast<int64_t>(config_.instance_id), "MatchingEngineThread");
@@ -213,6 +239,7 @@ void MatchingEngineThread::on_app_ready_event() {
         lease_agent_.emplace("MatchingEngineThread", get_logger(), lease_links_, fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::matching_engine),
                              self_id, peer_instance_id(), arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_,
                              pubsub_itc_fw::PeerStatementsFlag{pubsub_itc_fw::PeerStatementsFlag::SayWhenPeerMayNotLead});
+        lease_agent_->record_metrics_to(lease_metrics);
         if (test_events_.has_value()) {
             lease_agent_->report_test_events_to(*test_events_);
         }
@@ -848,14 +875,14 @@ void MatchingEngineThread::set_epoch(int32_t new_epoch) {
 
     // Written before the new epoch is acted on, so a crash in the gap cannot bring
     // the node back believing it still owns a generation it has spent.
-    if (!epoch_store_.store(epoch_)) {
+    if (!epoch_recording_.record(epoch_, config_.lease.period)) {
         // Carry on in the new generation regardless. Stopping would take out a
         // matching engine that is otherwise healthy, and the in-memory epoch is
         // still correct for as long as this process lives. What is lost is the
         // guarantee across a restart, and that is worth an alert.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                    "MatchingEngineThread: epoch advanced {} -> {} but could not be written to {} -- a restart from here may reuse a spent generation", previous,
-                   epoch_, epoch_store_.path());
+                   epoch_, epoch_recording_.path());
         return;
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: epoch advanced {} -> {} (recorded)", previous, epoch_);
@@ -893,6 +920,8 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
     set_epoch(lease_agent_->highest_epoch());
     switch (change) {
         case pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader:
+            // How much of the lease is left now that the epoch is recorded, which may have waited for the disk.
+            epoch_recording_.acted_on_taking_the_lead(lease_agent_->lease_expires_at(), std::chrono::steady_clock::now());
             // The lease settles the role. An instance that is not already leading catches up from
             // the WAL before it acts on it, whatever it has done so far.
             become_leader_when_current();
@@ -901,6 +930,8 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
             }
             break;
         case pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading:
+            // Said at Error if a slow record of the epoch, before this instance acted on the lead, is the probable cause.
+            static_cast<void>(epoch_recording_.stopped_leading(config_.lease.period));
             // Stops matching at once, whatever it was doing, and tells the sequencers so they stop
             // routing orders here.
             catch_up_.stop_awaiting_halt();

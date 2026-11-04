@@ -430,7 +430,20 @@ targets = ["127.0.0.1:9100"]
 # instance takes a lease it holds to be. It covers clocks running at slightly different rates,
 # which PTP keeps to microseconds, and the moment between a leader checking its lease and what
 # it then sends leaving the machine.
-lease_period_milliseconds = 3000
+#
+# The period must also outlast the longest an instance may wait for its disk as it takes the lead:
+# it records its new epoch on disk, with a sync, before acting, while the lease it has just been
+# granted runs. If the sync takes longer than the period allows, the instance stops leading as it
+# starts. This environment's period is longer than the others' for that reason. The development
+# machine keeps the WALs on a SATA SSD that writes about 20 MB a second once its small fast cache
+# is full, and in high availability scenario 80 a record of the epoch waited 3.2 seconds behind a
+# matching engine creating its 496 MB region (docs/bug_list.md, BUG-0228). 5000 leaves about a
+# second and a half above that. The cost is that a failover takes about two seconds longer than
+# with 3000. The other environments keep 3000, which assumes a disk that syncs well inside it; each
+# component says at start-up how long its disk takes, and warns if it is too slow for the period,
+# and the metrics ending in epoch_record_milliseconds and lease_left_when_leading_milliseconds show
+# how close each change of leader comes.
+lease_period_milliseconds = 5000
 lease_drift_allowance_milliseconds = 250
 lease_renewal_interval_milliseconds = 1000
 

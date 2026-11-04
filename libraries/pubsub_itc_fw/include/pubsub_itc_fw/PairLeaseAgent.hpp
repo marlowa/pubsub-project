@@ -184,6 +184,9 @@ class PairLeaseAgent {
 
     /// Apply the lease rules. Called every LeaseTiming::tick_interval.
     [[nodiscard]] Change on_tick(Clock::time_point now) {
+        // How long since the last tick: much longer than a tick means the thread that runs the lease was held up.
+        const Clock::duration since_last_tick = last_tick_at_ == Clock::time_point{} ? Clock::duration::zero() : now - last_tick_at_;
+        last_tick_at_ = now;
         adopt_background_record();
         start_wanted_record();
         write_statement_if_needed();
@@ -198,6 +201,12 @@ class PairLeaseAgent {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                        "{}: lease ran out -- neither the peer nor {} renewed it in time, so this instance stops leading (epoch={})", owner_name_,
                        third_voter_name_, participant_.epoch());
+            if (since_last_tick > held_up_after_ticks * LeaseTiming::tick_interval) {
+                PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                           "{}: the thread that runs the lease did not tick for {} ms before this, where it ticks every {} ms -- it was held up, so it "
+                           "could not renew the lease in time; the voters were not necessarily lost. The cause is said beside this if it is known",
+                           owner_name_, std::chrono::duration_cast<std::chrono::milliseconds>(since_last_tick).count(), LeaseTiming::tick_interval.count());
+            }
             report(LeaseChange::RanOut, Voter::NoVoter, participant_.epoch());
             change = Change::StoppedLeading;
         }
@@ -405,6 +414,9 @@ class PairLeaseAgent {
     }
 
     /// When this instance's latest lease runs out, as it counts it: somewhat earlier than the voters count it.
+    /// A gap between ticks this many times the tick interval or longer means the thread that runs the lease was held up.
+    static constexpr int held_up_after_ticks = 5;
+
     /// Where to record how the leases go. Called once, before the first tick.
     void record_metrics_to(const LeaseMetrics& metrics) {
         metrics_ = metrics;
@@ -734,6 +746,7 @@ class PairLeaseAgent {
 
     std::string owner_name_;
     LeaseMetrics metrics_{};
+    Clock::time_point last_tick_at_{};
     pubsub_itc_fw::QuillLogger& logger_;
     LeaseLinksInterface& links_;
     int32_t pair_id_;
