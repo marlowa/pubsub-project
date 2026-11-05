@@ -9,7 +9,7 @@
 
 ## Open bugs by severity
 
-17 high, 51 medium, 16 low.
+17 high, 50 medium, 16 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -79,7 +79,6 @@
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0225](#bug_0225) | medium | defect | A matching engine that becomes a follower before it has asked to follow the WAL announces that it follows, but applies nothing |
 | [BUG-0226](#bug_0226) | medium | defect | A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made |
-| [BUG-0228](#bug_0228) | medium | defect | A slow sync when a sequencer records its new epoch can use up the lease it has just been granted, so it stops leading as it starts |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
@@ -232,143 +231,6 @@ went looking.
       or its rejection.
    7. Checking the behaviour through both gateways: the same order, rejection, cancellation and reporting outcomes
       through FIX and through the binary gateway.
-
-### BUG-0228: A slow sync when a sequencer records its new epoch can use up the lease it has just been granted, so it stops leading as it starts {#bug_0228}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-04 |
-| Recorded | 2026-11-04 |
-| How | `ha_test.py` scenario 80 failed once in the full suite for phase 10 step 15; logs kept in `tmp/ha_test_failures/20261104-094717-scenario-80-catch_up_survives_second_connection`. Then scenario 80 run alone six times with `iostat` and `scripts/thread_offcpu.py` attached to the primary sequencer's `SequencerThread`; output in `tmp/perf_s15/` |
-| Impact | Under heavy load on the disk, a sequencer granted a lease can stop leading before it has led, again and again, and a matching engine being caught up by it has its catch-up stopped each time. In scenario 80 the engine was not caught up within 10 seconds. No order is lost: an instance that stops leading writes nothing more, and the next leader serves the engine |
-
-**What happens.** Principle F4 allows two waits for the disk on the sequencer's thread, while it changes role, and
-recording a new epoch is one of them: `ReplicatedWal` calls `EpochStore::store`, which writes the epoch to a temporary
-file, syncs it with `fsync`, and renames it into place, before the new generation is acted on. The exception rests on
-the instance handling no orders meanwhile. But the lease the instance has just been granted keeps running while it
-waits, and nothing bounds the wait against it.
-
-In the failed run, the primary sequencer was granted a lease at 09:47:02.656. Its thread was then blocked for 3.2
-seconds; the reactor said "callback not finished yet" six times, and the lease promise record, written in the
-background, took 3,502 ms. The thread acted on the new epoch at 09:47:05.458, said the lease had run out at
-09:47:06.158, and stopped leading. The same happened at the next two grants, until the scenario's limit passed.
-
-**Why the sync was slow.** The disk holding `/mnt/sda1` and `/mnt/sda2`, a Crucial BX500 SATA SSD with no memory
-cache of its own, writes about 120 MB a second until its fast cache is full and then about 20 MB a second at full
-load. Scenario 80 damages the matching engine's open-order region on purpose, and the restarted engine creates a new
-one of 496 MB with every block allocated ([BUG-0071](#bug_0071)). In two of the six runs alone that took 24.9 and 34.5
-seconds, against about 2 in the others; `iostat` showed the disk 96 to 106 per cent busy, each write taking 270 to
-490 ms and each flush up to 694 ms. `epoch.state` is on `/mnt/sda2` and the region on `/mnt/sda1`, but both are on the
-one disk, and share its queue.
-
-In the run in which the disk collapsed, `scripts/thread_offcpu.py`, attached to the primary sequencer's
-`SequencerThread`, found it not running at all, in uninterruptible sleep, at three times:
-
-- at start-up, while both matching engines created their regions: three waits of 0.10 to 0.24 seconds, in
-  `jbd2_log_wait_commit`, which waits for the ext4 journal to commit;
-- while the 200,000 baseline orders were being sequenced: one wait of 0.37 seconds, in `do_get_write_access`, which
-  waits for the journal before metadata can be changed. This is a wait on the order path;
-- while the restarted engine created its region again: nine waits of 0.12 to 2.18 seconds, in `do_get_write_access`,
-  in `folio_wait_bit_common`, which waits for a page to be written, and in `jbd2_log_wait_commit`.
-
-In the two runs in which the disk did not collapse, the thread never went 100 ms without running.
-
-The sequencer's thread does not stop for 11 seconds at start-up, although `scripts/thread_offcpu.py` once reported
-that it did in each of those three runs. The thread's processor time, which the same samples record, rises throughout
-each of those 11 seconds. A rule that counts as off the processor every sample in which the thread ran for less than a
-fifth of the interval joins up the short wakings of an idle thread into one apparent stall. The tool counts only the
-samples in which the thread did not run at all; it is checked against a thread that wakes every 20 milliseconds, which
-it does not report, and one that sleeps for 2 seconds at a time, which it does. The figures above are read from the
-recorded samples by that rule. Recorded again with `perf record -e context-switches --switch-events -g`, attached to
-every thread of both sequencers from start-up, which records the kernel's and the program's stack each time a thread
-leaves the processor, the longest time either `SequencerThread` was off the processor in a run of scenario 80 without
-a collapse was 13 ms.
-
-**What is wanted.**
-
-1. **The wait bounded by the lease.** Either the epoch recorded before the lease is asked for, so that the sync does
-   not run against a lease already granted, or the instance that has just been granted a lease declines to act on it,
-   and asks again, when it cannot record the epoch within some part of it. Which is safe has to be worked out against
-   the TLA+ model of leases before any change.
-2. **Four metrics**, each recorded by one thread, as `SingleWriterHistogram` requires: how long recording the epoch
-   takes, a histogram, on the sequencer's thread; how long the lease promise record's background write takes, a
-   histogram, on the sequencer's thread, where `PairLeaseAgent` already works out the time; how much of the lease was
-   left when the instance acted on it, a histogram, on the sequencer's thread; and how many times leadership was lost
-   because the lease ran out, a counter, on the sequencer's thread.
-3. **A Google Benchmark of `EpochStore::store`**, on the filesystem that holds the WALs, given as an argument, that
-   reports the median, the 99th and 99.9th percentiles and the worst, not the mean: with the filesystem idle; while
-   another thread appends to a mapped WAL on it; and with that WAL on another filesystem. Then the same for `fdatasync`
-   in place of `fsync`, and for `pwrite` in place to a file opened with `O_DSYNC`, without the rename.
-**Done so far.** Points 2 and 3 are built: the four metrics, for the sequencer and the matching engine, and the
-benchmark below. Recording the epoch is done for both programs by `EpochRecording`, which also warns when a record takes
-more than a quarter of the lease, says at Error when a slow record before taking the lead is the probable cause of
-stopping leading, and checks at start-up how fast the disk syncs, with a gauge. The lease agent says when its thread was
-held up before the lease ran out. On the development machine the WALs, the epoch files and the lease promise records are on `/nvme`, an NVMe SSD of
-their own, set by `PUBSUB_WAL_ROOT` in the build scripts, and the lease period is 3000 ms, as in the other
-environments, with the reason in `environments/dev.toml`.
-
-**Point 1, decided on 5 November 2026: the epoch is recorded before the lease is asked for.** The instance chooses the
-epoch it will ask to lead in, writes it to disk and waits for the write, and only then sends the request. The lease is
-counted from the moment the request is sent, so the wait for the disk no longer comes out of it, and when the grant
-arrives the epoch is already on disk and the instance acts on it at once. The epoch on disk then means "no epoch at or
-below this may be used again by this instance", which can be an epoch it asked for and was never granted; after a
-restart the instance starts from that. The cost is that on a slow disk the request to lead goes out later by the time
-the write takes. The other choice, declining a lease whose epoch could not be written within part of it, was rejected:
-the voters' promises to the declining instance stop anyone else leading for a lease period, and on a disk that stays
-slow that repeats at every grant. `MajorityLeaseHA.tla` is given the rule (rule 13, `RecordBeforeAsking`), and every
-safety and liveness check of section 11 of `docs/availability/tla/findings.md` holds with it (section 11.9 there).
-
-It is built. `PairLeaseAgent` calls a `RecordEpochBeforeAskingInterface` between choosing the epoch and sending the
-request, and notes the request as sent, and so starts the lease, once the write has finished. The sequencer's
-`ReplicatedWal` and `MatchingEngineThread` give it an `EpochRecordedBeforeAsking`. `EpochRecording` does not write an
-epoch no higher than one it has already written, so nothing is written when the grant arrives. The Error that names a
-slow record as the probable cause of stopping leading counts only time spent recording between the grant and acting on
-it. Tests: `PairLeaseAgentTest.TheEpochIsWrittenBeforeTheRequestToLeadAndTheLeaseIsCountedFromWhenTheWriteFinished`,
-which fails if the request is noted as sent before the write, and four new tests in `EpochRecordingTest`. There is no stall at start-up to find; the waits that do happen are listed above, and all are in the kernel's journal.
-
-**Measured with the benchmark.** `epoch_store_cost` (`libraries/pubsub_itc_fw/benchmarks/src/EpochStoreCost.cpp`),
-run on 4 November 2026, 200 records of the epoch for each line, with the load a thread writing 512 MiB files one after
-another, measured once it had written 2 GiB. Times in milliseconds, median / 99th percentile / longest:
-
-| How it is recorded | Load | On `/mnt/sda2` (BX500) | On `/nvme` (Crucial P310) |
-|--------------------|------|------------------------|---------------------------|
-| `EpochStore::store` | none | 2.2 / 4.8 / 48 | 3.9 / 4.5 / 68 |
-| `EpochStore::store` | on the same disk | 1.9 / 132 / 157 | 3.7 / 27 / 40 |
-| `EpochStore::store` | on the other disk | 1.9 / 2.2 / 4.9 | 3.9 / 5.2 / 68 |
-| `fdatasync` in place | none | 0.44 / 1.3 / 7.3 | 0.90 / 0.92 / 4.4 |
-| `fdatasync` in place | on the same disk | 0.38 / 53 / 58 | 0.90 / 14 / 18 |
-| `O_DSYNC` in place | none | 0.43 / 0.63 / 1.7 | 0.89 / 0.97 / 4.2 |
-| `O_DSYNC` in place | on the same disk | 0.43 / 58 / 59 | 0.95 / 18 / 27 |
-
-Writing on the same disk makes the tail 27 times longer on the BX500 and 6 times on the P310; writing on the other
-disk makes no difference. Writing in place, without the rename and the sync of the directory, halves the tail or
-better, but does not remove it. The BX500 stays slow after the writing stops: the last measurement taken on it, with the
-load moved to `/nvme`, had a median of 51 ms, while `iostat` showed it 99 per cent busy with nothing of the venue's
-writing to it. This load produces a tail of 157 ms at most, not the 3.2 seconds of the failed scenario, so it shows
-the effect but not its whole size.
-
-**Measured in the venue.** On 4 November 2026, with the lease at 3000 ms, scenario 80 was run six times with the WALs,
-the epoch files and the arbiters' lease promise records on `/mnt/sda2`, which shares the BX500 with the open-order
-regions on `/mnt/sda1`, and six times with them on `/nvme`, a Crucial P310 of their own; the regions were on
-`/mnt/sda1` in both. Each run started from cleared WALs. Output in `tmp/bug0228_nvme/`.
-
-| | On `/mnt/sda2` | On `/nvme` |
-|---|---|---|
-| Runs of scenario 80 passed | 4 of 6 | 6 of 6 |
-| Runs in which the region took more than 20 seconds to create again | not known: the two failures stopped before it was timed | 2 (23.9 and 29.0 seconds) |
-| Longest record of an epoch | 4,752 ms by the primary sequencer, and 5,282 ms in a matching engine's check at start-up | under 6 ms |
-| Times a lease agent's thread was held up | 7, in the arbiters and the sequencer, the longest 9,052 ms in an arbiter | none |
-| Times an instance stopped leading because recording its epoch was slow | 2 | none |
-
-Both full suites then passed with the files on `/nvme` and the lease at 3000 ms: 99 of 99, and 38 of 38 with the
-secondary matching engine started first. The P310 is slower than the BX500 at the median, about 4 ms against 2 ms,
-which is of no consequence against a lease of 3000 ms; what costs the lead is the longest records, and those come from
-sharing a disk with a region being created. A lease of 5000 ms would not have kept the lead on `/mnt/sda2` either, since
-an arbiter's lease thread there was held up for 9 seconds.
-
-**Principles.** F4: the exception for recording a new epoch now says that the epoch is written before the request to
-lead is sent, so that the lease does not run while the thread waits.
 
 ### BUG-0227: An operator whose request to lift the halt cannot be written is told that reports are outstanding {#bug_0227}
 
@@ -4002,6 +3864,144 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0228: A slow sync when a sequencer records its new epoch can use up the lease it has just been granted, so it stops leading as it starts {#bug_0228}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-04 |
+| Recorded | 2026-11-04 |
+| Fixed | 2026-11-05 -- an instance writes the epoch it asks to lead in to disk before it sends the request, so the lease, counted from the request, does not run while the disk is waited for (rule 13 of `availability/majority_leases.md`); the epoch, the lease promise records and the WALs are on a disk of their own in development; four metrics and a start-up check of how fast the disk syncs say when a disk is too slow; and a benchmark measures recording the epoch |
+| How | `ha_test.py` scenario 80 failed once in the full suite for phase 10 step 15; logs kept in `tmp/ha_test_failures/20261104-094717-scenario-80-catch_up_survives_second_connection`. Then scenario 80 run alone six times with `iostat` and `scripts/thread_offcpu.py` attached to the primary sequencer's `SequencerThread`; output in `tmp/perf_s15/` |
+| Impact | Under heavy load on the disk, a sequencer granted a lease can stop leading before it has led, again and again, and a matching engine being caught up by it has its catch-up stopped each time. In scenario 80 the engine was not caught up within 10 seconds. No order is lost: an instance that stops leading writes nothing more, and the next leader serves the engine |
+
+**What happens.** Principle F4 allows two waits for the disk on the sequencer's thread, while it changes role, and
+recording a new epoch is one of them: `ReplicatedWal` calls `EpochStore::store`, which writes the epoch to a temporary
+file, syncs it with `fsync`, and renames it into place, before the new generation is acted on. The exception rests on
+the instance handling no orders meanwhile. But the lease the instance has just been granted keeps running while it
+waits, and nothing bounds the wait against it.
+
+In the failed run, the primary sequencer was granted a lease at 09:47:02.656. Its thread was then blocked for 3.2
+seconds; the reactor said "callback not finished yet" six times, and the lease promise record, written in the
+background, took 3,502 ms. The thread acted on the new epoch at 09:47:05.458, said the lease had run out at
+09:47:06.158, and stopped leading. The same happened at the next two grants, until the scenario's limit passed.
+
+**Why the sync was slow.** The disk holding `/mnt/sda1` and `/mnt/sda2`, a Crucial BX500 SATA SSD with no memory
+cache of its own, writes about 120 MB a second until its fast cache is full and then about 20 MB a second at full
+load. Scenario 80 damages the matching engine's open-order region on purpose, and the restarted engine creates a new
+one of 496 MB with every block allocated ([BUG-0071](#bug_0071)). In two of the six runs alone that took 24.9 and 34.5
+seconds, against about 2 in the others; `iostat` showed the disk 96 to 106 per cent busy, each write taking 270 to
+490 ms and each flush up to 694 ms. `epoch.state` is on `/mnt/sda2` and the region on `/mnt/sda1`, but both are on the
+one disk, and share its queue.
+
+In the run in which the disk collapsed, `scripts/thread_offcpu.py`, attached to the primary sequencer's
+`SequencerThread`, found it not running at all, in uninterruptible sleep, at three times:
+
+- at start-up, while both matching engines created their regions: three waits of 0.10 to 0.24 seconds, in
+  `jbd2_log_wait_commit`, which waits for the ext4 journal to commit;
+- while the 200,000 baseline orders were being sequenced: one wait of 0.37 seconds, in `do_get_write_access`, which
+  waits for the journal before metadata can be changed. This is a wait on the order path;
+- while the restarted engine created its region again: nine waits of 0.12 to 2.18 seconds, in `do_get_write_access`,
+  in `folio_wait_bit_common`, which waits for a page to be written, and in `jbd2_log_wait_commit`.
+
+In the two runs in which the disk did not collapse, the thread never went 100 ms without running.
+
+The sequencer's thread does not stop for 11 seconds at start-up, although `scripts/thread_offcpu.py` once reported
+that it did in each of those three runs. The thread's processor time, which the same samples record, rises throughout
+each of those 11 seconds. A rule that counts as off the processor every sample in which the thread ran for less than a
+fifth of the interval joins up the short wakings of an idle thread into one apparent stall. The tool counts only the
+samples in which the thread did not run at all; it is checked against a thread that wakes every 20 milliseconds, which
+it does not report, and one that sleeps for 2 seconds at a time, which it does. The figures above are read from the
+recorded samples by that rule. Recorded again with `perf record -e context-switches --switch-events -g`, attached to
+every thread of both sequencers from start-up, which records the kernel's and the program's stack each time a thread
+leaves the processor, the longest time either `SequencerThread` was off the processor in a run of scenario 80 without
+a collapse was 13 ms.
+
+**What is wanted.**
+
+1. **The wait bounded by the lease.** Either the epoch recorded before the lease is asked for, so that the sync does
+   not run against a lease already granted, or the instance that has just been granted a lease declines to act on it,
+   and asks again, when it cannot record the epoch within some part of it. Which is safe has to be worked out against
+   the TLA+ model of leases before any change.
+2. **Four metrics**, each recorded by one thread, as `SingleWriterHistogram` requires: how long recording the epoch
+   takes, a histogram, on the sequencer's thread; how long the lease promise record's background write takes, a
+   histogram, on the sequencer's thread, where `PairLeaseAgent` already works out the time; how much of the lease was
+   left when the instance acted on it, a histogram, on the sequencer's thread; and how many times leadership was lost
+   because the lease ran out, a counter, on the sequencer's thread.
+3. **A Google Benchmark of `EpochStore::store`**, on the filesystem that holds the WALs, given as an argument, that
+   reports the median, the 99th and 99.9th percentiles and the worst, not the mean: with the filesystem idle; while
+   another thread appends to a mapped WAL on it; and with that WAL on another filesystem. Then the same for `fdatasync`
+   in place of `fsync`, and for `pwrite` in place to a file opened with `O_DSYNC`, without the rename.
+**Done so far.** Points 2 and 3 are built: the four metrics, for the sequencer and the matching engine, and the
+benchmark below. Recording the epoch is done for both programs by `EpochRecording`, which also warns when a record takes
+more than a quarter of the lease, says at Error when a slow record before taking the lead is the probable cause of
+stopping leading, and checks at start-up how fast the disk syncs, with a gauge. The lease agent says when its thread was
+held up before the lease ran out. On the development machine the WALs, the epoch files and the lease promise records are on `/nvme`, an NVMe SSD of
+their own, set by `PUBSUB_WAL_ROOT` in the build scripts, and the lease period is 3000 ms, as in the other
+environments, with the reason in `environments/dev.toml`.
+
+**Point 1, decided on 5 November 2026: the epoch is recorded before the lease is asked for.** The instance chooses the
+epoch it will ask to lead in, writes it to disk and waits for the write, and only then sends the request. The lease is
+counted from the moment the request is sent, so the wait for the disk no longer comes out of it, and when the grant
+arrives the epoch is already on disk and the instance acts on it at once. The epoch on disk then means "no epoch at or
+below this may be used again by this instance", which can be an epoch it asked for and was never granted; after a
+restart the instance starts from that. The cost is that on a slow disk the request to lead goes out later by the time
+the write takes. The other choice, declining a lease whose epoch could not be written within part of it, was rejected:
+the voters' promises to the declining instance stop anyone else leading for a lease period, and on a disk that stays
+slow that repeats at every grant. `MajorityLeaseHA.tla` is given the rule (rule 13, `RecordBeforeAsking`), and every
+safety and liveness check of section 11 of `docs/availability/tla/findings.md` holds with it (section 11.9 there).
+
+It is built. `PairLeaseAgent` calls a `RecordEpochBeforeAskingInterface` between choosing the epoch and sending the
+request, and notes the request as sent, and so starts the lease, once the write has finished. The sequencer's
+`ReplicatedWal` and `MatchingEngineThread` give it an `EpochRecordedBeforeAsking`. `EpochRecording` does not write an
+epoch no higher than one it has already written, so nothing is written when the grant arrives. The Error that names a
+slow record as the probable cause of stopping leading counts only time spent recording between the grant and acting on
+it. Tests: `PairLeaseAgentTest.TheEpochIsWrittenBeforeTheRequestToLeadAndTheLeaseIsCountedFromWhenTheWriteFinished`,
+which fails if the request is noted as sent before the write, and four new tests in `EpochRecordingTest`. There is no stall at start-up to find; the waits that do happen are listed above, and all are in the kernel's journal.
+
+**Measured with the benchmark.** `epoch_store_cost` (`libraries/pubsub_itc_fw/benchmarks/src/EpochStoreCost.cpp`),
+run on 4 November 2026, 200 records of the epoch for each line, with the load a thread writing 512 MiB files one after
+another, measured once it had written 2 GiB. Times in milliseconds, median / 99th percentile / longest:
+
+| How it is recorded | Load | On `/mnt/sda2` (BX500) | On `/nvme` (Crucial P310) |
+|--------------------|------|------------------------|---------------------------|
+| `EpochStore::store` | none | 2.2 / 4.8 / 48 | 3.9 / 4.5 / 68 |
+| `EpochStore::store` | on the same disk | 1.9 / 132 / 157 | 3.7 / 27 / 40 |
+| `EpochStore::store` | on the other disk | 1.9 / 2.2 / 4.9 | 3.9 / 5.2 / 68 |
+| `fdatasync` in place | none | 0.44 / 1.3 / 7.3 | 0.90 / 0.92 / 4.4 |
+| `fdatasync` in place | on the same disk | 0.38 / 53 / 58 | 0.90 / 14 / 18 |
+| `O_DSYNC` in place | none | 0.43 / 0.63 / 1.7 | 0.89 / 0.97 / 4.2 |
+| `O_DSYNC` in place | on the same disk | 0.43 / 58 / 59 | 0.95 / 18 / 27 |
+
+Writing on the same disk makes the tail 27 times longer on the BX500 and 6 times on the P310; writing on the other
+disk makes no difference. Writing in place, without the rename and the sync of the directory, halves the tail or
+better, but does not remove it. The BX500 stays slow after the writing stops: the last measurement taken on it, with the
+load moved to `/nvme`, had a median of 51 ms, while `iostat` showed it 99 per cent busy with nothing of the venue's
+writing to it. This load produces a tail of 157 ms at most, not the 3.2 seconds of the failed scenario, so it shows
+the effect but not its whole size.
+
+**Measured in the venue.** On 4 November 2026, with the lease at 3000 ms, scenario 80 was run six times with the WALs,
+the epoch files and the arbiters' lease promise records on `/mnt/sda2`, which shares the BX500 with the open-order
+regions on `/mnt/sda1`, and six times with them on `/nvme`, a Crucial P310 of their own; the regions were on
+`/mnt/sda1` in both. Each run started from cleared WALs. Output in `tmp/bug0228_nvme/`.
+
+| | On `/mnt/sda2` | On `/nvme` |
+|---|---|---|
+| Runs of scenario 80 passed | 4 of 6 | 6 of 6 |
+| Runs in which the region took more than 20 seconds to create again | not known: the two failures stopped before it was timed | 2 (23.9 and 29.0 seconds) |
+| Longest record of an epoch | 4,752 ms by the primary sequencer, and 5,282 ms in a matching engine's check at start-up | under 6 ms |
+| Times a lease agent's thread was held up | 7, in the arbiters and the sequencer, the longest 9,052 ms in an arbiter | none |
+| Times an instance stopped leading because recording its epoch was slow | 2 | none |
+
+Both full suites then passed with the files on `/nvme` and the lease at 3000 ms: 99 of 99, and 38 of 38 with the
+secondary matching engine started first. The P310 is slower than the BX500 at the median, about 4 ms against 2 ms,
+which is of no consequence against a lease of 3000 ms; what costs the lead is the longest records, and those come from
+sharing a disk with a region being created. A lease of 5000 ms would not have kept the lead on `/mnt/sda2` either, since
+an arbiter's lease thread there was held up for 9 seconds.
+
+**Principles.** F4: the exception for recording a new epoch now says that the epoch is written before the request to
+lead is sent, so that the lease does not run while the thread waits.
 
 ### BUG-0224: Reading one WAL record at a known position lists the whole WAL directory and reads its whole segment ahead, so it takes milliseconds on the thread that sequences orders {#bug_0224}
 
