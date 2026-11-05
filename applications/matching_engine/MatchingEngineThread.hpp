@@ -273,6 +273,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // whenever the epoch moves.
     // The epoch on disk, each record of it timed (BUG-0228).
     pubsub_itc_fw::EpochRecording epoch_recording_;
+    // Writes the epoch this instance asks to lead in before the request is sent, through epoch_recording_.
+    pubsub_itc_fw::EpochRecordedBeforeAsking epoch_recorded_before_asking_;
 
     // Where this instance's promises in deciding which instance leads outlive the process, until
     // the machine reboots. It lets a process restarted by its supervisor keep the lead it held.

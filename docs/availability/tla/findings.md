@@ -698,15 +698,16 @@ and must wait as a restarted voter does.
 
 Every run below is exhaustive: TLC visited every reachable state within the budgets given. `MaxEpoch`
 bounds how many generations of epoch can be issued. With `MaxEpoch = 0` each instance can lead in one
-epoch only; with `MaxEpoch = 1`, in two. The lease is 2 ticks.
+epoch only; with `MaxEpoch = 1`, in two. The lease is 2 ticks. Every rule is on, including rule 13, which writes the
+epoch to disk before an instance asks to lead (section 11.9).
 
 | Failures allowed | `MaxEpoch` | Distinct states | Result |
 |------------------|-----------:|----------------:|--------|
-| One instance crash, one restart of voter 3, one link failure | 0 | 42,179,802 | Both safety properties hold |
-| Two instance crashes | 0 | 9,008,358 | Both hold |
+| One instance crash, one restart of voter 3, one link failure | 0 | 43,040,118 | Both safety properties hold |
+| Two instance crashes | 0 | 9,310,974 | Both hold |
 | Two link failures | 0 | 4,323,990 | Both hold |
-| Voter 3 down at the start; one instance crash; one link failure | 0 | 15,881,941 | Both hold |
-| One instance crash | 1 | 84,646,945 | Both hold |
+| Voter 3 down at the start; one instance crash; one link failure | 0 | 16,235,575 | Both hold |
+| One instance crash | 1 | 94,718,162 | Both hold |
 | One restart of voter 3 | 1 | 72,310,837 | Both hold |
 | One link failure | 1 | 47,402,987 | Both hold |
 
@@ -715,9 +716,8 @@ larger failure budgets are run with `MaxEpoch = 0`.
 
 The table above is with `CandidateResends = FALSE`. The first row, the configuration in
 `MajorityLeaseHA.cfg`, is also checked with `CandidateResends = TRUE`, the setting the code uses: both
-safety properties hold over 416,722,789 distinct states, which takes TLC about 50 minutes on 32
-cores, against about 4 minutes for the 42,179,802 states without it. Releases 1.7.4 and 1.8.0 of the
-TLA+ tools give the same number of states. At that size TLC estimates the chance that two different
+safety properties hold over 423,144,337 distinct states, which takes TLC about 51 minutes on 32
+cores, against about 4 minutes for the 43,040,118 states without it. At that size TLC estimates the chance that two different
 states shared a fingerprint, so that one of them was never checked, at between 0.2% and 0.5% from the
 fingerprints it actually saw, depending on the fingerprint function it chose for the run, and at 8%
 by its more cautious calculation. The other
@@ -872,6 +872,38 @@ a message naming this section and asking for release 1.8.0 or later.
 The two threads and the shared file are in TLC's liveness checker, which prints only liveness counterexamples. No
 safety counterexample has failed to print, and the safety counterexamples the script compares with the committed copies
 are the same under any fingerprint function.
+
+### 11.9 Rule 13: the epoch is written to disk before the instance asks to lead
+
+Rule 13 of [../majority_leases.md](../majority_leases.md) says that an instance writes the epoch it is about to ask to
+lead in to disk, and waits for the write, before it sends the request. The lease is counted from the moment the request
+is sent, so the wait for the disk does not come out of it ([BUG-0228](../../bug_list.md#bug_0228)). The epoch on disk
+can then be one the instance asked to lead in and was never granted, higher than any epoch it granted or led in, and
+after a restart the instance starts from that higher epoch: it votes as a voter whose highest epoch is that one, and
+asks to lead above it.
+
+The constant `RecordBeforeAsking` turns the rule on. The variable `askedOnDisk` holds the highest epoch an instance has
+written before asking, and `Crash` gives the instance back the higher of that and the highest epoch it granted or led
+in. With the constant `FALSE`, `askedOnDisk` stays at zero and the specification behaves exactly as without the rule.
+
+**The rule is reached.** `NeverRestartsHigher` says that no instance crashes with an epoch on disk above any it granted
+or led in. With the rule on it is broken within a few steps, which shows the model reaches the state the rule creates,
+so the checks below test it.
+
+**The rule changes nothing when it is off.** With `RecordBeforeAsking = FALSE`, the rows of 11.3 with one instance
+crash, one restart of voter 3 and one link failure; with two instance crashes; and with voter 3 down at the start
+visit 42,179,802, 9,008,358 and 15,881,941 distinct states, as the specification without the variable did.
+
+**What held with the rule on.** Every row of the table in 11.3 is the run with the rule on, and both safety properties
+hold in each. Only the rows that allow an instance to crash have more states than with the rule off, which is as
+expected: the epoch on disk is read back only when an instance crashes. Every liveness check of 11.3 holds with the
+rule on, with `CandidateResends` both `TRUE` and `FALSE`. Every counterexample of 11.4 and 11.5 is still produced, and
+the committed traces in `traces/` are unchanged.
+
+The one behaviour the rule adds is that a restarted instance refuses its peer's request at an epoch between the
+highest it granted or led in and the higher one on its disk. The refusal names the higher epoch, and the peer asks
+again above it (rule 8). That costs a round of requests, and the liveness checks show it does not stop a leader being
+chosen.
 
 ## 12. Rule 11: a follower that is behind must not lead
 

@@ -26,6 +26,7 @@
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/PeerStatementsFlag.hpp>
+#include <pubsub_itc_fw/RecordEpochBeforeAskingInterface.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 
 namespace pubsub_itc_fw {
@@ -50,7 +51,9 @@ struct LeaseMetrics {
  * Keeping it in one place means all four apply the lease rules, and report what they do, in exactly
  * the same way. The rules themselves are in LeaseParticipant; this class drives them:
  *
- *   - It asks both other voters to let this instance lead whenever the rules allow it to ask.
+ *   - It asks both other voters to let this instance lead whenever the rules allow it to ask. Given a
+ *     RecordEpochBeforeAskingInterface, it has the owner write the epoch it will ask in to disk first, and counts
+ *     the lease from the moment the write has finished (rule 13 of docs/availability/majority_leases.md).
  *   - While leading it asks both to renew, every renewal interval.
  *   - While asking to lead it sends the request again every renewal interval, at the same epoch, so
  *     that a voter able to grant only after a refusal (its promise to a dead leader has run out, or the
@@ -66,7 +69,8 @@ struct LeaseMetrics {
  *     docs/availability/a_follower_behind_does_not_lead.md). The leader acts on a command its peer
  *     lacks only once its own statement is on disk and another voter has echoed it.
  *
- * It never writes to the disk itself. In the sequencer and the matching engine it runs on the thread
+ * It never writes to the disk itself. The owner writes the epoch, and only while this instance is asking to lead and so
+ * handling no orders. In the sequencer and the matching engine it runs on the thread
  * that handles orders, which must never wait for the disk. Every record is written in the background by
  * a BackgroundPromiseRecorderInterface, and the agent learns at a later tick that the write has finished.
  * A promise to the peer that the record on disk does not yet cover is refused with the reason
@@ -182,6 +186,17 @@ class PairLeaseAgent {
         }
     }
 
+    /**
+     * @brief Have @p recorder write each epoch this instance asks to lead in to disk before the request is sent.
+     *
+     * Called once, before the first tick, by an owner that keeps its epoch on disk. The request is then sent, and the
+     * lease counted from, the time given to on_tick() plus the time the write took, so the write does not shorten the
+     * lease (rule 13 of docs/availability/majority_leases.md). Without it, the request is sent at once.
+     */
+    void record_epoch_before_asking_through(RecordEpochBeforeAskingInterface& recorder) {
+        epoch_recorder_ = &recorder;
+    }
+
     /// Apply the lease rules. Called every LeaseTiming::tick_interval.
     [[nodiscard]] Change on_tick(Clock::time_point now) {
         // How long since the last tick: much longer than a tick means the thread that runs the lease was held up.
@@ -247,14 +262,17 @@ class PairLeaseAgent {
 
         if (asks_to_lead_ && participant_.may_ask_to_lead(now)) {
             const int32_t epoch = participant_.begin_asking_to_lead();
-            asked_at_ = now;
+            // The epoch goes to disk before the request is sent, and the request is noted as sent once the write has
+            // finished, so that the lease, which is counted from that moment, does not run while the disk is waited for.
+            const Clock::time_point sent_at = epoch_recorder_ == nullptr ? now : now + epoch_recorder_->record_before_asking(epoch);
+            asked_at_ = sent_at;
             peer_refused_promised_elsewhere_ = false;
             third_voter_refused_promised_elsewhere_ = false;
-            last_renewal_ = now;
+            last_renewal_ = sent_at;
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: asking the peer and {} to let this instance lead at epoch {}", owner_name_,
                        third_voter_name_, epoch);
             report(LeaseChange::AskingToLead, Voter::NoVoter, epoch);
-            ask_voters(epoch, now);
+            ask_voters(epoch, sent_at);
         }
         return change;
     }
@@ -776,6 +794,8 @@ class PairLeaseAgent {
 
     // What writes this instance's promises, or nullptr if they are not kept.
     BackgroundPromiseRecorderInterface* recorder_{nullptr};
+    // Writes the epoch this instance asks to lead in before the request is sent; none for an owner that keeps no epoch.
+    RecordEpochBeforeAskingInterface* epoch_recorder_{nullptr};
     TestEventChannel* test_events_{nullptr};
 
     // The instance named in the record, and the expiry recorded. The record covers a promise to that

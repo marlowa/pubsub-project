@@ -170,7 +170,10 @@ and two things it does then must wait for the disk:
   `EpochStore::store` writes the epoch to a file and syncs it on the application thread before the
   new generation is acted on. The wait is what makes the change safe: without it, a process that
   crashed before the epoch reached the disk could restart believing it still owned a generation
-  that has already been used.
+  that has already been used. An instance asking to lead writes the epoch it asks in before it sends
+  the request, so that the wait does not come out of the lease it is then granted; the lease is
+  counted from the moment the request is sent (rule 13 of
+  [majority_leases.md](availability/majority_leases.md), BUG-0228).
 - **Cutting back a follower's log.** When a follower sequencer repairs its log to match its leader's,
   `Wal::truncate_after` zeroes the rest of the segment and syncs it on the sequencer's thread.
 

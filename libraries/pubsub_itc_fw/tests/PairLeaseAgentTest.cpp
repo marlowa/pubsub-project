@@ -31,6 +31,7 @@
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
 #include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/RecordEpochBeforeAskingInterface.hpp>
 #include <pubsub_itc_fw/SingleWriterHistogram.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <test_events.hpp>
@@ -141,6 +142,26 @@ struct RecordsAtOnce : public pubsub_itc_fw::BackgroundPromiseRecorderInterface 
   private:
     KeptPromises& kept_;
     std::optional<bool> outcome_;
+};
+
+// Writes the epoch an agent asks to lead in, as the owner's disk would, taking as long as the test says, and notes how
+// many requests the agent had sent when it was called. The test's clock does not move while it writes; the agent is
+// told how long the write took, as an owner tells it.
+struct EpochWrittenBeforeAsking : public pubsub_itc_fw::RecordEpochBeforeAskingInterface {
+    explicit EpochWrittenBeforeAsking(const Outbox& outbox) : outbox_(outbox) {}
+
+    Clock::duration record_before_asking(int32_t epoch) override {
+        epochs.push_back(epoch);
+        requests_sent_when_called.push_back(outbox_.to_peer.size() + outbox_.to_third_voter.size());
+        return takes;
+    }
+
+    Clock::duration takes{milliseconds{2500}};
+    std::vector<int32_t> epochs;
+    std::vector<size_t> requests_sent_when_called;
+
+  private:
+    const Outbox& outbox_;
 };
 
 // How long the slow store in the tests below takes to write each record, as a disk whose sync has stopped
@@ -367,6 +388,22 @@ TEST_F(PairLeaseAgentTest, ThePrimaryLeadsWhenBothStartTogether) {
     ASSERT_EQ(reported(0, pubsub_itc_fw::LeaseChange::Granted), 1);
     const auto granted = std::find(event_links_[0].lease_changes.begin(), event_links_[0].lease_changes.end(), pubsub_itc_fw::LeaseChange::Granted);
     EXPECT_EQ(event_links_[0].epochs[static_cast<size_t>(granted - event_links_[0].lease_changes.begin())], 1);
+}
+
+TEST_F(PairLeaseAgentTest, TheEpochIsWrittenBeforeTheRequestToLeadAndTheLeaseIsCountedFromWhenTheWriteFinished) {
+    EpochWrittenBeforeAsking written(outboxes_[0]);
+    agents_[0]->record_epoch_before_asking_through(written);
+    for (int i = 0; i < 80 && written.epochs.empty(); ++i) {
+        step();
+    }
+    // The request was sent, and granted, in the step that wrote the epoch, at now_ as the test's clock reads.
+    ASSERT_EQ(written.epochs.size(), 1U);
+    EXPECT_EQ(written.requests_sent_when_called.front(), 0U) << "the epoch is written before any request to lead is sent";
+    ASSERT_FALSE(changes_[0].empty());
+    EXPECT_EQ(changes_[0].front(), pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader);
+    EXPECT_EQ(agents_[0]->epoch(), written.epochs.front()) << "it leads in the epoch it wrote";
+    EXPECT_EQ(agents_[0]->lease_expires_at(), now_ + written.takes + timing_.period - timing_.drift_allowance)
+        << "the lease is counted from when the write finished, so the write takes none of it";
 }
 
 TEST_F(PairLeaseAgentTest, ALeaderKeepsLeadingWhileItRenews) {

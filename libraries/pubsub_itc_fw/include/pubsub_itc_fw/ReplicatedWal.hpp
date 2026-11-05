@@ -535,6 +535,8 @@ class ReplicatedWal {
     LogEpochTable log_epochs_;
 
     EpochRecording epoch_recording_;
+    // Writes the epoch this instance asks to lead in before the request is sent, through epoch_recording_.
+    EpochRecordedBeforeAsking epoch_recorded_before_asking_;
     LeasePromiseStore promise_store_;
     // Writes promise records on a thread of its own, when no recorder was given. Declared after the store
     // it writes to, so that it is destroyed first.

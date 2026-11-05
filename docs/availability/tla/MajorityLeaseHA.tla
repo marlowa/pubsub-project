@@ -53,6 +53,14 @@
 (*      third voter down would refuse each other for ever.                 *)
 (*  10. An instance whose request to lead fails waits at least one tick    *)
 (*      before asking again.                                               *)
+(*  Rules 11 and 12 of the design concern a follower that is behind, and   *)
+(*  are checked in FollowerBehindHA.tla.                                   *)
+(*  13. An instance writes the epoch it is about to ask to lead in to disk *)
+(*      before it sends the request, so that the wait for the disk does    *)
+(*      not come out of a lease already running. The epoch on disk can     *)
+(*      therefore be higher than any epoch the instance has granted or led *)
+(*      in, and after a restart the instance starts from that higher       *)
+(*      epoch.                                                             *)
 (*                                                                         *)
 (* Why one specification covers the pair with the arbiter pool as a single *)
 (* voter: at most one arbiter is active at a time, which this same design  *)
@@ -105,7 +113,11 @@ CONSTANTS
     CandidateResends,
     \* TRUE adds degraded self-promotion: an instance asking to lead that receives no grant
     \* may lead on its own vote alone. It is not part of the design.
-    DegradedPromotion
+    DegradedPromotion,
+    \* rule 13: TRUE writes the epoch to disk before asking to lead in it. FALSE writes it only
+    \* once it has been granted or led in, so that a restart starts from the highest epoch granted
+    \* or led in.
+    RecordBeforeAsking
 
 Cand == {1, 2}
 Third == 3
@@ -128,6 +140,8 @@ VARIABLES
     epoch,       \* epoch[v]: the highest epoch v has granted or led in. Kept on disk by
                  \* instances 1 and 2; lost by the third voter when it restarts.
     candEpoch,   \* candEpoch[s]: the epoch s is asking to lead in, while a candidate
+    askedOnDisk, \* askedOnDisk[s]: the highest epoch s has written to disk before asking to lead
+                 \* in it (rule 13). What s has on disk is the higher of this and epoch[s].
     promise,     \* promise[v]: [to, left] -- v has promised not to grant anyone but "to"
                  \* for "left" more ticks. An instance leading or asking to lead holds a
                  \* promise to itself that does not run down.
@@ -141,10 +155,12 @@ VARIABLES
                  \* it is useless, and is dropped when that reaches zero
     crashes, thirdRestarts, linkFailures,
     leaderAt,    \* history: every <<instance, epoch>> that has led
-    regressed    \* history: an instance began leading below an epoch the other led in
+    regressed,   \* history: an instance began leading below an epoch the other led in
+    restartedHigher  \* history: an instance crashed while the epoch on its disk was higher
+                     \* than the highest it had granted or led in (rule 13)
 
-vars == <<up, role, epoch, candEpoch, promise, quiet, held, sent, backoff, alone, link, msgs,
-          crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
+vars == <<up, role, epoch, candEpoch, askedOnDisk, promise, quiet, held, sent, backoff, alone, link, msgs,
+          crashes, thirdRestarts, linkFailures, leaderAt, regressed, restartedHigher>>
 
 NoPromise == [to |-> None, left |-> 0]
 
@@ -191,6 +207,7 @@ Init ==
     /\ role = [s \in Cand |-> "unknown"]
     /\ epoch = [v \in Voters |-> 0]
     /\ candEpoch = [s \in Cand |-> 0]
+    /\ askedOnDisk = [s \in Cand |-> 0]
     /\ promise = [v \in Voters |-> NoPromise]
     /\ quiet = [v \in Voters |-> 0]
     /\ held = [s \in Cand |-> ClearedHeld]
@@ -202,6 +219,7 @@ Init ==
     /\ crashes = 0 /\ thirdRestarts = 0 /\ linkFailures = 0
     /\ leaderAt = {}
     /\ regressed = FALSE
+    /\ restartedHigher = FALSE
 
 -----------------------------------------------------------------------------
 (* Instance s asks to lead. It may do so at any time that the rules allow, *)
@@ -212,11 +230,13 @@ StartCandidacy(s) ==
     /\ LET e == NextFor(epoch[s], s) IN
        /\ role' = [role EXCEPT ![s] = "candidate"]
        /\ candEpoch' = [candEpoch EXCEPT ![s] = e]
+       /\ askedOnDisk' = IF RecordBeforeAsking THEN [askedOnDisk EXCEPT ![s] = Max(askedOnDisk[s], e)]
+                         ELSE askedOnDisk
        /\ promise' = [promise EXCEPT ![s] = [to |-> s, left |-> Lease]]
        /\ held' = [held EXCEPT ![s] = ClearedHeld]
        /\ msgs' = msgs \cup {Req(s, v, e) : v \in {w \in Others(s) : LinkUp(s, w)}}
     /\ UNCHANGED <<up, epoch, quiet, sent, backoff, alone, link, crashes, thirdRestarts, linkFailures,
-                   leaderAt, regressed>>
+                   leaderAt, regressed, restartedHigher>>
 
 (* A candidate gives up, which any timeout may cause. It releases the vote *)
 (* it gave itself. Any grant still on its way to it is ignored on arrival.  *)
@@ -228,7 +248,7 @@ AbandonCandidacy(s) ==
     /\ promise' = [promise EXCEPT ![s] = NoPromise]
     /\ backoff' = [backoff EXCEPT ![s] = TRUE]
     /\ UNCHANGED <<up, epoch, candEpoch, quiet, held, sent, alone, link, msgs,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 (* Degraded self-promotion, which the design removes: a candidate leads on *)
 (* its own vote alone.                                                      *)
@@ -241,7 +261,7 @@ PromoteAlone(s) ==
     /\ leaderAt' = leaderAt \cup {<<s, candEpoch[s]>>}
     /\ regressed' = (regressed \/ RegressesAt(s, candEpoch[s]))
     /\ UNCHANGED <<up, candEpoch, promise, quiet, held, sent, backoff, link, msgs,
-                   crashes, thirdRestarts, linkFailures>>
+                   crashes, thirdRestarts, linkFailures, askedOnDisk, restartedHigher>>
 
 (* A leader asks voter v to renew its lease, at most once in each tick. *)
 SendRenewal(s, v) ==
@@ -250,7 +270,7 @@ SendRenewal(s, v) ==
     /\ sent' = [sent EXCEPT ![s][v] = TRUE]
     /\ msgs' = msgs \cup {Req(s, v, epoch[s])}
     /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, backoff, alone, link,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 (* A candidate sends its request again to voter v, at most once in each   *)
 (* tick: a voter that refused it, because its vote was promised to a leader *)
@@ -262,7 +282,7 @@ ResendRequest(s, v) ==
     /\ sent' = [sent EXCEPT ![s][v] = TRUE]
     /\ msgs' = msgs \cup {Req(s, v, candEpoch[s])}
     /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, backoff, alone, link,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 (* A request reaches voter v, which grants or refuses it. An instance that *)
 (* grants its peer a lease becomes, or stays, its follower.                 *)
@@ -278,7 +298,7 @@ ReceiveReq(m) ==
           ELSE /\ msgs' = (msgs \ {m}) \cup {Nack(v, x, epoch[v])}
                /\ UNCHANGED <<promise, epoch, role>>
     /\ UNCHANGED <<up, candEpoch, quiet, held, sent, backoff, alone, link,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 (* A grant reaches instance x. A candidate that receives one for the epoch *)
 (* it asked for now holds a majority and leads; a leader that receives one  *)
@@ -296,11 +316,11 @@ ReceiveAck(m) ==
                /\ regressed' = (regressed \/ RegressesAt(x, m.epoch))
           ELSE IF role[x] = "leader" /\ ~alone[x] /\ m.epoch = epoch[x]
                THEN /\ held' = [held EXCEPT ![x][v] = Max(held[x][v], left)]
-                    /\ UNCHANGED <<role, epoch, leaderAt, regressed>>
-               ELSE UNCHANGED <<role, epoch, held, leaderAt, regressed>>
+                    /\ UNCHANGED <<role, epoch, leaderAt, regressed, askedOnDisk, restartedHigher>>
+               ELSE UNCHANGED <<role, epoch, held, leaderAt, regressed, askedOnDisk, restartedHigher>>
     /\ msgs' = msgs \ {m}
     /\ UNCHANGED <<up, candEpoch, promise, quiet, sent, backoff, alone, link,
-                   crashes, thirdRestarts, linkFailures>>
+                   crashes, thirdRestarts, linkFailures, askedOnDisk, restartedHigher>>
 
 (* A refusal reaches instance x. If it names a newer epoch than the one x  *)
 (* leads in, or asks to lead in, x stops (rule 8). Either way x learns the  *)
@@ -323,14 +343,14 @@ ReceiveNack(m) ==
                /\ UNCHANGED <<role, promise, held, alone, backoff>>
     /\ msgs' = msgs \ {m}
     /\ UNCHANGED <<up, candEpoch, quiet, sent, link, crashes, thirdRestarts, linkFailures,
-                   leaderAt, regressed>>
+                   leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 (* A message addressed to a voter that is down is lost. *)
 DropToDown(m) ==
     /\ m \in msgs /\ ~up[m.to]
     /\ msgs' = msgs \ {m}
     /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, sent, backoff, alone, link,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 (* A leader whose lease has run out stops leading. Until it does, it is    *)
 (* not acting (see Acting), so this step only tidies its state.             *)
@@ -340,7 +360,7 @@ LeaseRunsOut(s) ==
     /\ promise' = [promise EXCEPT ![s] = NoPromise]
     /\ held' = [held EXCEPT ![s] = ClearedHeld]
     /\ UNCHANGED <<up, epoch, candEpoch, quiet, sent, backoff, alone, link, msgs,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 (* One tick of the clock. Every period remaining is reduced by one, except  *)
 (* the vote an instance gives itself while it leads or asks to lead.         *)
@@ -357,7 +377,7 @@ Tick ==
     /\ backoff' = [s \in Cand |-> FALSE]
     /\ msgs' = {[m EXCEPT !.rem = m.rem - 1] : m \in {n \in msgs : n.rem > 1}}
     /\ UNCHANGED <<up, role, epoch, candEpoch, alone, link, crashes, thirdRestarts, linkFailures,
-                   leaderAt, regressed>>
+                   leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 -----------------------------------------------------------------------------
 (* Failures and recoveries. *)
@@ -369,8 +389,11 @@ Crash(v) ==
     /\ IF v = Third THEN thirdRestarts < MaxThirdRestarts ELSE crashes < MaxCrashes
     /\ up' = [up EXCEPT ![v] = FALSE]
     /\ role' = IF v \in Cand THEN [role EXCEPT ![v] = "unknown"] ELSE role
-    \* An instance keeps its epoch on disk; the third voter holds its only in memory.
-    /\ epoch' = IF v = Third THEN [epoch EXCEPT ![v] = 0] ELSE epoch
+    \* An instance keeps its epoch on disk; the third voter holds its only in memory. Under rule 13
+    \* the disk can hold an epoch the instance asked to lead in and was never granted, higher than
+    \* any it granted or led in, and the instance starts again from that.
+    /\ epoch' = IF v = Third THEN [epoch EXCEPT ![v] = 0] ELSE [epoch EXCEPT ![v] = Max(epoch[v], askedOnDisk[v])]
+    /\ restartedHigher' = (restartedHigher \/ (v \in Cand /\ askedOnDisk[v] > epoch[v]))
     /\ promise' = [promise EXCEPT ![v] = IF v \in Cand /\ InstancesKeepPromises /\ promise[v].to # v
                                           THEN promise[v] ELSE NoPromise]
     /\ quiet' = [quiet EXCEPT ![v] = 0]
@@ -379,7 +402,7 @@ Crash(v) ==
     /\ msgs' = {m \in msgs : m.to # v}
     /\ crashes' = IF v = Third THEN crashes ELSE crashes + 1
     /\ thirdRestarts' = IF v = Third THEN thirdRestarts + 1 ELSE thirdRestarts
-    /\ UNCHANGED <<candEpoch, sent, backoff, link, linkFailures, leaderAt, regressed>>
+    /\ UNCHANGED <<candEpoch, sent, backoff, link, linkFailures, leaderAt, regressed, askedOnDisk>>
 
 Restart(v) ==
     /\ ~up[v]
@@ -387,7 +410,7 @@ Restart(v) ==
     /\ up' = [up EXCEPT ![v] = TRUE]
     /\ quiet' = [quiet EXCEPT ![v] = IF RestartWaits /\ ~(v \in Cand /\ InstancesKeepPromises) THEN Lease ELSE 0]
     /\ UNCHANGED <<role, epoch, candEpoch, promise, held, sent, backoff, alone, link, msgs,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 LinkFails(l) ==
     /\ l \in link /\ linkFailures < MaxLinkFailures
@@ -395,13 +418,13 @@ LinkFails(l) ==
     /\ msgs' = {m \in msgs : ~OverLink(m, l)}
     /\ linkFailures' = linkFailures + 1
     /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, sent, backoff, alone,
-                   crashes, thirdRestarts, leaderAt, regressed>>
+                   crashes, thirdRestarts, leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 LinkRecovers(l) ==
     /\ l \in AllLinks \ link
     /\ link' = link \cup {l}
     /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, sent, backoff, alone, msgs,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 -----------------------------------------------------------------------------
 Next ==
@@ -432,7 +455,7 @@ LiveSpec == Spec /\ Fairness
 
 (* Keeps the model finite. *)
 EpochBound == /\ \A v \in Voters : epoch[v] \div 4 <= MaxEpoch
-              /\ \A s \in Cand : candEpoch[s] \div 4 <= MaxEpoch
+              /\ \A s \in Cand : candEpoch[s] \div 4 <= MaxEpoch /\ askedOnDisk[s] \div 4 <= MaxEpoch
 
 -----------------------------------------------------------------------------
 (* Properties. *)
@@ -455,6 +478,11 @@ EpochNamesOneLeader == \A p, q \in leaderAt : p[2] = q[2] => p[1] = q[1]
 (* This does not hold: see findings.md section 11. It is checked to show    *)
 (* the one way it fails.                                                    *)
 NoRegression == ~regressed
+
+(* Under rule 13 an instance does crash with an epoch on disk higher than  *)
+(* any it granted or led in. This does not hold with RecordBeforeAsking    *)
+(* on; it is checked to show that the model reaches that state.            *)
+NeverRestartsHigher == ~restartedHigher
 
 (* Liveness: from some point on, an instance acts as leader for good. With *)
 (* ThirdStaysDown this says that losing the third voter does not stop the   *)

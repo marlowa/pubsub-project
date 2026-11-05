@@ -36,6 +36,7 @@ ReplicatedWal::ReplicatedWal(ReplicatedWalConfiguration configuration, QuillLogg
     , lease_links_(lease_links)
     , events_(events)
     , epoch_recording_(configuration_.wal_directory + "/epoch.state", configuration_.owner_name, logger)
+    , epoch_recorded_before_asking_(epoch_recording_, configuration_.lease.period, configuration_.owner_name, logger)
     , promise_store_(configuration_.wal_directory + "/lease_promise.state", LeasePromiseStore::current_boot_id())
     , promises_elsewhere_(std::move(promises_elsewhere)) {
     epoch_recording_.measure_into(configuration_.epoch_record_milliseconds, configuration_.lease_left_when_leading_milliseconds);
@@ -107,6 +108,7 @@ int64_t ReplicatedWal::open(Clock::time_point now) {
                          configuration_.third_voter_id, configuration_.third_voter_name, configuration_.lease, now, epoch_,
                          PeerStatementsFlag{PeerStatementsFlag::SayWhetherPeerMayLead});
     lease_agent_->record_metrics_to(configuration_.lease_metrics);
+    lease_agent_->record_epoch_before_asking_through(epoch_recorded_before_asking_);
     if (test_events_ != nullptr) {
         lease_agent_->report_test_events_to(*test_events_);
     }
@@ -752,16 +754,17 @@ void ReplicatedWal::on_acknowledgement_watch(Clock::time_point now) {
 }
 
 void ReplicatedWal::act_on(PairLeaseAgent::Change change, Clock::time_point now) {
-    // Whatever happened, the highest epoch this instance knows may have risen, and it is kept on disk. How long that took
-    // is measured on the steady clock and added to @p now, which is the lease's clock, so that the lease left is right
-    // whichever clock the caller keeps time by.
+    // Whatever happened, the highest epoch this instance knows may have risen, and it is kept on disk. On taking the lead
+    // it was written before the request was sent, so nothing is written now. How long any write took is measured on the
+    // steady clock and added to @p now, which is the lease's clock, so that the lease left is right whichever clock the
+    // caller keeps time by.
     const Clock::time_point recording_began = Clock::now();
     set_epoch(lease_agent_->highest_epoch());
     const Clock::duration spent_recording = Clock::now() - recording_began;
     switch (change) {
         case PairLeaseAgent::Change::BecameLeader:
-            // How much of the lease is left now that the epoch is recorded, which may have waited for the disk.
-            epoch_recording_.acted_on_taking_the_lead(lease_agent_->lease_expires_at(), now + spent_recording);
+            // How much of the lease is left now that the epoch is recorded, and how long recording it took since the grant.
+            epoch_recording_.acted_on_taking_the_lead(lease_agent_->lease_expires_at(), now + spent_recording, spent_recording);
             change_role(ReplicaRole::leader, now);
             break;
         case PairLeaseAgent::Change::StoppedLeading:
@@ -1021,7 +1024,8 @@ void ReplicatedWal::set_epoch(int32_t new_epoch) {
     const int32_t previous = epoch_;
     epoch_ = new_epoch;
     // Written before the new epoch is acted on, so that a crash in between cannot bring the instance back
-    // believing it still owns a generation it has spent.
+    // believing it still owns a generation it has spent. An epoch this instance asked to lead in was written
+    // before it asked, and is not written again.
     if (!epoch_recording_.record(epoch_, configuration_.lease.period)) {
         // Carry on in the new generation regardless. Stopping would take out an instance that is otherwise
         // healthy, and the epoch in memory is still right for as long as this process lives. What is lost

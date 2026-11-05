@@ -20,6 +20,7 @@
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/RecordEpochBeforeAskingInterface.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -27,18 +28,23 @@ namespace pubsub_itc_fw {
  * @brief Recording an instance's epoch on disk, timed, and saying so when the disk is too slow for the lease
  *        (docs/bug_list.md, BUG-0228).
  *
- * When an instance moves to a new generation it records the epoch on disk, with EpochStore, before it acts on the
- * generation. That waits for the disk, on the application's own thread, and the lease the instance has just been
- * granted keeps running meanwhile. On a disk that is busy the wait can be longer than the lease, and the instance stops
- * leading as it starts. This class does the recording for the sequencer's replicated WAL and for the matching engine
- * alike, and makes that visible:
+ * An instance records its epoch on disk, with EpochStore, before it acts on it, and that waits for the disk on the
+ * application's own thread. An instance asking to lead records the epoch it asks in before it sends the request, through
+ * EpochRecordedBeforeAsking, so that the wait does not come out of the lease it is then granted (rule 13 of
+ * docs/availability/majority_leases.md). An epoch is written only when it is higher than any this object has already
+ * written, so when the grant arrives at that epoch nothing is written and the instance acts at once. The epoch is also
+ * recorded when the instance learns of a higher one in any other way, by granting its peer or from a refusal.
+ *
+ * This class does the recording for the sequencer's replicated WAL and for the matching engine alike, and makes it
+ * visible:
  *
  * - every record of an epoch is timed, into a histogram if one is given;
  * - a record that takes more than a quarter of the lease is logged at Warning, naming the file, the time it took, the
- *   lease and the setting, even when the lease survives it;
+ *   lease and the setting;
  * - when the instance takes the lead, the lease left is recorded, into a second histogram if one is given;
- * - when the instance then stops leading, and the record of the epoch before taking the lead took more than a quarter
- *   of the lease, that is logged at Error as the probable cause.
+ * - when the instance then stops leading, and recording the epoch between the grant and acting on it took more than a
+ *   quarter of the lease, that is logged at Error as the probable cause. With the epoch recorded before asking, that
+ *   happens only when the record before asking failed and the epoch was written again on the grant.
  *
  * Only durations are compared, never two readings of different clocks, so it gives the same answers whichever clock
  * the caller keeps the lease by. One thread, the application's, calls every member function, which makes it the one
@@ -77,20 +83,28 @@ class EpochRecording {
     }
 
     /**
-     * @brief Records @p epoch on disk, timed, and warns if it took more than a quarter of @p lease_period.
-     * @return Whether it reached the disk (EpochStore::store).
+     * @brief Records @p epoch on disk, timed, and warns if it took more than a quarter of @p lease_period. An epoch no
+     *        higher than one this object has already written is not written again, and takes no time.
+     * @return Whether it is on disk (EpochStore::store).
      */
     bool record(int32_t epoch, std::chrono::milliseconds lease_period) {
+        if (epoch <= highest_written_) {
+            last_record_took_ = Clock::duration::zero();
+            return true;
+        }
         const Clock::time_point began = Clock::now();
         const bool recorded = store_.store(epoch);
         last_record_took_ = Clock::now() - began;
+        if (recorded) {
+            highest_written_ = epoch;
+        }
         const double milliseconds = std::chrono::duration<double, std::milli>(last_record_took_).count();
         record_milliseconds_.observe(milliseconds);
         if (too_slow_for(last_record_took_, lease_period)) {
             PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                       "{}: recording epoch {} in {} took {:.0f} ms, more than a quarter of the {} ms lease -- the disk is slow to sync, and a "
-                       "record that takes longer than the lease costs this instance the lead as it takes it. See [lease] period_milliseconds and "
-                       "BUG-0228",
+                       "{}: recording epoch {} in {} took {:.0f} ms, more than a quarter of the {} ms lease -- the disk is slow to sync. An "
+                       "instance records the epoch it asks to lead in before it asks, so this delays its request to lead rather than shortening its "
+                       "lease, and holds up its thread meanwhile. See [lease] period_milliseconds and BUG-0228",
                        owner_name_, epoch, store_.path(), milliseconds, lease_period.count());
         }
         return recorded;
@@ -98,18 +112,19 @@ class EpochRecording {
 
     /**
      * @brief This instance acts on taking the lead at @p now, with its lease running out at @p lease_expires_at: the lease
-     *        left is recorded, and the time the last record of the epoch took is kept, to explain stopping leading
-     *        soon after.
+     *        left is recorded, and @p recording_since_grant_took, how long recording the epoch took between the grant and
+     *        acting on it, is kept to explain stopping leading soon after. A record made before asking to lead is not
+     *        counted in it: it was made before the lease began.
      */
-    void acted_on_taking_the_lead(Clock::time_point lease_expires_at, Clock::time_point now) {
+    void acted_on_taking_the_lead(Clock::time_point lease_expires_at, Clock::time_point now, Clock::duration recording_since_grant_took) {
         const double left = std::chrono::duration<double, std::milli>(lease_expires_at - now).count();
         lease_left_milliseconds_.observe(left > 0.0 ? left : 0.0);
-        record_before_leading_took_ = last_record_took_;
+        record_before_leading_took_ = recording_since_grant_took;
     }
 
     /**
-     * @brief This instance has stopped leading. If the record of the epoch before it took the lead took more than a quarter
-     *        of @p lease_period, that is the probable cause, and is said at Error.
+     * @brief This instance has stopped leading. If recording the epoch between the grant and acting on it took more than a
+     *        quarter of @p lease_period, that is the probable cause, and is said at Error.
      * @return Whether it was said.
      */
     bool stopped_leading(std::chrono::milliseconds lease_period) {
@@ -119,7 +134,7 @@ class EpochRecording {
             return false;
         }
         PUBSUB_LOG(logger_, FwLogLevel::Error,
-                   "{}: this instance stopped leading, and recording its epoch in {} before it acted on the lead took {:.0f} ms of the {} ms "
+                   "{}: this instance stopped leading, and recording its epoch in {} after it was granted the lead took {:.0f} ms of the {} ms "
                    "lease, which is the probable cause -- the disk holding it is too slow to sync within the lease. Move the file to a faster "
                    "disk, or lengthen [lease] period_milliseconds for every voter (BUG-0228)",
                    owner_name_, store_.path(), std::chrono::duration<double, std::milli>(took).count(), lease_period.count());
@@ -203,9 +218,50 @@ class EpochRecording {
     HistogramHandle record_milliseconds_{};
     HistogramHandle lease_left_milliseconds_{};
     Clock::duration last_record_took_{};
-    // How long the record of the epoch took before this instance last took the lead; zero once it has been used to
-    // explain stopping leading.
+    // How long recording the epoch took between the grant and this instance last acting on the lead; zero once it has
+    // been used to explain stopping leading.
     Clock::duration record_before_leading_took_{};
+    // The highest epoch this object has written to disk, or zero. An epoch no higher is not written again.
+    int32_t highest_written_{0};
+};
+
+/**
+ * @brief Records the epoch an instance is about to ask to lead in, before the request is sent (rule 13 of
+ *        docs/availability/majority_leases.md), for PairLeaseAgent.
+ *
+ * The sequencer's replicated WAL and the matching engine each give their PairLeaseAgent one, over the EpochRecording
+ * that keeps their epoch. A record that fails is said at Error, and the agent asks to lead regardless; the epoch is
+ * then written again when the grant arrives.
+ */
+class EpochRecordedBeforeAsking : public RecordEpochBeforeAskingInterface {
+  public:
+    /**
+     * @param[in] recording    The owner's EpochRecording, which must outlive this object.
+     * @param[in] lease_period The lease period, against which a slow record is warned of.
+     * @param[in] owner_name   How the owner is named in the Quill log.
+     * @param[in] logger       Where a failed record is logged.
+     */
+    EpochRecordedBeforeAsking(EpochRecording& recording, std::chrono::milliseconds lease_period, std::string owner_name, QuillLogger& logger)
+        : recording_(recording), lease_period_(lease_period), owner_name_(std::move(owner_name)), logger_(logger) {}
+
+    [[nodiscard]] std::chrono::steady_clock::duration record_before_asking(int32_t epoch) override {
+        const std::chrono::steady_clock::time_point began = std::chrono::steady_clock::now();
+        if (recording_.record(epoch, lease_period_)) {
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: recorded epoch {} in {} before asking to lead in it", owner_name_, epoch, recording_.path());
+        } else {
+            PUBSUB_LOG(logger_, FwLogLevel::Error,
+                       "{}: could not write epoch {} to {} before asking to lead in it -- asking regardless; it is written again if the lead is "
+                       "granted, and until it is on disk a restart may reuse it",
+                       owner_name_, epoch, recording_.path());
+        }
+        return std::chrono::steady_clock::now() - began;
+    }
+
+  private:
+    EpochRecording& recording_;
+    std::chrono::milliseconds lease_period_;
+    std::string owner_name_;
+    QuillLogger& logger_;
 };
 
 } // namespaces

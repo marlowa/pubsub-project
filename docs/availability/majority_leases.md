@@ -165,6 +165,18 @@ vote of just one other voter: either its peer or the third voter.
     again once the peer is configured as it is. The model check of rule 11 covers the sequencer pair's starting
     statement; the engine pair's is not modelled. It is less restrictive, and nothing about orders depends on it: it
     only keeps an engine configured differently from leading.
+13. **An instance writes the epoch it is about to ask to lead in to disk before it sends the request.** It waits for
+    the write to reach the disk, and only then sends the request and notes the time it sent it. Its lease is counted
+    from that time (rule 2), so however long the disk takes, none of it comes out of the lease. When the grant arrives
+    the epoch is already on disk, and the instance acts on the lead at once. Writing it only once the grant had
+    arrived would mean waiting for the disk while the lease runs, and on a busy disk the wait can be longer than the
+    lease, so that the instance stops leading as it starts ([BUG-0228](../bug_list.md#bug_0228)).
+
+    The epoch on disk is therefore the highest epoch the instance has granted, led in, or asked to lead in. An epoch
+    asked for and never granted is spent, as one whose request was refused already is. After a restart the instance
+    starts from the epoch on disk, so it may refuse its peer's request at an epoch below that one; the refusal names
+    the higher epoch, and the peer asks again above it (rule 8). On a slow disk, the cost is that the request goes out
+    later by the time the write takes. The model check is in section 11.9 of [tla/findings.md](tla/findings.md).
 
 ## 4. Why two instances never act as leader at the same moment
 
@@ -301,6 +313,12 @@ nothing has failed.
   reads and checks the timings.
 - The sequencer, the matching engine, the matching engine publisher and the arbiter each own a `PairLeaseAgent`, and
   supply only the connections it sends on. An instance that stops leading stops acting at once.
+- Rule 13: the sequencer and the matching engine give their agent an `EpochRecordedBeforeAsking`
+  (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/EpochRecording.hpp`), through
+  `PairLeaseAgent::record_epoch_before_asking_through`. The agent calls it between choosing the epoch and sending the
+  request, and notes the request as sent once the write has finished. `EpochRecording` does not write an epoch no
+  higher than one it has already written, so nothing is written when the grant arrives. The arbiter and the matching
+  engine publisher keep no epoch on disk and give the agent nothing.
 - The arbiter votes for the components through `libraries/pubsub_itc_fw/include/pubsub_itc_fw/ComponentLeaseVoters.hpp`, which applies rule 6 to
   an arbiter that has just become active, and carries the highest epoch in each group across a change of active arbiter.
 - The witness is a `LeaseVoter`.

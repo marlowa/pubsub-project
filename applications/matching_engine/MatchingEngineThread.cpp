@@ -84,6 +84,7 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     , is_primary_(!config.ha_enabled || config.ha_role == "primary")
     , order_book_(&book_growth_reporter_)
     , epoch_recording_(config.epoch_state_file, "MatchingEngineThread", logger)
+    , epoch_recorded_before_asking_(epoch_recording_, config.lease.period, "MatchingEngineThread", logger)
     , lease_promise_store_(config.epoch_state_file + ".lease_promise", pubsub_itc_fw::LeasePromiseStore::current_boot_id()) {
     // Wired before the reserve below, so even the initial capacity is reported if it is
     // large. The book is the venue's biggest consumer of memory and was, until this,
@@ -240,6 +241,7 @@ void MatchingEngineThread::on_app_ready_event() {
                              self_id, peer_instance_id(), arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_,
                              pubsub_itc_fw::PeerStatementsFlag{pubsub_itc_fw::PeerStatementsFlag::SayWhenPeerMayNotLead});
         lease_agent_->record_metrics_to(lease_metrics);
+        lease_agent_->record_epoch_before_asking_through(epoch_recorded_before_asking_);
         if (test_events_.has_value()) {
             lease_agent_->report_test_events_to(*test_events_);
         }
@@ -874,7 +876,8 @@ void MatchingEngineThread::set_epoch(int32_t new_epoch) {
     epoch_ = new_epoch;
 
     // Written before the new epoch is acted on, so a crash in the gap cannot bring
-    // the node back believing it still owns a generation it has spent.
+    // the node back believing it still owns a generation it has spent. An epoch this
+    // instance asked to lead in was written before it asked, and is not written again.
     if (!epoch_recording_.record(epoch_, config_.lease.period)) {
         // Carry on in the new generation regardless. Stopping would take out a
         // matching engine that is otherwise healthy, and the in-memory epoch is
@@ -917,11 +920,14 @@ void MatchingEngineThread::adopt_leader_role() {
 }
 
 void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) {
+    // On taking the lead the epoch was written before the request was sent, so nothing is written here then.
+    const auto recording_began = std::chrono::steady_clock::now();
     set_epoch(lease_agent_->highest_epoch());
+    const auto spent_recording = std::chrono::steady_clock::now() - recording_began;
     switch (change) {
         case pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader:
-            // How much of the lease is left now that the epoch is recorded, which may have waited for the disk.
-            epoch_recording_.acted_on_taking_the_lead(lease_agent_->lease_expires_at(), std::chrono::steady_clock::now());
+            // How much of the lease is left now that the epoch is recorded, and how long recording it took since the grant.
+            epoch_recording_.acted_on_taking_the_lead(lease_agent_->lease_expires_at(), std::chrono::steady_clock::now(), spent_recording);
             // The lease settles the role. An instance that is not already leading catches up from
             // the WAL before it acts on it, whatever it has done so far.
             become_leader_when_current();

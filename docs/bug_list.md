@@ -306,8 +306,26 @@ more than a quarter of the lease, says at Error when a slow record before taking
 stopping leading, and checks at start-up how fast the disk syncs, with a gauge. The lease agent says when its thread was
 held up before the lease ran out. On the development machine the WALs, the epoch files and the lease promise records are on `/nvme`, an NVMe SSD of
 their own, set by `PUBSUB_WAL_ROOT` in the build scripts, and the lease period is 3000 ms, as in the other
-environments, with the reason in `environments/dev.toml`. Point 1, recording the epoch before the lease is asked for, waits for a design that Andrew
-is to discuss first. There is no stall at start-up to find; the waits that do happen are listed above, and all are in the kernel's journal.
+environments, with the reason in `environments/dev.toml`.
+
+**Point 1, decided on 5 November 2026: the epoch is recorded before the lease is asked for.** The instance chooses the
+epoch it will ask to lead in, writes it to disk and waits for the write, and only then sends the request. The lease is
+counted from the moment the request is sent, so the wait for the disk no longer comes out of it, and when the grant
+arrives the epoch is already on disk and the instance acts on it at once. The epoch on disk then means "no epoch at or
+below this may be used again by this instance", which can be an epoch it asked for and was never granted; after a
+restart the instance starts from that. The cost is that on a slow disk the request to lead goes out later by the time
+the write takes. The other choice, declining a lease whose epoch could not be written within part of it, was rejected:
+the voters' promises to the declining instance stop anyone else leading for a lease period, and on a disk that stays
+slow that repeats at every grant. `MajorityLeaseHA.tla` is given the rule (rule 13, `RecordBeforeAsking`), and every
+safety and liveness check of section 11 of `docs/availability/tla/findings.md` holds with it (section 11.9 there).
+
+It is built. `PairLeaseAgent` calls a `RecordEpochBeforeAskingInterface` between choosing the epoch and sending the
+request, and notes the request as sent, and so starts the lease, once the write has finished. The sequencer's
+`ReplicatedWal` and `MatchingEngineThread` give it an `EpochRecordedBeforeAsking`. `EpochRecording` does not write an
+epoch no higher than one it has already written, so nothing is written when the grant arrives. The Error that names a
+slow record as the probable cause of stopping leading counts only time spent recording between the grant and acting on
+it. Tests: `PairLeaseAgentTest.TheEpochIsWrittenBeforeTheRequestToLeadAndTheLeaseIsCountedFromWhenTheWriteFinished`,
+which fails if the request is noted as sent before the write, and four new tests in `EpochRecordingTest`. There is no stall at start-up to find; the waits that do happen are listed above, and all are in the kernel's journal.
 
 **Measured with the benchmark.** `epoch_store_cost` (`libraries/pubsub_itc_fw/benchmarks/src/EpochStoreCost.cpp`),
 run on 4 November 2026, 200 records of the epoch for each line, with the load a thread writing 512 MiB files one after
@@ -349,8 +367,8 @@ which is of no consequence against a lease of 3000 ms; what costs the lead is th
 sharing a disk with a region being created. A lease of 5000 ms would not have kept the lead on `/mnt/sda2` either, since
 an arbiter's lease thread there was held up for 9 seconds.
 
-**Principles.** F4: the exception for recording a new epoch says nothing of the lease, which keeps running while the
-thread waits.
+**Principles.** F4: the exception for recording a new epoch now says that the epoch is written before the request to
+lead is sent, so that the lease does not run while the thread waits.
 
 ### BUG-0227: An operator whose request to lift the halt cannot be written is told that reports are outstanding {#bug_0227}
 
