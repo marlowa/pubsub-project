@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 229 |
-| Open | 84 (60 defects, 24 tasks) |
-| Closed | 145 |
-| Next id | BUG-0230 |
+| Bugs recorded | 232 |
+| Open | 86 (62 defects, 24 tasks) |
+| Closed | 146 |
+| Next id | BUG-0233 |
 
 ## Open bugs by severity
 
-17 high, 50 medium, 16 low.
+18 high, 50 medium, 18 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -30,6 +30,7 @@
 | [BUG-0193](#bug_0193) | high | task | Once both matching engines apply every command, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
+| [BUG-0230](#bug_0230) | high | defect | The passive arbiter can lack the leader's statement that its follower may not lead, so a follower missing commands the matching engine acted on can be elected after a change of active arbiter |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -96,6 +97,8 @@
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client once logged on and exited without sending its baseline orders, failing scenario 22 |
 | [BUG-0227](#bug_0227) | low | defect | An operator whose request to lift the halt cannot be written is told that reports are outstanding |
+| [BUG-0231](#bug_0231) | low | defect | A matching engine sends its settings to its peer only on its own connection to the peer's listener, so a leader whose peer reaches it only the other way never compares them |
+| [BUG-0232](#bug_0232) | low | defect | Two messages between the instances of a pair are ignored by the instance that receives them: the sequencers' StatusQuery and StatusResponse, and a matching engine's RoleAnnouncement to its peer |
 
 ---
 
@@ -192,6 +195,91 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0230: The passive arbiter can lack the leader's statement that its follower may not lead, so a follower missing commands the matching engine acted on can be elected after a change of active arbiter {#bug_0230}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-11-05 |
+| Recorded | 2026-11-05 |
+| How | Phase 11 of the recovery plan: checking every connection between the two instances of a pair for state sent outside the WAL. Found by reading `ArbiterThread::handle_component_lease_request` and `send_group_state_to_peer` against rule 11 of `availability/majority_leases.md` |
+| Impact | Needs two failures close together, or a failed link between the arbiters and then a second failure. Then a sequencer that lacks commands the matching engine acted on can be elected leader, and those commands, with the reports members were sent for them, are not in the WAL the venue goes on from |
+
+**What happens.** Rule 11 lets the leading sequencer act on a command its follower does not hold only once a voter
+other than itself has recorded that the follower may not lead. When the follower has disconnected, the only such voter
+is the arbiter tier, meaning whichever arbiter is active. The active arbiter records the statement, writes it to its
+file, sends the grant that echoes it, and only then sends an `ArbiterStateRecord` carrying it to the passive arbiter.
+Nothing acknowledges that record, and nothing waits for it. The leader starts sending held commands to the matching
+engine as soon as the echo arrives.
+
+So the passive arbiter can lack the statement while the leader relies on it:
+
+- the record is still on its way when the active arbiter's machine dies; or
+- the link between the two arbiters is down. The whole state is sent again when the link comes back up
+  (`ArbiterThread`, on the peer connection being established), but only if the active arbiter is still running then.
+
+If the passive arbiter then becomes active, it waits out one lease period, as any newly active arbiter must, and then
+grants the follower's request to lead: it holds no statement saying the follower may not. With the follower's own vote
+that is a majority. The leader cannot stop it: its lease, held from the arbiter that has gone and not renewable through
+the disconnected follower, has run out.
+
+**Why the model checks did not find it.** `FollowerBehindHA.tla` treats the arbiter tier as one voter that keeps its
+statements on disk, and its counterexample `behind-4-arbiter-forgets` shows that rule 11 fails if that voter forgets.
+A change of active arbiter with the statement not yet passed on is that voter forgetting, but the model has no change of
+active arbiter in it. `MajorityLeaseHA.tla` models a change of active arbiter as the third voter restarting, and has no
+statements.
+
+**What it needs.** A design, worked out against the models before any code. Two directions:
+
+1. The active arbiter echoes a statement only once the passive arbiter has acknowledged it, which needs an
+   acknowledgement message and makes the echo wait for a second machine as well as the disk. With the passive arbiter
+   down the active one would then have to echo regardless, or the leader could not act without its follower at all.
+2. A newly active arbiter grants nothing in a pair until it has learned that pair's newest statement, from the leader's
+   own lease requests, which carry it while the leader leads, or from the other arbiter.
+
+**Principles.** The same one-way copy, made safe by numbering and repetition, is how the statement travels everywhere
+else; here a lost copy is not noticed.
+
+### BUG-0231: A matching engine sends its settings to its peer only on its own connection to the peer's listener, so a leader whose peer reaches it only the other way never compares them {#bug_0231}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-05 |
+| Recorded | 2026-11-05 |
+| How | Phase 11 of the recovery plan: checking every connection between the two instances of a pair. Found by reading `MatchingEngineThread::send_engine_settings` |
+| Impact | With the two engines configured differently and one engine's connection to its peer's listener failing while the other direction works, the leader never learns the difference and does not bar its peer from leading. The two would then apply the same commands differently after a change of leader |
+
+**What happens.** Each engine holds two connections to its peer: one it made to the peer's listener, and one the peer
+made to its own. Lease messages go on whichever is up. `send_engine_settings` sends `EngineSettings` only on the first,
+when it is established. If that connection cannot be made but the other can, the engine takes part in the leases while
+its peer never receives its settings. `PeerSettingsCheck` then stays at "not known", and bars nobody.
+
+**What it needs.** Send the settings on whichever connection to the peer comes up, in both directions. A repeat is
+harmless: the check compares values.
+
+### BUG-0232: Two messages between the instances of a pair are ignored by the instance that receives them: the sequencers' StatusQuery and StatusResponse, and a matching engine's RoleAnnouncement to its peer {#bug_0232}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-05 |
+| Recorded | 2026-11-05 |
+| How | Phase 11 of the recovery plan: checking every connection between the two instances of a pair |
+| Impact | None on trading. Each is code and a Quill log line that suggest a mechanism that does not exist, which misleads a reader |
+
+- **The sequencers' `StatusQuery` and `StatusResponse`.** Each sequencer sends a `StatusQuery` when its connection to
+  its peer comes up, and answers one with a `StatusResponse` giving its role, epoch and next sequence number. The
+  receiver logs them and sets `SequencerThread::peer_instance_id_`, which nothing reads. A comment says the exchange
+  "tells a restarting peer how far the sequence has reached", but nothing acts on that; a rejoining follower is
+  brought up to date by log repair.
+- **A matching engine's `RoleAnnouncement` to its peer.** `MatchingEngineThread::announce_role` sends it to the
+  peer as well as to the sequencers, with a comment saying the peer can then adopt the follower role on the strength
+  of it. The peer's handler drops it, with a comment saying there is nothing to act on, because leases decide.
+
+**What it needs.** Remove the exchange between the sequencers and the field, stop sending the announcement to the
+peer, and correct the comments.
 
 ### BUG-0229: The functional specification has not been checked against the code, and specifies recovery far more than normal operation {#bug_0229}
 

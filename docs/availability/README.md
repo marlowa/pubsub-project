@@ -23,6 +23,7 @@ different time budgets, and conflating them is the subject of a bug entry ([BUG-
 - [reports_held_until_sessions_are_announced.md](reports_held_until_sessions_are_announced.md) — the design for BUG-0190 (agreed): a sequencer that leads before every gateway has announced its sessions holds the reports for sessions it does not know of, and sends them once the session is announced
 - [test_events.md](test_events.md) — the design for phase 6 (agreed): the high availability tests check what a member receives, and test events defined in the DSL, instead of the wording of Quill log messages; with a new generator that writes plain Python from the DSL
 - [test_events_inventory.md](test_events_inventory.md) — every check in `ha_test.py` that reads a Quill log, grouped by the kind of fact it proves
+- [state_between_pair_instances.md](state_between_pair_instances.md) — every message sent between the two instances of a pair outside the WAL, what it carries, and whether a lost or repeated copy can leave the receiver wrong without its knowing
 - [tla/findings.md](tla/findings.md) — the HA design specified in TLA+ and model checked: what held, eight findings with counterexamples, directions for fixing, and the checks of the majority-lease design and of rule 11
 
 ---
