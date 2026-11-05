@@ -1,0 +1,134 @@
+"""Tests for CPU affinity data and the graphical display model."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+SCRIPTS_DIRECTORY = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(SCRIPTS_DIRECTORY))
+
+import cpu_affinity_graphic  # noqa: E402
+
+
+def test_isolcpus_flags_are_distinguished():
+    settings = cpu_affinity_graphic.parse_isolation_settings(
+        "quiet isolcpus=domain,managed_irq,2-3 isolcpus=nohz,4-5 nohz_full=6-7"
+    )
+
+    assert settings["scheduler"] == {2, 3}
+    assert settings["managed_irq"] == {2, 3}
+    assert settings["isolcpus_nohz"] == {4, 5}
+    assert settings["nohz_full"] == {6, 7}
+
+
+def test_isolcpus_without_flags_defaults_to_scheduler_isolation():
+    settings = cpu_affinity_graphic.parse_isolation_settings("isolcpus=2-3")
+
+    assert settings["scheduler"] == {2, 3}
+
+
+def test_managed_irq_only_does_not_mark_cpus_scheduler_isolated():
+    settings = cpu_affinity_graphic.parse_isolation_settings("isolcpus=managed_irq,2-3")
+
+    assert settings["scheduler"] == set()
+    assert settings["managed_irq"] == {2, 3}
+
+
+def test_core_types_use_cpu_capacity_then_cppc_performance():
+    core_types = cpu_affinity_graphic.classify_cpu_core_types(
+        [0, 1, 2, 3, 4],
+        {0: 1024, 1: 512},
+        {2: 100, 3: 79, 4: 0},
+    )
+
+    assert core_types == {
+        0: "P-core",
+        1: "E-core",
+        2: "P-core",
+        3: "E-core",
+        4: "E-core",
+    }
+
+
+def test_core_type_is_unknown_when_linux_publishes_no_classification():
+    core_types = cpu_affinity_graphic.classify_cpu_core_types([0], {}, {})
+
+    assert core_types == {0: "Unknown"}
+
+
+def test_cpu_usage_is_calculated_from_busy_and_total_tick_deltas():
+    before = {0: (50, 100), 1: (20, 100)}
+    after = {0: (80, 200), 1: (70, 200)}
+
+    usage = cpu_affinity_graphic.calculate_cpu_usage(before, after)
+
+    assert usage == {0: 30.0, 1: 50.0}
+
+
+def test_cpu_usage_is_unavailable_without_a_valid_interval():
+    before = {0: (50, 100), 1: (20, 100)}
+    after = {0: (50, 100), 1: (10, 90)}
+
+    usage = cpu_affinity_graphic.calculate_cpu_usage(before, after)
+
+    assert usage == {0: None, 1: None}
+
+
+def test_cpu_cards_separate_single_cpu_threads_from_flexible_threads():
+    processes = [
+        {
+            "pid": 42,
+            "name": "risk_worker",
+            "threads": [
+                {"thread_id": 43, "name": "risk_worker", "processors": [3]},
+                {"thread_id": 44, "name": "worker", "processors": [0, 1]},
+                {"thread_id": 45, "name": "pool", "processors": [0, 1, 2, 3]},
+            ],
+        },
+    ]
+    settings = {
+        "scheduler": {3},
+        "managed_irq": set(),
+        "isolcpus_nohz": {3},
+        "nohz_full": {2},
+    }
+
+    cards = cpu_affinity_graphic.build_cpu_cards(
+        processes,
+        [0, 1, 2, 3],
+        {0: 10.0, 1: 25.0, 2: 50.0, 3: 100.0},
+        settings,
+        {0: "P-core", 1: "E-core", 2: "Unknown", 3: "P-core"},
+    )
+
+    assert [card.processor for card in cards] == [0, 1, 2, 3]
+    assert [card.core_type for card in cards] == ["P-core", "E-core", "Unknown", "P-core"]
+    assert cards[0].usage == 10.0
+    assert cards[0].multi_cpu_thread_count == 1
+    assert cards[0].all_online_thread_count == 1
+    assert cards[0].all_online_process_count == 1
+    assert cards[2].nohz_full
+    assert cards[3].scheduler_isolated
+    assert cards[3].nohz_full
+    assert cards[3].single_cpu_thread_count == 1
+
+
+def test_threads_with_all_online_affinity_are_counted_not_repeated_as_rows():
+    cards = cpu_affinity_graphic.build_cpu_cards(
+        [
+            {
+                "pid": 42,
+                "name": "worker_pool",
+                "threads": [
+                    {"thread_id": 43, "name": "worker", "processors": [0, 1, 2, 3]},
+                ],
+            },
+        ],
+        [0, 1, 2, 3],
+        {},
+        None,
+    )
+
+    assert [card.all_online_thread_count for card in cards] == [1, 1, 1, 1]
+    assert all(card.threads == [] for card in cards)
