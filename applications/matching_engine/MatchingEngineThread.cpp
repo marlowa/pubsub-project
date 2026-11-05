@@ -291,17 +291,11 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         announce_role();
         report_sending_.release_for_connection(epoch_, holding_reports_until_entitled());
     } else if (svc == "me_peer") {
-        // Our dial to the peer's listener, for the lease requests between the pair, the role announcements and the
-        // settings check.
+        // Our dial to the peer's listener, for the lease requests between the pair and the settings check.
         outbound_peer_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: connection {} to the peer engine established", id.get_value());
-        send_engine_settings();
+        send_engine_settings(id);
         died_applying_check_.peer_connected();
-        // Tell the peer what this instance is as soon as there is a link to tell it
-        // on. An instance that has just restarted is sitting in Unknown waiting for
-        // arbitration, and a leader saying so here lets it settle immediately rather
-        // than waiting on an arbiter that may decline while it is still learning.
-        announce_role();
     } else if (svc == "arbiter_primary") {
         arbiter_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter-primary connection {} established", id.get_value());
@@ -309,15 +303,12 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         arbiter_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter-secondary connection {} established", id.get_value());
     } else if (ha_enabled_ && svc == peer_inbound_svc) {
-        // The peer's dial to us, which carries the same as ours.
+        // The peer's dial to us, which carries the same as ours. The settings go on it too: lease messages use whichever
+        // connection to the peer is up, so the peer must learn this instance's settings on either (BUG-0231).
         inbound_peer_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: connection {} from the peer engine established", id.get_value());
+        send_engine_settings(id);
         died_applying_check_.peer_connected();
-        // Tell the peer what this instance is as soon as there is a link to tell it
-        // on. An instance that has just restarted is sitting in Unknown waiting for
-        // arbitration, and a leader saying so here lets it settle immediately rather
-        // than waiting on an arbiter that may decline while it is still learning.
-        announce_role();
     } else {
         // An inbound order connection from a sequencer, alike for either configured role.
         sequencer_order_conn_ids_.insert(id);
@@ -423,8 +414,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         return;
     }
     if (pdu_id == pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id) {
-        // The peer saying which role it holds. Nothing to act on: which instance leads is decided
-        // by leases, and the announcement is for the sequencers, which route orders by it.
+        // Engines send their announcements only to the sequencers, which route orders by them. One arriving from the
+        // peer is ignored: which instance leads is decided by leases.
         release_pdu_payload(message);
         return;
     }
@@ -1272,19 +1263,14 @@ void MatchingEngineThread::announce_role() {
     announcement.current_role = role_.role() == MeRole::Leader ? pubsub_itc_fw_app::Role::leader : pubsub_itc_fw_app::Role::follower;
     announcement.epoch = epoch_;
 
-    // The peer gets this too, not just the sequencers. An instance starting beside
-    // an established leader can then adopt follower on the strength of the leader
-    // saying so, instead of waiting on arbitration that a recently started arbiter
-    // will decline. Both connections to the peer are held permanently, so whichever
-    // one is up carries it.
+    // For the sequencers, which route orders by it. The peer is not sent it: which instance leads is decided by leases.
     for (const pubsub_itc_fw::ConnectionID& conn :
-         {report_sending_.connection(EngineReportSending::Sequencer::primary), report_sending_.connection(EngineReportSending::Sequencer::secondary),
-          outbound_peer_conn_id_, inbound_peer_conn_id_}) {
+         {report_sending_.connection(EngineReportSending::Sequencer::primary), report_sending_.connection(EngineReportSending::Sequencer::secondary)}) {
         if (conn.is_valid()) {
             send_pdu(conn, pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id, 0, announcement);
         }
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: announced role {} at epoch {} to the sequencers and the peer",
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: announced role {} at epoch {} to the sequencers",
                pubsub_itc_fw_app::to_string(announcement.current_role), epoch_);
 }
 
@@ -1433,15 +1419,12 @@ void MatchingEngineThread::handle_leader_changed(const pubsub_itc_fw::EventMessa
     send_follow_request();
 }
 
-void MatchingEngineThread::send_engine_settings() {
-    if (!outbound_peer_conn_id_.is_valid()) {
-        return;
-    }
+void MatchingEngineThread::send_engine_settings(const pubsub_itc_fw::ConnectionID& to_peer) {
     pubsub_itc_fw_app::EngineSettings settings{};
     settings.instance_id = static_cast<int64_t>(config_.instance_id);
     settings.order_book_region_capacity = static_cast<int64_t>(order_book_.region_capacity());
     settings.identifier_secret_fingerprint = report_identifiers_.secret_fingerprint();
-    send_pdu(outbound_peer_conn_id_, pubsub_itc_fw_app::EngineSettings::message_pdu_id, 0, settings);
+    send_pdu(to_peer, pubsub_itc_fw_app::EngineSettings::message_pdu_id, 0, settings);
 }
 
 void MatchingEngineThread::handle_engine_settings(const pubsub_itc_fw::EventMessage& message) {

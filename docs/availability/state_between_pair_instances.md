@@ -33,7 +33,6 @@ statement can be lost without anyone knowing is between the two arbiters, below.
 | Message | What it carries | If lost, late or repeated |
 |---|---|---|
 | `ReplicatedRecord`, `WalAck`, `LogPositionRequest`, `LogPositionReply`, and the records the leader sends a rejoining follower | The WAL itself, and how far the follower holds it | The WAL's own numbering finds every gap ([follower_log_repair.md](follower_log_repair.md)) |
-| `StatusQuery`, `StatusResponse` | Each instance's role, epoch and next sequence number | Nothing acts on them: the receiver logs them and sets a field that nothing reads ([BUG-0232](../bug_list.md#bug_0232)) |
 
 ## The matching engines
 
@@ -41,9 +40,8 @@ The follower engine applies every command from the WAL itself, so no copy of the
 
 | Message | What it carries | If lost, late or repeated |
 |---|---|---|
-| `EngineSettings` | The two settings the engines must share: the open-order region's capacity and a fingerprint of the identifier secret | Sent on the connection's coming up, and a repeat is harmless, since the receiver compares values. But it is sent only on the engine's own connection to its peer's listener, so a leader whose peer reaches it only the other way never learns the peer's settings ([BUG-0231](../bug_list.md#bug_0231)) |
+| `EngineSettings` | The two settings the engines must share: the open-order region's capacity and a fingerprint of the identifier secret | Sent whenever a connection to the peer comes up, in either direction, since lease messages use whichever is up. A repeat is harmless: the receiver compares values |
 | `AppliedThroughQuery`, `AppliedThrough` | An engine that died applying a command asks how far its peer has applied ([voided_commands.md](voided_commands.md), section 4.2) | A lost answer runs out a timer of one lease period, and the engine asks the leading sequencer to void the command instead, which is the safe course |
-| `RoleAnnouncement` | The engine's role and epoch | The peer drops it: leases decide the roles ([BUG-0232](../bug_list.md#bug_0232)) |
 
 ## The matching engine publishers
 

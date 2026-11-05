@@ -2618,16 +2618,15 @@ _SCENARIOS: list[Scenario] = [
 
     # 30 — R3 for the sequencer pair: restarting the follower changes nothing.
     #
-    # A restarted sequencer learns from its peer through StatusQuery/StatusResponse that the
-    # peer already leads, and adopts follower without troubling the arbiter -- the mechanism
-    # the DSL documents for exactly this. What must not happen is the restarted instance
-    # deciding for itself and producing a second leader while the first carries on serving.
+    # A restarted sequencer finds its peer leading: the peer's lease requests, which its own vote
+    # grants, make it the follower. What must not happen is the restarted instance deciding for
+    # itself and producing a second leader while the first carries on serving.
     Scenario(
         number=30,
         short_name="sequencer_follower_restart_changes_nothing",
         description="Restarting the follower sequencer leaves leadership untouched",
         expected_outcome=(
-            "sequencer_secondary returns as follower via StatusResponse and never transitions "
+            "sequencer_secondary returns as follower and never transitions "
             "to leader; sequencer_primary keeps leading and orders are uninterrupted"
         ),
         steps=[],

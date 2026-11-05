@@ -508,9 +508,9 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void handle_engine_position_query(const pubsub_itc_fw::EventMessage& message);
 
     // The settings that change what the engine does with a command, which the two engines of a pair must share
-    // (docs/availability/deterministic_matching_engine.md, section 5). Sent to the peer when this instance's
-    // connection to the peer's listener is established.
-    void send_engine_settings();
+    // (docs/availability/deterministic_matching_engine.md, section 5). Sent to the peer on @p to_peer whenever a
+    // connection to it is established, in either direction, since lease messages use whichever is up (BUG-0231).
+    void send_engine_settings(const pubsub_itc_fw::ConnectionID& to_peer);
     // The peer's settings arrived: given to PeerSettingsCheck.
     void handle_engine_settings(const pubsub_itc_fw::EventMessage& message);
 

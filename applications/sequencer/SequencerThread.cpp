@@ -382,17 +382,13 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: arbiter-secondary connection {} established", id.get_value());
     } else if (svc == "peer") {
         peer_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: outbound peer connection {} established -- sending StatusQuery",
-                   id.get_value());
-        send_status_query(id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: outbound peer connection {} established", id.get_value());
         if (replicated_wal_.has_value()) {
             replicated_wal_->on_peer_connection_established(std::chrono::steady_clock::now());
         }
     } else if (svc == peer_inbound_svc) {
         peer_inbound_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound peer connection {} established -- sending StatusQuery",
-                   id.get_value());
-        send_status_query(id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound peer connection {} established", id.get_value());
         if (replicated_wal_.has_value()) {
             replicated_wal_->on_peer_connection_established(std::chrono::steady_clock::now());
         }
@@ -1498,82 +1494,11 @@ void SequencerThread::SequencerReplicatedWalEvents::granted_lease_to_peer(std::c
     owner_.kept_reports_.granted_lease_to_leader(at);
 }
 
-void SequencerThread::send_status_query(const pubsub_itc_fw::ConnectionID& conn_id) {
-    pubsub_itc_fw_app::StatusQuery sq{};
-    sq.instance_id = static_cast<int64_t>(config_.instance_id);
-    sq.epoch = current_epoch();
-    send_pdu(conn_id, pubsub_itc_fw_app::StatusQuery::message_pdu_id, 0, sq);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusQuery sent on connection {} (instance_id={} epoch={})",
-               conn_id.get_value(), sq.instance_id, sq.epoch);
-}
-
-void SequencerThread::send_status_response(const pubsub_itc_fw::ConnectionID& conn_id) {
-    pubsub_itc_fw_app::StatusResponse sr{};
-    sr.self_instance_id = static_cast<int64_t>(config_.instance_id);
-    sr.peer_instance_id = 0; // we don't know the peer's ID here; it's in the query
-    sr.epoch = current_epoch();
-    sr.current_role = role_;
-    sr.next_sequence_number = replicated_wal_.has_value() ? replicated_wal_->next_seq_no() : 0;
-    send_pdu(conn_id, pubsub_itc_fw_app::StatusResponse::message_pdu_id, 0, sr);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusResponse sent on connection {} (role={} epoch={} next_seq={})",
-               conn_id.get_value(), pubsub_itc_fw_app::to_string(role_), sr.epoch, sr.next_sequence_number);
-}
-
-void SequencerThread::handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::StatusQueryView sq{};
-
-    if (!pubsub_itc_fw_app::decode(sq, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode StatusQuery -- dropping");
-        return;
-    }
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusQuery received from peer (instance_id={} epoch={})", sq.instance_id,
-               sq.epoch);
-
-    peer_instance_id_ = sq.instance_id;
-
-    // The exchange tells a restarting peer how far the sequence has reached. Which of the two leads
-    // is not settled here: that is decided by leases, which this exchange plays no part in.
-    send_status_response(conn_id);
-}
-
-void SequencerThread::handle_peer_status_response(const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::StatusResponseView sr{};
-
-    if (!pubsub_itc_fw_app::decode(sr, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode StatusResponse -- dropping");
-        return;
-    }
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusResponse received from peer (self_id={} epoch={} role={} next_seq={})",
-               sr.self_instance_id, sr.epoch, pubsub_itc_fw_app::to_string(sr.current_role), sr.next_sequence_number);
-
-    peer_instance_id_ = sr.self_instance_id;
-
-    // This instance's next sequence number is not moved up to the peer's. A rejoining follower is
-    // sent the records it missed (docs/availability/follower_log_repair.md), and an instance that
-    // takes the lead numbers above every record it then holds.
-}
-
 void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = static_cast<int16_t>(message.pdu_id());
 
-    if (pdu_id == pubsub_itc_fw_app::StatusQuery::message_pdu_id) {
-        handle_peer_status_query(conn_id, message);
-    } else if (pdu_id == pubsub_itc_fw_app::StatusResponse::message_pdu_id) {
-        handle_peer_status_response(message);
-    } else if (replicated_wal_.has_value() && replicated_wal_->handle_message(conn_id, pdu_id, message.payload(), static_cast<size_t>(message.payload_size()),
-                                                                              std::chrono::steady_clock::now())) {
+    if (replicated_wal_.has_value() &&
+        replicated_wal_->handle_message(conn_id, pdu_id, message.payload(), static_cast<size_t>(message.payload_size()), std::chrono::steady_clock::now())) {
         // The lease rules and the replicated WAL: handled there.
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unknown peer PDU id {} -- dropping", pdu_id);

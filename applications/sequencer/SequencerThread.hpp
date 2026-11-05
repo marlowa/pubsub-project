@@ -177,9 +177,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID arbiter_primary_conn_id_;
     pubsub_itc_fw::ConnectionID arbiter_secondary_conn_id_;
 
-    // instance_id of the peer sequencer, learned from StatusQuery/StatusResponse.
-    int64_t peer_instance_id_{0};
-
     // How long committing one record to the log takes. On the order path, which is why it is
     // worth measuring: a commit that blocks is a sequencer that has stopped sequencing, and until
     // this existed the only sign of it was the reactor's stall watchdog saying a callback had not
@@ -366,10 +363,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID peer_active_conn() const;
     /// Does what this sequencer must on a change of role, after the replicated WAL has done its part.
     void on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t epoch);
-    void send_status_query(const pubsub_itc_fw::ConnectionID& conn_id);
-    void send_status_response(const pubsub_itc_fw::ConnectionID& conn_id);
-    void handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void handle_peer_status_response(const pubsub_itc_fw::EventMessage& message);
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 
     // WalRecord doubles as the pipeline envelope (Option B): the WAL, the follower's copy of it and the
