@@ -985,7 +985,48 @@ This needs the follower's process to restart within the moments between granting
 write completing, and the arbiter not to have recorded the statement in that time, and the leader to
 stop acting in that time. That is the risk accepted in section 4.5 of the design.
 
-### 12.6 Limits
+### 12.6 Two arbiters: the passive arbiter's copy of a statement
+
+The arbiter tier is two arbiters, of which one is active at a time. Sections 12.3 to 12.5 treat it as one
+voter that keeps its record on disk. In the venue the active arbiter holds the record, and sends each
+statement it records to the passive arbiter, which keeps a copy; when the passive arbiter becomes active,
+its copy is all it knows. The specification models this with the variables `pBar` and `pKey` for the
+passive arbiter's copy, `pLinked` for the link between the two arbiters, and four steps:
+
+- `CopyToPassive`: the active arbiter's copy of its record reaches the passive arbiter, at any later
+  moment or never;
+- `ArbiterLinkFails` and `ArbiterLinkRecovers`: when the link comes back up, each arbiter sends the other
+  its whole state, and both keep the newer statement;
+- `ChangeActiveArbiter`: the passive arbiter becomes active, and voter 3's record is now its copy.
+
+`MaxArbiterChanges` and `MaxArbiterLinkFailures` bound how many of each one behaviour may have. With both
+at zero the copy is not made, and the run in 12.3 visits exactly the 38,773,460 states given there.
+
+**The active arbiter must not echo a statement the passive one may lack.** With one change of active
+arbiter allowed and `PassiveAcknowledges = FALSE`, which is what the venue does, `LeaderHoldsActed` is
+broken in nine steps (`traces/behind-6-passive-arbiter-lacks-statement.txt`):
+
+1. Instance 1 is elected and says instance 2 may not lead.
+2. The active arbiter records the statement and echoes it, and instance 1 has the engine act on command
+   1, which instance 2 does not hold.
+3. Instance 1's lease runs out.
+4. The passive arbiter becomes active before the statement has reached it, and elects instance 2.
+
+This is [BUG-0230](../../bug_list.md#bug_0230).
+
+**The fix holds.** With `PassiveAcknowledges = TRUE` the active arbiter echoes a statement only once the
+passive arbiter holds it, which the specification makes one step with the arbiter recording it. While the
+link between them is down the active arbiter echoes regardless, and the passive arbiter knows it may have
+missed statements: if it becomes active in that state, it grants nothing until the link comes back up and
+brings it the other arbiter's state. With the budgets of 12.3, one change of active arbiter and one failure
+of the link between the arbiters, `LeaderHoldsActed` holds over 959,234,080 distinct states, which takes
+about 54 minutes on 32 workers.
+
+The cost is availability. An arbiter that became active while it may have missed statements grants
+nothing until the other arbiter is reachable again, so while the leader is also unavailable the pair has
+no leader.
+
+### 12.7 Limits
 
 - Leadership is abstracted, so this specification depends on `MajorityLeaseHA.tla` for the guarantee
   that two instances never act at once.
@@ -994,15 +1035,15 @@ stop acting in that time. That is the risk accepted in section 4.5 of the design
 - The operator's tool that lets a follower lead after the old leader's machine is lost is not modelled.
   Using it breaks `LeaderHoldsActed` by definition.
 
-### 12.7 Files
+### 12.8 Files
 
 | File | What it is |
 |------|------------|
 | `FollowerBehindHA.tla` | Rule 11, with leadership abstracted |
-| `FollowerBehindHA.cfg` | Every part of rule 11 on, with an instance writing to disk before it grants |
-| `traces/behind-*.txt` | The counterexamples in 12.4 and 12.5 |
+| `FollowerBehindHA.cfg` | Every part of rule 11 on, with an instance writing to disk before it grants, one change of active arbiter, one failure of the link between the arbiters, and the passive arbiter acknowledging statements (section 12.6) |
+| `traces/behind-*.txt` | The counterexamples in 12.4, 12.5 and 12.6 |
 
-The counterexamples in 12.4 and 12.5 are reproduced on every install by `scripts/tla_trace_pages.py`,
+The counterexamples in 12.4, 12.5 and 12.6 are reproduced on every install by `scripts/tla_trace_pages.py`,
 in the same way as those of section 11, and the install fails if any of them stops breaking
 `LeaderHoldsActed` or no longer matches its committed trace. They appear as text traces only, not on
 the web page.

@@ -89,7 +89,7 @@ _ARBITER_DOWN_FOR_GOOD = dict(_NO_FAILURES, Prompt='TRUE', ThirdUpAtStart='FALSE
 # The same for FollowerBehindHA.tla: one command, two statements per leadership, two leaderships and no
 # failures, before each run's own changes.
 _FOLLOWER_SMALL = {'MaxCommands': '1', 'MaxStatements': '2', 'MaxElections': '2', 'MaxCrashes': '0',
-                   'MaxThirdRestarts': '0', 'MaxInFlight': '2'}
+                   'MaxThirdRestarts': '0', 'MaxInFlight': '2', 'MaxArbiterChanges': '0', 'MaxArbiterLinkFailures': '0'}
 
 
 @dataclass
@@ -202,6 +202,16 @@ COUNTEREXAMPLES: List[Counterexample] = [
         'Instance 2 records in memory that it may not lead and grants. Instance 1 acts on command 1 before the arbiter has '
         'recorded the statement. Instance 1\'s lease runs out, and instance 2 crashes before its record reaches the disk. '
         'It restarts knowing nothing, and the arbiter, which never recorded the statement, elects it.',
+        _FOLLOWER_SPEC),
+    Counterexample(
+        'behind-6-passive-arbiter-lacks-statement', dict(_FOLLOWER_SMALL, MaxArbiterChanges='1', PassiveAcknowledges='FALSE'),
+        'Spec', 'INVARIANTS LeaderHoldsActed', 'LeaderHoldsActed',
+        'The active arbiter echoes a statement before the passive one holds it',
+        'The active arbiter confirms a statement to the leader without waiting for the passive arbiter to hold it '
+        '(BUG-0230).',
+        'The active arbiter records that instance 2 may not lead and echoes it, and instance 1 acts on command 1. Instance '
+        '1\'s lease runs out, and the passive arbiter becomes active before the statement has reached it. It holds nothing '
+        'saying instance 2 may not lead, and elects it.',
         _FOLLOWER_SPEC),
 ]
 
@@ -534,8 +544,9 @@ def follower_text_trace(example: Counterexample, output: str, states: List[dict]
         'Columns. up, barred and disk list voters 1, 2 and 3 in that order; lepoch, stmt and confirmed list instances 1 and 2.',
         'leader is the instance acting as leader, or 0 for none. log lists the commands each instance holds, and acted the',
         'commands the matching engine has acted on. barred is the instance each voter has recorded may not lead, 0 for none,',
-        'and disk is the same as written to disk. stmt "bar:N" or "may:N" is what a leader says about its peer, may not lead',
-        'or may lead, and the statement\'s number. confirmed is the highest statement number a grant has echoed back.',
+        'and disk is the same as written to disk. passive is the passive arbiter\'s copy of voter 3\'s barred. stmt "bar:N"',
+        'or "may:N" is what a leader says about its peer, may not lead or may lead, and the statement\'s number. confirmed',
+        'is the highest statement number a grant has echoed back.',
         'msgs lists statements in flight as "st from>to eEPOCH.NUMBER bar|may".',
         f'Reproduced by scripts/tla_trace_pages.py, entry {example.name}.',
     ]
@@ -550,7 +561,8 @@ def follower_text_trace(example: Counterexample, output: str, states: List[dict]
                                           for m in state['msgs'])) + '}'
         lines.append(f'{number:3} {action:22} up={_flags(state["up"]):14} leader={state["leader"]} '
                      f'lepoch={_numbers(state["lepoch"]):7} log={logs:12} acted={acted:6} barred={_numbers(state["barred"]):9} '
-                     f'disk={_numbers(state["barDisk"]):9} stmt={statements:12} confirmed={_numbers(state["confirmed"]):6} '
+                     f'disk={_numbers(state["barDisk"]):9} passive={state["pBar"]} stmt={statements:12} '
+                     f'confirmed={_numbers(state["confirmed"]):6} '
                      f'msgs={messages}')
     return '\n'.join(line.rstrip() for line in lines) + '\n'
 
