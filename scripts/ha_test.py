@@ -5433,6 +5433,9 @@ def await_new_orders_since(f8proc: subprocess.Popen, count: int, since: int, tim
     started = time.monotonic()
     deadline = started + timeout
     while reports.new_orders_since(since) < count:
+        if f8proc.poll() is not None:
+            found = reports.new_orders_since(since) >= count
+            return found, time.monotonic() - started
         if time.monotonic() >= deadline:
             return False, time.monotonic() - started
         time.sleep(POLL_INTERVAL)
@@ -5471,6 +5474,9 @@ def await_new_orders(f8proc: subprocess.Popen, count: int, sent_before: int, tim
     started = time.monotonic()
     deadline = started + timeout
     while reports.new_among(sent_before, count) < count:
+        if f8proc.poll() is not None:
+            found = reports.new_among(sent_before, count) >= count
+            return found, time.monotonic() - started
         if time.monotonic() >= deadline:
             return False, time.monotonic() - started
         time.sleep(POLL_INTERVAL)
@@ -7934,6 +7940,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  Waiting for the client to receive a New report for each of the {before_total} baseline orders ...")
             found, elapsed = await_new_orders(f8proc, before_total, 0, timeout=120.0)
             if not found:
+                exit_code = f8proc.poll()
+                if exit_code is not None:
+                    die(f"baseline orders did not complete — f8test exited with status {exit_code} before all reports arrived")
                 die("baseline orders did not complete — system is not healthy")
             log(f"  {before_total} baseline orders confirmed ({elapsed:.1f}s)")
 

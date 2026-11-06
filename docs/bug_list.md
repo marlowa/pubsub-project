@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 232 |
-| Open | 83 (59 defects, 24 tasks) |
-| Closed | 149 |
+| Open | 82 (58 defects, 24 tasks) |
+| Closed | 150 |
 | Next id | BUG-0233 |
 
 ## Open bugs by severity
 
-18 high, 50 medium, 15 low.
+18 high, 50 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -94,7 +94,6 @@
 | [BUG-0214](#bug_0214) | low | defect | `fix_load_client.py` reports messages unreported that the venue answered, because it cancels orders the venue refused and does not count the OrderCancelReject that answers each |
 | [BUG-0215](#bug_0215) | low | defect | `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds |
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
-| [BUG-0223](#bug_0223) | low | defect | The fix8 test client once logged on and exited without sending its baseline orders, failing scenario 22 |
 | [BUG-0227](#bug_0227) | low | defect | An operator whose request to lift the halt cannot be written is told that reports are outstanding |
 
 ---
@@ -391,28 +390,6 @@ serving: when the reading thread hands that engine over, `engine_handed_over` ro
 that follows discards the orders it is sent by routing. This has not been checked.
 
 **Principles.** V11: a loss of resilience is not a loss of service, and is reported.
-
-### BUG-0223: The fix8 test client once logged on and exited without sending its baseline orders, failing scenario 22 {#bug_0223}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-11-02 |
-| Recorded | 2026-11-02 |
-| How | The full ha_test suite with the primary engine first, for phase 9 step 3: 97 of 98 passed, and scenario 22 failed with "baseline orders did not complete" |
-| Impact | A scenario fails without any fault in the venue, so a full suite has to be read failure by failure before a change can be judged |
-
-**What happens.** In scenario 22 (resend_recovery) the f8test client, started for the 1000 baseline orders, logged on
-and 0.24 seconds later closed its connection, having sent no order; the scenario waited two minutes for reports and
-failed. Its output (`f8test_resend_baseline.txt`, kept in `tmp/ha_test_failures/20261102-195521-scenario-22-resend_recovery`)
-ends at the transition to the continuous state, after the line "Cannot get ioctl:", with no order and no error. No
-venue component logged a refusal or a fault: the gateway saw the logon, then the connection lost by the peer. Run
-twice on its own straight afterwards, the scenario passed both times, and it passed in the full suite run earlier the
-same day.
-
-**What is wanted.** Find why f8test stops reading the commands it is given on standard input, which is how the
-scenario drives it, or have ha_test.py notice that the client exited and say so, rather than waiting for reports that
-cannot come.
 
 ### BUG-0222: No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it {#bug_0222}
 
@@ -3921,6 +3898,29 @@ logs on many sessions together, repeated, which fails now some of the time.
 | Impact | The UI misleads about connection state |
 
 `FixTransportIntegrationTest` opens a real QuickFIX/J TCP connection without completing FIX logon. It checks that `connected` is true while `loggedOn` is false, then closes the peer and checks that `connected` becomes false and `lastError` reports the transport disconnect.
+
+### BUG-0223: The fix8 test client once logged on and exited without sending its baseline orders, failing scenario 22 {#bug_0223}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-02 |
+| Recorded | 2026-11-02 |
+| Fixed | 2026-11-06 -- order-report waits stop when `f8test` exits, and the baseline failure reports its exit status instead of waiting for the report timeout |
+| How | The full ha_test suite with the primary engine first, for phase 9 step 3: 97 of 98 passed, and scenario 22 failed with "baseline orders did not complete" |
+| Impact | A scenario fails without any fault in the venue, so a full suite has to be read failure by failure before a change can be judged |
+
+**What happened.** In scenario 22 (`resend_recovery`) the `f8test` client, started for the 1000 baseline orders, logged
+on and 0.24 seconds later closed its connection, having sent no order; the scenario waited two minutes for reports and
+failed. Its output (`f8test_resend_baseline.txt`, kept in `tmp/ha_test_failures/20261102-195521-scenario-22-resend_recovery`)
+ends at the transition to the continuous state, after the line "Cannot get ioctl:", with no order and no error. No
+venue component logged a refusal or a fault: the gateway saw the logon, then the connection lost by the peer.
+
+**What was done.** `ha_test.py` now stops waiting for reports when the client exits, and the baseline failure includes
+the client's exit status. Two focused tests check that both report-wait functions return when the client has exited.
+Scenario 22 passed on 6 November against the installed venue, but the early exit did not recur, so its cause remains
+unknown. The bug is closed because the failure is not readily reproducible and the test now detects an early client
+exit without waiting through the full report timeout.
 
 ### BUG-0232: Two messages between the instances of a pair are ignored by the instance that receives them: the sequencers' StatusQuery and StatusResponse, and a matching engine's RoleAnnouncement to its peer {#bug_0232}
 
