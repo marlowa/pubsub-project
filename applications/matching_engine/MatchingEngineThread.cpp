@@ -32,6 +32,7 @@ namespace {
 
 // The arbiter pool's identity as a voter in deciding which matching engine leads. The engines are 1 and 2.
 constexpr int64_t arbiter_pool_voter_id = 3;
+constexpr char promise_recorder_thread_name[] = "mePromiseRec";
 
 // Which session an inbound envelope belongs to.
 //
@@ -167,6 +168,10 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     }
     peer_settings_check_.emplace(static_cast<int64_t>(order_book_.region_capacity()), report_identifiers_.secret_fingerprint(), peer_instance_id(),
                                  config_.identifier_secret_file, settings_links_, get_logger());
+    if (ha_enabled_) {
+        background_promise_recorder_.emplace(lease_promise_store_, promise_recorder_thread_name);
+        register_extra_thread(background_promise_recorder_->writer_pthread_id(), promise_recorder_thread_name);
+    }
 }
 
 void MatchingEngineThread::on_initial_event() {
@@ -245,7 +250,6 @@ void MatchingEngineThread::on_app_ready_event() {
         if (test_events_.has_value()) {
             lease_agent_->report_test_events_to(*test_events_);
         }
-        background_promise_recorder_.emplace(lease_promise_store_);
         lease_agent_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), lease_promise_store_.load_statement(),
                                        std::chrono::steady_clock::now());
         lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);

@@ -130,21 +130,20 @@ class Reactor;
 class ApplicationThread {
   public:
     /**
-     * @brief Descriptor for a thread that a subclass wants the Reactor to pin.
+     * @brief Descriptor for a thread that belongs in the background CPU tier.
      *
      * Subclasses call register_extra_thread() from their constructor to
      * enrol threads they manage themselves (not ApplicationThread event-loop
-     * threads).  The Reactor reads this collection during pin_registered_threads()
-     * and claims one additional CPU core per entry, pinning each thread using
-     * the same cross-process registry as all other threads.
+     * threads). The Reactor excludes these threads from hot-path CPU demand and
+     * records them in its pinning log. It does not assign them a dedicated CPU;
+     * they keep the background CPU affinity inherited from their process.
      *
      * @note The thread must already be running and the pthread_t valid at the
-     * time register_extra_thread() is called.  Because the Reactor pins threads
-     * immediately after all ApplicationThreads reach the is_running() state,
-     * registration must happen in the subclass constructor (or an override of
-     * start()) -- never in response to the Initial or AppReady events.  If a
-     * subclass needs to start extra threads later than that, a deferred pinning
-     * mechanism would be required (not yet designed; document the need first).
+     * time register_extra_thread() is called. The Reactor reads this collection
+     * during pin_registered_threads(), so registration must happen before that
+     * method runs, usually in the subclass constructor or an override of start(),
+     * not in response to the Initial or AppReady events. A thread started later
+     * must be given the background CPU affinity by another mechanism.
      */
     struct ExtraThread {
         pthread_t thread_id;

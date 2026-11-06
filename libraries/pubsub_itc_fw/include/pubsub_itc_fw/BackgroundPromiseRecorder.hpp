@@ -3,18 +3,21 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <pthread.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <thread>
-
-#include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 
 #include <pubsub_itc_fw/BackgroundPromiseRecorderInterface.hpp>
 #include <pubsub_itc_fw/LeasePromiseRecord.hpp>
 #include <pubsub_itc_fw/LeasePromiseRecorderInterface.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -61,15 +64,30 @@ class BackgroundPromiseRecorder : public BackgroundPromiseRecorderInterface {
      * @brief Starts the writer thread.
      * @param[in] store The recorder that writes the record to disk. It must outlive this object, and the
      *            writer thread if a write is stuck when this object is destroyed.
+     * @param[in] thread_name Linux name to assign to the writer thread. It must contain at most 15 bytes.
      */
-    explicit BackgroundPromiseRecorder(LeasePromiseRecorderInterface& store) : shared_(std::make_shared<Shared>()) {
+    explicit BackgroundPromiseRecorder(LeasePromiseRecorderInterface& store, const std::string& thread_name = "PromiseWriter")
+        : shared_(std::make_shared<Shared>()) {
         writer_.start([shared = shared_, &store] { write_requests(*shared, store); });
+        const int name_result = pthread_setname_np(writer_.get_pthread_id(), thread_name.c_str());
+        if (name_result != 0) {
+            shared_->stopping.store(true, std::memory_order_release);
+            writer_.join();
+            throw PubSubItcException("BackgroundPromiseRecorder: failed to set the writer thread name");
+        }
     }
 
     BackgroundPromiseRecorder(const BackgroundPromiseRecorder&) = delete;
     BackgroundPromiseRecorder& operator=(const BackgroundPromiseRecorder&) = delete;
     BackgroundPromiseRecorder(BackgroundPromiseRecorder&&) = delete;
     BackgroundPromiseRecorder& operator=(BackgroundPromiseRecorder&&) = delete;
+
+    /**
+     * @brief Returns the writer thread handle for background-tier registration.
+     */
+    [[nodiscard]] pthread_t writer_pthread_id() const {
+        return writer_.get_pthread_id();
+    }
 
     /**
      * @brief Start a write on the writer thread; false, and nothing asked for, if one is already in progress.

@@ -147,8 +147,7 @@ class ReplicatedWalEventsInterface {
 };
 
 /**
- * @brief Promises kept somewhere other than the WAL's directory: for a test that keeps them in memory and
- *        writes them at once, so that it can control the time.
+ * @brief A promise recorder and previously stored promises supplied by the caller.
  */
 struct PromisesKeptElsewhere {
     /// Where to write promise records. Must outlive the ReplicatedWal.

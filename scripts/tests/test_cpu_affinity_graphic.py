@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import sys
+from unittest.mock import Mock
 
 SCRIPTS_DIRECTORY = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS_DIRECTORY))
@@ -61,6 +63,92 @@ def test_unknown_core_type_has_no_display_label():
     label = cpu_affinity_graphic.CpuAffinityWindow._core_type_label("Unknown")
 
     assert label == ""
+
+
+def test_summary_option_accepts_a_filename(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["cpu_affinity_graphic.py", "--summary", "summary.txt"])
+
+    arguments = cpu_affinity_graphic.parse_arguments()
+
+    assert arguments.summary == Path("summary.txt")
+
+
+def test_text_summary_includes_cpu_and_thread_details():
+    cards = cpu_affinity_graphic.build_cpu_cards(
+        [
+            {
+                "pid": 42,
+                "name": "risk_worker",
+                "threads": [
+                    {"thread_id": 43, "name": "risk", "processors": [0]},
+                ],
+            },
+        ],
+        [0, 1],
+        {0: 25.0, 1: 0.0},
+        None,
+        {0: "Unknown", 1: "E-core"},
+    )
+    snapshot = cpu_affinity_graphic.SystemSnapshot(
+        cards=cards,
+        process_count=1,
+        thread_count=1,
+        unreadable_process_count=0,
+        unreadable_thread_count=0,
+        affinity_scan_complete=True,
+        sample_seconds=1.0,
+        updated_at="10:00:00",
+    )
+
+    summary = cpu_affinity_graphic.format_system_summary(snapshot)
+
+    assert "CPU 0\n" in summary
+    assert "CPU 0 (UNKNOWN)" not in summary
+    assert "CPU 1 (E-CORE)" in summary
+    assert "CPU usage: 25.0%" in summary
+    assert "risk_worker / risk" in summary
+    assert "PID 42 | TID 43 | CPUs 0" in summary
+
+
+def test_summary_waits_for_usage_measurement_from_every_cpu():
+    cards = cpu_affinity_graphic.build_cpu_cards(
+        [],
+        [0, 1],
+        {},
+        None,
+    )
+    snapshot = cpu_affinity_graphic.SystemSnapshot(
+        cards=cards,
+        process_count=0,
+        thread_count=0,
+        unreadable_process_count=0,
+        unreadable_thread_count=0,
+        affinity_scan_complete=True,
+        sample_seconds=0.0,
+        updated_at="10:00:00",
+    )
+    summary_path = Mock(spec=Path)
+
+    written = cpu_affinity_graphic._write_summary_when_ready(summary_path, snapshot)
+
+    assert not written
+    summary_path.write_text.assert_not_called()
+
+    snapshot = replace(snapshot, sample_seconds=1.0)
+    cards[0].usage = 25.0
+    written = cpu_affinity_graphic._write_summary_when_ready(summary_path, snapshot)
+
+    assert not written
+    summary_path.write_text.assert_not_called()
+
+    cards[1].usage = 0.0
+    written = cpu_affinity_graphic._write_summary_when_ready(summary_path, snapshot)
+
+    assert written
+    summary_path.write_text.assert_called_once_with(
+        cpu_affinity_graphic.format_system_summary(snapshot),
+        encoding="utf-8",
+    )
 
 
 def test_cpu_usage_is_calculated_from_busy_and_total_tick_deltas():

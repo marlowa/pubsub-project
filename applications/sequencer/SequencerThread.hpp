@@ -15,12 +15,14 @@
 #include <vector>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/FixedCapacityRingBuffer.hpp>
 #include <pubsub_itc_fw/GaugeHandle.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
+#include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
@@ -285,6 +287,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // How the replicated WAL reads a command's identity from a record, so that it keeps a record of the commands it
     // holds (docs/availability/one_check_against_sequencing_twice.md). Declared before the WAL, which uses it.
     SequencerCommandIdentity command_identity_;
+
+    // The writer is started before the Reactor pins this thread, so it inherits the background-core mask.
+    // The WAL is declared after these members and is therefore destroyed before the writer and its store.
+    std::optional<pubsub_itc_fw::LeasePromiseStore> lease_promise_store_;
+    std::optional<pubsub_itc_fw::BackgroundPromiseRecorder> background_promise_recorder_;
 
     // The sequencer's write-ahead log, kept on both instances of the pair, and the deciding of which
     // instance leads: the library's replicated WAL (docs/availability/replicated_wal_in_the_library.md).

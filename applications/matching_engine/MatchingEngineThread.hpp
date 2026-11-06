@@ -280,8 +280,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // the machine reboots. It lets a process restarted by its supervisor keep the lead it held.
     pubsub_itc_fw::LeasePromiseStore lease_promise_store_;
     // Writes promise records on a thread of its own, so that refreshing one does not stop this
-    // instance answering lease requests while the disk is written (BUG-0107). Declared after the
-    // store it writes to, so it is destroyed first. Constructed only when there is a lease agent.
+    // instance answering lease requests while the disk is written (BUG-0107). It is created before
+    // the Reactor pins this thread, so its writer inherits the background-core mask.
     std::optional<pubsub_itc_fw::BackgroundPromiseRecorder> background_promise_recorder_;
 
     // Drives the lease rules that decide whether this instance leads. Recurring.

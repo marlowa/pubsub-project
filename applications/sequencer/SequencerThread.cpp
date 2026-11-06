@@ -60,6 +60,7 @@ namespace {
 
 // The arbiter pool's identity as a voter in deciding which sequencer leads. The sequencers are 1 and 2.
 constexpr int64_t arbiter_pool_voter_id = 3;
+constexpr char promise_recorder_thread_name[] = "seqPromiseRec";
 
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
@@ -109,7 +110,13 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , peer_inbound_conn_id_{}
     , arbiter_primary_conn_id_{}
     , arbiter_secondary_conn_id_{}
-    , wal_positions_(wal_positions) {}
+    , wal_positions_(wal_positions) {
+    if (config_.ha_enabled) {
+        lease_promise_store_.emplace(config_.wal_directory + "/lease_promise.state", pubsub_itc_fw::LeasePromiseStore::current_boot_id());
+        background_promise_recorder_.emplace(*lease_promise_store_, promise_recorder_thread_name);
+        register_extra_thread(background_promise_recorder_->writer_pthread_id(), promise_recorder_thread_name);
+    }
+}
 
 void SequencerThread::on_initial_event() {
     // The log starts a helper thread to prepare its next segment, and a new thread inherits the
@@ -186,7 +193,13 @@ void SequencerThread::on_initial_event() {
     // (docs/availability/one_check_against_sequencing_twice.md).
     wal_configuration.command_identity = &command_identity_;
     wal_configuration.identifiers_reserved = config_.identifiers_reserved;
-    replicated_wal_.emplace(std::move(wal_configuration), get_logger(), replication_links_, lease_links_, replicated_wal_events_);
+    std::optional<pubsub_itc_fw::PromisesKeptElsewhere> promises_elsewhere;
+    if (background_promise_recorder_.has_value()) {
+        promises_elsewhere.emplace(
+            pubsub_itc_fw::PromisesKeptElsewhere{&*background_promise_recorder_, lease_promise_store_->load(), lease_promise_store_->load_statement()});
+    }
+    replicated_wal_.emplace(std::move(wal_configuration), get_logger(), replication_links_, lease_links_, replicated_wal_events_,
+                            std::move(promises_elsewhere));
     // Only when a test started this instance (docs/availability/test_events.md).
     if (config_.test_events.enabled) {
         test_events_.emplace(test_event_links_, config_.test_events.component, static_cast<int64_t>(config_.instance_id), "SequencerThread");

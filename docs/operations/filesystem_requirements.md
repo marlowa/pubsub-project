@@ -243,11 +243,13 @@ The venue writes two kinds of file that interfere with each other when they shar
 
 **The small synced files.** Each matching engine's epoch file, and the lease promise record of every
 sequencer, matching engine and arbiter. Each is a few dozen bytes, and each is written and **synced**
-(`fsync`) before the vote or change of leadership it records takes effect, on the thread that handles
-leases. Until the sync returns, that instance answers no lease request and renews nothing. Promise
-records are normally refreshed in the background, seconds before they are needed
-([majority_leases.md](../availability/majority_leases.md), rule 6), but an instance's first record
-after it starts is always written on the lease thread and waited for.
+(`fsync`) before the vote or change of leadership it records takes effect. An epoch is synced on the
+application thread during a role change. A lease promise record is written and synced by
+`BackgroundPromiseRecorder` on its own thread. The lease-handling thread starts the write and checks
+its outcome at a later tick; if the record does not yet cover a promise, the agent refuses that
+promise until the write finishes rather than waiting for the disk. Promise records are normally
+refreshed in the background seconds before they are needed
+([majority_leases.md](../availability/majority_leases.md), rule 6).
 
 **The large file.** Each matching engine's open-order region, about 500 MB as configured. The engine
 creates it from scratch when it finds none, writing every block, and writes to it continuously while
@@ -272,6 +274,9 @@ the venue and the matching engine created its region:
 The same happened that afternoon with the arbiters, whose promise records then shared a filesystem
 with the region, and both arbiters' lease threads stalled for five seconds at once
 ([BUG-0107](../bug_list.md#bug_0107)).
+
+These are measurements from 2026-10-03. Under the current implementation, a slow promise-record sync
+delays the affected grant instead of holding the lease-handling thread.
 
 With the regions moved to a different filesystem and nothing else changed, five consecutive scenario
 runs, the first straight after a build (when the earlier failure happened), recorded **no promise record

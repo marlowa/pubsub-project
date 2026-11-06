@@ -34,37 +34,12 @@
 #include <pubsub_itc_fw/RollingLogfileConfiguration.hpp>
 
 /*
- * CPU pinning of the Quill backend thread -- design note.
- *
- * The Quill backend thread should be pinned to a dedicated CPU core to prevent
- * the OS scheduler from migrating it onto cores reserved for latency-sensitive
- * threads (the Reactor event loop and ApplicationThreads).
- *
- * Design decision: the Reactor owns all thread pinning, including the Quill backend.
- * QuillLogger starts the backend as early as possible (on first construction, before
- * the Reactor exists) so that the application can log during config loading and startup.
- * The Reactor then pins the already-running backend thread from within Reactor::run(),
- * before the event loop starts.
- *
- * Mechanism:
- *   1. sched_getaffinity(0, ...) discovers the cores the process is allowed to
- *      use (respects taskset, container CPU limits, isolcpus).
- *   2. quill::Backend::get_thread_id() returns the backend's kernel LWP.
- *   3. sched_setaffinity(tid, ...) pins it.
- *
- * Core assignment strategy: the Quill backend gets the last core in the
- * allowed set.  Latency-sensitive threads are assigned from the front.  If
- * only one core is available, pinning is skipped.
- *
- * The TID-zero race: get_thread_id() can return 0 before the backend thread
- * has published its LWP.  In practice this window is microseconds; by the time
- * Reactor::run() is entered the backend has long since started.  The Reactor
- * should attempt pinning once, log a warning to stderr if the TID is zero or
- * sched_setaffinity fails, and continue -- pinning failure is not fatal.
- *
- * Future extension: the same Reactor::run() pinning pass should also pin the
- * Reactor's own event-loop thread and each registered ApplicationThread to
- * successive cores from the front of the allowed set.
+ * Quill starts its backend thread when the first logger is constructed, before
+ * the component CPU layout is loaded. Applying the process affinity later does
+ * not change this existing thread, so apply_background_affinity() assigns the
+ * backend's affinity from the generated layout. It pins the backend to its
+ * allocated background CPU when one is present, otherwise to the background
+ * CPU set. The Reactor does not pin the backend.
  */
 
 namespace {

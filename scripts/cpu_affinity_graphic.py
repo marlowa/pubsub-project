@@ -164,6 +164,107 @@ def _format_thread_rows(
     return text, colour_ranges
 
 
+def _cpu_isolation_summary(card: CpuCard) -> str:
+    tags: list[str] = []
+    if card.scheduler_isolated:
+        tags.append("SCHEDULER-ISOLATED (isolcpus)")
+    if card.managed_irq_isolated:
+        tags.append("MANAGED-IRQ ISOLATION")
+    if card.nohz_full:
+        tags.append("NOHZ_FULL")
+    if tags:
+        return " | ".join(tags)
+    if card.isolation_known:
+        return "No isolation flags reported for this CPU"
+    return "Kernel isolation settings unavailable"
+
+
+def _cpu_thread_summary(card: CpuCard) -> str:
+    return (
+        f"Single-CPU threads: {card.single_cpu_thread_count}  |  "
+        f"Multi-CPU threads: {card.multi_cpu_thread_count}  |  "
+        f"All-CPU threads: {card.all_online_thread_count}"
+    )
+
+
+def _cpu_availability_summary(card: CpuCard) -> str:
+    flexible_count = card.multi_cpu_thread_count + card.all_online_thread_count
+    if card.single_cpu_thread_count == 0 and flexible_count > 0:
+        return "OPEN TO THREADS ALLOWED ON MULTIPLE CPUs"
+    if card.single_cpu_thread_count == 0:
+        return "No reported process threads are allowed here"
+    return ""
+
+
+def _cpu_all_online_summary(card: CpuCard) -> str:
+    if card.all_online_thread_count == 0:
+        return ""
+    return (
+        f"{card.all_online_thread_count} thread(s) in {card.all_online_process_count} "
+        "process(es) are allowed on every online CPU"
+    )
+
+
+def format_system_summary(snapshot: SystemSnapshot) -> str:
+    """Format the CPU cards and affinity details as a plain-text report."""
+    lines = [
+        "CPU affinity summary",
+        f"Updated: {snapshot.updated_at}",
+        (
+            f"{len(snapshot.cards)} online CPUs | {snapshot.process_count} processes | "
+            f"{snapshot.thread_count} threads | "
+            f"unavailable processes: {snapshot.unreadable_process_count} | "
+            f"unavailable threads: {snapshot.unreadable_thread_count}"
+        ),
+    ]
+    if snapshot.sample_seconds > 0:
+        lines.append(f"CPU usage sample: {snapshot.sample_seconds:.2f} seconds")
+    else:
+        lines.append("CPU usage sample: not available yet")
+    lines.append("")
+
+    for card in snapshot.cards:
+        core_type_label = "" if card.core_type == "Unknown" else card.core_type.upper()
+        heading = f"CPU {card.processor}"
+        if core_type_label:
+            heading += f" ({core_type_label})"
+        usage_text = "sampling..." if card.usage is None else f"{card.usage:.1f}%"
+        lines.extend((
+            heading,
+            f"CPU usage: {usage_text}",
+            f"Isolation: {_cpu_isolation_summary(card)}",
+            _cpu_thread_summary(card),
+        ))
+        availability = _cpu_availability_summary(card)
+        if availability:
+            lines.append(availability)
+        all_online = _cpu_all_online_summary(card)
+        if all_online:
+            lines.append(all_online)
+        lines.append("Threads with restricted CPU sets:")
+        thread_text, _ = _format_thread_rows(card.threads)
+        if thread_text:
+            lines.extend(f"  {line}" for line in thread_text.rstrip().splitlines())
+        else:
+            lines.append("  none")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _write_summary_when_ready(path: Path, snapshot: SystemSnapshot) -> bool:
+    """Write a summary only after every online CPU has a usage measurement."""
+    if (
+        not snapshot.affinity_scan_complete
+        or snapshot.sample_seconds <= 0
+        or not snapshot.cards
+        or any(card.usage is None for card in snapshot.cards)
+    ):
+        return False
+    path.write_text(format_system_summary(snapshot), encoding="utf-8")
+    return True
+
+
 def online_processors() -> list[int]:
     """Read the online CPU set, with a fallback for systems without sysfs."""
     try:
@@ -490,6 +591,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--pid", type=int, help="show only this process")
     parser.add_argument("--name", help="show processes whose name or command contains this text")
     parser.add_argument("--kernel", action="store_true", help="include kernel threads")
+    parser.add_argument(
+        "--summary",
+        type=Path,
+        metavar="FILENAME",
+        help="write a text summary after the first complete affinity and CPU usage scan",
+    )
     parser.add_argument(
         "--sample-seconds",
         type=_positive_float,
@@ -896,59 +1003,28 @@ class CpuAffinityWindow:
                 outline=_COLOURS["bar"],
             )
 
-        tags: list[str] = []
-        if card.scheduler_isolated:
-            tags.append("SCHEDULER-ISOLATED (isolcpus)")
-        if card.managed_irq_isolated:
-            tags.append("MANAGED-IRQ ISOLATION")
-        if card.nohz_full:
-            tags.append("NOHZ_FULL")
-        if tags:
-            isolation_text = " | ".join(tags)
+        isolation_text = _cpu_isolation_summary(card)
+        if card.scheduler_isolated or card.managed_irq_isolated or card.nohz_full:
             isolation_colour = _COLOURS["cyan"]
-        elif card.isolation_known:
-            isolation_text = "No isolation flags reported for this CPU"
-            isolation_colour = _COLOURS["muted"]
         else:
-            isolation_text = "Kernel isolation settings unavailable"
-            isolation_colour = _COLOURS["red"]
+            isolation_colour = (
+                _COLOURS["muted"] if card.isolation_known else _COLOURS["red"]
+            )
         widgets["isolation_label"].configure(
             text=isolation_text,
             fg=isolation_colour,
         )
 
-        single_count = card.single_cpu_thread_count
-        multi_count = card.multi_cpu_thread_count
-        all_count = card.all_online_thread_count
-        widgets["summary_label"].configure(
-            text=(
-                f"Single-CPU threads: {single_count}  |  "
-                f"Multi-CPU threads: {multi_count}  |  "
-                f"All-CPU threads: {all_count}"
-            )
+        widgets["summary_label"].configure(text=_cpu_thread_summary(card))
+        availability = _cpu_availability_summary(card)
+        availability_colour = (
+            _COLOURS["green"] if availability.startswith("OPEN") else _COLOURS["muted"]
         )
-        flexible_count = multi_count + all_count
-        if single_count == 0 and flexible_count > 0:
-            availability = "OPEN TO THREADS ALLOWED ON MULTIPLE CPUs"
-            availability_colour = _COLOURS["green"]
-        elif single_count == 0:
-            availability = "No reported process threads are allowed here"
-            availability_colour = _COLOURS["muted"]
-        else:
-            availability = ""
-            availability_colour = _COLOURS["muted"]
         widgets["availability_label"].configure(
             text=availability,
             fg=availability_colour,
         )
-        if all_count:
-            all_text = (
-                f"{all_count} thread(s) in {card.all_online_process_count} process(es) "
-                "are allowed on every online CPU"
-            )
-        else:
-            all_text = ""
-        widgets["all_online_label"].configure(text=all_text)
+        widgets["all_online_label"].configure(text=_cpu_all_online_summary(card))
         self._update_thread_rows(widgets, card.threads)
 
     @staticmethod
@@ -1059,10 +1135,12 @@ class CpuAffinityWindow:
                 self.arguments.name,
                 self.arguments.kernel,
             )
-            self.messages.put((self._make_snapshot({}, 0.0, survey), None))
+            snapshot = self._make_snapshot({}, 0.0, survey)
+            self.messages.put((snapshot, None))
         except OSError as error:
             self.messages.put((None, f"Cannot read process affinity: {error}"))
 
+        summary_written = False
         while not self.stop_event.wait(self.arguments.sample_seconds):
             try:
                 current = read_cpu_times()
@@ -1081,6 +1159,15 @@ class CpuAffinityWindow:
                 self.messages.put((None, f"System scan failed: {error}"))
                 continue
             self.messages.put((snapshot, None))
+            if self.arguments.summary is not None and not summary_written:
+                try:
+                    summary_written = _write_summary_when_ready(self.arguments.summary, snapshot)
+                except OSError as error:
+                    summary_written = True
+                    self.messages.put((
+                        None,
+                        f"Cannot write summary file {self.arguments.summary}: {error}",
+                    ))
 
     def _poll_messages(self) -> None:
         """Apply the newest background scan result on Tk's main thread."""

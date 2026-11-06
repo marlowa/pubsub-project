@@ -1,6 +1,9 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <pthread.h>
+#include <sched.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -1118,6 +1121,24 @@ TEST_F(PairLeaseAgentTest, ACandidateAskingAgainStillGivesUpALeasePeriodAfterItF
     now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
     record(0, agents_[0]->on_tick(now_));
     EXPECT_EQ(reported(0, pubsub_itc_fw::LeaseChange::NoLeader), 1) << "the candidate did not give up a lease period after it first asked";
+}
+
+TEST(BackgroundPromiseRecorderTest, WriterHasNameAndInheritsAffinity) {
+    KeptPromises store;
+    cpu_set_t caller_affinity{};
+    ASSERT_EQ(pthread_getaffinity_np(pthread_self(), sizeof(caller_affinity), &caller_affinity), 0);
+
+    pubsub_itc_fw::BackgroundPromiseRecorder recorder(store, "mePromiseRec");
+
+    cpu_set_t writer_affinity{};
+    ASSERT_EQ(pthread_getaffinity_np(recorder.writer_pthread_id(), sizeof(writer_affinity), &writer_affinity), 0);
+    for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+        EXPECT_EQ(CPU_ISSET(cpu, &caller_affinity), CPU_ISSET(cpu, &writer_affinity)) << "CPU " << cpu;
+    }
+
+    std::array<char, 16> writer_name{};
+    ASSERT_EQ(pthread_getname_np(recorder.writer_pthread_id(), writer_name.data(), writer_name.size()), 0);
+    EXPECT_STREQ(writer_name.data(), "mePromiseRec");
 }
 
 // While the store takes two seconds to write, starting a write, reading its outcome, and trying to start a
