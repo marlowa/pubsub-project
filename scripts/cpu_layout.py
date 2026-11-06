@@ -562,7 +562,7 @@ def format_layout(layout: Layout) -> str:
     if layout.quill_backend_cores:
         placement = ", ".join(
             f"{name}->{core}" for name, core in sorted(layout.quill_backend_cores.items()))
-        lines.append(f"  Quill backends on background cores: {placement}")
+        lines.append(f"  Planned Quill backend CPU assignments (round-robin; pinned at startup): {placement}")
 
     # Case B: something was ranked and none of it was admitted.  A machine with
     # nothing ranked at all -- the admin host, say -- is not case B and must not
