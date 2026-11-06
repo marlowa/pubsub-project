@@ -186,7 +186,7 @@ def _poll_log_for(log_path: Path, marker: str, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if log_path.is_file():
-            with open(log_path, "r", errors="replace") as fh:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
                 if marker in fh.read():
                     return True
         time.sleep(LOG_POLL_INTERVAL)
@@ -208,7 +208,7 @@ def _wait_for_tcp_port(host: str, port: int, timeout: float) -> bool:
 def _launch(name: str, binary: Path, log_path: Path, config_path: Path) -> subprocess.Popen:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     stdout_path = log_path.parent / f"{name}.stdout"
-    with open(stdout_path, "w") as stdout_fh:
+    with open(stdout_path, "w", encoding="utf-8") as stdout_fh:
         proc = subprocess.Popen(
             [str(binary), str(log_path), str(config_path)],
             cwd=str(log_path.parent),
@@ -225,12 +225,12 @@ def _show_stdout(proc: subprocess.Popen) -> None:
     stdout_path = getattr(proc, "stdout_path", None)
     if stdout_path is None or not Path(stdout_path).is_file():
         return
-    content = Path(stdout_path).read_text(errors="replace").strip()
+    content = Path(stdout_path).read_text(encoding="utf-8", errors="replace").strip()
     if content:
-        log(f"  --- process output ---")
+        log("  --- process output ---")
         for line in content.splitlines():
             log(f"  {line}")
-        log(f"  --- end output ---")
+        log("  --- end output ---")
 
 
 def _shutdown(name: str, proc: subprocess.Popen) -> None:

@@ -60,7 +60,7 @@ def _run(command: list[str], step: str) -> None:
     print(step)
     print('='*60)
     sys.stdout.flush()
-    result = subprocess.run(command)
+    result = subprocess.run(command, check=False)
     if result.returncode != 0:
         # Which of the four steps died, and what was run. The bare exit that stood here left a
         # failed deploy looking like a failed build: the banner above is the last thing printed

@@ -125,10 +125,13 @@ def main() -> int:
                         help=f"the install directory, where the deployed configurations, certificates and lib/python are (default: {install_default})")
     parser.add_argument("--sequencer", action="append", type=parse_sequencer, metavar="HOST:PORT",
                         help="a sequencer's listener for operators; give it once for each sequencer. Default: both, from their deployed configurations")
-    parser.add_argument("--certificate", type=Path, metavar="PATH", help="the operator's certificate (default: etc/operator/operator.crt in the install directory)")
+    parser.add_argument("--certificate", type=Path, metavar="PATH",
+                        help=("the operator's certificate (default: etc/operator/operator.crt "
+                              "in the install directory)"))
     parser.add_argument("--key", type=Path, metavar="PATH", help="its private key (default: etc/operator/operator.key in the install directory)")
     parser.add_argument("--ca", type=Path, metavar="PATH",
-                        help="the certificate authority that signed the sequencers' certificates (default: etc/operator/operator_ca.crt in the install directory)")
+                        help=("the certificate authority that signed the sequencers' certificates "
+                              "(default: etc/operator/operator_ca.crt in the install directory)"))
     parser.add_argument("--timeout", type=float, default=5.0, metavar="SECONDS", help="how long to wait for each sequencer (default: 5)")
     args = parser.parse_args()
 

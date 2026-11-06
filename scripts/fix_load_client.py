@@ -440,7 +440,7 @@ def run(options):
         list(session.read_available(0.2))
 
     elapsed = time.monotonic() - started
-    print(f"\n=== fix_load_client summary ===")
+    print("\n=== fix_load_client summary ===")
     print(f"  comp id        {options.comp_id}")
     print(f"  order shape    {'minimal' if options.minimal_order else 'full'}: "
           f"{options.underlyings} underlying(s), {options.parties} party/parties "

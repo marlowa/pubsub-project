@@ -393,7 +393,7 @@ def main() -> None:
     binaries = deployment_binaries(env)
     jar_paths = deployment_jar_paths(env)
 
-    print(f"=== release.py ===")
+    print("=== release.py ===")
     print(f"  version      : {version}")
     print(f"  git hash     : {git_hash or '(omitted)'}")
     print(f"  artefact     : {artefact_name}.tar.gz")

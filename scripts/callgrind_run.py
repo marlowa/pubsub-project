@@ -287,7 +287,9 @@ def launch_app_under_callgrind(name: str, bin_name: str, config: Path,
     app_cmd = [str(bin_dir / bin_name), str(log_file), str(config)]
     full_cmd = valgrind_cmd + app_cmd
 
-    with open(stderr_file, "w") as stderr_fh, open(log_dir / f"{name}.stdout", "w") as stdout_fh:
+    with open(stderr_file, "w", encoding="utf-8") as stderr_fh, open(
+        log_dir / f"{name}.stdout", "w", encoding="utf-8"
+    ) as stdout_fh:
         proc = subprocess.Popen(
             full_cmd,
             cwd=cwd,
@@ -361,7 +363,7 @@ def generate_reports(app_names: list[str], callgrind_dir: Path) -> None:
     report_path = callgrind_dir / "report.txt"
     log(f"Generating callgrind reports → {callgrind_dir}")
 
-    with open(report_path, "w") as report_fh:
+    with open(report_path, "w", encoding="utf-8") as report_fh:
         for name in app_names:
             data_files = sorted(callgrind_dir.glob(f"{name}.callgrind.out.*"))
             if not data_files:
@@ -379,8 +381,13 @@ def generate_reports(app_names: list[str], callgrind_dir: Path) -> None:
 
                 result = subprocess.run(
                     ["callgrind_annotate", "--auto=yes", str(data)],
-                    capture_output=True, text=True,
+                    capture_output=True, text=True, check=False,
                 )
+                if result.returncode != 0:
+                    die(
+                        f"callgrind_annotate failed for {data} with exit code {result.returncode}:\n"
+                        f"{result.stderr.strip()}"
+                    )
 
                 print(result.stdout)
                 report_fh.write(result.stdout + "\n")
@@ -591,7 +598,7 @@ def main() -> None:
     log(f"  callgrind output: {callgrind_dir}")
     targets_desc = ("matching_engine_primary, "
                     + ("binary_order_gateway_a" if args.gateway == "binary" else "fix_order_gateway_a"))
-    log(f"  valgrind tool  : callgrind")
+    log("  valgrind tool  : callgrind")
     log(f"  callgrind targets: {targets_desc}")
     log(f"  gateway        : {args.gateway}")
     log(f"  clients        : {args.clients}")
@@ -621,7 +628,8 @@ def main() -> None:
         ensure_fix8_credentials(creds_file, FIX8_COMP_ID, FIX8_PASSWORD, args.logon_mode)
 
     steps = [
-        ("auth_service_a",   "authentication_service", etc_dir / "authentication_service" / "authentication_service_a.toml",  etc_dir / "authentication_service"),
+        ("auth_service_a", "authentication_service",
+         etc_dir / "authentication_service" / "authentication_service_a.toml", etc_dir / "authentication_service"),
         ("auth_service_b", "authentication_service", etc_dir / "authentication_service" / "authentication_service_b.toml", etc_dir / "authentication_service"),
         ("witness",            "witness",                etc_dir / "witness"                / "witness.toml",                None),
         ("arbiter_primary",        "arbiter",                etc_dir / "arbiter"                / "arbiter_primary.toml",        None),
@@ -631,8 +639,10 @@ def main() -> None:
         ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"              / "sequencer_secondary.toml",    None),
         # After the sequencers, and started only once the profiled engine leads: see the loop below.
         ("matching_engine_secondary", "matching_engine",      etc_dir / "matching_engine"        / "matching_engine_secondary.toml",None),
-        ("fix_order_gateway_a",        "fix_order_gateway",          etc_dir / "fix_order_gateway"          / "fix_order_gateway_a.toml",        etc_dir / "fix_order_gateway"),
-        ("binary_order_gateway_a",  "binary_order_gateway",  etc_dir / "binary_order_gateway"  / "binary_order_gateway_a.toml",  etc_dir / "binary_order_gateway"),
+        ("fix_order_gateway_a", "fix_order_gateway",
+         etc_dir / "fix_order_gateway" / "fix_order_gateway_a.toml", etc_dir / "fix_order_gateway"),
+        ("binary_order_gateway_a", "binary_order_gateway",
+         etc_dir / "binary_order_gateway" / "binary_order_gateway_a.toml", etc_dir / "binary_order_gateway"),
     ]
 
     # Both gateways run whichever is under the profiler, so the process set is the same in
@@ -687,7 +697,7 @@ def main() -> None:
                 log_file = log_dir / f"{name}.log"
                 cwd = str(workdir) if workdir is not None else str(log_dir)
                 log(f"Starting {name} (unprofiled) ...")
-                with open(log_dir / f"{name}.stdout", "w") as stdout_fh:
+                with open(log_dir / f"{name}.stdout", "w", encoding="utf-8") as stdout_fh:
                     proc = subprocess.Popen(
                         [str(bin_dir / bin_name), str(log_file), str(config)],
                         cwd=cwd, stdout=stdout_fh, stderr=subprocess.STDOUT
@@ -781,7 +791,7 @@ def main() -> None:
     # An ER is accounted for whether delivered or dropped; compare that total to NOS.
     er_discrepancy = (gw_er_sent + gw_er_dropped) - gw_nos_recv
     if er_discrepancy == 0:
-        log(f"  NOS→ER match  : YES — one ER (sent or dropped) per NOS")
+        log("  NOS→ER match  : YES — one ER (sent or dropped) per NOS")
     elif er_discrepancy > 0:
         log(f"  NOS→ER match  : {er_discrepancy:,} extra ERs (partial fills or late cancel ACKs)")
     else:

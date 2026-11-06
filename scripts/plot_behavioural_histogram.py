@@ -16,7 +16,7 @@ def parse_behaviour_stats(log_file):
     datasets = []
     current = None
 
-    with open(log_file, "r") as f:
+    with open(log_file, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
 

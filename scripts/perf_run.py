@@ -379,7 +379,7 @@ def launch_app(name: str, bin_name: str, config: Path,
     log_file = log_dir / f"{name}.log"
     log(f"Starting {name} ...")
     cwd = str(workdir) if workdir is not None else str(log_dir)
-    with open(log_dir / f"{name}.stdout", "w") as stdout_fh:
+    with open(log_dir / f"{name}.stdout", "w", encoding="utf-8") as stdout_fh:
         proc = subprocess.Popen(
             [str(bin_dir / bin_name), str(log_file), str(config)],
             cwd=cwd,
@@ -399,7 +399,7 @@ def attach_perf(name: str, pid: int, perf_dir: Path) -> subprocess.Popen:
     data_file  = perf_dir / f"{name}.perf.data"
     stderr_file = perf_dir / f"{name}.perf.stderr"
     call_graph_arg = f"{CALLGRAPH},{DWARF_STACK_SIZE}" if CALLGRAPH == "dwarf" else CALLGRAPH
-    with open(stderr_file, "w") as stderr_fh:
+    with open(stderr_file, "w", encoding="utf-8") as stderr_fh:
         proc = subprocess.Popen(
             ["perf", "record", "-p", str(pid), "-o", str(data_file),
              "--call-graph", call_graph_arg, "-F", str(FREQ), "-m", PERF_MMAP_SIZE],
@@ -587,7 +587,7 @@ def generate_reports(app_names: list[str], perf_dir: Path) -> None:
     report_path = perf_dir / "report.txt"
     log(f"Generating perf reports → {perf_dir}")
 
-    with open(report_path, "w") as report_fh:
+    with open(report_path, "w", encoding="utf-8") as report_fh:
         for name in app_names:
             data = perf_dir / f"{name}.perf.data"
             if not data.is_file():
@@ -604,8 +604,10 @@ def generate_reports(app_names: list[str], perf_dir: Path) -> None:
 
             result = subprocess.run(
                 ["perf", "report", "-i", str(data), "--stdio", "--no-children"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, check=False,
             )
+            if result.returncode != 0:
+                die(f"perf report failed for {data} with exit code {result.returncode}:\n{result.stderr.strip()}")
 
             print(result.stdout)
             report_fh.write(result.stdout + "\n")
@@ -616,15 +618,15 @@ def generate_reports(app_names: list[str], perf_dir: Path) -> None:
                 try:
                     script = subprocess.run(
                         ["perf", "script", "-i", str(data)],
-                        capture_output=True,
+                        capture_output=True, check=True,
                     )
                     collapse = subprocess.run(
                         [str(FLAMEGRAPH / "stackcollapse-perf.pl")],
-                        input=script.stdout, capture_output=True,
+                        input=script.stdout, capture_output=True, check=True,
                     )
                     flamegraph = subprocess.run(
                         [str(FLAMEGRAPH / "flamegraph.pl")],
-                        input=collapse.stdout, capture_output=True,
+                        input=collapse.stdout, capture_output=True, check=True,
                     )
                     svg_path.write_bytes(flamegraph.stdout)
                     log(f"  flamegraph: {svg_path.name}")
@@ -633,7 +635,7 @@ def generate_reports(app_names: list[str], perf_dir: Path) -> None:
                     jpg_path = svg_path.with_suffix(".jpg")
                     convert = subprocess.run(
                         ["convert", str(svg_path), str(jpg_path)],
-                        capture_output=True,
+                        capture_output=True, check=False,
                     )
                     if convert.returncode == 0:
                         log(f"  jpg:        {jpg_path.name}")
@@ -728,7 +730,7 @@ RESOURCE_SAMPLE_SECONDS = 5.0
 def _read_process_memory(pid: int) -> tuple[int, int, int] | None:
     """Return (rss_kb, vsz_kb, threads) for a pid, or None once it has gone."""
     try:
-        status = Path(f"/proc/{pid}/status").read_text()
+        status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
     except (FileNotFoundError, ProcessLookupError, PermissionError):
         return None
     rss = vsz = threads = 0
@@ -746,7 +748,7 @@ def _read_system_memory() -> tuple[int, int]:
     """Return (MemAvailable_kb, SwapFree_kb) -- how close the machine is to the OOM killer."""
     available = swap_free = 0
     try:
-        for line in Path("/proc/meminfo").read_text().splitlines():
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
             if line.startswith("MemAvailable:"):
                 available = int(line.split()[1])
             elif line.startswith("SwapFree:"):
@@ -1439,7 +1441,9 @@ def main() -> None:
     # Each tuple: (name, binary, config, optional_workdir).
     # auth services must start first; gateway connects to them on startup.
     steps = [
-        ("auth_service_a",   "authentication_service", etc_dir / "authentication_service" / "authentication_service_a.toml",  etc_dir / "authentication_service"),
+        ("auth_service_a", "authentication_service",
+         etc_dir / "authentication_service" / "authentication_service_a.toml",
+         etc_dir / "authentication_service"),
         ("auth_service_b", "authentication_service", etc_dir / "authentication_service" / "authentication_service_b.toml", etc_dir / "authentication_service"),
         ("witness",                "witness",                etc_dir / "witness"               / "witness.toml",                  None),
         ("arbiter_primary",        "arbiter",                etc_dir / "arbiter"               / "arbiter_primary.toml",                  None),
@@ -1448,10 +1452,16 @@ def main() -> None:
         ("matching_engine_secondary", "matching_engine",    etc_dir / "matching_engine"       / "matching_engine_secondary.toml",None),
         ("sequencer_primary",      "sequencer",              etc_dir / "sequencer"             / "sequencer_primary.toml",                None),
         ("sequencer_secondary",    "sequencer",              etc_dir / "sequencer"             / "sequencer_secondary.toml",      None),
-        ("fix_order_gateway_a",    "fix_order_gateway",      etc_dir / "fix_order_gateway"      / "fix_order_gateway_a.toml",      etc_dir / "fix_order_gateway"),
-        ("fix_order_gateway_b",    "fix_order_gateway",      etc_dir / "fix_order_gateway"      / "fix_order_gateway_b.toml",      etc_dir / "fix_order_gateway"),
-        ("binary_order_gateway_a", "binary_order_gateway",   etc_dir / "binary_order_gateway"   / "binary_order_gateway_a.toml",   etc_dir / "binary_order_gateway"),
-        ("binary_order_gateway_b", "binary_order_gateway",   etc_dir / "binary_order_gateway"   / "binary_order_gateway_b.toml",   etc_dir / "binary_order_gateway"),
+        ("fix_order_gateway_a", "fix_order_gateway",
+         etc_dir / "fix_order_gateway" / "fix_order_gateway_a.toml", etc_dir / "fix_order_gateway"),
+        ("fix_order_gateway_b", "fix_order_gateway",
+         etc_dir / "fix_order_gateway" / "fix_order_gateway_b.toml", etc_dir / "fix_order_gateway"),
+        ("binary_order_gateway_a", "binary_order_gateway",
+         etc_dir / "binary_order_gateway" / "binary_order_gateway_a.toml",
+         etc_dir / "binary_order_gateway"),
+        ("binary_order_gateway_b", "binary_order_gateway",
+         etc_dir / "binary_order_gateway" / "binary_order_gateway_b.toml",
+         etc_dir / "binary_order_gateway"),
     ]
 
     # Every gateway instance of both protocols runs whichever one is under test, so the
@@ -1656,7 +1666,7 @@ def main() -> None:
         log(f"  GW-ER-DROPPED : {gw_er_dropped:>10,}            (client disconnected before delivery)")
     er_discrepancy = er_accounted - gw_nos_recv
     if er_discrepancy == 0:
-        log(f"  NOS→ER match  : YES — one ER (sent or dropped) per NOS")
+        log("  NOS→ER match  : YES — one ER (sent or dropped) per NOS")
     elif er_discrepancy > 0:
         log(f"  NOS→ER match  : {er_discrepancy:,} extra ERs (partial fills or late cancel ACKs)")
     else:

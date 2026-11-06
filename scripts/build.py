@@ -15,7 +15,7 @@ from pathlib import Path
 
 def _is_rhel8():
     try:
-        text = Path('/etc/os-release').read_text()
+        text = Path('/etc/os-release').read_text(encoding='utf-8')
         lines = {l.split('=')[0]: l.split('=', 1)[1] for l in text.splitlines() if '=' in l}
         return lines.get('ID', '').strip('"') in ('rhel', 'rocky', 'centos') \
             and lines.get('VERSION_ID', '').strip('"').startswith('8')
@@ -33,7 +33,7 @@ def platform_tag():
     mixture of stale objects and a stale CMake cache at worst.
     """
     try:
-        text = Path('/etc/os-release').read_text()
+        text = Path('/etc/os-release').read_text(encoding='utf-8')
         lines = {l.split('=')[0]: l.split('=', 1)[1] for l in text.splitlines() if '=' in l}
         identifier = lines.get('ID', '').strip('"')
         version = lines.get('VERSION_ID', '').strip('"')
@@ -98,8 +98,9 @@ def run_check_standards(source_dir):
 
 
 # pylint's exit status is a bitmask of the categories it found, not a pass/fail: 1 fatal,
-# 2 error, 4 warning, 8 refactor, 16 convention, 32 usage error.
-PYLINT_NON_ERROR_EXIT_BITS = 4 | 8 | 16
+# 2 error, 4 warning, 8 refactor, 16 convention, 32 usage error. Warnings fail the gate;
+# refactor and convention messages remain advisory.
+PYLINT_TOLERATED_EXIT_BITS = 8 | 16
 
 
 def run_pylint(source_dir):
@@ -110,13 +111,10 @@ def run_pylint(source_dir):
     The DSL and dictionary generator are held at 10.00/10, style included: they are library
     code, they are read as much as run, and they are small enough for that to be free.
 
-    The top-level scripts are checked for ERRORS ONLY. They were checked for nothing at all
-    until 2026-08-09, because the invocation above names two package directories and every
-    script in the repository root falls outside them -- which is how an undefined variable
-    lived in perf_run.py's FIX path long enough for a release check to find it. These are the
-    scripts that deploy the venue and run the tests, so a defect that stops one of them
-    outright matters far more than its line lengths, and errors-only is the bar they can pass
-    today. Raising it means fixing the style first, which is worth doing and is not urgent.
+    The top-level scripts are checked for errors, subprocess return handling, and explicit text
+    encodings. These scripts deploy the venue and run the tests, so errors that stop a script,
+    ignored subprocess failures, and locale-dependent text handling must fail the build. Other
+    style warnings will be added after they have been fixed.
 
     Globbed rather than listed. A hard-coded list is a list that goes stale, and a new script
     would silently inherit the very gap this closes.
@@ -127,13 +125,9 @@ def run_pylint(source_dir):
     over optional visualisation packages. The checks worth having here -- undefined-variable
     among them -- are properties of the source and hold in any environment.
 
-    The errors-only run tolerates a non-error exit status, because asking for errors does not
-    guarantee that only errors are reported. A stale entry in an inline disable comment is
-    reported as useless-option-value (R0022) whatever the message filter says, since it is the
-    filter itself that is being complained about -- and that stopped the RHEL8 build of 0.3.0
-    on a newer pylint than the one the code was written against, over two disables naming
-    bad-whitespace, a check removed from pylint years ago. An error still fails the gate; a
-    check retired by a future pylint no longer does.
+    Pylint can report a refactor or convention message even when the selected checks are errors,
+    W1510, and W1514. Those exit bits are tolerated; errors, warnings, and usage errors fail
+    the gate. W1510 and W1514 are not tolerated because they are enabled warnings.
     """
     python_dir = source_dir / "python"
     run_command(
@@ -146,11 +140,11 @@ def run_pylint(source_dir):
     top_level_scripts = sorted(str(path.relative_to(source_dir)) for path in scripts_dir.glob("*.py"))
     if top_level_scripts:
         run_command(
-            [sys.executable, "-m", "pylint", "--disable=all", "--enable=E",
+            [sys.executable, "-m", "pylint", "--disable=all", "--enable=E,W1510,W1514",
              "--disable=import-error", *top_level_scripts],
             cwd=source_dir,
-            description=f"Running pylint (errors only) on {len(top_level_scripts)} top-level scripts",
-            tolerated_exit_bits=PYLINT_NON_ERROR_EXIT_BITS
+            description=f"Running pylint (errors and explicit subprocess handling and encodings) on {len(top_level_scripts)} top-level scripts",
+            tolerated_exit_bits=PYLINT_TOLERATED_EXIT_BITS
         )
 
     print("\n✓ pylint passed")

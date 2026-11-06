@@ -294,9 +294,9 @@ class Launcher:
             return (f"killed by {name}", ran_for)
 
         log(f"*** {self.name} CRASHED: {name} -- {meaning}")
-        log(f"*** This is not a shutdown. A core may have been written; look for it with:")
+        log("*** This is not a shutdown. A core may have been written; look for it with:")
         log(f"***     coredumpctl list | grep {self.name}")
-        log(f"*** and keep the backtrace, which outlives the binary: coredumpctl info <pid>")
+        log("*** and keep the backtrace, which outlives the binary: coredumpctl info <pid>")
         return (f"CRASHED with {name}", ran_for)
 
     def run(self) -> int:

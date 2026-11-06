@@ -553,7 +553,7 @@ def _launch_service(binary_path: Path, log_path: Path,
                     config_path: Path) -> subprocess.Popen:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     stdout_path = log_path.parent / "authentication_service.stdout"
-    with open(stdout_path, "w") as stdout_file:
+    with open(stdout_path, "w", encoding="utf-8") as stdout_file:
         process = subprocess.Popen(
             [str(binary_path), str(log_path), str(config_path)],
             stdout=stdout_file,
@@ -572,7 +572,7 @@ def _wait_for_service_ready(log_path: Path, timeout: float, marker: str) -> floa
     t0 = time.monotonic()
     while time.monotonic() < deadline:
         if log_path.is_file():
-            with open(log_path, "r", errors="replace") as log_file:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as log_file:
                 if marker in log_file.read():
                     return time.monotonic() - t0
         time.sleep(LOG_POLL_INTERVAL)
@@ -590,7 +590,7 @@ def _poll_log_for(log_path: Path, marker: str,
     t0 = time.monotonic()
     while time.monotonic() < deadline:
         if log_path.is_file():
-            with open(log_path, "r", errors="replace") as log_file:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as log_file:
                 log_file.seek(position)
                 chunk = log_file.read()
                 position = log_file.tell()
@@ -713,7 +713,7 @@ def _run_scenario_1(service_log: Path, port: int, args, admin_port: int = 0) -> 
         die("expected force_password_change=False, got True")
 
     log(f"  request_id echo       : OK ({request_id})")
-    log(f"  server_nonce prefix   : OK (starts with client_nonce)")
+    log("  server_nonce prefix   : OK (starts with client_nonce)")
     log(f"  salt length           : {len(challenge.salt)} bytes")
     log(f"  iterations            : {challenge.iterations}")
     log(f"  outcome               : Granted ({result.outcome})")
@@ -762,7 +762,7 @@ def _run_scenario_2(service_log: Path, port: int, args, admin_port: int = 0) -> 
         if result.outcome != AUTHENTICATION_OUTCOME_GRANTED:
             die(f"exchange request_id={request_id}: expected Granted (0), "
                 f"got {result.outcome}")
-        log(f"  outcome: Granted — OK")
+        log("  outcome: Granted — OK")
 
     connection.close()
 
@@ -805,7 +805,7 @@ def _run_scenario_3(service_log: Path, port: int, args, admin_port: int = 0) -> 
 
         if result.outcome != AUTHENTICATION_OUTCOME_GRANTED:
             die(f"client {comp_id}: expected Granted (0), got {result.outcome}")
-        log(f"    outcome: Granted — OK")
+        log("    outcome: Granted — OK")
 
     log("=== Verifying service log ===")
     for request_id, comp_id, _ in clients:
@@ -838,7 +838,7 @@ def _run_scenario_4(service_log: Path, port: int, args, admin_port: int = 0) -> 
         die(f"SetCredentialResult outcome={result.outcome}, expected Success (0)")
     if result.comp_id != comp_id:
         die(f"SetCredentialResult comp_id='{result.comp_id}', expected '{comp_id}'")
-    log(f"  SetCredentialResult: Success — OK")
+    log("  SetCredentialResult: Success — OK")
 
     log("=== Verifying service log for credential update ===")
     log_pos = 0
@@ -889,7 +889,7 @@ def _run_scenario_5(service_log: Path, port: int, args, admin_port: int = 0) -> 
     pdu_conn.close()
 
     if bad_result.outcome == AUTHENTICATION_OUTCOME_GRANTED:
-        die(f"authentication with wrong password should have failed but returned Granted")
+        die("authentication with wrong password should have failed but returned Granted")
     log(f"  wrong password rejected (outcome={bad_result.outcome}): OK")
 
     log("=== Authenticating with the correct password ===")

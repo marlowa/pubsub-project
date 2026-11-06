@@ -53,7 +53,7 @@ def is_changed(previous_summary, current_summary):
 def read_summary_file(s_filename):
     """Read summary by file and build structure for comparision"""
     summary_data = {}
-    with open(s_filename, 'r') as file_handle:
+    with open(s_filename, 'r', encoding='utf-8') as file_handle:
         lines = [line.strip() for line in file_handle]
     line_number = 0
     for line in lines:

@@ -40,7 +40,7 @@ def plot_histograms(log_file, output_dir, quality):
     data = []
 
     # Parse space-delimited buckets from the log file
-    with open(log_file, 'r') as f:
+    with open(log_file, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if line.startswith("# DATASET:"):

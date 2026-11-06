@@ -102,8 +102,8 @@ class Thread:
     def read(self) -> tuple[float, str, int, int] | None:
         """Wall clock, state character, cumulative run ns, cumulative runqueue-wait ns."""
         try:
-            stat = self.stat_path.read_text()
-            sched = self.sched_path.read_text().split()
+            stat = self.stat_path.read_text(encoding="utf-8")
+            sched = self.sched_path.read_text(encoding="utf-8").split()
         except OSError:
             # The thread has ended. Only these two are required, so only these end the watch.
             self.gone = True
@@ -121,7 +121,7 @@ class Thread:
         that nothing happened.
         """
         try:
-            value = self.wchan_path.read_text().strip()
+            value = self.wchan_path.read_text(encoding="utf-8").strip()
             return value if value and value != "0" else ""
         except OSError:
             return ""
@@ -160,7 +160,7 @@ def filesystem_of(path: str) -> tuple[str, str, str]:
     best = ("", "", "")
     best_point = ""
     try:
-        for line in Path("/proc/self/mounts").read_text().splitlines():
+        for line in Path("/proc/self/mounts").read_text(encoding="utf-8").splitlines():
             fields = line.split()
             if len(fields) < 4:
                 continue
@@ -201,7 +201,7 @@ def writable_file_mappings(pid: int) -> list[str]:
 
     mapped = []
     try:
-        for line in Path(f"/proc/{pid}/maps").read_text().splitlines():
+        for line in Path(f"/proc/{pid}/maps").read_text(encoding="utf-8").splitlines():
             parts = line.split(maxsplit=5)
             if len(parts) < 6:
                 continue
@@ -220,7 +220,7 @@ def io_counters(pid: int) -> tuple[int, int] | None:
     """Bytes this process has actually caused to be read from and written to storage."""
     try:
         values = {}
-        for line in Path(f"/proc/{pid}/io").read_text().splitlines():
+        for line in Path(f"/proc/{pid}/io").read_text(encoding="utf-8").splitlines():
             key, _, value = line.partition(":")
             values[key.strip()] = int(value)
         return values.get("read_bytes", 0), values.get("write_bytes", 0)
@@ -501,7 +501,7 @@ def main() -> int:
 
     out = None
     if args.output:
-        out = open(args.output, "w")
+        out = open(args.output, "w", encoding="utf-8")
         out.write("# wall thread state run_ns wait_ns wchan\n")
     try:
         stalls, samples, busy = watch(threads, args.hz, args.seconds, args.min_stall_ms, out)

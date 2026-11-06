@@ -151,7 +151,7 @@ class ScaSummary:
         no_error_list_filename = 'clang-check-summary-no-error-list.txt'
         if os.path.exists(no_error_list_filename):
             no_error_list_tmp = []
-            with open(no_error_list_filename, 'r') as file_handle:
+            with open(no_error_list_filename, 'r', encoding='utf-8') as file_handle:
                 no_error_list_tmp = [line.strip() for line in file_handle]
             self.no_error_list = [line for line in no_error_list_tmp if not line.startswith('#')]
         if self.no_error_list:
@@ -178,7 +178,7 @@ class ScaSummary:
         for filename in sorted_filenames:
             sorted_summary_byfile[filename] = summary_byfile[filename]
 
-        with open(self.output_byfile, 'w') as file_handle:
+        with open(self.output_byfile, 'w', encoding='utf-8') as file_handle:
             print('#', file=file_handle)
             print('# Each record is of the form: <filename>|<issueList>:<grandTotal>', file=file_handle)
             print('# where <issueList> is a comma separated list of issues and the final field', file=file_handle)
@@ -248,7 +248,7 @@ class ScaSummary:
         #
         # Now read from the report.
         try:
-            with open(self.file, 'r') as file_handle:
+            with open(self.file, 'r', encoding='utf-8') as file_handle:
                 lines = [line.strip() for line in file_handle]
         except IOError as myexception:
             message = "Couldn't open file {} for reading: {}".format(self.file, myexception.args)
@@ -364,7 +364,7 @@ class ScaSummary:
 
         sorted_summary = sorted(summary.items(), key=lambda x: (x[1], x[0]))
         message = ''
-        with open(self.output, 'w') as file_handle:
+        with open(self.output, 'w', encoding='utf-8') as file_handle:
             if sorted_summary:
                 print('check summary has {} categories and is as follows:-'.format(len(sorted_summary)), file=file_handle)
             else:

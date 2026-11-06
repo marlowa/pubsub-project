@@ -133,7 +133,7 @@ def get_checks_from_ignore_list(filename):
     if not os.path.exists(filename):
         LOGGER.error('%s not found.', filename)
         sys.exit(1)
-    lines = [line.strip() for line in open(filename, 'r')]
+    lines = [line.strip() for line in open(filename, 'r', encoding='utf-8')]
     checklist = []
     for line in lines:
         if line != '' and line[0] != '#':
@@ -153,7 +153,7 @@ def get_checks_from_ignore_list(filename):
 def get_extra_macros(filename):
     """Read a list of macros from a file and form a command line argument list to set them"""
     macros = ''
-    with open(filename, 'r') as file:
+    with open(filename, 'r', encoding='utf-8') as file:
         lines = [line.strip() for line in file]
         for line in lines:
             line = replace_variables('${\\w*}', line)
@@ -164,7 +164,7 @@ def get_extra_macros(filename):
 def read_exclude_files_from_config(filename):
     """Read from a config file a list of filenames to exclude from the analysis"""
     names = []
-    with open(filename, 'r') as file:
+    with open(filename, 'r', encoding='utf-8') as file:
         lines = [line.strip() for line in file]
         for line in lines:
             line = replace_variables('${\\w*}', line)
@@ -247,7 +247,7 @@ class Sca: # pylint: disable=too-many-instance-attributes
            during compilation. Any warnings the compiler might emit are suppressed.
         """
         includes = []
-        with open(includes_config, 'r') as file:
+        with open(includes_config, 'r', encoding='utf-8') as file:
             lines = [line.strip() for line in file]
             for line in lines:
                 line = replace_variables('${\\w*}', line)
@@ -263,7 +263,7 @@ class Sca: # pylint: disable=too-many-instance-attributes
     def read_names_from_config(self, filename):
         """Read from a config file a list of names/tokens"""
         names = []
-        with open(filename, 'r') as file:
+        with open(filename, 'r', encoding='utf-8') as file:
             lines = [line.strip() for line in file]
             for line in lines:
                 line = replace_variables('${\\w*}', line)
@@ -300,7 +300,7 @@ class Sca: # pylint: disable=too-many-instance-attributes
         if not os.path.exists(self.filenames):
             raise MyException(f'The file {self.filenames} does not exist.')
         self.filelist = []
-        with open(self.filenames, 'r') as file:
+        with open(self.filenames, 'r', encoding='utf-8') as file:
             lines = [line.strip() for line in file]
             for line in lines:
                 if line != '' and line[0] != '#':
@@ -317,7 +317,7 @@ class Sca: # pylint: disable=too-many-instance-attributes
                                 self.filelist.append(line)
 
     def build_list_of_files_to_process(self):
-        """Build a list of filenames to process by walking the tree from the current directory and including every cpp files unless it comes from a directory that is to be excluded"""
+        """Build a list of C++ filenames by walking the current directory, skipping excluded directories."""
         filelist = []
         for root, _dirs, files in os.walk("."):
             for filename in files:
@@ -388,7 +388,7 @@ class Sca: # pylint: disable=too-many-instance-attributes
             exception_text = str(ex)
 
         if os.path.exists(log_filename):
-            with open(log_filename, 'r') as file:
+            with open(log_filename, 'r', encoding='utf-8') as file:
                 output = [line.strip() for line in file]
             if not self.keep_logs:
                 os.remove(log_filename)
@@ -435,8 +435,10 @@ class Sca: # pylint: disable=too-many-instance-attributes
                 print(f'ERROR: no match: ERROR: leafname {leafname} found using "in" but RE does not find it, line: {line}.')
                 sys.exit(1)
 
-            # TODO This is where we need to cater for different delimiters for source line number and column number depending on output format e.g Visual Studio Code.
-            result = re.search(r'^(?P<cpp_filename>.+):(?P<line_number>\d+):(?P<character_number>\d+): (?P<warning_type>(warning|note|error)): (?P<warning_text>.*)', line)
+            # TODO Handle other delimiters for source line, column and message when clang output is not in the default format.
+            result = re.search(
+                r'^(?P<cpp_filename>.+):(?P<line_number>\d+):'
+                r'(?P<character_number>\d+): (?P<warning_type>(warning|note|error)): (?P<warning_text>.*)', line)
             result = None
             if result is not None:
                 replacement_filename = filename if leafname in result.group('cpp_filename') else result.group('cpp_filename')
@@ -453,7 +455,7 @@ class Sca: # pylint: disable=too-many-instance-attributes
     def create_json_file(self, count, batch):
         """Write compile_command.json will all the file and compiler details for this batch"""
         try:
-            json_file_handle = open('compile_commands.json', 'w')
+            json_file_handle = open('compile_commands.json', 'w', encoding='utf-8')
         except Exception as ex: # pylint: disable=broad-except
             raise MyException("Failed to open compile_commands.json for writing: " + str(ex.args))
         print('[', file=json_file_handle)

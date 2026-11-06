@@ -230,8 +230,8 @@ def expand_templates(install_dir: Path, namespace: dict[str, str], config_owners
         # that is the thing to say. See docs/bug_list.md, BUG-0015.
         print(f"  0 of {seen} template(s) expanded in {where}/ -- they were already expanded by an "
               f"earlier deployment, so nothing in them changed.")
-        print(f"  If you expected an edit to take effect, deploy a release built since that edit: "
-              f"scripts/devsetup.sh, or deploy.py --artefact.")
+        print("  If you expected an edit to take effect, deploy a release built since that edit: "
+              "scripts/devsetup.sh, or deploy.py --artefact.")
     else:
         print(f"  no templates found in {where}/ -- nothing was deployed here")
 
@@ -501,7 +501,7 @@ def _generate_fix_client_truststore(env: dict, install_dir: Path, force: bool) -
     jks_path = jks_dir / "fix_gateway_trust.jks"
 
     if not force and jks_path.exists():
-        print(f"  fix_gateway_trust.jks: already exists — skipping (use --force-certs to regenerate)")
+        print("  fix_gateway_trust.jks: already exists — skipping (use --force-certs to regenerate)")
         return
 
     jks_dir.mkdir(parents=True, exist_ok=True)
@@ -588,7 +588,7 @@ def provision_fix_credentials(env: dict) -> None:
             ["psql", "--host", host, "--port", str(port),
              "--username", user, "--dbname", name,
              "--command", sql],
-            capture_output=True, text=True,
+            capture_output=True, text=True, check=False,
             env={**os.environ, "PGPASSWORD": app_pass},
         )
         if result.returncode != 0:
@@ -801,7 +801,7 @@ def run_create_db(
     if liquibase_contexts:
         command.extend(["--contexts", liquibase_contexts])
 
-    result = subprocess.run(command)
+    result = subprocess.run(command, check=False)
     if result.returncode != 0:
         sys.exit(
             f"error: create_db.py exited with code {result.returncode}\n"
@@ -868,7 +868,7 @@ def run_export_credentials(env: dict, install_dir: Path) -> None:
         "--db-port",          str(db["port"]),
         "--db-name",          db["name"],
         "--db-user",          db["user"],
-    ])
+    ], check=False)
     if result.returncode != 0:
         sys.exit(f"error: export_credentials.py exited with code {result.returncode}")
 

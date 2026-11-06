@@ -86,7 +86,7 @@ _HEADER = (
     f"  {'SwapUsed_MB':>{_COL_W[9]}}"
 )
 
-log_file = open(args.output, "w", buffering=1)   # line-buffered so data survives a crash
+log_file = open(args.output, "w", buffering=1, encoding="utf-8")   # line-buffered so data survives a crash
 log_file.write(f"# memory_monitor log started {datetime.datetime.now().isoformat(timespec='seconds')}\n")
 log_file.write(f"# {_HEADER}\n")
 log_file.flush()
