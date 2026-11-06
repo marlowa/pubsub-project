@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 232 |
-| Open | 84 (60 defects, 24 tasks) |
-| Closed | 148 |
+| Open | 83 (59 defects, 24 tasks) |
+| Closed | 149 |
 | Next id | BUG-0233 |
 
 ## Open bugs by severity
 
-18 high, 50 medium, 16 low.
+18 high, 50 medium, 15 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -81,7 +81,6 @@
 | [BUG-0225](#bug_0225) | medium | defect | A matching engine that becomes a follower before it has asked to follow the WAL announces that it follows, but applies nothing |
 | [BUG-0226](#bug_0226) | medium | defect | A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
-| [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -2411,19 +2410,6 @@ should run for longer and vary the pacing, and **preserve `installed/log/` befor
 runs** -- the step that was missed the first time and honoured the second.
 
 
-### BUG-0005: fix-test-client reports a dead gateway poorly {#bug_0005}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-07 (exact date not recorded) |
-| Recorded | 2026-08-08 (8cc0ced) |
-| How | Manual testing of the logon page |
-| Impact | The UI misleads about connection state |
-
-Two undecided items: `lastError` is left empty, and `connected` stays true after the gateway dies.
-FIX produces no disconnect message, so there is nothing to display without inferring it.
-
 ### BUG-0006: ResendRequest under load {#bug_0006}
 
 | | |
@@ -3922,6 +3908,19 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0005: fix-test-client reports a dead gateway poorly {#bug_0005}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-07 (exact date not recorded) |
+| Recorded | 2026-08-08 (8cc0ced) |
+| Fixed | 2026-11-06 -- `connected` follows QuickFIX/J's live transport responder, not the existence of a session object. If the transport drops without a specific logout reason, `lastError` says `FIX transport disconnected`; a specific reason from the gateway is kept |
+| How | Manual testing of the logon page |
+| Impact | The UI misleads about connection state |
+
+`FixTransportIntegrationTest` opens a real QuickFIX/J TCP connection without completing FIX logon. It checks that `connected` is true while `loggedOn` is false, then closes the peer and checks that `connected` becomes false and `lastError` reports the transport disconnect.
 
 ### BUG-0232: Two messages between the instances of a pair are ignored by the instance that receives them: the sequencers' StatusQuery and StatusResponse, and a matching engine's RoleAnnouncement to its peer {#bug_0232}
 

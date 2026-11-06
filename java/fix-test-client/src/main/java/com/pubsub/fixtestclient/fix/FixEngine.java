@@ -147,7 +147,7 @@ public class FixEngine {
     }
 
     public boolean isConnected() {
-        return sessionId != null && getSession() != null;
+        return fixApplication.isTransportConnected();
     }
 
     public SessionStatus getStatus() {
@@ -190,7 +190,7 @@ public class FixEngine {
 
         String lastError = connectError != null ? connectError : fixApplication.getLastLogoutReason();
         return new SessionStatus(
-                true,
+                fixApplication.isTransportConnected(),
                 loggingOn,
                 session.isLoggedOn(),
                 senderCompId,
@@ -238,6 +238,7 @@ public class FixEngine {
 
     private synchronized void stopInitiator() {
         loggingOn = false;
+        fixApplication.stopObservingTransport();
         if (initiator != null) {
             initiator.stop();
             initiator = null;

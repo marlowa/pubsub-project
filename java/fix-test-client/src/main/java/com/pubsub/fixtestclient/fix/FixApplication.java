@@ -8,6 +8,7 @@ import quickfix.FieldNotFound;
 import quickfix.Message;
 import quickfix.Session;
 import quickfix.SessionID;
+import quickfix.SessionStateListener;
 import quickfix.UnsupportedMessageType;
 import quickfix.field.MsgSeqNum;
 import quickfix.field.MsgType;
@@ -24,9 +25,10 @@ import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class FixApplication implements Application {
+public class FixApplication implements Application, SessionStateListener {
 
     private static final Logger log = LoggerFactory.getLogger(FixApplication.class);
+    private static final String TRANSPORT_DISCONNECTED = "FIX transport disconnected";
 
     private static final DateTimeFormatter NANO_SENDING_TIME =
             DateTimeFormatter.ofPattern("yyyyMMdd-HH:mm:ss.SSSSSSSSS").withZone(ZoneOffset.UTC);
@@ -47,6 +49,8 @@ public class FixApplication implements Application {
     private volatile Consumer<Message> inboundListener = msg -> { };
     private volatile Runnable onLogon = () -> { };
     private volatile Runnable onLogout = () -> { };
+    private volatile Session transportStateSession;
+    private volatile boolean transportConnected;
     private volatile String lastLogoutReason = "";
     private volatile boolean sessionWasEstablished = false;
     private volatile String pendingPassword = null;
@@ -58,6 +62,24 @@ public class FixApplication implements Application {
     @Override
     public void onCreate(SessionID sessionId) {
         log.info("Session created: {}", sessionId);
+        stopObservingTransport();
+        Session session = sessionLookup.apply(sessionId);
+        if (session == null) {
+            log.error("Could not find FIX session {} to observe its transport state", sessionId);
+            return;
+        }
+        transportStateSession = session;
+        session.addStateListener(this);
+    }
+
+    @Override
+    public void onConnect() {
+        updateTransportState();
+    }
+
+    @Override
+    public void onDisconnect() {
+        updateTransportState();
     }
 
     @Override
@@ -232,6 +254,19 @@ public class FixApplication implements Application {
         this.onLogout = callback;
     }
 
+    public boolean isTransportConnected() {
+        return transportConnected;
+    }
+
+    public void stopObservingTransport() {
+        Session session = transportStateSession;
+        transportStateSession = null;
+        if (session != null) {
+            session.removeStateListener(this);
+        }
+        transportConnected = false;
+    }
+
     public String getLastLogoutReason() {
         return lastLogoutReason;
     }
@@ -254,6 +289,15 @@ public class FixApplication implements Application {
 
     void setSessionLookup(Function<SessionID, Session> lookup) {
         this.sessionLookup = lookup;
+    }
+
+    private void updateTransportState() {
+        Session session = transportStateSession;
+        boolean connected = session != null && session.hasResponder();
+        if (transportConnected && !connected && lastLogoutReason.isEmpty()) {
+            lastLogoutReason = TRANSPORT_DISCONNECTED;
+        }
+        transportConnected = connected;
     }
 
     public int getSuggestedSeqNum() {

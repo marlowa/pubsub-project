@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class FixApplicationTest {
 
@@ -272,6 +273,45 @@ class FixApplicationTest {
         fixApplication.onLogon(sessionId);
 
         assertEquals(0, fixApplication.getSuggestedSeqNum());
+    }
+
+    @Test
+    void transportStateFollowsTheQuickfixResponder() {
+        when(mockSession.hasResponder()).thenReturn(true, false);
+
+        fixApplication.onCreate(sessionId);
+        verify(mockSession).addStateListener(fixApplication);
+
+        fixApplication.onConnect();
+        assertTrue(fixApplication.isTransportConnected());
+
+        fixApplication.onDisconnect();
+        assertFalse(fixApplication.isTransportConnected());
+        assertEquals("FIX transport disconnected", fixApplication.getLastLogoutReason());
+    }
+
+    @Test
+    void transportDisconnectKeepsTheGatewayLogoutReason() {
+        when(mockSession.hasResponder()).thenReturn(true, false);
+        fixApplication.onCreate(sessionId);
+        fixApplication.onConnect();
+        fixApplication.fromAdmin(logoutMessage("Gateway closed the session"), sessionId);
+
+        fixApplication.onDisconnect();
+
+        assertEquals("Gateway closed the session", fixApplication.getLastLogoutReason());
+    }
+
+    @Test
+    void stoppingTransportObservationRemovesTheListenerAndClearsState() {
+        when(mockSession.hasResponder()).thenReturn(true);
+        fixApplication.onCreate(sessionId);
+        fixApplication.onConnect();
+
+        fixApplication.stopObservingTransport();
+
+        verify(mockSession).removeStateListener(fixApplication);
+        assertFalse(fixApplication.isTransportConnected());
     }
 
     @Test
