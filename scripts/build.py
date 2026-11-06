@@ -646,18 +646,17 @@ def run_doxygen(source_dir, build_dir=None):
 
 def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverage=False,
                     enable_asan=False, enable_tsan=False, install_dir=None,
-                    enable_doxygen=True, debug=False):
+                    enable_doxygen=True, enable_tla_pages=True, debug=False):
     cmake_args = [
         "cmake",
         str(source_dir)
     ]
 
     cmake_args.append(f"-DCMAKE_BUILD_TYPE={'Debug' if debug else 'Release'}")
-    # Always explicit. Passing only the OFF case made this a one-way switch: CMake
-    # cache entries persist, so a single --no-doxygen run left ENABLE_DOXYGEN=OFF in
-    # the cache and silently disabled the install-time documentation build from then
-    # on, however many times it was rebuilt without the flag.
+    # Always explicit because CMake cache entries persist. Passing only the OFF case
+    # would leave either feature disabled after its skip flag was removed.
     cmake_args.append(f"-DENABLE_DOXYGEN={'ON' if enable_doxygen else 'OFF'}")
+    cmake_args.append(f"-DENABLE_TLA_PAGES={'ON' if enable_tla_pages else 'OFF'}")
     if install_dir is not None:
         cmake_args.append(f"-DCMAKE_INSTALL_PREFIX={install_dir}")
     if enable_valgrind:
@@ -1101,6 +1100,7 @@ Examples:
   %(prog)s --no-cpp-tests                     # Skip C++ tests only
   %(prog)s --no-java-tests                    # Skip Java tests only
   %(prog)s --no-pylint                        # Skip pylint on all project Python
+  %(prog)s --skip-tla                         # Skip the install-time TLA+ check and pages
   %(prog)s --valgrind                         # C++ build with Valgrind compatibility
   %(prog)s --doxygen                          # Build and generate Doxygen docs
   %(prog)s --doxygen-only                     # Only generate documentation
@@ -1126,6 +1126,10 @@ Examples:
 
     parser.add_argument('--no-doxygen', action='store_true',
         help='Skip Doxygen generation even if --doxygen or --doxygen-only is set'
+    )
+
+    parser.add_argument('--skip-tla', action='store_true',
+        help='Skip the install-time TLA+ counterexample check and page generation'
     )
 
     parser.add_argument('--no-tests', action='store_true',
@@ -1291,7 +1295,8 @@ Examples:
         configure_cmake(build_dir, source_dir, enable_valgrind=args.valgrind,
                         enable_coverage=args.coverage, enable_asan=args.asan,
                         enable_tsan=args.tsan, install_dir=staging_dir,
-                        enable_doxygen=not args.no_doxygen, debug=args.debug)
+                        enable_doxygen=not args.no_doxygen, enable_tla_pages=not args.skip_tla,
+                        debug=args.debug)
 
         build_project(build_dir, jobs=args.jobs, verbose=args.verbose)
 

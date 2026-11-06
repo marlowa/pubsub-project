@@ -156,6 +156,8 @@ def main() -> None:
         help="skip C++ build")
     build_group.add_argument("--no-doxygen", action="store_true",
         help="skip Doxygen documentation generation")
+    build_group.add_argument("--skip-tla", action="store_true",
+        help="skip the install-time TLA+ counterexample check and page generation")
     build_group.add_argument("--no-pylint", action="store_true",
         help="skip pylint: the Python DSL and FIX dictionary source, and the top-level scripts")
     build_group.add_argument("--no-pytest", action="store_true",
@@ -210,6 +212,8 @@ def main() -> None:
         build_cmd.append("--no-cpp")
     if args.no_doxygen:
         build_cmd.append("--no-doxygen")
+    if args.skip_tla:
+        build_cmd.append("--skip-tla")
     if args.no_pylint:
         build_cmd.append("--no-pylint")
     if args.no_pytest:

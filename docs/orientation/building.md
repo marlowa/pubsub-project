@@ -305,8 +305,9 @@ the browser's own fonts where there is no network.
 at `https://github.com/tlaplus/tlaplus/releases`. The jar is taken from `-DTLA2TOOLS_JAR`, then the
 `TLA2TOOLS_JAR` environment variable, then `$THIRDPARTY_DIR/tla2tools-1.8.0/tla2tools.jar`. On a host with
 no network, copy the jar there by hand. Without Java or the jar the step is skipped and CMake says why;
-`-DENABLE_TLA_PAGES=OFF` turns it off. The Rocky 8 container downloads the pinned release and checks its
-SHA-256 checksum, and sets `TLA2TOOLS_JAR`.
+`-DENABLE_TLA_PAGES=OFF` turns it off. The `--skip-tla` option to `scripts/build.py` and
+`scripts/devsetup.py` passes that setting through the build. The Rocky 8 container downloads the pinned
+release and checks its SHA-256 checksum, and sets `TLA2TOOLS_JAR`.
 
 **The release is pinned** because a different release of TLC can report a different, equally valid
 counterexample for the same run, and then the committed traces would no longer match. A newer release
