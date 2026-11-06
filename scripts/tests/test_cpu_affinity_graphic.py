@@ -57,6 +57,12 @@ def test_core_type_is_unknown_when_linux_publishes_no_classification():
     assert core_types == {0: "Unknown"}
 
 
+def test_unknown_core_type_has_no_display_label():
+    label = cpu_affinity_graphic.CpuAffinityWindow._core_type_label("Unknown")
+
+    assert label == ""
+
+
 def test_cpu_usage_is_calculated_from_busy_and_total_tick_deltas():
     before = {0: (50, 100), 1: (20, 100)}
     after = {0: (80, 200), 1: (70, 200)}
@@ -73,6 +79,45 @@ def test_cpu_usage_is_unavailable_without_a_valid_interval():
     usage = cpu_affinity_graphic.calculate_cpu_usage(before, after)
 
     assert usage == {0: None, 1: None}
+
+
+def test_thread_status_supplies_name_and_affinity_together():
+    status = (
+        "Name:\tmatching worker\n"
+        "State:\tS (sleeping)\n"
+        "Cpus_allowed_list:\t0-3,8\n"
+    )
+
+    details = cpu_affinity_graphic._parse_thread_status(status)
+
+    assert details == ("matching worker", [0, 1, 2, 3, 8])
+
+
+def test_thread_status_without_affinity_is_unreadable():
+    details = cpu_affinity_graphic._parse_thread_status("Name:\tworker\n")
+
+    assert details is None
+
+
+def test_thread_rows_are_formatted_as_text_with_category_ranges():
+    threads = [
+        cpu_affinity_graphic.AffinityThread(
+            "risk_worker", "risk", 42, 43, (2,), "single"
+        ),
+        cpu_affinity_graphic.AffinityThread(
+            "gateway", "io", 50, 51, (0, 1, 2), "few"
+        ),
+    ]
+
+    text, colour_ranges = cpu_affinity_graphic._format_thread_rows(threads)
+
+    assert text == (
+        "risk_worker / risk\n"
+        "PID 42 | TID 43 | CPUs 2\n"
+        "gateway / io\n"
+        "PID 50 | TID 51 | CPUs 0-2\n"
+    )
+    assert colour_ranges == [("single", 1, 3), ("few", 3, 5)]
 
 
 def test_cpu_cards_separate_single_cpu_threads_from_flexible_threads():

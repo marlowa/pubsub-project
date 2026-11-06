@@ -80,13 +80,14 @@ class CpuCard:
 
 @dataclass(frozen=True)
 class SystemSnapshot:
-    """One complete set of process affinity and CPU usage measurements."""
+    """One set of CPU, process-affinity and usage measurements."""
 
     cards: list[CpuCard]
     process_count: int
     thread_count: int
     unreadable_process_count: int
     unreadable_thread_count: int
+    affinity_scan_complete: bool
     sample_seconds: float
     updated_at: str
 
@@ -130,6 +131,37 @@ def format_cpu_list(processors: list[int] | set[int] | tuple[int, ...]) -> str:
         start = previous = processor
     pieces.append(str(start) if start == previous else f"{start}-{previous}")
     return ",".join(pieces)
+
+
+def _format_thread_rows(
+    threads: list[AffinityThread],
+) -> tuple[str, list[tuple[str, int, int]]]:
+    """Build thread text and contiguous colour ranges for one CPU card."""
+    lines: list[str] = []
+    colour_ranges: list[tuple[str, int, int]] = []
+    current_category = None
+    category_start_line = 1
+    line_number = 1
+
+    for thread in threads:
+        if thread.category != current_category:
+            if current_category is not None:
+                colour_ranges.append((current_category, category_start_line, line_number))
+            current_category = thread.category
+            category_start_line = line_number
+        lines.extend((
+            f"{thread.process_name} / {thread.thread_name}",
+            f"PID {thread.process_id} | TID {thread.thread_id} | "
+            f"CPUs {format_cpu_list(thread.allowed_processors)}",
+        ))
+        line_number += 2
+
+    if current_category is not None:
+        colour_ranges.append((current_category, category_start_line, line_number))
+    text = "\n".join(lines)
+    if text:
+        text += "\n"
+    return text, colour_ranges
 
 
 def online_processors() -> list[int]:
@@ -263,16 +295,30 @@ def _read_first_line(path: Path) -> str:
     return "".join(character if character.isprintable() else "?" for character in value)
 
 
-def _read_thread_affinity(pid: int, thread_id: int) -> list[int] | None:
-    """Read a thread's allowed CPUs, or return None if its procfs entry is unavailable."""
+def _parse_thread_status(status: str) -> tuple[str, list[int]] | None:
+    """Read a thread name and allowed CPUs from one procfs status record."""
+    thread_name = "?"
+    allowed_processors = None
+    for line in status.splitlines():
+        if line.startswith("Name:"):
+            thread_name = line.split(":", 1)[1].strip() or "?"
+        elif line.startswith("Cpus_allowed_list:"):
+            try:
+                allowed_processors = parse_cpu_list(line.split(":", 1)[1])
+            except ValueError:
+                return None
+        if allowed_processors is not None:
+            return thread_name, allowed_processors
+    return None
+
+
+def _read_thread_details(pid: int, thread_id: int) -> tuple[str, list[int]] | None:
+    """Read a thread's name and allowed CPUs from one procfs file."""
     path = _PROC / str(pid) / "task" / str(thread_id) / "status"
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("Cpus_allowed_list:"):
-                return parse_cpu_list(line.split(":", 1)[1])
+        return _parse_thread_status(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
         return None
-    return None
 
 
 def survey_processes(
@@ -319,11 +365,11 @@ def survey_processes(
 
         threads: list[dict] = []
         for thread_id in thread_ids:
-            processors = _read_thread_affinity(pid, thread_id)
-            if processors is None:
+            thread_details = _read_thread_details(pid, thread_id)
+            if thread_details is None:
                 unreadable_threads += 1
                 continue
-            thread_name = _read_first_line(task_directory / str(thread_id) / "comm") or "?"
+            thread_name, processors = thread_details
             threads.append({
                 "thread_id": thread_id,
                 "name": thread_name,
@@ -470,7 +516,16 @@ class CpuAffinityWindow:
         self.card_widgets: dict[int, dict] = {}
         self.cpu_ids: tuple[int, ...] = ()
         self._create_widgets()
+        self._render_snapshot(self._make_snapshot({}, 0.0))
 
+        self.root.bind_all("<Up>", self._scroll_up)
+        self.root.bind_all("<Down>", self._scroll_down)
+        self.root.bind_all("<Prior>", self._scroll_page_up)
+        self.root.bind_all("<Next>", self._scroll_page_down)
+        self.root.bind_all("<Home>", self._scroll_home)
+        self.root.bind_all("<MouseWheel>", self._on_mouse_wheel)
+        self.root.bind_all("<Button-4>", self._on_mouse_wheel_button)
+        self.root.bind_all("<Button-5>", self._on_mouse_wheel_button)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(150, self._poll_messages)
         self.worker = threading.Thread(target=self._collect_snapshots, daemon=True)
@@ -604,6 +659,48 @@ class CpuAffinityWindow:
         """Keep both scrollbars matched to the grid dimensions."""
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
+    def _scroll_up(self, _event):
+        self.canvas.yview_scroll(-1, "units")
+        return "break"
+
+    def _scroll_down(self, _event):
+        self.canvas.yview_scroll(1, "units")
+        return "break"
+
+    def _scroll_page_up(self, _event):
+        self.canvas.yview_scroll(-1, "pages")
+        return "break"
+
+    def _scroll_page_down(self, _event):
+        self.canvas.yview_scroll(1, "pages")
+        return "break"
+
+    def _scroll_home(self, _event):
+        self.canvas.yview_moveto(0.0)
+        return "break"
+
+    def _on_mouse_wheel(self, event):
+        if event.delta == 0:
+            return "break"
+        direction = -1 if event.delta > 0 else 1
+        units = max(1, abs(event.delta) // 120)
+        return self._scroll_at_pointer(event.widget, direction * units)
+
+    def _on_mouse_wheel_button(self, event):
+        direction = -1 if event.num == 4 else 1
+        return self._scroll_at_pointer(event.widget, direction)
+
+    def _scroll_at_pointer(self, widget, direction: int):
+        for card_widgets in self.card_widgets.values():
+            ancestor = widget
+            while ancestor is not None:
+                if ancestor == card_widgets["thread_list_frame"]:
+                    card_widgets["thread_text"].yview_scroll(direction, "units")
+                    return "break"
+                ancestor = getattr(ancestor, "master", None)
+        self.canvas.yview_scroll(direction, "units")
+        return "break"
+
     def _create_cpu_card(self, card: CpuCard, index: int) -> dict:
         """Create a CPU panel and return the widgets updated by later scans."""
         row = index // _REFRESH_COLUMNS
@@ -630,7 +727,7 @@ class CpuAffinityWindow:
         cpu_label.pack(side="left")
         core_type_label = self.tk.Label(
             heading,
-            text=card.core_type.upper(),
+            text=self._core_type_label(card.core_type),
             font=("TkDefaultFont", 9, "bold"),
             fg=self._core_type_colour(card.core_type),
             bg=_COLOURS["panel"],
@@ -698,8 +795,34 @@ class CpuAffinityWindow:
             bg=_COLOURS["panel"],
         )
         thread_heading.pack(fill="x", pady=(8, 3))
-        thread_frame = self.tk.Frame(frame, bg=_COLOURS["panel"])
-        thread_frame.pack(fill="x")
+        thread_list_frame = self.tk.Frame(frame, bg=_COLOURS["panel"])
+        thread_list_frame.pack(fill="both", expand=True)
+        thread_text = self.tk.Text(
+            thread_list_frame,
+            width=38,
+            height=8,
+            wrap="word",
+            takefocus=0,
+            bg=_COLOURS["panel"],
+            fg=_COLOURS["muted"],
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            state="disabled",
+        )
+        for category, colour in _CATEGORY_COLOURS.items():
+            thread_text.tag_configure(category, foreground=colour)
+        thread_scrollbar = self.tk.Scrollbar(
+            thread_list_frame,
+            orient="vertical",
+            command=thread_text.yview,
+            bg=_COLOURS["panel_highlight"],
+            troughcolor=_COLOURS["background"],
+            highlightthickness=0,
+        )
+        thread_text.configure(yscrollcommand=thread_scrollbar.set)
+        thread_text.pack(side="left", fill="both", expand=True)
+        thread_scrollbar.pack(side="right", fill="y")
 
         return {
             "frame": frame,
@@ -711,7 +834,8 @@ class CpuAffinityWindow:
             "summary_label": summary_label,
             "availability_label": availability_label,
             "all_online_label": all_online_label,
-            "thread_frame": thread_frame,
+            "thread_list_frame": thread_list_frame,
+            "thread_text": thread_text,
             "thread_signature": None,
         }
 
@@ -721,44 +845,26 @@ class CpuAffinityWindow:
         if widgets["thread_signature"] == signature:
             return
 
-        for child in widgets["thread_frame"].winfo_children():
-            child.destroy()
-
-        for thread in threads:
-            row = self.tk.Frame(
-                widgets["thread_frame"],
-                bg=_COLOURS["panel"],
-                padx=0,
-                pady=2,
-            )
-            row.pack(fill="x")
-            marker = self.tk.Frame(
-                row,
-                width=5,
-                bg=_CATEGORY_COLOURS[thread.category],
-            )
-            marker.pack(side="left", fill="y", padx=(0, 8))
-            detail = (
-                f"{thread.process_name} / {thread.thread_name}\n"
-                f"PID {thread.process_id} | TID {thread.thread_id} | "
-                f"CPUs {format_cpu_list(thread.allowed_processors)}"
-            )
-            self.tk.Label(
-                row,
-                text=detail,
-                anchor="w",
-                justify="left",
-                wraplength=310,
-                fg=_CATEGORY_COLOURS[thread.category],
-                bg=_COLOURS["panel"],
-            ).pack(side="left", fill="x", expand=True)
+        text, colour_ranges = _format_thread_rows(threads)
+        thread_text = widgets["thread_text"]
+        thread_text.configure(state="normal")
+        thread_text.delete("1.0", "end")
+        if text:
+            thread_text.insert("1.0", text)
+            for category, start_line, end_line in colour_ranges:
+                thread_text.tag_add(
+                    category,
+                    f"{start_line}.0",
+                    f"{end_line}.0",
+                )
+        thread_text.configure(state="disabled")
 
         widgets["thread_signature"] = signature
 
     def _update_cpu_card(self, widgets: dict, card: CpuCard) -> None:
         """Display fresh usage, isolation, availability and affinity data."""
         widgets["core_type_label"].configure(
-            text=card.core_type.upper(),
+            text=self._core_type_label(card.core_type),
             fg=self._core_type_colour(card.core_type),
         )
         if card.usage is None:
@@ -846,6 +952,13 @@ class CpuAffinityWindow:
         self._update_thread_rows(widgets, card.threads)
 
     @staticmethod
+    def _core_type_label(core_type: str) -> str:
+        """Return a badge label only when Linux identifies the processor type."""
+        if core_type == "Unknown":
+            return ""
+        return core_type.upper()
+
+    @staticmethod
     def _core_type_colour(core_type: str) -> str:
         """Return the badge colour for a P-core, E-core or unknown processor."""
         if core_type == "P-core":
@@ -866,16 +979,26 @@ class CpuAffinityWindow:
                 self.card_widgets[card.processor] = self._create_cpu_card(card, index)
 
         for card in snapshot.cards:
-            self._update_cpu_card(self.card_widgets[card.processor], card)
+            widgets = self.card_widgets[card.processor]
+            self._update_cpu_card(widgets, card)
+            if not snapshot.affinity_scan_complete:
+                widgets["summary_label"].configure(text="Scanning thread affinity...")
+                widgets["availability_label"].configure(text="")
+                widgets["all_online_label"].configure(text="")
 
-        summary = (
-            f"{len(snapshot.cards)} online CPUs | "
-            f"{snapshot.process_count} processes | {snapshot.thread_count} threads | "
-            f"unavailable processes: {snapshot.unreadable_process_count} | "
-            f"unavailable threads: {snapshot.unreadable_thread_count}"
-        )
+        if snapshot.affinity_scan_complete:
+            summary = (
+                f"{len(snapshot.cards)} online CPUs | "
+                f"{snapshot.process_count} processes | {snapshot.thread_count} threads | "
+                f"unavailable processes: {snapshot.unreadable_process_count} | "
+                f"unavailable threads: {snapshot.unreadable_thread_count}"
+            )
+        else:
+            summary = f"{len(snapshot.cards)} online CPUs | scanning process and thread affinity..."
         self.summary_label.configure(text=summary)
-        if snapshot.sample_seconds > 0:
+        if not snapshot.affinity_scan_complete:
+            status = "CPU panels ready; scanning process and thread affinity..."
+        elif snapshot.sample_seconds > 0:
             status = (
                 f"Updated {snapshot.updated_at}; CPU usage covers "
                 f"{snapshot.sample_seconds:.2f} seconds. Refreshing every "
@@ -887,17 +1010,22 @@ class CpuAffinityWindow:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _make_snapshot(
-        self, usage_by_cpu: dict[int, float | None], sample_seconds: float
+        self,
+        usage_by_cpu: dict[int, float | None],
+        sample_seconds: float,
+        survey: dict | None = None,
     ) -> SystemSnapshot:
         """Collect process data and assemble the card models for the window."""
-        survey = survey_processes(
-            self.arguments.pid,
-            self.arguments.name,
-            self.arguments.kernel,
-        )
         processors = online_processors()
         isolation = read_isolation_settings()
         core_types = read_cpu_core_types(processors)
+        affinity_scan_complete = survey is not None
+        if survey is None:
+            survey = {
+                "processes": [],
+                "unreadable_processes": 0,
+                "unreadable_threads": 0,
+            }
         cards = build_cpu_cards(
             survey["processes"],
             processors,
@@ -911,6 +1039,7 @@ class CpuAffinityWindow:
             thread_count=sum(len(process["threads"]) for process in survey["processes"]),
             unreadable_process_count=survey["unreadable_processes"],
             unreadable_thread_count=survey["unreadable_threads"],
+            affinity_scan_complete=affinity_scan_complete,
             sample_seconds=sample_seconds,
             updated_at=time.strftime("%H:%M:%S"),
         )
@@ -925,7 +1054,12 @@ class CpuAffinityWindow:
 
         previous_time = time.monotonic()
         try:
-            self.messages.put((self._make_snapshot({}, 0.0), None))
+            survey = survey_processes(
+                self.arguments.pid,
+                self.arguments.name,
+                self.arguments.kernel,
+            )
+            self.messages.put((self._make_snapshot({}, 0.0, survey), None))
         except OSError as error:
             self.messages.put((None, f"Cannot read process affinity: {error}"))
 
@@ -937,7 +1071,12 @@ class CpuAffinityWindow:
                 sample_seconds = current_time - previous_time
                 previous = current
                 previous_time = current_time
-                snapshot = self._make_snapshot(usage, sample_seconds)
+                survey = survey_processes(
+                    self.arguments.pid,
+                    self.arguments.name,
+                    self.arguments.kernel,
+                )
+                snapshot = self._make_snapshot(usage, sample_seconds, survey)
             except OSError as error:
                 self.messages.put((None, f"System scan failed: {error}"))
                 continue
