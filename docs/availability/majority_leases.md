@@ -147,12 +147,18 @@ vote of just one other voter: either its peer or the third voter.
     against a renewal every 1,000) it can miss them for many seconds,
     never settling that it follows ([BUG-0195](../bug_list.md#bug_0195)). Both refusals are needed: a peer's refusal
     alone may come from a peer that is itself only asking, and a grant from the third voter may still be on its way.
-11. **In the sequencer pair, a leader acts on a command its follower does not hold only once a voter other than itself
-    has recorded that the follower may not lead.** The leader says on every lease request whether its peer may lead,
+11. **In the sequencer pair, a leader acts on a command its follower does not hold only once its follower, or both
+    arbiters, or the active arbiter cut off from the other, have recorded that the follower may not lead.** The leader says on every lease request whether its peer may lead,
     as a numbered statement so that a late message cannot undo a newer one, and records it on its own disk first.
     Every leadership starts by saying the peer may not lead, and says it may only once the peer has acknowledged every
     record and the leader waits for its acknowledgements again. A voter that grants the request records the
-    statement, and its grant echoes it; a voter refuses a lease to an instance a statement it holds says may not lead,
+    statement. The peer's grant echoes it; each of the two arbiters, active or passive, records it from the request,
+    writes it to disk and confirms it with `StatementHeld`. The leader counts the statement as recorded once its peer
+    has echoed it, or both arbiters have confirmed it, or the active arbiter, having heard nothing from the other for
+    long enough, has confirmed it alone; an arbiter that becomes active when it may lack a statement confirmed alone
+    grants nothing until it has heard from the other again. A change of active arbiter therefore cannot lose a
+    statement the leader relied on. A voter refuses
+    a lease to an instance a statement it holds says may not lead,
     and an instance holding one about itself does not ask to lead. Any majority that could elect the follower then
     includes a voter that knows it lacks commands the matching engine acted on. The design, its decisions and its
     tests are in [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md), and its model check in

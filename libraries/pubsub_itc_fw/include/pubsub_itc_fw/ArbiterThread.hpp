@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <map>
 #include <optional>
@@ -25,6 +26,7 @@
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 
 #include <pubsub_itc_fw/ArbiterConfiguration.hpp>
+#include <pubsub_itc_fw/ArbiterPeerContact.hpp>
 #include <pubsub_itc_fw/ComponentLeaseVoters.hpp>
 #include <pubsub_itc_fw/ComponentStatementStore.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
@@ -145,6 +147,20 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // The newest statement from each component pair's leader about whether its peer may lead,
     // kept on disk beside the promise record, so that a restart does not forget it.
     ComponentStatementStore component_statement_store_;
+    // Whether the statements held in memory differ from those last written to disk, because a write failed.
+    bool component_statements_unsaved_{false};
+
+    // When this arbiter last heard from the other, and the echoes of its heartbeats: whether it may confirm statements alone,
+    // and whether, on becoming active, it may lack a statement the other confirmed alone. Constructed at the initial event.
+    std::optional<pubsub_itc_fw::ArbiterPeerContact> peer_contact_;
+    // Whether this arbiter must send the other its whole state on each peer connection before the next heartbeat on it, because
+    // it has confirmed a statement alone since it last did, or has started. A connection delivers in order, so the other
+    // arbiter receives every such statement before an echo that shows it is not behind.
+    bool owe_whole_state_on_outbound_{true};
+    bool owe_whole_state_on_inbound_{true};
+    // Whether this arbiter became active while it may lack a statement the other confirmed alone. It then answers no
+    // component's lease request until a fresh echo of its own heartbeat arrives.
+    bool may_be_behind_{false};
 
     // The statements found on disk at start that say an instance may not lead, by pair, reported to the test when its
     // connection is made, since they are read before it can be (docs/availability/test_events.md).
@@ -179,6 +195,26 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
 
     /// Writes every statement held to disk. Logs, and returns false, when it cannot.
     [[nodiscard]] bool save_component_statements();
+
+    /// Sends the other arbiter, on @p conn_id, the highest epoch granted and the newest statement held for every pair.
+    void send_whole_state_to_peer(const pubsub_itc_fw::ConnectionID& conn_id);
+
+    /// Sends a heartbeat on each connection to the other arbiter, preceded by the whole state on any connection that is owed it.
+    void send_heartbeats_to_peer(std::chrono::steady_clock::time_point now);
+
+    void handle_arbiter_heartbeat(const pubsub_itc_fw::EventMessage& message);
+
+    /**
+     * @brief Records the statement a component's leader carries on @p request, writes it to disk if it is new, and tells the
+     *        leader this arbiter holds it.
+     *
+     * Done by the active and the passive arbiter alike, so that a statement the leader relies on survives a change of
+     * active arbiter. Nothing is confirmed while the statements are held in memory only, or when this arbiter already
+     * holds a newer statement from the pair.
+     *
+     * @return Whether the statement this arbiter holds for the pair changed.
+     */
+    bool record_component_statement(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRequestView& request);
 
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_arbiter_state_record(const pubsub_itc_fw::EventMessage& message);

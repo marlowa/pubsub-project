@@ -103,8 +103,38 @@ Each `LeaseRequest` from a leader gains two fields:
   newer "no", would wrongly let the follower lead again. A voter takes a newer statement from every
   request that carries one, before it decides the request, whether it then grants or refuses.
 
-Each `LeaseGrant` gains one field: the number of the statement the voter recorded before granting. The
-leader treats a statement as recorded only when a grant echoes its number.
+Each `LeaseGrant` gains one field: the number of the statement the voter recorded before granting. Only
+the peer's grant fills it in. The arbiters confirm a statement with a message of their own, `StatementHeld`,
+which carries the arbiter's own instance id, 1 or 2, and identifies the statement by its leader, epoch and
+number. The leader treats a statement as recorded only when its peer's grant echoes its number, or both
+arbiters have sent `StatementHeld` for it, or the active arbiter has sent it saying it confirms alone.
+
+Both arbiters are needed because only one of them is active at a time. Every instance sends each lease
+request to both, so each records the statement from the request itself. If the leader relied on the
+active arbiter alone, and that arbiter stopped before the passive one held the statement, the passive
+arbiter would become active without it and could grant the follower the lead.
+
+One machine runs an arbiter, a sequencer and a matching engine, so the death of one machine can take
+the follower and an arbiter at once. The active arbiter's confirmation is therefore enough on its own
+once it has heard nothing from the other arbiter for long enough, and `StatementHeld` then says it
+confirms alone. The two arbiters make this safe between them (`ArbiterPeerContact`):
+
+- They send each other a heartbeat every tick, carrying the moment it was sent on the sender's clock
+  and echoing the newest such moment received from the other.
+- The active arbiter confirms alone only once it has heard nothing from the other arbiter for two lease
+  periods, one renewal interval and one more lease period: 10 seconds with the default timings.
+- An arbiter that has confirmed alone sends the other its whole state on a connection before its next
+  heartbeat on that connection. A connection delivers in order, so an arbiter that receives an echo has
+  received every statement confirmed alone before it.
+- An arbiter that becomes active when no heartbeat it sent in the last two lease periods and one renewal
+  interval has been echoed may lack a statement the other confirmed alone. It grants no component a
+  lease until a fresh echo arrives. Until then each pair elects a leader only with both of its
+  instances' votes.
+
+When the active arbiter's machine dies, the other becomes active after about one lease period and one
+renewal interval, well within the limit, and grants as usual. A leader that has also lost its follower
+waits until the arbiter left has heard nothing from the dead one for 10 seconds, and then acts on that
+arbiter's confirmation alone. The model check is in section 12.6 of [tla/findings.md](tla/findings.md).
 
 A voter records a "no" before it sends the grant, exactly as it records a promise before granting, so
 that the statement survives the voter's own restart:
@@ -112,7 +142,7 @@ that the statement survives the voter's own restart:
 - **The leader** writes its own statement to its record on disk before it sends it, in the same file
   as its lease promise record. An instance whose record says its peer may not lead refuses that peer's
   requests to lead, whether it has restarted or its lease has simply run out, until a request carries a
-  newer statement. That happens when no voter echoed the old leader's statement, so the peer could become
+  newer statement. That happens when the old leader's statement was never confirmed, so the peer could become
   leader at a higher epoch: its requests then carry its own statement, which replaces the old one, and the
   old leader grants and follows. Adopting a newer statement is safe, because an instance could lead at a
   later epoch only with a majority that honoured the statements then current. This matches the TLA+
@@ -122,18 +152,21 @@ that the statement survives the voter's own restart:
   `LeasePromiseStore`). It does not wait for the disk before granting, for the reason given in 4.5.
   While it holds the statement, in memory or on disk, it does not ask to lead, and it grants its peer's
   requests to lead.
-- **The arbiter** writes it to disk, in a file beside its own promise record named after it with
-  `.component_statements` added, and sends it to the passive arbiter in the same way it already
-  sends the highest epoch granted in each group (`ArbiterStateRecord`); the passive arbiter writes it
-  to disk too. Its grant echoes the statement only once the file has been written. It refuses a lease
-  to an instance its record says may not lead, with the refusal reason `may_not_lead`.
+- **Each arbiter,** active or passive, records it from the request and writes it to disk, in a file
+  beside its own promise record named after it with `.component_statements` added. Only once the file
+  has been written does it send the leader `StatementHeld`. If the write fails it sends nothing, and
+  tries the write again when the request next arrives. The active arbiter also sends it to the passive
+  arbiter in the same way it already sends the highest epoch granted in each group
+  (`ArbiterStateRecord`), and refuses a lease to an instance its record says may not lead, with the
+  refusal reason `may_not_lead`. The passive arbiter grants and refuses nothing.
 
 ### 4.3 What the leader does
 
 **Starting to act without the follower.** When the leader would start sending to the engine without
 waiting, because the follower has disconnected or has fallen behind, it first sends a lease request
-saying its peer may not lead, to both voters, at once rather than at the next renewal. It goes on holding
-commands until a grant echoes that statement. Only then does it send the held commands to the engine and
+saying its peer may not lead, to its peer and both arbiters, at once rather than at the next renewal. It
+goes on holding commands until its peer's grant echoes that statement, or both arbiters confirm it, or the
+active arbiter confirms it alone. Only then does it send the held commands to the engine and
 stop waiting for acknowledgements. The delay is one round trip to the nearer voter plus that voter's
 synced write: normally a few milliseconds.
 
@@ -271,11 +304,11 @@ change.
 
 | Test | What it requires | Status |
 |---|---|---|
-| `ha_test.py` scenario 63: follower stopped | The follower is stopped with SIGSTOP. The leader says the follower may not lead, and the matching engine accepts an order only after the arbiter has echoed that. The leader is killed and the follower resumed: the follower must not lead. The old leader is restarted, leads holding the order, and says the follower may lead again once it has caught up | Passes. With the voters made to ignore statements, it fails: the follower takes the lead |
+| `ha_test.py` scenario 63: follower stopped | The follower is stopped with SIGSTOP. The leader says the follower may not lead, and the matching engine accepts an order only after both arbiters have confirmed that, or the active arbiter has confirmed it alone. The leader is killed and the follower resumed: the follower must not lead. The old leader is restarted, leads holding the order, and says the follower may lead again once it has caught up | Passes. With the voters made to ignore statements, it fails: the follower takes the lead |
 | `ha_test.py` scenario 64: arbiter restarted | As scenario 63, with the active arbiter killed and restarted after the order is accepted and before the leader is killed. The restarted arbiter reports the recorded statement, and the follower must still not lead | Passes |
 | Caught up again | After the follower has fallen behind and caught up, the leader says it may lead, and a failover proceeds normally | Covered by scenario 61, whose final step kills the leader once the restarted follower has caught up and requires the follower to take over, and by scenario 63's last step |
 | Arbiters down | The follower falls behind with the arbiters stopped, records the statement itself, and must not lead | Not built as a scenario: the follower's acknowledgements and its lease grants travel on the same peer connection, so `libblock_sends_to_ports.so` cannot block one without the other. The follower recording and echoing a statement is covered by `PairLeaseAgentTest`, and the property with any voter recording it by the simulation and the TLA+ model |
-| Unit tests | In `LeaseRulesTest.cpp`: a voter keeps only the newest statement and refuses the instance it names; a leader starts each leadership saying "no" and records it itself, so that once its lease has run out it refuses its peer; it may act without its peer only once another voter echoes the current statement; an instance that holds a "no" about itself does not ask to lead; a restored statement is honoured; a pair that makes no statements never stops its peer leading | Done |
+| Unit tests | In `LeaseRulesTest.cpp`: a voter keeps only the newest statement and refuses the instance it names; a leader starts each leadership saying "no" and records it itself, so that once its lease has run out it refuses its peer; it may act without its peer only once its peer echoes the current statement, or both arbiters confirm it, or the active arbiter confirms it alone, and one arbiter's ordinary confirmation is not enough; an instance that holds a "no" about itself does not ask to lead; a restored statement is honoured; a pair that makes no statements never stops its peer leading | Done |
 | Simulation | `LeaseSimulationTest.cpp` gains logs, the engine's set of acted-on commands, copying to the peer that sometimes stalls, and statements and echoes, and checks after every step that an instance starting to act as leader holds every acted-on command. Runs with the leader not waiting for an echo, with the arbiter forgetting its statement, and with an instance forgetting its statement each find a violation | Done |
 | TLA+ | `FollowerBehindHA.tla` checks that the instance acting as leader holds every command the engine has acted on, and each part of the rule is removed in turn to show it is needed | Done: section 12 of [tla/findings.md](tla/findings.md). Each counterexample is rerun on every install |
 

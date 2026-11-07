@@ -417,6 +417,11 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         release_pdu_payload(message);
         return;
     }
+    if (pdu_id == pubsub_itc_fw::StatementHeld::message_pdu_id) {
+        handle_statement_held(message);
+        release_pdu_payload(message);
+        return;
+    }
     if (pdu_id == pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id) {
         // Engines send their announcements only to the sequencers, which route orders by them. One arriving from the
         // peer is ignored: which instance leads is decided by leases.
@@ -1102,6 +1107,25 @@ void MatchingEngineThread::handle_lease_grant(const pubsub_itc_fw::EventMessage&
         return;
     }
     act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, grant.echoed_statement_number, std::chrono::steady_clock::now()));
+}
+
+void MatchingEngineThread::handle_statement_held(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw::StatementHeldView held{};
+    if (!pubsub_itc_fw::decode(held, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode StatementHeld -- dropping");
+        return;
+    }
+    if (fix_common::group_of(held.pair_id) != pubsub_itc_fw_app::ComponentGroup::matching_engine || !lease_agent_.has_value()) {
+        return;
+    }
+    // Only the instance and epoch identify the statement; whether it lets the peer lead is the leader's own record of it.
+    const pubsub_itc_fw::LeaderStatement statement{held.statement_leader_id, held.statement_epoch, held.statement_number, false};
+    lease_agent_->on_statement_held(held.arbiter_instance_id, statement, held.alone);
 }
 
 void MatchingEngineThread::handle_lease_refusal(const pubsub_itc_fw::EventMessage& message) {

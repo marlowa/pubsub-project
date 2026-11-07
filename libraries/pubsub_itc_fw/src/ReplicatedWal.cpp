@@ -402,6 +402,14 @@ bool ReplicatedWal::dispatch_message(const ConnectionID& from, int16_t pdu_id, c
         handle_lease_refusal(view, now);
         return true;
     }
+    if (pdu_id == StatementHeld::message_pdu_id) {
+        StatementHeldView view{};
+        if (!decode(view, payload, size, consumed, arena, needed)) {
+            return refuse("StatementHeld");
+        }
+        handle_statement_held(view);
+        return true;
+    }
     return false;
 }
 
@@ -701,7 +709,18 @@ void ReplicatedWal::handle_lease_grant(const LeaseGrantView& grant, Clock::time_
         return;
     }
     act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, grant.echoed_statement_number, now), now);
-    // A grant may carry the echo that confirms the leader's statement, which lets records commit.
+    // The peer's grant may carry the echo that confirms the leader's statement, which lets records commit.
+    advance_commit();
+}
+
+void ReplicatedWal::handle_statement_held(const StatementHeldView& held) {
+    if (held.pair_id != configuration_.pair_id || !lease_agent_.has_value()) {
+        return;
+    }
+    // Only the instance and epoch identify the statement; whether it lets the peer lead is the leader's own record of it.
+    const LeaderStatement statement{held.statement_leader_id, held.statement_epoch, held.statement_number, false};
+    lease_agent_->on_statement_held(held.arbiter_instance_id, statement, held.alone);
+    // Both arbiters holding the leader's statement lets records commit, as the peer's echo does.
     advance_commit();
 }
 

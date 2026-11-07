@@ -419,6 +419,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_lease_grant(const pubsub_itc_fw::EventMessage& message);
     void handle_lease_refusal(const pubsub_itc_fw::EventMessage& message);
+    /// Either arbiter says it holds this instance's statement about its peer.
+    void handle_statement_held(const pubsub_itc_fw::EventMessage& message);
 
     // WAL reconciliation (RECONCILING state).
 

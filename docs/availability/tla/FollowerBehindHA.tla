@@ -55,11 +55,24 @@
 (* passive one, which keeps a copy; the copy may arrive late or not at all, *)
 (* and when the link between the arbiters comes back up each sends the      *)
 (* other its whole state. A change of active arbiter gives voter 3 the      *)
-(* passive arbiter's copy as its record. With PassiveAcknowledges, the      *)
-(* active arbiter echoes a statement only once the passive one holds it,    *)
-(* unless the link between them is down, in which case the passive one      *)
-(* knows it may have missed statements, and grants nothing after becoming   *)
-(* active until the link brings it the other's state.                       *)
+(* passive arbiter's copy as its record. With BothArbitersConfirm, the     *)
+(* leader also sends each statement to the passive arbiter, which records   *)
+(* it and confirms it to the leader itself, and a leader acts on a command  *)
+(* its peer lacks only once its peer, or both arbiters, have confirmed its  *)
+(* statement. A statement for the arbiters is one message that each of the  *)
+(* two takes delivery of separately, so that it counts once in MaxInFlight. *)
+(*                                                                         *)
+(* With ActiveConfirmsAlone, the active arbiter's confirmation is enough on *)
+(* its own once the link to the passive arbiter has been down for a set     *)
+(* time, D (AloneWindowOpens). D is longer than the passive arbiter takes   *)
+(* to become active after the active one dies, plus how much later one      *)
+(* arbiter can notice the link has failed than the other. So an arbiter     *)
+(* that becomes active within D of noticing the failure knows the other     *)
+(* confirmed nothing alone, and one that becomes active later knows it may  *)
+(* be behind, and grants nothing until the link brings it the other's       *)
+(* state. Time is not modelled: the step that opens the window also marks   *)
+(* the passive arbiter as possibly behind, which is what the timing         *)
+(* guarantees. With PassiveKnowsBehind = FALSE that mark is left out.       *)
 (*                                                                         *)
 (* Not modelled: the order of commands within a log; how a follower's log   *)
 (* is repaired when it rejoins a leader whose log differs; the operator's   *)
@@ -86,13 +99,27 @@ CONSTANTS
     ThirdKeepsRecord,      \* FALSE: voter 3 loses its record when it restarts
     MaxArbiterChanges,     \* changes of active arbiter in one behaviour
     MaxArbiterLinkFailures,\* failures of the link between the arbiters in one behaviour
-    \* TRUE: the active arbiter echoes a statement only once the passive one holds it, or the
-    \* link between them is down and the passive one knows it may be behind (BUG-0230).
-    PassiveAcknowledges
+    \* TRUE: the passive arbiter records each statement from the leader and confirms it, and a
+    \* leader acts alone only once its peer, or both arbiters, have confirmed it (BUG-0230).
+    BothArbitersConfirm,
+    \* TRUE: once the link between the arbiters has been down for long enough, the active
+    \* arbiter's confirmation is enough on its own.
+    ActiveConfirmsAlone,
+    \* TRUE: an arbiter that may have missed a statement the other confirmed alone knows it,
+    \* and grants nothing until it has the other's state. FALSE removes this.
+    PassiveKnowsBehind
 
 Cand == {1, 2}
 Third == 3
 Voters == {1, 2, 3}
+Passive == 4                 \* the passive arbiter, as the one whose confirmation a leader may need
+AloneConf == 5               \* the active arbiter, confirming while the link to the passive one is down
+Confirmers == {1, 2, 3, 4, 5}
+\* With no change of active arbiter and no failure of the link between the arbiters allowed, the
+\* passive arbiter plays no part, and the arbiter tier is one voter, as in sections 12.3 to 12.5 of
+\* findings.md. This keeps those runs the size they are with one voter.
+TwoArbiters == MaxArbiterChanges > 0 \/ MaxArbiterLinkFailures > 0
+ArbTargets == IF BothArbitersConfirm /\ TwoArbiters THEN {Third, Passive} ELSE {Third}
 None == 0
 Peer(s) == IF s = 1 THEN 2 ELSE 1
 Others(s) == {Peer(s), Third}
@@ -114,26 +141,29 @@ VARIABLES
     barDisk,     \* barDisk[v], barKeyDisk[v]: the same, as written to disk; for voter 3,
     barKeyDisk,  \* as kept on disk and by the passive arbiter
     stmt,        \* stmt[s]: [bar, num] -- what leader s says about its peer, and its number
-    confirmed,   \* confirmed[s]: the highest statement number a grant to s has echoed
+    confirmed,   \* confirmed[s][v]: the highest statement number voter v has confirmed to s
     msgs,        \* statements in flight
     crashes, thirdRestarts,
     actors,      \* history: the instances that have had the engine act on a command
     pBar,        \* pBar, pKey: the passive arbiter's copy of voter 3's record
     pKey,
     pLinked,     \* the link between the two arbiters is up
-    pBehind,     \* the passive arbiter knows it may have missed statements
-    thirdBlind,  \* the active arbiter may have missed statements, and grants nothing
+    alone,       \* the link has been down long enough for the active arbiter to confirm alone
+    pBehind,     \* the passive arbiter may lack a statement the active one confirmed alone
+    thirdBehind, \* the active arbiter may lack such a statement, and grants nothing
     arbiterChanges, arbiterLinkFailures
 
 vars == <<up, leader, lepoch, elections, log, acted, nextCmd, barred, barKey, barDisk, barKeyDisk,
           stmt, confirmed, msgs, crashes, thirdRestarts, actors,
-          pBar, pKey, pLinked, pBehind, thirdBlind, arbiterChanges, arbiterLinkFailures>>
+          pBar, pKey, pLinked, alone, pBehind, thirdBehind, arbiterChanges, arbiterLinkFailures>>
 recVars == <<barred, barKey, barDisk, barKeyDisk>>
-arbVars == <<pBar, pKey, pLinked, pBehind, thirdBlind, arbiterChanges, arbiterLinkFailures>>
+arbVars == <<pBar, pKey, pLinked, alone, pBehind, thirdBehind, arbiterChanges, arbiterLinkFailures>>
 
 (* A leader's statement about its peer, carried on a lease request. *)
-Statement(s, v) ==
-    [type |-> "st", from |-> s, to |-> v, key |-> <<lepoch[s], stmt[s].num>>, bar |-> stmt[s].bar]
+Msg(s, v, key, bar) ==
+    [type |-> "st", from |-> s, to |-> v, key |-> key, bar |-> bar, arbs |-> IF v = Third THEN ArbTargets ELSE {}]
+Statement(s, v) == Msg(s, v, <<lepoch[s], stmt[s].num>>, stmt[s].bar)
+NoConfirmations == [v \in Confirmers |-> 0]
 
 (* Instance s records its own statement, durably, with LeaderRecordsOwn. *)
 OwnRecord(s, bar, key) ==
@@ -159,7 +189,7 @@ Init ==
     /\ barDisk = [v \in Voters |-> None]
     /\ barKeyDisk = [v \in Voters |-> NoKey]
     /\ stmt = [s \in Cand |-> [bar |-> TRUE, num |-> 0]]
-    /\ confirmed = [s \in Cand |-> 0]
+    /\ confirmed = [s \in Cand |-> NoConfirmations]
     /\ msgs = {}
     /\ crashes = 0
     /\ thirdRestarts = 0
@@ -167,8 +197,9 @@ Init ==
     /\ pBar = None
     /\ pKey = NoKey
     /\ pLinked = TRUE
+    /\ alone = FALSE
     /\ pBehind = FALSE
-    /\ thirdBlind = FALSE
+    /\ thirdBehind = FALSE
     /\ arbiterChanges = 0
     /\ arbiterLinkFailures = 0
 
@@ -177,15 +208,16 @@ Init ==
 
 (* Instance x becomes leader: nobody is acting, x has not recorded that it may *)
 (* not lead, and one other running voter that has not recorded that x may not  *)
-(* lead grants it. Its first statement is made and recorded at once.           *)
+(* lead grants it. Its first statement is made and recorded at once. An active  *)
+(* arbiter that may be behind grants nothing.                                    *)
 Elect(x) ==
     /\ leader = None /\ up[x] /\ barred[x] # x /\ elections < MaxElections
-    /\ \E v \in Others(x) : up[v] /\ barred[v] # x /\ (v = Third => ~thirdBlind)
+    /\ \E v \in Others(x) : up[v] /\ barred[v] # x /\ (v = Third => ~thirdBehind)
     /\ leader' = x
     /\ elections' = elections + 1
     /\ lepoch' = [lepoch EXCEPT ![x] = elections + 1]
     /\ stmt' = [stmt EXCEPT ![x] = [bar |-> LeaderStartsBarred, num |-> 1]]
-    /\ confirmed' = [confirmed EXCEPT ![x] = 0]
+    /\ confirmed' = [confirmed EXCEPT ![x] = NoConfirmations]
     /\ OwnRecord(x, LeaderStartsBarred, <<elections + 1, 1>>)
     /\ UNCHANGED <<up, log, acted, nextCmd, msgs, crashes, thirdRestarts, actors>>
     /\ UNCHANGED arbVars
@@ -210,36 +242,64 @@ SendStatement(s) ==
                    crashes, thirdRestarts, actors>>
     /\ UNCHANGED arbVars
 
-(* A statement reaches voter v, which grants and records it if it is newer than *)
-(* the one it holds. Voter 3's record is durable at once. An instance's is       *)
-(* durable at once with InstancesRecordFirst, and otherwise only after DiskWrite. *)
-(* If the voter now holds the statement, its grant echoes it, and the echo either *)
-(* reaches the leader at once, if that leadership is still current, or is lost.   *)
+(* A statement reaches instance v, which grants and records it if it is newer *)
+(* than the one it holds. Its record is durable at once with                 *)
+(* InstancesRecordFirst, and otherwise only after DiskWrite. If it now holds  *)
+(* the statement, its grant confirms it, and the confirmation either reaches  *)
+(* the leader at once, if that leadership is still current, or is lost.       *)
 ReceiveStatement(m) ==
-    /\ m \in msgs /\ m.type = "st" /\ up[m.to]
+    /\ m \in msgs /\ m.type = "st" /\ m.to \in Cand /\ up[m.to]
     /\ LET v == m.to
            rec == KeyAbove(m.key, barKey[v])
            b == IF m.bar THEN Peer(m.from) ELSE None
-           durable == v = Third \/ InstancesRecordFirst
-           \* With PassiveAcknowledges, voter 3 echoes only once the passive arbiter holds the
-           \* statement, which it does at once here while the link is up; with the link down it
-           \* echoes regardless, and the passive arbiter knows it may be behind.
-           copied == v = Third /\ PassiveAcknowledges /\ rec /\ pLinked
-           missed == v = Third /\ PassiveAcknowledges /\ rec /\ ~pLinked
-       IN /\ ~(v = Third /\ thirdBlind)
-          /\ barred' = IF rec THEN [barred EXCEPT ![v] = b] ELSE barred
+       IN /\ barred' = IF rec THEN [barred EXCEPT ![v] = b] ELSE barred
           /\ barKey' = IF rec THEN [barKey EXCEPT ![v] = m.key] ELSE barKey
-          /\ barDisk' = IF rec /\ durable THEN [barDisk EXCEPT ![v] = b] ELSE barDisk
-          /\ barKeyDisk' = IF rec /\ durable THEN [barKeyDisk EXCEPT ![v] = m.key] ELSE barKeyDisk
-          /\ pBar' = IF copied THEN b ELSE pBar
-          /\ pKey' = IF copied THEN m.key ELSE pKey
-          /\ pBehind' = (pBehind \/ missed)
+          /\ barDisk' = IF rec /\ InstancesRecordFirst THEN [barDisk EXCEPT ![v] = b] ELSE barDisk
+          /\ barKeyDisk' = IF rec /\ InstancesRecordFirst THEN [barKeyDisk EXCEPT ![v] = m.key] ELSE barKeyDisk
           /\ msgs' = msgs \ {m}
           /\ \/ /\ (rec \/ barKey[v] = m.key) /\ leader = m.from /\ m.key[1] = lepoch[m.from]
-                /\ confirmed' = [confirmed EXCEPT ![m.from] = Max(@, m.key[2])]
+                /\ confirmed' = [confirmed EXCEPT ![m.from][v] = Max(@, m.key[2])]
              \/ UNCHANGED confirmed
     /\ UNCHANGED <<up, leader, lepoch, elections, log, acted, nextCmd, stmt,
-                   crashes, thirdRestarts, actors, pLinked, thirdBlind, arbiterChanges, arbiterLinkFailures>>
+                   crashes, thirdRestarts, actors>>
+    /\ UNCHANGED arbVars
+
+(* The statement for the arbiters with one of them, a, still to take delivery. *)
+Delivered(m, a) == IF m.arbs = {a} THEN msgs \ {m} ELSE (msgs \ {m}) \cup {[m EXCEPT !.arbs = @ \ {a}]}
+
+(* A statement reaches arbiter a: the active one, Third, or the passive one,   *)
+(* Passive. Each writes it to disk before confirming. The active one's        *)
+(* confirmation is the echo on its grant; the passive one's is sent on its own. *)
+ReceiveAtArbiter(m, a) ==
+    /\ m \in msgs /\ m.type = "st" /\ m.to = Third /\ a \in m.arbs
+    /\ a = Third => up[Third]
+    /\ LET held == IF a = Third THEN barKey[Third] ELSE pKey
+           rec == KeyAbove(m.key, held)
+           b == IF m.bar THEN Peer(m.from) ELSE None
+       IN /\ IF a = Third
+             THEN /\ barred' = IF rec THEN [barred EXCEPT ![Third] = b] ELSE barred
+                  /\ barKey' = IF rec THEN [barKey EXCEPT ![Third] = m.key] ELSE barKey
+                  /\ barDisk' = IF rec THEN [barDisk EXCEPT ![Third] = b] ELSE barDisk
+                  /\ barKeyDisk' = IF rec THEN [barKeyDisk EXCEPT ![Third] = m.key] ELSE barKeyDisk
+                  /\ UNCHANGED <<pBar, pKey>>
+             ELSE /\ pBar' = IF rec THEN b ELSE pBar
+                  /\ pKey' = IF rec THEN m.key ELSE pKey
+                  /\ UNCHANGED recVars
+          /\ msgs' = Delivered(m, a)
+          /\ LET c == IF a = Third /\ alone THEN AloneConf ELSE a IN
+             \/ /\ (rec \/ held = m.key) /\ leader = m.from /\ m.key[1] = lepoch[m.from]
+                /\ confirmed' = [confirmed EXCEPT ![m.from][c] = Max(@, m.key[2])]
+             \/ UNCHANGED confirmed
+    /\ UNCHANGED <<up, leader, lepoch, elections, log, acted, nextCmd, stmt,
+                   crashes, thirdRestarts, actors, pLinked, alone, pBehind, thirdBehind, arbiterChanges, arbiterLinkFailures>>
+
+(* The statement for the arbiters is lost on its way to one of them. *)
+LoseAtArbiter(m, a) ==
+    /\ m \in msgs /\ a \in m.arbs
+    /\ msgs' = Delivered(m, a)
+    /\ UNCHANGED <<up, leader, lepoch, elections, log, acted, nextCmd, recVars, stmt, confirmed,
+                   crashes, thirdRestarts, actors>>
+    /\ UNCHANGED arbVars
 
 (* A message is lost, or refused. *)
 Lose(m) ==
@@ -255,8 +315,7 @@ StartAlone(s) ==
     /\ leader = s /\ ~stmt[s].bar /\ stmt[s].num < MaxStatements
     /\ stmt' = [stmt EXCEPT ![s] = [bar |-> TRUE, num |-> @.num + 1]]
     /\ OwnRecord(s, TRUE, <<lepoch[s], stmt[s].num + 1>>)
-    /\ msgs' = msgs \cup {[type |-> "st", from |-> s, to |-> v, key |-> <<lepoch[s], stmt[s].num + 1>>, bar |-> TRUE]
-                          : v \in Others(s)}
+    /\ msgs' = msgs \cup {Msg(s, v, <<lepoch[s], stmt[s].num + 1>>, TRUE) : v \in Others(s)}
     /\ UNCHANGED <<up, leader, lepoch, elections, log, acted, nextCmd, confirmed, crashes, thirdRestarts, actors>>
     /\ UNCHANGED arbVars
 
@@ -267,8 +326,7 @@ StopAlone(s) ==
     /\ log[s] \subseteq log[Peer(s)]
     /\ stmt' = [stmt EXCEPT ![s] = [bar |-> FALSE, num |-> @.num + 1]]
     /\ OwnRecord(s, FALSE, <<lepoch[s], stmt[s].num + 1>>)
-    /\ msgs' = msgs \cup {[type |-> "st", from |-> s, to |-> v, key |-> <<lepoch[s], stmt[s].num + 1>>, bar |-> FALSE]
-                          : v \in Others(s)}
+    /\ msgs' = msgs \cup {Msg(s, v, <<lepoch[s], stmt[s].num + 1>>, FALSE) : v \in Others(s)}
     /\ UNCHANGED <<up, leader, lepoch, elections, log, acted, nextCmd, confirmed, crashes, thirdRestarts, actors>>
     /\ UNCHANGED arbVars
 
@@ -303,10 +361,17 @@ Replicate(s) ==
                    crashes, thirdRestarts, actors>>
     /\ UNCHANGED arbVars
 
-(* The leader may act on a command its peer does not hold: a voter has echoed its *)
-(* current statement that its peer may not lead. Without rule 11, at any time.    *)
+(* The leader may act on a command its peer does not hold: its peer, or the     *)
+(* arbiters, have confirmed its current statement that its peer may not lead.   *)
+(* Without rule 11, at any time.                                                *)
 MayActAlone(s) ==
-    IF RecordStatement THEN stmt[s].bar /\ confirmed[s] >= stmt[s].num ELSE TRUE
+    IF RecordStatement
+    THEN /\ stmt[s].bar
+         /\ \/ confirmed[s][Peer(s)] >= stmt[s].num
+            \/ /\ confirmed[s][Third] >= stmt[s].num
+               /\ BothArbitersConfirm /\ TwoArbiters => confirmed[s][Passive] >= stmt[s].num
+            \/ confirmed[s][AloneConf] >= stmt[s].num
+    ELSE TRUE
 
 (* The leader has the matching engine act on a command in its log. *)
 Act(s) ==
@@ -351,17 +416,17 @@ Restart(v) ==
 (* The two arbiters. *)
 
 (* The active arbiter's copy of a statement reaches the passive one, late. *)
-(* Without PassiveAcknowledges this is the only way it gets there. The copy *)
+(* Without BothArbitersConfirm this is the only way it gets there. The copy *)
 (* is used only by a change of active arbiter, so with none allowed it is   *)
 (* not made, which keeps those runs the size they were without the arbiters.*)
 CopyToPassive ==
     /\ MaxArbiterChanges > 0
-    /\ up[Third] /\ pLinked /\ ~thirdBlind
+    /\ up[Third] /\ pLinked
     /\ KeyAbove(barKey[Third], pKey)
     /\ pBar' = barred[Third]
     /\ pKey' = barKey[Third]
     /\ UNCHANGED <<up, leader, lepoch, elections, log, acted, nextCmd, recVars, stmt, confirmed, msgs,
-                   crashes, thirdRestarts, actors, pLinked, pBehind, thirdBlind, arbiterChanges, arbiterLinkFailures>>
+                   crashes, thirdRestarts, actors, pLinked, alone, pBehind, thirdBehind, arbiterChanges, arbiterLinkFailures>>
 
 (* The link between the arbiters fails. *)
 ArbiterLinkFails ==
@@ -369,7 +434,18 @@ ArbiterLinkFails ==
     /\ pLinked' = FALSE
     /\ arbiterLinkFailures' = arbiterLinkFailures + 1
     /\ UNCHANGED <<up, leader, lepoch, elections, log, acted, nextCmd, recVars, stmt, confirmed, msgs,
-                   crashes, thirdRestarts, actors, pBar, pKey, pBehind, thirdBlind, arbiterChanges>>
+                   crashes, thirdRestarts, actors, pBar, pKey, alone, pBehind, thirdBehind, arbiterChanges>>
+
+(* The link has been down for D, with the active arbiter running: from now on *)
+(* its confirmation is enough on its own. The passive arbiter, if it becomes  *)
+(* active from now on, does so more than D after noticing the failure, and so *)
+(* knows it may be behind.                                                    *)
+AloneWindowOpens ==
+    /\ ActiveConfirmsAlone /\ ~pLinked /\ up[Third] /\ ~alone
+    /\ alone' = TRUE
+    /\ pBehind' = PassiveKnowsBehind
+    /\ UNCHANGED <<up, leader, lepoch, elections, log, acted, nextCmd, recVars, stmt, confirmed, msgs,
+                   crashes, thirdRestarts, actors, pBar, pKey, pLinked, thirdBehind, arbiterChanges, arbiterLinkFailures>>
 
 (* The link comes back up, with the active arbiter running, and each arbiter *)
 (* sends the other its whole state: both keep the newer statement, and      *)
@@ -386,8 +462,9 @@ ArbiterLinkRecovers ==
           /\ barKeyDisk' = [barKeyDisk EXCEPT ![Third] = key]
           /\ pBar' = bar
           /\ pKey' = key
+    /\ alone' = FALSE
     /\ pBehind' = FALSE
-    /\ thirdBlind' = FALSE
+    /\ thirdBehind' = FALSE
     /\ UNCHANGED <<up, leader, lepoch, elections, log, acted, nextCmd, stmt, confirmed, msgs,
                    crashes, thirdRestarts, actors, arbiterChanges, arbiterLinkFailures>>
 
@@ -395,8 +472,7 @@ ArbiterLinkRecovers ==
 (* lost its own lease. Voter 3's record is now the passive arbiter's copy,    *)
 (* and the arbiter that was active is cut off from it until the link comes    *)
 (* back. Promises are not modelled here, so the wait a newly active arbiter   *)
-(* makes is not either. With PassiveAcknowledges, an arbiter that knew it may *)
-(* be behind grants nothing until the link brings it the other's state.       *)
+(* makes is not either. Statements on their way to either arbiter are lost.    *)
 ChangeActiveArbiter ==
     /\ arbiterChanges < MaxArbiterChanges
     /\ arbiterChanges' = arbiterChanges + 1
@@ -407,11 +483,17 @@ ChangeActiveArbiter ==
     /\ barKeyDisk' = [barKeyDisk EXCEPT ![Third] = pKey]
     /\ pBar' = barred[Third]
     /\ pKey' = barKey[Third]
-    /\ thirdBlind' = (PassiveAcknowledges /\ pBehind)
-    /\ pBehind' = PassiveAcknowledges
     /\ pLinked' = FALSE
+    \* The new active arbiter grants nothing if it may be behind. Its own window to
+    \* confirm alone opens D after it noticed the link fail, which AloneWindowOpens allows
+    \* at any later step.
+    /\ thirdBehind' = pBehind
+    /\ pBehind' = FALSE
+    /\ alone' = FALSE
     /\ msgs' = {m \in msgs : m.to # Third}
-    /\ UNCHANGED <<leader, lepoch, elections, log, acted, nextCmd, stmt, confirmed,
+    \* The arbiter each leader's confirmations came from has changed role.
+    /\ confirmed' = [s \in Cand |-> [confirmed[s] EXCEPT ![Third] = confirmed[s][Passive], ![Passive] = confirmed[s][Third]]]
+    /\ UNCHANGED <<leader, lepoch, elections, log, acted, nextCmd, stmt,
                    crashes, thirdRestarts, actors, arbiterLinkFailures>>
 
 -----------------------------------------------------------------------------
@@ -419,8 +501,9 @@ Next ==
     \/ \E s \in Cand : Elect(s) \/ StopActing(s) \/ SendStatement(s) \/ StartAlone(s) \/ StopAlone(s)
                        \/ Write(s) \/ Replicate(s) \/ Act(s)
     \/ \E m \in msgs : ReceiveStatement(m) \/ Lose(m)
+    \/ \E m \in msgs, a \in {Third, Passive} : ReceiveAtArbiter(m, a) \/ LoseAtArbiter(m, a)
     \/ \E v \in Voters : DiskWrite(v) \/ Crash(v) \/ Restart(v)
-    \/ CopyToPassive \/ ArbiterLinkFails \/ ArbiterLinkRecovers \/ ChangeActiveArbiter
+    \/ CopyToPassive \/ ArbiterLinkFails \/ ArbiterLinkRecovers \/ ChangeActiveArbiter \/ AloneWindowOpens
 
 Spec == Init /\ [][Next]_vars
 

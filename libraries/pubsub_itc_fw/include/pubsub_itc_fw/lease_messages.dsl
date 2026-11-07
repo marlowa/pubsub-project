@@ -138,3 +138,50 @@ message ArbiterStateRecord (id=400, version=1)
     i64 statement_number # its number within that leadership
     bool peer_may_lead # false: the leader's peer may not lead
 end
+
+# ------------------------------------------------------------
+#  401 -- StatementHeld
+#  Sent by an arbiter, active or passive, to a leader that has made a
+#  statement about whether its peer may lead, once the arbiter holds
+#  that statement and has written it to disk. Every instance sends its
+#  lease requests to both arbiters, so each arbiter records the
+#  statement from the request itself rather than waiting to be told it
+#  by the other arbiter.
+#
+#  A leader whose statement says its peer may not lead acts on a
+#  command its peer lacks only once its peer has echoed the statement,
+#  or both arbiters have confirmed it with this message, or the active
+#  arbiter has confirmed it alone. One arbiter is not normally enough:
+#  if it stops and the other becomes active without the statement, the
+#  peer could be granted the lead while lacking commands the leader
+#  acted on. The active arbiter confirms alone only once it has heard
+#  nothing from the other arbiter for long enough that the other, if
+#  it becomes active, knows it may lack statements and grants nothing
+#  until it has this one's state (ArbiterPeerContact.hpp).
+# ------------------------------------------------------------
+message StatementHeld (id=401, version=1)
+    i64 arbiter_instance_id # the arbiter confirming: its own instance id within the arbiter pool, 1 or 2
+    i32 pair_id             # the pair, as on the request
+    i64 statement_leader_id # the leader that made the statement
+    i32 statement_epoch     # the epoch of the leadership that made it
+    i64 statement_number    # its number within that leadership
+    bool alone              # true: the active arbiter, cut off from the other, confirms alone, and this is enough on its own
+end
+
+# ------------------------------------------------------------
+#  402 -- ArbiterHeartbeat
+#  Sent by each arbiter to the other every tick, on every connection
+#  between them. It says when it was sent, on the sender's steady
+#  clock, and echoes the newest such moment the sender has received
+#  from the other arbiter. The active arbiter uses the moment it last
+#  heard from the other to decide whether to confirm statements alone;
+#  an arbiter becoming active uses the echo of its own heartbeats to
+#  decide whether it may lack a statement the other confirmed alone
+#  (ArbiterPeerContact.hpp). An arbiter that has confirmed a statement
+#  alone sends its whole state on a connection before the next
+#  heartbeat that echoes anything on it.
+# ------------------------------------------------------------
+message ArbiterHeartbeat (id=402, version=1)
+    i64 sent_at_nanoseconds # when this heartbeat was sent, on the sender's steady clock
+    i64 echoed_nanoseconds  # the newest sent_at_nanoseconds received from the other arbiter, or zero for none
+end

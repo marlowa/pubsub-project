@@ -204,14 +204,26 @@ COUNTEREXAMPLES: List[Counterexample] = [
         'It restarts knowing nothing, and the arbiter, which never recorded the statement, elects it.',
         _FOLLOWER_SPEC),
     Counterexample(
-        'behind-6-passive-arbiter-lacks-statement', dict(_FOLLOWER_SMALL, MaxArbiterChanges='1', PassiveAcknowledges='FALSE'),
+        'behind-6-passive-arbiter-lacks-statement',
+        dict(_FOLLOWER_SMALL, MaxArbiterChanges='1', BothArbitersConfirm='FALSE', ActiveConfirmsAlone='FALSE'),
         'Spec', 'INVARIANTS LeaderHoldsActed', 'LeaderHoldsActed',
-        'The active arbiter echoes a statement before the passive one holds it',
-        'The active arbiter confirms a statement to the leader without waiting for the passive arbiter to hold it '
-        '(BUG-0230).',
-        'The active arbiter records that instance 2 may not lead and echoes it, and instance 1 acts on command 1. Instance '
+        'The leader relies on the active arbiter alone while the passive one may lack the statement',
+        'The leader acts on the active arbiter\'s confirmation alone, with the link between the arbiters up (BUG-0230).',
+        'The active arbiter records that instance 2 may not lead and confirms it, and instance 1 acts on command 1. Instance '
         '1\'s lease runs out, and the passive arbiter becomes active before the statement has reached it. It holds nothing '
         'saying instance 2 may not lead, and elects it.',
+        _FOLLOWER_SPEC),
+    Counterexample(
+        'behind-7-arbiter-does-not-know-it-is-behind',
+        dict(_FOLLOWER_SMALL, MaxArbiterChanges='1', MaxArbiterLinkFailures='1', PassiveKnowsBehind='FALSE'),
+        'Spec', 'INVARIANTS LeaderHoldsActed', 'LeaderHoldsActed',
+        'An arbiter becomes active not knowing it may lack a statement the other confirmed alone',
+        'The passive arbiter, cut off long enough for the active one to confirm statements alone, does not know that it '
+        'may lack one when it becomes active.',
+        'The link between the arbiters fails, and stays down long enough for the active arbiter to confirm statements '
+        'alone. It confirms that instance 2 may not lead, and instance 1 acts on command 1. Instance 1\'s lease runs out, '
+        'and the passive arbiter becomes active. It never received the statement, grants as if it lacked nothing, and '
+        'elects instance 2.',
         _FOLLOWER_SPEC),
 ]
 
@@ -546,8 +558,11 @@ def follower_text_trace(example: Counterexample, output: str, states: List[dict]
         'commands the matching engine has acted on. barred is the instance each voter has recorded may not lead, 0 for none,',
         'and disk is the same as written to disk. passive is the passive arbiter\'s copy of voter 3\'s barred. stmt "bar:N"',
         'or "may:N" is what a leader says about its peer, may not lead or may lead, and the statement\'s number. confirmed',
-        'is the highest statement number a grant has echoed back.',
-        'msgs lists statements in flight as "st from>to eEPOCH.NUMBER bar|may".',
+        'is, for each instance, the highest statement number confirmed by instance 1, instance 2, the active arbiter, the',
+        'passive arbiter, and the active arbiter confirming alone, in that order. alone is T once the active arbiter may',
+        'confirm alone. behind is two flags, for the active and the passive arbiter: T where that arbiter may lack a',
+        'statement the other confirmed alone; an active arbiter marked T grants nothing.',
+        'msgs lists statements in flight as "st from>to eEPOCH.NUMBER bar|may"; one to voter 3 goes to the arbiter tier.',
         f'Reproduced by scripts/tla_trace_pages.py, entry {example.name}.',
     ]
     for number, state in enumerate(states, start=1):
@@ -561,7 +576,9 @@ def follower_text_trace(example: Counterexample, output: str, states: List[dict]
                                           for m in state['msgs'])) + '}'
         lines.append(f'{number:3} {action:22} up={_flags(state["up"]):14} leader={state["leader"]} '
                      f'lepoch={_numbers(state["lepoch"]):7} log={logs:12} acted={acted:6} barred={_numbers(state["barred"]):9} '
-                     f'disk={_numbers(state["barDisk"]):9} passive={state["pBar"]} stmt={statements:12} '
+                     f'disk={_numbers(state["barDisk"]):9} passive={state["pBar"]} '
+                     f'alone={"T" if state["alone"] else "F"} behind={"T" if state["thirdBehind"] else "F"}{"T" if state["pBehind"] else "F"} '
+                     f'stmt={statements:12} '
                      f'confirmed={_numbers(state["confirmed"]):6} '
                      f'msgs={messages}')
     return '\n'.join(line.rstrip() for line in lines) + '\n'

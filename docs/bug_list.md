@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 232 |
-| Open | 82 (58 defects, 24 tasks) |
-| Closed | 150 |
+| Open | 81 (57 defects, 24 tasks) |
+| Closed | 151 |
 | Next id | BUG-0233 |
 
 ## Open bugs by severity
 
-18 high, 50 medium, 14 low.
+17 high, 50 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -30,7 +30,6 @@
 | [BUG-0193](#bug_0193) | high | task | Once both matching engines apply every command, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
-| [BUG-0230](#bug_0230) | high | defect | The passive arbiter can lack the leader's statement that its follower may not lead, so a follower missing commands the matching engine acted on can be elected after a change of active arbiter |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -191,63 +190,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0230: The passive arbiter can lack the leader's statement that its follower may not lead, so a follower missing commands the matching engine acted on can be elected after a change of active arbiter {#bug_0230}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-11-05 |
-| Recorded | 2026-11-05 |
-| How | Phase 11 of the recovery plan: checking every connection between the two instances of a pair for state sent outside the WAL. Found by reading `ArbiterThread::handle_component_lease_request` and `send_group_state_to_peer` against rule 11 of `availability/majority_leases.md` |
-| Impact | Needs two failures close together, or a failed link between the arbiters and then a second failure. Then a sequencer that lacks commands the matching engine acted on can be elected leader, and those commands, with the reports members were sent for them, are not in the WAL the venue goes on from |
-
-**What happens.** Rule 11 lets the leading sequencer act on a command its follower does not hold only once a voter
-other than itself has recorded that the follower may not lead. When the follower has disconnected, the only such voter
-is the arbiter tier, meaning whichever arbiter is active. The active arbiter records the statement, writes it to its
-file, sends the grant that echoes it, and only then sends an `ArbiterStateRecord` carrying it to the passive arbiter.
-Nothing acknowledges that record, and nothing waits for it. The leader starts sending held commands to the matching
-engine as soon as the echo arrives.
-
-So the passive arbiter can lack the statement while the leader relies on it:
-
-- the record is still on its way when the active arbiter's machine dies; or
-- the link between the two arbiters is down. The whole state is sent again when the link comes back up
-  (`ArbiterThread`, on the peer connection being established), but only if the active arbiter is still running then.
-
-If the passive arbiter then becomes active, it waits out one lease period, as any newly active arbiter must, and then
-grants the follower's request to lead: it holds no statement saying the follower may not. With the follower's own vote
-that is a majority. The leader cannot stop it: its lease, held from the arbiter that has gone and not renewable through
-the disconnected follower, has run out.
-
-**Why the model checks did not find it.** `FollowerBehindHA.tla` treats the arbiter tier as one voter that keeps its
-statements on disk, and its counterexample `behind-4-arbiter-forgets` shows that rule 11 fails if that voter forgets.
-A change of active arbiter with the statement not yet passed on is that voter forgetting, but the model has no change of
-active arbiter in it. `MajorityLeaseHA.tla` models a change of active arbiter as the third voter restarting, and has no
-statements.
-
-**What it needs.** A design, worked out against the models before any code. Two directions:
-
-1. The active arbiter echoes a statement only once the passive arbiter has acknowledged it, which needs an
-   acknowledgement message and makes the echo wait for a second machine as well as the disk. With the passive arbiter
-   down the active one would then have to echo regardless, or the leader could not act without its follower at all.
-2. A newly active arbiter grants nothing in a pair until it has learned that pair's newest statement, from the leader's
-   own lease requests, which carry it while the leader leads, or from the other arbiter.
-
-**Decided on 5 November 2026: direction 1.** `FollowerBehindHA.tla` now models the two arbiters, the copy between
-them, the link between them failing and recovering, and a change of active arbiter (`docs/availability/tla/findings.md`,
-section 12.6). Without the passive arbiter's acknowledgement, `LeaderHoldsActed` is broken in nine steps, which is this
-defect (`traces/behind-6-passive-arbiter-lacks-statement.txt`). With it, and an arbiter that may have missed statements
-granting nothing until it has the other arbiter's state, it holds over 959,234,080 states.
-
-**Still open before code: how an arbiter knows, when it starts, whether it may have missed statements.** It cannot tell
-from its own files whether the other arbiter was active earlier in the day, so it must start as possibly behind. If the
-other arbiter is down at the start of the day, the one that is running then grants nothing all day, and every pair runs
-on its instances' votes alone, so that one more failure stops a pair. The model starts with both arbiters running and
-connected, and never restarts the passive one, so it does not show this.
-
-**Principles.** The same one-way copy, made safe by numbering and repetition, is how the statement travels everywhere
-else; here a lost copy is not noticed.
 
 ### BUG-0229: The functional specification has not been checked against the code, and specifies recovery far more than normal operation {#bug_0229}
 
@@ -3965,6 +3907,84 @@ its peer never receives its settings. `PeerSettingsCheck` then stays at "not kno
 
 **What it needs.** Send the settings on whichever connection to the peer comes up, in both directions. A repeat is
 harmless: the check compares values.
+
+### BUG-0230: The passive arbiter can lack the leader's statement that its follower may not lead, so a follower missing commands the matching engine acted on can be elected after a change of active arbiter {#bug_0230}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-11-05 |
+| Recorded | 2026-11-05 |
+| Fixed | 2026-11-07 -- each arbiter, active or passive, records a leader's statement from its lease request and confirms it with `StatementHeld`; the leader relies on its follower's echo or both arbiters' confirmations, or the active arbiter's alone once it has heard nothing from the other for 10 seconds; an arbiter that becomes active without a recent echo of its own heartbeat (`ArbiterHeartbeat`) grants nothing until it has one |
+| How | Phase 11 of the recovery plan: checking every connection between the two instances of a pair for state sent outside the WAL. Found by reading `ArbiterThread::handle_component_lease_request` and `send_group_state_to_peer` against rule 11 of `availability/majority_leases.md` |
+| Impact | Needs two failures close together, or a failed link between the arbiters and then a second failure. Then a sequencer that lacks commands the matching engine acted on can be elected leader, and those commands, with the reports members were sent for them, are not in the WAL the venue goes on from |
+
+**What happens.** Rule 11 lets the leading sequencer act on a command its follower does not hold only once a voter
+other than itself has recorded that the follower may not lead. When the follower has disconnected, the only such voter
+is the arbiter tier, meaning whichever arbiter is active. The active arbiter records the statement, writes it to its
+file, sends the grant that echoes it, and only then sends an `ArbiterStateRecord` carrying it to the passive arbiter.
+Nothing acknowledges that record, and nothing waits for it. The leader starts sending held commands to the matching
+engine as soon as the echo arrives.
+
+So the passive arbiter can lack the statement while the leader relies on it:
+
+- the record is still on its way when the active arbiter's machine dies; or
+- the link between the two arbiters is down. The whole state is sent again when the link comes back up
+  (`ArbiterThread`, on the peer connection being established), but only if the active arbiter is still running then.
+
+If the passive arbiter then becomes active, it waits out one lease period, as any newly active arbiter must, and then
+grants the follower's request to lead: it holds no statement saying the follower may not. With the follower's own vote
+that is a majority. The leader cannot stop it: its lease, held from the arbiter that has gone and not renewable through
+the disconnected follower, has run out.
+
+**Why the model checks did not find it.** `FollowerBehindHA.tla` treats the arbiter tier as one voter that keeps its
+statements on disk, and its counterexample `behind-4-arbiter-forgets` shows that rule 11 fails if that voter forgets.
+A change of active arbiter with the statement not yet passed on is that voter forgetting, but the model has no change of
+active arbiter in it. `MajorityLeaseHA.tla` models a change of active arbiter as the third voter restarting, and has no
+statements.
+
+**What it needs.** A design, worked out against the models before any code. Two directions:
+
+1. The active arbiter echoes a statement only once the passive arbiter has acknowledged it, which needs an
+   acknowledgement message and makes the echo wait for a second machine as well as the disk. With the passive arbiter
+   down the active one would then have to echo regardless, or the leader could not act without its follower at all.
+2. A newly active arbiter grants nothing in a pair until it has learned that pair's newest statement, from the leader's
+   own lease requests, which carry it while the leader leads, or from the other arbiter.
+
+**Decided on 7 November 2026: both arbiters confirm the statement, and the active arbiter confirms alone once cut off
+for long enough.** Every instance already sends each lease request to both arbiters. Each arbiter, active or passive,
+now records the leader's statement from the request, writes it to disk, and confirms it to the leader with a new message,
+`StatementHeld` (401), carrying its own instance id. The passive arbiter still grants and refuses nothing, and the active
+arbiter's grant no longer echoes the statement. The leader acts on a command its follower lacks only once its follower has
+echoed the statement or both arbiters have confirmed it, so that whichever arbiter is active later holds it.
+
+Requiring both arbiters alone would make the death of one machine stop trading, because one machine runs an arbiter, a
+sequencer and a matching engine: `ha_test.py` scenarios 7 and 48 failed that way. So the active arbiter's confirmation is
+enough on its own once it has heard nothing from the other arbiter for two lease periods, one renewal interval and one
+more lease period, 10 seconds with the default timings, and `StatementHeld` then says it confirms alone. The two arbiters
+exchange `ArbiterHeartbeat` (402) every tick, each echoing the other's send time. An arbiter that has confirmed alone sends
+the other its whole state before its next echo, on the same connection. An arbiter that becomes active when no heartbeat
+it sent in the last two lease periods and one renewal interval has been echoed may lack a statement confirmed alone, and
+answers no component until a fresh echo arrives (`ArbiterPeerContact`). When the active arbiter's machine dies, the other
+becomes active within that time and grants as usual; a leader that has also lost its follower acts on the remaining
+arbiter's confirmation alone 10 seconds after the death.
+
+`FollowerBehindHA.tla` models the two arbiters, each statement reaching or missing each separately, the copy between
+them, the link between them failing and recovering, a change of active arbiter, and the active arbiter confirming alone
+(`docs/availability/tla/findings.md`, section 12.6). With a leader relying on the active arbiter alone and the link up,
+`LeaderHoldsActed` is broken in nine steps, which is this defect (`traces/behind-6-passive-arbiter-lacks-statement.txt`).
+With an arbiter that becomes active not knowing it may be behind, it is broken in eleven
+(`traces/behind-7-arbiter-does-not-know-it-is-behind.txt`). With the design, it holds over 301,843,316 distinct states
+at budgets smaller than those of section 12.3, which section 12.6 states; the budgets of 12.3 do not finish.
+
+**Tests.** `LeaseRulesTest.LeaderMayActWithoutItsPeerOnlyOnceBothArbitersHoldTheStatement`,
+`LeaseRulesTest.LeaderMayActWithoutItsPeerOnceTheActiveArbiterConfirmsTheStatementAlone`,
+`PairLeaseAgentTest.WithItsPeerDownALeaderActsWithoutItOnlyOnceBothArbitersHoldItsStatement`,
+`PairLeaseAgentTest.WithItsPeerAndOneArbiterDownALeaderActsWithoutItsPeerOnceTheActiveArbiterConfirmsAlone`, and
+`ArbiterPeerContactTest`. Each fails when the rule it checks is broken.
+
+**Principles.** The same one-way copy, made safe by numbering and repetition, is how the statement travels everywhere
+else; here a lost copy is not noticed.
 
 ### BUG-0228: A slow sync when a sequencer records its new epoch can use up the lease it has just been granted, so it stops leading as it starts {#bug_0228}
 

@@ -17,9 +17,11 @@
  * The leader also writes commands to its log, copies its log to its peer, and has the matching engine
  * act on commands. Copying to the peer sometimes stalls, and then the leader runs without its peer
  * under rule 11 (docs/availability/a_follower_behind_does_not_lead.md): it says that its peer may not
- * lead, and acts on commands its peer lacks only once another voter has echoed that statement. The
- * simulation checks that an instance starting to act as leader holds every command the engine has
- * acted on. A voter here records a statement durably before it grants; the design lets the follower
+ * lead, and acts on commands its peer lacks only once its peer has echoed that statement or both arbiters
+ * have confirmed it. The simulation's third voter stands for the whole arbiter pool, so its echo is taken
+ * as both arbiters' confirmation; that one arbiter is not enough is tested in LeaseRulesTest and
+ * PairLeaseAgentTest. The simulation checks that an instance starting to act as leader holds every
+ * command the engine has acted on. A voter here records a statement durably before it grants; the design lets the follower
  * write it in the background, and findings.md section 12.5 describes the risk that leaves.
  *
  * An instance asked by its peer sometimes refuses a request it would grant, as PairLeaseAgent does
@@ -357,7 +359,15 @@ class PairSimulation {
                     violation_ = fmt::format("epoch {} was led by instance {} and then by instance {}", message.epoch, recorded.first->second, message.to);
                 }
             }
-            instance.note_echo(message.epoch, message.echoed);
+            if (message.from == 3) {
+                // The simulation's third voter stands for the whole arbiter pool, and keeps its statement on
+                // disk before echoing it, so its echo is taken as both arbiters saying they hold the statement.
+                const pubsub_itc_fw::LeaderStatement held{message.to, message.epoch, message.echoed, false};
+                instance.note_held_by_arbiter(1, held, false);
+                instance.note_held_by_arbiter(2, held, false);
+            } else {
+                instance.note_echo_from_peer(message.epoch, message.echoed);
+            }
         } else {
             static_cast<void>(instance.on_refusal(message.request_id, message.epoch, now_, wait_before_asking_again()));
         }

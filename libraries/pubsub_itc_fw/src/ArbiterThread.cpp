@@ -130,6 +130,7 @@ void ArbiterThread::on_initial_event() {
                        pair_name(pair_id), statement.leader_id, statement.epoch, statement.instance_that_may_not_lead());
         }
     }
+    peer_contact_.emplace(config_.lease, std::chrono::steady_clock::now());
     lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "ArbiterThread: deciding the active arbiter by leases (period={} ms, drift allowance={} ms, renewal every {} ms); no vote is granted or asked "
@@ -170,16 +171,7 @@ void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
         // A peer that has just restarted knows no epochs at all. Telling it the highest granted in
         // each group means it will not grant a lower one if it becomes active; telling it each
         // statement means it will not grant a lease to an instance a leader has said may not lead.
-        std::map<int32_t, bool> groups;
-        for (const auto& entry : component_voters_.highest_epochs()) {
-            groups[entry.first] = true;
-        }
-        for (const auto& entry : component_voters_.statements()) {
-            groups[entry.first] = true;
-        }
-        for (const auto& entry : groups) {
-            send_group_state_to_peer(id, entry.first);
-        }
+        send_whole_state_to_peer(id);
     } else if (svc == "witness") {
         witness_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: witness connection {} established", id.get_value());
@@ -237,7 +229,9 @@ void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& 
 
 void ArbiterThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     if (id == lease_tick_timer_id_) {
-        act_on(pool_lease_->on_tick(std::chrono::steady_clock::now()));
+        const auto now = std::chrono::steady_clock::now();
+        act_on(pool_lease_->on_tick(now));
+        send_heartbeats_to_peer(now);
     }
 }
 
@@ -280,12 +274,22 @@ void ArbiterThread::adopt_role(ArbiterRole new_role) {
     role_ = new_role;
 
     if (new_role == ArbiterRole::leader) {
-        component_voters_.became_active(std::chrono::steady_clock::now());
+        const auto now = std::chrono::steady_clock::now();
+        component_voters_.became_active(now);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "ArbiterThread: now ACTIVE -- granting no component a lease for {} ms, because what the previously active arbiter promised is not known",
                    config_.lease.period.count());
+        may_be_behind_ = peer_contact_->may_be_behind(now);
+        if (may_be_behind_) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "ArbiterThread: now ACTIVE, but no heartbeat this arbiter sent in the last {} ms has been echoed by the other arbiter, which may "
+                       "since have confirmed alone a statement this one lacks -- granting no component a lease until the other arbiter is heard from "
+                       "again. Until then each pair can elect a leader only with both of its instances' votes",
+                       std::chrono::duration_cast<std::chrono::milliseconds>(peer_contact_->may_be_behind_after()).count());
+        }
     } else {
         component_voters_.became_passive();
+        may_be_behind_ = false;
     }
 }
 
@@ -396,8 +400,13 @@ void ArbiterThread::handle_component_lease_request(const pubsub_itc_fw::Connecti
         return;
     }
 
-    // A passive arbiter stays silent rather than refusing. The component sent the same request to
-    // the active arbiter, with the same id, and a refusal from here would cancel it.
+    // Both arbiters, active and passive, record a leader's statement from its request, write it to disk,
+    // and tell the leader they hold it. The leader acts on a command its peer lacks only once its peer or
+    // both arbiters hold the statement, so that a change of active arbiter cannot lose it.
+    const bool statement_changed = record_component_statement(conn_id, request);
+
+    // A passive arbiter grants and refuses nothing. The component sent the same request to the active
+    // arbiter, with the same id, and a refusal from here would cancel it.
     if (!component_voters_.active()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "ArbiterThread: not active -- leaving group={} instance {}'s LeaseRequest to the active arbiter", pair_name(request.pair_id),
@@ -405,36 +414,34 @@ void ArbiterThread::handle_component_lease_request(const pubsub_itc_fw::Connecti
         return;
     }
 
+    // An arbiter that became active while it may lack a statement the other confirmed alone answers nothing until a fresh echo
+    // of its own heartbeat shows the other has since sent it its whole state.
+    if (may_be_behind_) {
+        if (peer_contact_->may_be_behind(std::chrono::steady_clock::now())) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                       "ArbiterThread: may lack a statement the other arbiter confirmed alone -- not answering group={} instance {}'s LeaseRequest",
+                       pair_name(request.pair_id), request.candidate_instance_id);
+            return;
+        }
+        may_be_behind_ = false;
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "ArbiterThread: the other arbiter has echoed a recent heartbeat, after sending its whole state -- granting leases again");
+    }
+
     const int32_t highest_before = component_voters_.highest_epoch(request.pair_id);
     const pubsub_itc_fw::LeaseVoter::Answer answer =
         component_voters_.consider(request.pair_id, request.candidate_instance_id, request.epoch, std::chrono::steady_clock::now());
 
     if (answer.verdict == pubsub_itc_fw::LeaseVoter::Verdict::Granted) {
-        // A leader's statement is recorded, and on disk, before the grant echoes it: the leader may
-        // rely on the echo to act on a command its peer lacks.
-        int64_t echoed = 0;
-        bool statement_changed = false;
-        const pubsub_itc_fw::LeaderStatement statement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead};
-        if (statement.leader_id != 0) {
-            const pubsub_itc_fw::LeaderStatement before = component_voters_.statement(request.pair_id);
-            echoed = component_voters_.record_statement(request.pair_id, statement);
-            statement_changed = !component_voters_.statement(request.pair_id).same_as(before);
-            if (statement_changed && !save_component_statements()) {
-                echoed = 0;
-            }
-        }
+        // The grant echoes no statement: the arbiter confirms one with StatementHeld instead, as the
+        // passive arbiter does, and the leader counts the two arbiters' confirmations separately.
         pubsub_itc_fw::LeaseGrant grant{};
         grant.voter_instance_id = arbiter_pool_voter_id;
         grant.pair_id = request.pair_id;
         grant.epoch = request.epoch;
         grant.request_id = request.request_id;
-        grant.echoed_statement_number = echoed;
+        grant.echoed_statement_number = 0;
         send_pdu(conn_id, pubsub_itc_fw::LeaseGrant::message_pdu_id, 0, grant);
-        if (statement_changed) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: group={} instance {} says at epoch {} (statement {}) that its peer {}",
-                       pair_name(request.pair_id), statement.leader_id, statement.epoch, statement.number,
-                       statement.peer_may_lead ? "may lead" : "may not lead");
-        }
 
         int64_t& last = last_granted_to_[request.pair_id];
         if (last != request.candidate_instance_id) {
@@ -465,6 +472,91 @@ void ArbiterThread::handle_component_lease_request(const pubsub_itc_fw::Connecti
                request.candidate_instance_id, request.epoch, pubsub_itc_fw::to_string(refusal.reason));
 }
 
+bool ArbiterThread::record_component_statement(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRequestView& request) {
+    const pubsub_itc_fw::LeaderStatement statement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead};
+    if (statement.leader_id == 0) {
+        return false;
+    }
+    const pubsub_itc_fw::LeaderStatement before = component_voters_.statement(request.pair_id);
+    const int64_t held = component_voters_.record_statement(request.pair_id, statement);
+    const bool changed = !component_voters_.statement(request.pair_id).same_as(before);
+    if (changed) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: group={} instance {} says at epoch {} (statement {}) that its peer {}",
+                   pair_name(request.pair_id), statement.leader_id, statement.epoch, statement.number, statement.peer_may_lead ? "may lead" : "may not lead");
+    }
+    if (changed || component_statements_unsaved_) {
+        component_statements_unsaved_ = !save_component_statements();
+    }
+    if (component_statements_unsaved_) {
+        // Held in memory only, so not confirmed: the leader goes on sending it, and the write is tried again then.
+        return changed;
+    }
+    if (held == 0) {
+        // This arbiter holds a newer statement than the one on the request, so it does not confirm it.
+        return changed;
+    }
+    // The active arbiter confirms alone once it has heard nothing from the other arbiter for long enough that the other, if it
+    // becomes active, knows it may lack this statement. It then owes the other its whole state before its next echo.
+    const bool alone = component_voters_.active() && peer_contact_->may_confirm_alone(std::chrono::steady_clock::now());
+    if (alone) {
+        owe_whole_state_on_outbound_ = true;
+        owe_whole_state_on_inbound_ = true;
+    }
+    pubsub_itc_fw::StatementHeld confirmation{};
+    confirmation.alone = alone;
+    confirmation.arbiter_instance_id = static_cast<int64_t>(config_.instance_id);
+    confirmation.pair_id = request.pair_id;
+    confirmation.statement_leader_id = statement.leader_id;
+    confirmation.statement_epoch = statement.epoch;
+    confirmation.statement_number = statement.number;
+    send_pdu(conn_id, pubsub_itc_fw::StatementHeld::message_pdu_id, 0, confirmation);
+    return changed;
+}
+
+void ArbiterThread::send_whole_state_to_peer(const pubsub_itc_fw::ConnectionID& conn_id) {
+    std::map<int32_t, bool> groups;
+    for (const auto& entry : component_voters_.highest_epochs()) {
+        groups[entry.first] = true;
+    }
+    for (const auto& entry : component_voters_.statements()) {
+        groups[entry.first] = true;
+    }
+    for (const auto& entry : groups) {
+        send_group_state_to_peer(conn_id, entry.first);
+    }
+    (conn_id == peer_conn_id_ ? owe_whole_state_on_outbound_ : owe_whole_state_on_inbound_) = false;
+}
+
+void ArbiterThread::send_heartbeats_to_peer(std::chrono::steady_clock::time_point now) {
+    pubsub_itc_fw::ArbiterHeartbeat heartbeat{};
+    heartbeat.sent_at_nanoseconds = pubsub_itc_fw::ArbiterPeerContact::sent_at(now);
+    heartbeat.echoed_nanoseconds = peer_contact_->echo();
+    for (const pubsub_itc_fw::ConnectionID& conn : {peer_conn_id_, peer_inbound_conn_id_}) {
+        if (!conn.is_valid()) {
+            continue;
+        }
+        // Every statement this arbiter confirmed alone goes ahead of the echo on the same connection, which delivers in order.
+        if (conn == peer_conn_id_ ? owe_whole_state_on_outbound_ : owe_whole_state_on_inbound_) {
+            send_whole_state_to_peer(conn);
+        }
+        send_pdu(conn, pubsub_itc_fw::ArbiterHeartbeat::message_pdu_id, 0, heartbeat);
+    }
+}
+
+void ArbiterThread::handle_arbiter_heartbeat(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw::ArbiterHeartbeatView heartbeat{};
+    if (!pubsub_itc_fw::decode(heartbeat, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: failed to decode ArbiterHeartbeat -- dropping");
+        return;
+    }
+    peer_contact_->on_heartbeat(heartbeat.sent_at_nanoseconds, heartbeat.echoed_nanoseconds, std::chrono::steady_clock::now());
+}
+
 void ArbiterThread::send_group_state_to_peer(const pubsub_itc_fw::ConnectionID& conn_id, int32_t pair_id) {
     pubsub_itc_fw::ArbiterStateRecord record{};
     record.pair_id = pair_id;
@@ -492,7 +584,10 @@ bool ArbiterThread::save_component_statements() {
 
 void ArbiterThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = message.pdu_id();
-    if (pdu_id == pubsub_itc_fw::LeaseRequest::message_pdu_id) {
+    peer_contact_->heard(std::chrono::steady_clock::now());
+    if (pdu_id == pubsub_itc_fw::ArbiterHeartbeat::message_pdu_id) {
+        handle_arbiter_heartbeat(message);
+    } else if (pdu_id == pubsub_itc_fw::LeaseRequest::message_pdu_id) {
         handle_lease_request(conn_id, message);
     } else if (pdu_id == pubsub_itc_fw::LeaseGrant::message_pdu_id) {
         handle_lease_grant(message);

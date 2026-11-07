@@ -945,9 +945,9 @@ requires it first to have a voter record that the follower may not lead.
 With every part of rule 11 in place, and an instance writing a statement it receives to disk before it
 grants, `LeaderHoldsActed` holds. The run is exhaustive, with two commands, three statements in each
 leadership, three leaderships, two crashes of the instances, one restart of the arbiter, and at most two
-statements in flight at once: 38,773,460 distinct states. With at most three statements in flight and
-the same budgets otherwise, it also holds: 437,751,224 distinct states, which takes about twenty minutes
-on 24 workers.
+statements in flight at once: 115,843,292 distinct states, which takes under six minutes on 32 workers. With at most three statements in flight and
+the same budgets otherwise, a run found no error in 744,094,524 distinct states, and was stopped after 50
+minutes on 32 workers with 124 million states still to explore, so it is not exhaustive.
 
 `NoChangeOfLeaderAfterActing` is broken within eight steps: instance 1 has the engine act on a command
 that instance 2 holds, its lease runs out, and instance 2 is elected. Rule 11 does not stop a change of
@@ -985,46 +985,93 @@ This needs the follower's process to restart within the moments between granting
 write completing, and the arbiter not to have recorded the statement in that time, and the leader to
 stop acting in that time. That is the risk accepted in section 4.5 of the design.
 
-### 12.6 Two arbiters: the passive arbiter's copy of a statement
+### 12.6 Two arbiters: a statement the leader relies on must survive a change of active arbiter
 
 The arbiter tier is two arbiters, of which one is active at a time. Sections 12.3 to 12.5 treat it as one
-voter that keeps its record on disk. In the venue the active arbiter holds the record, and sends each
-statement it records to the passive arbiter, which keeps a copy; when the passive arbiter becomes active,
-its copy is all it knows. The specification models this with the variables `pBar` and `pKey` for the
-passive arbiter's copy, `pLinked` for the link between the two arbiters, and four steps:
+voter that keeps its record on disk. In the venue every instance sends each lease request, and so each
+statement, to both arbiters; the active arbiter grants and refuses, and the passive arbiter grants and
+refuses nothing. The active arbiter also sends each statement it records to the passive arbiter, without
+acknowledgement. When the passive arbiter becomes active, what it holds is all it knows.
 
-- `CopyToPassive`: the active arbiter's copy of its record reaches the passive arbiter, at any later
-  moment or never;
-- `ArbiterLinkFails` and `ArbiterLinkRecovers`: when the link comes back up, each arbiter sends the other
-  its whole state, and both keep the newer statement;
-- `ChangeActiveArbiter`: the passive arbiter becomes active, and voter 3's record is now its copy.
+The specification models this with these variables and steps:
 
-`MaxArbiterChanges` and `MaxArbiterLinkFailures` bound how many of each one behaviour may have. With both
-at zero the copy is not made, and the run in 12.3 visits exactly the 38,773,460 states given there.
+- `pBar` and `pKey` are the passive arbiter's record, and `pLinked` is whether the link between the two
+  arbiters is up.
+- A statement sent to the arbiter tier travels to the active arbiter (voter 3) and, with
+  `BothArbitersConfirm`, to the passive arbiter too. `ReceiveAtArbiter` delivers it to one of them, which
+  records it, writes it to disk and confirms it to the leader; `LoseAtArbiter` loses it on the way to one
+  of them. A leader keeps the highest statement number confirmed by each of its peer, the active arbiter
+  and the passive arbiter separately.
+- `CopyToPassive`: the active arbiter's copy of its record reaches the passive arbiter, at any later moment
+  or never.
+- `ArbiterLinkFails` and `ArbiterLinkRecovers`: when the link comes back up, each arbiter sends the other its
+  whole state, and both keep the newer statement.
+- `ChangeActiveArbiter`: the passive arbiter becomes active. Voter 3's record is now the passive arbiter's,
+  and the confirmations a leader holds from each arbiter go with that arbiter.
 
-**The active arbiter must not echo a statement the passive one may lack.** With one change of active
-arbiter allowed and `PassiveAcknowledges = FALSE`, which is what the venue does, `LeaderHoldsActed` is
-broken in nine steps (`traces/behind-6-passive-arbiter-lacks-statement.txt`):
+`MaxArbiterChanges` and `MaxArbiterLinkFailures` bound how many of each one behaviour may have.
+
+**One arbiter's confirmation is not enough.** With one change of active arbiter allowed and
+`BothArbitersConfirm = FALSE` and `ActiveConfirmsAlone = FALSE`, so that a leader acts on the active arbiter's
+confirmation alone even with the link between the arbiters up,
+`LeaderHoldsActed` is broken in nine steps (`traces/behind-6-passive-arbiter-lacks-statement.txt`):
 
 1. Instance 1 is elected and says instance 2 may not lead.
-2. The active arbiter records the statement and echoes it, and instance 1 has the engine act on command
+2. The active arbiter records the statement and confirms it, and instance 1 has the engine act on command
    1, which instance 2 does not hold.
-3. Instance 1's lease runs out.
+3. Instance 1 stops leading.
 4. The passive arbiter becomes active before the statement has reached it, and elects instance 2.
 
 This is [BUG-0230](../../bug_list.md#bug_0230).
 
-**The fix holds.** With `PassiveAcknowledges = TRUE` the active arbiter echoes a statement only once the
-passive arbiter holds it, which the specification makes one step with the arbiter recording it. While the
-link between them is down the active arbiter echoes regardless, and the passive arbiter knows it may have
-missed statements: if it becomes active in that state, it grants nothing until the link comes back up and
-brings it the other arbiter's state. With the budgets of 12.3, one change of active arbiter and one failure
-of the link between the arbiters, `LeaderHoldsActed` holds over 959,234,080 distinct states, which takes
-about 54 minutes on 32 workers.
+**One machine must not stop trading.** Requiring both arbiters is safe, but one machine runs an arbiter, a
+sequencer and a matching engine, so the death of one machine would take the follower and an arbiter at
+once, and the new leader could then never act. So, with `ActiveConfirmsAlone`, the active arbiter's
+confirmation is enough on its own once the link to the passive arbiter has been down for a set time, D.
+The arbiters exchange heartbeats that echo each other's send times, and D is longer than the passive
+arbiter takes to become active after the active one dies, plus the time a heartbeat takes to arrive and
+the drift between the two clocks over that time. An arbiter that becomes active within D of the last echo
+of its own heartbeat therefore knows the other confirmed nothing alone; one that becomes active later knows
+it may lack a statement, and grants nothing until it has heard from the other again. An arbiter that has
+confirmed alone sends the other its whole state before its next echo, on the same connection, so an echo
+never arrives ahead of a statement confirmed alone. The code and its reasoning are in `ArbiterPeerContact`.
 
-The cost is availability. An arbiter that became active while it may have missed statements grants
-nothing until the other arbiter is reachable again, so while the leader is also unavailable the pair has
-no leader.
+Time is not modelled, so the specification represents the timing by what it guarantees: the step that lets
+the active arbiter confirm alone, `AloneWindowOpens`, also marks the passive arbiter as possibly behind
+(`pBehind`). `ChangeActiveArbiter` hands that mark to the arbiter that becomes active (`thirdBehind`), which
+then grants nothing, and `ArbiterLinkRecovers` clears both. A confirmation sent while the window is open is
+kept by the leader separately, and is enough on its own.
+
+**Knowing it may be behind is needed.** With `PassiveKnowsBehind = FALSE`, so that the mark is not made,
+`LeaderHoldsActed` is broken in eleven steps (`traces/behind-7-arbiter-does-not-know-it-is-behind.txt`):
+
+1. Instance 1 is elected and says instance 2 may not lead.
+2. The link between the arbiters fails, and stays down long enough for the active arbiter to confirm alone.
+3. The active arbiter confirms the statement alone, and instance 1 has the engine act on command 1.
+4. Instance 1 stops leading, and the passive arbiter, which never received the statement, becomes active
+   and elects instance 2.
+
+**The fix holds.** With both arbiters needed, the active arbiter's confirmation being enough on its own once the
+link has been down for D, and an arbiter that may be behind granting nothing, `LeaderHoldsActed` holds over
+301,843,316 distinct states, which took 22.6 minutes on 32 workers. That run is exhaustive with one command,
+two statements in each leadership, two leaderships, one crash of an instance, no restart of the arbiter tier,
+at most two statements in flight, one change of active arbiter and one failure of the link between the
+arbiters. With the same budgets and the mark left out, the property is broken, as above, so those budgets
+reach the case the mark exists for.
+
+The budgets of 12.3 do not finish here. Each statement can reach or miss each arbiter separately, and the
+number of states grows far faster than with one arbiter: a run with those budgets, requiring both arbiters
+but without the active arbiter confirming alone, found no error in 2,685,532,867 distinct states before it
+was stopped after three hours, when it had nearly filled the disk.
+
+The cost is availability in two places. A leader that has lost its follower and one arbiter waits until the
+other arbiter has heard nothing from the lost one for D, 10 seconds with the default timings, before it acts
+on commands its follower lacks. An arbiter that becomes active after being cut off from the other for longer
+than D grants nothing until it hears from it again; meanwhile each pair can elect a leader only with both of
+its instances' votes.
+
+With `MaxArbiterChanges` and `MaxArbiterLinkFailures` both at zero, `CopyToPassive` and `AloneWindowOpens`
+cannot happen, and the passive arbiter's record plays no part.
 
 ### 12.7 Limits
 
@@ -1040,7 +1087,7 @@ no leader.
 | File | What it is |
 |------|------------|
 | `FollowerBehindHA.tla` | Rule 11, with leadership abstracted |
-| `FollowerBehindHA.cfg` | Every part of rule 11 on, with an instance writing to disk before it grants, one change of active arbiter, one failure of the link between the arbiters, and the passive arbiter acknowledging statements (section 12.6) |
+| `FollowerBehindHA.cfg` | Every part of rule 11 on, with an instance writing to disk before it grants, one change of active arbiter, one failure of the link between the arbiters, a leader needing its peer's or both arbiters' confirmation of a statement, and the active arbiter confirming alone once the link between the arbiters has been down long enough (section 12.6) |
 | `traces/behind-*.txt` | The counterexamples in 12.4, 12.5 and 12.6 |
 
 The counterexamples in 12.4, 12.5 and 12.6 are reproduced on every install by `scripts/tla_trace_pages.py`,

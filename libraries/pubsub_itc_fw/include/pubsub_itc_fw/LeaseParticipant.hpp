@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 
@@ -48,8 +49,12 @@ namespace pubsub_itc_fw {
  *   - The owner calls begin_running_without_peer() before it has the matching engine act on a command
  *     the peer does not hold, and peer_holds_everything() once the peer has acknowledged every record
  *     this instance holds, after it has gone back to acting only on commands the peer holds.
- *   - may_act_without_peer() is true only once a voter other than this instance has echoed the current
- *     statement that the peer may not lead.
+ *   - may_act_without_peer() is true only once the current statement, that the peer may not lead, is
+ *     held by the peer, or by both arbiters of the arbiter pool, or by the active arbiter confirming it
+ *     alone. One arbiter is not normally enough: if it stops and the other becomes active without the
+ *     statement, the peer could be granted the lead while lacking commands this instance acted on
+ *     (docs/bug_list.md, BUG-0230). The active arbiter confirms alone only once the other arbiter
+ *     would know it may lack the statement if it became active (ArbiterPeerContact.hpp).
  *   - An instance whose voter holds a statement that it may not lead does not ask to lead.
  *
  * In the matching engine pair, constructed with PeerStatementsFlag::SayWhenPeerMayNotLead, every leadership
@@ -57,8 +62,9 @@ namespace pubsub_itc_fw {
  * the peer must not lead, and say_peer_may_lead() when the reason has gone. Recording, sending and the
  * refusal by a voter that holds the statement are as in the sequencer pair.
  *
- * The owner sends statement() on every lease request while leading, records the statement each grant
- * echoes with note_echo(), and keeps recorded_statement() durably whenever it changes, before
+ * The owner sends statement() on every lease request while leading, to the peer and to both arbiters.
+ * It passes the statement number the peer's grants echo to note_echo_from_peer(), and each arbiter's
+ * StatementHeld message to note_held_by_arbiter(). It keeps recorded_statement() durably whenever it changes, before
  * sending anything that depends on it. In every other pair the leader makes no statements, and its
  * statement() names no leader.
  */
@@ -144,7 +150,9 @@ class LeaseParticipant {
                 // pair's starts by saying it may.
                 const bool peer_may_lead = peer_statements_ == PeerStatementsFlag::SayWhenPeerMayNotLead;
                 statement_ = LeaderStatement{self_id_, epoch, 1, peer_may_lead};
-                echoed_ = 0;
+                echoed_by_peer_ = 0;
+                held_by_arbiter_ = {0, 0};
+                held_alone_ = 0;
                 voter_.record_statement(statement_);
             }
         }
@@ -152,13 +160,43 @@ class LeaseParticipant {
     }
 
     /**
-     * @brief A grant echoed the number of the statement its voter recorded.
+     * @brief The peer's grant echoed the number of the statement the peer recorded.
+     *
+     * Only the peer's grants count. The arbiter pool's grants echo nothing; an arbiter confirms a
+     * statement with note_held_by_arbiter() instead.
+     *
      * @param[in] epoch The epoch the grant was for.
      * @param[in] number The statement number it echoed, or zero.
      */
-    void note_echo(int32_t epoch, int64_t number) {
-        if (holder_.state() == LeaseHolder::State::Leading && epoch == holder_.epoch() && number > echoed_) {
-            echoed_ = number;
+    void note_echo_from_peer(int32_t epoch, int64_t number) {
+        if (holder_.state() == LeaseHolder::State::Leading && epoch == holder_.epoch() && number > echoed_by_peer_) {
+            echoed_by_peer_ = number;
+        }
+    }
+
+    /**
+     * @brief One of the two arbiters says it holds a statement of this instance's, and has written it to disk.
+     *
+     * Ignored unless this instance leads and the statement is one it made in its present leadership.
+     *
+     * @param[in] arbiter_instance_id The arbiter's own instance id within the arbiter pool: 1 or 2. Any other is ignored.
+     * @param[in] held The statement the arbiter holds.
+     * @param[in] alone Whether the arbiter, active and cut off from the other arbiter, confirms it alone, which is
+     *            enough on its own.
+     */
+    void note_held_by_arbiter(int64_t arbiter_instance_id, const LeaderStatement& held, bool alone) {
+        if (arbiter_instance_id != 1 && arbiter_instance_id != 2) {
+            return;
+        }
+        if (holder_.state() != LeaseHolder::State::Leading || held.leader_id != self_id_ || held.epoch != holder_.epoch()) {
+            return;
+        }
+        int64_t& highest = held_by_arbiter_.at(static_cast<size_t>(arbiter_instance_id - 1));
+        if (held.number > highest) {
+            highest = held.number;
+        }
+        if (alone && held.number > held_alone_) {
+            held_alone_ = held.number;
         }
     }
 
@@ -224,11 +262,13 @@ class LeaseParticipant {
      * @brief Whether this instance may have the matching engine act on a command its peer does not hold.
      *
      * True only while it leads, says that its peer may not lead, holds that statement in its own voter,
-     * and a voter other than itself has echoed that statement.
+     * and the peer has echoed that statement, or both arbiters have said they hold it, or the active arbiter has
+     * confirmed it alone.
      */
     [[nodiscard]] bool may_act_without_peer() const {
-        return holder_.state() == LeaseHolder::State::Leading && !statement_.peer_may_lead && echoed_ >= statement_.number &&
-               voter_.holds_statement(statement_);
+        const bool held_elsewhere = echoed_by_peer_ >= statement_.number ||
+                                    (held_by_arbiter_[0] >= statement_.number && held_by_arbiter_[1] >= statement_.number) || held_alone_ >= statement_.number;
+        return holder_.state() == LeaseHolder::State::Leading && !statement_.peer_may_lead && held_elsewhere && voter_.holds_statement(statement_);
     }
 
     /**
@@ -350,7 +390,9 @@ class LeaseParticipant {
     Clock::time_point wait_until_{};
     PeerStatementsFlag peer_statements_;
     LeaderStatement statement_{};
-    int64_t echoed_{0}; ///< the highest statement number a grant in this leadership has echoed
+    int64_t echoed_by_peer_{0};                ///< the highest statement number the peer's grants in this leadership have echoed
+    std::array<int64_t, 2> held_by_arbiter_{}; ///< for arbiters 1 and 2, the highest statement number of this leadership each says it holds
+    int64_t held_alone_{0};                    ///< the highest statement number of this leadership an active arbiter has confirmed alone
 };
 
 } // namespaces

@@ -365,8 +365,8 @@ class ReplicatedWal {
     /// follower is connected, its WAL agrees with this one, and it keeps up.
     [[nodiscard]] bool waits_for_follower() const;
 
-    /// As the leader: whether records the follower lacks wait for a voter to confirm that the follower may
-    /// not lead, because no follower keeps up and no voter has yet echoed that statement.
+    /// As the leader: whether records the follower lacks wait for confirmation that the follower may not
+    /// lead, because no follower keeps up, and neither the follower nor both arbiters yet hold that statement.
     [[nodiscard]] bool waits_for_confirmation() const {
         return configuration_.ha_enabled && !waits_for_follower() && !may_commit_without_follower();
     }
@@ -386,6 +386,7 @@ class ReplicatedWal {
     void handle_position_reply(const LogPositionReplyView& reply, Clock::time_point now);
     void handle_lease_request(const ConnectionID& from, const LeaseRequestView& request, Clock::time_point now);
     void handle_lease_grant(const LeaseGrantView& grant, Clock::time_point now);
+    void handle_statement_held(const StatementHeldView& held);
     void handle_lease_refusal(const LeaseRefusalView& refusal, Clock::time_point now);
 
     /// A connection to the peer has been established.

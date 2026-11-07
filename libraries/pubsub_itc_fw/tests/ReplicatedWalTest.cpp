@@ -452,20 +452,32 @@ class Pair {
             if (!arbiter_up_ || !up_[i]) {
                 continue;
             }
+            // Both arbiters record the leader's statement from the request and say they hold it. The harness keeps one
+            // record for both, since they always receive the same requests here.
+            const LeaderStatement statement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead};
+            if (statement.leader_id != 0) {
+                arbiter_.record_statement(statement);
+                if (arbiter_.holds_statement(statement)) {
+                    for (const int64_t arbiter_instance : {int64_t{1}, int64_t{2}}) {
+                        StatementHeld held{};
+                        held.arbiter_instance_id = arbiter_instance;
+                        held.pair_id = test_pair_id;
+                        held.statement_leader_id = statement.leader_id;
+                        held.statement_epoch = statement.epoch;
+                        held.statement_number = statement.number;
+                        const Encoded confirmation = encode_message(held);
+                        EXPECT_TRUE(wals_[i]->handle_message(ConnectionID{}, confirmation.pdu_id, confirmation.bytes.data(), confirmation.bytes.size(), now_));
+                    }
+                }
+            }
             const LeaseVoter::Answer answer = arbiter_.consider(request.candidate_instance_id, request.epoch, now_);
             if (answer.verdict == LeaseVoter::Verdict::Granted) {
-                int64_t echoed = 0;
-                const LeaderStatement statement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead};
-                if (statement.leader_id != 0) {
-                    arbiter_.record_statement(statement);
-                    echoed = arbiter_.holds_statement(statement) ? statement.number : 0;
-                }
                 LeaseGrant grant{};
                 grant.pair_id = test_pair_id;
                 grant.voter_instance_id = arbiter_id;
                 grant.epoch = request.epoch;
                 grant.request_id = request.request_id;
-                grant.echoed_statement_number = echoed;
+                grant.echoed_statement_number = 0;
                 const Encoded reply = encode_message(grant);
                 EXPECT_TRUE(wals_[i]->handle_message(ConnectionID{}, reply.pdu_id, reply.bytes.data(), reply.bytes.size(), now_));
             } else {

@@ -287,15 +287,22 @@ class PairLeaseAgentTest : public ::testing::Test {
                     if (!arbiter_up_) {
                         continue;
                     }
+                    // Each arbiter that is up records the leader's statement from the request and says it holds it.
+                    // The harness keeps one record for both, since they always receive the same requests here.
+                    const pubsub_itc_fw::LeaderStatement statement = statement_on(request);
+                    if (statement.leader_id != 0) {
+                        arbiter_.record_statement(statement);
+                        if (arbiter_.holds_statement(statement)) {
+                            for (const int64_t arbiter_instance : {int64_t{1}, int64_t{2}}) {
+                                if (arbiter_instance == 1 || second_arbiter_up_) {
+                                    agents_[i]->on_statement_held(arbiter_instance, statement, arbiter_instance == 1 && active_arbiter_confirms_alone_);
+                                }
+                            }
+                        }
+                    }
                     const auto answer = arbiter_.consider(request.candidate_instance_id, request.epoch, now_);
                     if (answer.verdict == pubsub_itc_fw::LeaseVoter::Verdict::Granted) {
-                        int64_t echoed = 0;
-                        const pubsub_itc_fw::LeaderStatement statement = statement_on(request);
-                        if (statement.leader_id != 0) {
-                            arbiter_.record_statement(statement);
-                            echoed = arbiter_.holds_statement(statement) ? statement.number : 0;
-                        }
-                        record(i, agents_[i]->on_grant(arbiter_id, request.epoch, request.request_id, echoed, now_));
+                        record(i, agents_[i]->on_grant(arbiter_id, request.epoch, request.request_id, 0, now_));
                     } else {
                         record(i, agents_[i]->on_refusal(arbiter_id, answer.highest_epoch, request.request_id,
                                                          pubsub_itc_fw::LeaseRefusalReason::promised_elsewhere, now_));
@@ -362,6 +369,11 @@ class PairLeaseAgentTest : public ::testing::Test {
     std::unique_ptr<pubsub_itc_fw::PairLeaseAgent> agents_[2];
     pubsub_itc_fw::LeaseVoter arbiter_;
     bool arbiter_up_{true};
+    // Whether the passive arbiter is up and confirms statements. The active arbiter grants and confirms while arbiter_up_.
+    bool second_arbiter_up_{true};
+    // Whether the active arbiter, arbiter 1 here, says it confirms statements alone, as it does once it has heard nothing from the
+    // other arbiter for long enough (ArbiterPeerContact).
+    bool active_arbiter_confirms_alone_{false};
     std::vector<pubsub_itc_fw::PairLeaseAgent::Change> changes_[2];
     KeptPromises kept_[2];
     RecordsAtOnce at_once_[2]{RecordsAtOnce{kept_[0]}, RecordsAtOnce{kept_[1]}};
@@ -928,6 +940,53 @@ TEST_F(PairLeaseAgentTest, ALeaderMayActWithoutItsPeerOnlyOnceAnotherVoterHasEch
     }
     EXPECT_TRUE(agents_[0]->may_act_without_peer()) << "the statement was echoed, and still the leader may not act after five ticks";
     EXPECT_LE(ticks, 2);
+}
+
+TEST_F(PairLeaseAgentTest, WithItsPeerDownALeaderActsWithoutItOnlyOnceBothArbitersHoldItsStatement) {
+    // One arbiter is not enough: if it stops and the other becomes active without the statement, the peer could be
+    // granted the lead while lacking commands the leader acted on (docs/availability/tla/traces/behind-6-passive-arbiter-lacks-statement.txt).
+    make_statements();
+    keep_promises();
+    ASSERT_TRUE(step_until_the_primary_leads());
+    agents_[0]->peer_holds_everything(now_);
+    deliver();
+    crash(1);
+    second_arbiter_up_ = false;
+    agents_[0]->begin_running_without_peer(now_);
+    for (int i = 0; i < 40; ++i) {
+        step();
+        ASSERT_FALSE(agents_[0]->may_act_without_peer()) << "acting on a command the peer lacks, with only one arbiter holding the statement";
+    }
+    ASSERT_TRUE(agents_[0]->acting(now_)) << "the leader lost its lease, so the test proves nothing";
+    // The arbiter that comes back confirms the statement when the leader's next lease request reaches it, which is at
+    // most one renewal interval away; forty ticks is longer than that.
+    second_arbiter_up_ = true;
+    for (int i = 0; i < 40 && !agents_[0]->may_act_without_peer(); ++i) {
+        step();
+    }
+    EXPECT_TRUE(agents_[0]->may_act_without_peer()) << "both arbiters hold the statement, and still the leader may not act after forty ticks";
+}
+
+TEST_F(PairLeaseAgentTest, WithItsPeerAndOneArbiterDownALeaderActsWithoutItsPeerOnceTheActiveArbiterConfirmsAlone) {
+    // The active arbiter's machine may die with the leading sequencer's, and then the arbiter left is the only one. It confirms
+    // alone once it has heard nothing from the other arbiter for long enough, and the new leader must then be able to act.
+    make_statements();
+    keep_promises();
+    ASSERT_TRUE(step_until_the_primary_leads());
+    agents_[0]->peer_holds_everything(now_);
+    deliver();
+    crash(1);
+    second_arbiter_up_ = false;
+    agents_[0]->begin_running_without_peer(now_);
+    for (int i = 0; i < 40; ++i) {
+        step();
+        ASSERT_FALSE(agents_[0]->may_act_without_peer()) << "acting on a command the peer lacks, with only one arbiter holding the statement";
+    }
+    active_arbiter_confirms_alone_ = true;
+    for (int i = 0; i < 40 && !agents_[0]->may_act_without_peer(); ++i) {
+        step();
+    }
+    EXPECT_TRUE(agents_[0]->may_act_without_peer()) << "the active arbiter confirms alone, and still the leader may not act after forty ticks";
 }
 
 TEST_F(PairLeaseAgentTest, ALeaderWhoseOwnStatementCannotBeWrittenNeverActsWithoutItsPeer) {

@@ -67,7 +67,8 @@ struct LeaseMetrics {
  *     every request, records the peer's statement when it grants, echoes it on the grant, and keeps
  *     the statement it holds on disk with its promise (rule 11 in
  *     docs/availability/a_follower_behind_does_not_lead.md). The leader acts on a command its peer
- *     lacks only once its own statement is on disk and another voter has echoed it.
+ *     lacks only once its own statement is on disk and the peer has echoed it, or both arbiters
+ *     have said they hold it, or the active arbiter has confirmed it alone (on_statement_held).
  *
  * It never writes to the disk itself. The owner writes the epoch, and only while this instance is asking to lead and so
  * handling no orders. In the sequencer and the matching engine it runs on the thread
@@ -345,7 +346,9 @@ class PairLeaseAgent {
      */
     [[nodiscard]] Change on_grant(int64_t voter_id, int32_t epoch, int64_t request_id, int64_t echoed_statement_number, Clock::time_point now) {
         const LeaseHolder::Event event = participant_.on_grant(voter_id, request_id, epoch, now);
-        participant_.note_echo(epoch, echoed_statement_number);
+        if (voter_id == peer_id_) {
+            participant_.note_echo_from_peer(epoch, echoed_statement_number);
+        }
         if (event == LeaseHolder::Event::LeaseExtended) {
             record_leading();
         }
@@ -366,6 +369,30 @@ class PairLeaseAgent {
                    owner_name_, epoch, voter_name(voter_id));
         report(LeaseChange::Granted, voter_id == peer_id_ ? Voter::Peer : Voter::ThirdVoter, epoch);
         return Change::BecameLeader;
+    }
+
+    /**
+     * @brief One of the two arbiters says it holds a statement of this instance's and has written it to disk.
+     *
+     * Either arbiter sends this, active or passive, because each records the statement from the lease
+     * requests this instance sends to both. A leader that says its peer may not lead acts on a command
+     * its peer lacks only once the peer has echoed the statement, or both arbiters have sent this, or
+     * the active arbiter has sent it saying it confirms alone.
+     *
+     * @param[in] arbiter_instance_id The arbiter's own instance id within the arbiter pool: 1 or 2.
+     * @param[in] held The statement it holds.
+     * @param[in] alone Whether the active arbiter, cut off from the other arbiter, confirms it alone, which is enough on its own.
+     */
+    void on_statement_held(int64_t arbiter_instance_id, const LeaderStatement& held, bool alone) {
+        const bool could_act_before = may_act_without_peer();
+        participant_.note_held_by_arbiter(arbiter_instance_id, held, alone);
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "{}: arbiter {} holds statement {} of epoch {}{}", owner_name_, arbiter_instance_id, held.number,
+                   held.epoch, alone ? ", and confirms it alone" : "");
+        if (!could_act_before && may_act_without_peer()) {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+                       "{}: {} statement {} that the peer may not lead -- this instance may act on commands the peer lacks", owner_name_,
+                       alone ? "the active arbiter, cut off from the other arbiter, confirms alone" : "both arbiters hold", held.number);
+        }
     }
 
     /**
@@ -494,7 +521,7 @@ class PairLeaseAgent {
      * @brief Whether the owner may have the matching engine act on a command its peer does not hold.
      *
      * True only while this instance leads saying its peer may not lead, that statement is on disk, and
-     * a voter other than this instance has echoed it.
+     * the peer has echoed it, or both arbiters have said they hold it, or the active arbiter has confirmed it alone.
      */
     [[nodiscard]] bool may_act_without_peer() const {
         return participant_.may_act_without_peer() && recorder_ != nullptr && recorded_statement_.same_as(participant_.statement());

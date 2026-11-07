@@ -4,15 +4,18 @@ leader is the instance acting as leader, or 0 for none. log lists the commands e
 commands the matching engine has acted on. barred is the instance each voter has recorded may not lead, 0 for none,
 and disk is the same as written to disk. passive is the passive arbiter's copy of voter 3's barred. stmt "bar:N"
 or "may:N" is what a leader says about its peer, may not lead or may lead, and the statement's number. confirmed
-is the highest statement number a grant has echoed back.
-msgs lists statements in flight as "st from>to eEPOCH.NUMBER bar|may".
+is, for each instance, the highest statement number confirmed by instance 1, instance 2, the active arbiter, the
+passive arbiter, and the active arbiter confirming alone, in that order. alone is T once the active arbiter may
+confirm alone. behind is two flags, for the active and the passive arbiter: T where that arbiter may lack a
+statement the other confirmed alone; an active arbiter marked T grants nothing.
+msgs lists statements in flight as "st from>to eEPOCH.NUMBER bar|may"; one to voter 3 goes to the arbiter tier.
 Reproduced by scripts/tla_trace_pages.py, entry behind-6-passive-arbiter-lacks-statement.
-  1 Initial                up=<<T,T,T>>      leader=0 lepoch=<<0,0>> log=<<{},{}>>    acted={}     barred=<<0,0,0>> disk=<<0,0,0>> passive=0 stmt=bar:0 bar:0  confirmed=<<0,0>> msgs={}
-  2 Elect(1)               up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{},{}>>    acted={}     barred=<<2,0,0>> disk=<<2,0,0>> passive=0 stmt=bar:1 bar:0  confirmed=<<0,0>> msgs={}
-  3 SendStatement(1)       up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{},{}>>    acted={}     barred=<<2,0,0>> disk=<<2,0,0>> passive=0 stmt=bar:1 bar:0  confirmed=<<0,0>> msgs={st 1>2 e1.1 bar, st 1>3 e1.1 bar}
-  4 Write(1)               up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{1},{}>>   acted={}     barred=<<2,0,0>> disk=<<2,0,0>> passive=0 stmt=bar:1 bar:0  confirmed=<<0,0>> msgs={st 1>2 e1.1 bar, st 1>3 e1.1 bar}
-  5 a statement arrives    up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{1},{}>>   acted={}     barred=<<2,0,2>> disk=<<2,0,2>> passive=0 stmt=bar:1 bar:0  confirmed=<<1,0>> msgs={st 1>2 e1.1 bar}
-  6 Act(1)                 up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{1},{}>>   acted={1}    barred=<<2,0,2>> disk=<<2,0,2>> passive=0 stmt=bar:1 bar:0  confirmed=<<1,0>> msgs={st 1>2 e1.1 bar}
-  7 StopActing(1)          up=<<T,T,T>>      leader=0 lepoch=<<1,0>> log=<<{1},{}>>   acted={1}    barred=<<2,0,2>> disk=<<2,0,2>> passive=0 stmt=bar:1 bar:0  confirmed=<<1,0>> msgs={st 1>2 e1.1 bar}
-  8 ChangeActiveArbiter    up=<<T,T,T>>      leader=0 lepoch=<<1,0>> log=<<{1},{}>>   acted={1}    barred=<<2,0,0>> disk=<<2,0,0>> passive=2 stmt=bar:1 bar:0  confirmed=<<1,0>> msgs={st 1>2 e1.1 bar}
-  9 Elect(2)               up=<<T,T,T>>      leader=2 lepoch=<<1,2>> log=<<{1},{}>>   acted={1}    barred=<<2,1,0>> disk=<<2,1,0>> passive=2 stmt=bar:1 bar:1  confirmed=<<1,0>> msgs={st 1>2 e1.1 bar}
+  1 Initial                up=<<T,T,T>>      leader=0 lepoch=<<0,0>> log=<<{},{}>>    acted={}     barred=<<0,0,0>> disk=<<0,0,0>> passive=0 alone=F behind=FF stmt=bar:0 bar:0  confirmed=<<[0, 0, 0, 0, 0],[0, 0, 0, 0, 0]>> msgs={}
+  2 Elect(1)               up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{},{}>>    acted={}     barred=<<2,0,0>> disk=<<2,0,0>> passive=0 alone=F behind=FF stmt=bar:1 bar:0  confirmed=<<[0, 0, 0, 0, 0],[0, 0, 0, 0, 0]>> msgs={}
+  3 SendStatement(1)       up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{},{}>>    acted={}     barred=<<2,0,0>> disk=<<2,0,0>> passive=0 alone=F behind=FF stmt=bar:1 bar:0  confirmed=<<[0, 0, 0, 0, 0],[0, 0, 0, 0, 0]>> msgs={st 1>2 e1.1 bar, st 1>3 e1.1 bar}
+  4 Write(1)               up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{1},{}>>   acted={}     barred=<<2,0,0>> disk=<<2,0,0>> passive=0 alone=F behind=FF stmt=bar:1 bar:0  confirmed=<<[0, 0, 0, 0, 0],[0, 0, 0, 0, 0]>> msgs={st 1>2 e1.1 bar, st 1>3 e1.1 bar}
+  5 a statement arrives    up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{1},{}>>   acted={}     barred=<<2,0,2>> disk=<<2,0,2>> passive=0 alone=F behind=FF stmt=bar:1 bar:0  confirmed=<<[0, 0, 1, 0, 0],[0, 0, 0, 0, 0]>> msgs={st 1>2 e1.1 bar}
+  6 Act(1)                 up=<<T,T,T>>      leader=1 lepoch=<<1,0>> log=<<{1},{}>>   acted={1}    barred=<<2,0,2>> disk=<<2,0,2>> passive=0 alone=F behind=FF stmt=bar:1 bar:0  confirmed=<<[0, 0, 1, 0, 0],[0, 0, 0, 0, 0]>> msgs={st 1>2 e1.1 bar}
+  7 StopActing(1)          up=<<T,T,T>>      leader=0 lepoch=<<1,0>> log=<<{1},{}>>   acted={1}    barred=<<2,0,2>> disk=<<2,0,2>> passive=0 alone=F behind=FF stmt=bar:1 bar:0  confirmed=<<[0, 0, 1, 0, 0],[0, 0, 0, 0, 0]>> msgs={st 1>2 e1.1 bar}
+  8 ChangeActiveArbiter    up=<<T,T,T>>      leader=0 lepoch=<<1,0>> log=<<{1},{}>>   acted={1}    barred=<<2,0,0>> disk=<<2,0,0>> passive=2 alone=F behind=FF stmt=bar:1 bar:0  confirmed=<<[0, 0, 0, 1, 0],[0, 0, 0, 0, 0]>> msgs={st 1>2 e1.1 bar}
+  9 Elect(2)               up=<<T,T,T>>      leader=2 lepoch=<<1,2>> log=<<{1},{}>>   acted={1}    barred=<<2,1,0>> disk=<<2,1,0>> passive=2 alone=F behind=FF stmt=bar:1 bar:1  confirmed=<<[0, 0, 0, 1, 0],[0, 0, 0, 0, 0]>> msgs={st 1>2 e1.1 bar}

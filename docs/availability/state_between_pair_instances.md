@@ -24,9 +24,10 @@ older one, so a lost message delays a decision and a late one is ignored. Both a
 
 In the sequencer and matching engine pairs, a lease request also carries the leader's statement about whether its peer
 may lead (rule 11 of [majority_leases.md](majority_leases.md)). Each statement is numbered, a voter keeps only the
-newest it has seen, and the leader sends it on every request until a grant echoes it, so a lost or late copy cannot undo
-a newer one. This is checked by the model in [tla/findings.md](tla/findings.md), section 12. The one place a copy of a
-statement can be lost without anyone knowing is between the two arbiters, below.
+newest it has seen, and the leader sends it on every request, so a lost or late copy cannot undo a newer one. The
+leader relies on a statement only once its peer has echoed it, or both arbiters have confirmed it, or the active arbiter,
+cut off from the other, has confirmed it alone, so the copy between the two arbiters, below, is not what keeps it. This is checked by the model in [tla/findings.md](tla/findings.md), section
+12.
 
 ## The sequencers
 
@@ -51,7 +52,8 @@ Only the lease messages. Each publisher follows the WAL from the leading sequenc
 
 | Message | What it carries | If lost, late or repeated |
 |---|---|---|
-| `ArbiterStateRecord` | For each pair the arbiters vote in, the highest epoch granted and the leader's newest statement about whether its peer may lead | A repeat or a late copy is harmless: the receiver keeps the higher epoch and the newer statement. A lost copy is made up when the link between the arbiters comes up again, but only if the active arbiter is still running then. Nothing acknowledges it, and the active arbiter echoes a statement before the passive one has it, so a change of active arbiter can lose a statement the leader is relying on ([BUG-0230](../bug_list.md#bug_0230)). A lost epoch costs only availability ([tla/findings.md](tla/findings.md), section 11.5) |
+| `ArbiterStateRecord` | For each pair the arbiters vote in, the highest epoch granted and the leader's newest statement about whether its peer may lead | A repeat or a late copy is harmless: the receiver keeps the higher epoch and the newer statement. A lost copy is made up when the link between the arbiters comes up again, if the active arbiter is still running then. A lost statement is harmless: each arbiter also records the statement from the leader's own requests, and the leader relies on it only once both arbiters, or its peer, have confirmed it. An arbiter that confirms alone sends its whole state before its next `ArbiterHeartbeat`, and one that becomes active without a recent echo of its own heartbeat grants nothing until it has one ([a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md)) A lost epoch costs only availability ([tla/findings.md](tla/findings.md), section 11.5) |
+| `ArbiterHeartbeat` | When it was sent, on the sender's clock, and an echo of the newest such moment received from the other arbiter | A lost or late heartbeat only makes an arbiter think it has heard less recently than it has, which delays an active arbiter confirming alone, or makes one becoming active wait to grant: availability only. An echo is sent on a connection only after any statement the sender confirmed alone, so an echo cannot overtake one |
 
 ## The FIX gateways
 

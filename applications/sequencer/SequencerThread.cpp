@@ -518,10 +518,12 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         return;
     }
 
-    // Arbiter PDUs: the active arbiter's answers to this sequencer's lease requests.
+    // Arbiter PDUs: the active arbiter's answers to this sequencer's lease requests, and either arbiter's confirmation that it
+    // holds this sequencer's statement about its peer.
     if (conn_id == arbiter_primary_conn_id_ || conn_id == arbiter_secondary_conn_id_) {
         const auto pdu_id = static_cast<int16_t>(message.pdu_id());
-        const bool lease_answer = pdu_id == pubsub_itc_fw::LeaseGrant::message_pdu_id || pdu_id == pubsub_itc_fw::LeaseRefusal::message_pdu_id;
+        const bool lease_answer = pdu_id == pubsub_itc_fw::LeaseGrant::message_pdu_id || pdu_id == pubsub_itc_fw::LeaseRefusal::message_pdu_id ||
+                                  pdu_id == pubsub_itc_fw::StatementHeld::message_pdu_id;
         if (lease_answer && replicated_wal_.has_value()) {
             static_cast<void>(replicated_wal_->handle_message(conn_id, pdu_id, message.payload(), static_cast<size_t>(message.payload_size()),
                                                               std::chrono::steady_clock::now()));

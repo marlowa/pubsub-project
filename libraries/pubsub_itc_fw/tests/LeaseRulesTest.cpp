@@ -272,13 +272,13 @@ TEST(LeaseRulesTest, AnOldLeaderWhoseLeaseRanOutRefusesAPeerItsRecordSaysMayNotL
     EXPECT_EQ(participant.on_peer_request(2, 2, later).answer.verdict, pubsub_itc_fw::LeaseVoter::Verdict::RefusedMayNotLead);
 }
 
-TEST(LeaseRulesTest, LeaderMayActWithoutItsPeerOnlyOnceAnotherVoterEchoesTheStatement) {
+TEST(LeaseRulesTest, LeaderMayActWithoutItsPeerOnceThePeerEchoesTheStatement) {
     pubsub_itc_fw::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, statements);
     make_first_instance_lead(participant);
     EXPECT_FALSE(participant.may_act_without_peer());
-    participant.note_echo(5, 1);
+    participant.note_echo_from_peer(5, 1);
     EXPECT_FALSE(participant.may_act_without_peer()) << "an echo for another epoch counts for nothing";
-    participant.note_echo(1, 1);
+    participant.note_echo_from_peer(1, 1);
     EXPECT_TRUE(participant.may_act_without_peer());
 
     participant.peer_holds_everything();
@@ -289,9 +289,56 @@ TEST(LeaseRulesTest, LeaderMayActWithoutItsPeerOnlyOnceAnotherVoterEchoesTheStat
 
     participant.begin_running_without_peer();
     EXPECT_EQ(participant.statement().number, 3);
-    participant.note_echo(1, 2);
+    participant.note_echo_from_peer(1, 2);
     EXPECT_FALSE(participant.may_act_without_peer()) << "an echo of an earlier statement must not count";
-    participant.note_echo(1, 3);
+    participant.note_echo_from_peer(1, 3);
+    EXPECT_TRUE(participant.may_act_without_peer());
+}
+
+TEST(LeaseRulesTest, LeaderMayActWithoutItsPeerOnlyOnceBothArbitersHoldTheStatement) {
+    // One arbiter is not enough: if it stops and the other becomes active without the statement, the peer could be granted
+    // the lead while lacking commands the leader acted on (docs/availability/tla/traces/behind-6-passive-arbiter-lacks-statement.txt).
+    pubsub_itc_fw::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, statements);
+    make_first_instance_lead(participant);
+    const pubsub_itc_fw::LeaderStatement first{1, 1, 1, false};
+
+    participant.note_held_by_arbiter(1, first, false);
+    EXPECT_FALSE(participant.may_act_without_peer()) << "one arbiter alone must not be enough";
+    participant.note_held_by_arbiter(1, first, false);
+    EXPECT_FALSE(participant.may_act_without_peer()) << "the same arbiter twice is still one arbiter";
+    participant.note_held_by_arbiter(3, first, false);
+    EXPECT_FALSE(participant.may_act_without_peer()) << "an id outside the arbiter pool counts for nothing";
+    participant.note_held_by_arbiter(2, pubsub_itc_fw::LeaderStatement{1, 5, 1, false}, false);
+    EXPECT_FALSE(participant.may_act_without_peer()) << "a statement of another leadership counts for nothing";
+    participant.note_held_by_arbiter(2, pubsub_itc_fw::LeaderStatement{2, 1, 1, false}, false);
+    EXPECT_FALSE(participant.may_act_without_peer()) << "a statement of another instance counts for nothing";
+    participant.note_held_by_arbiter(2, first, false);
+    EXPECT_TRUE(participant.may_act_without_peer());
+
+    participant.peer_holds_everything();
+    participant.begin_running_without_peer();
+    EXPECT_EQ(participant.statement().number, 3);
+    EXPECT_FALSE(participant.may_act_without_peer()) << "confirmations of an earlier statement must not count";
+    participant.note_held_by_arbiter(1, pubsub_itc_fw::LeaderStatement{1, 1, 3, false}, false);
+    EXPECT_FALSE(participant.may_act_without_peer());
+    participant.note_held_by_arbiter(2, pubsub_itc_fw::LeaderStatement{1, 1, 3, false}, false);
+    EXPECT_TRUE(participant.may_act_without_peer());
+}
+
+TEST(LeaseRulesTest, LeaderMayActWithoutItsPeerOnceTheActiveArbiterConfirmsTheStatementAlone) {
+    pubsub_itc_fw::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, statements);
+    make_first_instance_lead(participant);
+    participant.note_held_by_arbiter(2, pubsub_itc_fw::LeaderStatement{1, 5, 1, false}, true);
+    EXPECT_FALSE(participant.may_act_without_peer()) << "an alone confirmation of another leadership counts for nothing";
+    participant.note_held_by_arbiter(3, pubsub_itc_fw::LeaderStatement{1, 1, 1, false}, true);
+    EXPECT_FALSE(participant.may_act_without_peer()) << "an id outside the arbiter pool counts for nothing, alone or not";
+    participant.note_held_by_arbiter(2, pubsub_itc_fw::LeaderStatement{1, 1, 1, false}, true);
+    EXPECT_TRUE(participant.may_act_without_peer());
+
+    participant.peer_holds_everything();
+    participant.begin_running_without_peer();
+    EXPECT_FALSE(participant.may_act_without_peer()) << "an alone confirmation of an earlier statement must not count";
+    participant.note_held_by_arbiter(2, pubsub_itc_fw::LeaderStatement{1, 1, 3, false}, true);
     EXPECT_TRUE(participant.may_act_without_peer());
 }
 
