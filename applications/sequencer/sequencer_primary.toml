@@ -103,7 +103,7 @@ renewal_interval_milliseconds = ${shared_lease_renewal_interval_milliseconds}
 # cancels in one trading day. 200 million is the figure a MiFID test uses, twice the 100 million the
 # venue is tested with. The table holds each command's identifier and its position in the WAL, 6 GiB at
 # this size; it is reserved and filled from the WAL in the background when the sequencer starts, and
-# never grows. Read only when [ha] ha_enabled is true.
+# never grows. Read with high availability on or off, because every command is checked either way.
 [commands]
 identifiers_reserved = 200000000
 

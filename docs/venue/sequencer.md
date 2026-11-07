@@ -66,16 +66,21 @@ copy is thrown away before a number is taken.
    - With a follower connected and keeping up, the record is sent to the follower and the command is
      held until the follower acknowledges the record (`WalAck`). Only then is it sent to the engine,
      so the engine never acts on a command the follower does not hold. Up to 16,384 commands are held
-     in memory; beyond that they wait in the log and are sent from there, in order.
+     in memory (`[commands] orders_held_at_most`); beyond that they wait in the log and are sent from
+     there, in order.
    - With no follower keeping up, the leader runs alone: it tells a voter that the follower may not
      lead, and holds commands until that statement is confirmed. See
      [A follower behind does not lead](../availability/a_follower_behind_does_not_lead.md). The leader
      decides the follower is not keeping up when the follower disconnects, when no acknowledgement
      has come for 100 milliseconds while commands are waiting, or when the store of held commands
      fills.
-   - With no matching engine connected, the command is not sent. It is in the log, and whichever
-     engine acts next catches up from the log before it acts (below). The sequencer logs how long
-     commands have been waiting, not a line for each one.
+   - While no matching engine leads, the command is held, and sent to the engine that next leads,
+     oldest first; that engine has caught up from the log before it leads (below). The sequencer
+     logs a Warning every five seconds while it has no engine, not a line for each command. Once no
+     engine has led for five seconds (`[recovery] orders_held_at_most_seconds`), it tells the gateways
+     to refuse new orders until one leads; the orders already held stay held. If no engine could be
+     trading within the longest recovery the venue does by itself, trading halts (see
+     [When no matching engine can trade](#sequencer_absence)).
 6. **Sends the record to the follower and to every downstream subscriber**, whether or not an engine
    took the command.
 
@@ -94,9 +99,9 @@ the leader has forwarded, and the follower discards what it holds up to that poi
 **The leader forwards it**, in `forward_report_from_engine()`:
 
 1. **Finds the session.** Ordinarily the report's sequence number finds the session that placed the
-   order. A report with no originating sequence number, such as a cancel a promoted engine issues
-   for an order it inherited, or a report kept while this sequencer was following, is routed by the
-   session identity on its envelope.
+   order. A report with no originating sequence number, such as the cancel of each order a
+   `CancelBook` command removes from the book, which no member placed, or a report kept while this
+   sequencer was following, is routed by the session identity on its envelope.
 2. **Gives the report a sequence number of its own and writes it to the log**, sends it to the
    follower and streams it to downstream subscribers, as for a command. An order can have several
    reports, so they cannot share the order's number.
@@ -242,8 +247,11 @@ record it holds and asking for new records too. A sequencer that does not lead d
 `WalFollowDeclined`, and sends `WalLeaderChanged` if it takes the lead, so that the publisher asks it
 again. The leading sequencer's reading thread sends the publisher every record after its position, up
 to the last record committed, and the sequencer then sends `WalFollowCaughtUp`, saying how many records
-were sent. From then on the sequencer's own thread sends the publisher each record as it is committed,
-reading it back from the log it has just written (`WalHandedOverFollowers`). So a publisher is sent
+were sent. From then on the sequencer's own thread sends the publisher each record as it is committed
+(`WalHandedOverFollowers`), from a copy of the record it kept in memory when it wrote it, and reads the
+record back from the log only when there was no room to keep the copy
+([publishers_sent_from_memory.md](../availability/publishers_sent_from_memory.md)). A matching engine that
+follows the log is sent records in the same way once it has been caught up. So a publisher is sent
 only records the venue's record holds, once each and in order, and nothing a leader wrote but never had
 committed. A publisher writes into its own log only the record after the last it holds; it sends no
 acknowledgement. See [following_the_wal.md](../availability/following_the_wal.md), section 4.3,

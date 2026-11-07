@@ -42,8 +42,8 @@ See [Deciding leadership by majority, with leases](../availability/majority_leas
 
 **On every start**, the sequencer opens its log, finds the last sequence number in it so that
 numbering carries on from there, and starts writing a snapshot of the log's position every 30
-seconds. With high availability on, it also fills its table of the command identifiers in the log,
-in the background (see [Sequencer Design](sequencer.md)).
+seconds. It also fills its table of the command identifiers in the log, with high availability on
+or off, in the background (see [Sequencer Design](sequencer.md)).
 
 ## Ports
 
@@ -55,6 +55,7 @@ In the development environment. The preprod, prod and test-1 environment files u
 | 11021, 11022 | primary, secondary | Each sequencer's report listener: the matching engines connect here |
 | 11003, 11004 | primary, secondary | Each sequencer's peer listener; each connects to the other's |
 | 11030, 11031 | primary, secondary | Each sequencer's listener for downstream subscribers, such as the matching engine publishers |
+| 11050, 11051 | primary, secondary | Each sequencer's listener for operators, over which trading is halted and a halt lifted |
 | 11010, 11011 | gateways | The FIX gateway instances' report listeners, which the sequencers connect to |
 | 11110, 11111 | gateways | The binary gateway instances' report listeners |
 | 11020, 11023 | engines | The primary and secondary matching engines' order listeners |
@@ -71,11 +72,14 @@ In the development environment. The preprod, prod and test-1 environment files u
 | `[ha] arbiter_primary_*`, `arbiter_secondary_*` | The two arbiters |
 | `[peer] listen_port`, `host`, `port` | The connection to the peer sequencer: this instance listens on one port and connects to the other's |
 | `[lease]` | The lease period, the allowance for clock drift and the renewal interval, from the environment's shared values so that every voter agrees |
-| `[commands] identifiers_reserved` | How many command identifiers the table that stops a command being sequenced twice is reserved for: 200 million. Read only with high availability on |
+| `[commands] identifiers_reserved` | How many command identifiers the table that stops a command being sequenced twice is reserved for: 200 million |
+| `[commands] orders_held_at_most` | The most orders the leader holds in memory while it waits for its follower's acknowledgement or a voter's confirmation: 16,384. Orders beyond that wait in the log and are sent from there. Read only with high availability on |
 | `[wal_subscriber] listen_port` | The listener for downstream subscribers |
 | `[operator] listen_host`, `listen_port`, `tls_certificate_path`, `tls_private_key_path`, `tls_ca_path` | The listener for operators, over which `scripts/operator_halt.py` halts trading or lifts a halt. TLS only; a client is accepted only with a certificate signed by the authority `tls_ca_path` names, which may not be empty. Deployment makes the three files ([sequencer.md](sequencer.md), "Whether trading is halted, and the operator's halt and lift") |
 | `[wal] directory`, `segment_size`, `snapshot_interval_seconds` | Where the log is kept, the size of each segment file (4 MiB), and how often the snapshot is written (30 seconds) |
+| `[wal] records_kept_for_publishers`, `bytes_kept_for_publishers` | The room for the copies of committed records kept in memory, so that records are sent to the publishers and to a following matching engine without being read back from the log: 32,768 records and 16 MiB |
 | `[recovery] automatic_recovery_limit_seconds` | The longest the venue recovers by itself while no matching engine can trade: when the time without one, added to how long the catch-up under way will still take, passes it, the leading sequencer voids the orders it holds, cancels the book and halts trading, and the gateways refuse orders with the reason (R-0117). 10 seconds, from the environment's shared value, so that both instances agree. See [Sequencer](sequencer.md#sequencer_absence) |
+| `[recovery] orders_held_at_most_seconds` | The longest orders are held while no matching engine leads: after it, the gateways are told to refuse new orders until one leads. 5 seconds, from the environment's shared value |
 | `[catch_up] send_every_report` | Whether a matching engine catching up is told to send every report again, rather than only the reports of commands after the last one the WAL holds every report of: false. True only in the check of `ha_test.py` that runs both engines on a copy of a scenario's WAL and compares every report with a replay. See [far_back_catch_up.md](../availability/far_back_catch_up.md) |
 | `[metrics]` | The Prometheus endpoint, and the bucket bounds for the log write time and the order path histograms |
 | `[reactor]`, `[logging]`, `[event_queue_pool]`, `[command_queue_pool]` | CPU pinning and waiting, log levels, and the pools the reactor's queues take their entries from |

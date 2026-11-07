@@ -1005,11 +1005,11 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     //
     // Ordinarily it is the order's record: a member is not told its order executed until the follower holds the order.
     //
-    // A report that answers no order has no order's record to wait for: the reports cancelling the book that a promoted
-    // matching engine sends carry seq_no 0. A report that repeats one already sent, as every report from a catch-up
-    // does, names an order whose record was committed long ago, so waiting for that record would not wait at all. Both
-    // wait for the report's own record instead, which is unique to the report, so that the member learns of it only once
-    // the follower holds the report's record.
+    // A report that answers no order has no order's record to wait for: the reports of the orders a CancelBook command
+    // cancels carry seq_no 0, because no member placed that command. A report that repeats one already sent, as every
+    // report from a catch-up does, names an order whose record was committed long ago, so waiting for that record would
+    // not wait at all. Both wait for the report's own record instead, which is unique to the report, so that the member
+    // learns of it only once the follower holds the report's record.
     const bool gate_on_own_record = (er_seq_no == 0) || possible_repeat;
     const int64_t gate_seq_no = gate_on_own_record ? er_wal_seq : er_seq_no;
 

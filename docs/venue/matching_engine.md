@@ -41,7 +41,7 @@ In order, the engine:
 5. **Refuses an order when the book is full**, with OrdRejReason Other and the text "the venue is
    holding as many open orders as it can". The book has a fixed number of records
    (`[order_book] region_capacity`: two million in the development environment, one million in the
-   others), and it is never grown on the engine's thread.
+   preprod and test-1 environments, and one hundred million in prod), and it is never grown on the engine's thread.
 6. **Otherwise accepts it**: the order is written to the book, and the member is sent an execution report with ExecType and OrdStatus New,
    LeavesQty equal to OrderQty, and CumQty 0. The report echoes the order's price, order type, time
    in force, expiry time, and its party and underlying repeating groups.
@@ -51,7 +51,7 @@ Every refusal is an execution report with ExecType and OrdStatus Rejected and Or
 ### A cancel
 
 The engine looks for the order named by `OrigClOrdID` under the same session. If it is open, the
-engine removes it from the book, sends the removal to the standby engine, and reports it with
+engine removes it from the book and reports it with
 ExecType and OrdStatus Canceled. If it is not open, the engine sends a rejected execution report with
 OrdRejReason Unknown order. The gateways turn that report into an `OrderCancelReject` for the member;
 see [fix_order_gateway.md](fix_order_gateway.md) and [binary_order_gateway.md](binary_order_gateway.md).
@@ -122,8 +122,8 @@ sequencer to halt trading, by a `TechnicalEvent` in the WAL, and cancels nothing
 an engine that restarts after a halt is still halted. It is set and cleared by commands: a `CancelBook`
 that asks to halt and cancels an order, and a `TechnicalEvent`, which says whether trading is halted.
 While halted, the engine refuses every new order, in the reply to that order, and still carries out
-every cancel. The engine that leads tells the follower of each change to the halt as it tells it of
-each change to the book.
+every cancel. Both engines apply the same commands from the WAL, so an engine that follows halts and
+lifts the halt at the same commands as the engine that leads.
 
 ## High availability
 
@@ -145,8 +145,10 @@ With high availability on, two instances run: `matching_engine` (the primary, in
   marked `PossResend`. See
   [Both matching engines apply the WAL](../availability/both_engines_apply_the_wal.md).
 - **The two instances are linked** (`[peer]`, ports 11025 and 11026 in the development environment):
-  the link carries the lease requests between them, their role announcements, and the check that
-  their settings agree.
+  the link carries the lease requests and grants between them, the check that their settings agree,
+  and the question an engine asks at start-up of whether its peer applied a command it died applying
+  (`DiedApplyingCheck`, below). Neither engine sends the other its role: which instance leads is
+  decided by leases, and each announces its role only to the sequencers.
 - **Every engine catches up before it acts**, whether it has just been promoted or has just started.
   It sends the sequencers the position it has reached (`WalFollowRequest`), and the leading sequencer
   sends every command after it, then says where it stopped and how many records it sent
@@ -193,6 +195,7 @@ environment, primary first:
 | `[lease]` | The lease period, the allowance for clock drift, and how often a lease is renewed, shared by every component that takes part in leases |
 | `[ha_timing] catch_up_retry_seconds` | How long to wait before asking for a catch-up again when no answer came, 15 seconds |
 | `[order_book] region_path`, `region_capacity` | The book's file, and the most orders it can hold |
+| `[identifiers] secret_file` | The file holding the secret from which the keys for `OrderID` and `ExecID` are derived; both engines of a pair must hold the same secret |
 | `[order_book] initial_capacity`, `growth_report_threshold_bytes` | The size reserved for the map from order identity to record, and when its growth is reported |
 | `[event_queue_pool]`, `[command_queue_pool]` | The pools the reactor's queues take their entries from |
 | `[reactor]`, `[logging]`, `[metrics]` | CPU pinning and waiting, log levels, and the Prometheus endpoint |

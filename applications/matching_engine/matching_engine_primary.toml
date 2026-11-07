@@ -17,8 +17,9 @@ role    = "primary"
 [peer]
 # The link between the two engines. Symmetric: this instance listens, and also dials its peer,
 # and both connections stand at all times. Whichever is up carries the lease requests and grants
-# between the pair, each engine's announcement of its role, and the check that the two engines'
-# settings agree. Each engine applies the WAL itself, so no book is sent on it.
+# between the pair, the check that the two engines' settings agree, and an engine's question at
+# start-up of whether its peer applied the command it died applying. Each engine applies the WAL
+# itself, so no book is sent on it.
 listen_host = "${matching_engine_peer_listen_host}"
 listen_port = ${matching_engine_peer_listen_port}
 host = "${matching_engine_peer_host}"
