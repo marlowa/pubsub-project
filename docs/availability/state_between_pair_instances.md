@@ -20,14 +20,14 @@ handler, `MatchingEnginePublisherThread::handle_peer_pdu` and `ArbiterThread::ha
 to the third voter. They decide which instance leads ([majority_leases.md](majority_leases.md)). A request is sent
 again every renewal interval, a lease runs out unless it is renewed, and a voter records a newer epoch and ignores an
 older one, so a lost message delays a decision and a late one is ignored. Both are checked by the model in
-[tla/findings.md](tla/findings.md), section 11, in which any message may be lost or arrive late.
+[tla/findings.md](tla/findings.md), section 2, in which any message may be lost or arrive late.
 
 In the sequencer and matching engine pairs, a lease request also carries the leader's statement about whether its peer
 may lead (rule 11 of [majority_leases.md](majority_leases.md)). Each statement is numbered, a voter keeps only the
 newest it has seen, and the leader sends it on every request, so a lost or late copy cannot undo a newer one. The
 leader relies on a statement only once its peer has echoed it, or both arbiters have confirmed it, or the active arbiter,
 cut off from the other, has confirmed it alone, so the copy between the two arbiters, below, is not what keeps it. This is checked by the model in [tla/findings.md](tla/findings.md), section
-12.
+3.
 
 ## The sequencers
 

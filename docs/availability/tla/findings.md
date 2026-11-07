@@ -1,630 +1,45 @@
 # Checking the high availability design with TLA+: findings {#tla_findings}
 
-This document reports what model checking found when two parts of the venue's high availability
-design were specified in TLA+ and checked with its model checker, TLC. The first two specifications are
-written from the code at commit `42d29e9`, and from the design documents where they explain it.
+This document reports what model checking finds when the venue's high availability design is specified in TLA+ and
+checked with its model checker, TLC.
 
-TLA+ is a language for describing a system's design precisely enough for a tool to check it. A
-specification states what the system's state can be, which steps can change that state, and which
-properties must always hold. TLC then explores every reachable state of a small version of the
-system and, if any sequence of steps breaks a property, reports that sequence. It checks the design
-as specified, not the running code, so each finding below also says where in the code the behaviour
-comes from.
+TLA+ is a language for describing a system's design precisely enough for a tool to check it. A specification states
+what the system's state can be, which steps can change that state, and which properties must always hold. TLC then
+explores every reachable state of a small version of the system and, if any sequence of steps breaks a property,
+reports that sequence, which is called a counterexample. It checks the design as specified, not the running code, so
+each result below holds in the code only as far as the specification matches the code; section 4 says where it does.
 
 ---
 
 ## 1. Summary
 
-Two specifications were written:
+Two specifications are checked, both in this directory:
 
-- **`SequencerPairHA.tla`**: the two sequencer instances and the arbiter they report to. It covers
-  the instances' roles and persisted epochs, the heartbeat and arbitration timeouts, resolving
-  leadership between visible peers, degraded self-promotion, the arbiter's record, its learning
-  period after a restart, and leases.
-- **`ArbiterPoolHA.tla`**: the two arbiters and the witness, which decide which arbiter is active.
+- **`MajorityLeaseHA.tla`** (section 2): the rules by which an instance of a pair leads only while a majority of three
+  voters grants it a lease. It covers a component pair, whose third voter is the active arbiter, and the two arbiters,
+  whose third voter is the witness. Two instances never act as leader at once, and no epoch is led by two instances,
+  with crashes and restarts of every voter, link failures, and messages delayed or lost. Each rule of the design is
+  needed: with any one removed, TLC finds two instances acting as leader at once, or no instance ever leading.
+  Promotion of an instance on its own vote when no arbiter answers, which the design leaves out, lets two instances
+  lead at once during a partition (`traces/lease-4-degraded-promotion.txt`).
+- **`FollowerBehindHA.tla`** (section 3): rule 11 of the same design, which keeps an instance whose log lacks commands
+  the matching engine has acted on from leading, with the arbiter tier as two arbiters of which one is active at a
+  time. The instance leading always holds every command the engine has acted on, and each part of the rule is needed.
 
-Both include crashes and restarts of every party, link failures, and messages that are still in
-flight when the state they describe changes.
+Section 4 sets the two against the venue's design principles, and says which principles no model checks.
 
-**What held.** With nothing failing, every property holds in both specifications. So do these, on
-their own:
-- a single crash and restart of either sequencer instance;
-- a single link failure, of any link, in either specification;
-- a single arbiter restart;
-- a single crash of the witness.
+**What remains open.** An epoch can go backwards after both arbiters restart, as section 2.5 shows. Two instances
+still never act at once, and a leader learns of the higher epoch from its peer. Learning it from a receiver is not
+built.
 
-The first of these is the case the recent work on process death was aimed at, and it checks out.
-
-**What did not.** Every result below is reported under the strict timing rules described in section
-3.3. So none of them depends on a failure, restart or timeout landing within a message's flight
-time. Where a timing-dependent variant also exists, it is mentioned as supporting evidence.
-
-| # | Finding | Smallest failure found to cause it |
-|---|---------|------------------------------------|
-| 1 | Two running sequencer leaders can hold **the same epoch**, which defeats epoch fencing | The primary crashes while the secondary takes over, then restarts cut off from both the secondary and the arbiter |
-| 2 | A leader never stands down when it learns of a newer generation, so two leaders **persist** after the fault that caused them has gone | Any path to two leaders, of which the simplest is two concurrent failures (section 6.2) |
-| 3 | An arbitration round begun at startup is never cancelled, and can later **promote a healthy follower beside its healthy leader** | The primary starting after the secondary, followed by one link failure or one arbiter crash |
-| 4 | After a degraded promotion the generations **diverge for good**: the follower ignores its leader from then on. This reproduces BUG-0085 | Two link failures; or a late-starting primary and one link failure |
-| 5 | A follower that the arbiter confirms is left with **no timeout armed**, and never takes over if its leader then dies | A failure of the link between the two instances, followed by the leader's death |
-| 6 | The arbiter **ignores the epoch in its own record** when that record is unconfirmed, and issues an epoch already used by another instance | Both instances crashing, one after the other |
-| 7 | **Two arbiters can both be active**, and nothing ever makes one stand down | An arbiter restart and one link failure; or the active arbiter losing its links to both the other arbiter and the witness |
-| 8 | After one blip on the link between the arbiters, the passive arbiter **can never take over**, so the loss of the active arbiter's machine leaves no active arbiter | One link blip at any earlier time, then the active arbiter's death |
-
-Two claims in the design documents do not survive checking:
-
-- **The header of `leader_follower.dsl`** says the arbiter pool has "three votes, majority is two"
-  and "tolerates any single-machine failure". The witness keeps no record of the votes it has
-  granted, and an active arbiter never stands down. After one transient blip on the link between
-  the arbiters (finding 8), the death of the active arbiter's machine leaves the venue with no
-  active arbiter at all.
-- **`design_notes.md` section 11e** says there is only ever one issuer of a generation, because
-  resolution between peers and arbitration by the arbiter "are mutually exclusive by construction".
-  Within the strict timing rules and the budgets checked, those two did not collide. But the
-  argument does not cover the third issuer, degraded self-promotion, and finding 1 is a collision
-  between degraded self-promotion and the arbiter. With the timing rules relaxed, peer resolution
-  and the arbiter do collide (section 6.1).
-
-Writing the specifications raised further questions before the checker ran. Section 7 lists those.
-
-Section 11 checks the design that replaced it, and that the venue now uses, in which an instance leads only while a
-majority of three voters grants it a lease. It is specified in a third file, `MajorityLeaseHA.tla`. Section 12 checks
-rule 11 of that design, that a follower which is behind does not lead, in a fourth, `FollowerBehindHA.tla`. Section 13 sets
-the two against the venue's design principles, and says which principles no model checks.
-
-### 1.1 Which findings the code now addresses
-
-Sections 2 to 10 record the checking of the design at commit `42d29e9`. The venue no longer decides
-leadership that way: it decides by majority, with leases, as section 11 and
-[../majority_leases.md](../majority_leases.md) describe. That changes what each finding means for the
-code as it stands:
-
-| Finding | Where it stands |
-|---------|-----------------|
-| 1 | Addressed. Every new epoch records which instance leads in it: its remainder on division by 4 is that instance's id (`pubsub_itc_fw/LeaderEpoch.hpp`), so two different instances never lead at the same epoch. The lease rules use it for every group and for the arbiters' own epochs. |
-| 2, 3, 4, 5, 6 | No longer apply. They are about mechanisms the majority design removed: heartbeat timeouts, degraded self-promotion without an arbiter, arbitration rounds, and the arbiter computing leadership from its record. An instance now leads only while a majority grants it a lease, and stops at once when its lease runs out. |
-| 7 and 8 | Resolved by the majority design: the arbiter pool is a genuine majority of the two arbiters and the witness, the witness issues no epochs, and an arbiter becomes active only with a grant. |
-
-The earlier specifications keep constants (`WithFixes`, `UniqueEpochs`, `LeaderStandsDown` and
-`ArbiterLiftsIncumbent` in `SequencerPairHA.tla`; `WithFixes` and `UniqueEpochsAndStandDown` in
-`ArbiterPoolHA.tla`) that model the remedies tried on that design before it was replaced; with every
-constant off, each models the code at `42d29e9`.
-
-**What remains open:**
-
-- **An epoch can go backwards** after both arbiters restart, as section 11.5 shows. Two instances still
-  never act at once, and a leader learns of the higher epoch from its peer. Learning it from a receiver
-  is not built.
-
-What an old leader had not replicated when it stopped is handled: a
-rejoining follower's log is repaired to match its leader's
-([../follower_log_repair.md](../follower_log_repair.md)), and a follower that lacks commands the engine
-acted on never leads (rule 11, checked in section 12).
+Every counterexample recorded here is rerun on every install by `scripts/tla_trace_pages.py`, and the install fails
+if one stops breaking its property or no longer matches its committed trace.
 
 ---
 
-## 2. What was modelled
+## 2. The design the venue uses: leadership by majority, with leases
 
-### 2.1 The sequencer pair: `SequencerPairHA.tla`
-
-The specification follows `SequencerThread.cpp`, `ArbiterThread.cpp` and `LeadershipDecision.hpp`
-action by action:
-
-| Code | Specification |
-|------|---------------|
-| `handle_peer_status_response` and `elect_role` | `ReceiveStatus` |
-| `resolve_with_visible_peer` | `ResolveRole` and `ResolveTarget`: the lower instance id leads, at one past the higher epoch |
-| `handle_peer_heartbeat` | `ReceiveHeartbeat`: a follower follows a newer epoch and re-arms its timeout |
-| `on_timer_event`, peer heartbeat timeout | `HeartbeatTimeout`: report to the arbiter, or promote in a new generation if none is connected |
-| `on_timer_event`, arbitration timeout | `ArbitrationTimeout`: retry, or promote in a new generation |
-| `decide_and_broadcast` with `LeadershipDecision::decide` | `ArbiterDecides`, including declining while learning |
-| `handle_arbitration_decision` | `ReceiveDecision` |
-| `handle_leadership_lease` | `LeaseArrives` |
-| `on_connection_lost` in the arbiter | `Unconfirm`: the record stops being trusted when its leader disconnects |
-| `adopt_role` | `Adopt`: the heartbeat timeout is re-armed only on a transition into follower |
-
-There are three links: instance to instance, and each instance to the arbiter. Status responses,
-arbitration reports and arbitration decisions are messages in flight.
-
-The code retries arbitration six times, three seconds apart. The specification uses two retries,
-and adds a timing rule in their place: a round can run out while the arbiter is still reachable only
-if the arbiter restarted during the round. Fifteen seconds of retries outlast its ten-second learning
-period, and a reachable arbiter that is not learning answers every report.
-
-### 2.2 The arbiter pool: `ArbiterPoolHA.tla`
-
-The specification follows `ArbiterThread.cpp` (`elect_role`, `adopt_role`,
-`promote_if_nothing_else_can_be_active`, `handle_arbiter_vote_response`) and `WitnessThread.cpp`
-(`handle_arbiter_vote_request`). It covers:
-
-- each arbiter's role, its epoch held only in memory, and whether it has seen its peer act as
-  active;
-- the heartbeat or startup timeout, and an outstanding vote request;
-- the witness, whose highest-epoch record is also held only in memory;
-- three links: between the arbiters, and from each arbiter to the witness.
-
-### 2.3 What is left out
-
-- **The matching engine pair.** Its code has the same degraded self-promotion
-  (`MatchingEngineThread.cpp`, around lines 1254 and 1506). But by design it only ever gives
-  leadership up to its peer, never takes it from its peer, so some of the collisions below cannot
-  happen there in the same way. It was not modelled.
-- **Receivers of leader traffic,** such as the gateways and the matching engine receiving from the
-  sequencer. The properties are stated about leaders' roles and epochs, which is what receivers judge
-  by.
-- **Lease expiry by elapsed time.** A leader that stops renewing is modelled by its link or its
-  process failing instead.
-- **The two specifications together.** What two active arbiters do to a sequencer pair is argued
-  from the code in section 6.7, not checked.
-
----
-
-## 3. How the results were produced
-
-### 3.1 The properties
-
-For the sequencer pair:
-
-| Property | Meaning |
-|----------|---------|
-| `NoTwoLeadersSharingAnEpoch` | Two running instances are never both leader at the same epoch. Receivers accept a message whose epoch equals the one they hold, so two leaders sharing an epoch are both believed. |
-| `EpochNamesOneLeader` | Over a whole run, no epoch is ever held as leader by two different instances. |
-| `NoRegression` | A new leader's epoch is never below an epoch another instance has already led in. Receivers discard messages with a lower epoch than the one they hold. |
-| `FollowerCanNotice` | A running follower whose peer is dead always has a way to notice: an armed timeout, an outstanding arbitration request, or a message on its way. |
-| `ArbiterNeverIssuesBelowItsRecord` | The arbiter never starts a new generation at or below the epoch in its own record. |
-| `AtMostOneLeader` | Two instances never lead at once. The design does not claim this, because a partitioned leader keeps running and is meant to be fenced by its epoch. It is checked to show where fencing is all that stands between the venue and two leaders. |
-
-For the arbiter pool:
-
-| Property | Meaning |
-|----------|---------|
-| `AtMostOneActive` | Two running arbiters are never both active. |
-| `NoLastingTwoActive` | Two active arbiters that can see each other, with nothing left in flight, do not exist, because nothing would ever make one stand down. |
-| `PassiveNotAheadOfActive` | A passive arbiter's epoch is never above the active arbiter's. |
-| `PassiveCanNotice` | A passive arbiter whose active peer has died always has a way to notice. |
-
-### 3.2 Failure budgets
-
-Each run allows a fixed number of each kind of failure: instance or arbiter crashes, witness
-crashes, and link failures. Restarts and link recoveries are unlimited. The tables in section 5
-give, for each property, the smallest budgets that break it.
-
-### 3.3 The timing rules
-
-TLC lets any enabled step happen next, which includes a failure landing in the millisecond or so
-while a message is in flight. That does happen, but rarely. So each specification has a constant,
-`Quiet`, and every result in sections 1, 5 and 6 is reported with it on unless it says otherwise.
-
-With `Quiet` on:
-
-- no failure, restart or timeout happens while any message is in flight;
-- continuous traffic has caught up before any failure or restart. A follower receiving heartbeats
-  has followed its leader's epoch and has its timeout armed, and a leader connected to the arbiter
-  has had its lease recorded.
-
-The sequencer specification has two further constants:
-- **`FailuresAfterStart`**, on by default. Failures begin only once the pair has first settled, with
-  one leader, one follower, and the arbiter holding a confirmed record.
-- **`LateStart`**, off by default. When it is on, the primary starts after the secondary, which is
-  how finding 3 arises without any race.
-
-A result found with `Quiet` on does not depend on unlucky timing within a message's flight. It can
-still depend on the order of events seconds apart, such as a link failing before a retry fires,
-because that is exactly what the real timeouts race against.
-
-### 3.4 Checking the checks
-
-- **Every property holds in fair weather.** With all failure budgets at zero, every property holds
-  in both specifications. So the counterexamples come from failures, not from a mistake that breaks
-  the specification in fair weather.
-- **No property holds vacuously.** Every property is shown to fail by at least one counterexample.
-- **Each counterexample was checked against the code.** Each was read step by step against the code
-  before being reported.
-- **The timing rules were introduced one at a time, each for a stated reason.** Several early
-  counterexamples depended on timings the real constants rule out. Each rule was added because a
-  specific counterexample relied on something the real system does not do, and the counterexamples
-  that survive all of them are the ones reported here.
-
----
-
-## 4. What held
-
-- **Fair weather.** With no failures, every property holds in both specifications, including
-  `AtMostOneLeader` and `AtMostOneActive`.
-- **A single process death of either sequencer instance, with its restart.** All six sequencer
-  properties hold. The restarted instance comes back without taking leadership from a working peer,
-  epochs never collide or go backwards, and the survivor always notices a dead peer.
-- **Any single link failure, or a single arbiter restart, in the sequencer specification,** when
-  both instances start together.
-- **A crash and restart combined with an arbiter restart.**
-- **In the arbiter pool, a single arbiter crash, a single witness crash, or a single link failure**
-  never produces two active arbiters.
-
----
-
-## 5. Results
-
-"holds" means the property holds within the stated budgets. "fails" means TLC found a counterexample.
-
-### 5.1 The sequencer pair, with `Quiet` on, instances starting together
-
-| Failures allowed | Two leaders, same epoch | Epoch names one leader | No regression | Follower can notice | Arbiter below its record | At most one leader |
-|---|---|---|---|---|---|---|
-| none | holds | holds | holds | holds | holds | holds |
-| 1 instance crash | holds | holds | holds | holds | holds | holds |
-| 1 link failure | holds | holds | holds | holds | holds | holds |
-| 1 arbiter restart | holds | holds | holds | holds | holds | holds |
-| 2 instance crashes | holds | fails | holds | holds | fails | holds |
-| 2 link failures | holds | holds | fails | holds | holds | fails |
-| 1 crash and 1 link failure | holds | holds | holds | fails | holds | holds |
-| 1 crash and 1 arbiter restart | holds | holds | holds | holds | holds | holds |
-| 1 link failure and 1 arbiter restart | holds | holds | holds | holds | holds | fails |
-| 1 crash and 2 link failures | fails | fails | fails | fails | fails | fails |
-
-### 5.2 The sequencer pair, with `Quiet` on, the primary starting later
-
-| Failures allowed | Two leaders, same epoch | No regression | Follower can notice | At most one leader |
-|---|---|---|---|---|
-| none | holds | holds | holds | holds |
-| 1 link failure | holds | fails | holds | fails |
-| 1 arbiter restart | holds | holds | holds | fails |
-
-### 5.3 The arbiter pool, with `Quiet` on
-
-| Failures allowed | At most one active | No lasting two active | Passive not ahead of active | Passive can notice |
-|---|---|---|---|---|
-| none | holds | holds | holds | holds |
-| 1 arbiter crash | holds | holds | not run | holds |
-| 1 witness crash | holds | holds | not run | not run |
-| 1 link failure | holds | holds | fails | not run |
-| 2 link failures | fails | fails | not run | not run |
-| 1 arbiter crash and 1 link failure | fails | fails | not run | fails |
-| 1 witness crash and 1 link failure | holds | holds | not run | not run |
-| 1 arbiter crash and 1 witness crash | holds | holds | not run | not run |
-
-"Not run" means that combination was not checked for that property, because the finding it belongs
-to was already established by a smaller combination.
-
----
-
-## 6. Findings
-
-Each finding gives what happens in plain steps, the counterexample, the code responsible, and how
-likely it is. The counterexamples are in `traces/`, one file per counterexample, as a table of
-states. In the text, S1 and S2 are the sequencer instances with instance ids 1 (the primary) and 2
-(the secondary), and A1 and A2 are the arbiters. "S1 at 2" means instance 1 holding epoch 2.
-
-### 6.1 Two running sequencer leaders can hold the same epoch
-
-**What happens** (`traces/seq-1-same-epoch.txt`):
-
-1. The pair has settled: S1 leads at 1, and S2 follows at 1.
-2. S1's process dies. S2 times out and reports, and the arbiter makes S2 leader at 2. S1's epoch
-   file still says 1, because S1 was not running when generation 2 began.
-3. S1's links to the arbiter and to S2 both fail, and S1 is then restarted.
-4. S1's startup timeout fires. It can see neither its peer nor the arbiter, so it promotes itself in
-   a new generation: its own epoch plus one, 1 + 1 = 2.
-
-S1 and S2 now both lead at epoch 2. Every receiver accepts a message whose epoch equals its own, so
-anything that can reach both believes both, and epoch fencing cannot tell them apart.
-
-**Why it happens.** Degraded self-promotion adds one to the instance's own epoch, which is stale
-whenever the instance was not running while its peer moved on. The arbiter's decision and peer
-resolution also add one to "the higher known epoch". So any two of the three issuers can arrive at
-the same number from the same base.
-
-**Supporting evidence, timing-dependent** (`traces/seq-11-timing-one-crash-same-epoch.txt`, `Quiet`
-off). With nothing but S1's crash and restart, the arbiter answers S2's report with "S2 leads at 2"
-at the moment S1, restarting, resolves itself to leader at 2. S1 is working from a status reply that
-still describes S2 as a follower. This is resolution between peers and the arbiter issuing at once,
-which section 11e of the design notes argues cannot happen. It needs the restart to complete while
-the arbiter's decision is in flight, which is a window of about a millisecond. It also relies on a
-follower ignoring its peer's status: `elect_role` returns at once for an instance that already
-holds a role, so S1 resolves on the assumption that S2 is resolving too, and S2 is not.
-
-**Code.** The degraded paths in `SequencerThread::on_timer_event` call `set_epoch(epoch_ + 1)`.
-`resolve_with_visible_peer` and `LeadershipDecision::decide` use the higher known epoch plus one.
-
-**How likely.** The robust sequence needs S1 to come back cut off from both S2 and the arbiter while
-still being reachable by something that acts on its traffic. If S1 is cut off from everything, it is
-harmless. The partial isolation this needs is a network fault rather than a process fault.
-
-### 6.2 A leader never stands down on learning of a newer generation
-
-**What happens.** Once two instances both hold the leader role, nothing in the sequencer's code
-makes either give it up, even after every link has recovered:
-- A leader ignores its peer's heartbeats: `handle_peer_heartbeat` follows a newer epoch only when
-  `role_` is follower.
-- A leader ignores status responses: `elect_role` returns at once for an instance with a role.
-- A leader never asks the arbiter anything: only a follower's timeout sends a report.
-
-The only thing that demotes a leader is an arbitration decision naming its peer. That is sent only
-in answer to a report, and a report comes only from a follower.
-
-The simplest paths to two leaders are two concurrent failures that leave the follower with neither
-its peer nor an arbiter:
-- the peer link and the follower's arbiter link (`traces/seq-5-two-leaders-two-links.txt`);
-- the peer link and an arbiter crash (`traces/seq-4-two-leaders-link-and-arbiter.txt`).
-
-The follower then promotes itself, as the design intends when no arbiter can be reached. What this
-finding adds is that the result is permanent. Receivers that see both leaders keep only the higher
-epoch's traffic, but the lower-epoch leader goes on believing it leads, and anything that sees only
-it keeps acting on it.
-
-The arbiter pool has the same property. An active arbiter never stands down: its heartbeat timeout
-handler returns immediately while it is active, and `elect_role` returns at once for an arbiter with
-a role. `traces/arb-a-two-link-blips-two-active.txt` ends with two active arbiters that can see each
-other and each know the other is active, with nothing left that would change either.
-
-**Relation to the design.** `design_notes.md` section 10 accepts that a partitioned leader "keeps
-running and keeps being refused", as the price of having no hardware fencing. The checking adds two
-things. It stays that way after the partition ends too, not only during it. And when the two leaders
-share an epoch (finding 1), it is not refused at all.
-
-### 6.3 An arbitration round begun at startup can promote a healthy follower
-
-**What happens** (`traces/seq-8-late-start-leftover-round-link.txt`, `LateStart` on):
-
-1. The venue starts, and the arbiter is in its learning period. S2 is running, but S1 has not
-   started yet.
-2. S2's startup timeout fires. It reports to the arbiter, which declines because it is still
-   learning. S2's round of retries begins.
-3. S1 starts. The two exchange status and settle leadership between themselves: S1 leads at 1, and
-   S2 follows at 1. S2's round of retries is not cancelled.
-4. S2's link to the arbiter fails. S2's next retry finds no arbiter connected, so S2 promotes itself
-   to leader at 2.
-
-S1 is healthy, and still leading at 1. `traces/seq-10-late-start-leftover-round-arbiter-crash.txt`
-reaches the same end with an arbiter crash instead of the link failure.
-
-**Code.** `adopt_role` does not cancel `arbitration_timeout_timer_id_` or clear
-`arbitration_outstanding_`. Only `handle_arbitration_decision` does. The arbitration timeout handler
-returns early only for a leader, so a follower carries on retrying, and falls back to degraded
-promotion when no arbiter is connected.
-
-**How likely.** It needs one instance to start after the other while the arbiter is learning. That
-is common at a cold start of the whole venue, where the arbiter has just started too. The leftover
-round lasts until the arbiter next answers, a few seconds after its learning period ends. So a link
-failure or arbiter crash has to land in that window.
-
-### 6.4 After a degraded promotion the generations diverge for good (BUG-0085)
-
-**What happens** (`traces/seq-6-regression-two-links.txt`):
-
-1. S2 promotes itself to 2 in the degraded path, as in finding 6.2. S1 still leads at 1.
-2. S2's link to the arbiter recovers. When S2 registers again, the arbiter sends it the confirmed
-   record: "S1 leads at 1". S2 becomes a follower, but `set_epoch` refuses to go backwards, so S2
-   stays at 2.
-3. S2 is now a follower at 2, and its leader S1 is at 1. S2 discards every heartbeat from S1 as
-   stale, so its timeout is never re-armed by them. It times out, reports, is told again that S1
-   leads at 1, and repeats this indefinitely.
-
-`traces/seq-9-late-start-leftover-round-regression.txt` reaches the same state from finding 3's
-leftover round and a single link failure.
-
-This is BUG-0085's mechanism. The model adds one thing to the entry's "where to start", which
-suggests letting the arbiter learn a component's generation from its heartbeat. In this sequence,
-that would tell the arbiter S2 is at 2. But S1 would still lead at 1, and every receiver that had
-accepted S2's traffic at 2 would discard S1's. Learning the higher epoch heals nothing unless the
-leader is also moved to a generation above it.
-
-### 6.5 A confirmed follower is left with no timeout armed
-
-**What happens** (`traces/seq-7-stuck-follower.txt`):
-
-1. The pair has settled. The link between S1 and S2 fails.
-2. S2 hears no heartbeats, times out, and reports. S1 is still connected to the arbiter, so the
-   arbiter confirms it: "S1 leads at 1, S2 follows".
-3. S2 was already a follower, so `adopt_role` changes nothing. In particular it does not re-arm the
-   heartbeat timeout, which has already fired. `handle_arbitration_decision` has cancelled the
-   arbitration timeout, so S2 now has no timer of either kind.
-4. S1 dies.
-
-S2 never notices. Heartbeats from S1 were the only thing that would have re-armed S2's timeout, and
-none will come. The arbiter sees S1 disconnect and stops trusting its record, but it tells nobody:
-it answers questions and does not volunteer decisions.
-
-The pair has no leader until S1 is restarted. If S1's machine has died, which is the case the
-secondary exists for, that is indefinitely.
-
-**Code.** `adopt_role` returns immediately when the new role equals the current one, so the timeout
-is re-armed only on a transition into follower. `handle_arbitration_decision` calls
-`adopt_role(follower)` and cancels the arbitration timeout.
-
-**How likely.** It needs the peer link to fail, then the leader to die before the link comes back
-and a heartbeat gets through. A leader's machine dying often takes the peer link with it, so if the
-two happen in the wrong order, this is the case the secondary exists for.
-
-### 6.6 The arbiter ignores the epoch in its own record when that record is unconfirmed
-
-**What happens** (`traces/seq-2-epoch-reused.txt` and `traces/seq-3-arbiter-at-its-record.txt`):
-
-1. The pair has settled at 1. S1 dies, and the arbiter makes S2 leader at 2.
-2. S2 dies too. The arbiter's record still says "S2 at 2", but it is no longer confirmed.
-3. S1 restarts, with its epoch file still at 1. It cannot see S2, so it reports epoch 1.
-4. The arbiter has no confirmed incumbent, so it decides from the reported epoch alone:
-   max(0, 1) + 1 = 2. It makes S1 leader at 2, the epoch S2 held.
-
-Epoch 2 has now named two different leaders. Anything still carrying S2's traffic at epoch 2, such
-as a message in a queue or a reconnecting receiver, is accepted as current alongside S1's.
-
-**Code.** `LeadershipDecision.hpp` says a new epoch "is taken from the higher of the arbiter's record
-and the reporter's, so a component that has been away and comes back with a stale epoch cannot wind
-the sequence backwards". But `ArbiterThread::decide_and_broadcast` sets `inputs.incumbent_epoch`
-only when the record is confirmed. When the incumbent has disconnected, which is exactly when a
-returning component is most likely to report, the decision uses the reporter's epoch alone.
-
-**How likely.** Both instances dying in turn is the pattern of a faulty release, or of both hosts
-being restarted.
-
-### 6.7 Two arbiters can both be active
-
-**What happens** (`traces/arb-b-restart-and-link-two-active.txt`):
-
-1. A1 is active. A1 crashes. A2 times out, asks the witness, which cannot see A1, and becomes
-   active at 1.
-2. The link between the arbiters fails.
-3. A1 is restarted. It holds no role, epoch zero, and no memory of having seen A2 active. Its
-   startup timeout fires, and it asks the witness.
-4. The witness sees both arbiters connected, and grants the lower id, A1, at epoch 2.
-
-A1 and A2 are now both active, and when the link between them recovers, neither stands down
-(finding 6.2).
-
-`traces/arb-a-two-link-blips-two-active.txt` reaches the same end without any crash. A1, while
-active, loses its links to both A2 and the witness, but stays reachable by the components, and the
-witness grants A2. `traces/arb-c-timing-startup-race-and-link-two-active.txt` (`Quiet` off) reaches
-it with a single link failure during startup.
-
-**Why it matters.** Components send their arbitration reports to both arbiters
-(`SequencerThread::send_arbitration_report` sends to both connections), and only a passive arbiter
-drops them. With two active arbiters, each decides from its own connection table and its own record.
-If S1 is connected to A1 but not to A2, a report from S2 is answered by A1 with "S1 leads", and by
-A2 with "S2 leads at a new epoch". `handle_arbitration_decision` applies whichever arrives, so the
-component's role depends on the order of arrival. Leases also go to both arbiters, and their records
-can diverge further from there. This consequence is argued from the code, not checked, because the
-two specifications are separate.
-
-**Why it happens.** The witness is not a third vote in a majority:
-- It grants the role to whichever arbiter asks, preferring the lower id when it can see both.
-- It remembers nothing of what it has granted, so it cannot tell a restarted A1 asking for the first
-  time from a pool whose active member is already serving. That is the mistake BUG-0031 describes
-  for component arbitration, a cold-start preference applied to a rejoin, recurring one level up.
-- An active arbiter never checks that it still holds a majority. It stays active with no link to
-  either the other arbiter or the witness.
-
-### 6.8 After one blip on the link between the arbiters, the passive arbiter cannot take over
-
-**What happens** (`traces/arb-e-vote-leaves-passive-ahead.txt` and
-`traces/arb-f-passive-cannot-notice.txt`):
-
-1. A1 is active at 0, and A2 passive at 0. The link between them blips.
-2. A2 hears no heartbeats, times out, and asks the witness. The witness sees A1 connected, grants A1,
-   and returns the epoch for the new arbiter generation: 1.
-3. A2 takes that epoch and stays passive. A1 never learns of epoch 1.
-4. The link recovers. A1's heartbeats carry epoch 0, below A2's 1, so A2 discards them as coming from
-   a stale peer.
-5. A2's heartbeat timeout has already fired, and `adopt_role(follower)` changes nothing for an
-   arbiter that is already passive, so nothing re-arms it. The heartbeats that would re-arm it are
-   being discarded.
-6. A1 dies. A2 never notices. No arbiter is active.
-
-With no active arbiter, every arbitration report is dropped, and components fall back to degraded
-self-promotion. Findings 1, 3 and 4 show where that leads.
-
-The blip in step 1 can have happened at any time before step 6, and leaves no visible sign. So after
-any transient fault on that link, the pool no longer survives the loss of the active arbiter's
-machine.
-
-**Code.** `handle_arbiter_vote_response` takes `resp.epoch` and calls `adopt_role`. `adopt_role`
-returns immediately for the current role. `handle_peer_heartbeat` ignores a heartbeat whose epoch
-is below the receiver's, and re-arms the timeout only otherwise.
-
----
-
-## 7. Questions the specifications raised before checking
-
-Writing a specification forces each piece of state and each step to be stated exactly. These are the
-places where the design documents did not say, and the code had to be read to find out:
-
-- **Which facts survive whose restart.** Sequencer epochs persist. Arbiter epochs, the arbiter's
-  record, its memory of having seen its peer active, and the witness's highest epoch do not. The
-  design notes discuss persistence for the sequencer and for the arbiter's record. They do not
-  discuss the arbiter's own epoch or the witness's, and findings 6.7 and 6.8 turn on exactly those.
-- **What a vote from the witness means to an arbiter that did not win it.** The code makes it a
-  source of a new epoch for that arbiter too. Finding 6.8 follows.
-- **Whether an arbitration round belongs to a role or to the instance.** The code ties it to the
-  instance, so it outlives the role being settled another way. Finding 6.3 follows.
-- **Whether the arbiter's record epoch is a fact or an opinion.** The comment in
-  `LeadershipDecision.hpp` treats it as a fact that bounds new epochs. The code treats it as valid
-  only while the record is confirmed. Finding 6.6 follows.
-- **Whether the arbiter elects on a status query.** The sequencer deliberately elects only on the
-  response, because the query carries no role, and `design_notes.md` records that electing on the
-  query once produced two leaders. The arbiter still elects on the query: `handle_peer_status_query`
-  calls `elect_role` with the peer's role as unknown. No counterexample was traced to this within the
-  budgets run, but it is the pattern the design notes identify as a cause of two leaders.
-
----
-
-## 8. Limits of this checking
-
-- **Bounded.** Each run explores every state reachable within small budgets: epochs up to 3 or 4,
-  and up to three failures in all. A property that holds here holds only within those bounds, and is
-  not proved for longer runs.
-- **Abstracted timing.** Time is replaced by "any enabled step may happen next", with the timing
-  rules in sections 2.1 and 3.3. The rules exclude races within a message's flight. They do not
-  exclude races between events seconds apart, because the real timeouts race against those.
-- **The specification, not the code.** Each counterexample was read against the code, and each
-  finding names the code responsible. But the specification is a reading of the code, and where the
-  two differ, the code decides.
-- **Not modelled:** the matching engine pair, receivers of leader traffic, several component groups
-  sharing one arbiter pool, the effect of two active arbiters on components (argued in section 6.7),
-  and lease expiry by elapsed time.
-
----
-
-## 9. Directions for fixing
-
-These are options to decide between, not decisions.
-
-- **Make generations unique to their issuer.** Finding 1 and part of 6.6 come from several issuers
-  all computing "an epoch plus one". A standard remedy, used by Paxos for its ballot numbers, is to
-  make each issuer's numbers distinct. For example, the epoch can be a counter paired with the
-  issuing party's identity, and compared counter first. Two issuers then cannot produce the same
-  generation, however their timing falls.
-- **Make a leader stand down on seeing a newer generation.** A leader that receives a heartbeat or
-  status response carrying a higher epoch than its own should stop acting as leader and ask. That
-  gives the pair a way to converge after a fault ends (finding 6.2). The same applies to an active
-  arbiter that learns of a peer active at a higher epoch.
-- **Tie arbitration rounds to the role, not the instance.** Cancel the arbitration timeout and clear
-  the outstanding flag whenever a role is adopted by any path (finding 6.3).
-- **Re-arm the heartbeat timeout on every decision, not only on a transition.** In `adopt_role` for
-  the sequencer, and in `handle_arbiter_vote_response` for the arbiters (findings 6.5 and 6.8).
-- **Let the arbiter bound new epochs by everything it has seen.** Keep, for each group, the highest
-  epoch seen from any lease, report, heartbeat or replicated record, confirmed or not, and issue
-  above it (finding 6.6). Moving the leader above a degraded generation, not only learning of it, is
-  what BUG-0085 needs (finding 6.4).
-- **Give the arbiter pool a real majority.** An active arbiter should stay active only while it can
-  reach at least one of the other arbiter and the witness, and stand down otherwise. The witness
-  should remember whom it last granted, and at what epoch, and should not grant a rejoining arbiter
-  over one it knows to be active. The witness's vote should not hand a new epoch to the arbiter that
-  did not win it (findings 6.7 and 6.8).
-- **Re-run the checks after each change.** A change to the code should be matched by the same change
-  to the specification, then run against the budgets in section 5. A fix is confirmed when the
-  counterexample it targets disappears and the fair-weather runs still pass.
-
----
-
-## 10. Files, and how to reproduce
-
-| File | What it is |
-|------|------------|
-| `SequencerPairHA.tla` | The sequencer pair and its arbiter |
-| `SequencerPairHA.cfg` | Default settings: `Quiet` on, `WithFixes` off, one crash and one link failure; it reproduces finding 5, and passes with `WithFixes` on |
-| `ArbiterPoolHA.tla` | The two arbiters and the witness |
-| `ArbiterPoolHA.cfg` | Default settings: `Quiet` on, `WithFixes` off, one arbiter crash and one link failure |
-| `traces/` | One counterexample per file, as a table of states |
-
-TLC is in `tla2tools.jar`, from the TLA+ project's releases at
-`https://github.com/tlaplus/tlaplus/releases`. It needs Java 11 or later. From this directory:
-
-```
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config SequencerPairHA.cfg SequencerPairHA.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config ArbiterPoolHA.cfg ArbiterPoolHA.tla
-```
-
-`-deadlock` turns off deadlock checking. Once the failure budgets are spent, a run can reach a state
-with nothing left to do, and that is not an error.
-
-To reproduce one finding, copy the configuration file, set the budgets given for that finding in
-section 5, and list only its property under `INVARIANTS`. TLC stops at the first property it finds
-broken. Every run in this document completes in under a minute on an ordinary machine.
-
----
-
-## 11. The design the venue uses: leadership by majority, with leases
-
-Sections 1 to 10 check the design the code implemented at commit `42d29e9`. This section checks the
-design the venue uses now, described in [../majority_leases.md](../majority_leases.md) and implemented
+This section checks the design the venue uses to decide which instance of a pair leads, described in [../majority_leases.md](../majority_leases.md) and implemented
 in the library's `PairLeaseAgent`. It is specified in `MajorityLeaseHA.tla`.
 
 In this design, an instance may lead only while a majority of three voters has granted it a
@@ -634,13 +49,13 @@ places: voters 1 and 2 may lead, and voter 3 never does. A change of active arbi
 voter 3 restarting, because the new active arbiter knows nothing of what the previous one promised
 and must wait as a restarted voter does.
 
-### 11.1 How this specification differs from the other two
+### 2.1 What the specification assumes
 
 - **It models time.** Every promise, lease and restart wait is a count of clock ticks remaining,
   and one step of the model advances the clock by a tick. A lease design cannot be checked without
   this, because its safety argument is an argument about time.
 - **Messages may take any number of ticks, or be lost.** The safety results below therefore do not
-  depend on how quickly messages arrive. There is no `Quiet` setting for safety.
+  depend on how quickly messages arrive.
 - **Liveness is checked with `Prompt` on.** Whether a leader is eventually chosen does depend on
   timing, so those checks assume that every message arrives within the tick it was sent in, and that
   a leader asks for renewal in every tick. Weak fairness is assumed for every step the design takes,
@@ -653,21 +68,21 @@ and must wait as a restarted voter does.
   since died can grant the request as soon as that promise runs out, rather than the candidate
   waiting out a whole lease period ([../voided_commands.md](../voided_commands.md), decision 4).
 
-### 11.2 The properties
+### 2.2 The properties
 
 | Property | Kind | What it says |
 |----------|------|--------------|
 | `AtMostOneActing` | Safety | Two instances never act as leader at the same moment. An instance acts only while it holds an unexpired grant from a voter other than itself. |
 | `EpochNamesOneLeader` | Safety | No epoch is ever led by two different instances. |
-| `NoRegression` | Safety | No instance begins leading at an epoch below one the other instance has led in. It does not hold; see 11.5. |
+| `NoRegression` | Safety | No instance begins leading at an epoch below one the other instance has led in. It does not hold; see 2.5. |
 | `EventuallyLeaderForGood` | Liveness | From some point on, an instance acts as leader for good. |
 
-### 11.3 What held
+### 2.3 What held
 
 Every run below is exhaustive: TLC visited every reachable state within the budgets given. `MaxEpoch`
 bounds how many generations of epoch can be issued. With `MaxEpoch = 0` each instance can lead in one
 epoch only; with `MaxEpoch = 1`, in two. The lease is 2 ticks. Every rule is on, including rule 13, which writes the
-epoch to disk before an instance asks to lead (section 11.9).
+epoch to disk before an instance asks to lead (section 2.9).
 
 | Failures allowed | `MaxEpoch` | Distinct states | Result |
 |------------------|-----------:|----------------:|--------|
@@ -690,7 +105,7 @@ states shared a fingerprint, so that one of them was never checked, at between 0
 fingerprints it actually saw, depending on the fingerprint function it chose for the run, and at 8%
 by its more cautious calculation. The other
 rows are not yet checked with `CandidateResends = TRUE`. The code also has each instance keep its promises
-on disk, so that it need not wait after a restart; section 13.2 gives the results with that setting, which is the
+on disk, so that it need not wait after a restart; section 4.2 gives the results with that setting, which is the
 one `MajorityLeaseHA.cfg` holds.
 
 The liveness property, with `Prompt` on and `MaxEpoch = 1`, each checked with `CandidateResends` both
@@ -704,10 +119,10 @@ The liveness property, with `Prompt` on and `MaxEpoch = 1`, each checked with `C
 | One link failure, which later recovers | Holds |
 | One restart of voter 3 | Holds |
 
-The first two rows are the concern that degraded self-promotion was meant to address: losing the
-arbiter tier alone does not stop the pair.
+The first two rows show that losing the arbiter tier alone does not stop the pair, so the design needs no
+promotion of an instance on its own vote.
 
-### 11.4 Each rule is needed
+### 2.4 Each rule is needed
 
 Each rule of the design was removed in turn, to confirm that the checks can fail and that the rule is
 doing work. Every one of these runs fails, with every other rule in place, including
@@ -722,7 +137,7 @@ doing work. Every one of these runs fails, with every other rule in place, inclu
 | `CandidateYields = FALSE`, voter 3 down | `EventuallyLeaderForGood` | Both instances ask to lead at the same moment, each refuses the other, both give up, and the same thing repeats for ever at the same epochs. | `traces/lease-6-no-yield-livelock.txt` |
 | `PeerVotes = FALSE`, voter 3 down | `EventuallyLeaderForGood` | Without the peer's vote, no instance can gather two of the three votes while voter 3 is down, so nobody ever leads. | `traces/lease-7-no-peer-vote.txt` |
 
-### 11.5 An epoch can go backwards
+### 2.5 An epoch can go backwards
 
 `NoRegression` fails within two ticks, with one restart of voter 3 (`traces/lease-5-epoch-regresses.txt`):
 
@@ -740,35 +155,35 @@ design recovers from this: instance 1 learns of epoch 2 when its peer refuses to
 from a receiver, and it stops and asks again above epoch 2. The specification models the peer's
 refusal. It does not model receivers.
 
-### 11.6 Limits
+### 2.6 Limits
 
 - The larger failure budgets were checked only with one generation of epochs, so behaviours that
   need three or more elections of the same instance under those budgets were not explored.
 - Liveness was checked only with `Prompt` on, and only with two generations of epochs.
 - Clock drift, receivers on the order path, and the catch-up a new leader performs are not modelled.
 - With `CandidateResends = TRUE` only the configuration in `MajorityLeaseHA.cfg` and the liveness checks
-  have been run; the other failure budgets in 11.3 are checked without it.
+  have been run; the other failure budgets in 2.3 are checked without it.
 
-### 11.7 Files
+### 2.7 Files
 
 | File | What it is |
 |------|------------|
 | `MajorityLeaseHA.tla` | The design |
 | `MajorityLeaseHA.cfg` | The settings the code uses: every rule on, each instance keeping its promises on disk, one failure of each kind. Change the constants as the tables above say to reproduce each run. |
-| `traces/lease-*.txt` | The counterexamples in 11.4 and 11.5, generated by `scripts/tla_trace_pages.py` |
+| `traces/lease-*.txt` | The counterexamples in 2.4 and 2.5, generated by `scripts/tla_trace_pages.py` |
 
 A liveness run uses `SPECIFICATION LiveSpec` and `PROPERTY EventuallyLeaderForGood` in place of
 `SPECIFICATION Spec` and the invariants, with `Prompt = TRUE`.
 
-The counterexamples in 11.4 and 11.5 are reproduced on every install by `scripts/tla_trace_pages.py`,
+The counterexamples in 2.4 and 2.5 are reproduced on every install by `scripts/tla_trace_pages.py`,
 which also writes a web page that steps through them. The install fails if any of them stops breaking
 its property. Each is rerun with the smallest failure budget that produces it, which is smaller than the
 budgets in the tables above. The script's list of counterexamples gives the exact settings of each. It
 runs TLC with a fixed fingerprint function, `-fp 0`, so that each liveness counterexample is the same loop on every
-build; section 11.8 explains why, and why the script needs TLC release 1.8.0 or later.
+build; section 2.8 explains why, and why the script needs TLC release 1.8.0 or later.
 `docs/orientation/building.md` describes the step and what it needs.
 
-### 11.8 TLC releases before 1.8.0 can fail while printing a liveness counterexample
+### 2.8 TLC releases before 1.8.0 can fail while printing a liveness counterexample
 
 **What happens.** With `CandidateResends = TRUE`, TLC 2.19 finds `lease-6` and `lease-7` broken, as it should, and then
 sometimes stops while printing the counterexample. It reports `java.io.EOFException`, thrown in `GraphNode.read`,
@@ -843,7 +258,7 @@ The two threads and the shared file are in TLC's liveness checker, which prints 
 safety counterexample has failed to print, and the safety counterexamples the script compares with the committed copies
 are the same under any fingerprint function.
 
-### 11.9 Rule 13: the epoch is written to disk before the instance asks to lead
+### 2.9 Rule 13: the epoch is written to disk before the instance asks to lead
 
 Rule 13 of [../majority_leases.md](../majority_leases.md) says that an instance writes the epoch it is about to ask to
 lead in to disk, and waits for the write, before it sends the request. The lease is counted from the moment the request
@@ -860,14 +275,14 @@ in. With the constant `FALSE`, `askedOnDisk` stays at zero and the specification
 or led in. With the rule on it is broken within a few steps, which shows the model reaches the state the rule creates,
 so the checks below test it.
 
-**The rule changes nothing when it is off.** With `RecordBeforeAsking = FALSE`, the rows of 11.3 with one instance
+**The rule changes nothing when it is off.** With `RecordBeforeAsking = FALSE`, the rows of 2.3 with one instance
 crash, one restart of voter 3 and one link failure; with two instance crashes; and with voter 3 down at the start
 visit 42,179,802, 9,008,358 and 15,881,941 distinct states, as the specification without the variable did.
 
-**What held with the rule on.** Every row of the table in 11.3 is the run with the rule on, and both safety properties
+**What held with the rule on.** Every row of the table in 2.3 is the run with the rule on, and both safety properties
 hold in each. Only the rows that allow an instance to crash have more states than with the rule off, which is as
-expected: the epoch on disk is read back only when an instance crashes. Every liveness check of 11.3 holds with the
-rule on, with `CandidateResends` both `TRUE` and `FALSE`. Every counterexample of 11.4 and 11.5 is still produced, and
+expected: the epoch on disk is read back only when an instance crashes. Every liveness check of 2.3 holds with the
+rule on, with `CandidateResends` both `TRUE` and `FALSE`. Every counterexample of 2.4 and 2.5 is still produced, and
 the committed traces in `traces/` are unchanged.
 
 The one behaviour the rule adds is that a restarted instance refuses its peer's request at an epoch between the
@@ -875,7 +290,7 @@ highest it granted or led in and the higher one on its disk. The refusal names t
 again above it (rule 8). That costs a round of requests, and the liveness checks show it does not stop a leader being
 chosen.
 
-## 12. Rule 11: a follower that is behind must not lead
+## 3. Rule 11: a follower that is behind must not lead
 
 Rule 11 keeps an instance whose log lacks commands the matching engine has acted on from taking the
 lead. It is described in [../a_follower_behind_does_not_lead.md](../a_follower_behind_does_not_lead.md)
@@ -885,7 +300,7 @@ A leader normally has the engine act on a command only once its follower holds i
 command the follower does not hold, because the follower has disconnected or fallen behind, rule 11
 requires it first to have a voter record that the follower may not lead.
 
-### 12.1 How this specification differs from MajorityLeaseHA.tla
+### 3.1 How this specification differs from MajorityLeaseHA.tla
 
 - **Leadership is one step.** `MajorityLeaseHA.tla` shows that two instances never act as leader at
   the same moment. This specification takes that as given: when no instance is acting, an instance
@@ -903,14 +318,14 @@ requires it first to have a voter record that the follower may not lead.
   at once or is lost. A later echo would only let the leader act later, which it may always choose to
   do, so this allows every behaviour that delayed echoes allow.
 
-### 12.2 The properties
+### 3.2 The properties
 
 | Property | Kind | What it says |
 |----------|------|--------------|
 | `LeaderHoldsActed` | Safety | The instance acting as leader holds every command the engine has acted on. |
 | `NoChangeOfLeaderAfterActing` | Safety, expected to be broken | After one instance has had the engine act on a command, the other never leads. It is checked to show the specification is not vacuous: if rule 11 stopped every change of leader, it would hold. |
 
-### 12.3 What held
+### 3.3 What held
 
 With every part of rule 11 in place, and an instance writing a statement it receives to disk before it
 grants, `LeaderHoldsActed` holds. The run is exhaustive, with two commands, three statements in each
@@ -923,7 +338,7 @@ minutes on 32 workers with 124 million states still to explore, so it is not exh
 that instance 2 holds, its lease runs out, and instance 2 is elected. Rule 11 does not stop a change of
 leader when the follower holds what was acted on.
 
-### 12.4 Each part of the rule is needed
+### 3.4 Each part of the rule is needed
 
 Each part of rule 11 was removed in turn. Every one of these runs breaks `LeaderHoldsActed`.
 
@@ -937,7 +352,7 @@ Each part of rule 11 was removed in turn. Every one of these runs breaks `Leader
 The second row is why the leader keeps a record of its own statement. A leader whose lease runs out is
 still running, and its peer's request to lead can reach it before it asks to lead again.
 
-### 12.5 The risk accepted
+### 3.5 The risk accepted
 
 In the design as decided, an instance that receives a statement records it in memory, grants at once,
 and writes it to disk in the background, so that a follower whose disk has stopped answering does not
@@ -955,9 +370,9 @@ This needs the follower's process to restart within the moments between granting
 write completing, and the arbiter not to have recorded the statement in that time, and the leader to
 stop acting in that time. That is the risk accepted in section 4.5 of the design.
 
-### 12.6 Two arbiters: a statement the leader relies on must survive a change of active arbiter
+### 3.6 Two arbiters: a statement the leader relies on must survive a change of active arbiter
 
-The arbiter tier is two arbiters, of which one is active at a time. Sections 12.3 to 12.5 treat it as one
+The arbiter tier is two arbiters, of which one is active at a time. Sections 3.3 to 3.5 treat it as one
 voter that keeps its record on disk. In the venue every instance sends each lease request, and so each
 statement, to both arbiters; the active arbiter grants and refuses, and the passive arbiter grants and
 refuses nothing. The active arbiter also sends each statement it records to the passive arbiter, without
@@ -1029,7 +444,7 @@ at most two statements in flight, one change of active arbiter and one failure o
 arbiters. With the same budgets and the mark left out, the property is broken, as above, so those budgets
 reach the case the mark exists for.
 
-The budgets of 12.3 do not finish here. Each statement can reach or miss each arbiter separately, and the
+The budgets of 3.3 do not finish here. Each statement can reach or miss each arbiter separately, and the
 number of states grows far faster than with one arbiter: a run with those budgets, requiring both arbiters
 but without the active arbiter confirming alone, found no error in 2,685,532,867 distinct states before it
 was stopped after three hours, when it had nearly filled the disk.
@@ -1043,7 +458,7 @@ its instances' votes.
 With `MaxArbiterChanges` and `MaxArbiterLinkFailures` both at zero, `CopyToPassive` and `AloneWindowOpens`
 cannot happen, and the passive arbiter's record plays no part.
 
-### 12.7 Limits
+### 3.7 Limits
 
 - Leadership is abstracted, so this specification depends on `MajorityLeaseHA.tla` for the guarantee
   that two instances never act at once.
@@ -1052,39 +467,38 @@ cannot happen, and the passive arbiter's record plays no part.
 - The operator's tool that lets a follower lead after the old leader's machine is lost is not modelled.
   Using it breaks `LeaderHoldsActed` by definition.
 
-### 12.8 Files
+### 3.8 Files
 
 | File | What it is |
 |------|------------|
 | `FollowerBehindHA.tla` | Rule 11, with leadership abstracted |
-| `FollowerBehindHA.cfg` | Every part of rule 11 on, with an instance writing to disk before it grants, one change of active arbiter, one failure of the link between the arbiters, a leader needing its peer's or both arbiters' confirmation of a statement, and the active arbiter confirming alone once the link between the arbiters has been down long enough (section 12.6) |
-| `traces/behind-*.txt` | The counterexamples in 12.4, 12.5 and 12.6 |
+| `FollowerBehindHA.cfg` | Every part of rule 11 on, with an instance writing to disk before it grants, one change of active arbiter, one failure of the link between the arbiters, a leader needing its peer's or both arbiters' confirmation of a statement, and the active arbiter confirming alone once the link between the arbiters has been down long enough (section 3.6) |
+| `traces/behind-*.txt` | The counterexamples in 3.4, 3.5 and 3.6 |
 
-The counterexamples in 12.4, 12.5 and 12.6 are reproduced on every install by `scripts/tla_trace_pages.py`,
-in the same way as those of section 11, and the install fails if any of them stops breaking
+The counterexamples in 3.4, 3.5 and 3.6 are reproduced on every install by `scripts/tla_trace_pages.py`,
+in the same way as those of section 2, and the install fails if any of them stops breaking
 `LeaderHoldsActed` or no longer matches its committed trace. They appear as text traces only, not on
 the web page.
 
-## 13. The models against the design principles
+## 4. The models against the design principles
 
 [../../design_principles.md](../../design_principles.md) lists the principles the venue's design rests on. This
 section says, for each venue principle, whether a model checks it, which property does, whether the model's
-assumptions match the code, and what the model leaves out. The two specifications of the earlier design,
-`SequencerPairHA.tla` and `ArbiterPoolHA.tla`, check nothing the venue now relies on, and are not counted here.
+assumptions match the code, and what the model leaves out.
 
-### 13.1 Principle by principle
+### 4.1 Principle by principle
 
 | Principle | Model and property | Does the model match the code? | Not modelled |
 |-----------|--------------------|--------------------------------|--------------|
-| V3. At most one instance of a pair acts as leader | `MajorityLeaseHA.tla`: `AtMostOneActing` and `EpochNamesOneLeader` | Yes, for rules 1 to 10 and 13, with the instances keeping their promises on disk as the code does (13.2). An arbiter that becomes active grants nothing for one lease period, which the model treats as voter 3 restarting; in the code it also keeps the highest epoch granted in each pair, which only removes grants the model allows. An arbiter that may lack a statement grants nothing until it hears from the other arbiter (section 12.6), which also only removes grants. | Clock drift between machines, which the code allows for by shortening each lease by the largest drift allowed. |
-| V4. A follower that is missing commands never takes over | `FollowerBehindHA.tla`: `LeaderHoldsActed`, with two arbiters | Yes, except where section 12.5 says: the code records a statement it receives in memory, grants, and writes it to disk in the background, which is the risk accepted. | The times on which the two arbiters rely, 7 and 10 seconds (`ArbiterPeerContact.hpp`): the model replaces them with one step that opens the active arbiter's window to confirm alone and marks the passive arbiter as possibly behind together. That the times guarantee this is argued in `ArbiterPeerContact.hpp`, not checked. The operator's tool that lets a follower lead after its leader's machine is lost. |
+| V3. At most one instance of a pair acts as leader | `MajorityLeaseHA.tla`: `AtMostOneActing` and `EpochNamesOneLeader` | Yes, for rules 1 to 10 and 13, with the instances keeping their promises on disk as the code does (4.2). An arbiter that becomes active grants nothing for one lease period, which the model treats as voter 3 restarting; in the code it also keeps the highest epoch granted in each pair, which only removes grants the model allows. An arbiter that may lack a statement grants nothing until it hears from the other arbiter (section 3.6), which also only removes grants. | Clock drift between machines, which the code allows for by shortening each lease by the largest drift allowed. |
+| V4. A follower that is missing commands never takes over | `FollowerBehindHA.tla`: `LeaderHoldsActed`, with two arbiters | Yes, except where section 3.5 says: the code records a statement it receives in memory, grants, and writes it to disk in the background, which is the risk accepted. | The times on which the two arbiters rely, 7 and 10 seconds (`ArbiterPeerContact.hpp`): the model replaces them with one step that opens the active arbiter's window to confirm alone and marks the passive arbiter as possibly behind together. That the times guarantee this is argued in `ArbiterPeerContact.hpp`, not checked. The operator's tool that lets a follower lead after its leader's machine is lost. |
 | V5. The matching engine acts only on commands the logs hold | In part, by `LeaderHoldsActed`: the instance leading holds every command the engine has acted on | Yes, for the part modelled. | The engine catching up from the leading sequencer's log, and checking that it accounted for every record (R-0101), before it acts. |
-| V9. Within a log, sequence numbers only go forward | None | | Sequence numbers are not modelled; `FollowerBehindHA.tla` treats a log as a set of commands. Section 11.5 is about epochs, which may go backwards, not sequence numbers. |
+| V9. Within a log, sequence numbers only go forward | None | | Sequence numbers are not modelled; `FollowerBehindHA.tla` treats a log as a set of commands. Section 2.5 is about epochs, which may go backwards, not sequence numbers. |
 | V10. A follower's log becomes a copy of its leader's | None | | Log repair is not modelled. It is checked by `ha_test.py` scenario 62 and the scenarios of the repair design, each made to fail with the repair disabled. |
-| V11. A fault in the standby is a loss of resilience, not a loss of service | `MajorityLeaseHA.tla`: `EventuallyLeaderForGood`, which holds with voter 3 down for good | Yes. | `FollowerBehindHA.tla` has no liveness property, so nothing checks that a leader whose follower has died goes on having the engine act on commands. Two costs of rule 11 bear on this principle and are argued, not checked: a leader that has lost its follower and the passive arbiter waits 10 seconds before acting on a command the follower lacks, and an arbiter that becomes active after the link to the other arbiter has been down for 7 seconds or more grants nothing until it hears from the other again (section 12.6). |
+| V11. A fault in the standby is a loss of resilience, not a loss of service | `MajorityLeaseHA.tla`: `EventuallyLeaderForGood`, which holds with voter 3 down for good | Yes. | `FollowerBehindHA.tla` has no liveness property, so nothing checks that a leader whose follower has died goes on having the engine act on commands. Two costs of rule 11 bear on this principle and are argued, not checked: a leader that has lost its follower and the passive arbiter waits 10 seconds before acting on a command the follower lacks, and an arbiter that becomes active after the link to the other arbiter has been down for 7 seconds or more grants nothing until it hears from the other again (section 3.6). |
 | V1, V2, V6, V7, V8, V12, V13, V14 | None | | None of these is about deciding which instance leads, which is what the models check. |
 
-### 13.2 The instances keep their promises on disk
+### 4.2 The instances keep their promises on disk
 
 In the code, an instance of a pair, and an arbiter in deciding which arbiter is active, keeps the promise its vote
 makes in a record on disk (`LeasePromiseStore.hpp`), and grants nothing the record does not cover until the write has
@@ -1092,7 +506,7 @@ finished (`PairLeaseAgent::promise_recorded`). After a restart during the same b
 back and votes at once, rather than waiting out a lease period. The vote it gave itself is not kept. This is
 `InstancesKeepPromises = TRUE` in `MajorityLeaseHA.tla`, under which rule 6 applies to voter 3 only.
 
-Two runs check it, with the budgets of the first row of section 11.3: one instance crash, one restart of voter 3
+Two runs check it, with the budgets of the first row of section 2.3: one instance crash, one restart of voter 3
 and one link failure, with `MaxEpoch = 0`.
 
 | `CandidateResends` | Distinct states | Time on 30 workers | Result |
@@ -1110,12 +524,12 @@ because the instance grants nothing the record on disk does not yet cover.
 
 `MajorityLeaseHA.cfg` holds this setting. The counterexample `traces/lease-3-restart-does-not-wait.txt` is of an
 instance that forgets its promise, so `scripts/tla_trace_pages.py` runs it with `InstancesKeepPromises = FALSE`; every
-counterexample of sections 11 and 12 still breaks its property and matches its committed trace.
+counterexample of sections 2 and 3 still breaks its property and matches its committed trace.
 
-### 13.3 What the check found
+### 4.3 What the check found
 
-- Every result reported in section 11 was with each instance forgetting its promises when it crashes and waiting
-  out a lease period after it restarts, which is not what the code does. The code's setting holds (13.2).
+- Every result reported in section 2 was with each instance forgetting its promises when it crashes and waiting
+  out a lease period after it restarts, which is not what the code does. The code's setting holds (4.2).
 - The header of `MajorityLeaseHA.tla` said that rules 11 and 12 are both checked in `FollowerBehindHA.tla`. Rule 12,
   under which the matching engine pair uses the same statements to keep an engine configured differently from its
   peer from leading, is not modelled, as rule 12 in [../majority_leases.md](../majority_leases.md) says. The header

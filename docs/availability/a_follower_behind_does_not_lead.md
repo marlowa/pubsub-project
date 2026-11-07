@@ -77,7 +77,7 @@ follower with the arbiter, and the follower with the old leader:
   has asked to lead again, and an instance that knew nothing would grant it. So the leader is a voter
   that knows, like the other two: it writes each statement to its own record on disk before it sends
   it, and while its record says its peer may not lead, it refuses that peer's requests to lead. The
-  model check in section 12 of [tla/findings.md](tla/findings.md) finds the follower elected without
+  model check in section 3 of [tla/findings.md](tla/findings.md) finds the follower elected without
   this, even with no crash.
 - **The follower with the arbiter.** Either the follower knows it may not lead and does not ask, or the
   arbiter knows and refuses. One of the two knowing is enough.
@@ -134,7 +134,7 @@ confirms alone. The two arbiters make this safe between them (`ArbiterPeerContac
 When the active arbiter's machine dies, the other becomes active after about one lease period and one
 renewal interval, well within the limit, and grants as usual. A leader that has also lost its follower
 waits until the arbiter left has heard nothing from the dead one for 10 seconds, and then acts on that
-arbiter's confirmation alone. The model check is in section 12.6 of [tla/findings.md](tla/findings.md).
+arbiter's confirmation alone. The model check is in section 3.6 of [tla/findings.md](tla/findings.md).
 
 A voter records a "no" before it sends the grant, exactly as it records a promise before granting, so
 that the statement survives the voter's own restart:
@@ -240,7 +240,7 @@ The commands only the leader holds could be lost only if all of these happened w
 held in the follower's memory alone, and before the arbiter had recorded it: the leader acts on the
 follower's grant; the leader stops acting, because it dies or its lease runs out; the follower's process
 restarts, losing what it held in memory; and the arbiter, which never recorded the statement, elects the
-follower. Section 12.5 of [tla/findings.md](tla/findings.md) gives this sequence as found by the model
+follower. Section 3.5 of [tla/findings.md](tla/findings.md) gives this sequence as found by the model
 check. When the arbiter is reachable it records the statement within milliseconds, so the window is that
 short. When the arbiter pool is unreachable, the window lasts until the follower's disk write completes,
 and that is short too, because the lease rules already end this situation within seconds. A follower must write each promise to disk before it gives the grant that
@@ -310,12 +310,12 @@ change.
 | Arbiters down | The follower falls behind with the arbiters stopped, records the statement itself, and must not lead | Not built as a scenario: the follower's acknowledgements and its lease grants travel on the same peer connection, so `libblock_sends_to_ports.so` cannot block one without the other. The follower recording and echoing a statement is covered by `PairLeaseAgentTest`, and the property with any voter recording it by the simulation and the TLA+ model |
 | Unit tests | In `LeaseRulesTest.cpp`: a voter keeps only the newest statement and refuses the instance it names; a leader starts each leadership saying "no" and records it itself, so that once its lease has run out it refuses its peer; it may act without its peer only once its peer echoes the current statement, or both arbiters confirm it, or the active arbiter confirms it alone, and one arbiter's ordinary confirmation is not enough; an instance that holds a "no" about itself does not ask to lead; a restored statement is honoured; a pair that makes no statements never stops its peer leading | Done |
 | Simulation | `LeaseSimulationTest.cpp` gains logs, the engine's set of acted-on commands, copying to the peer that sometimes stalls, and statements and echoes, and checks after every step that an instance starting to act as leader holds every acted-on command. Runs with the leader not waiting for an echo, with the arbiter forgetting its statement, and with an instance forgetting its statement each find a violation | Done |
-| TLA+ | `FollowerBehindHA.tla` checks that the instance acting as leader holds every command the engine has acted on, and each part of the rule is removed in turn to show it is needed | Done: section 12 of [tla/findings.md](tla/findings.md). Each counterexample is rerun on every install |
+| TLA+ | `FollowerBehindHA.tla` checks that the instance acting as leader holds every command the engine has acted on, and each part of the rule is removed in turn to show it is needed | Done: section 3 of [tla/findings.md](tla/findings.md). Each counterexample is rerun on every install |
 
 ## 8. Order of the work
 
 1. Agreement to the design. Done.
-2. The TLA+ model, done in section 12 of [tla/findings.md](tla/findings.md), and the simulation, done
+2. The TLA+ model, done in section 3 of [tla/findings.md](tla/findings.md), and the simulation, done
    in `LeaseSimulationTest.cpp` with the rule itself in `LeaseVoter` and `LeaseParticipant`, each shown
    to find the fault when a part of the rule is removed. Only a pair constructed with
    `PeerStatementsFlag::SayWhetherPeerMayLead` makes statements, and no component does so until step 4.

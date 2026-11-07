@@ -31,7 +31,7 @@ namespace pubsub_itc_fw {
  * So an arbiter that becomes active less than may_be_behind_after() after sending the heartbeat whose echo it last
  * received holds every statement a leader relied on, and grants as usual. One that becomes active later may lack
  * such a statement, and grants nothing until a fresh echo arrives (docs/availability/a_follower_behind_does_not_lead.md,
- * and section 12.6 of docs/availability/tla/findings.md).
+ * and section 3.6 of docs/availability/tla/findings.md).
  *
  * may_be_behind_after() is two lease periods and one renewal interval. When the active arbiter's machine dies, the
  * other becomes active once its promise to the dead one has run out and the witness has granted it: about one lease

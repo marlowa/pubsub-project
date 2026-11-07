@@ -45,7 +45,7 @@ namespace pubsub_itc_fw {
  * over the real one, with the directory flushed too, so a reader sees the old record or the new one
  * whatever moment the process dies at. A missing or damaged record reads as none, which is safe for
  * the promise, because the instance then waits; a lost statement is the risk described in
- * docs/availability/tla/findings.md section 12.5.
+ * docs/availability/tla/findings.md section 3.5.
  */
 class LeasePromiseStore : public LeasePromiseRecorderInterface {
   public:

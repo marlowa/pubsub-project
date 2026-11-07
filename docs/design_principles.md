@@ -420,8 +420,10 @@ Only the voters decide which instance leads. The supervisor (`launch.py`) decide
 start a process, or start it again; it never decides which instance leads
 ([process_death.md](availability/process_death.md)). And a voter that cannot be sure that granting a
 lease is safe refuses, rather than guess: an arbiter that has just become active, and does not know
-what the previous active arbiter promised, grants no component a lease for one lease period, and an
-arbiter refuses an instance its record says may not lead (V4).
+what the previous active arbiter promised, grants no component a lease for one lease period; an
+arbiter that becomes active when it may lack a statement the other arbiter confirmed on its own
+grants no component a lease until it has heard from the other arbiter again (V4); and an arbiter
+refuses an instance its record says may not lead (V4).
 
 **Why.** Two leaders acting at once would sequence or match two different histories. A second
 authority beside the voters, such as a supervisor that chose a leader, could disagree with them, which
@@ -466,16 +468,27 @@ unwell (V11). While it does, the matching engine acts on commands that only the 
 are matched, and members are sent reports for them.
 
 **What the leader does before trading alone.** Before it passes the matching engine any command the
-follower does not hold, the leader records the statement "my follower may not take over". It records
-it in two places: on its own disk, and with at least one other voter, the arbiter or the follower
-itself, by adding it to the lease renewals it already sends every second. The statement stays in force
-until the follower has caught up and holds every command again.
+follower does not hold, the leader records the statement "my follower may not take over". It writes it
+to its own disk, and adds it to the lease renewals it already sends every second to its follower and to
+both arbiters. It passes the command on only once the statement is held outside its own machine, in one
+of three ways:
+
+- the follower has recorded it, and said so in its reply;
+- both arbiters, the active one and the passive one, have recorded it on disk and confirmed it;
+- the active arbiter has recorded and confirmed it, having heard nothing from the other arbiter for
+  10 seconds, which is long enough that the other cannot still be about to become active without
+  knowing it is behind.
+
+The statement stays in force until the follower has caught up and holds every command again.
 
 **Why that is enough.** To become leader, the follower needs a majority of its three voters: its own
 vote and one other. Every voter that could give it that vote knows the statement:
 
 - the follower knows it, so it does not ask to lead;
-- the arbiter knows it, so it refuses;
+- the active arbiter knows it, so it refuses. If the active arbiter changes, the arbiter that takes over
+  either holds the statement, because both arbiters confirmed it, or knows that it may lack a
+  statement the other confirmed on its own, and grants nothing until it has heard from the other
+  again;
 - the old leader, if it comes back, has it on its disk, so it refuses.
 
 **What happens if the leader dies while trading alone.** Trading stops until the leader returns. If its
@@ -496,12 +509,16 @@ the voters. This is rule 11 in [majority_leases.md](availability/majority_leases
 
 **Where it holds.** In the lease classes (the statement that the follower may not lead travels on the
 lease requests and is recorded by the voters), and in the leading sequencer, which acts on a command
-its follower does not hold only once another voter has recorded that statement: the library's
-replicated WAL commits such a record only then (`ReplicatedWal`). Design:
+its follower does not hold only once the statement is held in one of the three ways above: the library's
+replicated WAL commits such a record only then (`ReplicatedWal`). Each arbiter records and confirms the
+statement in `ArbiterThread`, and `ArbiterPeerContact` decides when the active arbiter may confirm on its
+own and when an arbiter becoming active may lack a statement. Design:
 [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md).
 
-**What checks it.** `ha_test.py` scenarios 61, 63 and 64; `LeaseRulesTest`; the simulation; the
-model `FollowerBehindHA.tla`.
+**What checks it.** `ha_test.py` scenarios 61, 63 and 64, and scenarios 7 and 48, in which one machine
+death takes an arbiter, a sequencer and a matching engine together; `LeaseRulesTest`, `PairLeaseAgentTest`
+and `ArbiterPeerContactTest`; the simulation; the model `FollowerBehindHA.tla`, with two arbiters
+([tla/findings.md](availability/tla/findings.md), section 3).
 
 **Today: holds.**
 

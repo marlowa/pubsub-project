@@ -290,7 +290,7 @@ the browser's own fonts where there is no network.
 **The install fails if:**
 
 - a counterexample no longer breaks the property it is listed against. That means the specification has
-  changed in a way that no longer shows what `docs/availability/tla/findings.md` section 11 or 12 says it
+  changed in a way that no longer shows what `docs/availability/tla/findings.md` section 2 or 3 says it
   shows.
   Each run allows only the failures its counterexample needs, so this is reported within about two minutes;
 - a committed safety trace in `docs/availability/tla/traces/` differs from what TLC now produces. After

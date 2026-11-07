@@ -116,7 +116,7 @@ Passive == 4                 \* the passive arbiter, as the one whose confirmati
 AloneConf == 5               \* the active arbiter, confirming while the link to the passive one is down
 Confirmers == {1, 2, 3, 4, 5}
 \* With no change of active arbiter and no failure of the link between the arbiters allowed, the
-\* passive arbiter plays no part, and the arbiter tier is one voter, as in sections 12.3 to 12.5 of
+\* passive arbiter plays no part, and the arbiter tier is one voter, as in sections 3.3 to 3.5 of
 \* findings.md. This keeps those runs the size they are with one voter.
 TwoArbiters == MaxArbiterChanges > 0 \/ MaxArbiterLinkFailures > 0
 ArbTargets == IF BothArbitersConfirm /\ TwoArbiters THEN {Third, Passive} ELSE {Third}

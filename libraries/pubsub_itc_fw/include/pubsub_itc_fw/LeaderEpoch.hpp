@@ -19,16 +19,16 @@ namespace pubsub_itc_fw {
  * an epoch equal to the one it holds, so if two different instances ever lead at the same epoch,
  * both are believed, and the check cannot tell them apart.
  *
- * Several parties start generations: the two peers resolving leadership between themselves, the
- * arbiter, and an instance promoting itself when no arbiter can be reached. If each of them took
- * "the highest epoch it knows, plus one", two of them working from the same known epoch would issue
- * the same number for different leaders. Model checking the high availability design showed this
- * happening (docs/availability/tla/findings.md, finding 1).
+ * Each instance of a pair chooses the epoch it asks to lead in, from the highest it knows, and both
+ * may ask from the same known epoch at the same moment. If each took "the highest epoch it knows,
+ * plus one", both would ask in the same number, and nothing in the lease rules would stop a voter
+ * granting it to one and later to the other.
  *
  * So the value of an epoch records which instance leads in it: its remainder on division by
- * epoch_stride is that instance's id. Every party that starts a generation takes the next such
- * number above what it knows, for the instance it is making leader. Two different instances then
- * never lead at the same epoch, whoever issued it and however the issuers' timing falls. Ordinary
+ * epoch_stride is that instance's id. Every instance that asks to lead takes the next such number
+ * above what it knows. Two different instances then never lead at the same epoch, however their
+ * requests are timed. The model of the lease rules checks this as the property EpochNamesOneLeader
+ * (docs/availability/tla/findings.md, section 2). Ordinary
  * integer comparison still orders generations correctly, because the generation is the quotient
  * and dominates the remainder.
  *

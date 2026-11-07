@@ -291,7 +291,7 @@ Under that recommendation:
   step that the follower's WAL is the leader's up to some point, that no committed record is ever
   missing from the WAL of the instance that leads next, and that no number is used twice.
 - **No lock**: the library's standards check finds none in the new files.
-- **The TLA+ models** of the sequencer pair, `SequencerPairHA.tla` and `FollowerBehindHA.tla` in
+- **The TLA+ models** of the sequencer pair, `MajorityLeaseHA.tla` and `FollowerBehindHA.tla` in
   `docs/availability/tla`, are read against the class. The rules are unchanged, so the models should
   need no change; if the class does anything the models do not allow, that is a fault in the class.
 

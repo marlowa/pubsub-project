@@ -23,36 +23,28 @@ the TLA+ description matches the code.
 \subsubsection{What is checked}
 \label{sec:ha:enabled:model_checking:scope}
 
-Two TLA+ descriptions model the design the code implements:
+The venue decides which instance of a pair leads by majority, with leases
+(\reqref{R-0146}). Two TLA+ descriptions check that design:
 
 \begin{itemize}
-  \item the two sequencer instances and the arbiter they report to; and
-  \item the two arbiters and the witness, which decide which arbiter is active.
+  \item \texttt{MajorityLeaseHA.tla} describes two instances and a third voter. The
+        same description covers a component pair, whose third voter is the active
+        arbiter, and the two arbiters, whose third voter is the witness. It includes
+        crashes and restarts of every voter, the failure of any link, and messages
+        that are delayed or lost. Model checking it found no state in which two
+        instances act as leader at once, and no epoch led by two instances. With any
+        one rule of the design removed, TLC finds two instances acting as leader at
+        once, or no instance ever leading, within a few steps. The design leaves out
+        promotion of an instance on its own vote when no arbiter answers: added to
+        the description, it lets two instances lead at once during a partition.
+  \item \texttt{FollowerBehindHA.tla} describes the rule that an instance whose WAL
+        lacks commands the matching engine has acted on never takes the lead, with
+        the arbiter tier as two arbiters of which one is active at a time. Model
+        checking it found no state in which the instance leading lacks a command the
+        engine acted on, and with any one part of the rule removed TLC finds one.
 \end{itemize}
 
-Both include crashes and restarts of every party, the failure of any link, and
-messages that arrive after the state they describe has changed.
-
-Model checking found eight defects in that design. The code now addresses six of
-them in full and part of one more. The properties that now hold within the limits
-checked are these:
-
-\begin{itemize}
-  \item no two leaders ever lead in the same epoch, so a receiver can always tell
-        them apart;
-  \item two leaders that can hear each other always resolve to one; and
-  \item two active arbiters that can hear each other always resolve to one.
-\end{itemize}
-
-Model checking also showed that no fix within that design could stop two
-instances leading while a partition lasts, because an instance that could reach no
-arbiter promoted itself. The venue therefore decides leadership by majority, with
-leases (\reqref{R-0146}), which removes promotion without an arbiter. A third TLA+
-description specifies that design. Model checking it found no state in which two
-instances act as leader at once. It also showed that each rule is needed: with any
-one rule removed, TLC finds two instances acting as leader at once within a few
-steps. The design is described in
-\texttt{docs/availability/majority\_leases.md}.
+The design is described in \texttt{docs/availability/majority\_leases.md}.
 
 The descriptions, the counterexamples and the full results are in
 \texttt{docs/availability/tla/}, with the results in \texttt{findings.md}.

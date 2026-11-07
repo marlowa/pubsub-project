@@ -24,7 +24,7 @@ different time budgets, and conflating them is the subject of a bug entry ([BUG-
 - [test_events.md](test_events.md) — the design for phase 6 (agreed): the high availability tests check what a member receives, and test events defined in the DSL, instead of the wording of Quill log messages; with a new generator that writes plain Python from the DSL
 - [test_events_inventory.md](test_events_inventory.md) — every check in `ha_test.py` that reads a Quill log, grouped by the kind of fact it proves
 - [state_between_pair_instances.md](state_between_pair_instances.md) — every message sent between the two instances of a pair outside the WAL, what it carries, and whether a lost or repeated copy can leave the receiver wrong without its knowing
-- [tla/findings.md](tla/findings.md) — the HA design specified in TLA+ and model checked: what held, eight findings with counterexamples, directions for fixing, and the checks of the majority-lease design and of rule 11
+- [tla/findings.md](tla/findings.md) — the majority-lease design and its rule 11 specified in TLA+ and model checked: what holds, the counterexamples that show each rule is needed, and how the models compare with the design principles
 
 ---
 

@@ -5,7 +5,7 @@ This document describes how the venue decides which instance of a pair leads. It
 - **A pair of component instances**: the two sequencers, the two matching engines, and the two matching engine publishers.
 - **The two arbiters**, which decide between themselves which one is active.
 
-The design has been specified in TLA+ and model checked, and [tla/findings.md](tla/findings.md) section 11 reports what
+The design has been specified in TLA+ and model checked, and [tla/findings.md](tla/findings.md) section 2 reports what
 that checking found. Section 10 says where each part is implemented and what checks it.
 
 ---
@@ -22,8 +22,8 @@ If it takes over in the second case, the venue has two leaders. Every design has
 follower cannot tell the difference.
 
 An instance that promotes itself whenever it can reach no arbiter keeps the venue trading when the arbiters are down,
-but when the real cause is a cut-off follower it produces two leaders. Model checking shows this happening (findings 1, 2
-and 4 in [tla/findings.md](tla/findings.md)), so no instance of this venue promotes itself.
+but when the real cause is a cut-off follower it produces two leaders. Model checking shows this happening (the
+counterexample `lease-4-degraded-promotion` in section 2.4 of [tla/findings.md](tla/findings.md)), so no instance of this venue promotes itself.
 
 The venue uses instead a rule taken from the standard literature on consensus: **an instance may lead only while a
 majority of three voters agrees that it should, and each voter's agreement lasts for a fixed period and must be
@@ -137,7 +137,7 @@ vote of just one other voter: either its peer or the third voter.
     request again is safe because it is the same request at the same epoch, and a voter applies the same rules to it as
     to the first copy: the TLA+ model's `ResendRequest` action, enabled by the constant `CandidateResends`, lets a
     candidate send it again at any time, and TLC finds no state with two leaders ([findings.md](tla/findings.md),
-    section 11).
+    section 2).
 
     An instance that, on one request, is refused by both other voters because each has promised its vote elsewhere
     -- its peer because it holds its own vote, and the third voter because it has promised it to the peer -- has
@@ -162,7 +162,7 @@ vote of just one other voter: either its peer or the third voter.
     and an instance holding one about itself does not ask to lead. Any majority that could elect the follower then
     includes a voter that knows it lacks commands the matching engine acted on. The design, its decisions and its
     tests are in [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md), and its model check in
-    section 12 of [tla/findings.md](tla/findings.md).
+    section 3 of [tla/findings.md](tla/findings.md).
 12. **In the matching engine pair, the same statements say when the peer may not lead.** They are recorded, sent,
     echoed and refused on exactly as in rule 11, with one difference: every leadership starts by saying the peer may
     lead, because an engine that is behind catches up from the sequencer's WAL before it acts. A leading engine says
@@ -182,7 +182,7 @@ vote of just one other voter: either its peer or the third voter.
     asked for and never granted is spent, as one whose request was refused already is. After a restart the instance
     starts from the epoch on disk, so it may refuse its peer's request at an epoch below that one; the refusal names
     the higher epoch, and the peer asks again above it (rule 8). On a slow disk, the cost is that the request goes out
-    later by the time the write takes. The model check is in section 11.9 of [tla/findings.md](tla/findings.md).
+    later by the time the write takes. The model check is in section 2.9 of [tla/findings.md](tla/findings.md).
 
 ## 4. Why two instances never act as leader at the same moment
 
@@ -353,7 +353,7 @@ nothing has failed.
 does not know what was promised. R-0093 is qualified: when the surviving instance is the follower, it needs an arbiter to
 take over.
 
-**How it was checked before it was built.** [tla/findings.md](tla/findings.md) section 11 gives the results. In summary:
+**How it was checked before it was built.** [tla/findings.md](tla/findings.md) section 2 gives the results. In summary:
 two instances acting as leader at once was not found in any of seven exhaustive runs covering crashes, restarts of the
 third voter and link failures, with between 4 and 85 million states each. Removing any one of rules 2, 5 and 6, or adding
 promotion without a majority, produces two leaders acting at once within a few steps. With the third voter down for good,

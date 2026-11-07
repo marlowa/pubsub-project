@@ -6,8 +6,8 @@
 (* design is described in docs/availability/majority_leases.md.            *)
 (*                                                                         *)
 (* This is the design, not a model of the code; the library implements     *)
-(* it in PairLeaseAgent.hpp. SequencerPairHA.tla and ArbiterPoolHA.tla     *)
-(* model the code at commit 42d29e9.                                       *)
+(* it in PairLeaseAgent.hpp. findings.md section 4 says where the two      *)
+(* agree.                                                                  *)
 (*                                                                         *)
 (* The same design serves two places in the venue, so one specification    *)
 (* covers both:                                                            *)
@@ -477,7 +477,7 @@ AtMostOneActing == ~(Acting(1) /\ Acting(2))
 EpochNamesOneLeader == \A p, q \in leaderAt : p[2] = q[2] => p[1] = q[1]
 
 (* A new leader's epoch is not below one the other instance has led in.   *)
-(* This does not hold: see findings.md section 11. It is checked to show    *)
+(* This does not hold: see findings.md section 2.5. It is checked to show  *)
 (* the one way it fails.                                                    *)
 NoRegression == ~regressed
 
@@ -487,8 +487,8 @@ NoRegression == ~regressed
 NeverRestartsHigher == ~restartedHigher
 
 (* Liveness: from some point on, an instance acts as leader for good. With *)
-(* ThirdStaysDown this says that losing the third voter does not stop the   *)
-(* pair, which is the concern degraded self-promotion was meant to address. *)
+(* ThirdStaysDown this says that losing the third voter does not stop the  *)
+(* pair, so the design needs no promotion of an instance on its own vote.  *)
 EventuallyLeaderForGood == <>[](\E s \in Cand : Acting(s))
 
 =============================================================================

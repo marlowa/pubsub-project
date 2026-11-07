@@ -28,7 +28,7 @@ namespace pubsub_itc_fw {
  *
  * Records are numbered from 1 without a break, which the sequencer makes true when it opens its log.
  * Epochs usually rise from one run to the next, but are not assumed to: a new leader can briefly lead
- * below an epoch already led in (docs/availability/tla/findings.md, section 11.5).
+ * below an epoch already led in (docs/availability/tla/findings.md, section 2.5).
  *
  * One thread, the sequencer's, calls every member function (principle F1). In builds with thread
  * checks, a call from any other thread is refused.

@@ -4,17 +4,17 @@ tla_trace_pages.py -- Reproduce the counterexamples of MajorityLeaseHA.tla and F
 the TLC model checker, confirm that each one still fails, and write them out as text traces and, for
 MajorityLeaseHA.tla, as a web page that steps through them.
 
-MajorityLeaseHA.tla (in docs/availability/tla/) specifies the proposed design for deciding which instance
+MajorityLeaseHA.tla (in docs/availability/tla/) specifies the design for deciding which instance
 of a pair leads. Most of what was learned from checking it is recorded as counterexamples: runs in which
 one rule of the design is removed or changed, and TLC finds a sequence of events that breaks a property.
 Each of those runs is evidence that the rule is needed. This script reruns every one of them and fails
 if any no longer breaks the property it is listed against. A counterexample that stops failing means the
-specification has changed in a way that no longer shows what findings.md section 11 says it shows, and
+specification has changed in a way that no longer shows what findings.md section 2 says it shows, and
 that has to be looked at, not discovered months later.
 
 FollowerBehindHA.tla specifies rule 11 of the same design, which keeps an instance whose log lacks
 commands the matching engine has acted on from leading. Its counterexamples, described in findings.md
-section 12, are reproduced and compared in the same way. They appear as text traces only: the captions
+section 3, are reproduced and compared in the same way. They appear as text traces only: the captions
 and the page are written for the variables of MajorityLeaseHA.tla.
 
 For each counterexample the script:
@@ -332,7 +332,7 @@ def check_broken(example: Counterexample, output: str) -> None:
         raise TraceError(f'{example.name}: TLC found {example.broken} broken, as expected, but then failed while printing '
                          f'the counterexample. TLC releases before 1.8.0 have a race between the two threads that '
                          f'print a liveness counterexample, described in docs/availability/tla/findings.md, section '
-                         f'11.8. Check that the jar is release 1.8.0 or later.')
+                         f'2.8. Check that the jar is release 1.8.0 or later.')
     if broken == example.broken:
         return
     if 'No error has been found' in output:

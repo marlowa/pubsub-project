@@ -3971,11 +3971,11 @@ arbiter's confirmation alone 10 seconds after the death.
 
 `FollowerBehindHA.tla` models the two arbiters, each statement reaching or missing each separately, the copy between
 them, the link between them failing and recovering, a change of active arbiter, and the active arbiter confirming alone
-(`docs/availability/tla/findings.md`, section 12.6). With a leader relying on the active arbiter alone and the link up,
+(`docs/availability/tla/findings.md`, section 3.6). With a leader relying on the active arbiter alone and the link up,
 `LeaderHoldsActed` is broken in nine steps, which is this defect (`traces/behind-6-passive-arbiter-lacks-statement.txt`).
 With an arbiter that becomes active not knowing it may be behind, it is broken in eleven
 (`traces/behind-7-arbiter-does-not-know-it-is-behind.txt`). With the design, it holds over 301,843,316 distinct states
-at budgets smaller than those of section 12.3, which section 12.6 states; the budgets of 12.3 do not finish.
+at budgets smaller than those of section 3.3, which section 3.6 states; the budgets of 3.3 do not finish.
 
 **Tests.** `LeaseRulesTest.LeaderMayActWithoutItsPeerOnlyOnceBothArbitersHoldTheStatement`,
 `LeaseRulesTest.LeaderMayActWithoutItsPeerOnceTheActiveArbiterConfirmsTheStatementAlone`,
@@ -4071,7 +4071,7 @@ restart the instance starts from that. The cost is that on a slow disk the reque
 the write takes. The other choice, declining a lease whose epoch could not be written within part of it, was rejected:
 the voters' promises to the declining instance stop anyone else leading for a lease period, and on a disk that stays
 slow that repeats at every grant. `MajorityLeaseHA.tla` is given the rule (rule 13, `RecordBeforeAsking`), and every
-safety and liveness check of section 11 of `docs/availability/tla/findings.md` holds with it (section 11.9 there).
+safety and liveness check of section 2 of `docs/availability/tla/findings.md` holds with it (section 2.9 there).
 
 It is built. `PairLeaseAgent` calls a `RecordEpochBeforeAskingInterface` between choosing the epoch and sending the
 request, and notes the request as sent, and so starts the lease, once the write has finished. The sequencer's
@@ -4398,7 +4398,7 @@ and both read nodes of the behaviour graph through one file with no lock, so one
 the other is reading from. TLC reads that file only for a node whose slot in its in-memory cache another node has
 taken, and which nodes share a slot depends on the fingerprint function, which TLC otherwise chooses at random on each
 run. So some functions fail often (129: 27 of 40 runs) and others never have (0: none of 200), and the same function
-fails on some runs and not others. [findings.md, section 11.8](availability/tla/findings.md) gives the evidence, read
+fails on some runs and not others. [findings.md, section 2.8](availability/tla/findings.md) gives the evidence, read
 from TLC's compiled code with `javap`, and the measurements.
 
 **It is a known defect of TLC, fixed upstream.** It is [tlaplus issue 597](https://github.com/tlaplus/tlaplus/issues/597),

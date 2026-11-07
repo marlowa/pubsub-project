@@ -452,8 +452,7 @@ checking the design showed all three issuing at overlapping times: an instance c
 report outstanding at the arbiter when its peer becomes visible, and a follower takes no part in
 resolution between peers, because it already holds a role. If each issuer takes "the highest epoch
 it knows, plus one", two of them working from the same known epoch issue the same number for
-different leaders, and every receiver accepts both. See `docs/availability/tla/findings.md`,
-finding 1.
+different leaders, and every receiver accepts both.
 
 **Every epoch names its leader.** So the value of a new epoch records which instance leads in it:
 its remainder on division by 4 is that instance's id. Every issuer takes the next such number above
@@ -525,8 +524,8 @@ grant from either other voter is enough. No instance promotes itself on silence.
 Why: a follower that hears nothing cannot tell a dead leader from being cut off itself, so no rule
 it applies alone can be right in both cases. A majority of three can, because two instances would
 each need two votes at once, and every voter grants one instance at a time. Model checking a
-follower that promotes itself when no arbiter answers finds two leaders during a partition, and
-two active arbiters; see `docs/availability/tla/findings.md`.
+follower that promotes itself when no arbiter answers finds two leaders during a partition; see the
+counterexample `lease-4-degraded-promotion` in section 2.4 of `docs/availability/tla/findings.md`.
 
 A supervised restart of a leader does not move the lead. A voter that restarts having forgotten
 its promises must grant nothing for one lease period, and a leader made to wait that long would

@@ -22,7 +22,7 @@
  * as both arbiters' confirmation; that one arbiter is not enough is tested in LeaseRulesTest and
  * PairLeaseAgentTest. The simulation checks that an instance starting to act as leader holds every
  * command the engine has acted on. A voter here records a statement durably before it grants; the design lets the follower
- * write it in the background, and findings.md section 12.5 describes the risk that leaves.
+ * write it in the background, and findings.md section 3.5 describes the risk that leaves.
  *
  * An instance asked by its peer sometimes refuses a request it would grant, as PairLeaseAgent does
  * while the promise of its vote is not yet on disk, although its vote is promised in memory.
