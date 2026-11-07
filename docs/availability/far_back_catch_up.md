@@ -1,5 +1,9 @@
 # A matching engine catching up from far back {#far_back_catch_up}
 
+> **Built.** [BUG-0176](../bug_list.md#bug_0176), [BUG-0212](../bug_list.md#bug_0212) and
+> [BUG-0172](../bug_list.md#bug_0172) are fixed, and the limit on how long the venue recovers on its own
+> (section 5) is in the leading sequencer.
+
 This design covers what a matching engine catching up from far back in the WAL must do so that the venue keeps
 working while it does, and the limit on how long the venue recovers on its own:
 

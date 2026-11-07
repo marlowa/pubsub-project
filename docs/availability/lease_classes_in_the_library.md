@@ -3,6 +3,9 @@
 > **Status: agreed, 12 October 2026.** This is the design for phase 3 of
 > [the recovery plan](../recovery_plan.md). Andrew agreed it as a whole, with the three decisions in
 > section 9.
+>
+> **Built.** Phase 3 is finished: the lease classes, the voting service and the promise recorder are in
+> the library. Andrew reviewed it on 13 October 2026.
 
 ## 1. What phase 3 does
 

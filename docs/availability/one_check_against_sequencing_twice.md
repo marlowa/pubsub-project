@@ -1,5 +1,9 @@
 # One check against sequencing a command twice {#one_check_against_sequencing_twice}
 
+> **Built.** Phase 9 is finished: the leading sequencer checks every command, in one check, and the
+> gateways' store of unanswered commands is in the library. [BUG-0122](../bug_list.md#bug_0122) and
+> [BUG-0114](../bug_list.md#bug_0114) are fixed.
+
 This is the design of phase 9 of the [recovery plan](../recovery_plan.md). It covers:
 
 - [BUG-0122](../bug_list.md#bug_0122): a command is protected from being sequenced twice only on particular paths, and

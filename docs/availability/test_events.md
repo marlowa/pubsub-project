@@ -1,7 +1,8 @@
 # Phase 6: test events instead of Quill log wording {#test_events}
 
-**Status: agreed** with Andrew on 18 October 2026 (decisions 1 A, 2 A, 3 yes, 4 yes, 5 B, 6 yes, 7 yes). Nothing in
-it is built yet.
+**Status: agreed** with Andrew on 18 October 2026 (decisions 1 A, 2 A, 3 yes, 4 yes, 5 B, 6 yes, 7 yes), and
+**built**: phase 6 is finished, and the high availability tests decide whether a scenario passes from test events,
+not from the wording of Quill log messages.
 
 ## 1. What phase 6 does
 

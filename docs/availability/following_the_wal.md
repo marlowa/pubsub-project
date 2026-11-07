@@ -3,8 +3,12 @@
 > **Status: agreed, 14 October 2026.** This is the design for phase 5 of
 > [the recovery plan](../recovery_plan.md). It follows section 4 of
 > [ha_library_boundary.md](ha_library_boundary.md), "Design area: following the WAL". Andrew agreed it
-> as a whole, with the decisions recorded in section 8. Step 1 is built: the library's way of following
-> a WAL exists and is tested on its own (section 5.1, "What step 1 built"); no component uses it yet.
+> as a whole, with the decisions recorded in section 8.
+>
+> **Built.** Phase 5 is finished: the matching engines, the publishers and a follower sequencer that
+> rejoins are all caught up through the library's reading thread. The sections that describe how a
+> component followed the WAL before this phase describe what the design changed, not the venue as it is
+> now.
 
 Throughout this page, WAL means the write-ahead log, the file of sequenced records on disk. The text
 log each process writes about what it is doing is called the Quill log.

@@ -1,5 +1,9 @@
 # Both matching engines apply the WAL {#both_engines_apply_the_wal}
 
+> **Built.** Phase 8 is finished. Both matching engines apply every committed command from the WAL, the
+> `BookUpdate` copy of the book is removed, and a promoted engine keeps every order. Section 1 describes the
+> venue before this phase, which is what the design changed.
+
 This is the design for phase 8 of the [recovery plan](../recovery_plan.md): both matching engines apply every committed
 command from the WAL themselves, whichever one leads, and only the leading engine's execution reports are sent on to
 the members. It is way B of [ha_library_boundary.md](ha_library_boundary.md), section 10, agreed on 12 October 2026.

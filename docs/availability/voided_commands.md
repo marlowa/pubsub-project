@@ -1,5 +1,8 @@
 # Voided commands, and halting when no matching engine leads {#voided_commands}
 
+> **Built.** Every step of section 8 is built, and [BUG-0197](../bug_list.md#bug_0197) is fixed. Section 2
+> describes the venue before this design, which is what the design changed.
+
 This is the second design of phase 8 of the [recovery plan](../recovery_plan.md), agreed as decision 5 of
 [both_engines_apply_the_wal.md](both_engines_apply_the_wal.md). It covers:
 

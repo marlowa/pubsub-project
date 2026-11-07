@@ -1,5 +1,9 @@
 # Dividing the sequencer and the matching engine into parts
 
+> **Built.** Phase 10 is finished: every step of the design is built, and Andrew closed the phase on
+> 4 November 2026. [sequencer.md](sequencer.md) and [matching_engine.md](matching_engine.md) describe the
+> parts as they are now.
+
 This is the design for phase 10 of the [recovery plan](../recovery_plan.md): dividing what is left of
 `SequencerThread` and `MatchingEngineThread` into parts, each with one job and its own state, all still run by the
 same single thread. Behaviour does not change. Section 10 holds its decisions, which Andrew took on 3 November 2026, each as recommended.

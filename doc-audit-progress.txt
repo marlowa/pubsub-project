@@ -50,20 +50,6 @@ The audit continues with the rest of the availability directory meanwhile; these
    `mep_oar.md`, sections 4, 5.2, 5.3 and 6.2, and the publisher's callbacks in section 6, were
    brought up to date on 17 October 2026 by step 5 of phase 5, because step 4 removed the messages
    they described; the rest of it is still unaudited.
-7. The documents under `docs/availability/` that are each the design for one phase of the recovery plan or
-   one bug (`ha_library_boundary.md`, `lease_classes_in_the_library.md`, `replicated_wal_in_the_library.md`,
-   `following_the_wal.md`, `test_events.md`, `deterministic_matching_engine.md`,
-   `both_engines_apply_the_wal.md`, `voided_commands.md`, `far_back_catch_up.md`,
-   `one_check_against_sequencing_twice.md`, `publishers_sent_from_memory.md`,
-   `reports_held_until_sessions_are_announced.md`, and `docs/venue/dividing_the_sequencer_and_matching_engine.md`)
-   each begin by describing how the venue worked before the change, because that is what the design
-   changes; for example, `both_engines_apply_the_wal.md` section 1 describes the `BookUpdate` copy of the
-   book, which no longer exists. Correcting those sections to describe the present code would make the
-   designs unreadable. The proposal is that they are treated as design records: each is checked only
-   for a clear statement at its top of whether it is built, and the descriptive documents (`sequencer.md`,
-   `matching_engine.md`, `wal_and_ha.md`, `majority_leases.md` and the like) are what is checked against
-   the code. Is that right?
-
 ## Phase 11: the second pass over the high availability, sequencer and matching engine documents
 
 Phase 11 of the recovery plan asks for these documents to be brought up to date with the code after
@@ -73,6 +59,16 @@ code as it now stands. Done in this pass:
 
 venue: `README.md`, `matching_engine.md`, `sequencer.md`, `sequencer_app.md`
 
+The design records. Andrew decided on 7 November 2026 that the documents each giving the design for one
+phase of the recovery plan or one bug are records of that design. Each begins by describing the venue
+before the change, because that is what the design changes, and that description is not corrected to
+the present code. Each is checked only for a statement at its top of whether it is built, and the index
+of `docs/availability/` says the same. Done: `ha_library_boundary.md`, `lease_classes_in_the_library.md`,
+`replicated_wal_in_the_library.md`, `following_the_wal.md`, `test_events.md`,
+`deterministic_matching_engine.md`, `both_engines_apply_the_wal.md`, `voided_commands.md`,
+`far_back_catch_up.md`, `one_check_against_sequencing_twice.md`, `publishers_sent_from_memory.md`,
+`reports_held_until_sessions_are_announced.md`, and `docs/venue/dividing_the_sequencer_and_matching_engine.md`.
+
 availability: `wal_and_ha.md`
 
 Still to read again: availability `majority_leases.md`, `gateway_ha.md`,
@@ -81,7 +77,7 @@ Still to read again: availability `majority_leases.md`, `gateway_ha.md`,
 `session_binding.md`, `resend_provenance.md`, `matching_engine_presence.md`, `ha_in_the_library.md`,
 `test_events_inventory.md`; venue `arbiter.md`, `witness.md`, `trading_phases.md`; durability `wal.md`,
 `replay.md`, `open_order_checkpoint.md`; orientation `architecture.md`. `design_notes.md` waits on
-question 4, and the phase design records on question 7.
+question 4.
 
 ## Building and testing on Rocky 8 in Docker (started, blocked)
 

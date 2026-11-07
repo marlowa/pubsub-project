@@ -7,6 +7,11 @@
 > an application supplies, and how the pieces built today map onto it. The detail within each design
 > area is designed at the start of the phase of [the recovery plan](../recovery_plan.md) that builds
 > it, and agreed before any code is written.
+>
+> **Built.** The phases of the recovery plan that build this design, phases 3 to 5 and 7 to 10, are all
+> finished. Each section below that begins by describing the venue before those phases describes what
+> the design changed, not the venue as it is now; [wal_and_ha.md](wal_and_ha.md) describes the venue as
+> it is now.
 
 ## 1. The shape in one paragraph
 
