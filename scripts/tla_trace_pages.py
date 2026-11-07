@@ -123,7 +123,7 @@ COUNTEREXAMPLES: List[Counterexample] = [
         'Instance 2 grants instance 1 a lease and at once asks to lead itself. The arbiter grants instance 2. Each now has '
         'two of the three votes, counting its own, and both act as leader.'),
     Counterexample(
-        'lease-3-restart-does-not-wait', dict(_NO_FAILURES, MaxCrashes='1', RestartWaits='FALSE'),
+        'lease-3-restart-does-not-wait', dict(_NO_FAILURES, MaxCrashes='1', RestartWaits='FALSE', InstancesKeepPromises='FALSE'),
         'Spec', 'INVARIANTS AtMostOneActing', 'AtMostOneActing',
         'A restart that forgets a promise',
         'Rule 6 removed: a restarted voter grants votes straight away.',
