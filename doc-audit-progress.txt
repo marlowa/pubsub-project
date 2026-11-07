@@ -73,7 +73,9 @@ code as it now stands. Done in this pass:
 
 venue: `README.md`, `matching_engine.md`, `sequencer.md`, `sequencer_app.md`
 
-Still to read again: availability `wal_and_ha.md`, `majority_leases.md`, `gateway_ha.md`,
+availability: `wal_and_ha.md`
+
+Still to read again: availability `majority_leases.md`, `gateway_ha.md`,
 `process_death.md`, `change_of_sequencer_leader.md`, `a_follower_behind_does_not_lead.md`,
 `follower_log_repair.md`, `commands_during_a_change_of_leader.md`, `order_acceptance.md`,
 `session_binding.md`, `resend_provenance.md`, `matching_engine_presence.md`, `ha_in_the_library.md`,
@@ -271,6 +273,10 @@ Reported to Andrew, and not changed by the audit.
   `growth_report_threshold_bytes` tells of a time the book reached 9.9 GB, and the comment on
   `region_capacity` says "a cancelled or filled order releases its record", though the engine never
   fills an order.
+- `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl` still defines `StatusQuery` (PDU 100)
+  and `StatusResponse` (PDU 101), and two integration tests use them, but no component sends or handles
+  either message any more. Either the messages and their tests are removed, or they are kept for a reason
+  that should be written beside them.
 - `scripts/ha_test.py`, scenario 16: its expected outcome says the engine that followed "promotes via
   the arbiter (adopts LEADER) after the ~15 s promotion timeout". Leadership is decided by leases from a
   majority of the engine, its peer and the arbiter pool, and there is no promotion timeout.

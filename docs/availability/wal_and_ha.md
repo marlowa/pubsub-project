@@ -34,7 +34,7 @@ pieces it needs.
 | Component | How it is duplicated | Who decides who leads | Uses the write-ahead log | What a member sees on failover |
 |---|---|---|---|---|
 | **Sequencer** | A pair: leader and follower | A majority of three voters: the two sequencers and the active arbiter | Yes: the leader writes it, the follower receives every record | A pause of a few seconds. Orders sent during it are answered: each gateway keeps every command until it is answered and sends the unanswered ones again to the new leader ([Commands during a change of leader](commands_during_a_change_of_leader.md)) |
-| **Matching engine** | A pair: leader and follower, the follower holding a copy of the book | A majority of three voters, as for the sequencer | It has no log of its own; it catches up from the sequencer's | A pause. What happens to resting orders is a configured policy (below) |
+| **Matching engine** | A pair: leader and follower, each applying every command from the sequencer's log to its own book | A majority of three voters, as for the sequencer | It has no log of its own; both instances apply the sequencer's | A pause. Resting orders are kept (below) |
 | **Matching engine publisher** | A pair, as for the sequencer | A majority of three voters | It reads the sequencer's log | A subscriber reconnects and asks for records from the sequence number it had reached |
 | **Arbiters** | Two arbiters and a witness | A majority of the two arbiters and the witness | No | None: arbiters are not on the order path |
 | **Order gateways** | Two instances of each protocol; each member session is provisioned to a primary and a backup instance | Nobody: the member chooses which instance to connect to | No | The member reconnects to its other instance |
@@ -81,7 +81,7 @@ The log's format, its segments, the single-writer rule and replay are described 
 
 The leader holds back each command from the matching engine until the follower has acknowledged its
 record: the library's replicated WAL (`ReplicatedWal`) commits the record once the follower has
-acknowledged it, and the sequencer holds the command until then (`SequencerThread::hold_until_acknowledged`). So the matching engine
+acknowledged it, and the sequencer holds the command until then (`OrderRelease`). So the matching engine
 never acts on, and a member is never told about, an order that only one machine holds: if the leader's
 machine died, the follower would still have every order the engine had acted on, and would take over
 with it (principle V5 in [design_principles.md](../design_principles.md)). The one exception is a
@@ -172,8 +172,8 @@ At any moment, **one instance holds the leader role and the other holds the foll
   the topics. The active arbiter votes.
 - **The follower keeps itself ready to take over, and does nothing on the order path.** The following
   sequencer receives every record of the leader's log and writes it to its own. The following
-  matching engine receives every change to the leader's book and applies it to its own copy. Neither
-  sends anything to a matching engine, a gateway or a member.
+  matching engine is sent every committed command from the sequencer's log and applies it to its own
+  book, as the leader does. Neither sends anything to a matching engine, a gateway or a member.
 
 Either instance can hold either role. The primary is the one that normally leads, but **being the
 primary does not make an instance the leader**: after a failover the secondary leads, and it goes on
@@ -211,16 +211,17 @@ and is granted. It keeps the leader role, and the follower never takes over
 
 ### How an instance learns its peer's role
 
-When two instances of a pair connect, each sends `StatusQuery` with its identity and epoch, and
-answers the other's with `StatusResponse`, which carries its current role. After that, the lease
-messages carry the decision: a voter's grant to one instance, and the leader's renewals, are what the
-roles rest on.
+The two instances of a pair do not tell each other their roles. The lease messages carry the
+decision: a voter's grant to one instance, and the leader's renewals, are what the roles rest on. An
+instance that grants its peer's request to lead takes the follower role; one that is granted a
+majority takes the leader role.
 
 ### Where the design differs between components
 
 - **Sequencer**: the follower's log is identical to the leader's, record for record.
-- **Matching engine**: the follower's book is a copy, and it catches up with the sequencer's log
-  before it acts as leader. What it does with resting orders on taking over is a configured policy.
+- **Matching engine**: the follower builds its own book by applying every command in the sequencer's
+  log, and catches up with the log before it acts as leader. It keeps every resting order on taking
+  over.
 - **Matching engine publisher**: it keeps no record of its promises, so a restarted publisher always
   waits one lease period before voting or asking to lead.
 - **Arbiters**: the leader is called *active* and the follower *passive*, and their third voter is
@@ -425,8 +426,9 @@ with a third process, the witness, as their third voter:
 
 - **Arbiter primary and arbiter secondary.** Each is a full arbiter. The one that holds a lease from
   the other or from the witness is *active* and votes for the components; the other is *passive*.
-  The active arbiter tells the passive one the highest epoch it has granted in each component group
-  (`ArbiterStateRecord`), so a change of active arbiter does not forget it.
+  The active arbiter tells the passive one the highest epoch it has granted in each component group,
+  and the newest statement each group's leader has made about whether its follower may lead
+  (`ArbiterStateRecord`), so a change of active arbiter forgets neither.
 - **The witness.** A small process that keeps nothing. It answers the arbiters' lease requests, and
   never becomes active or passive itself.
 
@@ -439,6 +441,31 @@ every pair are running.
 lease request to both. The active arbiter answers; the passive one stays silent, because a refusal
 from it would cancel the request the active arbiter is answering under the same id. Nothing connects
 to the witness except the two arbiters.
+
+**A leader's statement that its follower may not lead is held by both arbiters.** When the leading
+sequencer trades without its follower, it says in its lease requests that its follower may not lead,
+because the follower lacks commands the leader has acted on. That statement must survive a change of
+active arbiter: if the arbiter holding it stopped, and the other became active without it, the other
+could grant the lead to the follower that lacks those commands.
+
+So each arbiter, active or passive, records the statement from the lease request itself, writes it to
+disk, and then tells the leader that it holds it (`StatementHeld`). The leader acts on a command its
+follower lacks only once one of these is true:
+
+- its follower has received the statement and echoed it back;
+- both arbiters have told the leader that they hold the statement;
+- the active arbiter has told the leader that it holds the statement, and has heard nothing from the
+  other arbiter for two lease periods, one renewal interval and one more lease period: ten seconds
+  with the development environment's lease of three seconds and renewal interval of one second.
+
+The third case exists so that the loss of the passive arbiter's machine does not stop trading. It is
+safe because of what an arbiter does when it becomes active. The two arbiters send each other a
+heartbeat every tick (`ArbiterHeartbeat`), and each heartbeat echoes the newest heartbeat received from
+the other. An arbiter that becomes active looks at when it sent the heartbeat whose echo it last
+received. If that was more than two lease periods and one renewal interval ago (seven seconds in the
+development environment), the other arbiter may have confirmed a statement alone that this arbiter does
+not hold, so it grants nothing until it hears from the other arbiter and receives its state. See
+[A follower behind does not lead](a_follower_behind_does_not_lead.md).
 
 ### Three machines, and no more
 

@@ -1005,11 +1005,19 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     //
     // Ordinarily it is the order's record: a member is not told its order executed until the follower holds the order.
     //
-    // A report that answers no order has no order's record to wait for: the reports of the orders a CancelBook command
-    // cancels carry seq_no 0, because no member placed that command. A report that repeats one already sent, as every
-    // report from a catch-up does, names an order whose record was committed long ago, so waiting for that record would
-    // not wait at all. Both wait for the report's own record instead, which is unique to the report, so that the member
-    // learns of it only once the follower holds the report's record.
+    // Two kinds of report cannot wait for the record of the order they answer.
+    //
+    // The first kind answers no member's order. A CancelBook command is written into the WAL by the sequencer itself,
+    // not placed by a member. When the matching engine applies it, it cancels every order on the book and sends a
+    // report of each cancel. Those reports carry seq_no 0, because the command that caused them was not a member's
+    // order, so there is no order's record for them to wait for.
+    //
+    // The second kind repeats a report that may already have been sent, as every report produced during a catch-up
+    // does. Such a report names an order whose record was committed long ago, so waiting for that record would not
+    // make it wait at all.
+    //
+    // Both kinds wait instead for the report's own record in the WAL, which belongs to that report alone. The member
+    // is therefore told of the report only once the follower holds the record of the report itself.
     const bool gate_on_own_record = (er_seq_no == 0) || possible_repeat;
     const int64_t gate_seq_no = gate_on_own_record ? er_wal_seq : er_seq_no;
 

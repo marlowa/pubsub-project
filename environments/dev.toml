@@ -727,9 +727,14 @@ sequencer_er_port             = 11021
 sequencer_er_secondary_host   = "127.0.0.1"
 sequencer_er_secondary_port   = 11022
 # The link between the two engines is symmetric: each instance listens, and each dials the other.
-# Both connections stand at all times, and whichever is up carries the lease requests between the
-# pair, the role announcements and the settings check. Wired one way round, after a failover one
-# direction has no channel at all (docs/bug_list.md, BUG-0034).
+# Both connections stand at all times, and whichever is up carries three kinds of message between
+# the two engines. The first is the requests for a lease and the grants that answer them, by which
+# the pair decides which engine leads. The second is each engine's region capacity and a fingerprint
+# of its secret for identifiers, so that each can check that the other's settings are the same as
+# its own. The third is used only at start-up: when an engine finds that its previous process died
+# while applying a command, it asks the other engine whether that engine applied the command. If the
+# link were wired in one direction only, then after a failover one direction would have no
+# connection at all (docs/bug_list.md, BUG-0034).
 peer_listen_host  = "127.0.0.1"
 peer_listen_port  = 11025
 peer_host         = "127.0.0.1"

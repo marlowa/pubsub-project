@@ -145,10 +145,13 @@ With high availability on, two instances run: `matching_engine` (the primary, in
   marked `PossResend`. See
   [Both matching engines apply the WAL](../availability/both_engines_apply_the_wal.md).
 - **The two instances are linked** (`[peer]`, ports 11025 and 11026 in the development environment):
-  the link carries the lease requests and grants between them, the check that their settings agree,
-  and the question an engine asks at start-up of whether its peer applied a command it died applying
-  (`DiedApplyingCheck`, below). Neither engine sends the other its role: which instance leads is
-  decided by leases, and each announces its role only to the sequencers.
+  the link carries three kinds of message. The first is the requests for a lease and the grants that
+  answer them. The second is each engine's region capacity and a fingerprint of its secret for
+  identifiers, so that each engine can check that the other's settings are the same as its own. The
+  third is used only at start-up: an engine whose previous process died while applying a command asks
+  the other engine whether that engine applied the command (`DiedApplyingCheck`, below). Neither
+  engine sends the other its role. Which instance leads is decided by leases, and each engine tells
+  only the sequencers which role it has.
 - **Every engine catches up before it acts**, whether it has just been promoted or has just started.
   It sends the sequencers the position it has reached (`WalFollowRequest`), and the leading sequencer
   sends every command after it, then says where it stopped and how many records it sent

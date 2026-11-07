@@ -15,11 +15,19 @@ enabled = ${ha_enabled}
 role    = "primary"
 
 [peer]
-# The link between the two engines. Symmetric: this instance listens, and also dials its peer,
-# and both connections stand at all times. Whichever is up carries the lease requests and grants
-# between the pair, the check that the two engines' settings agree, and an engine's question at
-# start-up of whether its peer applied the command it died applying. Each engine applies the WAL
-# itself, so no book is sent on it.
+# The link between the two engines. It is symmetric: this instance listens, and also dials its
+# peer, and both connections stand at all times. Whichever connection is up carries three kinds of
+# message between the two engines:
+#
+# - the requests for a lease and the grants that answer them, by which the pair decides which
+#   engine leads;
+# - each engine's region capacity and a fingerprint of its secret for identifiers, so that each
+#   engine can check that the other's settings are the same as its own;
+# - at start-up only: when an engine finds that its previous process died while applying a
+#   command, it asks the other engine whether that engine applied the command.
+#
+# No book is sent on this link. Each engine applies every command from the sequencer's WAL itself,
+# so each builds its own book.
 listen_host = "${matching_engine_peer_listen_host}"
 listen_port = ${matching_engine_peer_listen_port}
 host = "${matching_engine_peer_host}"
