@@ -161,10 +161,12 @@ buffer is alive and unmodified. Typed accessors convert on demand (hffix's
 
 - `as_int` / `as_int64` / `as_uint`, `as_char`, `as_bool` (FIX boolean: `Y` is
   true).
-- `as_decimal(mantissa, exponent)` — parses a fixed-point decimal such as
-  `-123.45` into `mantissa = -12345, exponent = -2`. **No float is produced**, so
-  no precision is lost; scientific notation is rejected. This matters for the
-  framework's integer-only price/quantity rule.
+- `is_decimal()` — whether the value is a decimal number as FIX writes one, such
+  as `-123.45`: an optional sign, then digits with at most one decimal point, and
+  at least one digit; scientific notation is not one. Only the characters are
+  looked at and no number is built, so a value of any length is checked, and the
+  venue sets no limit on the number of digits. Nothing in the venue does
+  arithmetic with a price or quantity: it carries the text the member sent.
 - `as_utc_timestamp_ns` — parses a FIX `UTCTimestamp`
   (`YYYYMMDD-HH:MM:SS` with an optional fractional part up to nanoseconds) to
   nanoseconds since the Unix epoch, using Howard Hinnant's days-from-civil

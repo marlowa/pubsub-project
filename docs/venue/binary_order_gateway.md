@@ -93,7 +93,7 @@ session's record of open orders.
    OrigClOrdID at most `fix_order_limits::max_cl_ord_id_length` (64, the matching engine's book
    key), Symbol and OrderQty at most `[order_limits]` in the configuration.
 3. **Every quantity and price is a decimal number**, by the FIX codec's own rule
-   (`fix_codec::FixField::as_decimal`).
+   (`fix_codec::FixField::is_decimal`).
 4. **A sequencer is connected, and the venue is accepting orders.** The primary sequencer counts,
    and so does the secondary when `ha_enabled` is true. The leading sequencer says whether the
    venue is accepting orders with an `OrderAcceptance` message, on the connection it holds to the

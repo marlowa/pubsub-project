@@ -4,6 +4,7 @@
 #include <fix_codec/FixField.hpp>
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 #include <gtest/gtest.h>
@@ -40,25 +41,30 @@ TEST(FixFieldTest, CharAndBool) {
     EXPECT_FALSE(make(43, "N").as_bool());
 }
 
-TEST(FixFieldTest, DecimalMantissaExponent) {
-    int64_t mantissa = 0;
-    int exponent = 0;
+TEST(FixFieldTest, ADecimalNumberIsAnOptionalSignDigitsAndAtMostOneDecimalPoint) {
+    EXPECT_TRUE(make(44, "123.45").is_decimal());
+    EXPECT_TRUE(make(44, "-0.001").is_decimal());
+    EXPECT_TRUE(make(44, "+7").is_decimal());
+    EXPECT_TRUE(make(44, "100").is_decimal());
+    EXPECT_TRUE(make(44, "100.").is_decimal());
+    EXPECT_TRUE(make(44, ".5").is_decimal());
 
-    ASSERT_TRUE(make(44, "123.45").as_decimal(mantissa, exponent));
-    EXPECT_EQ(mantissa, 12345);
-    EXPECT_EQ(exponent, -2);
+    EXPECT_FALSE(make(44, "").is_decimal());
+    EXPECT_FALSE(make(44, "-").is_decimal());
+    EXPECT_FALSE(make(44, ".").is_decimal());
+    EXPECT_FALSE(make(44, "1.2.3").is_decimal());
+    EXPECT_FALSE(make(44, "1e5").is_decimal());
+    EXPECT_FALSE(make(44, "1 000").is_decimal());
+    EXPECT_FALSE(make(44, "--1").is_decimal());
+    EXPECT_FALSE(make(44, "1-").is_decimal());
+}
 
-    ASSERT_TRUE(make(44, "-0.001").as_decimal(mantissa, exponent));
-    EXPECT_EQ(mantissa, -1);
-    EXPECT_EQ(exponent, -3);
-
-    ASSERT_TRUE(make(44, "100").as_decimal(mantissa, exponent));
-    EXPECT_EQ(mantissa, 100);
-    EXPECT_EQ(exponent, 0);
-
-    EXPECT_FALSE(make(44, "").as_decimal(mantissa, exponent));
-    EXPECT_FALSE(make(44, "1.2.3").as_decimal(mantissa, exponent));
-    EXPECT_FALSE(make(44, "1e5").as_decimal(mantissa, exponent));
+TEST(FixFieldTest, ADecimalNumberOfAnyLengthIsCheckedWithoutBuildingANumber) {
+    // Far more digits than a signed 64-bit integer holds (nineteen), before and after the point.
+    const std::string long_value = std::string(40, '9') + "." + std::string(40, '9');
+    EXPECT_TRUE(make(44, long_value).is_decimal());
+    EXPECT_TRUE(make(38, "-" + std::string(25, '1')).is_decimal());
+    EXPECT_FALSE(make(44, std::string(30, '9') + "x").is_decimal());
 }
 
 TEST(FixFieldTest, UtcTimestampToNanos) {

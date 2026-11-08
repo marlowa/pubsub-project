@@ -10,7 +10,7 @@ target_include_directories(binary_order_gateway PRIVATE
         ${FIX_DSL_INCLUDE_DIR}
 )
 
-# fix_codec for one thing only: its rule for what a decimal number is (FixField::as_decimal), so a
+# fix_codec for one thing only: its rule for what a decimal number is (FixField::is_decimal), so a
 # quantity or price is held to the same rule whichever protocol carried it. Clients speak the
 # generated PDUs directly, so there is no FIX text to parse here.
 target_link_libraries(binary_order_gateway PRIVATE

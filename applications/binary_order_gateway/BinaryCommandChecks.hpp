@@ -33,7 +33,7 @@ namespace binary_order_gateway {
  * - **Symbol and OrderQty are no longer than configured**, which is what the open-order record can
  *   hold. The FIX gateway has the same two limits in its own configuration.
  * - **Every quantity and price is a decimal number**, by the FIX codec's own rule
- *   (fix_codec::FixField::as_decimal), since the binary protocol carries them as text as FIX does.
+ *   (fix_codec::FixField::is_decimal), since the binary protocol carries them as text as FIX does.
  *
  * Each function returns an empty view when the command passes, and otherwise the reason, written
  * into the caller's buffer. The reason names the field as the binary protocol names it. The checks
@@ -55,9 +55,7 @@ namespace detail {
 /// True if @p text is a decimal number as FIX defines one: an optional sign, digits, and an
 /// optional decimal point with digits.
 [[nodiscard]] inline bool is_decimal(std::string_view text) {
-    int64_t mantissa = 0;
-    int exponent = 0;
-    return fix_codec::FixField{0, text}.as_decimal(mantissa, exponent);
+    return fix_codec::FixField{0, text}.is_decimal();
 }
 
 /// Writes a reason into @p buffer and returns it, cut short rather than overrunning.

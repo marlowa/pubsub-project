@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 235 |
-| Open | 66 (45 defects, 21 tasks) |
-| Closed | 169 |
+| Open | 65 (44 defects, 21 tasks) |
+| Closed | 170 |
 | Next id | BUG-0236 |
 
 ## Open bugs by severity
 
-16 high, 37 medium, 13 low.
+16 high, 36 medium, 13 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -43,7 +43,6 @@
 | [BUG-0087](#bug_0087) | medium | task | Whether the hot path allocates cannot be established on demand |
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
 | [BUG-0091](#bug_0091) | medium | task | A member's standing instructions die with the gateway that received them |
-| [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
 | [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
 | [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
 | [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
@@ -2655,49 +2654,6 @@ something happened.
 Related: R-0103 and R-0113 in `docs/book`, [BUG-0090](#bug_0090),
 [session_binding.md](availability/session_binding.md).
 
-### BUG-0095: Checking the format of a FIX price or quantity overflows a signed integer on long values {#bug_0095}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-09-26 |
-| Recorded | 2026-09-26 |
-| How | Reading `FixField::as_decimal` while establishing where the venue handles decimal values, for the design of the order activity recorder's published prices |
-| Impact | A member can send a price or quantity long enough to overflow a signed 64-bit integer inside the FIX gateway's validation. Signed overflow is undefined behaviour in C++, so what the gateway then does is not defined by the language |
-
-**What happens.** The FIX order gateway checks the format of every field whose FIX type is decimal:
-`QTY`, `PRICE`, `FLOAT`, `AMT`, `PERCENTAGE` and `PRICEOFFSET`. `python/fix_dictionary/emitter.py`
-maps each of those types to `fix_decimal`, and `FixMessageValidator::check_format` checks a
-`fix_decimal` field by calling `FixField::as_decimal` (`libraries/fix_codec/FixField.hpp`).
-
-`as_decimal` builds the number up one digit at a time in an `int64_t`, as `digits = digits * 10 +
-(character - '0')`, with no check for overflow. A value with more than eighteen digits, counting
-those after the decimal point, overflows it. In practice the value usually wraps round and the
-check still passes, because the validator only looks at whether `as_decimal` returned true, but the
-language gives no such assurance.
-
-**Nothing uses the number.** The validator discards the mantissa and exponent `as_decimal` returns;
-it only needs to know whether the text is well formed. No other code calls `as_decimal`. The venue
-does no arithmetic with prices or quantities anywhere: it carries them as the text the member sent,
-from the gateway through the matching engine to the execution report.
-
-**Why it is not high.** In the common case the overflow wraps and the message is handled normally,
-so nothing has been seen to go wrong. The fault is that correct behaviour depends on what the
-compiler happens to do with undefined behaviour.
-
-**Why it is not low.** The input comes from outside the venue, from any member, and reaches this
-code before anything else looks at the field.
-
-**What closing it needs.** Check the format by looking at the characters alone: an optional sign,
-at least one digit, at most one decimal point, and nothing else. Build no number, so there is no
-limit on the number of digits, in keeping with the rule that the venue imposes no maximum size on a
-FIX value. `as_decimal` then has no caller and is removed, with its tests in
-`libraries/fix_codec/tests/FixFieldTest.cpp` rewritten against the character check. A test must
-include a value of more than nineteen digits.
-
-Related: [BUG-0096](#bug_0096), and `docs/pubsub/oar_external_stream.md` section 4.6, which relies on
-prices and quantities being well-formed decimal text.
-
 ### BUG-0173: No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests {#bug_0173}
 
 | | |
@@ -3004,6 +2960,50 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0095: Checking the format of a FIX price or quantity overflows a signed integer on long values {#bug_0095}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-26 |
+| Recorded | 2026-09-26 |
+| Fixed | 2026-11-08 -- `FixField::as_decimal` is replaced by `FixField::is_decimal`, which looks only at the characters: an optional sign, then digits with at most one decimal point, and at least one digit. It builds no number, so a value of any length is checked and nothing can overflow. The FIX gateway's validator and the binary gateway's checks both call it. Built with the undefined behaviour sanitizer outside the venue's build, which has no option for it, the old check of a value with 40 digits before and after the point stopped with "signed integer overflow: 999999999999999999 * 10 cannot be represented in type 'long int'", and the new check accepted the same value. The new tests in `FixFieldTest` include that value, and the test of the form failed when `is_decimal` was made on purpose to accept the letter e. With the fix, `devsetup.sh` passed and the suite passed 102 of 102 |
+| How | Reading `FixField::as_decimal` while establishing where the venue handles decimal values, for the design of the order activity recorder's published prices |
+| Impact | A member can send a price or quantity long enough to overflow a signed 64-bit integer inside the FIX gateway's validation. Signed overflow is undefined behaviour in C++, so what the gateway then does is not defined by the language |
+
+**What happens.** The FIX order gateway checks the format of every field whose FIX type is decimal:
+`QTY`, `PRICE`, `FLOAT`, `AMT`, `PERCENTAGE` and `PRICEOFFSET`. `python/fix_dictionary/emitter.py`
+maps each of those types to `fix_decimal`, and `FixMessageValidator::check_format` checks a
+`fix_decimal` field by calling `FixField::as_decimal` (`libraries/fix_codec/FixField.hpp`).
+
+`as_decimal` builds the number up one digit at a time in an `int64_t`, as `digits = digits * 10 +
+(character - '0')`, with no check for overflow. A value with more than eighteen digits, counting
+those after the decimal point, overflows it. In practice the value usually wraps round and the
+check still passes, because the validator only looks at whether `as_decimal` returned true, but the
+language gives no such assurance.
+
+**Nothing uses the number.** The validator discards the mantissa and exponent `as_decimal` returns;
+it only needs to know whether the text is well formed. No other code calls `as_decimal`. The venue
+does no arithmetic with prices or quantities anywhere: it carries them as the text the member sent,
+from the gateway through the matching engine to the execution report.
+
+**Why it is not high.** In the common case the overflow wraps and the message is handled normally,
+so nothing has been seen to go wrong. The fault is that correct behaviour depends on what the
+compiler happens to do with undefined behaviour.
+
+**Why it is not low.** The input comes from outside the venue, from any member, and reaches this
+code before anything else looks at the field.
+
+**What closing it needs.** Check the format by looking at the characters alone: an optional sign,
+at least one digit, at most one decimal point, and nothing else. Build no number, so there is no
+limit on the number of digits, in keeping with the rule that the venue imposes no maximum size on a
+FIX value. `as_decimal` then has no caller and is removed, with its tests in
+`libraries/fix_codec/tests/FixFieldTest.cpp` rewritten against the character check. A test must
+include a value of more than nineteen digits.
+
+Related: [BUG-0096](#bug_0096), and `docs/pubsub/oar_external_stream.md` section 4.6, which relies on
+prices and quantities being well-formed decimal text.
 
 ### BUG-0210: A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again {#bug_0210}
 

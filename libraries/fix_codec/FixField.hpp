@@ -89,25 +89,19 @@ struct FixField {
     }
 
     /**
-     * @brief Parses a fixed-point decimal (e.g. "-123.45") as mantissa and exponent.
+     * @brief Whether the value is a decimal number as FIX writes one, such as "-123.45": an
+     *        optional sign, then digits with at most one decimal point among or after them, and at
+     *        least one digit. Scientific notation is not one.
      *
-     * On success sets @p mantissa and @p exponent such that the value equals
-     * mantissa * 10^exponent (exponent <= 0) and returns true. "-123.45" yields
-     * mantissa -12345, exponent -2. Scientific notation is rejected. No float is
-     * produced, so no precision is lost.
+     * Only the characters are looked at; no number is built, so a value of any length can be
+     * checked, and the venue sets no limit on how many digits a price or quantity has. Nothing in
+     * the venue does arithmetic with a price or quantity: it carries the text the member sent.
      */
-    [[nodiscard]] bool as_decimal(int64_t& mantissa, int& exponent) const {
-        if (value.empty()) {
-            return false;
-        }
+    [[nodiscard]] bool is_decimal() const {
         size_t index = 0;
-        bool negative = false;
-        if (value[index] == '+' || value[index] == '-') {
-            negative = value[index] == '-';
+        if (!value.empty() && (value[index] == '+' || value[index] == '-')) {
             ++index;
         }
-        int64_t digits = 0;
-        int fractional_digits = 0;
         bool seen_dot = false;
         bool seen_digit = false;
         for (; index < value.size(); ++index) {
@@ -117,21 +111,13 @@ struct FixField {
                     return false;
                 }
                 seen_dot = true;
-                continue;
-            }
-            if (character < '0' || character > '9') {
+            } else if (character >= '0' && character <= '9') {
+                seen_digit = true;
+            } else {
                 return false;
             }
-            digits = digits * 10 + (character - '0');
-            fractional_digits += seen_dot ? 1 : 0;
-            seen_digit = true;
         }
-        if (!seen_digit) {
-            return false;
-        }
-        mantissa = negative ? -digits : digits;
-        exponent = -fractional_digits;
-        return true;
+        return seen_digit;
     }
 
     /**

@@ -158,14 +158,11 @@ class FixMessageValidator {
                     return FixReject{RejectReason::IncorrectDataFormat, tag, type, field.value};
                 }
                 break;
-            case field_format::fix_decimal: {
-                int64_t mantissa = 0;
-                int exponent = 0;
-                if (!field.as_decimal(mantissa, exponent)) {
+            case field_format::fix_decimal:
+                if (!field.is_decimal()) {
                     return FixReject{RejectReason::IncorrectDataFormat, tag, type, field.value};
                 }
                 break;
-            }
             case field_format::fix_char:
                 if (field.value.size() != 1) {
                     return FixReject{RejectReason::IncorrectDataFormat, tag, type, field.value};
