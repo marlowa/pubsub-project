@@ -630,3 +630,8 @@ not the aim. Gaps found along the way are recorded, not fixed within the phase. 
 - Phase 10: the sequencer and the matching engine are each divided into parts, each part with its own unit tests,
   the sequencer's replay mode is removed, and the order's round trip is unchanged; Andrew closed the phase on
   4 November 2026.
+- Phase 11: the TLA+ models set against the design principles (`docs/availability/tla/findings.md`, section 4);
+  every message between the two instances of a pair outside the WAL checked
+  (`docs/availability/state_between_pair_instances.md`), with BUG-0230, BUG-0231 and BUG-0232 found and fixed; and
+  the high availability, sequencer and matching engine documents read again against the code
+  (`doc-audit-progress.txt`). Andrew closed the phase on 8 November 2026.
