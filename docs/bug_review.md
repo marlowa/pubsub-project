@@ -29,7 +29,7 @@ review recommends working on them.
 
 1. Leadership, leases and the arbiters (section 1)
 2. The write-ahead log, its retention, the disk, and the trading day (section 2)
-3. The matching engine
+3. The matching engine (section 3)
 4. The sequencer's handling of reports
 5. The gateways and what a member sees
 6. The framework: reactor, timers, allocators and threads
@@ -81,3 +81,24 @@ Ten entries.
 obvious remedy. BUG-0137 next, because V12 rests on it, designed with the trading phases and BUG-0132.
 BUG-0183 and BUG-0175 are investigations to schedule. BUG-0048 and BUG-0113's remainder wait on the
 decision about how long a member's reports are kept; BUG-0086 and BUG-0141 can be closed if Andrew agrees.
+
+## 3. The matching engine
+
+Nine entries.
+
+| Entry | Judgement | Evidence | What is left |
+|---|---|---|---|
+| [BUG-0225](bug_list.md#bug_0225): an engine that becomes a follower before asking to follow the WAL applies nothing | **Breach** of V11: a standby that cannot take over promptly is not reported | Unchanged. `MatchingEngineThread::follow_peer_claiming_leadership` makes the instance a follower with `enter_follower_state`, and nothing then asks to follow the WAL; scenario 24 shows it and passes, because it checks only the role | Ask to follow the WAL on every way into the follower role; a scenario that checks the restarted engine applies commands |
+| [BUG-0211](bug_list.md#bug_0211): changing the region's size during a day can rebuild a different book | **Breach** of V8 | Unchanged. `OrderBook::open` opens the region with the configured capacity, and a region of a different capacity is refused as unusable and rebuilt from the WAL, as a damaged one is | Tell a region refused only for its capacity from a damaged one, from its intact header, and refuse to rebuild with a smaller capacity |
+| [BUG-0194](bug_list.md#bug_0194): an engine that is connected but has stopped working looks healthy | **New requirement**, a design, for V6 and V8 | Unchanged. The reactor's watchdog catches a thread stuck in one callback; nothing catches an engine that answers its lease and applies nothing | The design the entry asks for: what evidence shows an engine is working, who notices, and what is done |
+| [BUG-0028](bug_list.md#bug_0028): growing the order book needs more memory than the machine has | **Partly done** | The map is reserved for the configured number of open orders at start-up, prod sets 100 million, and the book is no longer copied to the follower (phase 8), so the doubling the title describes no longer happens. The entry's own list of what is still open stands: the reserved map's pages are not touched at start-up, so the memory is not proven available; clearing erased slots copies the map; a restart costs time in proportion to the region's capacity, 8 to 17 seconds at 100 million; preprod and test-1 allow one million | Those four points. The title no longer describes the problem, and should be changed when the entry is next worked on |
+| [BUG-0066](bug_list.md#bug_0066): a flapping matching engine resets the deferral clock | **Fixed** in effect, by V14 and by phase 8 | What the entry measured was orders stranded on every cycle and the venue never refusing. Orders are no longer stranded: they are held while no engine leads and released to the engine that next leads (BUG-0064, fixed). An engine interrupted twice is not restarted again (`launch.py --max-interruptions 2`, V14), so a flap becomes one absence, which reaches the refusal after five seconds and the halt after ten. What remains true is that the venue's own clock still restarts each time an engine leads; it is the supervisor that ends the flap | Close it, if Andrew agrees; [order_acceptance.md](availability/order_acceptance.md) then drops it from "What this does not solve" |
+| [BUG-0193](bug_list.md#bug_0193): a command that crashes one engine crashes both | **Fixed** | All three parts are built: a fault caught while applying a command rejects that command (phase 7, [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), section 6, with fuzzing); an engine that died applying a command asks for it to be voided unless its peer applied it ([voided_commands.md](availability/voided_commands.md), section 4); the gateways' strict checks remain | Close it, if Andrew agrees |
+| [BUG-0151](bug_list.md#bug_0151): the round trip is about 20 microseconds slower when the secondary engine leads | **Investigation**, then a **Decision needed** | Unchanged. `environments/dev.toml` still gives the primary engine `reactor_spin_before_block = "50ms"` and the secondary `"0s"`, a setting that follows the instance's name rather than its role | Confirm the cause by measurement; then give both the same setting, or spin only while leading |
+| [BUG-0209](bug_list.md#bug_0209): no scenario reaches the halt when an engine cannot account for the venue's orders | **Test or tool** | Unchanged; the case cannot be reached while the WAL keeps the whole day | A scenario, possible once BUG-0210 or BUG-0048 is done |
+| [BUG-0216](bug_list.md#bug_0216): sending every record to the follower engine adds about 2 microseconds at the median | **Investigation** | Unchanged: one run of each build, and the spread between runs of one build not measured | Measure that spread first; only then decide whether to reduce it |
+
+**Recommended order in this area.** BUG-0225 and BUG-0211 first, as breaches; BUG-0225 is small. Then the
+design for BUG-0194. BUG-0028's remaining points belong with the start-of-day work of BUG-0137, since
+proving the memory available is a start-of-day check. BUG-0066 and BUG-0193 can be closed if Andrew agrees.
+BUG-0151 and BUG-0216 are measurements; BUG-0209 waits on BUG-0210.
