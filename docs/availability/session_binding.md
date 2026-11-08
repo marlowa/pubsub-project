@@ -235,8 +235,8 @@ that sent the messages. See [Resend provenance](resend_provenance.md).
 |---|---|
 | The identity | `applications/fix_common/SessionIdentity.hpp` |
 | Gateway side | `FixOrderGatewayThread::announce_session_bound`, `announce_session_unbound`, `announce_sessions_on_new_link`, `report_session_sequence_numbers`, `handle_session_bound_ack`; `BinaryOrderGatewayThread::announce_session_bound`, `announce_session_unbound`, `announce_sessions_on_new_link` |
-| Sequencer side | `SequencerThread::handle_session_bound`, `handle_session_unbound`, `handle_session_sequence_update`, `handle_session_replay_request`, `handle_undelivered_reports_request` |
-| The remembered state | `SequencerThread::SessionSequenceState` |
+| Sequencer side | `SequencerThread::handle_session_bound`, `handle_session_unbound`, `handle_session_sequence_update`, `handle_session_replay_request`, `handle_undelivered_reports_request`, which decode each message and hand it to `MemberSessions`, the part of the sequencer that holds where each session is connected and what is remembered about it |
+| The remembered state | `MemberSessions::SequenceState`, and the allowance for administrative messages after an unclean death, `MemberSessions::unclean_resume_admin_allowance` |
 | Tested by | `ha_test.py` scenarios 21, 22, 23 and 40; and 14, 27 and 36 for a sequencer that restarts |
 
 ## See also
