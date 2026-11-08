@@ -36,7 +36,7 @@ pending this design.
 topology, roles or peers, and writes the *component's* pid to the plain pid file so the existing
 tools need no changes. `devenv.py --supervised` wires it in, and it is off by default.
 
-Two rules it follows, and both are deliberate:
+Three rules it follows, and each is deliberate:
 
 - **It does not decide leadership.** Starting a process and assigning it a role are two jobs, and
   a supervisor that did both would become mandatory --
@@ -120,10 +120,21 @@ and is judged in its turn. The venue then has no instance of that component and 
 has stopped trying. That must be announced rather than discovered: a venue quietly running with
 nothing behind a component is the failure that looks like health. This is the same shape as
 a failure both instances of a pair share, such as the book growing until the machine runs out of memory
-([BUG-0028](../bug_list.md#bug_0028)). **Nothing implements
-this announcement yet**: when the last instance's supervisor gives up, the venue is left without that
-component and only `<name>.launcher.state` says so. The announcement needs the means for the venue
-to say anything about itself, described in [Trading phases](../venue/trading_phases.md).
+([BUG-0028](../bug_list.md#bug_0028)).
+
+For the matching engine, the venue does announce it. When the supervisor of the last matching engine
+gives up, the leading sequencer has no engine to send orders to. After five seconds without one, it
+tells the gateways to refuse new orders, saying that no matching engine is available. After ten
+seconds, the longest the venue recovers by itself, it writes into the WAL the commands that reject
+every order it was holding, cancel every order on the book, and halt trading, and it tells the
+gateways to refuse orders because the recovery took too long. Every member is sent a report of each
+of its orders, and a person decides when trading resumes
+([voided_commands.md](voided_commands.md), section 5).
+
+**For every other component, nothing implements this announcement yet.** When the supervisor of the
+last instance of a sequencer, a gateway, a publisher or an arbiter gives up, the venue is left without
+that component, and only `<name>.launcher.state` says so. The announcement needs the means for the
+venue to say anything about itself, described in [Trading phases](../venue/trading_phases.md).
 
 **There is no window, and that is deliberate.** The obvious shape is a lookback -- two deaths
 within some period -- and it is rejected. One interruption of this kind is acceptable: members will
@@ -164,10 +175,18 @@ it, but how tolerable one interruption is does.
   its follower takes over instead. It is three seconds; whether one value suits both is open.
 - **What happens on a crash loop?** Partly settled above: the instance is judged after two
   uncovered interruptions, and the last one is meant to halt the venue loudly. What that does not answer is
-  *why* it was dying. Section 7 proposes a poison-pill filter: recovery identifies the input that
-  caused the crash and skips it. Nothing implements this, and skipping an order because it crashed
-  the engine is a decision with its own consequences. Judging the instance bounds the damage; it
-  does not diagnose it.
+  *why* it was dying. For the matching engine, one cause is handled: a command that crashes the
+  engine applying it. An engine that restarts and finds that its previous process died applying a
+  command asks the other engine whether it applied that command. If the other engine did not, the
+  restarted engine asks the sequencers to void the command. The leading sequencer agrees only when the
+  command is a member's new order or cancel, no engine leads, and no engine has reported on that command
+  or any later one. It then writes a `VoidCommands` record into the WAL, so that every engine rejects the
+  command instead of applying it, and its member is sent the rejection
+  ([voided_commands.md](voided_commands.md), section 4). A command the sequencer wrote itself, such as a
+  `CancelBook`, is never voided: if it crashes both engines, the supervisors stop restarting them and
+  the venue halts at the limit on how long it recovers by itself. Section 7 of the
+  decision record proposes the same idea under the name of a poison-pill filter. Nothing does this
+  for any other component, and judging the instance bounds the damage without diagnosing it.
 - **Which components get an inner loop at all?** The matching engine is the expensive case because
   of the book. A gateway or the arbiter may be cheap enough to restart cold, in which case the
   supervisor is the whole answer for them.
