@@ -31,7 +31,8 @@ All 81 open entries have been judged. The figures:
 **The order of work**, agreed with Andrew on 8 November 2026:
 
 1. Close the thirteen entries above that are fixed or no longer apply. Done, 8 November 2026.
-2. The small breaches, each with a remedy already agreed or obvious: BUG-0129 (a data race), BUG-0225,
+2. The small breaches, each with a remedy already agreed or obvious: BUG-0129 (a data race; fixed and closed on
+   8 November 2026), BUG-0225,
    BUG-0226, BUG-0210, BUG-0095, BUG-0189, and the tests BUG-0181 and BUG-0185.
 3. The breaches that need a short design first: BUG-0142 (statements written in the background),
    BUG-0130 (segments kept ready), BUG-0207 (with its scenario), BUG-0211, BUG-0090 with BUG-0091,
@@ -190,7 +191,7 @@ but did not change these parts of it.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0129](bug_list.md#bug_0129): the stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation | **Breach** of F2 (the lock), and a data race, undefined behaviour in C++ | Unchanged: `Reactor.cpp` still takes `thread_registry_mutex_` (twelve uses), and `ApplicationThread::time_event_started_` and `time_event_finished_` are plain `HighResolutionClock::time_point` members written by one thread and read by another | Both parts as the entry describes; the race first, being undefined behaviour |
+| [BUG-0129](bug_list.md#bug_0129): the stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation | **Breach** of F2 (the lock), and a data race, undefined behaviour in C++ | Unchanged when judged: `Reactor.cpp` took `thread_registry_mutex_` (twelve uses), and `ApplicationThread::time_event_started_` and `time_event_finished_` were plain `HighResolutionClock::time_point` members written by one thread and read by another | **Fixed on 8 November 2026**, as the entry describes, and closed. The lock is now taken only at start-up and shutdown, and the two handler times are atomic. A unit test run under ThreadSanitizer reports the race with plain members and nothing with atomic ones |
 | [BUG-0127](bug_list.md#bug_0127): a pool that runs out takes a mutex and maps a new pool while holding it | **Breach** of F2 and F5 | Unchanged: `ExpandablePoolAllocator` still has `expansion_mutex_` on its slow path | No lock on the allocation path, as the entry describes; with BUG-0072, sizing so the slow path is not reached in a normal day |
 | [BUG-0128](bug_list.md#bug_0128): every timer start creates a timer and every cancel destroys one, with a lock and system calls on the reactor thread | **Breach** of F2 and F3 | Unchanged: `Reactor` still has `timer_registry_mutex_`, and there is still no way to create a timer apart from starting it | Timers created once and armed and disarmed afterwards; the design the entry asks for |
 | [BUG-0119](bug_list.md#bug_0119): a thread still in a handler when its reactor shuts down uses the destroyed reactor | **Breach** of F8 (shutdown is deterministic) | Unchanged in the shutdown path | Decide whether a reactor may ever be destroyed while one of its threads may still run, and make shutdown wait or refuse accordingly |

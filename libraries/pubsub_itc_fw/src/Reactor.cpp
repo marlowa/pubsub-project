@@ -192,13 +192,12 @@ void Reactor::route_message(ThreadID target_id, EventMessage message) {
     }
 
     if (message.originating_thread_id().get_value() != system_thread_id_value) {
+        // No lock: fast_path_threads_ changes only before the reactor runs and after its threads have
+        // been joined, as the lookup of the target above relies on too (BUG-0129).
         ApplicationThread* origin = nullptr;
-        {
-            const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
-            auto origin_it = fast_path_threads_.find(message.originating_thread_id());
-            if (origin_it != fast_path_threads_.end()) {
-                origin = origin_it->second;
-            }
+        auto origin_it = fast_path_threads_.find(message.originating_thread_id());
+        if (origin_it != fast_path_threads_.end()) {
+            origin = origin_it->second;
         }
 
         if (origin == nullptr || !origin->is_running()) {
@@ -1012,7 +1011,8 @@ void Reactor::on_housekeeping_tick() {
 }
 
 void Reactor::check_for_exited_threads() {
-    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+    // No lock: threads_ changes only before the reactor runs and after its threads have been joined, and
+    // this runs on the reactor thread while it runs (BUG-0129).
     for (auto& [name, thread] : threads_) {
         if (thread != nullptr) {
             auto state = thread->get_lifecycle_state().as_tag();
@@ -1033,13 +1033,17 @@ void Reactor::check_for_stuck_threads() {
         return;
     }
 
-    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
+    // No lock, as in check_for_exited_threads (BUG-0129).
     for (auto& [name, thread] : threads_) {
         if (thread != nullptr) {
             auto state = thread->get_lifecycle_state().as_tag();
             if (state == ThreadLifecycleState::Operational) {
-                if (thread->get_time_event_started() <= thread->get_time_event_finished()) {
-                    const auto duration = thread->get_time_event_finished() - thread->get_time_event_started();
+                // Each time is loaded once, so that the comparison and the durations below agree with each
+                // other however the thread moves on meanwhile.
+                const HighResolutionClock::time_point started = thread->get_time_event_started();
+                const HighResolutionClock::time_point finished = thread->get_time_event_finished();
+                if (started <= finished) {
+                    const auto duration = finished - started;
                     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
                     if (duration > config_.itc_maximum_inactivity_interval_) {
                         auto reason = fmt::format("Thread {} callback took too long, {} ms", thread->get_thread_name(), ms);
@@ -1048,14 +1052,14 @@ void Reactor::check_for_stuck_threads() {
                     }
                 } else {
                     const auto now = HighResolutionClock::now();
-                    const auto duration = now - thread->get_time_event_started();
+                    const auto duration = now - started;
                     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
                     if (duration > config_.itc_maximum_inactivity_interval_) {
                         auto reason = fmt::format("Thread {} callback appears to be stuck, duration [{} ms]", thread->get_thread_name(), ms);
                         shutdown(reason);
                         return;
                     }
-                    PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} callback not finished yet, taken [{}] ms so far", thread->get_thread_name(), ms);
+                    PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {} callback not finished yet, taken [{}] ms so far", thread->get_thread_name(), ms);
                 }
             } else if (state == ThreadLifecycleState::Started) {
                 PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} is started but init not complete, checking if stuck", thread->get_thread_name());
@@ -1558,15 +1562,6 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
         }
         handler_it->second->handle_event(events[i].events);
     }
-}
-
-std::string Reactor::get_thread_name_from_id(ThreadID id) const {
-    const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
-    auto it = threads_by_thread_id_.find(id);
-    if (it == threads_by_thread_id_.end()) {
-        throw PreconditionAssertion(fmt::format("get_thread_name_from_id: no thread with id {}", id.get_value()), __FILE__, __LINE__);
-    }
-    return it->second->get_thread_name();
 }
 
 void Reactor::handle_sigterm_and_singint() {

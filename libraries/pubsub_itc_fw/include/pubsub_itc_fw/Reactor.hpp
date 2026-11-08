@@ -202,15 +202,6 @@ class Reactor : public ThreadLookupInterface {
     void register_inbound_tls_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id, int64_t raw_buffer_capacity,
                                        TlsListenerConfiguration tls_config);
 
-    /**
-     * @brief Returns the name of a thread given its ID.
-     *
-     * @param[in] id The ID of the thread.
-     * @return The name of the thread.
-     * @pre id must refer to a registered thread. Violating this throws PreconditionAssertion.
-     */
-    std::string get_thread_name_from_id(ThreadID id) const;
-
     // Note: finished here means either fully shutdown or shutdown in progress.
     bool is_finished() const {
         auto state = lifecycle_.load(std::memory_order_acquire);
@@ -642,6 +633,11 @@ class Reactor : public ThreadLookupInterface {
      * All three structures are mutated only during initialisation and shutdown,
      * always under thread_registry_mutex_. During steady-state running they are
      * read-only, which guarantees fast_path_threads_ never contains dangling pointers.
+     * So the paths that run during the day read them without the lock: routing a
+     * message (route_message) and the reactor's once-a-second checks for exited and
+     * stuck threads. The lock is taken only where the structures are changed, at
+     * start-up and shutdown, and by the few start-up and shutdown paths that walk
+     * them (principle F2 in docs/design_principles.md, BUG-0129).
      */
     mutable std::mutex thread_registry_mutex_;
 

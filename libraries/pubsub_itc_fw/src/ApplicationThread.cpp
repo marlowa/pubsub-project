@@ -76,8 +76,6 @@ ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reac
     , reactor_(reactor)
     , outbound_allocator_(thread_config.outbound_slab_size)
     , decode_arena_buffer_()
-    , time_event_started_()
-    , time_event_finished_()
     , thread_name_(std::move(thread_name))
     , thread_id_(thread_id)
     , thread_(nullptr) {
@@ -591,7 +589,7 @@ void ApplicationThread::process_message(const EventMessage& message) {
         throw PreconditionAssertion("Non-reactor event received before thread is fully operational", __FILE__, __LINE__);
     }
 
-    time_event_started_ = HighResolutionClock::now();
+    set_time_event_started(HighResolutionClock::now());
 
     switch (tag) {
         case EventType::Initial: {
@@ -689,7 +687,7 @@ void ApplicationThread::process_message(const EventMessage& message) {
             break;
         }
     }
-    time_event_finished_ = HighResolutionClock::now();
+    set_time_event_finished(HighResolutionClock::now());
 }
 
 void ApplicationThread::on_timer_id_event(TimerID id) {

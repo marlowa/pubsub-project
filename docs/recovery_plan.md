@@ -556,7 +556,8 @@ the phase on 4 November 2026.
 
 - the reactor's timer lock, removed by creating timers at start-up and only starting and stopping them
   afterwards ([BUG-0128](bug_list.md#bug_0128));
-- the reactor's thread registry lock, taken during the trading day ([BUG-0129](bug_list.md#bug_0129));
+- the reactor's thread registry lock, taken during the trading day ([BUG-0129](bug_list.md#bug_0129)); done
+  on 8 November 2026;
 - the WAL's helper thread keeping only one segment ready ([BUG-0130](bug_list.md#bug_0130));
 - the leading sequencer's heap allocations ([BUG-0131](bug_list.md#bug_0131));
 - making sure memory pools do not run out during a trading day ([BUG-0127](bug_list.md#bug_0127)).

@@ -1114,15 +1114,6 @@ _PERMITTED_LOCKS = [
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::finalize_threads_after_shutdown', _START_UP_AND_SHUTDOWN),
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::handle_sigterm_and_singint', _START_UP_AND_SHUTDOWN),
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::cancel_all_timer_fds_for_thread', _START_UP_AND_SHUTDOWN),
-    # The thread registry lock taken during the trading day.
-    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::route_message',
-     'breach: BUG-0129, removed by a framework fix done alongside the phases'),
-    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::check_for_exited_threads',
-     'breach: BUG-0129, removed by a framework fix done alongside the phases'),
-    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::check_for_stuck_threads',
-     'breach: BUG-0129, removed by a framework fix done alongside the phases'),
-    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::get_thread_name_from_id',
-     'breach: BUG-0129, removed by a framework fix done alongside the phases'),
     # The reactor's timer lock: every timer start creates a timer and every cancel destroys one.
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/Reactor.hpp', 'timer_registry_mutex_',
      'breach: BUG-0128, removed by a framework fix done alongside the phases'),

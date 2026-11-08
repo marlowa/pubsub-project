@@ -121,7 +121,7 @@ another thread by other means.
 |---|---|---|---|
 | The expansion mutex in `ExpandablePoolAllocator` | Every queue between threads, and the gateways' open-order pools | Only when a pool runs out, and then while a new pool is mapped from the operating system | [BUG-0127](bug_list.md#bug_0127) |
 
-Two more locks are taken during the trading day, but not for each order.
+One more lock is taken during the trading day, but not for each order.
 
 `Reactor::timer_registry_mutex_` is taken when an application thread starts or cancels a timer, and
 by the reactor thread when it creates or destroys the timer. It is not accepted as an exception. The
@@ -130,11 +130,11 @@ timer and every cancel destroys one, and nothing stops that from happening on th
 are to be created during initialisation and only started and stopped afterwards, which leaves the lock
 nothing to protect. Recorded as [BUG-0128](bug_list.md#bug_0128).
 
-`Reactor::thread_registry_mutex_` is taken by the reactor thread in its once-a-second checks for
-threads that have exited or are stuck in a handler. It is not accepted as an exception either. The
-detection is kept; the lock is not needed for it, because the tables it guards change only at start-up
-and shutdown. Recorded as [BUG-0129](bug_list.md#bug_0129), which also makes the two handler times the
-check reads atomic.
+`Reactor::thread_registry_mutex_` is taken only at start-up and shutdown, where the tables of threads
+it guards are changed. The paths that run during the day read those tables without it: routing a
+message from one thread to another, and the reactor's once-a-second checks for threads that have exited
+or are stuck in a handler. The two times each thread records around its handlers, which the check for
+stuck threads reads, are atomic ([BUG-0129](bug_list.md#bug_0129), fixed).
 
 ### F3. The reactor thread runs only framework code
 

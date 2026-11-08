@@ -523,6 +523,39 @@ TEST_F(ApplicationThreadTest, TimestampSemantics) {
     EXPECT_EQ(thread->get_time_event_finished(), after);
 }
 
+// What: The times an application thread records around each handler, written on one thread while
+//       another reads them, as the reactor reads them once a second to find a stuck handler.
+// Why:  BUG-0129. Held as plain members, the two times were written by the application thread and read
+//       by the reactor thread with nothing to synchronise them, which is a data race and undefined
+//       behaviour. Held as atomics, they are not.
+// How:  One thread stores both times a hundred thousand times while this thread reads them. The test's
+//       assertion only checks the reads saw increasing values; what it exists for is the ThreadSanitizer
+//       build, which reports the race when the members are plain and nothing when they are atomic.
+TEST_F(ApplicationThreadTest, HandlerTimesWrittenOnOneThreadAndReadOnAnotherAreNotARace) {
+    auto thread =
+        ApplicationThread::create<TestThread>(logger_with_sink_.logger, *reactor_, "TimesThread", ThreadID(1), make_queue_config(), make_allocator_config());
+
+    constexpr int64_t writes = 100000;
+    const HighResolutionClock::time_point origin{};
+    ThreadWithJoinTimeout writer([&thread, origin] {
+        for (int64_t i = 1; i <= writes; ++i) {
+            thread->set_time_event_started(origin + std::chrono::nanoseconds{i});
+            thread->set_time_event_finished(origin + std::chrono::nanoseconds{i});
+        }
+    });
+
+    HighResolutionClock::time_point last_seen = origin;
+    bool went_backwards = false;
+    while (thread->get_time_event_finished() < origin + std::chrono::nanoseconds{writes}) {
+        const HighResolutionClock::time_point seen = thread->get_time_event_started();
+        went_backwards = went_backwards || seen < last_seen;
+        last_seen = seen;
+    }
+    ASSERT_TRUE(writer.join_with_timeout(std::chrono::seconds{30}));
+    EXPECT_FALSE(went_backwards);
+    EXPECT_EQ(thread->get_time_event_started(), origin + std::chrono::nanoseconds{writes});
+}
+
 // TEST 7: Logging verification
 // What: Ensures that the ApplicationThread emits at least one log message
 //       during its lifecycle (start/shutdown path).

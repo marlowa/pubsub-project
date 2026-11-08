@@ -822,14 +822,6 @@ TEST_F(ReactorTest, GetShutdownReasonReturnsReason) {
     EXPECT_EQ(reactor_->get_shutdown_reason(), "reason under test");
 }
 
-TEST_F(ReactorTest, GetThreadNameFromIdReturnsName) {
-    auto thread = ApplicationThread::create<CooperativeShutdownThread>(logger_with_sink_.logger, *reactor_, "NamedThread", ThreadID{1}, make_queue_config(),
-                                                                       make_allocator_config());
-    reactor_->register_thread(thread);
-
-    EXPECT_EQ(reactor_->get_thread_name_from_id(ThreadID{1}), "NamedThread");
-}
-
 TEST_F(ReactorTest, HandleSigtermInitiatesShutdown) {
     // handle_sigterm_and_singint() requires the reactor to be in Running state
     // to trigger a shutdown. Set lifecycle state directly via the test seam.

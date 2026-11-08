@@ -516,20 +516,33 @@ class ApplicationThread {
      */
     TimerID schedule_timer(std::chrono::microseconds interval, TimerType type);
 
-    auto get_time_event_started() const {
-        return time_event_started_;
+    /**
+     * @brief When this thread last began handling an event.
+     *
+     * Written by this thread and read by the reactor thread, which checks once a second for a handler
+     * that has run too long (Reactor::check_for_stuck_threads). The value is held as an atomic count of
+     * nanoseconds, stored with release ordering and loaded with acquire ordering, so that the reactor
+     * reads a value this thread wrote rather than one the compiler assumed nobody else reads. On
+     * x86-64 both are ordinary loads and stores. A caller that compares the two times should load each
+     * once.
+     */
+    [[nodiscard]] HighResolutionClock::time_point get_time_event_started() const {
+        return HighResolutionClock::time_point{HighResolutionClock::duration{time_event_started_ns_.load(std::memory_order_acquire)}};
     }
 
-    auto get_time_event_finished() const {
-        return time_event_finished_;
+    /**
+     * @brief When this thread last finished handling an event. See get_time_event_started().
+     */
+    [[nodiscard]] HighResolutionClock::time_point get_time_event_finished() const {
+        return HighResolutionClock::time_point{HighResolutionClock::duration{time_event_finished_ns_.load(std::memory_order_acquire)}};
     }
 
     void set_time_event_started(HighResolutionClock::time_point time_event_started) {
-        time_event_started_ = time_event_started;
+        time_event_started_ns_.store(time_event_started.time_since_epoch().count(), std::memory_order_release);
     }
 
     void set_time_event_finished(HighResolutionClock::time_point time_event_finished) {
-        time_event_finished_ = time_event_finished;
+        time_event_finished_ns_.store(time_event_finished.time_since_epoch().count(), std::memory_order_release);
     }
 
     /**
@@ -929,8 +942,10 @@ class ApplicationThread {
     // to grow beyond its initial capacity.
     std::vector<uint8_t> decode_arena_buffer_;
 
-    HighResolutionClock::time_point time_event_started_;
-    HighResolutionClock::time_point time_event_finished_;
+    // When the current or last handler began and finished, in nanoseconds on HighResolutionClock. Written
+    // by this thread, read by the reactor thread; see get_time_event_started().
+    std::atomic<int64_t> time_event_started_ns_{0};
+    std::atomic<int64_t> time_event_finished_ns_{0};
 
     // Non-template helper for send_pdu. Defined in ApplicationThread.cpp where
     // Reactor is fully defined, avoiding incomplete-type errors in translation
