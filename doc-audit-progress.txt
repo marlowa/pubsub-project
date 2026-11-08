@@ -69,9 +69,9 @@ of `docs/availability/` says the same. Done: `ha_library_boundary.md`, `lease_cl
 `far_back_catch_up.md`, `one_check_against_sequencing_twice.md`, `publishers_sent_from_memory.md`,
 `reports_held_until_sessions_are_announced.md`, and `docs/venue/dividing_the_sequencer_and_matching_engine.md`.
 
-availability: `wal_and_ha.md`
+availability: `wal_and_ha.md`, `majority_leases.md`
 
-Still to read again: availability `majority_leases.md`, `gateway_ha.md`,
+Still to read again: availability `gateway_ha.md`,
 `process_death.md`, `change_of_sequencer_leader.md`, `a_follower_behind_does_not_lead.md`,
 `follower_log_repair.md`, `commands_during_a_change_of_leader.md`, `order_acceptance.md`,
 `session_binding.md`, `resend_provenance.md`, `matching_engine_presence.md`, `ha_in_the_library.md`,

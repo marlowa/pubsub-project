@@ -154,10 +154,14 @@ vote of just one other voter: either its peer or the third voter.
     record and the leader waits for its acknowledgements again. A voter that grants the request records the
     statement. The peer's grant echoes it; each of the two arbiters, active or passive, records it from the request,
     writes it to disk and confirms it with `StatementHeld`. The leader counts the statement as recorded once its peer
-    has echoed it, or both arbiters have confirmed it, or the active arbiter, having heard nothing from the other for
-    long enough, has confirmed it alone; an arbiter that becomes active when it may lack a statement confirmed alone
-    grants nothing until it has heard from the other again. A change of active arbiter therefore cannot lose a
-    statement the leader relied on. A voter refuses
+    has echoed it, or both arbiters have confirmed it, or the active arbiter has confirmed it alone. The active arbiter
+    confirms alone only after it has heard nothing from the other arbiter for two lease periods, one renewal interval
+    and one more lease period, which is ten seconds with the timings of section 9. The two arbiters send each other a
+    heartbeat every tick (`ArbiterHeartbeat`), and each heartbeat echoes the newest one received from the other. An
+    arbiter that becomes active looks at when it sent the heartbeat whose echo it last received. If that was more than
+    two lease periods and one renewal interval ago, which is seven seconds, the other arbiter may have confirmed alone a
+    statement this one does not hold, so it grants nothing until it hears from the other arbiter again and receives its
+    state. A change of active arbiter therefore cannot lose a statement the leader relied on. A voter refuses
     a lease to an instance a statement it holds says may not lead,
     and an instance holding one about itself does not ask to lead. Any majority that could elect the follower then
     includes a voter that knows it lacks commands the matching engine acted on. The design, its decisions and its
@@ -287,7 +291,9 @@ what allows a component pair to treat "the arbiter" as a single voter.
 
 The component lease and the arbiter lease can have different periods. An arbiter that becomes active waits one component
 lease period before granting any component lease (rule 6). During that wait, component leaders renew with their peers
-alone, so a change of active arbiter costs nothing when every component pair has both instances running.
+alone, so a change of active arbiter costs nothing when every component pair has both instances running. An arbiter
+that becomes active after losing touch with the other arbiter may also wait longer than that, until it has the other's
+record of the leaders' statements, as rule 11 describes.
 
 ## 9. Timing
 
@@ -327,12 +333,23 @@ nothing has failed.
   engine publisher keep no epoch on disk and give the agent nothing.
 - The arbiter votes for the components through `libraries/pubsub_itc_fw/include/pubsub_itc_fw/ComponentLeaseVoters.hpp`, which applies rule 6 to
   an arbiter that has just become active, and carries the highest epoch in each group across a change of active arbiter.
+- Rule 11: the leader's agent makes the statement about its peer, records it in its promise record, and works out
+  whether the statement has been echoed or confirmed (`PairLeaseAgent`). `PeerStatementsFlag` says, for each kind of
+  pair, whether its leader makes statements at all, and if it does, whether each leadership starts by saying the peer
+  may not lead, as the sequencers' does, or says so only for a reason it finds, as the matching engines' does. The
+  matching engine publishers, and the two arbiters in deciding which of them is active, make none. Each arbiter keeps
+  the newest statement from each pair's leader on disk in `ComponentStatementStore.hpp`, and decides from its contact
+  with the other arbiter whether it may confirm a statement alone, and whether, on becoming active, it may lack one,
+  in `ArbiterPeerContact.hpp`.
 - The witness is a `LeaseVoter`.
 - A component instance keeps its promises in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeasePromiseStore.hpp`. The sequencer's file is
   `lease_promise.state` in its write-ahead log directory; the matching engine's is its epoch file's name with
   `.lease_promise` added; each arbiter's is `[lease] promise_file` in its configuration. The matching engine
   publisher keeps no record, so it waits after every restart.
-- The messages are `LeaseRequest`, `LeaseGrant` and `LeaseRefusal` in `leader_follower.dsl`.
+- The messages are in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/lease_messages.dsl`: `LeaseRequest`, `LeaseGrant`
+  and `LeaseRefusal` between every instance and its voters; `StatementHeld`, from an arbiter to a leader, saying that
+  the arbiter holds the leader's statement; and, between the two arbiters, `ArbiterStateRecord`, which carries the
+  highest epoch granted and the newest statement in each group, and `ArbiterHeartbeat`.
 
 **Tests.**
 
@@ -344,6 +361,8 @@ nothing has failed.
 - `libraries/pubsub_itc_fw/tests/PairLeaseAgentTest.cpp` and `libraries/pubsub_itc_fw/tests/ComponentLeaseVotersTest.cpp`.
   The agent tests restart a leader after its process has been down for 1.5 seconds, with and without its record, and
   show that it keeps the lead only with the record.
+- `libraries/pubsub_itc_fw/tests/ComponentStatementStoreTest.cpp` and
+  `libraries/pubsub_itc_fw/tests/ArbiterPeerContactTest.cpp`, for the arbiters' part in rule 11.
 - `libraries/pubsub_itc_fw/tests/LeasePromiseStoreTest.cpp`: the record is read back during the same boot, and ignored
   when it comes from another boot, is missing, or is damaged.
 - `scripts/ha_test.py`, which runs the whole venue. Scenario 8 checks that an arbiter left with only its own vote does
