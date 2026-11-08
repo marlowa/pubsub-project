@@ -27,8 +27,8 @@ review recommends working on them.
 
 ## The areas
 
-1. Leadership, leases and the arbiters (this page, section 1)
-2. The write-ahead log, its retention, the disk, and the trading day
+1. Leadership, leases and the arbiters (section 1)
+2. The write-ahead log, its retention, the disk, and the trading day (section 2)
 3. The matching engine
 4. The sequencer's handling of reports
 5. The gateways and what a member sees
@@ -59,3 +59,25 @@ BUG-0207 needs a scenario before it is fixed. Then BUG-0121, because without it 
 leader keeps the lead fails late in a busy day. BUG-0134's remaining reporting is small. BUG-0167 and
 BUG-0029 wait on Andrew's decisions; BUG-0135, BUG-0222 with BUG-0136, and BUG-0061 with BUG-0062 are
 new requirements to be placed in the order with the rest.
+
+## 2. The write-ahead log, its retention, the disk, and the trading day
+
+Ten entries.
+
+| Entry | Judgement | Evidence | What is left |
+|---|---|---|---|
+| [BUG-0130](bug_list.md#bug_0130): the WAL's helper keeps only one segment ready | **Breach** of F2 (no order-handling thread waits for another thread) and F4 (none waits for the disk) | Unchanged. `WalWriter::ensure_capacity` still calls `await_helper()` when the helper is filling the next segment, and fills one itself when the helper is not ready; the helper prepares one segment at a time. A segment filled by the writing thread is counted (`segments_filled_inline_`) and not logged: `WalWriter.cpp` logs nothing | What was agreed on 11 October 2026: a configurable number of segments kept ready, four by default, and a Warning when the writer fills one itself |
+| [BUG-0113](bug_list.md#bug_0113): a resend request reads the log on the thread that sequences orders | **Partly done**; what is left is a **Breach** of F4, accepted for now and listed by name | A matching engine's catch-up is read on the reading thread (phase 5). A resend reads backwards from the newest segment and stops once it has what it needs, so a resend after a reconnect reads a few segments; one that asks for reports from far back still reads far back on the sequencer's thread. `scripts/check_standards.py` permits this read by name, as a resend or a request for undelivered reports, "BUG-0113, which moves them to a recovery service" | The recovery service, chosen on 4 October 2026, which needs the period for which a member's reports are kept (R-0008) to be stated first |
+| [BUG-0210](bug_list.md#bug_0210): a sequencer whose WAL has lost its first segment dies on an exception | **Breach** of V11 | Unchanged. `Wal::truncate_after` opens the segment that holds the record to keep, and throws if it cannot be opened; nothing catches it | A missing segment repaired as a gap is, by discarding what follows and being sent it again; on a leader, a refusal naming the missing file |
+| [BUG-0183](bug_list.md#bug_0183): a sequencer dies with SIGBUS appending to a WAL left by earlier runs | **Investigation**; a **Breach** of V2 if the cause is in the venue | The cause is not found. Every run of the tests starts from fresh WALs, which avoids it. BUG-0137's refusal of a file from another trading day would stop the venue starting on such a WAL at all | Find which segment was short and why; whatever the cause, a write that cannot be backed refuses with a message rather than killing the process |
+| [BUG-0175](bug_list.md#bug_0175): while the disk is slow, the leading sequencer's own thread waits in the file system's journal | **Investigation**; a **Breach** of F4 if confirmed | Not reproduced since the WALs moved to a disk of their own with `lazytime` (BUG-0228). Finding the call needs the scheduler's events with kernel stacks, which `perf` now records without root when attached per thread (the method recorded under BUG-0228) | Reproduce under a slow disk with that method, then take the call off the thread or show F4 permits it |
+| [BUG-0137](bug_list.md#bug_0137): no start-of-day or end-of-day procedure, and a file from an earlier day is taken as a restart | **Breach** of V12, which says each trading day starts fresh and is met only by a procedure that does not exist | Unchanged: no list of the venue's files, no procedure, and no component checks which trading day a file belongs to | The four parts agreed on 11 October 2026, designed with the trading phases |
+| [BUG-0132](bug_list.md#bug_0132): orders open at the end of the trading day are never cancelled | **New requirement**, needed for V2 (every order is a day order) | Unchanged; the trading phases `closed` and `eod` are designed and not built ([trading_phases.md](venue/trading_phases.md)) | Cancel every open order through the sequencer when trading closes, designed with the trading phases and BUG-0137 |
+| [BUG-0048](bug_list.md#bug_0048): the log retains all of its history | **Decision needed**: the period for which a member's reports are kept (R-0008) | Unchanged: `Wal::truncate_below` is called by nothing, and nothing reclaims the log during the day. Of the three positions retention depends on, the matching engine's position is still not reported to the sequencer, and the third needs the period above | The period stated; then the engine's position reported, and retention anchored to the lowest of the three |
+| [BUG-0086](bug_list.md#bug_0086): the engine's fallback recovery replays a whole day | **Fixed** as far as this entry goes; what is left is BUG-0048 | The document is corrected ([open_order_checkpoint.md](durability/open_order_checkpoint.md) says the record is not truncated and what the replay costs). The entry itself says it closes with BUG-0048 | Close it into BUG-0048, if Andrew agrees |
+| [BUG-0141](bug_list.md#bug_0141): a follower discarding records while its identifier record is built stops | **Fixed**, by a different route from the one the entry asked for | `LoggedCommandIdentifiersBuilder` now passes over a segment it cannot read, counts it, and `ReplicatedWal` logs a Warning naming the cause, so the process no longer stops. An identifier it records from a record later discarded is harmless: a match is checked against the WAL itself and searched for when it differs (phase 9, [one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md)). The builder and the repair still use the files without synchronising, which the entry asked to end | Close it, if Andrew accepts that a builder skipping a segment the repair deleted is correct rather than a race to be removed |
+
+**Recommended order in this area.** BUG-0130 and BUG-0210 first: each is a breach with an agreed or
+obvious remedy. BUG-0137 next, because V12 rests on it, designed with the trading phases and BUG-0132.
+BUG-0183 and BUG-0175 are investigations to schedule. BUG-0048 and BUG-0113's remainder wait on the
+decision about how long a member's reports are kept; BUG-0086 and BUG-0141 can be closed if Andrew agrees.
