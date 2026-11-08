@@ -295,6 +295,13 @@ TEST(TestEventsConfigurationTest, WithoutTheirKeysTheMatchingEngineDiesApplyingN
     EXPECT_TRUE(configuration.die_applying_cl_ord_id.empty());
     EXPECT_FALSE(configuration.die_applying_once);
     EXPECT_TRUE(configuration.lose_and_regain_lease_after_cl_ord_id.empty());
+    EXPECT_FALSE(configuration.hold_sequencer_connections_until_role_decided);
+}
+
+TEST(TestEventsConfigurationTest, WhetherTheMatchingEngineHoldsSequencerConnectionsUntilItsRoleIsDecidedIsRead) {
+    const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"matching_engine_primary\"\n"
+                                      "hold_sequencer_connections_until_role_decided = true\n");
+    EXPECT_TRUE(configuration.hold_sequencer_connections_until_role_decided);
 }
 
 TEST(TestEventsConfigurationTest, TheOrderAfterWhichTheMatchingEngineLosesAndRegainsItsLeaseIsRead) {

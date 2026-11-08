@@ -128,15 +128,53 @@ TEST(EngineRoleTest, APeerAgreedToLeadWhileCatchingUpIsActedOnOnce) {
     EXPECT_FALSE(role.take_peer_leader_note().has_value());
 }
 
-TEST(EngineRoleTest, AFollowerThatNeverAskedToFollowDoesNotFollowTheWal) {
-    // The defect BUG-0225, kept as it is: an instance restarted beside a leading peer agrees that the peer leads before
-    // any sequencer has connected, and becomes a follower without having asked to follow the WAL.
+TEST(EngineRoleTest, AFollowerThatNeverAskedToFollowDoesNotFollowTheWalUntilItAsks) {
+    // An instance restarted beside a leading peer agrees that the peer leads before any sequencer has connected, and
+    // becomes a follower without having asked to follow the WAL. The role says so, so that the engine asks at once.
     EngineRole role(true);
     role.became_follower();
     EXPECT_EQ(role.role(), MeRole::Follower);
     EXPECT_TRUE(role.follows_without_following_the_wal());
     EXPECT_FALSE(role.following_the_wal());
     EXPECT_FALSE(role.keeps_its_reports());
+
+    // Asking to follow again goes back to following once the catch-up completes, now following the WAL.
+    role.start_catching_up_to_follow_again();
+    role.request_sent(false);
+    EXPECT_EQ(role.role(), MeRole::Reconciling);
+    EXPECT_FALSE(role.follows_without_following_the_wal());
+    EXPECT_EQ(role.catch_up_completed_now(), Completed::following_again);
+    EXPECT_EQ(role.role(), MeRole::Follower);
+    EXPECT_TRUE(role.following_the_wal());
+    EXPECT_TRUE(role.keeps_its_reports());
+}
+
+TEST(EngineRoleTest, AFollowerWhoseLeaseRanOutWhileCatchingUpToLeadHasNotAskedToFollow) {
+    // The lease runs out while the instance is catching up in order to lead: its latest request asked to lead, so as a
+    // follower it does not follow the WAL until it asks again.
+    EngineRole role(true);
+    role.start_catching_up_to_lead();
+    role.request_sent(true);
+    role.became_follower();
+    EXPECT_TRUE(role.follows_without_following_the_wal());
+    EXPECT_FALSE(role.following_the_wal());
+}
+
+TEST(EngineRoleTest, AnInstanceCurrentAfterAskingToFollowFollowsTheWalWhenItBecomesAFollower) {
+    // Caught up at start-up with a request to follow: agreeing that the peer leads needs no further request.
+    EngineRole role(true);
+    role.start_catching_up_to_become_current();
+    role.request_sent(false);
+    static_cast<void>(role.catch_up_completed_now());
+    role.became_follower();
+    EXPECT_FALSE(role.follows_without_following_the_wal());
+    EXPECT_TRUE(role.following_the_wal());
+}
+
+TEST(EngineRoleTest, WithHighAvailabilityOffNoInstanceIsAFollowerWithoutTheWal) {
+    EngineRole role(false);
+    role.became_follower();
+    EXPECT_FALSE(role.follows_without_following_the_wal());
 }
 
 TEST(EngineRoleTest, ACommandDiscardedWithoutALeaseMeansTheInstanceIsNotCurrent) {

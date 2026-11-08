@@ -879,6 +879,11 @@ class RestartStep(NamedTuple):
                        is dead, so that it restarts as it would after a reboot: knowing
                        nothing of what it promised, and so agreeing that nobody leads, and
                        asking for nothing, for one lease period.
+    hold_sequencer_connections: for a matching engine, restart it with [test_events]
+                       hold_sequencer_connections_until_role_decided, so that it deals with no
+                       sequencer's order connection until it knows whether it leads or follows.
+                       A restarted engine beside a leading peer then always agrees that its peer
+                       leads before any sequencer has connected to it (BUG-0225, BUG-0233).
     down_secs:         how long to leave the process dead before restarting it.  Zero
                        for every scenario whose subject is a fast restart.  A scenario
                        testing what a LONG absence does needs the venue to be absent for
@@ -894,6 +899,7 @@ class RestartStep(NamedTuple):
     down_secs: float = 0.0
     damage_region: str = ""
     forget_lease_promises: bool = False
+    hold_sequencer_connections: bool = False
 
 
 class SupervisedKillStep(NamedTuple):
@@ -1329,6 +1335,10 @@ class Scenario(NamedTuple):
     # once it has caught up, holding exactly as many orders as the member was told are open. See run_scenario's "an
     # engine that waited catches up before it leads" block, BUG-0198 and BUG-0199.
     assert_waiting_engine_catches_up: bool = False
+    # When True, require the matching engine that led at the start, killed and restarted while the other engine leads, to
+    # follow the WAL: it must finish a catch-up after it restarts, and apply every recovery order sent in phase 5. See
+    # run_scenario's "a restarted engine follows the WAL" block, and BUG-0225.
+    assert_restarted_engine_follows_the_wal: bool = False
     # For a scenario with both matching engines whose subject needs one of them to lead at the start: the engine named,
     # "matching_engine_primary" or "matching_engine_secondary", is started first, and the other only once it leads, and
     # the steps begin once the other follows, as --secondary-engine-first does for every scenario. Empty for the usual
@@ -2289,36 +2299,28 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
-    # 24 — a restarted primary ME must come back as a FOLLOWER, not seize leadership.
+    # 24 -- a matching engine restarted beside a leading peer comes back as a follower that follows the WAL.
     #
-    # This is the regression test for BUG-0031 in docs/bug_list.md. The arbiter used to recompute leadership from instance
-    # ids on every request and never consult what it had already decided. The primary always
-    # holds the lower id, so a primary that restarted after the secondary had been promoted
-    # was handed leadership back -- from the instance holding a populated order book to the
-    # one that had just lost its.
+    # The engine that led is killed, and the other takes the lead. The first is then restarted, which is the ordinary way
+    # a standby comes back. It must not take the lead back: the engine leading holds the book the members were told of,
+    # and a lead that moved back would hand it to an instance that has just restarted (BUG-0031).
     #
-    # CURRENTLY FAILS, and not on anything it asserts. All four steps above pass; the run then
-    # fails in the recovery-order phase because the sequencer routes orders to whichever socket
-    # is "the primary matching engine" rather than to the leader, so the rejoined follower
-    # receives them and discards them. That is a separate defect, recorded as "The sequencer
-    # routes orders to the primary matching engine, not to the leader". This is a real failure
-    # and not a broken harness -- do not disable the scenario to make the suite green.
-    #
-    # It also covers the second half of that fix. leadership_state_ was keyed by instance, so
-    # the arbiter's reconnect path looked the stored decision up under the connecting
-    # instance's OWN id and, after a promotion, found nothing recorded against the primary.
-    # Before the fix the restarted primary was told nothing at all and sat in Unknown, so the
-    # positive assertion below fails as surely as the negative one.
+    # It must also follow the WAL, applying every command, so that it can take over promptly (principle V11). A restarted
+    # engine usually agrees that its peer leads before any sequencer has connected to it, and so becomes a follower before
+    # it has asked to follow the WAL; it must ask then. If it does not, it says it follows, but applies nothing and keeps
+    # no report, and its book falls behind while nothing says so (BUG-0225). So the scenario checks the restarted engine
+    # finishes a catch-up and applies every recovery order sent after it restarted, and not only its role.
     Scenario(
         number=24,
         short_name="me_primary_rejoins_as_follower",
-        description="Restarted primary ME rejoins as follower, not leader",
+        description="Restarted engine that led rejoins as a follower that follows the WAL, not as leader",
         expected_outcome=(
             "the engine that followed promotes and keeps leadership; the restarted "
-            "engine that led is assigned the follower role by the arbiter and "
-            "never adopts LEADER"
+            "engine that led follows, never adopts LEADER, catches up, and applies "
+            "every order sent after it restarted"
         ),
         me_ha=True,
+        assert_restarted_engine_follows_the_wal=True,
         # As scenario 16: in-flight orders would advance the promoted secondary's counter
         # during reconciliation and make the recovery count non-deterministic.
         orders_during_override=0,
@@ -4910,6 +4912,59 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         steps=[],
     ),
+
+    # 100 -- a matching engine restarted beside a leading peer agrees that its peer leads before any sequencer connects to it,
+    # and still follows the WAL.
+    #
+    # As scenario 24, with one difference. After a restart, two things race: the sequencers try to connect to the engine
+    # every two seconds, and the engine that leads asks it for a lease every second. In scenario 24 a sequencer almost
+    # always connects first, so the restarted engine is caught up as an instance starting, and is already following the
+    # WAL when it becomes a follower. Here the restarted engine is started with [test_events]
+    # hold_sequencer_connections_until_role_decided, so it deals with no sequencer until it knows whether it leads or
+    # follows. It therefore grants its peer a lease, and becomes a follower, before it has asked to be caught up at all.
+    # That is the way BUG-0225 was found: the engine said it followed and applied nothing. It must now ask to follow the
+    # WAL at once, finish a catch-up, and apply every order sent after it restarted (BUG-0233).
+    Scenario(
+        number=100,
+        short_name="me_rejoins_as_follower_before_any_sequencer",
+        description="Restarted engine that agrees its peer leads before any sequencer connects to it still follows the WAL",
+        expected_outcome=(
+            "the restarted engine becomes a follower before it has asked to be caught up, then asks to follow the WAL, "
+            "finishes a catch-up, and applies every order sent after it restarted; the engine leading keeps the lead"
+        ),
+        me_ha=True,
+        assert_restarted_engine_follows_the_wal=True,
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name=ENGINE_LEADING_AT_START,
+                takeover=expect_leads(ENGINE_FOLLOWING_AT_START),
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+            RestartStep(
+                proc_name=ENGINE_LEADING_AT_START,
+                ready_log_name=f"{ENGINE_LEADING_AT_START}.log",
+                ready=expect_engine_reachable(ENGINE_LEADING_AT_START),
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+                hold_sequencer_connections=True,
+            ),
+            VerifyStep(
+                expect=expect_follows(ENGINE_LEADING_AT_START),
+                timeout=30.0,
+                description="the restarted engine that led follows",
+                absent=expect_leads(ENGINE_LEADING_AT_START),
+            ),
+            VerifyStep(
+                expect=expect_leads(ENGINE_FOLLOWING_AT_START),
+                timeout=5.0,
+                description="the engine promoted in its place still holds leadership",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -6057,6 +6112,9 @@ _DIE_APPLYING_NOW: dict[str, tuple[str, bool]] = {}
 # again, and the engines of the scenario being run that are to do so ([test_events] lose_and_regain_lease_after_cl_ord_id).
 _LEASE_LOST_AND_REGAINED_CL_ORD_ID = "lease-bounce-1"
 _LEASE_LOST_AND_REGAINED_NOW: dict[str, str] = {}
+# The matching engines being restarted with [test_events] hold_sequencer_connections_until_role_decided, by a restart step
+# that asks for it; the name is added just before the engine is launched and removed just after.
+_HOLD_SEQUENCER_CONNECTIONS_NOW: set[str] = set()
 
 # The components that send test events so far. Others are added as their checks move onto test events.
 _TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter", "fix_order_gateway", "binary_order_gateway")
@@ -6064,7 +6122,8 @@ _TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter", "fix_order_
 
 def config_with_test_events(config: Path, listener: TestEventListener, name: str, report_orders_of: tuple = (),
                             comp_ids_without_session: tuple = (), delay_session_announcements_ms: int = 0,
-                            die_applying: tuple[str, bool] | None = None, lose_and_regain_lease_after: str | None = None) -> Path:
+                            die_applying: tuple[str, bool] | None = None, lose_and_regain_lease_after: str | None = None,
+                            hold_sequencer_connections: bool = False) -> Path:
     """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
     knows the component by, which its threads give when they introduce themselves. report_orders_of lists the comp ids
     whose orders a matching engine reports the outcome of. comp_ids_without_session lists the comp ids whose reports a
@@ -6072,6 +6131,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
     announces its sessions on a sequencer link that has come up. die_applying, for a matching engine, is the ClOrdID of a
     new order it dies applying, and whether it dies only once. lose_and_regain_lease_after, for a matching engine, is the
     ClOrdID of a new order after which it acts as if its lease ran out and was at once granted again.
+    hold_sequencer_connections, for a matching engine, makes it hold each sequencer's order connection until it knows
+    whether it leads or follows.
 
     Written beside the original, so that the paths in it still resolve, and used instead of it. Named after the
     component, not the original file, because two components can be started from one file."""
@@ -6089,6 +6150,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
         text += f"die_applying_cl_ord_id = \"{die_applying[0]}\"\ndie_applying_once = {'true' if die_applying[1] else 'false'}\n"
     if lose_and_regain_lease_after is not None:
         text += f"lose_and_regain_lease_after_cl_ord_id = \"{lose_and_regain_lease_after}\"\n"
+    if hold_sequencer_connections:
+        text += "hold_sequencer_connections_until_role_decided = true\n"
     copy = config.with_name(f"{name}_test_events.toml")
     copy.write_text(text)
     return copy
@@ -6120,7 +6183,8 @@ def launch_app(name: str, bin_name: str, config: Path,
                                          _COMP_IDS_WITHOUT_SESSION if bin_name == "sequencer" else (),
                                          _ANNOUNCEMENT_DELAY_MS_NOW if bin_name in ("fix_order_gateway", "binary_order_gateway") else 0,
                                          _DIE_APPLYING_NOW.get(name) if bin_name == "matching_engine" else None,
-                                         _LEASE_LOST_AND_REGAINED_NOW.get(name) if bin_name == "matching_engine" else None)
+                                         _LEASE_LOST_AND_REGAINED_NOW.get(name) if bin_name == "matching_engine" else None,
+                                         bin_name == "matching_engine" and name in _HOLD_SEQUENCER_CONNECTIONS_NOW)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -7320,8 +7384,15 @@ def do_restart_step(
 
     # Only events from the new process can show that it is ready.
     since = _TEST_EVENTS.mark()
-    log(f"  Restarting {step.proc_name} ...")
-    new_proc = launch_app(step.proc_name, bin_name, config, bin_dir, log_dir)
+    if step.hold_sequencer_connections:
+        log(f"  Restarting {step.proc_name}, holding each sequencer's order connection until it knows whether it leads or follows ...")
+        _HOLD_SEQUENCER_CONNECTIONS_NOW.add(step.proc_name)
+    else:
+        log(f"  Restarting {step.proc_name} ...")
+    try:
+        new_proc = launch_app(step.proc_name, bin_name, config, bin_dir, log_dir)
+    finally:
+        _HOLD_SEQUENCER_CONNECTIONS_NOW.discard(step.proc_name)
     proc_by_name[step.proc_name] = new_proc
     for i, (name, _) in enumerate(app_procs):
         if name == step.proc_name:
@@ -7723,7 +7794,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         member_outcomes = (scenario.assert_kept_reports_forwarded or scenario.assert_logged_commands_reach_engine
                            or scenario.assert_orders_during_change_answered or scenario.assert_engine_holds_reports_without_connection
                            or scenario.assert_open_orders_survive or scenario.assert_inflight_recovery
-                           or scenario.assert_unbound_reports_delivered)
+                           or scenario.assert_unbound_reports_delivered or scenario.assert_restarted_engine_follows_the_wal)
         _REPORT_ORDERS_NOW = _REPORT_ORDERS_OF + ((FIX8_COMP_ID,) if member_outcomes else ())
         # The scenarios that check a refused command never reached the matching engine read the engine's outcomes for the
         # comp ids that send it.
@@ -8661,6 +8732,62 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     f"{member_open} are open. It holds orders the member was told were cancelled (BUG-0199)")
             log(f"  waiting engine: {leader} caught up to sequence number {resumed.through_seq_no} before leading, and holds the "
                 f"{member_open} order(s) the member was told are open -- OK")
+
+        # ── A restarted engine follows the WAL ───────────────────────────────
+        # BUG-0225. The engine that led was killed and restarted while the other led, and was checked to follow. A follower
+        # follows the WAL: it asks to be caught up, finishes the catch-up, and then applies every command as it is
+        # released. One that became a follower without asking would say it follows and apply nothing. So the restarted
+        # engine must have finished a catch-up since it started, and must have applied every recovery order the member was
+        # told of, whether it applied them in the catch-up or after it. A follower's reports are kept, not sent, so its own
+        # outcome events are the only record of what it applied.
+        if scenario.assert_restarted_engine_follows_the_wal:
+            if after_total <= 0:
+                die("restarted engine: the scenario sent no recovery orders, so whether the restarted engine applies commands is not known")
+            restarted = resolved(ENGINE_LEADING_AT_START)
+            started_at = _TEST_EVENTS.since_introduction(restarted)
+            module = _TEST_EVENTS.modules["matching_engine_test_events"]
+            # Which way the restarted engine came back, which is a race: the sequencers try to connect to it every two
+            # seconds, and the engine that leads asks it for a lease every second. If the lease request is answered first,
+            # the restarted engine becomes a follower before it has asked to be caught up, which is the way BUG-0225 was
+            # found; otherwise it catches up as an instance that is starting, and then becomes a follower.
+            _TEST_EVENTS.check()
+            became_follower = follows(_TEST_EVENTS.messages, restarted)
+            asked = catch_up(module, restarted, module.CatchUpStage.Started)
+            since_restart = _TEST_EVENTS.events[started_at:]
+            first_follower = next((index for index, event in enumerate(since_restart) if became_follower(event)), None)
+            first_ask = next((index for index, event in enumerate(since_restart) if asked(event)), None)
+            if first_follower is not None and (first_ask is None or first_follower < first_ask):
+                way = "it became a follower before it asked to be caught up, the way BUG-0225 was found"
+            else:
+                way = "it was caught up as an instance starting before it became a follower"
+            log(f"  restarted engine: {way}")
+            held = any(isinstance(step, RestartStep) and step.hold_sequencer_connections for step in scenario.extra_steps)
+            if held and not way.startswith("it became a follower"):
+                die(f"restarted engine: {restarted} was restarted holding each sequencer's order connection until it knew whether "
+                    f"it leads or follows, and yet {way[3:]}, so the setting did not take effect and the scenario tests the wrong thing")
+            found, _ = await_expectation(expect_catch_up(ENGINE_LEADING_AT_START, "Completed"), args.failover_timeout, started_at)
+            if not found:
+                die(f"restarted engine: {restarted} says it follows, and finished no catch-up after it restarted, so it never asked "
+                    f"to follow the WAL and applies nothing; {way} (BUG-0225)")
+            accepted = module.OrderOutcomeKind.Accepted
+
+            def applied_recovery_orders() -> int:
+                _TEST_EVENTS.check()
+                return sum(1 for event in _TEST_EVENTS.events[started_at:]
+                           if event.component == restarted and isinstance(event.message, module.OrderOutcome)
+                           and event.message.comp_id == FIX8_COMP_ID and event.message.outcome == accepted)
+
+            deadline = time.monotonic() + args.recovery_timeout
+            while applied_recovery_orders() < after_total and time.monotonic() < deadline:
+                _TEST_EVENTS.pump(0.5)
+            if not _TEST_EVENTS.settle(restarted):
+                die(f"{restarted} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]}), so what it applied is not known")
+            applied = applied_recovery_orders()
+            if applied < after_total:
+                die(f"restarted engine: {restarted} follows, and applied {applied} of the {after_total} orders sent after it "
+                    "restarted. A follower that does not follow the WAL applies nothing, and could not take over promptly (BUG-0225)")
+            log(f"  restarted engine: {restarted} finished a catch-up after it restarted, and has applied {applied} order(s) since "
+                f"it restarted, which covers the {after_total} recovery orders sent after it restarted -- OK")
 
         if scenario.assert_open_orders_survive:
             gateway_from = _TEST_EVENTS.mark()

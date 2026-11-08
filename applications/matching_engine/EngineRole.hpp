@@ -38,21 +38,22 @@ enum class MeRole { Unknown, Follower, Reconciling, Leader };
  *
  * - starting, on the first sequencer connection for orders: catching_up_to_become_current.
  * - catching_up_to_become_current, when it completes: current.
- * - starting or current, when the instance agrees that its peer leads: following.
+ * - starting or current, when the instance agrees that its peer leads: following. One that was starting has not asked
+ *   to follow the WAL, and asks then.
  * - any situation but leading, when the lease agent says this instance leads: catching_up_to_lead, replacing a
  *   catch-up under way.
  * - catching_up_to_lead, when it completes: leading (through current, as the role reports it).
- * - leading or catching_up_to_lead, when the lease runs out: following. One that was leading then asks to follow
- *   again.
+ * - leading or catching_up_to_lead, when the lease runs out: following. Either then asks to follow the WAL, because
+ *   its latest request, if it made one, asked to lead.
  * - current or following, when a record arrives out of turn, a sequencer connects, or a sequencer says it now leads:
  *   catching_up_to_follow_again, and back to the situation it was in when that completes.
  *
  * **Two facts beside the situation.** Whether the latest catch-up request asked to follow the WAL rather than to lead
  * is kept apart from the situation, because it is acted on in more than one: it decides whether the reports of a
  * catch-up are kept and compared, and whether a follower follows the WAL at all. A follower whose latest request asked
- * to lead, or who never made one, does not follow the WAL, applies nothing and keeps no report
- * (follows_without_following_the_wal); that is a defect, docs/bug_list.md BUG-0225, kept here as it is until it is
- * fixed. And whether any catch-up has completed is kept for the test's report of where the instance stands.
+ * to lead, or who never made one, would apply nothing and keep no report, so the engine asks to follow the WAL at the
+ * moment an instance becomes a follower in that state (follows_without_following_the_wal). And whether any catch-up has
+ * completed is kept for the test's report of where the instance stands.
  *
  * **A peer that leads, agreed while catching up to become current** cannot be followed until the catch-up ends, so it
  * is noted and acted on then (take_peer_leader_note), its epoch checked again then.
@@ -129,7 +130,8 @@ class EngineRole {
         return catch_up_completed_;
     }
 
-    /// Whether the instance follows, but does not follow the WAL: the defect BUG-0225.
+    /// Whether the instance follows, but has not asked to follow the WAL: its latest request asked to lead, or it made
+    /// none. Until it asks, it applies nothing and keeps no report, so the engine asks as soon as this is true.
     [[nodiscard]] bool follows_without_following_the_wal() const {
         return ha_enabled_ && situation_ == Situation::following && !latest_request_asked_to_follow_;
     }

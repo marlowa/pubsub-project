@@ -155,4 +155,51 @@ TEST(EngineOrderRoutingTest, AnEngineThatAnnouncedBeforeItsConnectionOpenedIsKno
     EXPECT_TRUE(routing.active_is_known_to_lead());
 }
 
+// An engine whose lease ran out while it was being brought up to date in order to lead announces that it follows, and
+// then asks to be brought up to date in order to follow. The hand-over of its earlier catch-up can be acted on between
+// the two, routing orders to it as an engine that leads. Its request to follow corrects that: the orders go to the
+// engine known to lead, or nowhere.
+TEST(EngineOrderRoutingTest, AnEngineThatAsksToFollowIsNotKnownToLead) {
+    EngineOrderRouting routing;
+    routing.connected(primary, connection_5, claim);
+    routing.connected(secondary, connection_6, do_not_claim);
+    EXPECT_EQ(routing.announced(primary, Role::follower, 7), Outcome::FollowerWithdrawnNoLeader);
+
+    // The hand-over of the catch-up to lead it asked for before its lease ran out.
+    routing.caught_up_to_lead(connection_5);
+    ASSERT_TRUE(routing.active_is_known_to_lead());
+
+    EXPECT_EQ(routing.asked_to_follow(connection_5), Outcome::FollowerWithdrawnNoLeader);
+    EXPECT_FALSE(routing.active().is_valid());
+    EXPECT_FALSE(routing.active_is_known_to_lead());
+
+    // The other engine then leads, and the orders go to it.
+    EXPECT_EQ(routing.announced(secondary, Role::leader, 8), Outcome::RoutedToLeader);
+    EXPECT_EQ(routing.active(), connection_6);
+}
+
+TEST(EngineOrderRoutingTest, AnEngineThatAsksToFollowHandsItsOrdersToTheKnownLeader) {
+    EngineOrderRouting routing;
+    routing.connected(primary, connection_5, claim);
+    routing.connected(secondary, connection_6, do_not_claim);
+    EXPECT_EQ(routing.announced(secondary, Role::leader, 8), Outcome::RoutedToLeader);
+    routing.caught_up_to_lead(connection_5);
+
+    EXPECT_EQ(routing.asked_to_follow(connection_5), Outcome::FollowerHandedToLeader);
+    EXPECT_EQ(routing.active(), connection_6);
+    EXPECT_TRUE(routing.active_is_known_to_lead());
+}
+
+TEST(EngineOrderRoutingTest, AnEngineThatAsksToFollowAndCarriesNoOrdersChangesNothing) {
+    EngineOrderRouting routing;
+    routing.connected(primary, connection_5, claim);
+    routing.connected(secondary, connection_6, do_not_claim);
+    EXPECT_EQ(routing.announced(primary, Role::leader, 8), Outcome::AlreadyRoutedToLeader);
+
+    EXPECT_EQ(routing.asked_to_follow(connection_6), Outcome::FollowerNotCarryingOrders);
+    EXPECT_EQ(routing.active(), connection_5);
+    EXPECT_TRUE(routing.active_is_known_to_lead());
+    EXPECT_EQ(routing.asked_to_follow(connection_7), Outcome::NoOrderConnection) << "no engine is on connection 7";
+}
+
 } // un-named namespace

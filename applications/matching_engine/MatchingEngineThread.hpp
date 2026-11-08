@@ -387,6 +387,18 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // SequencerThread::handle_me_position_request). This guarantees the leader --
     // whichever it is -- reconciles this ME and re-routes live orders here.
     std::unordered_set<pubsub_itc_fw::ConnectionID> sequencer_order_conn_ids_;
+    // Order connections from the sequencers that are held, unread and not yet treated as made, until this instance knows
+    // whether it leads or follows. Empty unless a test sets hold_sequencer_connections_until_role_decided.
+    std::vector<pubsub_itc_fw::ConnectionID> held_sequencer_connections_;
+    // An order connection from a sequencer is made: this instance records it, and asks to be caught up if it needs to.
+    void sequencer_order_connection_established(const pubsub_itc_fw::ConnectionID& id);
+    // Whether the order connection @p id is held, for a test that sets hold_sequencer_connections_until_role_decided. If
+    // it is, reading from it is paused and it is not treated as made.
+    bool holds_sequencer_connection(const pubsub_itc_fw::ConnectionID& id);
+    // Whether this instance knows whether it leads or follows: it leads, follows, or is catching up to do either.
+    [[nodiscard]] bool role_decided() const;
+    // Once this instance knows whether it leads or follows, each held order connection is read again and treated as made.
+    void release_held_sequencer_connections();
 
     // How EngineCatchUp sends its requests and starts its timers.
     class CatchUpLinks : public EngineCatchUpLinksInterface {

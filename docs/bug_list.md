@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 232 |
-| Open | 67 (46 defects, 21 tasks) |
-| Closed | 165 |
-| Next id | BUG-0233 |
+| Bugs recorded | 235 |
+| Open | 68 (47 defects, 21 tasks) |
+| Closed | 167 |
+| Next id | BUG-0236 |
 
 ## Open bugs by severity
 
-15 high, 39 medium, 13 low.
+16 high, 39 medium, 13 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -28,6 +28,7 @@
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
+| [BUG-0234](#bug_0234) | high | defect | A matching engine catching up from far back sends its reports faster than the sequencer reads them, and the framework closes the connection and loses the rest |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0041](#bug_0041) | medium | defect | Five ways the venue will not start on a RHEL8 target host |
 | [BUG-0045](#bug_0045) | medium | task | A member has no defined way to discover its primary gateway is down |
@@ -64,9 +65,9 @@
 | [BUG-0210](#bug_0210) | medium | defect | A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again |
 | [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
-| [BUG-0225](#bug_0225) | medium | defect | A matching engine that becomes a follower before it has asked to follow the WAL announces that it follows, but applies nothing |
 | [BUG-0226](#bug_0226) | medium | defect | A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
+| [BUG-0235](#bug_0235) | medium | defect | Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -176,6 +177,76 @@ went looking.
 
 ## Open
 
+### BUG-0234: A matching engine catching up from far back sends its reports faster than the sequencer reads them, and the framework closes the connection and loses the rest {#bug_0234}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-11-08 |
+| Recorded | 2026-11-08 |
+| How | `ha_test.py` scenario 80, in the check that runs a matching engine on a copy of the scenario's WAL, in the full suite run for [BUG-0225](#bug_0225); logs kept in `tmp/ha_test_failures/20261108-084443-scenario-80-catch_up_survives_second_connection` |
+| Impact | Execution reports are lost: members are not told what the venue did with their orders, and nothing says which reports were lost or for whom. It happens whenever an engine produces reports faster than the sequencer reads them for long enough to fill the engine's queue of waiting sends, which a catch-up of a few hundred thousand commands does in well under a second |
+
+**What was seen.** The check runs one engine, with high availability off and `[catch_up] send_every_report` on, against
+a copy of the scenario's WAL of 400,000 records holding 200,000 orders, from an empty book. The engine is expected to
+add 200,000 reports to the copy. From the engine's Quill log:
+
+1. At 08:43:42.353 it asked to be caught up. By 08:43:42.791 it had applied all 200,000 orders, and sent a report for
+   each to the sequencer on its connection for reports.
+2. The sequencer read them more slowly than they were sent. At 08:43:42.845 the engine's framework had 65,536 sends,
+   18,097,338 bytes, waiting to be written on that connection, which is `ReactorConfiguration::connection_waiting_sends_maximum`.
+   It closed the connection as "not reading what is sent to it", told the engine it was lost, and began to reconnect.
+3. The engine went on sending reports on the closed connection. The reactor logged "unknown connection id 2 for
+   SendPdu" 47,091 times and dropped each one.
+4. The connection was made again at 08:43:44.930, two seconds later. The reports already dropped were not sent again.
+
+The copy then held 487,371 records, not 600,000: 87,371 reports reached the sequencer, and 112,629 did not. The same
+check passed in the suite run earlier the same day, in which the catch-up took 1.26 seconds rather than 0.44, so whether
+the queue fills depends on how fast the engine applies the commands against how fast the sequencer reads.
+
+**Where it can happen in the venue.** By default an engine catching up leaves out every report the WAL already holds
+(`docs/availability/far_back_catch_up.md`, section 2), so a catch-up sends few reports, and only this check sends
+200,000 at once. But `send_every_report` is a supported setting, and an engine whose open-order region cannot be read
+catches up from the first record of the day. Any burst of reports long enough to fill the queue loses reports the same
+way.
+
+**What is wanted.** No report is lost when the sequencer reads more slowly than the engine writes. This needs a design
+first, and the choice between at least two directions is for Andrew:
+
+- the engine paces its reports during a catch-up, waiting for the queue of waiting sends to drain before it applies
+  more, as the sequencer's reading thread already paces what it sends a follower ([BUG-0172](#bug_0172));
+- or the engine keeps every report it has not had written, and sends them again when the connection is made again.
+
+**Principle.** A report the venue owes a member reaches the member, or the venue knows and says which did not.
+
+### BUG-0235: Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later {#bug_0235}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-08 |
+| Recorded | 2026-11-08 |
+| How | Scenario 80 run alone after the full suite run for [BUG-0225](#bug_0225); logs kept in `tmp/ha_test_failures/20261108-092325-scenario-80-catch_up_survives_second_connection` |
+| Impact | Scenario 80 fails although nothing in the venue is wrong, which costs a run and can hide a real failure among false ones |
+
+**What happens.** Scenario 80 exists to show that a matching engine catching up from far back finishes its catch-up
+when the second sequencer connects to it during that catch-up. It restarts the primary engine with its region damaged,
+waits for the engine to report that its catch-up has started, and only then restarts the follower sequencer, which
+connects to the engine about half a second later. The catch-up of 400,000 records lasts 0.5 to 1.3 seconds on this
+machine. If the follower sequencer connects after it has finished, the scenario fails with "the scenario did not make
+the window it exists for".
+
+On 8 November 2026 it failed this way: the engine's catch-up ran from 09:23:22.710 to 09:23:23.210, and the follower
+sequencer connected at 09:23:23.249, 39 milliseconds late. In the suite run before it, the catch-up lasted 0.57 seconds
+and the follower connected 0.51 seconds into it; in the run before that, 1.26 seconds and 0.55.
+
+**What is wanted.** The scenario makes its window rather than hoping for it: for instance, the follower sequencer is
+started before the engine, and its order connection to the engine held back by a setting used only by tests until the
+engine's catch-up has started, as `hold_sequencer_connections_until_role_decided` does for scenario 100; or the
+catch-up is made long enough, by the number of orders, that half a second is a small part of it.
+
+**Principle.** None; a test that fails without a defect costs runs and trust.
+
 ### BUG-0229: The functional specification has not been checked against the code, and specifies recovery far more than normal operation {#bug_0229}
 
 | | |
@@ -272,51 +343,6 @@ report held for an unannounced session does. A scenario holds a gateway's connec
 purpose without the fix.
 
 **Principles.** V8: every report the matching engine produces reaches the member.
-
-### BUG-0225: A matching engine that becomes a follower before it has asked to follow the WAL announces that it follows, but applies nothing {#bug_0225}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-03 |
-| Recorded | 2026-11-03 |
-| How | Writing down the matching engine's role states for phase 10 ([dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md), section 6.1), and then seen in scenario 24 |
-| Impact | A matching engine restarted beside a leading peer, the ordinary way a standby comes back, says it follows but applies no command and keeps no report, so its book falls behind and nothing says so. Nothing is lost: if it is later given the lead, it catches up first. But the venue has a standby that cannot take over promptly, and V11 requires that to be reported |
-
-**What happens.** A matching engine asks to follow the WAL only in its catch-up request, and makes that request in
-three cases: when the first sequencer connects for orders, if no catch-up has completed and the role is not Follower;
-when the lease agent says it leads; and when, already following the WAL, a record arrives out of turn, a sequencer
-connects, or a sequencer says it now leads. It becomes a Follower without making the request in two ways:
-
-1. **Restarted beside a leading peer.** While the instance is still Unknown, before any sequencer has connected, its
-   peer asks for a lease and the instance grants it. `act_on` takes the AgreedPeerLeads branch for an Unknown role and
-   calls `follow_peer_claiming_leadership`, which makes the instance a Follower. When the sequencers then connect, the
-   catch-up is skipped, because the role is Follower ("an instance that already follows ... follows the WAL, and asks
-   again itself when it needs to"), but it does not follow the WAL, so it never asks.
-2. **The lease runs out while it is catching up to lead.** `act_on` takes the StoppedLeading branch and calls
-   `enter_follower_state`, which asks to follow again only when the role it leaves is Leader; here it is Reconciling.
-
-In either case the instance announces Follower, applies nothing, and keeps no report. Each event that would make it
-ask again is acted on only by an instance that follows the WAL or is catching up.
-
-**Evidence.** Scenario 24 (the engine that led is killed, the other takes the lead, and the first is restarted) run on
-3 November 2026 with the restarted engine's Quill log copied aside while the scenario ran: the restarted engine
-started at 10:51:36.83 as Unknown, granted its peer a lease and became a Follower at 10:51:38.89 ("peer (instance_id=2)
-leads at epoch 45258 -- this instance granted it a lease, and follows it"), and the two sequencer order connections
-were established at 10:51:39.20 and 10:51:39.29 with no catch-up asked for: no "entering RECONCILING" line follows.
-The scenario passes, because it checks only that the restarted engine is a follower. The second way was found by
-reading the code and has not been reproduced.
-
-**What is wanted.** An engine that is a Follower always follows the WAL: becoming a Follower by either way above asks
-to follow, as a follower that stops leading does. Scenario 24 checks that the restarted engine catches up and applies
-the commands sent after it restarted, and is made to fail on purpose without the fix.
-
-For the second way, the fix must also establish what the leading sequencer does with the catch-up to lead it is still
-serving: when the reading thread hands that engine over, `engine_handed_over` routes orders to it
-(`EngineOrderRouting::caught_up_to_lead`) although the engine has since announced that it follows, and an engine
-that follows discards the orders it is sent by routing. This has not been checked.
-
-**Principles.** V11: a loss of resilience is not a loss of service, and is reported.
 
 ### BUG-0222: No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it {#bug_0222}
 
@@ -3034,6 +3060,83 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0233: No scenario makes a restarted matching engine agree that its peer leads before a sequencer connects to it, so the way BUG-0225 was found is shown only by unit tests {#bug_0233}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-11-08 |
+| Recorded | 2026-11-08 |
+| Fixed | 2026-11-08 -- the matching engine has a setting used only by tests, `[test_events] hold_sequencer_connections_until_role_decided`, agreed by Andrew: while the engine is starting it pauses reading from each sequencer's order connection and does not treat it as made, and once it knows whether it leads or follows it reads again and treats each as made then. Scenario 100 restarts the engine that led with it on, so the engine always agrees that its peer leads before it deals with any sequencer, and fails if it came back the other way. With the BUG-0225 defect put back, scenario 100 failed; with the fix it passed in all 5 runs, alone and in both suites |
+| How | Making scenario 24's new check for [BUG-0225](#bug_0225) fail on purpose: with the defect put back, eight runs in a row passed, and in every one the restarted engine had been caught up as an instance starting before it became a follower |
+| Impact | The engine's decision to ask to follow the WAL when it becomes a follower without having asked is shown by `EngineRoleTest`, and the routing that goes with it by `EngineOrderRoutingTest`, but no scenario exercises them with real processes. A fault in how the engine thread acts on that decision would pass every scenario |
+
+**What happens now.** When a matching engine restarts beside a leading peer, two things race. The sequencers try to
+connect to it every two seconds (`ReactorConfiguration::connect_retry_interval_`, which no setting changes), and the
+engine that leads asks it for a lease every second. If a sequencer connects first, the restarted engine is caught up
+as an instance starting, and then becomes a follower; it already follows the WAL. If the lease request is answered
+first, it becomes a follower before it has asked to be caught up, which is the way BUG-0225 was found on 3 November
+2026. Scenario 24 checks that the restarted engine finishes a catch-up and applies every order sent after it restarted,
+and reports which way it came back. On 8 November 2026, with the primary engine leading first, scenario 24 went the
+first way in all nine runs with the defect put back and all seven with the fix. With the secondary engine leading first,
+in the one run made, with the fix, it went the second way.
+
+**What is wanted.** A scenario that makes the restarted engine agree that its peer leads before any sequencer
+connects to it, every time, and then checks what scenario 24 checks. Holding the sequencers back is the difficulty: the
+sequencers dial the engine, so `libblock_sends_to_ports.so`, which intercepts only `send`, cannot keep their connections
+away; and an `accept` held back by the same library on a listening socket that the reactor watches without edge
+triggering would make the reactor spin and log on every pass. Whether a setting used only by tests is acceptable for
+this is a decision for Andrew.
+
+**Principle.** V11: a loss of resilience is not a loss of service, and is reported; the test must be able to see one.
+
+### BUG-0225: A matching engine that becomes a follower before it has asked to follow the WAL announces that it follows, but applies nothing {#bug_0225}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-03 |
+| Recorded | 2026-11-03 |
+| Fixed | 2026-11-08 -- an engine that becomes a follower without having asked to follow the WAL asks at once (`MatchingEngineThread::enter_follower_state`, deciding by `EngineRole::follows_without_following_the_wal`): one that was leading, one whose lease ran out while it was catching up in order to lead, and one that agreed its peer leads before any sequencer had connected. The leading sequencer treats a request to follow as the engine saying it does not lead (`EngineOrderRouting::asked_to_follow`): the hand-over of an earlier catch-up to lead can be acted on after the engine says it follows, and it then routed orders to the engine as one that leads; the orders were held rather than sent, because the engine was being served a catch-up to follow, but the routing believed a follower led. Scenario 24 now checks that the restarted engine finishes a catch-up and applies every order sent after it restarted, and new scenario 100 makes it take the way the defect was found every time ([BUG-0233](#bug_0233)). With the old condition, scenario 100 failed ("finished no catch-up after it restarted"); faults put in on purpose were caught by the new `EngineRoleTest` and `EngineOrderRoutingTest` tests. With the fix, `devsetup.sh` passed, scenario 100 passed 3 times and scenario 24 6 times run alone, and the suites passed 99 of 100, the one failure being scenario 80's check of the engines on the WAL, which lost reports as [BUG-0234](#bug_0234) records, and 39 of 39 with the secondary engine first, in which scenario 24 went the way the defect was found and passed |
+| How | Writing down the matching engine's role states for phase 10 ([dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md), section 6.1), and then seen in scenario 24 |
+| Impact | A matching engine restarted beside a leading peer, the ordinary way a standby comes back, says it follows but applies no command and keeps no report, so its book falls behind and nothing says so. Nothing is lost: if it is later given the lead, it catches up first. But the venue has a standby that cannot take over promptly, and V11 requires that to be reported |
+
+**What happens.** A matching engine asks to follow the WAL only in its catch-up request, and makes that request in
+three cases: when the first sequencer connects for orders, if no catch-up has completed and the role is not Follower;
+when the lease agent says it leads; and when, already following the WAL, a record arrives out of turn, a sequencer
+connects, or a sequencer says it now leads. It becomes a Follower without making the request in two ways:
+
+1. **Restarted beside a leading peer.** While the instance is still Unknown, before any sequencer has connected, its
+   peer asks for a lease and the instance grants it. `act_on` takes the AgreedPeerLeads branch for an Unknown role and
+   calls `follow_peer_claiming_leadership`, which makes the instance a Follower. When the sequencers then connect, the
+   catch-up is skipped, because the role is Follower ("an instance that already follows ... follows the WAL, and asks
+   again itself when it needs to"), but it does not follow the WAL, so it never asks.
+2. **The lease runs out while it is catching up to lead.** `act_on` takes the StoppedLeading branch and calls
+   `enter_follower_state`, which asks to follow again only when the role it leaves is Leader; here it is Reconciling.
+
+In either case the instance announces Follower, applies nothing, and keeps no report. Each event that would make it
+ask again is acted on only by an instance that follows the WAL or is catching up.
+
+**Evidence.** Scenario 24 (the engine that led is killed, the other takes the lead, and the first is restarted) run on
+3 November 2026 with the restarted engine's Quill log copied aside while the scenario ran: the restarted engine
+started at 10:51:36.83 as Unknown, granted its peer a lease and became a Follower at 10:51:38.89 ("peer (instance_id=2)
+leads at epoch 45258 -- this instance granted it a lease, and follows it"), and the two sequencer order connections
+were established at 10:51:39.20 and 10:51:39.29 with no catch-up asked for: no "entering RECONCILING" line follows.
+The scenario passes, because it checks only that the restarted engine is a follower. The second way was found by
+reading the code and has not been reproduced.
+
+**What is wanted.** An engine that is a Follower always follows the WAL: becoming a Follower by either way above asks
+to follow, as a follower that stops leading does. Scenario 24 checks that the restarted engine catches up and applies
+the commands sent after it restarted, and is made to fail on purpose without the fix.
+
+For the second way, the fix must also establish what the leading sequencer does with the catch-up to lead it is still
+serving: when the reading thread hands that engine over, `engine_handed_over` routes orders to it
+(`EngineOrderRouting::caught_up_to_lead`) although the engine has since announced that it follows, and an engine
+that follows discards the orders it is sent by routing. This has not been checked.
+
+**Principles.** V11: a loss of resilience is not a loss of service, and is reported.
 
 ### BUG-0129: The stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation {#bug_0129}
 

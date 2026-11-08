@@ -313,37 +313,90 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: connection {} from the peer engine established", id.get_value());
         send_engine_settings(id);
         died_applying_check_.peer_connected();
+    } else if (holds_sequencer_connection(id)) {
+        return;
     } else {
         // An inbound order connection from a sequencer, alike for either configured role.
-        sequencer_order_conn_ids_.insert(id);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} established", id.get_value());
-        died_applying_check_.sequencer_connected();
-        if (role_.role() == MeRole::Reconciling) {
-            // Either reconciliation was begun before any sequencer had dialled in, so the request
-            // could not be sent, and sending it now is what keeps that from stranding the venue
-            // with no engine leading -- the outage BUG-0043 recorded; or it was sent on another
-            // connection, and only this one is still to be asked.
-            ask_on_new_sequencer_connection(id);
-        } else if (!role_.catch_up_completed() && role_.role() != MeRole::Follower) {
-            // The catch-up belongs here, at the moment this instance first has somewhere to ask
-            // and before it has served anything, rather than later when a role is settled. An
-            // instance that starts and works for fifteen seconds while an arbiter makes up its
-            // mind has already applied those orders; it is the orders taken BEFORE it started
-            // that it has not seen, and this is the only moment it can ask about them without
-            // mistaking live traffic for replay.
-            //
-            // An instance that already follows is excluded: it follows the WAL, and asks again itself when it needs to.
-            //
-            // An order in the venue's WAL that no engine has applied, such as one a sequencer
-            // wrote and then died before sending on, is in no engine's book, so this ask is the
-            // only thing that recovers it. See BUG-0064.
-            //
-            // Becoming current, not taking the role: who may act is the arbiter's to say, and
-            // an instance that promoted itself on the strength of having caught up would be
-            // deciding that for itself.
-            role_.start_catching_up_to_become_current();
-            begin_reconciliation();
-        }
+        sequencer_order_connection_established(id);
+    }
+}
+
+bool MatchingEngineThread::holds_sequencer_connection(const pubsub_itc_fw::ConnectionID& id) {
+    // Only for a test that sets hold_sequencer_connections_until_role_decided, and only while this instance does not yet
+    // know whether it leads or follows: see that setting in TestEventsConfiguration.
+    if (!ha_enabled_ || !config_.test_events.hold_sequencer_connections_until_role_decided || role_decided()) {
+        return false;
+    }
+    pause_reading(id);
+    held_sequencer_connections_.push_back(id);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: inbound sequencer order connection {} held, by a setting used only by tests, until this instance knows whether it "
+               "leads or follows",
+               id.get_value());
+    return true;
+}
+
+bool MatchingEngineThread::role_decided() const {
+    switch (role_.situation()) {
+        case EngineRole::Situation::starting:
+        case EngineRole::Situation::catching_up_to_become_current:
+        case EngineRole::Situation::current:
+            return false;
+        case EngineRole::Situation::catching_up_to_lead:
+        case EngineRole::Situation::leading:
+        case EngineRole::Situation::catching_up_to_follow_again:
+        case EngineRole::Situation::following:
+            return true;
+    }
+    return false;
+}
+
+void MatchingEngineThread::release_held_sequencer_connections() {
+    if (held_sequencer_connections_.empty() || !role_decided()) {
+        return;
+    }
+    // Moved out first: handling a connection can change the role, and must not find itself in the list.
+    std::vector<pubsub_itc_fw::ConnectionID> held;
+    held.swap(held_sequencer_connections_);
+    for (const pubsub_itc_fw::ConnectionID& id : held) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: this instance now knows whether it leads or follows (role {}) -- inbound sequencer order connection {} "
+                   "is no longer held",
+                   me_role_name(role_.role()), id.get_value());
+        resume_reading(id);
+        sequencer_order_connection_established(id);
+    }
+}
+
+void MatchingEngineThread::sequencer_order_connection_established(const pubsub_itc_fw::ConnectionID& id) {
+    sequencer_order_conn_ids_.insert(id);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} established", id.get_value());
+    died_applying_check_.sequencer_connected();
+    if (role_.role() == MeRole::Reconciling) {
+        // Either reconciliation was begun before any sequencer had dialled in, so the request
+        // could not be sent, and sending it now is what keeps that from stranding the venue
+        // with no engine leading -- the outage BUG-0043 recorded; or it was sent on another
+        // connection, and only this one is still to be asked.
+        ask_on_new_sequencer_connection(id);
+    } else if (!role_.catch_up_completed() && role_.role() != MeRole::Follower) {
+        // The catch-up belongs here, at the moment this instance first has somewhere to ask
+        // and before it has served anything, rather than later when a role is settled. An
+        // instance that starts and works for fifteen seconds while an arbiter makes up its
+        // mind has already applied those orders; it is the orders taken BEFORE it started
+        // that it has not seen, and this is the only moment it can ask about them without
+        // mistaking live traffic for replay.
+        //
+        // An instance that already follows is excluded: it follows the WAL, and asks again itself when it needs to.
+        //
+        // An order in the venue's WAL that no engine has applied, such as one a sequencer
+        // wrote and then died before sending on, is in no engine's book, so this ask is the
+        // only thing that recovers it. See BUG-0064.
+        //
+        // Becoming current, not taking the role: who may act is the arbiter's to say, and
+        // an instance that promoted itself on the strength of having caught up would be
+        // deciding that for itself.
+        role_.start_catching_up_to_become_current();
+        begin_reconciliation();
     }
 }
 
@@ -376,6 +429,11 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
     } else if (id == arbiter_secondary_conn_id_) {
         arbiter_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
+    } else if (const auto held = std::find(held_sequencer_connections_.begin(), held_sequencer_connections_.end(), id);
+               held != held_sequencer_connections_.end()) {
+        held_sequencer_connections_.erase(held);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: held inbound sequencer order connection {} lost: {}", id.get_value(),
+                   reason);
     } else if (sequencer_order_conn_ids_.count(id) > 0) {
         sequencer_order_conn_ids_.erase(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} lost: {}", id.get_value(),
@@ -954,6 +1012,7 @@ void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) 
         case pubsub_itc_fw::PairLeaseAgent::Change::Nothing:
             break;
     }
+    release_held_sequencer_connections();
 }
 
 void MatchingEngineThread::EngineLeaseLinks::send_request_to_peer(const pubsub_itc_fw::LeaseRequest& request) {
@@ -1162,9 +1221,27 @@ void MatchingEngineThread::enter_follower_state() {
     report_sending_.discard("this instance is a follower and serves nobody");
 
     announce_role();
-    if (ha_enabled_ && previous == MeRole::Leader) {
-        // It was sent commands by order routing; from now on it follows the WAL.
-        follow_the_wal_again("it stopped leading");
+
+    // A follower follows the WAL: it applies every command and keeps the reports, so that it can take the lead promptly.
+    // It follows only once it has asked to, in a catch-up request that asked to follow rather than to lead, so an
+    // instance that becomes a follower without such a request asks now. There are three ways to arrive here like that:
+    //
+    // - it was leading, and was sent its commands by order routing;
+    // - it was catching up in order to lead, and its lease ran out first, so its latest request asked to lead;
+    // - it had only just started, and agreed that its peer leads before any sequencer had connected to it, so it had
+    //   made no request at all. This is how an engine restarted beside a leading peer comes back.
+    //
+    // An instance whose latest request already asked to follow, such as one that caught up at start-up and is current,
+    // follows the WAL already and asks for nothing. With no sequencer connected yet, the request is sent when the first
+    // one connects.
+    if (role_.follows_without_following_the_wal()) {
+        const char* why = "it agreed that its peer leads before it had asked to follow the WAL";
+        if (previous == MeRole::Leader) {
+            why = "it stopped leading";
+        } else if (previous == MeRole::Reconciling) {
+            why = "its lease ran out while it was catching up in order to lead";
+        }
+        follow_the_wal_again(why);
     }
 }
 

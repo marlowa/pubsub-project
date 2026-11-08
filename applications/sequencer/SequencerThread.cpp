@@ -2870,6 +2870,34 @@ void SequencerThread::handle_wal_follow_request(const pubsub_itc_fw::ConnectionI
         return;
     }
 
+    // An engine that asks to follow does not lead. If orders are routed to it, they go to the engine known to lead, or
+    // are held until one does. This happens when an engine's lease ran out while it was being brought up to date in
+    // order to lead, and the hand-over of that catch-up was acted on after the engine said it follows.
+    if (!asking_to_lead) {
+        switch (engine_routing_.asked_to_follow(conn_id)) {
+            case EngineOrderRouting::AnnouncementOutcome::FollowerHandedToLeader:
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "SequencerThread: the matching engine on connection {} carried orders and asks to follow the WAL, so it does not lead -- "
+                           "order routing handed to instance {} on connection {}, which is the leader this sequencer knows of",
+                           conn_id.get_value(), engine_routing_.announced_leader(), engine_routing_.active().get_value());
+                engine_routing_changed();
+                break;
+            case EngineOrderRouting::AnnouncementOutcome::FollowerWithdrawnNoLeader:
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "SequencerThread: the matching engine on connection {} carried orders and asks to follow the WAL, so it does not lead -- "
+                           "withdrawn from order routing, and this sequencer knows of no leader to hand it to. Orders are held until an engine leads",
+                           conn_id.get_value());
+                engine_routing_changed();
+                break;
+            case EngineOrderRouting::AnnouncementOutcome::FollowerNotCarryingOrders:
+            case EngineOrderRouting::AnnouncementOutcome::NoOrderConnection:
+            case EngineOrderRouting::AnnouncementOutcome::RefusedAsBehind:
+            case EngineOrderRouting::AnnouncementOutcome::RoutedToLeader:
+            case EngineOrderRouting::AnnouncementOutcome::AlreadyRoutedToLeader:
+                break;
+        }
+    }
+
     // Every void, before the reading thread is asked to start: this thread and the reading thread send through the
     // reactor's one queue of commands, so the engine is sent the list before WalFollowStarted and before any record the
     // list names (docs/availability/voided_commands.md, section 3.3).

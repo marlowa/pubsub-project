@@ -74,6 +74,16 @@ struct TestEventsConfiguration {
     /// (BUG-0218).
     std::string lose_and_regain_lease_after_cl_ord_id;
 
+    /// Whether the matching engine holds back each sequencer's order connection until it knows whether it leads or
+    /// follows, from the optional `hold_sequencer_connections_until_role_decided` key; false when it is absent. Read by
+    /// the matching engine, with high availability on. While the engine is starting, it stops reading from each order
+    /// connection a sequencer makes to it, and does not treat the connection as made. Once the engine agrees that its
+    /// peer leads, or is told that it leads itself, it reads from each connection again and treats it as made at that
+    /// moment. A restarted engine then always agrees that its peer leads before it deals with any sequencer, which
+    /// otherwise happens only when a lease request from its peer happens to arrive before the sequencers connect. It
+    /// lets a test take that way every time (docs/bug_list.md BUG-0225 and BUG-0233).
+    bool hold_sequencer_connections_until_role_decided{false};
+
     /// Whether reports for @p comp_id are expected to reach no member's session.
     [[nodiscard]] bool expects_no_session_for(std::string_view comp_id) const {
         for (const auto& listed : comp_ids_without_session) {
@@ -110,7 +120,8 @@ struct TestEventsConfiguration {
  * required: a half-filled section is a mistake in the test, and guessing the missing part would hide it.
  * `report_orders_of` is optional, and only an application that reports the outcome of orders reads it. So are
  * `comp_ids_without_session`, read by the sequencer, `delay_session_announcements_ms`, read by the gateways, and
- * `die_applying_cl_ord_id`, `die_applying_once` and `lose_and_regain_lease_after_cl_ord_id`, read by the matching engine.
+ * `die_applying_cl_ord_id`, `die_applying_once`, `lose_and_regain_lease_after_cl_ord_id` and
+ * `hold_sequencer_connections_until_role_decided`, read by the matching engine.
  */
 class TestEventsConfigurationLoader {
   public:
@@ -157,6 +168,9 @@ class TestEventsConfigurationLoader {
         }
         if (toml.has_key("test_events.lose_and_regain_lease_after_cl_ord_id")) {
             toml.get_required_except("test_events.lose_and_regain_lease_after_cl_ord_id", configuration.lose_and_regain_lease_after_cl_ord_id);
+        }
+        if (toml.has_key("test_events.hold_sequencer_connections_until_role_decided")) {
+            toml.get_required_except("test_events.hold_sequencer_connections_until_role_decided", configuration.hold_sequencer_connections_until_role_decided);
         }
         return configuration;
     }

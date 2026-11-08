@@ -124,18 +124,30 @@ class EngineOrderRouting {
             active_leads_ = true;
             return already ? AnnouncementOutcome::AlreadyRoutedToLeader : AnnouncementOutcome::RoutedToLeader;
         }
-        if (active_ != own->second) {
-            return AnnouncementOutcome::FollowerNotCarryingOrders;
+        return routing_for_a_follower(own->second);
+    }
+
+    /**
+     * @brief The engine on @p connection asked this sequencer, which leads, to bring it up to date in order to follow the
+     *        WAL rather than to lead, so it does not lead now.
+     *
+     * Treated as that engine announcing that it follows, without an epoch. An engine announces that it follows before it
+     * asks, so this changes the routing only when something pointed orders at the engine between the two. That happens
+     * when the engine was being brought up to date in order to lead and its lease ran out: the hand-over of that earlier
+     * catch-up can be acted on after the engine's announcement and before its new request, and it routes orders to the
+     * engine as one that leads.
+     */
+    AnnouncementOutcome asked_to_follow(pubsub_itc_fw::ConnectionID connection) {
+        for (const auto& [instance, own] : connection_by_instance_) {
+            if (own != connection) {
+                continue;
+            }
+            if (announced_leader_ == instance) {
+                announced_leader_ = 0;
+            }
+            return routing_for_a_follower(own);
         }
-        const auto leader = announced_leader_ != 0 ? connection_by_instance_.find(announced_leader_) : connection_by_instance_.end();
-        if (leader != connection_by_instance_.end()) {
-            active_ = leader->second;
-            active_leads_ = true;
-            return AnnouncementOutcome::FollowerHandedToLeader;
-        }
-        active_ = pubsub_itc_fw::ConnectionID{};
-        active_leads_ = false;
-        return AnnouncementOutcome::FollowerWithdrawnNoLeader;
+        return AnnouncementOutcome::NoOrderConnection;
     }
 
     /**
@@ -224,6 +236,23 @@ class EngineOrderRouting {
     }
 
   private:
+    // The engine on connection @p own follows. If it carries orders, they go to the instance last known to lead, or
+    // nowhere when no instance is.
+    AnnouncementOutcome routing_for_a_follower(pubsub_itc_fw::ConnectionID own) {
+        if (active_ != own) {
+            return AnnouncementOutcome::FollowerNotCarryingOrders;
+        }
+        const auto leader = announced_leader_ != 0 ? connection_by_instance_.find(announced_leader_) : connection_by_instance_.end();
+        if (leader != connection_by_instance_.end()) {
+            active_ = leader->second;
+            active_leads_ = true;
+            return AnnouncementOutcome::FollowerHandedToLeader;
+        }
+        active_ = pubsub_itc_fw::ConnectionID{};
+        active_leads_ = false;
+        return AnnouncementOutcome::FollowerWithdrawnNoLeader;
+    }
+
     std::map<int64_t, pubsub_itc_fw::ConnectionID> connection_by_instance_;
     pubsub_itc_fw::ConnectionID active_{};
     bool active_leads_{false};
