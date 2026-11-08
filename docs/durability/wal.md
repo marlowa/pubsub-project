@@ -93,11 +93,14 @@ leader sends. Builds with thread checks refuse an append from any other thread.
 **`seq_no` continues across a change of writer; it does not restart.** A follower moves its
 counter past every record it writes, and a sequencer that takes the lead numbers from the
 highest record it holds plus one, so the sequence spans the failover unbroken. This is what
-makes `seq_no` alone the total order over the log's whole life. The leader epoch is not part
-of the WAL frame and not part of the order key: the sequencer carries it inside its record's
-payload (`WalRecord.leader_epoch`), where it is used only to repair a rejoining follower's log
-([follower_log_repair.md](../availability/follower_log_repair.md)). A record is located by
-`seq_no` and nothing else. Restarting the numbering on promotion, or ordering by
+makes `seq_no` alone the total order over the log's whole life. The leader epoch, the epoch of
+the leadership that numbered the record, is not part of the WAL frame and not part of the order
+key. It is written in the small header at the front of each record's payload (see *Payload
+conventions* below), and the library's replicated WAL reads it from there to build its table of
+epochs, which it uses only to repair a rejoining follower's log
+([follower_log_repair.md](../availability/follower_log_repair.md)). The sequencer's `WalRecord`
+envelope also carries a copy of it, as `WalRecord.leader_epoch`. A record is located by `seq_no`
+and nothing else. Restarting the numbering on promotion, or ordering by
 `(epoch, seq_no)`, would both break this.
 
 **No `fsync` per record.** Forcing each append to physical disk would cost tens to hundreds

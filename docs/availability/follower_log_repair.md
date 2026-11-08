@@ -52,6 +52,9 @@ Records written before the field existed read it as zero: the field is optional 
 generated decoder reads a message that ends where an optional field would begin as lacking it
 ([serialisation_dsl.md](../framework/serialisation_dsl.md)).
 
+The library's replicated WAL also writes the epoch in the small header at the front of every record's
+payload ([wal.md](../durability/wal.md), "Payload conventions"), and reads it from there.
+
 Each instance keeps in memory a table of the epochs that appear in its log and the first sequence number
 written in each. A sequencer reads its whole log when it opens it, so the table is built then, and it is
 kept up to date as records are appended and when a follower discards records (4.4). It changes only
