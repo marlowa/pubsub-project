@@ -44,8 +44,9 @@ copy is thrown away before a number is taken.
    the log in the background when the sequencer starts. A command the log does not hold goes on to
    step 2. One the log holds is not written again:
    - if its gateway marked it as sent again, because nothing answered it across a change of leader or
-     after its connection to the sequencer was closed and opened again, its answer comes from the
-     matching engine
+     after its connection to the sequencer was closed and opened again, it is answered: when the log
+     holds a report answering it, that report is sent to the member again, marked as a possible
+     repeat, and otherwise the matching engine answers it by the ordinary path
      ([Commands during a change of leader](../availability/commands_during_a_change_of_leader.md));
    - if not, the member has used the `ClOrdID` before today, and the leader refuses it: it sends the
      gateway `CommandRefused` on the connection the command came by, and the gateway rejects the

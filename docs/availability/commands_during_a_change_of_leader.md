@@ -114,9 +114,9 @@ again from a fresh copy.
 
 **Two connections from one gateway.** When a gateway closes a connection, commands it had already
 written may still be unread at the sequencer, and may be read after their marked copies arrive on the
-new connection. Those originals are not marked, so the leader would not check them. While a gateway
-instance has more than one connection open to it, the leader therefore checks every command from that
-instance against its log, marked or not, until the older connection has been read to its end.
+new connection. Those originals are not marked. The leader checks every command against its log,
+marked or not ([one_check_against_sequencing_twice.md](one_check_against_sequencing_twice.md)), so an
+original that arrives after its marked copy was sequenced is found in the log and not sequenced twice.
 
 ### 3.3 The new leader forwards kept reports before it says it leads
 
@@ -134,24 +134,28 @@ A command sent again is either in the new leader's log or not, and the gateway c
 - **Not in the log:** the old leader never wrote it, or wrote it and died before the follower
   received it, so nothing ever acted on it. The new leader sequences it as a new command, by the
   ordinary path.
-- **In the log:** it must not be sequenced again. The new leader discards it, and logs that at Info.
-  Its answer comes by one of the routes in section 3.6.
+- **In the log:** it must not be sequenced again. If the log also holds a report answering it, the
+  new leader forwards that report to the member's session, marked as a possible repeat. If not, it
+  passes the command over, and its answer comes by one of the routes in section 3.6.
 
 To tell the two apart, the sequencer keeps a **record of the identifiers in its log**: for each
 command its log holds, the session's identity and the command's `ClOrdID`. This is the record
-R-0119 and R-0010 describe. Section 7 sets out the decisions about its form, how much of the log it
-covers, and whether it checks every command or only those sent again.
+R-0119 and R-0010 describe. Section 7 sets out the decisions about its form and how much of the log it
+covers. The leader checks every command against it, marked or not; a command not marked as sent again
+that the log already holds is a member using a `ClOrdID` it has already used today, and is refused
+([one_check_against_sequencing_twice.md](one_check_against_sequencing_twice.md)). The check is made by
+`CommandChecks` in the sequencer, through the library's replicated WAL.
 
-**Which thread keeps it.** The record is a hash table, and the venue's hash table is confined to one
-thread, which it checks. The sequencer thread keeps it, and it is built **only from the log**, never
-from the copies a follower receives from the gateways, because a copy a follower received may never
-have been written to any log, and treating it as held would lose it.
+**Which thread keeps it.** The record is a table kept by the library's replicated WAL on the sequencer
+thread. It is built **only from the log**, never from the copies a follower receives from the gateways,
+because a copy a follower received may never have been written to any log, and treating it as held
+would lose it.
 
 - The sequencer thread is the only thread that writes the log, while leading and while following,
-  and it adds each command's identifier as it writes the record that holds it. So the record of
-  identifiers is complete whenever this instance takes the lead, without reading the log again.
-- At startup, the sequencer already reads its whole log, to build the table of epochs and to find a
-  gap. The identifiers are added during the same read.
+  and the identifier of each command is added as the record that holds it is written. So the record
+  of identifiers is complete whenever this instance takes the lead, without reading the log again.
+- At startup, a background thread reserves the table and fills it from the log's segments, while the
+  sequencer starts work at once (section 7, decision 1).
 - Each command's `ClOrdID` is copied onto its envelope by the gateway, and the leader logs it, so that
   the record can be built and kept up to date from the log without decoding each command. The leader
   also logs the member's gateway protocol and instance from the envelope, so that a command is identified by the whole of its session.
@@ -226,11 +230,12 @@ answer today ([BUG-0089](../bug_list.md#bug_0089)). It is outside this design.
 |---|---|---|
 | Gateway store | A copy of each command's envelope, about 200 bytes, and an index entry; removed when its report arrives | Memory set in configuration |
 | `OrderAcceptance` epoch, `sent_again` | One field each | None |
-| Record of identifiers | A hash and an insert per command in the sequencer, on the sequencer thread | Memory: see section 7, decision 1. A read once a second while following |
+| Record of identifiers | A check of every command, and an insert per command written, on the sequencer thread | Memory: see section 7, decision 1 |
 | Engine position on a change of sequencer leader | None | A round trip between sequencer and engine at each change of leader, before new commands are sent |
 
-The cost on the ordinary path has not yet been measured by the method in
-[latency_findings.md](../operations/latency_findings.md), as part 4.2's was.
+The check of every command costs 295 nanoseconds at the median on the order path, measured by the
+method in [latency_findings.md](../operations/latency_findings.md)
+([one_check_against_sequencing_twice.md](one_check_against_sequencing_twice.md), section 8, step 5).
 
 ## 6. Tests
 
@@ -293,16 +298,17 @@ protocol and the `ClOrdID`.
   checked against the log by the same index. Nothing is refused: refusing a command that may be live
   would tell a member it was refused when it was not.
 
-**Decision 2, decided: only commands marked `sent_again` are checked, in this part.** Checking every
-command, which would meet R-0119, is a separate change, recorded as [BUG-0114](../bug_list.md#bug_0114).
+**Decision 2, decided, and replaced by phase 9 of the recovery plan: only commands marked `sent_again`
+were to be checked in this part.** Phase 9 replaced it: the leader checks every command, which meets
+R-0119 and fixes [BUG-0114](../bug_list.md#bug_0114)
+([one_check_against_sequencing_twice.md](one_check_against_sequencing_twice.md)).
 
 **Decision 3, decided: the record covers the whole log, which is the whole trading day.** Every trading
 day starts with no log: after end of day the processes are stopped and the logs moved away, and the
 next day starts with none. So a log holds exactly one day, and a `ClOrdID` used on an earlier day is
 never in it. A sequencer that starts at the start of the day has an empty log and builds an empty
-record. Only a sequencer restarted during the day reads records at startup, and it already reads its
-whole log then, to build the table of epochs and to find a gap; the record adds a hash per record to
-that read. How long that read takes late in a busy day is part of a wider question, recorded under
+record. Only a sequencer restarted during the day has records to read into it at startup, and it
+reads them on a background thread while it starts work (decision 1). How long that read takes late in a busy day is part of a wider question, recorded under
 [BUG-0113](../bug_list.md#bug_0113): the size of the log, which the move of resends to a separate
 recovery service is to bound.
 
