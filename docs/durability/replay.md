@@ -12,7 +12,7 @@ written.
 
 | | needs | status |
 |---|---|---|
-| **State reconstruction** — "what was the book at 14:03?" | only the events that change replicated state | **already works.** HA reconciliation and the session-slice resend both do it |
+| **State reconstruction** — "what was the book at 14:03?" | only the events that change replicated state | **already works.** A matching engine catching up from the WAL, the answer to a member's resend, and `wal_replay_check`, which applies a WAL's commands to a fresh copy of the engine and compares its reports with those the WAL holds ([matching_engine.md](../venue/matching_engine.md)), all do it |
 | **Faithful re-execution** — "reproduce that bug exactly" | everything: timers, socket outcomes, thread interleaving, randomness | hard, and probably not worth it |
 
 If the answer is state reconstruction — and it should be — then most of the remaining work is
@@ -31,11 +31,12 @@ engine and the sequencer read the time of day only through it on their order pat
 agents read `steady_clock`, but leases decide which instance acts, not what the state is, and are not
 part of replay.) A `ReplayClock` implementing that interface is a small class.
 
-**Time arrives with the event.** The matching engine does not ask what time it is; it is told:
+**Time arrives with the event.** The matching engine does not ask what time it is; it is told, in the
+time the sequencer stamped on the command (`MatchingEngineStateMachine.hpp`):
 
 ```cpp
-void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no,
-                             int64_t sequenced_at_ns, const fix_common::SessionIdentity& session);
+void apply_new_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
+                     int32_t trading_date, const fix_common::SessionIdentity& session, CommandSource source);
 ```
 
 **The sequencer collapses concurrency into a total order before the WAL is written.** This is the
@@ -60,11 +61,12 @@ The question that dissolves most of the difficulty is not "how do I replay a tim
   state, so there is nothing to reconstruct.
 
 **What bypasses the sequencer.** Any state-changing effect that does not pass through the sequencer is
-the residue of this rule. In the matching engine there are three, all decided by the leading engine
-alone: cancelling everything and halting after it has been unable to match for too long, cancelling
-inherited orders on promotion, and refusing orders while halted. Section 8 of
-[ha_library_boundary.md](../availability/ha_library_boundary.md) proposes making each a command in the
-log, which would also make them replayable.
+the residue of this rule. In the matching engine there is none: every decision that changes the book is
+a command in the WAL. Cancelling everything and halting when no engine could trade for too long is a
+`CancelBook` and a `TechnicalEvent` the leading sequencer writes; a promoted engine cancels nothing; and
+an engine refuses orders while halted because of the `TechnicalEvent` records it has applied
+([deterministic_matching_engine.md](../availability/deterministic_matching_engine.md), section 4). That
+is what lets `wal_replay_check` reproduce an engine's reports from a WAL.
 
 ---
 
@@ -86,9 +88,12 @@ Prefer the second. It is also the cheaper one.
 
 ### Any `now() - recorded_timestamp` is broken under replay
 
-For example, `order_round_trip_nanoseconds` deliberately drops the
-`gateway_ingress_ns` stamp on the WAL replay path, because a replayed order's ingress time is hours
-stale and would invent a tail-latency spike at every failover.
+For example, a gateway measures an order's round trip, `order_round_trip_nanoseconds`, as its own
+clock now minus the time it read the order (`gateway_ingress_ns`), which travels on the order's
+envelope and comes back on the report. A report produced again long after the order arrived, carrying
+that stamp, would record a round trip of hours and invent a tail-latency spike. The gateway measures
+only the report that acknowledges a new order, and does not record a negative difference, which arises
+when the two times were taken by different processes after a gateway failover.
 
 **Treat that as a rule rather than one clever fix.** Any code subtracting a recorded timestamp from
 a live clock produces nonsense during replay, and the nonsense is plausible-looking, which is worse.

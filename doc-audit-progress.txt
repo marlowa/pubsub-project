@@ -60,7 +60,7 @@ code as it now stands. Done in this pass:
 venue: `README.md`, `matching_engine.md`, `sequencer.md`, `sequencer_app.md`, `arbiter.md`, `witness.md`,
 `trading_phases.md`
 
-durability: `wal.md`
+durability: `wal.md`, `replay.md`
 
 The design records. Andrew decided on 7 November 2026 that the documents each giving the design for one
 phase of the recovery plan or one bug are records of that design. Each begins by describing the venue
@@ -81,7 +81,7 @@ availability: `wal_and_ha.md`, `majority_leases.md`, `gateway_ha.md`, `process_d
 Still to read again: availability
 `ha_in_the_library.md`,
 `test_events_inventory.md`; durability
-`replay.md`, `open_order_checkpoint.md`; orientation `architecture.md`. `design_notes.md` waits on
+`open_order_checkpoint.md`; orientation `architecture.md`. `design_notes.md` waits on
 question 4.
 
 ## Building and testing on Rocky 8 in Docker (started, blocked)
@@ -278,6 +278,13 @@ Reported to Andrew, and not changed by the audit.
   and `StatusResponse` (PDU 101), and two integration tests use them, but no component sends or handles
   either message any more. Either the messages and their tests are removed, or they are kept for a reason
   that should be written beside them.
+- **To check, not confirmed:** the sequencer puts the gateway's ingress time on every report it routes
+  through its memory of which session placed an order, including a report marked as a possible repeat
+  (`SequencerThread::forward_report_from_engine`), and the gateway records a round trip for any report
+  acknowledging a new order that carries one (`FixOrderGatewayThread.cpp`, near the comment "The round
+  trip closes here"). If an acknowledgement is ever sent again while the sequencer still remembers the
+  order, for example by a matching engine catching up, the gateway would record a round trip as long as
+  the time since the order arrived. Whether that case occurs has not been established.
 - `scripts/ha_test.py`, scenario 21 (`reconnect_inherits_reports`) no longer tests what its name says. It was written
   when a promoted matching engine cancelled every resting order, so the cancel reports were what reached the
   member's new connection. A promoted engine now keeps every order, and the scenario sends no orders after the
