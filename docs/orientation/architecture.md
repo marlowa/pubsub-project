@@ -17,14 +17,22 @@ under the demands of a real system.
 - A write-ahead log, and a memory-mapped store of fixed-size records that survives a process restart
 - A serialisation language: message definitions from which a Python generator writes the C++
   encoders and decoders
+- High availability: the lease classes that decide which instance of a pair leads, by a majority of
+  three voters (`PairLeaseAgent` and the classes it uses); the voting service those pairs use as their
+  third voter (`Arbiter` and `Witness`); a replicated write-ahead log, written by one thread on the
+  leader and the follower, which commits a record once the follower holds it or a voter has agreed
+  that the follower may not lead (`ReplicatedWal`); a thread of its own that reads the log for those
+  that follow it (`WalReadingThread`, with `WalFollowerClient` for the follower's side); and, for a
+  client of the replicated log, a store of the commands not yet answered, which it sends again to a
+  new leader (`UnansweredCommands`)
 
-**High availability is built in the applications**, composed differently for each component: a pair
-whose leader holds a majority lease, for the sequencer, the matching engine and its publisher; two
-instances serving at once, for the authentication service; and two gateway instances per protocol,
-each member provisioned to a primary and a backup
-([WAL and HA](../availability/wal_and_ha.md#ha_component_specific)). The lease classes they share are
-in `applications/fix_common`. Moving the general part of it into the framework is the direction agreed
-in [ha_in_the_library.md](../availability/ha_in_the_library.md).
+**High availability is composed differently for each component** from those parts: a pair whose leader
+holds a majority lease, for the sequencer, the matching engine and its publisher; two instances serving
+at once, for the authentication service; and two gateway instances per protocol, each member
+provisioned to a primary and a backup
+([WAL and HA](../availability/wal_and_ha.md#ha_component_specific)). What remains in the applications
+is what only an application can know, such as what a command means and what a duplicate is answered
+with ([ha_library_boundary.md](../availability/ha_library_boundary.md)).
 
 **The applications** are a working venue that accepts orders and cancels them. It does not match
 buyers with sellers; the functional specification in `docs/book` records what it does and does not do.
@@ -41,8 +49,8 @@ one place: [design_principles.md](../design_principles.md).
 ## Framework and applications
 
 The framework (`libraries/pubsub_itc_fw/`) provides the infrastructure. The applications
-(`applications/`) use it. They also contain the high availability machinery described above, which is
-general rather than particular to any application. The framework knows nothing of what a
+(`applications/`) use it. The high availability machinery described above is in the framework; each
+application supplies only what is particular to it. The framework knows nothing of what a
 message means: message shapes are defined in the serialisation language, and the generated headers
 encode and decode them.
 
@@ -76,10 +84,13 @@ instruments is not designed.
  └───────┬───────────▲──────────┘                                   └──────────────────────────────┘
          │ commands  │ reports (the engine sends each to both sequencers)
          ▼           │
- ┌──────────────────────────────┐   every change to the book        ┌──────────────────────────────┐
- │ Matching engine (leading)    │ ────────────────────────────────► │ Matching engine (following)  │
- │ keeps the book and its open  │                                   │ keeps a copy of the book     │
- │ orders on disk; reports      │                                   │                              │
+ ┌──────────────────────────────┐                                   ┌──────────────────────────────┐
+ │ Matching engine (leading)    │                                   │ Matching engine (following)  │
+ │ applies each command to its  │                                   │ is sent every committed      │
+ │ book, keeps its open orders  │                                   │ record by the leading        │
+ │ on disk, and reports         │                                   │ sequencer and applies it to  │
+ │                              │                                   │ its own book; sends no       │
+ │                              │                                   │ reports                      │
  └──────────────────────────────┘                                   └──────────────────────────────┘
 
  ┌──────────────────────────────┐
@@ -113,9 +124,10 @@ instruments is not designed.
 | Commands to the engine | Leading sequencer → leading engine | Numbered commands, in order |
 | Reports from the engine | Engine → both sequencers | Each report; only the leader forwards it |
 | Log replication | Leading → following sequencer | Every record; the follower acknowledges each |
-| Link between the engines | Each engine ↔ the other | The lease requests between the pair, role announcements and the settings check; no book |
-| Leases | Each instance ↔ its peer and both arbiters | `LeaseRequest`, `LeaseGrant`, `LeaseRefusal` |
-| Arbiters | Arbiter ↔ arbiter, arbiter ↔ witness | The same lease messages, and the highest epoch granted in each group |
+| Following the log | Leading sequencer → following matching engine, and the publishers | Every committed record, after a catch-up from the position each holds |
+| Link between the engines | Each engine ↔ the other | The lease requests and grants between the pair, the check that their settings agree, and at start-up the question of whether the other engine applied the command this one died applying; no book |
+| Leases | Each instance ↔ its peer and both arbiters | `LeaseRequest`, `LeaseGrant`, `LeaseRefusal`; and from each arbiter to a leader, `StatementHeld`, confirming that it holds the leader's statement about whether its peer may lead |
+| Arbiters | Arbiter ↔ arbiter, arbiter ↔ witness | The same lease messages; between the arbiters, the highest epoch granted and the newest leader statement in each group, and a heartbeat every tick |
 | Topics | Publisher → subscribers | Records from the sequencer's log, by topic |
 | Authentication | Gateway ↔ both authentication services | The SCRAM-SHA-256 exchange for each logon |
 
@@ -137,18 +149,21 @@ Gateway
    │
    ▼
 Sequencer (leading)
+   - checks it against the commands its log already holds, and refuses a ClOrdID the session has
+     already used today
    - gives it the next sequence number
    - writes it to the log, and sends the record to the following sequencer
    - once the following sequencer has acknowledged the record, sends it to the leading matching
-     engine
+     engine, and the committed record to the following matching engine
    │
    ▼
 Matching engine (leading)
    - refuses it if its ClOrdID is already open for the session, is too long for the book, or the book
      is full, or if trading is halted
-   - otherwise puts it on the book, records it in its open-order region, and sends the change
-     to the following engine
+   - otherwise puts it on the book and records it in its open-order region
    - sends the execution report to both sequencers
+   (the following engine applies the same command to its own book, and keeps its report in case it
+   takes the lead)
    │
    ▼
 Sequencer (leading)
@@ -185,6 +200,7 @@ The development environment's values, from `environments/dev.toml` as deployed i
 | 11003, 11004 | Sequencer primary, secondary: the peer |
 | 11021, 11022 | Sequencer primary, secondary: reports from the matching engines |
 | 11030, 11031 | Sequencer primary, secondary: the publishers, reading the log |
+| 11050, 11051 | Sequencer primary, secondary: operators, halting trading and lifting a halt (TLS only) |
 | 11020, 11023 | Matching engine primary, secondary: commands from the sequencers |
 | 11025, 11026 | Matching engine primary, secondary: the peer |
 | 11040 to 11043 | Matching engine publisher: topic subscribers |

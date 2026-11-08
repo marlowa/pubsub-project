@@ -62,6 +62,8 @@ venue: `README.md`, `matching_engine.md`, `sequencer.md`, `sequencer_app.md`, `a
 
 durability: `wal.md`, `replay.md`, `open_order_checkpoint.md`
 
+orientation: `architecture.md`
+
 The design records. Andrew decided on 7 November 2026 that the documents each giving the design for one
 phase of the recovery plan or one bug are records of that design. Each begins by describing the venue
 before the change, because that is what the design changes, and that description is not corrected to
@@ -79,8 +81,7 @@ availability: `wal_and_ha.md`, `majority_leases.md`, `gateway_ha.md`, `process_d
 `order_acceptance.md`, `session_binding.md`, `resend_provenance.md`,
 `matching_engine_presence.md`
 
-Still to read again: orientation `architecture.md`. `design_notes.md` waits on
-question 4.
+Every document listed for this pass has been read again. `design_notes.md` waits on question 4.
 
 ## Building and testing on Rocky 8 in Docker (started, blocked)
 
