@@ -24,7 +24,7 @@ pass cancels on, which the engine carries out while halted.
 
 What the venue does not do is tell a member that is connected and not trading, or that connects during
 the halt, that the venue is halted and when it resumes: a member learns of the halt from the reply to
-an order. That is what remains of [BUG-0065](../bug_list.md), with the phases other than open and the
+an order. That is what remains of [BUG-0065](../bug_list.md#bug_0065), with the phases other than open and the
 table below, and it is what R-0126 waits on.
 
 This note settles the shape of the mechanism.
@@ -222,7 +222,11 @@ settled by naming the phases.
    `leader_follower.dsl`. The matching engine applies a technical event as a command in the WAL, takes
    from it whether trading is halted, and refuses one whose trading day is older than the trading date
    of the record carrying it ([deterministic_matching_engine.md](../availability/deterministic_matching_engine.md),
-   section 4.1). Nothing writes one yet, and the gateways do not act on it.
+   section 4.1). The leading sequencer writes one to halt trading and one to lift the halt, every one
+   with the phase `open` (`HaltAndVoidRequests`, and
+   [voided_commands.md](../availability/voided_commands.md), section 6). The gateways do not read the
+   technical event itself: they act on the sequencer's `OrderAcceptance`, which says whether trading is
+   halted.
 4. The per-phase table above, settled rather than guessed.
 5. Implementation, and scenarios.
 
@@ -235,7 +239,9 @@ shows whether a rule is sufficient as well as necessary.
 
 - [Sequencer Design](sequencer.md) — holds the venue's view of whether it is accepting orders, and
   broadcasts `OrderAcceptance`; see also [Order acceptance](../availability/order_acceptance.md)
-- [Matching engine](matching_engine.md) — where `halted_` lives today, and the ways the engine comes to halt
-- [Bug list](../bug_list.md) — BUG-0065, the venue having no way to declare a trading halt
+- [Matching engine](matching_engine.md) — whether trading is halted is kept in the book's file
+  (`OrderBook`), so that it outlives the process, and the ways the engine comes to halt
+- [Bug list](../bug_list.md#bug_0065) — BUG-0065, the venue telling a member of a halt only in the reply
+  to an order, and being unable to halt one instrument
 - [Process death](../availability/process_death.md) — R-0126, which cannot be built until the venue
   can announce something about itself
