@@ -20,6 +20,13 @@ before it is built:
   smaller; the race with a promotion that is about to finish remains.
 - **With high availability off, the sequencer leads at once**, so the limit of
   [order acceptance](order_acceptance.md) does run in that configuration.
+- **A venue whose engines do not come back now halts, and says so.** Once no engine could be trading
+  for longer than the venue recovers by itself, `[recovery] automatic_recovery_limit_seconds`, 10
+  seconds, the leading sequencer rejects the orders it holds, cancels every order on the book, halts
+  trading, and tells the gateways why; every member is sent a report of each of its orders, and a
+  person decides when trading resumes ([far_back_catch_up.md](far_back_catch_up.md), section 5, and
+  [voided_commands.md](voided_commands.md), section 5.3). What this design would still add is knowing
+  sooner, from the arbiter, that no engine is coming back, rather than waiting out that limit.
 
 The sections below are the design as written; where a statement about the code no longer holds, it
 is marked.
