@@ -106,7 +106,7 @@ highest record it holds plus one. There was no real alternative to weigh. Built:
 command whose sequence number is not greater than the last it applied, logs the refusal as an error
 naming both numbers, and sends the member a rejection, so that a numbering fault shows as a refusal
 rather than as a book that silently disagrees with the record
-(`MatchingEngineThread::sequence_goes_backwards`). The guard is safe only with option A of 4.2: if
+(`MatchingEngineStateMachine::sequence_goes_backwards`). The guard is safe only with option A of 4.2: if
 the engine could hold commands numbered above the new leader's last record, the new leader's next
 genuine orders would be numbered at or below them, and the guard would refuse them. Under option A the
 engine never applies a command the follower does not hold, so that case cannot arise.
@@ -212,9 +212,9 @@ is keeping to the member's gateway, each marked as a possible repeat, because it
 them the old leader forwarded before it died. It then empties the store. A member may receive a few
 reports twice across a change of leader, each repeat marked, which R-0122 allows.
 
-This covers every report, including those not prompted by a command sent during the change of
-leader, such as a fill caused by another member's order once the venue matches. It adds nothing to
-the ordinary path.
+This covers every report, including those not prompted by a command a member sent during the change
+of leader, such as the cancels of every resting order that a `CancelBook` command produces. It adds
+nothing to the ordinary path.
 
 **Option B: forward a report only once the follower holds the report's own record.** The follower's
 log would then show exactly which reports were forwarded, and the new leader would know which ones
@@ -232,7 +232,8 @@ enquiry (R-0002), which the venue does not answer ([BUG-0089](../bug_list.md#bug
 How it works:
 
 - **What is kept.** A sequencer that is not leading keeps a copy of every report the matching engine
-  sends it, exactly as the engine sent it, in `KeptReportStore`. The copies are written into a block of
+  sends it, exactly as the engine sent it, in `KeptReports`, which holds the copies in a
+  `KeptReportStore`. The copies are written into a block of
   128 MiB, and a list of where each copy lies holds up to 262,144 of them. Both are allocated when the
   sequencer starts, so keeping a report allocates nothing. When a leader dies, its follower holds the
   reports of up to one renewal interval plus one lease period plus the drift allowance, 4.25 seconds
@@ -307,23 +308,26 @@ engine act on an order in one of two cases:
   follower holds exactly the leader's records 1 to N. `release_held_orders_through()` sends the orders
   a commit covers. This is option A of 4.2.
 - **The follower does not, and a voter has recorded that it may not lead.** When no follower keeps up,
-  the leader acts on an order its follower lacks only once a voter other than itself has echoed its
-  statement that the follower may not lead
-  ([a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md), rule 11). The majority
-  behind the decision is then the leader, which holds the record, and a voter that holds the statement
-  instead of the record. What Raft guarantees with its commit index, that a new leader holds every
+  the leader acts on an order its follower lacks only once its statement that the follower may not
+  lead is held where a later election must meet it: the follower has echoed it, or both arbiters have
+  confirmed that they hold it, or the active arbiter has confirmed it alone after hearing nothing from
+  the other arbiter for ten seconds ([majority_leases.md](majority_leases.md), rule 11, and
+  [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md)). The majority behind the
+  decision is then the leader, which holds the record, and voters that hold the statement instead of
+  the record. What Raft guarantees with its commit index, that a new leader holds every
   committed record, this guarantees by keeping any instance that lacks one from being elected.
 
 A report is forwarded to its member on the same terms: once the follower holds the record it waits on,
 or once acting without the follower has been confirmed.
 
-**What has been acted on (Raft's applied).** `released_through()` (`SequencerThread.cpp`) is the last
-order the leader has sent to the matching engine: every order at or below it has been sent, or deferred
-because no engine was connected, and none above it. Orders above it are waiting, for the follower's
-acknowledgement or a voter's confirmation, in the storage for held orders or, once that is full, in the
-log. The matching engine knows its own position, the last record it applied: an engine that is starting
-reads it from the open-order region it recovers, and one taking the lead from the replica it maintained
-while following. It gives that position when it asks to catch up. The leader's catch-up sends it records up to
+**What has been acted on (Raft's applied).** `OrderRelease::released_through()` is the last order the
+leader has released to the matching engine: the lower of the last record committed and the record just
+before the oldest order still waiting. Orders above it are waiting: for the follower's acknowledgement or
+a voter's confirmation, for the leading engine to say how far it has got after a change of sequencer
+leader, or for a matching engine to lead. They wait in the storage for held orders or, once that is
+full, in the log. The matching engine knows its own position, the last record it applied: an engine
+that is starting reads it from the open-order region it recovers, and an engine that has been following
+knows it because it has itself applied every record it was sent from the log. It gives that position when it asks to catch up. The leader's catch-up sends it records up to
 `released_through()` and no further, so that nothing waiting is acted on early.
 
 **After a change of leader.** A new leader does not work out either number from its peer. It treats its
@@ -420,9 +424,11 @@ field.
   [commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md). The ways to make it smaller
   are a table per session keyed on a 64-bit hash of the `ClOrdID` alone, which halves it at the cost
   of a small chance of refusing a genuine order as a repeat, which must then be stated; and holding it
-  in a table that grows without stalling the thread that owns it, such as `IncrementalRehashMap`. The
-  record must also be rebuilt from the log at start, and how long that takes at 50 million records
-  is to be measured. The order book's own growth at this volume is
+  in a table that grows without stalling the thread that owns it, such as `IncrementalRehashMap`. As
+  built, the record is a table reserved when the sequencer starts for 200 million identifiers, each
+  held with its position in the log, which is 6 GiB, and it never grows (`[commands]
+  identifiers_reserved`). It is filled from the log in the background when the sequencer starts; until
+  it is complete, a command that must be checked is looked for in the log itself. The order book's own growth at this volume is
   [BUG-0028](../bug_list.md#bug_0028).
 
 ### Open
@@ -457,17 +463,19 @@ field.
 
 | Part | Where | Bug |
 |---|---|---|
-| 4.1 numbering, and the engine's guard | `SequencerThread` on taking the lead; `MatchingEngineThread::sequence_goes_backwards` | [BUG-0105](../bug_list.md#bug_0105) |
-| 4.2 option A, and running as if alone | `ReplicatedWal` in the library, which commits records and runs as if alone; `SequencerThread::hold_until_acknowledged` | [BUG-0103](../bug_list.md#bug_0103) |
+| 4.1 numbering, and the engine's guard | `ReplicatedWal` on taking the lead; `MatchingEngineStateMachine::sequence_goes_backwards` | [BUG-0105](../bug_list.md#bug_0105) |
+| 4.2 option A, and running as if alone | `ReplicatedWal` in the library, which commits records and runs as if alone; `OrderRelease` in the sequencer, which holds each order until its record is committed | [BUG-0103](../bug_list.md#bug_0103) |
 | Open question 2, a follower that is behind does not lead | The lease classes, the lease agent, the arbiter, and `ReplicatedWal` ([a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md)) | |
 | 4.3 the gateway keeping commands, and the record of identifiers | `UnansweredCommands` in the library, used by each gateway; `LoggedCommandIdentifiers` in the sequencer's replicated WAL ([commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md)) | [BUG-0103](../bug_list.md#bug_0103), [BUG-0115](../bug_list.md#bug_0115) |
-| 4.4 the follower keeping reports | `KeptReportStore` | [BUG-0103](../bug_list.md#bug_0103) |
+| 4.4 the follower keeping reports | `KeptReports`, which holds a `KeptReportStore` | [BUG-0103](../bug_list.md#bug_0103) |
 | 4.5 the rejoin | [follower_log_repair.md](follower_log_repair.md) | [BUG-0097](../bug_list.md#bug_0097) |
 
 No request from the sequencer to the engine for an order's state is needed: section 3.6 of
 [commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md) says why. The gap the
 specification records under R-0119, a `ClOrdID` reused once its first order has ended, is
-[BUG-0114](../bug_list.md#bug_0114), to be designed with [BUG-0122](../bug_list.md#bug_0122).
+[BUG-0114](../bug_list.md#bug_0114). It is fixed, with [BUG-0122](../bug_list.md#bug_0122), by the one
+check against sequencing a command twice
+([one_check_against_sequencing_twice.md](one_check_against_sequencing_twice.md)).
 
 Related: [wal_and_ha.md](wal_and_ha.md), [majority_leases.md](majority_leases.md),
 [order_acceptance.md](order_acceptance.md), [tla/findings.md](tla/findings.md), and the requirements
