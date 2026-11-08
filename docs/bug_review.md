@@ -32,7 +32,7 @@ review recommends working on them.
 2. The write-ahead log, its retention, the disk, and the trading day (section 2)
 3. The matching engine (section 3)
 4. The sequencer's handling of reports (section 4)
-5. The gateways and what a member sees
+5. The gateways and what a member sees (section 5)
 6. The framework: reactor, timers, allocators and threads
 7. Tests and tooling
 8. Operations, deployment and metrics
@@ -117,3 +117,31 @@ Three entries.
 **Recommended order in this area.** BUG-0226 first: it is small, and a report a member never receives is
 the failure V8 exists to prevent. BUG-0131 next, through its agreed design. BUG-0227 whenever the
 `OperatorHaltAnswer` outcomes are next touched.
+
+## 5. The gateways and what a member sees
+
+Fifteen entries.
+
+| Entry | Judgement | Evidence | What is left |
+|---|---|---|---|
+| [BUG-0090](bug_list.md#bug_0090): a restarted gateway silently stops honouring cancel-on-disconnect | **Breach** of V6 in spirit: a member's instruction the venue accepted is not carried out, and nothing says so | Unchanged. `FixSession::open_orders` is filled only as a live execution report arrives (`open_orders::track_open_order`), and the cleanup of a session returns at once, logging nothing, when the set is empty (`FixOrderGatewayThread.cpp`, `if (session.open_orders.empty())`) | The gateway learns a session's open orders when it takes the session on, or the cancel on disconnect is done where the orders are known; and the empty case is logged. Designed with BUG-0091 |
+| [BUG-0095](bug_list.md#bug_0095): checking a FIX price or quantity overflows a signed integer | **Defect**, undefined behaviour in the C++ | Unchanged: `FixField::as_decimal` still builds `digits = digits * 10 + ...` in an `int64_t` with no check. The binary gateway's checks, added since (`BinaryCommandChecks`), call the same rule, so the binary gateway now has the same fault | Check the text's form without building the number, which nothing uses |
+| [BUG-0091](bug_list.md#bug_0091): a member's standing instructions die with the gateway that received them | **New requirement** (R-0103), its mechanism decided | Unchanged: `SessionBound` and `SessionBoundAck` carry no cancel-on-disconnect fields | Add them, as [session_binding.md](availability/session_binding.md) decides, with BUG-0090 |
+| [BUG-0072](bug_list.md#bug_0072): the gateway's open-order pool is sized by nothing in particular | **Breach** of F5 by configuration: routine growth of the pool is an allocation on the order path | Unchanged: `environments/prod.toml` gives the binary gateway 4,096 slots in one pool | Size the pool from the number of open orders the venue plans for, as the matching engine's region is |
+| [BUG-0203](bug_list.md#bug_0203): the FIX gateway sometimes refuses a logon as an impostor when two are under way together | **Investigation** | Not reproduced since; cause unknown | Reproduce with many simultaneous logons, as at the start of the day, and find the shared state |
+| [BUG-0056](bug_list.md#bug_0056): the FIX gateway stopped completing logons while still running | **Investigation** | Not reproduced; the evidence is gone | Keep until a reproduction or a stress test of abandoned connections shows it or rules it out |
+| [BUG-0089](bug_list.md#bug_0089): a member cannot ask the venue what it is holding | **New requirement** (R-0002) | Unchanged: no order status messages in the dictionary or the code | Order status and mass status requests, answered from the book |
+| [BUG-0046](bug_list.md#bug_0046): the binary gateway has no in-flight report recovery | **New requirement** | Unchanged | A recovery for the binary protocol, designed with the sequencer's replay contract |
+| [BUG-0045](bug_list.md#bug_0045): a member has no defined way to discover its primary gateway is down | **New requirement**, an open design question | Unchanged | A statement of what a member should do, in the member documentation |
+| [BUG-0059](bug_list.md#bug_0059): no defence against a member reconnecting in a loop | **New requirement** | Unchanged; the entry already sets out the graduated answer | Place in the order of work |
+| [BUG-0058](bug_list.md#bug_0058): a member halted by a sequence gap is invisible to monitoring | **New requirement** | Unchanged | The gauge the entry describes |
+| [BUG-0109](bug_list.md#bug_0109): the FIX gateway's health line counts cancel reports as answered orders | **Defect** | Unchanged: `accounted` is every report sent, dropped or refused, and `awaiting` is new orders less that | Count only reports that answer new orders on the order side |
+| [BUG-0065](bug_list.md#bug_0065): the venue tells a member of a halt only in the reply to an order | **Partly done** | Halting and lifting are built; the entry itself lists what remains | `TradingSessionStatus` and its binary equivalent, halting one instrument, and the table of what each trading phase allows, designed with the trading phases |
+| [BUG-0092](bug_list.md#bug_0092): a refused cancel is answered with an execution report | **Fixed** | The FIX gateway answers its own refusal of a cancel with an `OrderCancelReject` (35=9), and `FixErEncoder` encodes the matching engine's refusal of a cancel as one too (`FixErEncoder.hpp`, "Encodes a matching engine report that refuses a request to cancel as a FIX OrderCancelReject"), under R-0151 and BUG-0099 | Close it, if Andrew agrees |
+| [BUG-0096](bug_list.md#bug_0096): the binary gateway passes on prices and quantities without checking them | **Fixed** | `BinaryCommandChecks` checks every quantity and price as a decimal number by the FIX codec's rule (BUG-0100) | Close it, if Andrew agrees; the overflow it inherits is BUG-0095 |
+
+**Recommended order in this area.** BUG-0090 and BUG-0091 together first: a member's instruction silently
+not carried out is the most serious thing here. BUG-0095 next, being small and undefined behaviour in
+both gateways. BUG-0072 is a configuration change. The investigations, BUG-0203 and BUG-0056, need a
+stress test of many logons and abandoned connections, which could serve both. The new requirements are
+placed with the rest; BUG-0065's remainder goes with the trading phases. BUG-0092 and BUG-0096 can close.
