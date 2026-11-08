@@ -21,6 +21,7 @@ code or the documents, to reach it.
 | **Investigation** | The entry asks for something to be found out, not built |
 | **Test or tool** | The defect is in a test, a script or a tool, not in the venue |
 | **No longer applies** | What the entry describes no longer exists in the code |
+| **Defect** | A defect that breaks no principle; small, and placed in the order of work with the rest |
 
 The entries are grouped by design area, not by number. Within an area they are listed in the order the
 review recommends working on them.
@@ -30,7 +31,7 @@ review recommends working on them.
 1. Leadership, leases and the arbiters (section 1)
 2. The write-ahead log, its retention, the disk, and the trading day (section 2)
 3. The matching engine (section 3)
-4. The sequencer's handling of reports
+4. The sequencer's handling of reports (section 4)
 5. The gateways and what a member sees
 6. The framework: reactor, timers, allocators and threads
 7. Tests and tooling
@@ -102,3 +103,17 @@ Nine entries.
 design for BUG-0194. BUG-0028's remaining points belong with the start-of-day work of BUG-0137, since
 proving the memory available is a start-of-day check. BUG-0066 and BUG-0193 can be closed if Andrew agrees.
 BUG-0151 and BUG-0216 are measurements; BUG-0209 waits on BUG-0210.
+
+## 4. The sequencer's handling of reports
+
+Three entries.
+
+| Entry | Judgement | Evidence | What is left |
+|---|---|---|---|
+| [BUG-0226](bug_list.md#bug_0226): a report held for a gateway with no connection counts as forwarded | **Breach** of V8 | Unchanged after phase 10 moved the code into `ReportForwarding`. `ReportForwarding::forwarded_through` holds the position back for reports waiting on the follower (`pending_`) and for reports held for an unannounced session (`held_reports_oldest_position_`), but not for reports held in `reports_held_for_gateways_` | Take the oldest report held for a gateway into the position; a scenario, as the entry describes, made to fail on purpose first |
+| [BUG-0131](bug_list.md#bug_0131): the leading sequencer allocates from the heap for every order, and copies waiting reports | **Breach** of F5 and F6 | Unchanged after phase 10. `MemberSessions::origins_` is a `std::unordered_map<int64_t, OriginSession>`, gaining a node for every order; `ReportForwarding::pending_` is a `std::multimap` whose entries hold the report in a `std::vector<uint8_t>` and the ClOrdID in a `std::string` | The five steps agreed on 11 October 2026, with the waiting reports' storage and its limits written up and agreed before any code |
+| [BUG-0227](bug_list.md#bug_0227): an operator whose lift cannot be written is told reports are outstanding | **Defect** | Unchanged in `HaltAndVoidRequests::operator_request`; cannot happen with the buffer the sequencer sizes for a `TechnicalEvent` | An outcome of its own for a command that could not be encoded |
+
+**Recommended order in this area.** BUG-0226 first: it is small, and a report a member never receives is
+the failure V8 exists to prevent. BUG-0131 next, through its agreed design. BUG-0227 whenever the
+`OperatorHaltAnswer` outcomes are next touched.
