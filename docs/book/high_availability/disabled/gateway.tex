@@ -77,21 +77,29 @@ establish this, and that the member can send the order again.
   protected by it, is not told, and cannot tell.
 \end{gap}
 
-\begin{requirement}{R-0008}{Reports remain recoverable for the reconnection window}
-  The venue shall retain every execution report for at least as long as a member
-  may take to reconnect and ask for it, and that period shall be stated.
+\begin{requirement}{R-0008}{The most recent messages to each member remain recoverable}
+  For each comp id, the venue shall keep the most recent application messages it
+  has sent to that comp id during the current trading day, up to a stated count.
+  The count shall be one figure that applies to every comp id. A resend request
+  for a message older than those kept shall be answered with a FIX gap fill, a
+  SequenceReset with GapFillFlag set, covering the messages that are no longer
+  kept. No message from an earlier trading day can be asked for.
   \rationale{Recovery that depends on a record still being present is only as good as the
-  retention behind that record. A retention period that follows from how much
-  storage is available, rather than from a stated figure, gives a member nothing to
-  rely on.}
-  \uncovered{no scenario measures how far back reports remain available}
+  retention behind that record. A stated count gives a member a figure to rely on,
+  where retention that follows from how much storage happens to be free gives it
+  nothing. A fixed count for every member, with a gap fill beyond it, is the
+  established practice at the London Stock Exchange and at Turquoise, so members
+  already know how to work with it. Because the count is in messages rather than
+  time, a member that is sent many messages has a shorter window in time than a
+  quiet one.}
+  \uncovered{no scenario measures how far back messages remain available}
 \end{requirement}
 
-\begin{gap}{BUG-0048, BUG-0046}
-  There is no stated retention period. The write-ahead log discards nothing, so a
-  report stays available for as long as the venue runs and the disk holds out. A
-  member that reconnects is therefore served by what the venue happens still to
-  hold, rather than by a period the venue has undertaken to keep.
+\begin{gap}{BUG-0048, BUG-0113}
+  The count has not been chosen, and nothing keeps messages for each comp id
+  separately. A resend is served from the write-ahead log, which discards nothing,
+  so a message stays available for as long as the venue runs and the disk holds
+  out, and no gap fill is ever sent for a message that is too old.
 \end{gap}
 
 \subsubsection{How a restarted instance becomes current}

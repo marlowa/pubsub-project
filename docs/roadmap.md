@@ -407,6 +407,19 @@ Each entry is a decision. Where what it describes is not built, the entry says s
 
 - **WAL-follower pattern for a single downstream consumer** (e.g. a Kafka publisher). The consumer opens a connection to the sequencer leader with a position cursor and receives WAL records from cursor onward, reusing the existing replication primitive. For multi-subscriber fan-out with replay, the framework now provides the [topic pub/sub primitive](pubsub/pubsub.md) (slice 10) instead; the two coexist and are chosen per consumer.
 
+- **Messages kept for each member.** A recovery service keeps, for each comp id, the most recent
+  application messages sent to that comp id during the current trading day, up to one count that
+  applies to every comp id, in storage allocated at the start of the day. A resend request for
+  anything older is answered with a FIX gap fill, and nothing from an earlier trading day can be
+  asked for. This is R-0008, and it is the practice of the London Stock Exchange and Turquoise,
+  chosen because members already know how to work with it. Because the count is in messages, the
+  busiest member gets the shortest window in time. Giving each comp id its own count, with a
+  default, would size the store by what each member does and spare the busiest members a window of
+  seconds, but no other exchange is known to do it, and it is not followed for that reason. The
+  count is not yet chosen, and the recovery service is not built
+  ([BUG-0113](bug_list.md#bug_0113)); the measurement and arithmetic behind the count are in
+  [BUG-0048](bug_list.md#bug_0048).
+
 ### Leaning
 
 - **High availability building blocks shared by every component.** The write-ahead log is in the
@@ -432,10 +445,12 @@ Each entry is a decision. Where what it describes is not built, the entry says s
   choice.
 
 - **Reclaiming space in the write-ahead log.** The venue never deletes log segments: the snapshot it
-  writes records a position and holds no state, and nothing truncates the log. Reclaiming space
-  waits on a decision about how long execution reports must be kept. The design in mind keeps two
-  rolling snapshots and truncates only below the older one, so that a snapshot found to be bad
-  always has an earlier one behind it.
+  writes records a position and holds no state, and nothing truncates the log. How long a member's
+  messages are kept is decided (see "Messages kept for each member" under Decided), so reclaiming
+  waits on work rather than on a decision: the recovery service, and the matching engine's
+  checkpoint position reported to the sequencer. The design in mind keeps two rolling snapshots and
+  truncates only below the older one, so that a snapshot found to be bad always has an earlier one
+  behind it.
 
 - **Market data integration mechanism.** Depends on requirements from the downstream market data consumer. Possibilities: another WAL follower, topic-based pubsub, or bespoke mechanism. Under investigation.
 

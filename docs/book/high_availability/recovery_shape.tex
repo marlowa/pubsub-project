@@ -62,8 +62,11 @@ position is useful only while the records after it still exist. Each source, the
 sequencer's log, the publisher's log and a member's reports, must therefore
 retain records at least as far back as the oldest position any party may still
 present to it. \reqref{R-0008}, \reqref{R-0022} and \reqref{R-0048} state that
-bound for each source in turn. In each case the retained period must be a figure
+bound for each source in turn. In each case what is retained must be a figure
 the venue states, rather than whatever the available storage happens to hold.
+For a member's messages the figure is a count, and the venue answers a request
+from further back with a FIX gap fill, so the oldest position a member may present
+and still be sent the messages themselves is set by that count.
 
 \begin{requirement}{R-0101}{A component establishes that its catch-up was complete before it acts}
   A component shall establish that every record the authority sent it arrived,

@@ -1135,12 +1135,13 @@ day: once the matching engine's checkpoint exists, the log need only reach back 
 reclaimed during the day, which bounds both its size and the time a restarted sequencer spends reading
 it at startup.
 
-Still to be decided: how long a member's reports are kept, which R-0008 requires to be stated. The
-decision under [BUG-0048](#bug_0048) that retention is the whole trading day is being reconsidered,
-because of the storage it implies. Two models are in use at other venues: a fixed number of recent
-messages per member, beyond which a resend is answered with a FIX gap fill (the London Stock Exchange
-and Turquoise, which keeps the last 65,000 messages per comp id), and the whole business day (Eurex,
-and Nasdaq's OUCH sessions). **Decided (2026-10-04): a table of segments, not files by period of
+**Decided (2026-11-08): the recovery service keeps a fixed count of recent messages for each comp
+id.** For each comp id it keeps the most recent application messages sent to that comp id during
+the current trading day, up to one count that applies to every comp id, in storage allocated at the
+start of the day. A resend request for anything older is answered with a FIX gap fill. This is R-0008,
+and it is the practice of the London Stock Exchange and Turquoise. The reasoning, the measurements
+behind the count, and the alternative not followed are under [BUG-0048](#bug_0048). **Still to be
+chosen: the count itself.** **Decided (2026-10-04): a table of segments, not files by period of
 time.** The log is already divided into segments of 4 MB. The sequencer keeps a small table of the
 time and sequence number of each segment's first record, about 1.4 MB for a 230 GB day. With it a
 reader finds the segment holding any moment or any record in one step, and everything before a given
@@ -2264,15 +2265,15 @@ described and is the state to be in while the alternative is silent loss. A full
 visible problem; a reader being told nothing is neither.
 
 **What closing this needs.** Retention anchored to the lowest position anything may still ask from
--- R-0022 in `docs/book`. Three positions make it up and only one exists today:
+-- R-0022 in `docs/book`. Three positions made it up; since the decision of 2026-11-08 below, two do:
 
 | Position | State |
 |---|---|
 | The follower's acknowledgement | Tracked as of 2026-08-30, `peer_acked_through_` |
 | The matching engine's checkpoint | Recorded as of 2026-08-31, and never reported |
-| The oldest a member's resend may reach | **Defined 2026-08-31**: the start of the current trading day |
+| The oldest a member's resend may reach | **Replaced 2026-11-08**: the recovery service keeps its own store, so the log need not reach back for resends; see below |
 
-Until all three exist, nothing may be discarded. The sequencer warns once the log passes five
+Until both exist, nothing may be discarded. The sequencer warns once the log passes five
 million records so that the growth is visible rather than discovered.
 
 **The second changed on 2026-08-31 and the third is not what it looks like.**
@@ -2283,12 +2284,9 @@ But it sits in a file on the matching engine's host and no PDU carries it to the
 which searching that component for `checkpoint` shows plainly -- there is a comment and nothing
 else. So this entry is now plumbing rather than design.
 
-The third is not a tracking problem, and no amount of code will supply it. R-0008 requires that
-reports be retained "for at least as long as a member may take to reconnect and ask for it, and
-that period shall be stated". **No such period has been stated.** Retention cannot be anchored
-to a figure nobody has chosen, so what survives is whatever the log has not yet discarded --
-which varies with the order rate, and so narrows exactly when a member has most at stake.
-R-0022 records the same thing from the other end: anchored to nothing measurable.
+The third was not a tracking problem, and no amount of code would supply it: R-0008 requires a
+stated figure, and none had been chosen. It is now decided, as a count of messages kept for each
+comp id by the recovery service; see the decision of 2026-11-08 below.
 
 **What a day of retention costs, measured 2026-08-31 rather than estimated.** A twenty-minute
 run of 2,496,000 orders wrote 9,284,048 records into 686 four-megabyte segments, which gives the
@@ -2362,45 +2360,85 @@ measured under a burst -- see [BUG-0060](#bug_0060).
 as it stands. A change that adds one sequenced message per order makes it 4.72 and a typical day
 58 GB, so this arithmetic should be redone whenever the set changes.
 
-**DECIDED 2026-08-31: retention is the entire trading day.**
+**DECIDED 2026-11-08: a fixed count of recent messages for each comp id, the same count for every
+comp id, with a FIX gap fill beyond it.** This replaces the decision of 2026-08-31 to keep the whole
+trading day, which would have meant every resend being served from a record of the whole day: about
+230 GB for one sequencer on a 200 million order day.
 
-The venue's day runs from the Asian open to the UK close -- about **01:00 to 19:30 UK time,
-18.5 hours**. Every execution report shall remain available for the whole of the day it belongs
-to. That is the stated period R-0008 requires, and it is stated because a member may be
-disconnected for any part of a session and must still be able to ask for what it missed.
+What is decided:
 
-The third position is therefore settled: **the oldest a member's resend may reach is the start
-of the current trading day.**
+- The recovery service ([BUG-0113](#bug_0113)) keeps, for each comp id, the most recent application
+  messages sent to that comp id during the current trading day, up to a count N. The storage for every
+  comp id is allocated at the start of the day, so its size is known before trading starts.
+- N is one figure, and it applies to every comp id.
+- A resend request for a message older than the N kept is answered with a FIX gap fill: a
+  SequenceReset with GapFillFlag set, covering the messages that are no longer kept.
+- No message from an earlier trading day can be asked for. Every trading day starts fresh.
+- The sequencer's write-ahead log then no longer has to reach back for resends at all. Its retention
+  is anchored to the follower's acknowledgement and the matching engine's checkpoint, the first two
+  positions in the table above, so the third position in that table is replaced by the recovery
+  service's own store.
 
-What that costs, using the measured figures above:
+This is the practice of the London Stock Exchange and Turquoise, and it was chosen because it is the
+established practice at other exchanges, which members already know how to work with.
 
-| Day | Log at close, primary | Both sequencers | Average order rate | Average write rate, both |
-|---|---|---|---|---|
-| Typical, 40M orders | 46.1 GB | 92.2 GB | 601 /s | 1.38 MB/s |
-| Heavy, twice that | 92.2 GB | 184.4 GB | 1,201 /s | 2.77 MB/s |
-| Extreme, three times | 138.3 GB | 276.7 GB | 1,802 /s | 4.15 MB/s |
+**The measurement N is derived from (2026-11-08).** A run of 80,000 orders over four binary sessions,
+with 30% of them cancelled, wrote these records into the sequencer's write-ahead log:
 
-The log is at its largest at the close and is reclaimed between days, so those are the peaks
-rather than a steady state. Against 1.7 TB free, even an extreme day leaves ample room.
+| Message | Count | Mean size on disk |
+|---|---|---|
+| NewOrderSingle | 80,000 | 457 bytes |
+| OrderCancelRequest | 23,996 | 237 bytes |
+| ExecutionReport | 103,996 | 441 bytes, at most 465 |
+| OrderCancelReject | 0 | |
 
-**Note how modest the average rate is, and do not be reassured by it.** A typical day averages
-601 orders per second because it is long and uneven. Today's twenty-minute run sustained 1,809
-per second -- three times that average -- and it is the peaks, not the mean, that produce the
-stalls this project has spent a day removing. See [BUG-0060](#bug_0060): microbursts remain
-unmeasured.
+A member is sent 1 + c messages per order, where c is the fraction of its orders it cancels: 1.30
+in this run, exactly. The venue does no matching, so it sends no fills, and a member is sent at most
+2 messages per order, when it cancels every order. A venue that matched would send one more message
+for each fill.
 
-**Still to settle, and it is a smaller question than the one just answered.** A member
-reconnecting at the start of day N+1 may want reports from day N. Whether the venue promises
-that -- and so retains two days rather than one -- is not decided here. Retaining two days
-doubles the peak to 184 GB typical, which still fits comfortably, so the question is about what
-is promised rather than what is affordable.
+So for a window of M minutes for a member sending r orders a second at its peak:
 
-**So this bug is no longer blocked on a decision. What remains is work**, and it is named: the
-PDU that carries the matching engine's checkpoint position to the sequencer; a generation number
-so that a reused segment's old records are not replayed as current (`WalEntryHeader` has an
-unused `filler(8)` field for one); and the reclaiming itself, which now has an obvious moment to
-happen -- between trading days. Until that is built the log grows without bound, which remains
-the right way to be wrong.
+N = M × 60 × r × 2
+
+and the store for the whole venue is the number of comp ids × N × about 450 bytes. For example, a
+window of 5 minutes at 100 orders a second needs N = 60,000, about 27 MB for each comp id; at 1,000
+orders a second it needs N = 600,000, about 270 MB for each comp id.
+
+**What a single count gives up.** Because N is a count of messages and not a period of time, the
+busiest member gets the shortest window in time. A count chosen to give a typical member a few
+minutes gives the busiest member a few seconds: 65,000 messages at 3,500 orders a second, at 2
+messages per order, lasts about 9 seconds. A count chosen to give the busiest member a few minutes
+makes every comp id's store that large: 1,000 comp ids × 600,000 messages × 450 bytes is about 270
+GB, almost all of it in stores for quiet members that never fill them.
+
+**The alternative not followed: a count for each comp id, with a default.** Each comp id's count
+would be held with its other settings in the COMPID editor, where its session limits already are. A
+member known to be busy would be given a larger count, and every other comp id would take the
+default. Its advantages are real:
+
+- The store is sized by what each member actually does, rather than every comp id paying for the
+  busiest one.
+- The busiest members need not be given a window of seconds to keep the store small.
+- A member's count could be raised without changing anyone else's.
+
+It is not followed because, as far as is known, no other exchange does it, and members and operators
+are better served by a model they already recognise than by one this venue invented. It would also
+be one more setting for each comp id that an operator could get wrong, and a member's window would
+then depend on configuration it cannot see. If the busiest members' windows prove too short in
+practice, this is the change to make.
+
+**What closing this entry needs**, now that the period is decided:
+
+- N chosen, using the arithmetic above.
+- The recovery service and its store for each comp id ([BUG-0113](#bug_0113)).
+- The PDU that carries the matching engine's checkpoint position to the sequencer.
+- A generation number, so that a reused segment's old records are not replayed as current
+  (`WalEntryHeader` has an unused `filler(8)` field for one).
+- The reclaiming itself, anchored to the lower of the follower's acknowledgement and the matching
+  engine's checkpoint.
+
+Until that is built the log grows without bound, which remains the right way to be wrong.
 
 Related: [BUG-0046](#bug_0046), since a member's resend is served from this log; and the checkpoint
 work, which cannot be completed without this.
