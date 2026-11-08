@@ -10,7 +10,7 @@ R-0004     active    2026-08-29  A committed order is processed
 R-0005     active    2026-08-29  A report produced for an unbound session is delivered on reconnection
 R-0006     active    2026-08-29  A resubmitted committed order is refused as a duplicate
 R-0007     active    2026-08-29  A numbered report that was not received is recoverable
-R-0008     active    2026-08-29  Reports remain recoverable for the reconnection window
+R-0008     active    2026-08-29  The most recent messages to each member remain recoverable
 R-0009     active    2026-08-29  A gap that cannot be filled is reported as such
 R-0010     active    2026-08-29  A duplicate is refused whatever has become of the first order
 R-0011     active    2026-08-29  A session's numbering survives a restart of whatever remembers it
@@ -165,3 +165,4 @@ R-0159     active    2026-11-02  A leader waits for its follower again once the 
 R-0160     active    2026-11-02  Trading in the group halts if the leader is lost while carrying on without its follower
 R-0161     active    2026-11-02  An operator can let the follower lead when the old leader's machine is lost for good
 R-0162     active    2026-11-02  Members are told which of their orders were lost with the old leader's machine
+R-0163     active    2026-11-08  With high availability off, a secondary instance refuses to start

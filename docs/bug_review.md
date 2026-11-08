@@ -14,7 +14,7 @@ All 81 open entries have been judged. The figures:
 |---|---|
 | Breach of a named principle | 16, and 3 more if their causes prove to be in the venue: BUG-0142, BUG-0207, BUG-0130, BUG-0113 (its remainder), BUG-0210, BUG-0137, BUG-0225, BUG-0211, BUG-0226, BUG-0131, BUG-0090, BUG-0072, BUG-0129, BUG-0127, BUG-0128, BUG-0119; and BUG-0183, BUG-0175 and BUG-0184 if their causes are in the venue; with BUG-0095's undefined behaviour and BUG-0181's test that can pass over lost orders treated as equally urgent |
 | Fixed, or no longer applies: closed on 8 November 2026 with Andrew's agreement | 13: BUG-0066, BUG-0193, BUG-0086, BUG-0141, BUG-0092, BUG-0096, BUG-0169, BUG-0144, BUG-0040, BUG-0030, BUG-0083, BUG-0145 (into BUG-0185), and BUG-0167 if its remaining risk is accepted |
-| Decision needed from Andrew | BUG-0167, BUG-0061, BUG-0151, BUG-0229, BUG-0073 |
+| Decision needed from Andrew | BUG-0167, BUG-0151, BUG-0229, BUG-0073 |
 | Partly done | BUG-0121, BUG-0134, BUG-0028, BUG-0065, BUG-0069, BUG-0041 |
 | The rest | new requirements, investigations, small defects, and tests and tools, each placed in its area's recommended order |
 
@@ -28,7 +28,9 @@ All 81 open entries have been judged. The figures:
 2. **The start-of-day and end-of-day procedures with the trading phases.** BUG-0137 (V12), BUG-0132,
    BUG-0065's remainder, and BUG-0028's check that the reserved memory is there at the start of the day
    belong in one design.
-3. **Which sequencer the gateways use with high availability off** (BUG-0061, then BUG-0062).
+3. **Which sequencer the gateways use with high availability off** (BUG-0061, then BUG-0062). Decided on 8
+   November 2026: none but the primary, and a secondary instance refuses to start with high availability off
+   (R-0163).
 
 **The order of work**, agreed with Andrew on 8 November 2026:
 
@@ -93,7 +95,7 @@ Eleven entries.
 | [BUG-0135](bug_list.md#bug_0135): while the leader trades alone, a power failure can lose the last seconds of the record | **New requirement** | Nothing syncs the leader's WAL while it runs without its follower; there is no such interval in `ReplicatedWal` or `Wal` | Build it as the entry describes, on a thread of its own (F4), if Andrew agrees |
 | [BUG-0222](bug_list.md#bug_0222): no operator procedure lets the follower lead after the old leader's machine is lost while it ran alone | **New requirement** (R-0161, R-0162) | Not built; [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md), section 4.4, says so | The operator's tool and the procedure for telling members, designed together |
 | [BUG-0136](bug_list.md#bug_0136): whether a copy of the log elsewhere could recover what the leader's machine took with it | **Investigation** | Unchanged. The order activity recorder is not built | Find out what each follower of the log keeps; then decide whether recovering from it is worth designing. Best done with BUG-0222 |
-| [BUG-0061](bug_list.md#bug_0061): with high availability off, a secondary sequencer started alone leads, but no gateway can reach it | **Decision needed** | Unchanged: with high availability off, both gateways connect only to the primary sequencer (`connect_to_service("sequencer_primary")`, the secondary only when `ha_enabled`) | Which sequencer the gateways use with high availability off: a setting naming it, or whichever says it leads |
+| [BUG-0061](bug_list.md#bug_0061): with high availability off, a secondary sequencer started alone leads, but no gateway can reach it | **New requirement**, decided on 8 November 2026 | Unchanged: with high availability off, both gateways connect only to the primary sequencer, and a secondary sequencer, matching engine or publisher starts and leads | A secondary instance refuses to start with high availability off (R-0163), as the arbiter and the witness do; scenarios 46 and 47 changed to assert the refusal |
 | [BUG-0062](bug_list.md#bug_0062): two instances that led with high availability off, and nothing notices when they are reunited | **New requirement**, reachable only once BUG-0061 is fixed | Unchanged | Detecting, when the instances come together with high availability on, that both have led, and halting rather than choosing one. Design it with BUG-0061 |
 
 **Recommended order in this area.** BUG-0142 and BUG-0207 first, because each breaks a principle, and

@@ -73,6 +73,31 @@ acknowledges every one of them, forwards none of them anywhere, and logs no
 error. A test that sent orders and received replies would pass against such a
 venue, and the result would mean nothing.
 
+\textbf{Only the primary instance of each singular component runs.} The gateways
+send orders to the primary sequencer and to no other. A secondary instance has no
+part in this configuration: there is no peer for it to follow and no arbiter to
+make it lead, and if the primary's machine is lost the venue stops, because this
+configuration does not cope with the loss of a machine.
+
+\begin{requirement}{R-0163}{With high availability off, a secondary instance refuses to start}
+  With high availability off, the secondary instance of the sequencer, of the
+  matching engine and of the publisher shall refuse to start, and shall say that
+  it refused because high availability is off.
+  \rationale{A secondary started in this configuration would be a second instance that
+  nothing sends orders to. The venue would accept members' logons and orders and
+  answer none of them, which is the failure this section exists to prevent. The
+  arbiter and the witness refuse to start in this configuration for the same
+  reason.}
+  \uncovered{scenario 46 asserts that a secondary sequencer started alone leads and cannot be reached}
+\end{requirement}
+
+\begin{gap}{BUG-0061}
+  A secondary sequencer, matching engine or publisher started with high
+  availability off starts and leads. The gateways send only to the primary
+  sequencer, so an order sent while only the secondary sequencer runs is
+  accepted from the member and never answered.
+\end{gap}
+
 \input{high_availability/disabled/recovery}
 \input{high_availability/disabled/authentication}
 \input{high_availability/disabled/administration}

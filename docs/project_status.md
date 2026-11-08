@@ -41,7 +41,7 @@ The [bug list](bug_list.md) holds 63 open entries, 14 of them high severity. Eac
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
-- **The specification is mostly untested.** 40 of 157 requirements are verified by a scenario, and
+- **The specification is mostly untested.** 40 of 158 requirements are verified by a scenario, and
   one more by a TLA+ model (`scripts/check_book_requirements.py` counts them; [BUG-0068](bug_list.md#bug_0068)). A scenario
   passing has repeatedly been found to say less than it appeared to, so treat untested requirements
   as unverified.

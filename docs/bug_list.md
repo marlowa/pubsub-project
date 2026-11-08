@@ -1505,9 +1505,7 @@ believing themselves leader is not something the venue currently detects after t
 file, reaches every component's configuration. With it off:
 
 - every primary starts and leads at once, with no peer and no arbiter;
-- a secondary started with high availability off also leads, because "secondary" then names only
-  which configuration file started it, and refusing would stop the venue being run on the surviving
-  machine after the primary machine has failed;
+- a secondary started with high availability off also leads. That is the defect: see below;
 - the arbiter and the witness refuse to start, saying why, and `devenv.py --no-ha` refuses when the
   environment still says high availability is on;
 - each gateway sends orders to one sequencer, the primary, so the same order cannot enter two books.
@@ -1519,11 +1517,32 @@ gateways send only to the primary, so no order reaches it. The gateway logs *"pr
 connected"* for each order, and the order goes nowhere: accepted from the member, and never
 answered. Scenario 46 asserts this gap rather than hiding it.
 
-**What closing it needs: a decision.** A venue with high availability off has to be told which one
-sequencer the gateways use. Sending to both would put an order into two books whenever both are
-running, so the gateways cannot simply try both. Two obvious ways: a setting in the environment file
-naming the sequencer to use; or the gateways sending to whichever sequencer says it leads, which works
-when only one is running and needs a rule for when both are, since with high availability off both lead.
+**Decided 2026-11-08: with high availability off, a secondary instance refuses to start.** The
+secondary sequencer, the secondary matching engine and the secondary publisher each exit at start-up,
+saying that they refused because high availability is off, as the arbiter and the witness already do.
+This is R-0163 in the functional specification.
+
+The reasoning: high availability off is a configuration for development and tests only, and must
+never be deployed in production (the section "High availability disabled" of the functional
+specification). It does not cope with the loss of a machine, so there is nothing for a secondary to
+do: if the primary's machine is lost, the venue stops. Running the venue on the secondary's machine
+with high availability off, which a setting naming the sequencer or the gateways following whichever
+sequencer leads would have made possible, would be coping with the loss of the primary's machine in
+a configuration that has said it will not. Refusing to start makes starting the wrong instance fail
+at once and visibly, where today it fails silently with every order.
+
+**What closing it needs.**
+
+- The refusal in the sequencer, the matching engine and the publisher, when high availability is off
+  and the instance is the secondary.
+- Scenario 46 changed to assert that a secondary sequencer started with high availability off refuses
+  and says why, as scenarios 44 and 45 do for the arbiter and the witness, and the same checked for the
+  matching engine and the publisher. Scenario 47, which starts both sequencers with high availability
+  off and asserts that both lead, changed to assert that the secondary refuses. The comments on both
+  scenarios state the old reasoning and change with them.
+- [BUG-0062](#bug_0062) checked: if no secondary can lead with high availability off, two instances
+  that both led with it off can no longer arise as that entry describes. Close it, or rewrite it with
+  whatever is left.
 
 Related: two instances that both led with high availability off and are later started together with
 it on are [BUG-0062](#bug_0062).
