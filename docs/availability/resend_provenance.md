@@ -199,7 +199,7 @@ counts. That needs a FIX client.
 |---|---|
 | The record | `fix_common::SeqNumRange` and `fix_common::seq_num_ranges`, shared by the gateway and the sequencer |
 | Recorded | `FixOrderGatewayThread::send_execution_report_to_session`, as each report takes its number |
-| Held | `FixSession::report_seq_nums`, and `SequencerThread::SessionSequenceState::report_seq_nums` |
+| Held | `FixSession::report_seq_nums` in the gateway, and `MemberSessions::SequenceState::report_seq_nums` in the sequencer |
 | Sent | `SessionSequenceUpdate` (126) every two seconds, and `SessionUnbound` (121), a range at a time |
 | Restored | `SessionBoundAck` (122), which seeds the gateway's copy |
 | Used | `handle_resend_request` for *s* and *n*, `gap_fill_unreplayable_run` for placing the gap fills |
