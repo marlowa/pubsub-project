@@ -1,5 +1,12 @@
 # High Availability: the decision record {#ha_design_notes}
 
+**How to read this record.** This page records the decisions about high availability, with the
+discussion and the evidence behind each, in the order they were taken. Some sections describe
+mechanisms the venue no longer uses; each of those says so where it begins, and names the section
+or document that describes what replaced it. Everything not marked in that way describes the venue
+as it is now. For the design as a whole, see [wal_and_ha.md](wal_and_ha.md) and
+[majority_leases.md](majority_leases.md).
+
 ## 1. Initial Problem
 Designing a high-availability (HA) system with the following constraints:
 * **Two instances:** primary (leader) and secondary (follower).
@@ -101,6 +108,16 @@ Treating a deterministic software failure the same as a non-deterministic
 hardware failure leads to unnecessary complexity. We use two distinct loops.
 
 ### Dealing with Process Death (Inner Loop)
+
+**Replaced: the shared-memory journal proposed here was measured and ruled out.** Rebuilding the
+matching engine's book by replaying a journal takes about two seconds for eight million entries,
+far beyond the 50 ms target. The engine's open orders are instead kept in a memory-mapped file of
+fixed-size records that a restarted engine reads back
+([open_order_checkpoint.md](../durability/open_order_checkpoint.md)), and a command that crashed
+the engine is voided rather than skipped by a filter ([voided_commands.md](voided_commands.md),
+section 4). The measurement is in [process_death.md](process_death.md), "What measurement has ruled
+out".
+
 Hardware and kernel remain healthy. We use a **Shared Memory (SHM) Journal** approach for high-speed local recovery.
 
 * **Mechanism:** State changes are written to a /dev/shm segment.
@@ -140,6 +157,10 @@ Total silence from a node requires a "Last Resort" failover.
 ---
 
 ## 9. Final Conclusion
+
+**Replaced in part.** The first sentence below still holds, and is why the venue has an arbiter pool
+(section 10). The rest rests on the shared-memory journal of section 7, which was ruled out.
+
 A 2-node HA system without fencing or an arbiter is fundamentally unsafe.
 By using an **Aeron-like SHM Journal**, we solve 99% of failures (software
 crashes) locally and instantly. This allows the **Leader-Follower network
@@ -151,9 +172,8 @@ hardware disasters.
 ## 10. Decision Taken: no STONITH {#ha_no_stonith}
 
 **STONITH was evaluated and is not implemented. It is not planned.** Sections 4, 6 and 7
-above are the discussion that led here, not a description of what runs. Where [section 7](#ha_process_vs_machine) says
-"Follower uses STONITH to ensure the primary is dead before promoting", that step does not
-exist in the code and no node has ever been fenced by this venue.
+above are the discussion that led here, not a description of what runs. No step of promotion fences
+the old leader, and no node has ever been fenced by this venue.
 
 **Why it was rejected.** Section 4's own requirements are the reason: valid STONITH must be
 out-of-band, authoritative at the hardware level, and independent of the data network being
@@ -289,8 +309,7 @@ accepts a claim only when its epoch is at least as new as the last one it accept
 group, so an instance whose leadership has been superseded cannot reclaim routing: its epoch is
 behind, and the claim is refused without anyone having to ask the arbiter anything.
 
-It is the same shape as `StatusResponse`, which carries `current_role` and `epoch` for the same
-reason. The authority rests with the lease rules of [section 11f](#ha_majority_leases): an instance
+The authority rests with the lease rules of [section 11f](#ha_majority_leases): an instance
 leads in an epoch only once a majority has granted it, so an announcement at an older epoch than one
 already accepted cannot come from the current leader.
 
@@ -409,7 +428,7 @@ defers instead of claiming a generation it cannot substantiate.
 
 ### Who is allowed to issue a generation
 
-**This section describes issuers of generations the venue no longer uses. Which instance leads is now decided by leases, as [section 11f](#ha_majority_leases) states.**
+**This section describes issuers of generations the venue no longer uses. Which instance leads is now decided by leases, as [section 11f](#ha_majority_leases) states.** One paragraph of it still describes the venue: "Every epoch names its leader", which is how every instance chooses the epoch it asks to lead in (`pubsub_itc_fw/LeaderEpoch.hpp`). The rest, including the three issuers and the resolution of two leaders by heartbeats, is the replaced design.
 
 The first answer was that the arbiter should be the only one, on the argument that fencing
 with two issuers is not fencing. Two issuers can fail two ways:
@@ -494,6 +513,11 @@ tidied away.
 
 ### What persistence broke on the way in
 
+**The three defects below were in the election by status messages that the lease rules of
+[section 11f](#ha_majority_leases) replaced.** The lesson they teach still applies to any state that
+is made to outlive a process: a rule that held while the state was lost on every restart may stop
+holding once it survives one.
+
 Worth recording, because all three have the same shape and a fourth of the same kind is
 likely. Each was a rule that held while the epoch was ephemeral and stopped holding once it
 survived a restart -- because a restarted node went from losing every epoch comparison
@@ -547,8 +571,9 @@ These are two jobs and they must not be the same component.
 
 * **The supervisor** answers one question: is this process running, and if not, start it. It
   needs to know only about its own machine.
-* **The arbiter** answers a different one: which instance leads. Both nodes ask it; neither
-  decides for itself.
+* **The voters** answer a different one: which instance leads. An instance leads only while a
+  majority of three voters, itself, its peer and the arbiter pool, has granted it a lease
+  ([section 11f](#ha_majority_leases)). The supervisor is not one of them.
 
 **Why the separation matters more than it looks.**
 
@@ -575,13 +600,14 @@ Both are observed failure modes of active/standby schemes that promote without a
 Avoiding them is the reason this design has an arbiter, and the reason a supervisor here is
 deliberately ignorant of roles.
 
-**Why an arbiter rather than a consensus algorithm.** Raft or Paxos would also prevent both, at
-the cost of implementing and then maintaining a consensus protocol inside a trading venue. An
-arbiter gets the same guarantee for this topology far more cheaply: one party decides, so only
-one leadership assignment exists at a time, and epoch checks on every PDU stop a stale leader
-acting on an assignment that has since been replaced. The arbiter is itself made available by
-running a pair plus a witness -- a small, bounded amount of the same problem, solved once in a
-component that holds no venue state.
+**Why an arbiter rather than a consensus library.** Raft or Paxos would also prevent both, at
+the cost of taking on and then maintaining a consensus protocol inside a trading venue. A majority
+of three voters, with leases, gets the same guarantee for this topology far more cheaply: each
+voter grants its vote to one instance at a time, so two instances can never both hold a majority,
+and a leader whose lease runs out stops acting before any voter can grant the lead to another. The
+rules are small enough to be model checked exhaustively ([tla/findings.md](tla/findings.md)). The
+arbiter pool is itself made available by running two arbiters and a witness under the same rules --
+a small, bounded amount of the same problem, solved once in a component that holds no venue state.
 
 ---
 
@@ -598,10 +624,11 @@ outage, and the venue has been one failure from an outage for however long nobod
 Closing that window is the reason automatic restart exists. It is not a convenience for
 operators; it is the difference between a bounded and an unbounded exposure.
 
-**The decision being automated is the one already designed.** Restart the failed instance and it
-comes back as a follower unless it finds there is no leader -- [section 11](#ha_restart_role). So automating the
-restart does not invent a policy, it removes a human from a judgement that already has a right
-answer.
+**The decision being automated is the one already designed.** A restarted instance comes back
+holding no position and leads only with a majority of the voters: a leader restarted within its
+lease period keeps the lead, and otherwise it follows whichever instance leads --
+[section 11](#ha_restart_role). So automating the restart does not invent a policy, it removes a
+human from a judgement that already has a right answer.
 
 ### Removing the human also removes a judgement, which has to be replaced
 
@@ -611,12 +638,15 @@ and something must take that job:
 
 * **A minimum runtime.** A healthy component runs for hours. One that exits a couple of
   seconds after starting has not run and stopped, it has failed to start -- so treat a death
-  inside that window as a failed start rather than as a normal exit, and count it.
+  inside that window as a failed start rather than as a normal exit, and count it
+  (`launch.py --minimum-runtime`).
 * **A backoff before retrying**, so a deterministic fault produces a slow retry rather than a
-  spin.
-* **Restart as follower**, so that an instance which is dying repeatedly cannot take leadership
-  from a healthy peer, die again, and hand it back -- disrupting a peer that was working
-  perfectly well, once per crash.
+  spin (`launch.py --failure-sleep`).
+* **No taking the lead from a healthy peer**, so that an instance which is dying repeatedly cannot
+  take leadership from a peer that is working perfectly well, die again, and hand it back, once per
+  crash. Under the lease rules a restarted instance's request to lead is refused while its peer leads
+  ([section 11f](#ha_majority_leases)), and an instance interrupted twice in a session is not
+  restarted again ([process_death.md](process_death.md), "A slow flap is a loss of service").
 
 Those three together are what make it safe to remove the human, and none is optional.
 
@@ -644,9 +674,10 @@ Two signals are wanted, and the first needs no new code:
   scrape at all, so `up` stays at 1 throughout and nothing looks wrong. A steadily rising
   restart count beside an unbroken `up` is the only evidence that anything is happening.
 
-A third, once leadership state is exposed: **a gauge that reads 1 while a component group is
-running without a standby**, so the window of no resilience is a query and an alert rather than
-something known by whoever happened to be watching.
+A third: **a gauge that reads 1 while a component group is running without a standby**, so the
+window of no resilience is a query and an alert rather than something known by whoever happened to
+be watching. The sequencer has one, `sequencer_running_alone`; that it is not yet loud enough, and
+that the other groups have none, is [BUG-0134](../bug_list.md#bug_0134).
 
 ---
 
@@ -659,9 +690,9 @@ something known by whoever happened to be watching.
 all is not merely supported -- it is what you get unless you ask for otherwise. No recovery
 decision may therefore depend on it, or the default deployment is the broken one.
 
-The same rule decides two other things in this document. The role is a command-line argument,
-so no supervisor is needed for a process to know what it is; and a launcher is optional, so it
-cannot decide leadership. Both are [section 12](#ha_supervisor_role).
+The same rule decides two other things in this document. Which instance a process is, primary or
+secondary, is in its own configuration file, so no supervisor is needed for a process to know what
+it is; and a launcher is optional, so it cannot decide leadership. Both are [section 12](#ha_supervisor_role).
 
 **Letting the system depend on something means it can never be absent again.** Every
 deployment then has to run it, configure it and keep it healthy -- a production pair of
@@ -690,8 +721,8 @@ rather than worked out from something that has stopped happening:
   child has died, and telling it the exit status, at the moment it happens;
 * the follower's replication socket closes -- TCP is telling it the peer has gone, within about
   a second, exactly as it did at 19:08:42 during the run on 2026-08-21;
-* a component's connection to the arbiter drops, and the arbiter removes it from its connection
-  table there and then.
+* the matching engine's connection to the leading sequencer closes, and the sequencer stops routing
+  orders to that engine there and then.
 
 None of those involves polling, waiting for a timeout to expire, or concluding anything from
 data that has stopped arriving. The difference matters and it is the reason this job cannot be
@@ -746,6 +777,20 @@ failure is **covered, loud, or safe**.
 
 Decided 2026-08-28, after [BUG-0064](../bug_list.md#bug_0064) showed that a venue which has lost
 orders resumes trading without saying so.
+
+**What was built.** The three states below exist, in this form. Orders are held while no matching
+engine leads, and released to the engine that next leads, so none is stranded (BUG-0064 is fixed).
+Once no engine has led for five seconds, the gateways refuse new orders, and stop refusing by
+themselves when one leads ([order_acceptance.md](order_acceptance.md)). Trading halts, by a
+`TechnicalEvent` the leading sequencer writes into the WAL, when no engine could be trading within the
+ten seconds the venue recovers by itself (the held orders are then rejected and the book cancelled),
+when an engine cannot account for the orders the venue holds, or when an operator declares it; and
+only a person lifts it, with `scripts/operator_halt.py`
+([voided_commands.md](voided_commands.md), sections 5 and 6). Two parts are not built: refusing
+because the arbiter reports no engine registered ([matching_engine_presence.md](matching_engine_presence.md),
+a design the arbiter's present form no longer supports), and the broadcast of a halt to members
+([BUG-0065](../bug_list.md#bug_0065)). The rest of this section is the decision as it was taken, and
+where it says "today" it describes the venue before these were built.
 
 [Refusing orders the venue cannot process](order_acceptance.md) rejected requiring an operator to
 re-enable acceptance, and the argument was good: BUG-0009 is a case where nobody watched for seven
