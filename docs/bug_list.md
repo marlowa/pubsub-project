@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 232 |
-| Open | 81 (57 defects, 24 tasks) |
-| Closed | 151 |
+| Open | 68 (47 defects, 21 tasks) |
+| Closed | 164 |
 | Next id | BUG-0233 |
 
 ## Open bugs by severity
 
-17 high, 50 medium, 14 low.
+15 high, 40 medium, 13 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -19,7 +19,6 @@
 | [BUG-0061](#bug_0061) | high | defect | With high availability off, a secondary sequencer started alone leads but no gateway can reach it |
 | [BUG-0062](#bug_0062) | high | defect | Two instances led with HA off, and nothing notices when they are reunited |
 | [BUG-0065](#bug_0065) | high | task | The venue tells a member of a trading halt only in the reply to an order, and cannot halt one instrument |
-| [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
@@ -27,12 +26,9 @@
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
 | [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
 | [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
-| [BUG-0193](#bug_0193) | high | task | Once both matching engines apply every command, a command that crashes one crashes both, and nothing limits what it costs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
-| [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
-| [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
 | [BUG-0041](#bug_0041) | medium | defect | Five ways the venue will not start on a RHEL8 target host |
 | [BUG-0045](#bug_0045) | medium | task | A member has no defined way to discover its primary gateway is down |
 | [BUG-0046](#bug_0046) | medium | task | The binary order gateway has no in-flight report recovery |
@@ -43,14 +39,10 @@
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
 | [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
-| [BUG-0083](#bug_0083) | medium | defect | Scenario 26 failed once inside the suite and has not been reproduced |
-| [BUG-0086](#bug_0086) | medium | defect | Removing truncation made the matching engine's fallback recovery slower, and a design document still says otherwise |
 | [BUG-0087](#bug_0087) | medium | task | Whether the hot path allocates cannot be established on demand |
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
 | [BUG-0091](#bug_0091) | medium | task | A member's standing instructions die with the gateway that received them |
-| [BUG-0092](#bug_0092) | medium | defect | A refused cancel is answered with an execution report rather than an order cancel reject |
 | [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
-| [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
 | [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
 | [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
 | [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
@@ -62,12 +54,8 @@
 | [BUG-0134](#bug_0134) | medium | defect | A venue running without a standby says so once, and not at all when no follower is connected |
 | [BUG-0135](#bug_0135) | medium | defect | While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record |
 | [BUG-0136](#bug_0136) | medium | task | Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known |
-| [BUG-0141](#bug_0141) | medium | defect | A follower that discards records while its record of command identifiers is still being built stops: the builder reads a segment the discard has deleted |
-| [BUG-0144](#bug_0144) | medium | defect | ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent |
 | [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
 | [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
-| [BUG-0167](#bug_0167) | medium | defect | A lease promise record can take longer to write than a lease period, and the leader then loses its lease |
-| [BUG-0169](#bug_0169) | medium | task | The high availability tests depend on the wording of Quill log messages; they should observe outcomes directly, or read a separate stream of named test events |
 | [BUG-0173](#bug_0173) | medium | task | No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests |
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
@@ -84,7 +72,6 @@
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
 | [BUG-0109](#bug_0109) | low | defect | The FIX gateway's health line counts cancel reports as answered orders |
-| [BUG-0145](#bug_0145) | low | defect | Scenarios 59 and 62 stop the leading sequencer without knowing that it has received the three orders it is meant to be holding |
 | [BUG-0149](#bug_0149) | low | defect | `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment |
 | [BUG-0166](#bug_0166) | low | defect | The reactor writes a Warning for every send to a connection that has gone, not one for each connection |
 | [BUG-0177](#bug_0177) | low | defect | The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value |
@@ -145,7 +132,6 @@ of it.
 |---|---|
 | [BUG-0009](#bug_0009) | `dropped=0` stayed true while 924,000 orders went nowhere. Nothing was dropped; it just was not the question anybody needed answered |
 | [BUG-0064](#bug_0064) | The sequencer logs that deferred orders "are recovered by its WAL replay". Nothing checks, and on a cold start nothing recovers them |
-| [BUG-0066](#bug_0066) | A connection is treated as recovery. "Reachable again" says nothing about whether anything was applied |
 | [BUG-0015](#bug_0015) | `deploy.py` reported doing nothing in the same words as doing something |
 | [BUG-0063](#bug_0063) | `check_docs.py` reported the tree consistent while the build was failing on the very links it had approved |
 
@@ -532,157 +518,6 @@ written into the WAL's own records of leadership.
 
 **Principles.** V11: a loss of resilience is not a loss of service.
 
-### BUG-0169: The high availability tests depend on the wording of Quill log messages; they should observe outcomes directly, or read a separate stream of named test events {#bug_0169}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task |
-| Found | 2026-10-17 |
-| Recorded | 2026-10-17 |
-| How | Andrew, after a review by another assistant pointed out that the tests read the Quill logs as their interface |
-| Impact | A Quill log message cannot be reworded for the people who read it without breaking a test, often silently and in another file; a test that fails can be failing on its own reading of the log rather than on the venue, which takes time to tell apart |
-
-**What is there now.** `scripts/ha_test.py` waits for a phrase in a Quill log 112 times (`poll_log_for`), counts
-lines holding a phrase 25 times (`count_log_marker`) and lines holding several phrases 10 times
-(`count_lines_with_all`), and reads counts or ranges out of log lines in seven more places, often from a byte
-position in the file. 67 messages in the C++ are marked `TEST CONTRACT`
-because a test depends on their exact wording: 15 in the FIX order gateway, 13 in the matching engine, 11 in
-the binary order gateway, 10 in the sequencer, 9 in the replicated WAL, and the rest in the arbiter and
-elsewhere. Prometheus is optional, so it cannot serve instead (principle V13 in
-[design_principles.md](design_principles.md)).
-
-**What is wanted.** Quill logs go back to being for people. A test asserts on what it can observe directly
-wherever it can: for instance, the test client reports each execution report it receives, rather than the
-test counting the matching engine's lines saying it accepted an order. For the internal steps a test cannot
-otherwise see -- a follower handed over, a follower refused past a damaged record, a change of leader -- each
-component writes named test events, switched off unless configured:
-
-- how the events reach the test is for the design. A file written through Quill has the very weakness being
-  removed: Quill writes in the background, so the test cannot know when the file holds every event. A
-  connection to a listener the test opens, carrying messages defined in the DSL, is the leading candidate;
-- the test harness decodes the events with Python code generated from the DSL by a new generator that writes
-  plain Python, beside the existing generators for C++, Java and pybind11 bindings (Andrew, 18 October 2026);
-- every event name and its fields listed in one header, which is the whole of the contract between the
-  components and the tests, instead of the wording of 67 scattered messages;
-- each event replacing a wait on log text, not added beside it; once a message is no longer read by a test,
-  its `TEST CONTRACT` comment goes and it can be worded for people;
-- an event the test expected and did not see fails the test, rather than weakening it.
-
-The design comes first, and is agreed before any of it is built.
-
-**When.** Phase 6 of the recovery plan, after the review of phase 5 and before phases 7 and 8 are reviewed;
-Andrew agreed on 17 October 2026 and placed it there on 18 October 2026. New tests written before then add as
-few log-text waits as they can.
-
-**Principles.** None directly; how the venue is tested.
-
-### BUG-0167: A lease promise record can take longer to write than a lease period, and the leader then loses its lease {#bug_0167}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-15 |
-| Recorded | 2026-10-15 |
-| How | The full scenario runs for step 2 of phase 5 ([following_the_wal.md](availability/following_the_wal.md)). Scenario 26 failed when the leading sequencer's lease ran out as a write of its lease promise record finished after 4,601 ms; the scenario passed five times of five when run again |
-| Impact | On a disk that is slow to make a write durable, a leader can lose its lease with nothing wrong with it, its peer or the arbiters, and the pair changes leader. Three failures in the week to 15 October 2026 of scenarios that passed when run again, scenarios 33, 6 and 26, had this cause |
-
-**What was measured.** Each instance that grants or asks for a lease first writes the promise to disk
-(`PairLeaseAgent`, written in the background), and until the write has finished it refuses any promise the
-record on disk does not already cover. A write taking 500 milliseconds or more is reported in the Quill log.
-In one full run of the 74 scenarios on this machine, 45 writes were reported, from sequencers, matching
-engines and arbiters alike: the median 708 milliseconds, one in ten above 1,299, and two above the lease
-period of 3,000 milliseconds, the longest 4,601. In five further runs of scenario 26 alone, on an otherwise
-quiet machine, the longest were 2,317, 4,058 and 4,076 milliseconds. The disk is a CT4000BX500, a low-cost
-solid-state disk; the WALs share it.
-
-**Later cases, 15 October 2026.** Scenario 35 failed the same way as scenario 26: a promise write of 4,476
-milliseconds made the leading sequencer lose its lease while a matching engine was asking for its position,
-and the engine, answered only after its next retry, was not given the orders. It passed five times of five
-when run again. In one run of `tmp/phase5/stall.sh`, a single promise write took 16,770 milliseconds, while
-the leading sequencer held 16,384 orders waiting for a voter to confirm in writing that the follower may not
-lead; the leader lost its lease and discarded them, as it must.
-
-**Measured with the machine idle, 17 October 2026.** On the WAL partition (on the same CT4000BX500, mounted
-with `lazytime`), 2,000 writes of 4 KiB each followed by `fdatasync` took 0.88 ms at the median when appending,
-5.2 ms at one in a thousand and 16 ms at the longest; overwriting blocks already allocated took 0.37 ms at the
-median and 4.0 ms at the longest. The project tree on the same disk gave the same figures, and the machine's
-NVMe disk was slower at the median (1.9 ms appending) though its longest was shorter (3.9 ms). Not one of the
-12,000 writes took 100 ms. So the disk, idle, makes a small write durable a thousand times faster than the
-slow promise writes above. On the same day a promise write of 3,099 ms failed scenario 14, while another
-program was converting video on the machine, using about 14 of its 32 cores, including the cores the venue's
-order path is pinned to, and writing heavily to the same disk; with that program stopped, a full run of all
-75 scenarios passed. Whether such a program was running during the earlier cases is not known.
-
-**A later case, 17 October 2026, on an otherwise quiet machine.** In a fill of 300,000 orders at 4,000 a
-second, begun a minute after the developer loop had built, installed and tested the whole project, nine promise
-writes took over 500 milliseconds, the longest 5,928; the sequencers' threads reported callbacks running for
-hundreds of milliseconds (53 over 100 milliseconds, against 6 in the same fill on 14 October); the leader ran
-as if alone for 2.6 seconds, the pair then changed leader several times, and 98,349 messages went unanswered.
-The same fill run twice more in the next half hour, with the disk recorded by `iostat`, had no callback over
-100 milliseconds, no slow promise write, and every message answered; the disk was busy 0.4 per cent of the time
-at the median. What the machine was doing during the first fill was not recorded, so its cause is not known.
-
-**Another, 17 October 2026, recorded with `iostat`.** The same fill, begun three minutes after the developer
-loop had installed a new build, failed the same way: promise writes took from 599 to 31,548 milliseconds on both
-sequencers, the pair changed leader four times, and 81,042 messages went unanswered. The disk was given the same
-work as in a fill that passed earlier the same day, about 11 MB a second in 22 writes a second, but was busy 35
-per cent of the time on average and over 90 per cent for 49 of the 181 seconds, against 2.5 per cent and none in
-the fill that passed. The same fill, run again ten minutes later, passed, with the disk busy 2.6 per cent of the
-time. Nothing else was using the disk or the processors. So for some minutes the disk took far longer to do the
-same writes. While it was slow, the leading sequencer's own thread also waited on the disk
-([BUG-0175](#bug_0175)).
-
-**And on 18 October 2026, after an idle night.** The same fill failed again at 08:36, with nothing built or run
-before it since the evening: promise writes took from 1,521 to 7,513 milliseconds on both sequencers, beginning
-about 40 seconds into the fill, as in the failure of the evening before, and 61,852 messages went unanswered. So
-the failures do not depend on a build having just written to the disk, as the two failures of 17 October had
-suggested. The fill run again at once passed, but even then the disk was over 90 per cent busy for 34 seconds,
-from about 100 seconds into the fill, against none in the passing fill of 17 October. Of the seven such fills run
-on 17 and 18 October, three failed this way.
-
-**31 October 2026.** In a full run of the 91 scenarios, four failed this way: scenarios 1, 23 and 68, in which no
-voter granted the matching engine a lease within the 15 seconds the scenario allows, and scenario 28, in which
-the secondary arbiter became active. In each, the arbiters lost their own leases, and promise writes took
-several seconds; the longest in each scenario were 5,462, 3,921, 7,283 and 5,519 milliseconds. All four passed
-when run again at once, one after another, and a full run of the 89 scenarios that existed earlier the same
-afternoon passed every one. A file-sharing client had started at 17:00:08, downloading to another partition
-of the same disk. The disk was not recorded during the scenarios, but at 21:45, measured from `/proc` and
-`iostat` with the venue stopped, that client was writing about 8 MB a second and the disk was busy 51 per
-cent of the time. A trading-day run made between 19:49 and 21:44, with the client still downloading, had
-promise writes of over 500 milliseconds throughout its two hours, up to 6,324 milliseconds; the sequencers
-changed leader more than twenty times, and the run measured nothing usable.
-
-**The same run repeated, 31 October and 1 November 2026, with the file-sharing client stopped**, and the disk
-recorded by `iostat` every 10 seconds. Promise writes still took over 500 milliseconds, the longest 3,817, in
-short spells about every 11 to 14 minutes: at 22:40, 22:55, 23:06, 23:17, 23:28, 23:42, 23:54, 00:05 and 00:19.
-The web browser was closed at 23:03, and the spells went on after it. No instance changed leader. In the 43
-samples in which the disk was more than 15 per cent busy, it was given about the same work as in the other 407,
-about 5.5 MB a second in 15 writes a second, but each write waited 172 milliseconds on average, against 4.6.
-The sequencer created WAL segments at a steady 24 or 25 a minute throughout, slow spells included. So, as on 17
-October, for minutes at a time the disk takes far longer to complete the same writes, with nothing else known
-to be writing to it.
-
-**1 November 2026, recorded with `iostat`.** In a full run of the scenarios, with no other program writing to the
-disk, scenario 66 failed this way: the matching engine's promise writes took 2,499 and then 5,299 milliseconds, its
-lease ran out at 07:19:14, and it stopped leading in the middle of the scenario. At 07:18:38, as the scenario started
-its venue, 125 MB a second was written to the disk for ten seconds, and from then until 07:19:58 the disk was 74 to 90
-per cent busy, with each write waiting 84 to 445 milliseconds on average, against 1 to 7 milliseconds before. The
-scenario passed when run again at once. The writes that began it are of the size the venue makes when it starts, such
-as a matching engine creating its open-order region, which writes every block of it
-([BUG-0071](#bug_0071)); which program made them was not recorded.
-
-**What is not known.** Whether the time is spent waiting for the disk to make the record durable (`fsync`)
-or behind other writes queued for the same disk, such as the WALs and the Quill logs; and how a disk of the
-kind a production machine would have compares.
-
-**What is wanted.** First the rest of the measurement: how long the write and its `fsync` take on this disk
-while the venue writes its WALs, the idle figures being known. Then a decision on whether a leader should keep its lease through one slow
-write. Every way to make it do so changes the rules for which instance leads, which the TLA+ models in
-`docs/availability/tla/` check, so any change is made to the model first.
-
-**Principles.** V11.
-
 ### BUG-0166: The reactor writes a Warning for every send to a connection that has gone, not one for each connection {#bug_0166}
 
 | | |
@@ -813,59 +648,6 @@ finished changing it.
 
 **Evidence kept.** The scenario's output and logs are in `tmp/bug0149/scenario-62`.
 
-### BUG-0145: Scenarios 59 and 62 stop the leading sequencer without knowing that it has received the three orders it is meant to be holding {#bug_0145}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-10-11 |
-| Recorded | 2026-10-11 |
-| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenarios 59 and 62 failed: in each, the leader's log did not hold the three orders sent to it |
-| Impact | Each scenario fails when the leader is slow to read its orders. On such a run scenario 59's check that "the matching engine has accepted none of them" passes without meaning anything, because the leader never had them. Its later check of the old leader's log notices, so the result is a false failure rather than a false pass |
-
-**What happens.** To test a leader that dies holding orders its follower never received, the scenario
-sends three orders to the leader with `inject_order` and stops the leader with `SIGSTOP` as soon as
-`inject_order` reports that it has sent them (`ha_test.py`, the scenario's step 2). Nothing confirms
-that the leader has read the orders and written them to its log before it is stopped. In this run the
-leader, a Debug build, had not, so its log held none of them.
-
-Scenario 62, an old leader that rejoins and discards the records its new leader does not have, sends
-its three orders and stops the leader in the same way, and failed in the same run for the same reason:
-"the leader's log does not hold the three orders sent to it".
-
-**What is wanted.** Each scenario waits for evidence that the leader has written the three orders, for
-example a line the leader logs for each order it holds waiting for its follower, before it stops the
-leader, and fails clearly if that evidence does not come.
-
-### BUG-0144: ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent {#bug_0144}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-11 |
-| Recorded | 2026-10-11 |
-| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenario 54 failed with "interim orders did not appear within 30s", although the matching engine had logged all 1,000 acceptances within 31 ms of the orders being sent |
-| Impact | A wait can miss the line it waits for and fail a healthy run. Worse, a check that something did not happen can miss the line that says it did, and pass |
-
-**What happened.** In scenario 54, `wait_for_accepted_count` waited for 1,000 lines containing "accepted
-NOS OrderID=ME-ORD-" in `matching_engine_secondary.log`, reading from the start of the file. All 1,000
-are in the log, written between 23:32:26.272 and 23:32:26.304, yet after 30 seconds it had not counted
-1,000.
-
-**Why.** Each time it polls, the function reads whatever has been added to the log since the last poll
-and counts the text in that piece alone (`seen += chunk.count(needle)`). The logging library writes the
-file in pieces that need not end at the end of a line, so a poll can read the first half of a line and
-the next poll the second half; the text is then in neither piece and is never counted. Reading from
-the start of the file rules out the only other explanation, a starting position past the lines.
-
-**The same pattern elsewhere in the script.** `poll_log_for`, which most waits and every check that
-something is absent go through, splits each piece into lines and tests each line, so a line split
-between two reads is tested as two halves, neither of which holds all the markers. At least two other
-readers do the same (`ha_test.py`, near lines 4616 and 4645).
-
-**What is wanted.** Every reader keeps the unfinished end of what it read and searches only complete
-lines, joining the remainder to the next read. A unit test feeds a reader a line in two pieces.
-
 ### BUG-0142: The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader {#bug_0142}
 
 | | |
@@ -916,53 +698,6 @@ lease must not run out while the epoch is being recorded; that is a design quest
 which must keep the rule that an arbiter echoes a statement only once it is recorded. This belongs with
 the high availability machinery that [ha_library_boundary.md](availability/ha_library_boundary.md)
 proposes moving into the library.
-
-### BUG-0141: A follower that discards records while its record of command identifiers is still being built stops: the builder reads a segment the discard has deleted {#bug_0141}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-11 |
-| Recorded | 2026-10-11 |
-| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. In scenario 2 the secondary sequencer stopped, although the scenario passed, because it checks only the arbiters' failover |
-| Impact | The following sequencer stops with an exception that nothing catches, so the venue loses its standby sequencer until the instance is started again. Trading goes on: only a follower discards records, so the leader cannot stop this way. A scenario that does not look at the follower passes regardless, as scenario 2 did |
-
-**What happened.** In scenario 2, against the Debug install, the secondary sequencer started, joined as
-follower, and found records at the end of its log that the leader did not hold. It discarded records
-694198 to 700778 (`SequencerThread.cpp`, the warning "discarded records ... from this instance's log").
-About a second and a half later the process ended with:
-
-```
-terminate called after throwing an instance of 'pubsub_itc_fw::PubSubItcException'
-  what():  WalReader: open(/mnt/sda2/mystuff2/var/sequencer_secondary_wal/wal_000063.log): No such file or directory
-```
-
-**Why.** Two parts of the sequencer use the log's segment files at the same time.
-
-1. `LoggedCommandIdentifiersBuilder` builds the record of command identifiers on a thread of its own. When
-   it starts, it takes the list of segment paths (64 of them in this run, numbers 0 to 63) and then reads
-   each in turn with `WalReader::replay_segment`. In this run it started at 23:04:17.46 and had not
-   finished when the process ended.
-2. The follower's log repair calls `Wal::truncate_after` (`Wal.cpp`), which ends with
-   `delete_segments_after`, deleting every segment after the one the kept records end in. In this run
-   that removed `wal_000063.log` at 23:04:19.68.
-
-When the builder reached the deleted segment, `replay_segment` threw because the file was not there.
-Nothing on the builder's thread catches an exception, so the process was terminated.
-
-**Why it showed in Debug.** A Debug build reads the log more slowly, so the builder was still running when
-the repair came. A Release build has the same window whenever a follower starts with a log large enough
-that its builder is still reading when the leader's answer makes it discard records.
-
-**Also wrong, though harmless as the code stands.** A builder that reads a segment while it is being
-truncated can record identifiers of records that are then discarded. The comment in the repair code
-says such an identifier is harmless: a command matching it is checked against the log exactly, not
-found, and sequenced as new.
-
-**What is wanted.** The builder and the repair must not use the same segment files unsynchronised. The
-choice of how is a design question for the recovery plan, because the builder and the repair are both
-part of the machinery that [ha_library_boundary.md](availability/ha_library_boundary.md) proposes moving into
-the library.
 
 ### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
 
@@ -1536,58 +1271,6 @@ Any of them needs the soak and fairness tests the reactor's other foundational c
 
 ---
 
-### BUG-0083: Scenario 26 failed once inside the suite and has not been reproduced {#bug_0083}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-09-07 |
-| Recorded | 2026-09-07 |
-| How | A full `ha_test.py --scenario all` run verifying BUG-0077's fix. 54 of 55 passed; scenario 26 failed at Phase 5 |
-| Impact | Unknown, and that is the entry. If it is a defect it is one where a restarted matching engine is not sent orders; if it is the harness, the suite's verdict on this area cannot be trusted until it is understood |
-
-**What happened.** Scenario 26 restarts the matching engine under its launcher and asserts that the
-restart beats the peer's promotion timeout. The restart happened, the peer correctly never
-promoted -- the absence check passed after its full 25 seconds -- and then the 1000 recovery orders
-never reached the restarted engine:
-
-```
-VERIFY: the secondary never promoted, because the restart beat its timeout
-  confirmed absent
-=== Phase 5: 1000 recovery orders (1000 accepted NOS on matching_engine_primary.log) ===
-FAIL: recovery orders did not appear within 30s
-```
-
-**Not reproduced, in four attempts**: scenario 26 alone; scenario 25 followed by 26, which is the
-suite's own order; a replay of scenarios 1 to 26 one after another, reproducing the suite's
-accumulated write-ahead log and regions; and a second full suite run, which passed 55 of 55. One
-failure in five runs of this scenario, all told. The
-logs from the failing run were overwritten by the scenarios that followed it, which is the first
-thing to fix about the next occurrence.
-
-**Why it is suspected of belonging to that day's change.** [BUG-0077](#bug_0077)'s fix stopped a
-catch-up from re-pointing the sequencer's ME order connection unless the asker is being promoted.
-That removed a side effect which had been quietly restoring the routing to a restarting engine, and
-scenario 26 is the scenario where the engine restarts and nothing else promotes -- so it is the one
-most exposed to a gap in what replaced it.
-
-**Against that**, the replacement paths were read and both cover the orderings that matter: an
-engine that announces leadership before the sequencer holds an order connection to it is routed to
-when that connection arrives (`SequencerThread.cpp:254`), and one that announces after is routed to
-by the announcement (`SequencerThread.cpp:2432`). In the passing runs the engine asks
-`(asking to lead)`, because the arbiter reaches it before the sequencer's order connection does,
-and the promotion path re-points as it always did. No mechanism is known to be missing, which is
-why this is recorded rather than diagnosed.
-
-**What to do at the next occurrence.** Copy `installed/log` aside before the run continues. The
-answer is two lines: the engine's `MePositionRequest sent ... (asking to lead | starting, not
-asking to lead)` says which branch it took, and the sequencer's `orders now route to connection`
-lines say whether anything ever pointed at it. Compare against
-[BUG-0076](#bug_0076), the last scenario that failed only inside the suite and turned out to be a
-real defect rather than a flake.
-
----
-
 ### BUG-0065: The venue tells a member of a trading halt only in the reply to an order, and cannot halt one instrument {#bug_0065}
 
 | | |
@@ -1739,134 +1422,6 @@ says where they go.
 Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the third state
 necessary rather than tidy. [BUG-0061](#bug_0061), since a non-HA venue has no arbiter and reaches
 these states differently. [BUG-0060](#bug_0060), for the burst of cancels a halt produces.
-
----
-
-### BUG-0066: A flapping matching engine resets the deferral clock, so the venue never stops accepting {#bug_0066}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-28 |
-| Recorded | 2026-08-28 |
-| How | Andrew asking what happens when the launcher restarts a component that keeps dying, then measuring it |
-| Impact | Each restart cycle strands the orders deferred during it, while orders on either side go through normally. The venue looks half-healthy because it is, and reports recovery on every cycle. [BUG-0009](#bug_0009)'s refusal never fires |
-
-**Measured.** A matching engine was killed and restarted on a 24-second cycle, eight times, with
-orders flowing. The sequencer's deferral clock restarted on every reconnect:
-
-```
-a matching engine is reachable again after 7s ... after 10s ... after 2s ... after 5s
-                                  after 8s ... after 11s ... after 3s ... after 6s
-```
-
-It never approached the 45-second refusal threshold. **Across roughly 190 seconds in which the venue
-could not process a single order, it refused nothing** -- `refused=0` -- and finished with
-`awaiting=16`: sixteen orders taken from a member and never answered.
-
-`note_matching_engine_reachable` clears `deferring_orders_` and zeroes `deferred_order_count_` when
-a connection is established. **Connectivity is treated as recovery.** For a real promotion that is
-right, and it was measured working. For a flap it is false, and it resets the only mechanism that
-would eventually have told the member anything.
-
-**Every one of those eight cycles also lied.** The recovery line says the deferred orders "are
-recovered by its WAL replay". Each restart is a cold start, and per [BUG-0064](#bug_0064) a cold
-start reconciles nothing -- so the orders were not recovered, eight times, in writing.
-
-**The launcher does not catch this either, and its definition of flapping is why.**
-`launch.py --minimum-runtime` defaults to 2 seconds: a child dying inside that counts as a failed
-start and earns a `--failure-sleep`. A child that survives ten seconds and then dies is not a failed
-start at all -- `consecutive_failures` resets to zero and it is restarted at once, indefinitely.
-**Flapping on any period longer than two seconds is invisible to the supervisor.**
-
-#### The fix, corrected 2026-08-28 before it was built
-
-**The first fix recorded here was wrong, and working it out is worth keeping.** It proposed ending
-the deferral on a successful forward rather than on a connection -- "recovery evidenced by progress,
-not connectivity" -- so that a flapping engine forwarding nothing would show an ever-growing age.
-
-Two things defeat it. **It deadlocks:** if a connection does not restore acceptance, the gateway
-refuses every order, so no order is ever forwarded, so the deferral never clears and the venue never
-reopens. And more fundamentally, **forwarding did resume on every cycle.** The measured run answered
-18 of 34 orders: during each up phase orders flowed normally. A progress-driven clock would have
-been cleared by those forwards exactly as the connection-driven one was.
-
-**The 16 stranded orders were not stranded because forwarding stopped. They were stranded because
-each restart applied nothing.** Every cycle deferred a few orders, the engine came back as a cold
-start, reconciled nothing, and those particular orders were lost while the next ones went through
-normally. The venue looked half-healthy throughout because it *was* half-healthy.
-
-**So this is [BUG-0064](#bug_0064) happening repeatedly, and BUG-0064's fix is this one's fix.** A
-cold-starting leader that reconciled -- reporting its position and being sent what it has not
-applied -- would pick up each cycle's deferred orders like a promoting follower already does. The
-deferral clock is a red herring.
-
-**What remains specific to flapping**, once BUG-0064 is fixed: an engine that dies faster than
-reconciliation completes accumulates orders no cycle ever applies. The sequencer knows the sequence
-numbers it deferred and the engine's applied position is already exchanged during reconciliation, so
-it can tell -- **the venue should clear a deferral only when the deferred range is known to have
-been applied**, rather than when an engine appears or when forwarding resumes. That is the honest
-version of "evidenced by progress", and it is a check on the orders themselves rather than on a
-proxy for them.
-
-**And the launcher's flap detection should widen** to restarts within a rolling window rather than
-consecutive starts shorter than `--minimum-runtime`. It already writes a restart count to
-`<name>.launcher.state`, so the raw material is there.
-
-**With high availability off this should halt the venue** rather than merely refuse. See
-[design notes 15](availability/design_notes.md#ha_recovery_ends_at_loss) and
-[BUG-0065](#bug_0065): with no peer, every restart is a cold start, so every cycle strands what was
-deferred, and a venue that resumes automatically conceals it.
-
-#### 2026-09-06: measured again, and the entry splits in two
-
-**The harm this recorded is gone.** The original measurement answered 18 of 34 orders and left
-`awaiting=16` -- sixteen taken from a member and never answered. Re-run on a clean deployment with
-the same eight cycles: **47 of 47 answered, `awaiting=0`, nothing stranded.** That is
-[BUG-0064](#bug_0064)'s catch-up doing what this entry predicted it would.
-
-**The mechanism in the title is still there and still resets.** Deferral cleared after 8s, 8s,
-12s, 12s, 12s, 11s, 9s and 8s -- once per cycle -- and acceptance was never withdrawn, `refused=0`,
-across 190 seconds of flapping. So a flapping engine still stops the venue ever refusing.
-
-**But the reason that mattered has changed, and the fix is not the deferral clock.** The clock
-resetting was recorded as harmful because each cycle stranded orders. Nothing strands now. What
-remains is the loss of service itself, and the numbers say where it comes from:
-
-- the engine's peer arms a **15 second** promotion timeout on losing the replication connection;
-- an engine goes from process start to leading in about **2.4 seconds**, and about 3.5 seconds from
-  the moment it dies;
-- so **every restart is complete long before any failover begins**, and the pair does nothing. Not
-  one promotion occurred in eight cycles.
-
-A member in those windows can neither place an order nor withdraw one, and is told nothing --- the
-venue only refuses after 45 seconds of *continuous* outage, which a flap never reaches.
-
-**Settled 2026-09-06, and built.** An instance that has cost the venue two interruptions is not
-restarted again; the last instance being stopped is announced rather than left silent. R-0125 and
-R-0126, with the reasoning in `docs/availability/process_death.md`. `launch.py` gains
-`--max-interruptions`, which counts deaths however long the component ran -- the existing
-`--max-consecutive-failures` counts *failed starts*, and a component dying every ten minutes starts
-perfectly every time, which is why it never fired. `devenv.py` passes 2.
-
-**Why judging the instance is the load-bearing part**, and not merely tidier: there are two obvious
-repairs and neither works alone. Leave failover at fifteen seconds and the flap gives silent holes.
-Make failover fast, which [BUG-0029](#bug_0029) asks for, and each death promotes the peer instead
--- and `open_orders_on_promotion` is `cancel`, so every one of those promotions cancels the whole
-book and tells every member their resting orders are gone. Eight cycles become eight mass
-cancellations, which is worse for a member than not knowing. Making recovery faster changes the
-shape of the damage; stopping the instance bounds it.
-
-**What is left, and why this entry stays open.** R-0126 is not built. The launcher supervises one
-process and does not know whether it is the last of its kind, and announcing that the venue cannot
-do a component's work is a venue-level act that [BUG-0065](#bug_0065) says does not exist yet. So
-the first half is done and the second is blocked on a trading halt. Neither requirement has a
-scenario.
-
-Related: [BUG-0009](#bug_0009), whose refusal this defeats. [BUG-0064](#bug_0064), which is why the
-repetition costs orders rather than merely time. [BUG-0029](#bug_0029), on the supervision grace
-period, and now on how wide the window is in which a restart outruns a failover. [BUG-0065](#bug_0065),
-which R-0126 waits on.
 
 ---
 
@@ -2531,127 +2086,6 @@ records what `launch.py` does, the measurement above, and the questions still op
 long to wait for a restart before letting the peer take over. A component that keeps dying and being
 restarted is [BUG-0066](#bug_0066).
 
-### BUG-0030: Restart coverage: what ha_test.py exercises, and what it does not {#bug_0030}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task -- a coverage matrix, not a defect |
-| Found | 2026-08-21, extended into a full matrix 2026-08-22 |
-| Recorded | 2026-08-22 (63889b8) |
-| How | Reading every scenario against the restart cases an HA pair actually has |
-| Impact | Three defects were found in the two cases that were covered. The uncovered ones have not been looked at |
-
-Every scenario kills a component and leaves it dead, which models **machine** death correctly --
-a dead machine does not come back on its own. It leaves **process** death, where the instance is
-restarted on a machine that never failed, almost entirely unexercised. That is the half a
-supervisor makes normal, and it is where every defect found on 2026-08-21 and 2026-08-22 lives.
-
-**The cases an HA pair has, and where each stands:**
-
-| | sequencer | arbiter | matching engine |
-|---|---|---|---|
-| **R1** restart the leader inside the peer's grace period; the peer must not promote | **27** | **28** | **26** |
-| **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | **25** | **24** |
-| **R3** restart the *follower* -- must stay follower, leader untouched | **30** | **31** | **29** |
-| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | **33** | **32** |
-| **R5** cold start both, in either order -- deterministic leader | **36** | **38** | **34** |
-| **R6** restart with no arbiter reachable -- degraded, and said so | **37** | **39** | **35** |
-
-Scenarios 10 to 13 restart a matching engine but run a single one, so no role is ever in
-question; they test that it comes back, not what it comes back as.
-
-**What the two covered cells cost to find.** R2 for the matching engine is scenario 24, written
-2026-08-22, and it found three defects in a row: the arbiter re-running the cold-start tie-break
-on a rejoin, the engine promoting itself on arbiter connect, and the sequencer routing orders by
-socket rather than by role. All three are in this file. That is one cell of eighteen.
-
-**Completed 2026-08-23.** Eighteen of eighteen cells. The last four were taken by
-ha_test.py scenarios 36-39; the suite went from 23 scenarios to 39.
-
-**Where it stood, 2026-08-22.** Fourteen of eighteen cells. Every cell taken so far found at
-least one defect except R1, R3 and R4-arbiter, which passed first time -- and that pattern is
-itself informative: the defects all lived in what an instance comes back *as*, so the cells where
-nothing has to decide that were the ones that already worked.
-
-**Complete, 2026-08-22.** All eighteen cells. Ten defects were found on the way, every one of
-them a consequence of the same omission: process death was not in the model, so nothing decided
-what a restarted instance comes back as, and channels, records and fallbacks were all built on
-identities that stop being true once roles can move.
-
-**The cells that passed first time are as informative as the ones that did not.** R1, R3 and
-R4-arbiter, and both R5/R6 cells for the sequencer and arbiter, needed no fixes. The defects all
-lived in what an instance comes back *as*; where nothing has to decide that, the code was already
-right. And where a component already had a symmetric design -- the sequencer's `peer` channel,
-its unconditional startup election timer -- it had none of the faults its matching-engine
-counterpart did.
-
-**One thing worth carrying forward.** The sequencer settles leadership with its peer directly,
-through StatusQuery/StatusResponse and the instance-id rule, and needs no arbiter to do it. The
-matching engine cannot: it must ask an arbiter or fall back to a unilateral rule. Whether the
-engine should gain the same peer-to-peer resolution is a design question this coverage raised and
-did not answer.
-
-### BUG-0040: The order-accounting check reports lost orders when it means it could not count them {#bug_0040}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-08-23 |
-| Recorded | 2026-08-23 (03ba5d8) |
-| How | A 113-minute trading-day run ended `FAIL -- the matching engine did not accept every order`, having just said it could not read the counter it needed |
-| Impact | A clean run is reported as order loss. That is the conclusion this check exists to prevent being drawn wrongly |
-
-`perf_run.py` finishes a run by comparing the matching engine's `orders_processed_total`
-against the orders the profile offered. When the counter cannot be read it sets the count to
--1, prints `COULD NOT READ the matching engine's metrics endpoint`, and then falls into the
-same comparison as any other run. -1 is not the expected total, so the run is declared a
-failure with the words *the matching engine did not accept every order*.
-
-Nothing had gone wrong with the venue. **"I could not measure this" and "this measurement came
-out wrong" are different results, and only one of them is about the venue.** Reporting the
-first as the second is the more damaging error, because it sends someone to look for a fault
-in the system rather than in the instrument.
-
-That is worth more here than it would be elsewhere. This check exists *because* of a false
-loss report: a June run reported 166 orders missing, which was investigated at length and
-turned out to be a Quill flushing artefact with every one of the million orders present. The
-post-shutdown ground-truth count was the answer to that. It has now produced a false loss
-report of its own, by a different route.
-
-**The reporting is fixed. The read failure itself is not**, and the obvious causes are all
-eliminated: the counter exists (`orders_processed_total`, registered in
-`MatchingEngineThread.cpp`), the scrape happens before `full_shutdown()` rather than after it,
-and the metrics port resolves correctly from the deployed configuration.
-
-**A leading hypothesis, and how to test it.** `read_counter` allows the scrape **two seconds**
-and turns any `URLError` or `OSError` into `None`, which the caller cannot tell apart from the
-metric being absent. At the end of the trading-day run the matching engine held 8.6 million
-resting orders in a table whose largest allocation was 9.5 GiB, with 8.0 GB resident. Rendering
-the Prometheus exposition under that is plausibly slower than two seconds, or the endpoint's
-thread simply did not get scheduled promptly.
-
-The evidence fits: the read failed after 113 minutes and 8.6 million orders, and succeeded twice
-immediately afterwards on runs of 1,000 orders. If the hypothesis holds, the failure follows the
-size of the book rather than anything about the code path -- so it will reproduce at the end of
-a long run and never at the end of a short one, which is the worst possible shape for noticing
-it.
-
-Two things follow if it is confirmed. The timeout is too short for a process holding several
-gigabytes, and more importantly a timeout and an absent metric should not arrive at the caller
-as the same value: one is "ask again", the other is "this venue does not publish that".
-
-Two things to fix, and the first does not depend on diagnosing the second:
-
-- Report an unreadable counter as *not verified*, distinct from both PASS and FAIL. A run whose
-  accounting could not be taken is not a run that failed.
-- Find out why the counter could not be read.
-
-Related: `component_metrics_port()` calls `die()` when a deployed config still holds
-unexpanded `${...}` placeholders, which is the state `build.sh` leaves `installed/etc` in until
-`deploy.py` runs again. A stale deployment therefore kills a run at the accounting step, long
-after the point where the cause would have been obvious.
-
 ### BUG-0041: Five ways the venue will not start on a RHEL8 target host {#bug_0041}
 
 | | |
@@ -3103,55 +2537,6 @@ setting should do the same.
 asserting it is worse than one that names none, because the count then reports coverage that does
 not exist.
 
-### BUG-0086: Removing truncation made the matching engine's fallback recovery slower, and a design document still says otherwise {#bug_0086}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-09-10 |
-| Recorded | 2026-09-10 |
-| How | Reading `docs/durability/open_order_checkpoint.md` against [BUG-0048](#bug_0048) while correcting the functional specification, which described the venue as discarding history it no longer discards |
-| Impact | The recovery the venue falls back on when the matching engine's region cannot be read now replays a whole trading day rather than the part the log had not truncated. The venue is halted throughout, so the cost is an operator's time rather than a member's |
-
-**What changed.** [BUG-0048](#bug_0048) was fixed on 2026-08-30 by stopping `take_snapshot()`
-deleting segments. That was the right fix for the loss it addressed: the log had been discarding
-almost everything every thirty seconds, and a component asking for anything older got nothing.
-
-**What it cost, which nothing recorded.** `open_order_checkpoint.md` describes the fallback for a
-region that cannot be read: establish what was open by replaying the sequencer's record, cancel
-each order, report each cancellation, halt. That is R-0123 in `docs/book`. The memo then says:
-
-> But that record is truncated as it is consumed, so a replay from the beginning starts wherever
-> truncation left off rather than at the start of the day.
-
-**That sentence was true when it was written and is now false.** Nothing truncates the log, so a
-replay from the beginning starts at the beginning. The memo's own arithmetic for the rejected
-path -- forty million orders at a microsecond each, so forty seconds -- is what this fallback now
-costs, where before it cost whatever remained after truncation.
-
-**Why it is medium and not high.** This path runs only when the region is absent, damaged, or
-written by a different build, and it ends in a halt. The venue is not trading while it replays and
-is not claiming to be, so no member waits on it. What it costs is the time an operator spends
-before the venue can be brought back.
-
-**Why it is worth an entry at all.** The memo states something untrue about the venue's behaviour,
-and it is the document somebody would read when this path ran slowly and they wanted to know
-whether that was expected. The two figures also move in opposite directions as retention is
-settled: anchoring retention under R-0022 will truncate the log again and shorten this path, so
-whatever is written now has to say which regime it describes.
-
-**The document is corrected.** `open_order_checkpoint.md` now says the record is not truncated,
-that the replay therefore starts at the start of the trading day, and what that costs. It also
-says which of its two fallback cases is reachable today and what would make the other one
-reachable again.
-
-**What is left.** The cost itself, which stands at a whole day's volume until retention is
-anchored to the oldest position anything may still present -- R-0022, and what closes
-[BUG-0048](#bug_0048). Anchoring it truncates the log again and shortens this path, so this entry
-closes with that one rather than on its own.
-
-Related: [BUG-0048](#bug_0048), which caused this and bounds it; R-0123 and R-0022 in `docs/book`.
-
 ### BUG-0087: Whether the hot path allocates cannot be established on demand {#bug_0087}
 
 | | |
@@ -3351,62 +2736,6 @@ something happened.
 Related: R-0103 and R-0113 in `docs/book`, [BUG-0090](#bug_0090),
 [session_binding.md](availability/session_binding.md).
 
-### BUG-0092: A refused cancel is answered with an execution report rather than an order cancel reject {#bug_0092}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-09-18 |
-| Recorded | 2026-09-19 |
-| How | Reading the reply on the wire while verifying R-0143, the requirement that a message missing a required field be answered rather than dropped. The reject itself was correct; its message type was not what FIX asks for |
-| Impact | A member's engine receives a message type it has no reason to associate with the request it sent. Whether it connects the two depends on the engine. One that does not leaves the member believing its cancel is still outstanding while the order is still resting |
-
-**What happens.** FIX 5.0 SP2 answers a refused `OrderCancelRequest` with an `OrderCancelReject`
-(`35=9`), carrying `CxlRejResponseTo` (434) to say which request it answers and `CxlRejReason`
-(102) to say why. The venue sends an `ExecutionReport` (`35=8`) instead, with `ExecType` and
-`OrdStatus` both `8` and the reason in `Text`.
-
-Both paths do it. `send_reject_execution_report` sets `Tag::MsgType` to `ExecutionReport`
-unconditionally; its `is_cancel` parameter only adds `OrigClOrdID` to the reply:
-
-```
-er.set(Tag::MsgType, MsgType::ExecutionReport);
-...
-if (is_cancel) {
-    // Cancel-reject convention: echo OrigClOrdID so the client can
-    // correlate the reject with the original order it tried to cancel.
-```
-
-The comment names the problem it is working around. Echoing `OrigClOrdID` is what an
-`OrderCancelReject` would carry anyway, and it is there because the message type does not tell
-the member what the reply is about. A rejection the matching engine produces -- an unknown order,
-for instance -- reaches the member the same way, because `FixErEncoder` emits an execution report
-for every report it is given.
-
-**Why it is not high.** The reply is delivered, and it echoes both `ClOrdID` and `OrigClOrdID`, so
-an engine that correlates on `ClOrdID` will connect it to the request. Nothing is lost and the
-venue does not stop trading. The risk is that a conforming engine is entitled to route `35=8` to
-its order-report handling rather than its cancel-reject handling, and the venue has no way to know
-which engines do.
-
-**Why it is not low.** It is not a documentation or tooling matter. A member cannot work around
-it, and the failure it produces on an engine that does not correlate is the same shape as
-[BUG-0090](#bug_0090): the member believes something is in hand that is not, and sees nothing to
-tell it otherwise.
-
-**What closing it needs.** The gateway holds every field an `OrderCancelReject` requires --
-`ClOrdID`, `OrderID`, `OrigClOrdID` and `OrdStatus` are all set already -- so the work is a second
-message shape rather than new state: emit `35=9` with `CxlRejResponseTo=1` when the refused
-message was a cancel request, map the reason onto `CxlRejReason`, and leave the execution report
-for refused orders. The matching engine's rejections need the gateway to know that the report it
-is encoding answers a cancel, which it does not distinguish today.
-
-**Not yet decided:** whether `ExecInst`-style venue-specific reasons map onto `CxlRejReason`'s
-enumeration or belong in `Text` alongside it. `CxlRejReason` has no "other" value in the sense
-`OrdRejReason` does, and the venue currently sends `OrdRejReason=99`.
-
-Related: R-0142, R-0143 and R-0144 in `docs/book`, and the sections they sit in.
-
 ### BUG-0095: Checking the format of a FIX price or quantity overflows a signed integer on long values {#bug_0095}
 
 | | |
@@ -3449,45 +2778,6 @@ include a value of more than nineteen digits.
 
 Related: [BUG-0096](#bug_0096), and `docs/pubsub/oar_external_stream.md` section 4.6, which relies on
 prices and quantities being well-formed decimal text.
-
-### BUG-0096: The binary order gateway passes on prices and quantities without checking their format {#bug_0096}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-09-26 |
-| Recorded | 2026-09-26 |
-| How | Checking whether both order gateways validate the decimal text of prices and quantities, while designing the order activity recorder's published events |
-| Impact | A price or quantity that is not decimal text, such as `abc` or `1e5`, can enter the venue through the binary order gateway, be accepted, and appear in the execution report. The same order sent through the FIX gateway is rejected |
-
-**What happens.** The binary order gateway forwards a `NewOrderSingle` or an `OrderCancelRequest`
-without decoding it. `BinaryOrderGatewayThread::handle_new_order_single` passes the payload
-straight to `forward_order_in_envelope`, and its comment gives the reason: decoding the order would
-undo what makes the gateway cheap. So no field of the order is checked there, and the price and
-quantity reach the sequencer and the matching engine exactly as the member encoded them. The
-matching engine does not examine the price either.
-
-The FIX gateway checks the same fields through `FixMessageValidator` ([BUG-0095](#bug_0095)), so the
-two gateways accept different orders.
-
-**Why it matters beyond the member.** The venue passes prices and quantities on as text, and the
-order activity recorder publishes that text unchanged for systems outside the venue to parse
-(`docs/pubsub/oar_external_stream.md` section 4.6). A malformed value would reach those systems,
-which could not parse it and would have to set the event aside.
-
-**Why it is not high.** Only a member using the binary protocol can send such a value, the venue
-does not calculate with it, and nothing inside the venue fails because of it.
-
-**What closing it needs.** The check belongs in the gateway through which the order enters,
-whichever protocol it uses, and not in the matching engine. Checking that a member's input is well
-formed is the gateway's job; the matching engine is entitled to receive orders that have already
-passed it. So the binary gateway decodes the price and quantity fields of each order, which it
-does not do today, and checks them with the same character check that closing
-[BUG-0095](#bug_0095) introduces for the FIX gateway. It rejects an order that fails and tells the member why,
-as the FIX gateway does for the same order; which message the binary protocol uses for that is
-part of the fix. The cost to the gateway's speed is measured
-before and after. Both gateways' orders are tested with the same malformed values, and must be
-treated identically.
 
 ### BUG-0173: No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests {#bug_0173}
 
@@ -3739,40 +3029,6 @@ one-time secret or proof that the requester has access to the installed host.
 The first-run route must require a one-time secret generated for the installation and available only to an
 operator with access to the host. Creating the first administrator must consume that secret and close setup.
 
-### BUG-0193: Once both matching engines apply every command, a command that crashes one crashes both, and nothing limits what it costs {#bug_0193}
-
-| | |
-|---|---|
-| Severity | high |
-| Kind | task -- a design for phases 7 and 8 of the recovery plan |
-| Found | 2026-10-24 |
-| Recorded | 2026-10-24 |
-| How | Discussing with Andrew whether to close [BUG-0010](#bug_0010), which named it among the failures both instances of a pair share |
-| Impact | One malformed or unexpected command stops the venue: both engines crash applying it, each restarts, catches up, applies it again and crashes again, until its launcher gives up |
-
-**Why it will happen.** Phases 7 and 8 of the [recovery plan](recovery_plan.md) make the two engines deterministic
-and have both apply every command from the WAL. That is what lets a promoted engine keep the members' resting
-orders. It also means a command that reaches a defect in the engine reaches it in both, at the same command. The
-standby gives no protection against it, by design.
-
-**What is wanted**, from BUG-0010's line of attack, to be designed in phases 7 and 8:
-
-1. **Catch what can be caught, and reject the command.** A fault that shows itself as an exception or a failed
-   precondition check, caught where the engine applies one command, rejects that command to its member, and the
-   engine goes on. Both engines reject it alike, because both are deterministic. Phase 7.
-2. **A crash on a command costs that command.** Before applying command N, the engine records N in a small
-   persisted slot. Restarting, and finding that it died applying N, it asks for N to be voided rather than applying
-   it again, and the void is written into the WAL as a command of its own, so that both engines skip N alike and its
-   member is sent a rejection. A command is voided only if no running engine has applied it: if the other engine
-   applied N without harm, N did not cause the crash. Phases 7 and 8.
-3. **Make such commands rarer.** Fuzz the engine with random, well-formed commands, checking the book's invariants
-   after each, and keep the gateways' strict checks of each field. Phase 7.
-
-**Design.** Part 2 is designed in [voided_commands.md](availability/voided_commands.md), section 4. Parts 1 and 3 are
-built in phase 7.
-
-**Principles.** V6: every command a gateway accepted is answered; V11: a loss of resilience is not a loss of service.
-
 ### BUG-0194: A matching engine that is connected but has stopped working looks healthy to everything that watches it {#bug_0194}
 
 | | |
@@ -3829,6 +3085,749 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0066: A flapping matching engine resets the deferral clock, so the venue never stops accepting {#bug_0066}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| Fixed | 2026-11-08 -- in effect, by principle V14 and by holding orders: orders are no longer stranded while no engine leads, being held and released to the engine that next leads (BUG-0064), and an engine interrupted twice is not restarted again (`launch.py --max-interruptions 2`), so a flap becomes one absence, which reaches the refusal after five seconds and the halt after ten. Judged in the phase 12 review (`bug_review.md`, section 3) |
+| How | Andrew asking what happens when the launcher restarts a component that keeps dying, then measuring it |
+| Impact | Each restart cycle strands the orders deferred during it, while orders on either side go through normally. The venue looks half-healthy because it is, and reports recovery on every cycle. [BUG-0009](#bug_0009)'s refusal never fires |
+
+**Measured.** A matching engine was killed and restarted on a 24-second cycle, eight times, with
+orders flowing. The sequencer's deferral clock restarted on every reconnect:
+
+```
+a matching engine is reachable again after 7s ... after 10s ... after 2s ... after 5s
+                                  after 8s ... after 11s ... after 3s ... after 6s
+```
+
+It never approached the 45-second refusal threshold. **Across roughly 190 seconds in which the venue
+could not process a single order, it refused nothing** -- `refused=0` -- and finished with
+`awaiting=16`: sixteen orders taken from a member and never answered.
+
+`note_matching_engine_reachable` clears `deferring_orders_` and zeroes `deferred_order_count_` when
+a connection is established. **Connectivity is treated as recovery.** For a real promotion that is
+right, and it was measured working. For a flap it is false, and it resets the only mechanism that
+would eventually have told the member anything.
+
+**Every one of those eight cycles also lied.** The recovery line says the deferred orders "are
+recovered by its WAL replay". Each restart is a cold start, and per [BUG-0064](#bug_0064) a cold
+start reconciles nothing -- so the orders were not recovered, eight times, in writing.
+
+**The launcher does not catch this either, and its definition of flapping is why.**
+`launch.py --minimum-runtime` defaults to 2 seconds: a child dying inside that counts as a failed
+start and earns a `--failure-sleep`. A child that survives ten seconds and then dies is not a failed
+start at all -- `consecutive_failures` resets to zero and it is restarted at once, indefinitely.
+**Flapping on any period longer than two seconds is invisible to the supervisor.**
+
+#### The fix, corrected 2026-08-28 before it was built
+
+**The first fix recorded here was wrong, and working it out is worth keeping.** It proposed ending
+the deferral on a successful forward rather than on a connection -- "recovery evidenced by progress,
+not connectivity" -- so that a flapping engine forwarding nothing would show an ever-growing age.
+
+Two things defeat it. **It deadlocks:** if a connection does not restore acceptance, the gateway
+refuses every order, so no order is ever forwarded, so the deferral never clears and the venue never
+reopens. And more fundamentally, **forwarding did resume on every cycle.** The measured run answered
+18 of 34 orders: during each up phase orders flowed normally. A progress-driven clock would have
+been cleared by those forwards exactly as the connection-driven one was.
+
+**The 16 stranded orders were not stranded because forwarding stopped. They were stranded because
+each restart applied nothing.** Every cycle deferred a few orders, the engine came back as a cold
+start, reconciled nothing, and those particular orders were lost while the next ones went through
+normally. The venue looked half-healthy throughout because it *was* half-healthy.
+
+**So this is [BUG-0064](#bug_0064) happening repeatedly, and BUG-0064's fix is this one's fix.** A
+cold-starting leader that reconciled -- reporting its position and being sent what it has not
+applied -- would pick up each cycle's deferred orders like a promoting follower already does. The
+deferral clock is a red herring.
+
+**What remains specific to flapping**, once BUG-0064 is fixed: an engine that dies faster than
+reconciliation completes accumulates orders no cycle ever applies. The sequencer knows the sequence
+numbers it deferred and the engine's applied position is already exchanged during reconciliation, so
+it can tell -- **the venue should clear a deferral only when the deferred range is known to have
+been applied**, rather than when an engine appears or when forwarding resumes. That is the honest
+version of "evidenced by progress", and it is a check on the orders themselves rather than on a
+proxy for them.
+
+**And the launcher's flap detection should widen** to restarts within a rolling window rather than
+consecutive starts shorter than `--minimum-runtime`. It already writes a restart count to
+`<name>.launcher.state`, so the raw material is there.
+
+**With high availability off this should halt the venue** rather than merely refuse. See
+[design notes 15](availability/design_notes.md#ha_recovery_ends_at_loss) and
+[BUG-0065](#bug_0065): with no peer, every restart is a cold start, so every cycle strands what was
+deferred, and a venue that resumes automatically conceals it.
+
+#### 2026-09-06: measured again, and the entry splits in two
+
+**The harm this recorded is gone.** The original measurement answered 18 of 34 orders and left
+`awaiting=16` -- sixteen taken from a member and never answered. Re-run on a clean deployment with
+the same eight cycles: **47 of 47 answered, `awaiting=0`, nothing stranded.** That is
+[BUG-0064](#bug_0064)'s catch-up doing what this entry predicted it would.
+
+**The mechanism in the title is still there and still resets.** Deferral cleared after 8s, 8s,
+12s, 12s, 12s, 11s, 9s and 8s -- once per cycle -- and acceptance was never withdrawn, `refused=0`,
+across 190 seconds of flapping. So a flapping engine still stops the venue ever refusing.
+
+**But the reason that mattered has changed, and the fix is not the deferral clock.** The clock
+resetting was recorded as harmful because each cycle stranded orders. Nothing strands now. What
+remains is the loss of service itself, and the numbers say where it comes from:
+
+- the engine's peer arms a **15 second** promotion timeout on losing the replication connection;
+- an engine goes from process start to leading in about **2.4 seconds**, and about 3.5 seconds from
+  the moment it dies;
+- so **every restart is complete long before any failover begins**, and the pair does nothing. Not
+  one promotion occurred in eight cycles.
+
+A member in those windows can neither place an order nor withdraw one, and is told nothing --- the
+venue only refuses after 45 seconds of *continuous* outage, which a flap never reaches.
+
+**Settled 2026-09-06, and built.** An instance that has cost the venue two interruptions is not
+restarted again; the last instance being stopped is announced rather than left silent. R-0125 and
+R-0126, with the reasoning in `docs/availability/process_death.md`. `launch.py` gains
+`--max-interruptions`, which counts deaths however long the component ran -- the existing
+`--max-consecutive-failures` counts *failed starts*, and a component dying every ten minutes starts
+perfectly every time, which is why it never fired. `devenv.py` passes 2.
+
+**Why judging the instance is the load-bearing part**, and not merely tidier: there are two obvious
+repairs and neither works alone. Leave failover at fifteen seconds and the flap gives silent holes.
+Make failover fast, which [BUG-0029](#bug_0029) asks for, and each death promotes the peer instead
+-- and `open_orders_on_promotion` is `cancel`, so every one of those promotions cancels the whole
+book and tells every member their resting orders are gone. Eight cycles become eight mass
+cancellations, which is worse for a member than not knowing. Making recovery faster changes the
+shape of the damage; stopping the instance bounds it.
+
+**What is left, and why this entry stays open.** R-0126 is not built. The launcher supervises one
+process and does not know whether it is the last of its kind, and announcing that the venue cannot
+do a component's work is a venue-level act that [BUG-0065](#bug_0065) says does not exist yet. So
+the first half is done and the second is blocked on a trading halt. Neither requirement has a
+scenario.
+
+Related: [BUG-0009](#bug_0009), whose refusal this defeats. [BUG-0064](#bug_0064), which is why the
+repetition costs orders rather than merely time. [BUG-0029](#bug_0029), on the supervision grace
+period, and now on how wide the window is in which a restart outruns a failover. [BUG-0065](#bug_0065),
+which R-0126 waits on.
+
+---
+
+### BUG-0193: Once both matching engines apply every command, a command that crashes one crashes both, and nothing limits what it costs {#bug_0193}
+
+| | |
+|---|---|
+| Severity | high |
+| Kind | task -- a design for phases 7 and 8 of the recovery plan |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| Fixed | 2026-11-08 -- all three parts built by phases 7 and 8: a fault caught while applying a command rejects that command, with fuzzing; an engine that died applying a command asks for it to be voided unless its peer applied it (`availability/voided_commands.md`, section 4); the gateways' strict checks remain. Judged in the phase 12 review (`bug_review.md`, section 3) |
+| How | Discussing with Andrew whether to close [BUG-0010](#bug_0010), which named it among the failures both instances of a pair share |
+| Impact | One malformed or unexpected command stops the venue: both engines crash applying it, each restarts, catches up, applies it again and crashes again, until its launcher gives up |
+
+**Why it will happen.** Phases 7 and 8 of the [recovery plan](recovery_plan.md) make the two engines deterministic
+and have both apply every command from the WAL. That is what lets a promoted engine keep the members' resting
+orders. It also means a command that reaches a defect in the engine reaches it in both, at the same command. The
+standby gives no protection against it, by design.
+
+**What is wanted**, from BUG-0010's line of attack, to be designed in phases 7 and 8:
+
+1. **Catch what can be caught, and reject the command.** A fault that shows itself as an exception or a failed
+   precondition check, caught where the engine applies one command, rejects that command to its member, and the
+   engine goes on. Both engines reject it alike, because both are deterministic. Phase 7.
+2. **A crash on a command costs that command.** Before applying command N, the engine records N in a small
+   persisted slot. Restarting, and finding that it died applying N, it asks for N to be voided rather than applying
+   it again, and the void is written into the WAL as a command of its own, so that both engines skip N alike and its
+   member is sent a rejection. A command is voided only if no running engine has applied it: if the other engine
+   applied N without harm, N did not cause the crash. Phases 7 and 8.
+3. **Make such commands rarer.** Fuzz the engine with random, well-formed commands, checking the book's invariants
+   after each, and keep the gateways' strict checks of each field. Phase 7.
+
+**Design.** Part 2 is designed in [voided_commands.md](availability/voided_commands.md), section 4. Parts 1 and 3 are
+built in phase 7.
+
+**Principles.** V6: every command a gateway accepted is answered; V11: a loss of resilience is not a loss of service.
+
+### BUG-0086: Removing truncation made the matching engine's fallback recovery slower, and a design document still says otherwise {#bug_0086}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-10 |
+| Recorded | 2026-09-10 |
+| Fixed | 2026-11-08 -- as far as this entry goes: `durability/open_order_checkpoint.md` says the record is not truncated and what the replay costs. The cost itself closes with BUG-0048. Judged in the phase 12 review (`bug_review.md`, section 2) |
+| How | Reading `docs/durability/open_order_checkpoint.md` against [BUG-0048](#bug_0048) while correcting the functional specification, which described the venue as discarding history it no longer discards |
+| Impact | The recovery the venue falls back on when the matching engine's region cannot be read now replays a whole trading day rather than the part the log had not truncated. The venue is halted throughout, so the cost is an operator's time rather than a member's |
+
+**What changed.** [BUG-0048](#bug_0048) was fixed on 2026-08-30 by stopping `take_snapshot()`
+deleting segments. That was the right fix for the loss it addressed: the log had been discarding
+almost everything every thirty seconds, and a component asking for anything older got nothing.
+
+**What it cost, which nothing recorded.** `open_order_checkpoint.md` describes the fallback for a
+region that cannot be read: establish what was open by replaying the sequencer's record, cancel
+each order, report each cancellation, halt. That is R-0123 in `docs/book`. The memo then says:
+
+> But that record is truncated as it is consumed, so a replay from the beginning starts wherever
+> truncation left off rather than at the start of the day.
+
+**That sentence was true when it was written and is now false.** Nothing truncates the log, so a
+replay from the beginning starts at the beginning. The memo's own arithmetic for the rejected
+path -- forty million orders at a microsecond each, so forty seconds -- is what this fallback now
+costs, where before it cost whatever remained after truncation.
+
+**Why it is medium and not high.** This path runs only when the region is absent, damaged, or
+written by a different build, and it ends in a halt. The venue is not trading while it replays and
+is not claiming to be, so no member waits on it. What it costs is the time an operator spends
+before the venue can be brought back.
+
+**Why it is worth an entry at all.** The memo states something untrue about the venue's behaviour,
+and it is the document somebody would read when this path ran slowly and they wanted to know
+whether that was expected. The two figures also move in opposite directions as retention is
+settled: anchoring retention under R-0022 will truncate the log again and shorten this path, so
+whatever is written now has to say which regime it describes.
+
+**The document is corrected.** `open_order_checkpoint.md` now says the record is not truncated,
+that the replay therefore starts at the start of the trading day, and what that costs. It also
+says which of its two fallback cases is reachable today and what would make the other one
+reachable again.
+
+**What is left.** The cost itself, which stands at a whole day's volume until retention is
+anchored to the oldest position anything may still present -- R-0022, and what closes
+[BUG-0048](#bug_0048). Anchoring it truncates the log again and shortens this path, so this entry
+closes with that one rather than on its own.
+
+Related: [BUG-0048](#bug_0048), which caused this and bounds it; R-0123 and R-0022 in `docs/book`.
+
+### BUG-0141: A follower that discards records while its record of command identifiers is still being built stops: the builder reads a segment the discard has deleted {#bug_0141}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| Fixed | 2026-11-08 -- by a different route from the one asked for: `LoggedCommandIdentifiersBuilder` passes over a segment it cannot read and `ReplicatedWal` logs a Warning naming the cause, so the follower no longer stops; an identifier recorded from a record later discarded is harmless, because a match is checked against the WAL itself (phase 9). Judged in the phase 12 review (`bug_review.md`, section 2) |
+| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. In scenario 2 the secondary sequencer stopped, although the scenario passed, because it checks only the arbiters' failover |
+| Impact | The following sequencer stops with an exception that nothing catches, so the venue loses its standby sequencer until the instance is started again. Trading goes on: only a follower discards records, so the leader cannot stop this way. A scenario that does not look at the follower passes regardless, as scenario 2 did |
+
+**What happened.** In scenario 2, against the Debug install, the secondary sequencer started, joined as
+follower, and found records at the end of its log that the leader did not hold. It discarded records
+694198 to 700778 (`SequencerThread.cpp`, the warning "discarded records ... from this instance's log").
+About a second and a half later the process ended with:
+
+```
+terminate called after throwing an instance of 'pubsub_itc_fw::PubSubItcException'
+  what():  WalReader: open(/mnt/sda2/mystuff2/var/sequencer_secondary_wal/wal_000063.log): No such file or directory
+```
+
+**Why.** Two parts of the sequencer use the log's segment files at the same time.
+
+1. `LoggedCommandIdentifiersBuilder` builds the record of command identifiers on a thread of its own. When
+   it starts, it takes the list of segment paths (64 of them in this run, numbers 0 to 63) and then reads
+   each in turn with `WalReader::replay_segment`. In this run it started at 23:04:17.46 and had not
+   finished when the process ended.
+2. The follower's log repair calls `Wal::truncate_after` (`Wal.cpp`), which ends with
+   `delete_segments_after`, deleting every segment after the one the kept records end in. In this run
+   that removed `wal_000063.log` at 23:04:19.68.
+
+When the builder reached the deleted segment, `replay_segment` threw because the file was not there.
+Nothing on the builder's thread catches an exception, so the process was terminated.
+
+**Why it showed in Debug.** A Debug build reads the log more slowly, so the builder was still running when
+the repair came. A Release build has the same window whenever a follower starts with a log large enough
+that its builder is still reading when the leader's answer makes it discard records.
+
+**Also wrong, though harmless as the code stands.** A builder that reads a segment while it is being
+truncated can record identifiers of records that are then discarded. The comment in the repair code
+says such an identifier is harmless: a command matching it is checked against the log exactly, not
+found, and sequenced as new.
+
+**What is wanted.** The builder and the repair must not use the same segment files unsynchronised. The
+choice of how is a design question for the recovery plan, because the builder and the repair are both
+part of the machinery that [ha_library_boundary.md](availability/ha_library_boundary.md) proposes moving into
+the library.
+
+### BUG-0092: A refused cancel is answered with an execution report rather than an order cancel reject {#bug_0092}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-18 |
+| Recorded | 2026-09-19 |
+| Fixed | 2026-11-08 -- the FIX gateway answers its own refusal of a cancel with an `OrderCancelReject` (35=9), and `FixErEncoder` encodes the matching engine's refusal of a cancel as one too (R-0151, BUG-0099). Judged in the phase 12 review (`bug_review.md`, section 5) |
+| How | Reading the reply on the wire while verifying R-0143, the requirement that a message missing a required field be answered rather than dropped. The reject itself was correct; its message type was not what FIX asks for |
+| Impact | A member's engine receives a message type it has no reason to associate with the request it sent. Whether it connects the two depends on the engine. One that does not leaves the member believing its cancel is still outstanding while the order is still resting |
+
+**What happens.** FIX 5.0 SP2 answers a refused `OrderCancelRequest` with an `OrderCancelReject`
+(`35=9`), carrying `CxlRejResponseTo` (434) to say which request it answers and `CxlRejReason`
+(102) to say why. The venue sends an `ExecutionReport` (`35=8`) instead, with `ExecType` and
+`OrdStatus` both `8` and the reason in `Text`.
+
+Both paths do it. `send_reject_execution_report` sets `Tag::MsgType` to `ExecutionReport`
+unconditionally; its `is_cancel` parameter only adds `OrigClOrdID` to the reply:
+
+```
+er.set(Tag::MsgType, MsgType::ExecutionReport);
+...
+if (is_cancel) {
+    // Cancel-reject convention: echo OrigClOrdID so the client can
+    // correlate the reject with the original order it tried to cancel.
+```
+
+The comment names the problem it is working around. Echoing `OrigClOrdID` is what an
+`OrderCancelReject` would carry anyway, and it is there because the message type does not tell
+the member what the reply is about. A rejection the matching engine produces -- an unknown order,
+for instance -- reaches the member the same way, because `FixErEncoder` emits an execution report
+for every report it is given.
+
+**Why it is not high.** The reply is delivered, and it echoes both `ClOrdID` and `OrigClOrdID`, so
+an engine that correlates on `ClOrdID` will connect it to the request. Nothing is lost and the
+venue does not stop trading. The risk is that a conforming engine is entitled to route `35=8` to
+its order-report handling rather than its cancel-reject handling, and the venue has no way to know
+which engines do.
+
+**Why it is not low.** It is not a documentation or tooling matter. A member cannot work around
+it, and the failure it produces on an engine that does not correlate is the same shape as
+[BUG-0090](#bug_0090): the member believes something is in hand that is not, and sees nothing to
+tell it otherwise.
+
+**What closing it needs.** The gateway holds every field an `OrderCancelReject` requires --
+`ClOrdID`, `OrderID`, `OrigClOrdID` and `OrdStatus` are all set already -- so the work is a second
+message shape rather than new state: emit `35=9` with `CxlRejResponseTo=1` when the refused
+message was a cancel request, map the reason onto `CxlRejReason`, and leave the execution report
+for refused orders. The matching engine's rejections need the gateway to know that the report it
+is encoding answers a cancel, which it does not distinguish today.
+
+**Not yet decided:** whether `ExecInst`-style venue-specific reasons map onto `CxlRejReason`'s
+enumeration or belong in `Text` alongside it. `CxlRejReason` has no "other" value in the sense
+`OrdRejReason` does, and the venue currently sends `OrdRejReason=99`.
+
+Related: R-0142, R-0143 and R-0144 in `docs/book`, and the sections they sit in.
+
+### BUG-0096: The binary order gateway passes on prices and quantities without checking their format {#bug_0096}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-26 |
+| Recorded | 2026-09-26 |
+| Fixed | 2026-11-08 -- `BinaryCommandChecks` checks every quantity and price as a decimal number by the FIX codec's rule (BUG-0100). The overflow that rule has is BUG-0095. Judged in the phase 12 review (`bug_review.md`, section 5) |
+| How | Checking whether both order gateways validate the decimal text of prices and quantities, while designing the order activity recorder's published events |
+| Impact | A price or quantity that is not decimal text, such as `abc` or `1e5`, can enter the venue through the binary order gateway, be accepted, and appear in the execution report. The same order sent through the FIX gateway is rejected |
+
+**What happens.** The binary order gateway forwards a `NewOrderSingle` or an `OrderCancelRequest`
+without decoding it. `BinaryOrderGatewayThread::handle_new_order_single` passes the payload
+straight to `forward_order_in_envelope`, and its comment gives the reason: decoding the order would
+undo what makes the gateway cheap. So no field of the order is checked there, and the price and
+quantity reach the sequencer and the matching engine exactly as the member encoded them. The
+matching engine does not examine the price either.
+
+The FIX gateway checks the same fields through `FixMessageValidator` ([BUG-0095](#bug_0095)), so the
+two gateways accept different orders.
+
+**Why it matters beyond the member.** The venue passes prices and quantities on as text, and the
+order activity recorder publishes that text unchanged for systems outside the venue to parse
+(`docs/pubsub/oar_external_stream.md` section 4.6). A malformed value would reach those systems,
+which could not parse it and would have to set the event aside.
+
+**Why it is not high.** Only a member using the binary protocol can send such a value, the venue
+does not calculate with it, and nothing inside the venue fails because of it.
+
+**What closing it needs.** The check belongs in the gateway through which the order enters,
+whichever protocol it uses, and not in the matching engine. Checking that a member's input is well
+formed is the gateway's job; the matching engine is entitled to receive orders that have already
+passed it. So the binary gateway decodes the price and quantity fields of each order, which it
+does not do today, and checks them with the same character check that closing
+[BUG-0095](#bug_0095) introduces for the FIX gateway. It rejects an order that fails and tells the member why,
+as the FIX gateway does for the same order; which message the binary protocol uses for that is
+part of the fix. The cost to the gateway's speed is measured
+before and after. Both gateways' orders are tested with the same malformed values, and must be
+treated identically.
+
+### BUG-0169: The high availability tests depend on the wording of Quill log messages; they should observe outcomes directly, or read a separate stream of named test events {#bug_0169}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-17 |
+| Recorded | 2026-10-17 |
+| Fixed | 2026-11-08 -- by phase 6: no check in `ha_test.py` reads a Quill log of the venue; three `TEST CONTRACT` messages remain, each an operator message a scenario checks deliberately. Judged in the phase 12 review (`bug_review.md`, section 7) |
+| How | Andrew, after a review by another assistant pointed out that the tests read the Quill logs as their interface |
+| Impact | A Quill log message cannot be reworded for the people who read it without breaking a test, often silently and in another file; a test that fails can be failing on its own reading of the log rather than on the venue, which takes time to tell apart |
+
+**What is there now.** `scripts/ha_test.py` waits for a phrase in a Quill log 112 times (`poll_log_for`), counts
+lines holding a phrase 25 times (`count_log_marker`) and lines holding several phrases 10 times
+(`count_lines_with_all`), and reads counts or ranges out of log lines in seven more places, often from a byte
+position in the file. 67 messages in the C++ are marked `TEST CONTRACT`
+because a test depends on their exact wording: 15 in the FIX order gateway, 13 in the matching engine, 11 in
+the binary order gateway, 10 in the sequencer, 9 in the replicated WAL, and the rest in the arbiter and
+elsewhere. Prometheus is optional, so it cannot serve instead (principle V13 in
+[design_principles.md](design_principles.md)).
+
+**What is wanted.** Quill logs go back to being for people. A test asserts on what it can observe directly
+wherever it can: for instance, the test client reports each execution report it receives, rather than the
+test counting the matching engine's lines saying it accepted an order. For the internal steps a test cannot
+otherwise see -- a follower handed over, a follower refused past a damaged record, a change of leader -- each
+component writes named test events, switched off unless configured:
+
+- how the events reach the test is for the design. A file written through Quill has the very weakness being
+  removed: Quill writes in the background, so the test cannot know when the file holds every event. A
+  connection to a listener the test opens, carrying messages defined in the DSL, is the leading candidate;
+- the test harness decodes the events with Python code generated from the DSL by a new generator that writes
+  plain Python, beside the existing generators for C++, Java and pybind11 bindings (Andrew, 18 October 2026);
+- every event name and its fields listed in one header, which is the whole of the contract between the
+  components and the tests, instead of the wording of 67 scattered messages;
+- each event replacing a wait on log text, not added beside it; once a message is no longer read by a test,
+  its `TEST CONTRACT` comment goes and it can be worded for people;
+- an event the test expected and did not see fails the test, rather than weakening it.
+
+The design comes first, and is agreed before any of it is built.
+
+**When.** Phase 6 of the recovery plan, after the review of phase 5 and before phases 7 and 8 are reviewed;
+Andrew agreed on 17 October 2026 and placed it there on 18 October 2026. New tests written before then add as
+few log-text waits as they can.
+
+**Principles.** None directly; how the venue is tested.
+
+### BUG-0040: The order-accounting check reports lost orders when it means it could not count them {#bug_0040}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-23 |
+| Recorded | 2026-08-23 (03ba5d8) |
+| Fixed | 2026-11-08 -- `perf_run.py` reports NOT VERIFIED, and says this is not a failure of the venue, when it cannot read the order count. Judged in the phase 12 review (`bug_review.md`, section 7) |
+| How | A 113-minute trading-day run ended `FAIL -- the matching engine did not accept every order`, having just said it could not read the counter it needed |
+| Impact | A clean run is reported as order loss. That is the conclusion this check exists to prevent being drawn wrongly |
+
+`perf_run.py` finishes a run by comparing the matching engine's `orders_processed_total`
+against the orders the profile offered. When the counter cannot be read it sets the count to
+-1, prints `COULD NOT READ the matching engine's metrics endpoint`, and then falls into the
+same comparison as any other run. -1 is not the expected total, so the run is declared a
+failure with the words *the matching engine did not accept every order*.
+
+Nothing had gone wrong with the venue. **"I could not measure this" and "this measurement came
+out wrong" are different results, and only one of them is about the venue.** Reporting the
+first as the second is the more damaging error, because it sends someone to look for a fault
+in the system rather than in the instrument.
+
+That is worth more here than it would be elsewhere. This check exists *because* of a false
+loss report: a June run reported 166 orders missing, which was investigated at length and
+turned out to be a Quill flushing artefact with every one of the million orders present. The
+post-shutdown ground-truth count was the answer to that. It has now produced a false loss
+report of its own, by a different route.
+
+**The reporting is fixed. The read failure itself is not**, and the obvious causes are all
+eliminated: the counter exists (`orders_processed_total`, registered in
+`MatchingEngineThread.cpp`), the scrape happens before `full_shutdown()` rather than after it,
+and the metrics port resolves correctly from the deployed configuration.
+
+**A leading hypothesis, and how to test it.** `read_counter` allows the scrape **two seconds**
+and turns any `URLError` or `OSError` into `None`, which the caller cannot tell apart from the
+metric being absent. At the end of the trading-day run the matching engine held 8.6 million
+resting orders in a table whose largest allocation was 9.5 GiB, with 8.0 GB resident. Rendering
+the Prometheus exposition under that is plausibly slower than two seconds, or the endpoint's
+thread simply did not get scheduled promptly.
+
+The evidence fits: the read failed after 113 minutes and 8.6 million orders, and succeeded twice
+immediately afterwards on runs of 1,000 orders. If the hypothesis holds, the failure follows the
+size of the book rather than anything about the code path -- so it will reproduce at the end of
+a long run and never at the end of a short one, which is the worst possible shape for noticing
+it.
+
+Two things follow if it is confirmed. The timeout is too short for a process holding several
+gigabytes, and more importantly a timeout and an absent metric should not arrive at the caller
+as the same value: one is "ask again", the other is "this venue does not publish that".
+
+Two things to fix, and the first does not depend on diagnosing the second:
+
+- Report an unreadable counter as *not verified*, distinct from both PASS and FAIL. A run whose
+  accounting could not be taken is not a run that failed.
+- Find out why the counter could not be read.
+
+Related: `component_metrics_port()` calls `die()` when a deployed config still holds
+unexpanded `${...}` placeholders, which is the state `build.sh` leaves `installed/etc` in until
+`deploy.py` runs again. A stale deployment therefore kills a run at the accounting step, long
+after the point where the cause would have been obvious.
+
+### BUG-0030: Restart coverage: what ha_test.py exercises, and what it does not {#bug_0030}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- a coverage matrix, not a defect |
+| Found | 2026-08-21, extended into a full matrix 2026-08-22 |
+| Recorded | 2026-08-22 (63889b8) |
+| Fixed | 2026-11-08 -- the coverage matrix is complete, all eighteen cells, as the entry records. Judged in the phase 12 review (`bug_review.md`, section 7) |
+| How | Reading every scenario against the restart cases an HA pair actually has |
+| Impact | Three defects were found in the two cases that were covered. The uncovered ones have not been looked at |
+
+Every scenario kills a component and leaves it dead, which models **machine** death correctly --
+a dead machine does not come back on its own. It leaves **process** death, where the instance is
+restarted on a machine that never failed, almost entirely unexercised. That is the half a
+supervisor makes normal, and it is where every defect found on 2026-08-21 and 2026-08-22 lives.
+
+**The cases an HA pair has, and where each stands:**
+
+| | sequencer | arbiter | matching engine |
+|---|---|---|---|
+| **R1** restart the leader inside the peer's grace period; the peer must not promote | **27** | **28** | **26** |
+| **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | **25** | **24** |
+| **R3** restart the *follower* -- must stay follower, leader untouched | **30** | **31** | **29** |
+| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | **33** | **32** |
+| **R5** cold start both, in either order -- deterministic leader | **36** | **38** | **34** |
+| **R6** restart with no arbiter reachable -- degraded, and said so | **37** | **39** | **35** |
+
+Scenarios 10 to 13 restart a matching engine but run a single one, so no role is ever in
+question; they test that it comes back, not what it comes back as.
+
+**What the two covered cells cost to find.** R2 for the matching engine is scenario 24, written
+2026-08-22, and it found three defects in a row: the arbiter re-running the cold-start tie-break
+on a rejoin, the engine promoting itself on arbiter connect, and the sequencer routing orders by
+socket rather than by role. All three are in this file. That is one cell of eighteen.
+
+**Completed 2026-08-23.** Eighteen of eighteen cells. The last four were taken by
+ha_test.py scenarios 36-39; the suite went from 23 scenarios to 39.
+
+**Where it stood, 2026-08-22.** Fourteen of eighteen cells. Every cell taken so far found at
+least one defect except R1, R3 and R4-arbiter, which passed first time -- and that pattern is
+itself informative: the defects all lived in what an instance comes back *as*, so the cells where
+nothing has to decide that were the ones that already worked.
+
+**Complete, 2026-08-22.** All eighteen cells. Ten defects were found on the way, every one of
+them a consequence of the same omission: process death was not in the model, so nothing decided
+what a restarted instance comes back as, and channels, records and fallbacks were all built on
+identities that stop being true once roles can move.
+
+**The cells that passed first time are as informative as the ones that did not.** R1, R3 and
+R4-arbiter, and both R5/R6 cells for the sequencer and arbiter, needed no fixes. The defects all
+lived in what an instance comes back *as*; where nothing has to decide that, the code was already
+right. And where a component already had a symmetric design -- the sequencer's `peer` channel,
+its unconditional startup election timer -- it had none of the faults its matching-engine
+counterpart did.
+
+**One thing worth carrying forward.** The sequencer settles leadership with its peer directly,
+through StatusQuery/StatusResponse and the instance-id rule, and needs no arbiter to do it. The
+matching engine cannot: it must ask an arbiter or fall back to a unilateral rule. Whether the
+engine should gain the same peer-to-peer resolution is a design question this coverage raised and
+did not answer.
+
+### BUG-0144: ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent {#bug_0144}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| Dismissed | 2026-11-08 -- no longer applies: phase 6 removed every wait on and count of a Quill log from `ha_test.py`. Judged in the phase 12 review (`bug_review.md`, section 7) |
+| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenario 54 failed with "interim orders did not appear within 30s", although the matching engine had logged all 1,000 acceptances within 31 ms of the orders being sent |
+| Impact | A wait can miss the line it waits for and fail a healthy run. Worse, a check that something did not happen can miss the line that says it did, and pass |
+
+**What happened.** In scenario 54, `wait_for_accepted_count` waited for 1,000 lines containing "accepted
+NOS OrderID=ME-ORD-" in `matching_engine_secondary.log`, reading from the start of the file. All 1,000
+are in the log, written between 23:32:26.272 and 23:32:26.304, yet after 30 seconds it had not counted
+1,000.
+
+**Why.** Each time it polls, the function reads whatever has been added to the log since the last poll
+and counts the text in that piece alone (`seen += chunk.count(needle)`). The logging library writes the
+file in pieces that need not end at the end of a line, so a poll can read the first half of a line and
+the next poll the second half; the text is then in neither piece and is never counted. Reading from
+the start of the file rules out the only other explanation, a starting position past the lines.
+
+**The same pattern elsewhere in the script.** `poll_log_for`, which most waits and every check that
+something is absent go through, splits each piece into lines and tests each line, so a line split
+between two reads is tested as two halves, neither of which holds all the markers. At least two other
+readers do the same (`ha_test.py`, near lines 4616 and 4645).
+
+**What is wanted.** Every reader keeps the unfinished end of what it read and searches only complete
+lines, joining the remainder to the next read. A unit test feeds a reader a line in two pieces.
+
+### BUG-0083: Scenario 26 failed once inside the suite and has not been reproduced {#bug_0083}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-07 |
+| Recorded | 2026-09-07 |
+| Dismissed | 2026-11-08 -- not reproduced, and the code it ran through has been replaced by phases 3 to 10; full runs since have passed scenario 26. A recurrence would be a new entry. Judged in the phase 12 review (`bug_review.md`, section 7) |
+| How | A full `ha_test.py --scenario all` run verifying BUG-0077's fix. 54 of 55 passed; scenario 26 failed at Phase 5 |
+| Impact | Unknown, and that is the entry. If it is a defect it is one where a restarted matching engine is not sent orders; if it is the harness, the suite's verdict on this area cannot be trusted until it is understood |
+
+**What happened.** Scenario 26 restarts the matching engine under its launcher and asserts that the
+restart beats the peer's promotion timeout. The restart happened, the peer correctly never
+promoted -- the absence check passed after its full 25 seconds -- and then the 1000 recovery orders
+never reached the restarted engine:
+
+```
+VERIFY: the secondary never promoted, because the restart beat its timeout
+  confirmed absent
+=== Phase 5: 1000 recovery orders (1000 accepted NOS on matching_engine_primary.log) ===
+FAIL: recovery orders did not appear within 30s
+```
+
+**Not reproduced, in four attempts**: scenario 26 alone; scenario 25 followed by 26, which is the
+suite's own order; a replay of scenarios 1 to 26 one after another, reproducing the suite's
+accumulated write-ahead log and regions; and a second full suite run, which passed 55 of 55. One
+failure in five runs of this scenario, all told. The
+logs from the failing run were overwritten by the scenarios that followed it, which is the first
+thing to fix about the next occurrence.
+
+**Why it is suspected of belonging to that day's change.** [BUG-0077](#bug_0077)'s fix stopped a
+catch-up from re-pointing the sequencer's ME order connection unless the asker is being promoted.
+That removed a side effect which had been quietly restoring the routing to a restarting engine, and
+scenario 26 is the scenario where the engine restarts and nothing else promotes -- so it is the one
+most exposed to a gap in what replaced it.
+
+**Against that**, the replacement paths were read and both cover the orderings that matter: an
+engine that announces leadership before the sequencer holds an order connection to it is routed to
+when that connection arrives (`SequencerThread.cpp:254`), and one that announces after is routed to
+by the announcement (`SequencerThread.cpp:2432`). In the passing runs the engine asks
+`(asking to lead)`, because the arbiter reaches it before the sequencer's order connection does,
+and the promotion path re-points as it always did. No mechanism is known to be missing, which is
+why this is recorded rather than diagnosed.
+
+**What to do at the next occurrence.** Copy `installed/log` aside before the run continues. The
+answer is two lines: the engine's `MePositionRequest sent ... (asking to lead | starting, not
+asking to lead)` says which branch it took, and the sequencer's `orders now route to connection`
+lines say whether anything ever pointed at it. Compare against
+[BUG-0076](#bug_0076), the last scenario that failed only inside the suite and turned out to be a
+real defect rather than a flake.
+
+---
+
+### BUG-0145: Scenarios 59 and 62 stop the leading sequencer without knowing that it has received the three orders it is meant to be holding {#bug_0145}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| Dismissed | 2026-11-08 -- the same fault as BUG-0185, which stays open for scenarios 59 and 76; scenario 62 now waits until the leader's WAL holds its orders. Judged in the phase 12 review (`bug_review.md`, section 7) |
+| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenarios 59 and 62 failed: in each, the leader's log did not hold the three orders sent to it |
+| Impact | Each scenario fails when the leader is slow to read its orders. On such a run scenario 59's check that "the matching engine has accepted none of them" passes without meaning anything, because the leader never had them. Its later check of the old leader's log notices, so the result is a false failure rather than a false pass |
+
+**What happens.** To test a leader that dies holding orders its follower never received, the scenario
+sends three orders to the leader with `inject_order` and stops the leader with `SIGSTOP` as soon as
+`inject_order` reports that it has sent them (`ha_test.py`, the scenario's step 2). Nothing confirms
+that the leader has read the orders and written them to its log before it is stopped. In this run the
+leader, a Debug build, had not, so its log held none of them.
+
+Scenario 62, an old leader that rejoins and discards the records its new leader does not have, sends
+its three orders and stops the leader in the same way, and failed in the same run for the same reason:
+"the leader's log does not hold the three orders sent to it".
+
+**What is wanted.** Each scenario waits for evidence that the leader has written the three orders, for
+example a line the leader logs for each order it holds waiting for its follower, before it stops the
+leader, and fails clearly if that evidence does not come.
+
+### BUG-0167: A lease promise record can take longer to write than a lease period, and the leader then loses its lease {#bug_0167}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-15 |
+| Recorded | 2026-10-15 |
+| Dismissed | 2026-11-08 -- the remaining risk is accepted by Andrew: a disk slower than a lease period still costs the lead, and is now reported. BUG-0228 measured the cause, moved the WALs and small synced files to a disk of their own, wrote the epoch before asking to lead (rule 13), and added the metrics. Judged in the phase 12 review (`bug_review.md`, section 1) |
+| How | The full scenario runs for step 2 of phase 5 ([following_the_wal.md](availability/following_the_wal.md)). Scenario 26 failed when the leading sequencer's lease ran out as a write of its lease promise record finished after 4,601 ms; the scenario passed five times of five when run again |
+| Impact | On a disk that is slow to make a write durable, a leader can lose its lease with nothing wrong with it, its peer or the arbiters, and the pair changes leader. Three failures in the week to 15 October 2026 of scenarios that passed when run again, scenarios 33, 6 and 26, had this cause |
+
+**What was measured.** Each instance that grants or asks for a lease first writes the promise to disk
+(`PairLeaseAgent`, written in the background), and until the write has finished it refuses any promise the
+record on disk does not already cover. A write taking 500 milliseconds or more is reported in the Quill log.
+In one full run of the 74 scenarios on this machine, 45 writes were reported, from sequencers, matching
+engines and arbiters alike: the median 708 milliseconds, one in ten above 1,299, and two above the lease
+period of 3,000 milliseconds, the longest 4,601. In five further runs of scenario 26 alone, on an otherwise
+quiet machine, the longest were 2,317, 4,058 and 4,076 milliseconds. The disk is a CT4000BX500, a low-cost
+solid-state disk; the WALs share it.
+
+**Later cases, 15 October 2026.** Scenario 35 failed the same way as scenario 26: a promise write of 4,476
+milliseconds made the leading sequencer lose its lease while a matching engine was asking for its position,
+and the engine, answered only after its next retry, was not given the orders. It passed five times of five
+when run again. In one run of `tmp/phase5/stall.sh`, a single promise write took 16,770 milliseconds, while
+the leading sequencer held 16,384 orders waiting for a voter to confirm in writing that the follower may not
+lead; the leader lost its lease and discarded them, as it must.
+
+**Measured with the machine idle, 17 October 2026.** On the WAL partition (on the same CT4000BX500, mounted
+with `lazytime`), 2,000 writes of 4 KiB each followed by `fdatasync` took 0.88 ms at the median when appending,
+5.2 ms at one in a thousand and 16 ms at the longest; overwriting blocks already allocated took 0.37 ms at the
+median and 4.0 ms at the longest. The project tree on the same disk gave the same figures, and the machine's
+NVMe disk was slower at the median (1.9 ms appending) though its longest was shorter (3.9 ms). Not one of the
+12,000 writes took 100 ms. So the disk, idle, makes a small write durable a thousand times faster than the
+slow promise writes above. On the same day a promise write of 3,099 ms failed scenario 14, while another
+program was converting video on the machine, using about 14 of its 32 cores, including the cores the venue's
+order path is pinned to, and writing heavily to the same disk; with that program stopped, a full run of all
+75 scenarios passed. Whether such a program was running during the earlier cases is not known.
+
+**A later case, 17 October 2026, on an otherwise quiet machine.** In a fill of 300,000 orders at 4,000 a
+second, begun a minute after the developer loop had built, installed and tested the whole project, nine promise
+writes took over 500 milliseconds, the longest 5,928; the sequencers' threads reported callbacks running for
+hundreds of milliseconds (53 over 100 milliseconds, against 6 in the same fill on 14 October); the leader ran
+as if alone for 2.6 seconds, the pair then changed leader several times, and 98,349 messages went unanswered.
+The same fill run twice more in the next half hour, with the disk recorded by `iostat`, had no callback over
+100 milliseconds, no slow promise write, and every message answered; the disk was busy 0.4 per cent of the time
+at the median. What the machine was doing during the first fill was not recorded, so its cause is not known.
+
+**Another, 17 October 2026, recorded with `iostat`.** The same fill, begun three minutes after the developer
+loop had installed a new build, failed the same way: promise writes took from 599 to 31,548 milliseconds on both
+sequencers, the pair changed leader four times, and 81,042 messages went unanswered. The disk was given the same
+work as in a fill that passed earlier the same day, about 11 MB a second in 22 writes a second, but was busy 35
+per cent of the time on average and over 90 per cent for 49 of the 181 seconds, against 2.5 per cent and none in
+the fill that passed. The same fill, run again ten minutes later, passed, with the disk busy 2.6 per cent of the
+time. Nothing else was using the disk or the processors. So for some minutes the disk took far longer to do the
+same writes. While it was slow, the leading sequencer's own thread also waited on the disk
+([BUG-0175](#bug_0175)).
+
+**And on 18 October 2026, after an idle night.** The same fill failed again at 08:36, with nothing built or run
+before it since the evening: promise writes took from 1,521 to 7,513 milliseconds on both sequencers, beginning
+about 40 seconds into the fill, as in the failure of the evening before, and 61,852 messages went unanswered. So
+the failures do not depend on a build having just written to the disk, as the two failures of 17 October had
+suggested. The fill run again at once passed, but even then the disk was over 90 per cent busy for 34 seconds,
+from about 100 seconds into the fill, against none in the passing fill of 17 October. Of the seven such fills run
+on 17 and 18 October, three failed this way.
+
+**31 October 2026.** In a full run of the 91 scenarios, four failed this way: scenarios 1, 23 and 68, in which no
+voter granted the matching engine a lease within the 15 seconds the scenario allows, and scenario 28, in which
+the secondary arbiter became active. In each, the arbiters lost their own leases, and promise writes took
+several seconds; the longest in each scenario were 5,462, 3,921, 7,283 and 5,519 milliseconds. All four passed
+when run again at once, one after another, and a full run of the 89 scenarios that existed earlier the same
+afternoon passed every one. A file-sharing client had started at 17:00:08, downloading to another partition
+of the same disk. The disk was not recorded during the scenarios, but at 21:45, measured from `/proc` and
+`iostat` with the venue stopped, that client was writing about 8 MB a second and the disk was busy 51 per
+cent of the time. A trading-day run made between 19:49 and 21:44, with the client still downloading, had
+promise writes of over 500 milliseconds throughout its two hours, up to 6,324 milliseconds; the sequencers
+changed leader more than twenty times, and the run measured nothing usable.
+
+**The same run repeated, 31 October and 1 November 2026, with the file-sharing client stopped**, and the disk
+recorded by `iostat` every 10 seconds. Promise writes still took over 500 milliseconds, the longest 3,817, in
+short spells about every 11 to 14 minutes: at 22:40, 22:55, 23:06, 23:17, 23:28, 23:42, 23:54, 00:05 and 00:19.
+The web browser was closed at 23:03, and the spells went on after it. No instance changed leader. In the 43
+samples in which the disk was more than 15 per cent busy, it was given about the same work as in the other 407,
+about 5.5 MB a second in 15 writes a second, but each write waited 172 milliseconds on average, against 4.6.
+The sequencer created WAL segments at a steady 24 or 25 a minute throughout, slow spells included. So, as on 17
+October, for minutes at a time the disk takes far longer to complete the same writes, with nothing else known
+to be writing to it.
+
+**1 November 2026, recorded with `iostat`.** In a full run of the scenarios, with no other program writing to the
+disk, scenario 66 failed this way: the matching engine's promise writes took 2,499 and then 5,299 milliseconds, its
+lease ran out at 07:19:14, and it stopped leading in the middle of the scenario. At 07:18:38, as the scenario started
+its venue, 125 MB a second was written to the disk for ten seconds, and from then until 07:19:58 the disk was 74 to 90
+per cent busy, with each write waiting 84 to 445 milliseconds on average, against 1 to 7 milliseconds before. The
+scenario passed when run again at once. The writes that began it are of the size the venue makes when it starts, such
+as a matching engine creating its open-order region, which writes every block of it
+([BUG-0071](#bug_0071)); which program made them was not recorded.
+
+**What is not known.** Whether the time is spent waiting for the disk to make the record durable (`fsync`)
+or behind other writes queued for the same disk, such as the WALs and the Quill logs; and how a disk of the
+kind a production machine would have compares.
+
+**What is wanted.** First the rest of the measurement: how long the write and its `fsync` take on this disk
+while the venue writes its WALs, the idle figures being known. Then a decision on whether a leader should keep its lease through one slow
+write. Every way to make it do so changes the rules for which instance leads, which the TLA+ models in
+`docs/availability/tla/` check, so any change is made to the model first.
+
+**Principles.** V11.
 
 ### BUG-0005: fix-test-client reports a dead gateway poorly {#bug_0005}
 

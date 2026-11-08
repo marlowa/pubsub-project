@@ -173,8 +173,10 @@ sequencer lifts it only once an engine leads and every order and cancel written 
   connection. An engine that takes orders and does nothing with them looks healthy throughout
   ([BUG-0194](../bug_list.md#bug_0194)).
 - **A matching engine that keeps failing and returning.** Each time an engine leads, the time without
-  one ends, and the next failure starts it again, so a venue whose engine flaps may never reach the limit
-  and never stop accepting ([BUG-0066](../bug_list.md#bug_0066)).
+  one ends, and the next failure starts it again, so this design alone would never stop a flapping engine.
+  The supervisor stops it instead: an instance interrupted twice is not restarted again (principle V14,
+  [process_death.md](process_death.md)), so a flap becomes one absence, which reaches the limit. No order
+  is stranded meanwhile, because orders are held and released to the engine that next leads.
 - **Telling the member when acceptance resumes.** Nothing announces it; a member finds out by sending
   an order that is not refused.
 - **Orders lost at a change of *sequencer* leader,** which is a different failure; see

@@ -13,7 +13,7 @@ All 81 open entries have been judged. The figures:
 | Judgement | Entries |
 |---|---|
 | Breach of a named principle | 16, and 3 more if their causes prove to be in the venue: BUG-0142, BUG-0207, BUG-0130, BUG-0113 (its remainder), BUG-0210, BUG-0137, BUG-0225, BUG-0211, BUG-0226, BUG-0131, BUG-0090, BUG-0072, BUG-0129, BUG-0127, BUG-0128, BUG-0119; and BUG-0183, BUG-0175 and BUG-0184 if their causes are in the venue; with BUG-0095's undefined behaviour and BUG-0181's test that can pass over lost orders treated as equally urgent |
-| Fixed, or no longer applies, and can be closed if Andrew agrees | 13: BUG-0066, BUG-0193, BUG-0086, BUG-0141, BUG-0092, BUG-0096, BUG-0169, BUG-0144, BUG-0040, BUG-0030, BUG-0083, BUG-0145 (into BUG-0185), and BUG-0167 if its remaining risk is accepted |
+| Fixed, or no longer applies: closed on 8 November 2026 with Andrew's agreement | 13: BUG-0066, BUG-0193, BUG-0086, BUG-0141, BUG-0092, BUG-0096, BUG-0169, BUG-0144, BUG-0040, BUG-0030, BUG-0083, BUG-0145 (into BUG-0185), and BUG-0167 if its remaining risk is accepted |
 | Decision needed from Andrew | BUG-0167, BUG-0029, BUG-0061, BUG-0048 (with BUG-0113), BUG-0151, BUG-0229, BUG-0073 |
 | Partly done | BUG-0121, BUG-0134, BUG-0029, BUG-0028, BUG-0065, BUG-0069, BUG-0041 |
 | The rest | new requirements, investigations, small defects, and tests and tools, each placed in its area's recommended order |
@@ -28,9 +28,9 @@ All 81 open entries have been judged. The figures:
    belong in one design.
 3. **Which sequencer the gateways use with high availability off** (BUG-0061, then BUG-0062).
 
-**A proposed order of work**, for Andrew to change:
+**The order of work**, agreed with Andrew on 8 November 2026:
 
-1. Close the thirteen entries above that are fixed or no longer apply.
+1. Close the thirteen entries above that are fixed or no longer apply. Done, 8 November 2026.
 2. The small breaches, each with a remedy already agreed or obvious: BUG-0129 (a data race), BUG-0225,
    BUG-0226, BUG-0210, BUG-0095, BUG-0189, and the tests BUG-0181 and BUG-0185.
 3. The breaches that need a short design first: BUG-0142 (statements written in the background),
