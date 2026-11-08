@@ -6,6 +6,43 @@ This is the working record of phase 12 of the [recovery plan](recovery_plan.md).
 Nothing is fixed while the review is made: what it produces is a judgement for each entry, with the
 evidence for it, and then an order of work agreed with Andrew for the entries that remain.
 
+## Summary
+
+All 81 open entries have been judged. The figures:
+
+| Judgement | Entries |
+|---|---|
+| Breach of a named principle | 16, and 3 more if their causes prove to be in the venue: BUG-0142, BUG-0207, BUG-0130, BUG-0113 (its remainder), BUG-0210, BUG-0137, BUG-0225, BUG-0211, BUG-0226, BUG-0131, BUG-0090, BUG-0072, BUG-0129, BUG-0127, BUG-0128, BUG-0119; and BUG-0183, BUG-0175 and BUG-0184 if their causes are in the venue; with BUG-0095's undefined behaviour and BUG-0181's test that can pass over lost orders treated as equally urgent |
+| Fixed, or no longer applies, and can be closed if Andrew agrees | 13: BUG-0066, BUG-0193, BUG-0086, BUG-0141, BUG-0092, BUG-0096, BUG-0169, BUG-0144, BUG-0040, BUG-0030, BUG-0083, BUG-0145 (into BUG-0185), and BUG-0167 if its remaining risk is accepted |
+| Decision needed from Andrew | BUG-0167, BUG-0029, BUG-0061, BUG-0048 (with BUG-0113), BUG-0151, BUG-0229, BUG-0073 |
+| Partly done | BUG-0121, BUG-0134, BUG-0029, BUG-0028, BUG-0065, BUG-0069, BUG-0041 |
+| The rest | new requirements, investigations, small defects, and tests and tools, each placed in its area's recommended order |
+
+**The decisions that unblock the most.**
+
+1. **How long a member's execution reports are kept (R-0008).** It decides BUG-0048 (reclaiming the
+   WAL), BUG-0113's remainder (the recovery service), BUG-0086, and through them BUG-0121's start-up
+   time and BUG-0209's scenario.
+2. **The start-of-day and end-of-day procedures with the trading phases.** BUG-0137 (V12), BUG-0132,
+   BUG-0065's remainder, and BUG-0028's check that the reserved memory is there at the start of the day
+   belong in one design.
+3. **Which sequencer the gateways use with high availability off** (BUG-0061, then BUG-0062).
+
+**A proposed order of work**, for Andrew to change:
+
+1. Close the thirteen entries above that are fixed or no longer apply.
+2. The small breaches, each with a remedy already agreed or obvious: BUG-0129 (a data race), BUG-0225,
+   BUG-0226, BUG-0210, BUG-0095, BUG-0189, and the tests BUG-0181 and BUG-0185.
+3. The breaches that need a short design first: BUG-0142 (statements written in the background),
+   BUG-0130 (segments kept ready), BUG-0207 (with its scenario), BUG-0211, BUG-0090 with BUG-0091,
+   BUG-0131, and BUG-0072.
+4. BUG-0087's tool for counting heap allocations, then the framework's locks, BUG-0127 and BUG-0128,
+   and BUG-0119.
+5. The three decisions above, and the designs they lead to: retention and the recovery service; the
+   trading day; high availability off.
+6. Then the new requirements, the investigations and the remaining small defects, in the order Andrew
+   chooses.
+
 ## How each entry is judged
 
 Each entry is given one of these judgements. The evidence column says what was actually checked, in the
@@ -35,7 +72,7 @@ review recommends working on them.
 5. The gateways and what a member sees (section 5)
 6. The framework: reactor, timers, allocators and threads (section 6)
 7. Tests and tooling (section 7)
-8. Operations, deployment and metrics
+8. Operations, deployment and metrics (section 8)
 
 ## 1. Leadership, leases and the arbiters
 
@@ -197,3 +234,20 @@ which is the failure the tests exist to catch. Then BUG-0185 (with BUG-0145 clos
 which make the suite fail at random and so make its verdict harder to trust. BUG-0215 and BUG-0214 make
 the load tools' verdicts trustworthy. Six entries can be closed if Andrew agrees: BUG-0083, BUG-0144,
 BUG-0169, BUG-0040, BUG-0030, and BUG-0145 into BUG-0185.
+
+## 8. Operations, deployment and metrics
+
+Seven entries.
+
+| Entry | Judgement | Evidence | What is left |
+|---|---|---|---|
+| [BUG-0189](bug_list.md#bug_0189): anyone who reaches first-run setup can create the first administrator | **Defect**, of security (R-0153) | Unchanged: nothing in `java/admin-service` asks for a one-time secret on first-run setup | A one-time secret generated at installation, required and consumed by setup |
+| [BUG-0069](bug_list.md#bug_0069): the sequencer, arbiters and witness report no metrics | **Partly done** | The sequencer now registers seventeen metrics (`SequencerThread.cpp`), among them `sequencer_running_alone` and the measures of a slow disk from BUG-0228. The arbiter, the witness and the authentication service register none of their own | Metrics for the arbiters (which is active, leases granted and refused, statements held) and the witness |
+| [BUG-0041](bug_list.md#bug_0041): five ways the venue will not start on a RHEL8 target host | **Partly done** | The first of the five is fixed: `db/create_db.py` now finds Liquibase with `shutil.which`. The other four were not checked in this review | Check the other four against the scripts, and the Rocky 8 Docker build, which is blocked on network access in the cloud environment (`doc-audit-progress.txt`) |
+| [BUG-0073](bug_list.md#bug_0073): the placeholder environments carry settings nobody chose | **Decision needed** | Unchanged; preprod, prod and test-1 still disable three of the four gateways, and still list `binary_order_gateway_a` among the components started | What each environment is to run, decided before any of them is deployed to |
+| [BUG-0060](bug_list.md#bug_0060): microbursts are not measured | **New requirement** | Unchanged | Place in the order of work; the latency work is otherwise complete |
+| [BUG-0006](bug_list.md#bug_0006): ResendRequest under load | **Test or tool**, a missing measurement | Unchanged; a resend from far back is also BUG-0113's remainder | Exercise resends in a trading-day run; best done after the recovery service of BUG-0113 |
+| [BUG-0047](bug_list.md#bug_0047): disaster recovery is not modelled | **New requirement**, deliberately deferred | Unchanged | Nothing until Andrew says |
+
+**Recommended order in this area.** BUG-0189 first: it is small and a security hole. BUG-0069's
+remainder next. BUG-0041's other four points when the venue is next brought up on another host.
