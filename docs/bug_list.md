@@ -1140,8 +1140,8 @@ id.** For each comp id it keeps the most recent application messages sent to tha
 the current trading day, up to one count that applies to every comp id, in storage allocated at the
 start of the day. A resend request for anything older is answered with a FIX gap fill. This is R-0008,
 and it is the practice of the London Stock Exchange and Turquoise. The reasoning, the measurements
-behind the count, and the alternative not followed are under [BUG-0048](#bug_0048). **Still to be
-chosen: the count itself.** **Decided (2026-10-04): a table of segments, not files by period of
+behind the count, and the alternative not followed are under [BUG-0048](#bug_0048). **The count is
+100,000 messages for each comp id (decided 2026-11-08).** **Decided (2026-10-04): a table of segments, not files by period of
 time.** The log is already divided into segments of 4 MB. The sequencer keeps a small table of the
 time and sequence number of each segment's first record, about 1.4 MB for a 230 GB day. With it a
 reader finds the segment holding any moment or any record in one step, and everything before a given
@@ -2367,6 +2367,11 @@ trading day, which would have meant every resend being served from a record of t
 
 What is decided:
 
+- **N is 100,000 messages** (decided 2026-11-08). At about 450 bytes a message that is 45 MB for
+  each comp id: 45 GB for 1,000 comp ids, and 135 GB for 3,000. At no more than 2 messages per order
+  it lasts about 8 minutes for a member sending 100 orders a second, 50 seconds at 1,000, and 14
+  seconds at 3,500, the whole venue's ceiling on the development machine.
+
 - The recovery service ([BUG-0113](#bug_0113)) keeps, for each comp id, the most recent application
   messages sent to that comp id during the current trading day, up to a count N. The storage for every
   comp id is allocated at the start of the day, so its size is known before trading starts.
@@ -2430,7 +2435,6 @@ practice, this is the change to make.
 
 **What closing this entry needs**, now that the period is decided:
 
-- N chosen, using the arithmetic above.
 - The recovery service and its store for each comp id ([BUG-0113](#bug_0113)).
 - The PDU that carries the matching engine's checkpoint position to the sequencer.
 - A generation number, so that a reused segment's old records are not replayed as current

@@ -79,7 +79,7 @@ establish this, and that the member can send the order again.
 
 \begin{requirement}{R-0008}{The most recent messages to each member remain recoverable}
   For each comp id, the venue shall keep the most recent application messages it
-  has sent to that comp id during the current trading day, up to a stated count.
+  has sent to that comp id during the current trading day, up to 100,000 messages.
   The count shall be one figure that applies to every comp id. A resend request
   for a message older than those kept shall be answered with a FIX gap fill, a
   SequenceReset with GapFillFlag set, covering the messages that are no longer
@@ -91,13 +91,14 @@ establish this, and that the member can send the order again.
   established practice at the London Stock Exchange and at Turquoise, so members
   already know how to work with it. Because the count is in messages rather than
   time, a member that is sent many messages has a shorter window in time than a
-  quiet one.}
+  quiet one. At no more than two messages per order, 100,000 messages last about
+  eight minutes for a member sending 100 orders a second, and about fifty seconds
+  for one sending 1,000.}
   \uncovered{no scenario measures how far back messages remain available}
 \end{requirement}
 
 \begin{gap}{BUG-0048, BUG-0113}
-  The count has not been chosen, and nothing keeps messages for each comp id
-  separately. A resend is served from the write-ahead log, which discards nothing,
+  Nothing keeps messages for each comp id separately. A resend is served from the write-ahead log, which discards nothing,
   so a message stays available for as long as the venue runs and the disk holds
   out, and no gap fill is ever sent for a message that is too old.
 \end{gap}

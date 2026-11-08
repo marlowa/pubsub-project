@@ -416,7 +416,7 @@ Each entry is a decision. Where what it describes is not built, the entry says s
   busiest member gets the shortest window in time. Giving each comp id its own count, with a
   default, would size the store by what each member does and spare the busiest members a window of
   seconds, but no other exchange is known to do it, and it is not followed for that reason. The
-  count is not yet chosen, and the recovery service is not built
+  count is 100,000 messages. The recovery service is not built
   ([BUG-0113](bug_list.md#bug_0113)); the measurement and arithmetic behind the count are in
   [BUG-0048](bug_list.md#bug_0048).
 
