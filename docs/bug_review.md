@@ -33,7 +33,7 @@ review recommends working on them.
 3. The matching engine (section 3)
 4. The sequencer's handling of reports (section 4)
 5. The gateways and what a member sees (section 5)
-6. The framework: reactor, timers, allocators and threads
+6. The framework: reactor, timers, allocators and threads (section 6)
 7. Tests and tooling
 8. Operations, deployment and metrics
 
@@ -145,3 +145,28 @@ not carried out is the most serious thing here. BUG-0095 next, being small and u
 both gateways. BUG-0072 is a configuration change. The investigations, BUG-0203 and BUG-0056, need a
 stress test of many logons and abandoned connections, which could serve both. The new requirements are
 placed with the rest; BUG-0065's remainder goes with the trading phases. BUG-0092 and BUG-0096 can close.
+
+## 6. The framework: reactor, timers, allocators and threads
+
+Eleven entries. None was touched by phases 3 to 11, which moved the venue's machinery into the library
+but did not change these parts of it.
+
+| Entry | Judgement | Evidence | What is left |
+|---|---|---|---|
+| [BUG-0129](bug_list.md#bug_0129): the stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation | **Breach** of F2 (the lock), and a data race, undefined behaviour in C++ | Unchanged: `Reactor.cpp` still takes `thread_registry_mutex_` (twelve uses), and `ApplicationThread::time_event_started_` and `time_event_finished_` are plain `HighResolutionClock::time_point` members written by one thread and read by another | Both parts as the entry describes; the race first, being undefined behaviour |
+| [BUG-0127](bug_list.md#bug_0127): a pool that runs out takes a mutex and maps a new pool while holding it | **Breach** of F2 and F5 | Unchanged: `ExpandablePoolAllocator` still has `expansion_mutex_` on its slow path | No lock on the allocation path, as the entry describes; with BUG-0072, sizing so the slow path is not reached in a normal day |
+| [BUG-0128](bug_list.md#bug_0128): every timer start creates a timer and every cancel destroys one, with a lock and system calls on the reactor thread | **Breach** of F2 and F3 | Unchanged: `Reactor` still has `timer_registry_mutex_`, and there is still no way to create a timer apart from starting it | Timers created once and armed and disarmed afterwards; the design the entry asks for |
+| [BUG-0119](bug_list.md#bug_0119): a thread still in a handler when its reactor shuts down uses the destroyed reactor | **Breach** of F8 (shutdown is deterministic) | Unchanged in the shutdown path | Decide whether a reactor may ever be destroyed while one of its threads may still run, and make shutdown wait or refuse accordingly |
+| [BUG-0184](bug_list.md#bug_0184): a paused connection sometimes went on delivering | **Investigation**, a **Breach** if the fault is in the reactor | Still failing about one run in four of the coverage build, as the entry records | Find whether pausing fails or the test's timing does, under load |
+| [BUG-0104](bug_list.md#bug_0104): a connection whose reads were paused can stay stalled after they resume | **Investigation** | Unchanged; the kernel rule is not established | As the entry describes; related to BUG-0184 and best done with it |
+| [BUG-0087](bug_list.md#bug_0087): whether the hot path allocates cannot be established on demand | **New requirement**, a tool | Not built: no counting interposer in `scripts/` | The tool; then BUG-0131, BUG-0127 and BUG-0072 can each be shown fixed by a count rather than by reading |
+| [BUG-0166](bug_list.md#bug_0166): the reactor writes a Warning for every send to a connection that has gone | **Defect** | Unchanged: `Reactor::process_control_commands` logs "unknown connection id ... for SendPdu" for each send | One Warning per connection, with a count |
+| [BUG-0161](bug_list.md#bug_0161): the framework names the venue's ideas in how it classifies a send | **Defect**, of naming | Unchanged: `MemberIsWaitingFlag.hpp` is still in the framework | The neutral names the entry suggests |
+| [BUG-0177](bug_list.md#bug_0177): the C++ generated from the DSL does not compile for a list of enums | **Defect**, in the DSL compiler | Unchanged in `python/dsl/generator_cpp.py` | As the entry describes |
+| [BUG-0179](bug_list.md#bug_0179): the Java generated from the DSL decodes an unlisted enum value as null | **Defect**, in the DSL compiler | Unchanged: `generator_java.py` still decodes through `fromValue`, which returns `null` for a value it does not know | As the entry describes |
+
+**Recommended order in this area.** BUG-0129 first, for its data race. Then BUG-0127 and BUG-0128,
+the two locks on paths an order can take; each needs a design agreed before code, and BUG-0128 the larger
+one. BUG-0087's tool is worth building before those, since it is how their fixes, and BUG-0131's, would
+be shown to work. BUG-0119 with the shutdown sequence. BUG-0184 and BUG-0104 together. The four defects
+are small and can be done when their files are next touched.
