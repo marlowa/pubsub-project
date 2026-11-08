@@ -5541,22 +5541,6 @@ def client_reports(f8proc: subprocess.Popen) -> ClientReports:
     return _CLIENT_REPORTS[f8proc.pid]
 
 
-def await_new_orders_since(f8proc: subprocess.Popen, count: int, since: int, timeout: float) -> tuple[bool, float]:
-    """Wait up to timeout seconds for count orders, any orders, to have their first New report at the client at or after
-    position since in its reports. Returns whether they did, and how long it took."""
-    reports = client_reports(f8proc)
-    started = time.monotonic()
-    deadline = started + timeout
-    while reports.new_orders_since(since) < count:
-        if f8proc.poll() is not None:
-            found = reports.new_orders_since(since) >= count
-            return found, time.monotonic() - started
-        if time.monotonic() >= deadline:
-            return False, time.monotonic() - started
-        time.sleep(POLL_INTERVAL)
-    return True, time.monotonic() - started
-
-
 # How many orders one command to the FIX8 test client sends: "T" sends a burst of a thousand, "n" a single order.
 _ORDERS_PER_COMMAND = {b"T": 1000, b"n": 1}
 
@@ -5596,6 +5580,44 @@ def await_new_orders(f8proc: subprocess.Popen, count: int, sent_before: int, tim
             return False, time.monotonic() - started
         time.sleep(POLL_INTERVAL)
     return True, time.monotonic() - started
+
+
+# The longest Phase 5 waits for its recovery orders while reports keep arriving at the client for orders sent before them.
+_RECOVERY_WAIT_LIMIT_SECONDS = 600.0
+
+
+def await_new_orders_while_reports_arrive(f8proc: subprocess.Popen, count: int, sent_before: int,
+                                          stall_timeout: float) -> tuple[bool, float, float | None]:
+    """Wait for each of count orders, the next sent after the first sent_before, to have a New report at the client.
+
+    Named by their ClOrdIDs, as await_new_orders names them, so reports for orders sent earlier cannot stand in for
+    these. The client sends in order, so these orders can wait behind thousands sent before a failure and not yet
+    answered. The wait therefore goes on for as long as the client keeps receiving reports, and gives up only when none
+    has arrived for stall_timeout seconds, or after _RECOVERY_WAIT_LIMIT_SECONDS in all.
+
+    Returns whether every one was reported, how long the wait took, and how far into it the first of them was reported,
+    which is how long the orders ahead of them took; None if none was.
+    """
+    reports = client_reports(f8proc)
+    started = time.monotonic()
+    last_progress = started
+    reports_seen = reports.mark()
+    first_reported_after: float | None = None
+    while True:
+        now = time.monotonic()
+        reported = reports.new_among(sent_before, count)
+        if reported > 0 and first_reported_after is None:
+            first_reported_after = now - started
+        if reported >= count:
+            return True, now - started, first_reported_after
+        if f8proc.poll() is not None:
+            return reports.new_among(sent_before, count) >= count, now - started, first_reported_after
+        if len(reports.reports) > reports_seen:
+            reports_seen = len(reports.reports)
+            last_progress = now
+        elif now - last_progress >= stall_timeout or now - started >= _RECOVERY_WAIT_LIMIT_SECONDS:
+            return False, now - started, first_reported_after
+        time.sleep(POLL_INTERVAL)
 
 
 def _fix_flag_is_set(value: str | None) -> bool:
@@ -6681,6 +6703,30 @@ def blocked_peer_environment(prefix: Path, flag: Path) -> dict[str, str]:
 def block_confirmation(flag: Path) -> Path:
     """The file libblock_sends_to_ports.so creates when it begins blocking, beside the flag file that tells it to."""
     return flag.with_suffix(".blocking")
+
+
+def stop_leader_once_it_has_written(leader: subprocess.Popen, wal_dir: Path, cl_ord_ids: list[str]) -> bool:
+    """Stops the leading sequencer with SIGSTOP as soon as its WAL holds every one of cl_ord_ids, or after 80 ms.
+
+    inject_order's "sent" line means only that the orders are on their way, so stopping the leader at once can beat it
+    to reading the last of them, and it then never writes it. The leader holds orders at least the follower's
+    acknowledgement timeout, 100 ms, before a voter can confirm that it may act without its follower, so waiting up to
+    80 ms still stops it before it acts on them. Only the newest two segments are read, so that each look is quick.
+
+    Returns whether the WAL held every order when the leader was stopped.
+    """
+    def written() -> bool:
+        newest = sorted(wal_dir.glob("wal_*.log"))[-2:]
+        data = b"".join(path.read_bytes() for path in newest)
+        return all(cl_ord_id.encode() in data for cl_ord_id in cl_ord_ids)
+
+    give_up_at = time.monotonic() + 0.080
+    held = written()
+    while not held and time.monotonic() < give_up_at:
+        time.sleep(0.002)
+        held = written()
+    os.kill(leader.pid, signal.SIGSTOP)
+    return held
 
 
 def await_blocking(flag: Path, timeout: float) -> bool:
@@ -8402,20 +8448,25 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 f8proc = send_burst(0, gw_log, FIX8_RECOVERY_CFG)
 
             log(f"  Sending {after_total} recovery orders ...")
-            # Counted, not named: orders sent before these may still be on their way when these are sent, and the client
-            # sends in order, so these can wait behind thousands of them. What is confirmed is that after_total further
-            # orders were accepted and reported to the member from here on, which is what the matching engine's own count
-            # confirmed before; it does not confirm these orders themselves when others were in flight (BUG-0181).
-            recovery_from = client_reports(f8proc).mark()
-            send_orders(f8proc, b"T", orders_after)
+            # Named by their ClOrdIDs. Orders sent before the failure may still be on their way, and the client sends in
+            # order, so these can wait behind thousands of them: the wait goes on while reports keep arriving.
+            reports = client_reports(f8proc)
+            reports.read()
+            unanswered_ahead = max(0, reports.orders_sent - len(reports.first_new))
+            recovery_sent_before = send_orders(f8proc, b"T", orders_after)
 
-            log(f"  Waiting for the client to receive New reports for {after_total} further orders ...")
-            found, elapsed = await_new_orders_since(f8proc, after_total, recovery_from, timeout=args.recovery_timeout)
+            log(f"  Waiting for the client to receive a New report for each of the {after_total} recovery orders, behind about "
+                f"{unanswered_ahead} orders sent before them and not yet answered ...")
+            found, elapsed, first_after = await_new_orders_while_reports_arrive(f8proc, after_total, recovery_sent_before,
+                                                                                stall_timeout=args.recovery_timeout)
+            reported = client_reports(f8proc).new_among(recovery_sent_before, after_total)
             if not found:
-                die(
-                    f"recovery orders did not appear within {args.recovery_timeout:.0f}s"
-                )
-            log(f"  {after_total} recovery orders confirmed ({elapsed:.1f}s)")
+                die(f"recovery orders: {reported} of the {after_total} recovery orders had a New report at the client after {elapsed:.0f}s, "
+                    f"when no report had arrived for {args.recovery_timeout:.0f}s or the wait reached {_RECOVERY_WAIT_LIMIT_SECONDS:.0f}s. "
+                    "Orders sent after the failure were lost, or the venue stopped answering.")
+            ahead = f"{first_after:.1f}s" if first_after is not None else "no time"
+            log(f"  {after_total} recovery orders confirmed by their ClOrdIDs ({elapsed:.1f}s; the orders sent before them took {ahead} "
+                "before the first of them was answered)")
 
         # ── ME-HA: the book a promotion resumes with ──────────────────────────
         # The matching engine does no matching: every accepted NewOrderSingle is added to
@@ -10416,8 +10467,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "follower may still be receiving the leader's records and nothing below would mean anything.")
             log("  the leader's sends to its follower are now discarded, and the library has confirmed it -- OK")
 
-            # 2. Three orders to the leader in one go, and the leader stopped the moment they are
-            #    sent. With nothing reaching the follower, the leader holds them waiting for an
+            # 2. Three orders to the leader in one go, and the leader stopped as soon as it has written
+            #    them. With nothing reaching the follower, the leader holds them waiting for an
             #    acknowledgement that cannot come; after 100 ms it would treat the follower as behind
             #    and run as if alone, sending them to the engine, which is the accepted exposure of a
             #    leader running alone. Stopping it first keeps the orders held, which is the case
@@ -10428,7 +10479,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             injector = subprocess.Popen([str(bin_dir / "inject_order"), "--port", order_ports["primary"], "--cl-ord-id", run_tag_base,
                                          "--count", str(len(unreplicated))], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             sent_line = injector.stdout.readline() if injector.stdout is not None else ""
-            os.kill(primary.pid, signal.SIGSTOP)
+            if not stop_leader_once_it_has_written(primary, wal_dirs["primary"], unreplicated):
+                die("unreplicated orders: the leader's WAL did not hold the three orders sent to it within 80 ms of their being sent, so "
+                    "it was stopped holding fewer, and what follows would not be the case this scenario is for.")
             injector.wait(timeout=30)
             if not sent_line.startswith("sent "):
                 die(f"unreplicated orders: inject_order did not report sending the orders: {sent_line!r}")
@@ -10436,7 +10489,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 state = stat.read().rsplit(")", 1)[1].split()[0]
             if state != "T":
                 die(f"unreplicated orders: sequencer_primary is in state {state!r} after SIGSTOP, not stopped.")
-            log(f"  {len(unreplicated)} orders sent to the leader, and the leader stopped straight after: {sent_line.strip()}")
+            log(f"  {len(unreplicated)} orders sent to the leader, and the leader stopped once it had written them: {sent_line.strip()}")
             # The gateway's other copy, which the follower discards as a follower does.
             for cl_ord_id in unreplicated:
                 inject_to(order_ports["secondary"], cl_ord_id)
@@ -10560,11 +10613,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
             injector = subprocess.Popen([str(bin_dir / "inject_order"), "--port", order_ports["primary"], "--cl-ord-id", unreplicated_base,
                                          "--count", "3"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             sent_line = injector.stdout.readline() if injector.stdout is not None else ""
-            os.kill(primary.pid, signal.SIGSTOP)
+            unreplicated_ids = [f"{unreplicated_base}-{number}" for number in (1, 2, 3)]
+            if not stop_leader_once_it_has_written(primary, wal_dirs["primary"], unreplicated_ids):
+                die("publishers: the leader's WAL did not hold the three orders sent to it within 80 ms of their being sent, so it was "
+                    "stopped holding fewer, and the publishers' check below would not be the one intended.")
             injector.wait(timeout=30)
             if not sent_line.startswith("sent "):
                 die(f"publishers: inject_order did not report sending the orders: {sent_line!r}")
-            log(f"  3 orders sent to the leader, and the leader stopped straight after: {sent_line.strip()}")
+            log(f"  3 orders sent to the leader, and the leader stopped once it had written them: {sent_line.strip()}")
             for number in (1, 2, 3):
                 inject_orders_to(order_ports["secondary"], f"{unreplicated_base}-{number}")
             time.sleep(1.0)
@@ -10865,19 +10921,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             sent_line = injector.stdout.readline() if injector.stdout is not None else ""
             only_old_ids = [f"{only_old}-{number}" for number in (1, 2, 3)]
             # The leader is stopped as soon as it has written the three orders, and before it can act on them.
-            # "sent" means only that they are on their way, so stopping it at once raced the leader reading them.
-            # It holds them at least the follower's acknowledgement timeout, 100 ms, before a voter can confirm
-            # that it may act without the follower, so waiting up to 80 ms still stops it first. Only the newest
-            # two segments are read, so that each look is quick.
-            def written_by_leader() -> bool:
-                newest = sorted(wal_dirs["primary"].glob("wal_*.log"))[-2:]
-                data = b"".join(path.read_bytes() for path in newest)
-                return all(cl_ord_id.encode() in data for cl_ord_id in only_old_ids)
-
-            give_up_at = time.monotonic() + 0.080
-            while not written_by_leader() and time.monotonic() < give_up_at:
-                time.sleep(0.002)
-            os.kill(primary.pid, signal.SIGSTOP)
+            stop_leader_once_it_has_written(primary, wal_dirs["primary"], only_old_ids)
             injector.wait(timeout=30)
             if not sent_line.startswith("sent "):
                 die(f"old leader rejoins: inject_order did not report sending the orders: {sent_line!r}")
@@ -13279,7 +13323,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--recovery-timeout", type=float, default=30.0, metavar="SECS",
-        help="Max seconds for recovery orders to appear in the ME log (default: 30)",
+        help="Seconds Phase 5 waits with no report arriving at the client before it gives up on the recovery orders (default: 30)",
     )
     parser.add_argument(
         "--secondary-engine-first", action="store_true",

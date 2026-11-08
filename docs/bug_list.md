@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 236 |
-| Open | 65 (44 defects, 21 tasks) |
-| Closed | 171 |
+| Open | 63 (42 defects, 21 tasks) |
+| Closed | 173 |
 | Next id | BUG-0237 |
 
 ## Open bugs by severity
 
-15 high, 37 medium, 13 low.
+15 high, 36 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -56,7 +56,6 @@
 | [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
 | [BUG-0173](#bug_0173) | medium | task | No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests |
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
-| [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
 | [BUG-0203](#bug_0203) | medium | defect | The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together |
 | [BUG-0209](#bug_0209) | medium | task | No scenario reaches the halt when a matching engine cannot account for the orders the venue holds |
@@ -73,7 +72,6 @@
 | [BUG-0166](#bug_0166) | low | defect | The reactor writes a Warning for every send to a connection that has gone, not one for each connection |
 | [BUG-0177](#bug_0177) | low | defect | The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value |
 | [BUG-0179](#bug_0179) | low | defect | The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again |
-| [BUG-0185](#bug_0185) | low | defect | Scenarios 59 and 76 stop the leader the moment inject_order has sent, which can beat the leader to reading the last order |
 | [BUG-0214](#bug_0214) | low | defect | `fix_load_client.py` reports messages unreported that the venue answered, because it cancels orders the venue refused and does not count the OrderCancelReject that answers each |
 | [BUG-0215](#bug_0215) | low | defect | `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds |
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
@@ -2790,31 +2788,6 @@ that says whether each value is one the definition allows.
 
 **Principles.** None; the DSL compiler.
 
-### BUG-0181: When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were {#bug_0181}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-18 |
-| Recorded | 2026-10-18 |
-| How | Moving Phase 5's confirmation of the recovery orders from the matching engine's Quill log to the member's reports, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): confirming the recovery orders by name failed in scenario 1, which showed what the old check had been confirming |
-| Impact | A scenario can pass when the orders sent after the failure are lost, provided enough orders sent before it are accepted afterwards. The run's output says "1000 recovery orders confirmed" either way |
-
-**What happens.** In every scenario that leaves orders in flight across the failure (by default Phase 3 sends 20,000
-just before Phase 4 without waiting), Phase 5 sends 1,000 recovery orders and waits for 1,000 further orders to be
-accepted. The FIX test client sends in order, so the recovery orders queue behind those it has not yet sent: in
-scenario 1 the client had been answered for 7,512 of 22,000 orders when the 30 seconds ran out. The orders that
-confirm the wait are therefore orders sent before the failure, and the recovery orders themselves may never be
-reported. The check before phase 6 did the same, by waiting for the matching engine's highest order number at the
-start of Phase 5 plus 1,000.
-
-**What is wanted.** Phase 5 confirms the recovery orders by their ClOrdIDs, as Phase 3 and the interim orders now
-are (`await_new_orders`), with a wait long enough for the orders ahead of them, or with the client allowed to finish
-sending the orders in flight first. Either way the time the in-flight orders take should be printed, so that a run
-shows how long recovery really took.
-
-**Principles.** The tests check what they say they check.
-
 ### BUG-0183: A sequencer dies with SIGBUS appending to a WAL left by earlier runs {#bug_0183}
 
 | | |
@@ -2887,27 +2860,6 @@ from it by then, would tell the two apart.
 
 **Principles.** None directly; the reactor's pausing of a connection is what the gateways rely on to hold back a member.
 
-### BUG-0185: Scenarios 59 and 76 stop the leader the moment inject_order has sent, which can beat the leader to reading the last order {#bug_0185}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-10-19 |
-| Recorded | 2026-10-19 |
-| How | A full run of the high availability scenarios in step 4 of phase 6 ([test_events.md](availability/test_events.md)) failed at scenario 59, which had passed in every earlier full run |
-| Impact | The scenarios fail at random, and a run that fails this way says the old leader's WAL lacks an order, which reads as a defect of the venue's |
-
-**What was seen.** Scenario 59 failed with "the old leader's log ... does not hold ['unrep-210320-3'], which it wrote
-before sending them to the engine". The scenario starts `inject_order` with three orders, waits for the line saying they
-were sent, and stops the leader with SIGSTOP at once. "Sent" means only that the orders are on their way: the leader may
-not yet have read the third when it is stopped, so it never writes it. Scenario 62 had the same race, and waits, polling
-the WAL, until the leader has written its orders before stopping it; its comment says why. Scenarios 59 and 76 do not.
-
-**What is wanted.** Scenarios 59 and 76 wait as scenario 62 does: until the leader's WAL holds the orders, within the
-time before the leader may act on them, and only then stop it.
-
-**Principles.** None; the tests.
-
 ### BUG-0194: A matching engine that is connected but has stopped working looks healthy to everything that watches it {#bug_0194}
 
 | | |
@@ -2964,6 +2916,54 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0185: Scenarios 59 and 76 stop the leader the moment inject_order has sent, which can beat the leader to reading the last order {#bug_0185}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-19 |
+| Recorded | 2026-10-19 |
+| Fixed | 2026-11-08 -- scenarios 59 and 76 stop the leader with `stop_leader_once_it_has_written`, which waits up to 80 milliseconds until the leader's WAL holds every one of the orders, as scenario 62 already did, and now does through the same function. If the orders are not written in that time, the scenario stops and says so, instead of going on to test a different case. Made on purpose to report the orders unwritten, scenario 59 stopped with that message. With the fix, scenarios 59, 76 and 62 passed, and the suites passed 102 of 102 and 39 of 39 with the secondary engine first |
+| How | A full run of the high availability scenarios in step 4 of phase 6 ([test_events.md](availability/test_events.md)) failed at scenario 59, which had passed in every earlier full run |
+| Impact | The scenarios fail at random, and a run that fails this way says the old leader's WAL lacks an order, which reads as a defect of the venue's |
+
+**What was seen.** Scenario 59 failed with "the old leader's log ... does not hold ['unrep-210320-3'], which it wrote
+before sending them to the engine". The scenario starts `inject_order` with three orders, waits for the line saying they
+were sent, and stops the leader with SIGSTOP at once. "Sent" means only that the orders are on their way: the leader may
+not yet have read the third when it is stopped, so it never writes it. Scenario 62 had the same race, and waits, polling
+the WAL, until the leader has written its orders before stopping it; its comment says why. Scenarios 59 and 76 do not.
+
+**What is wanted.** Scenarios 59 and 76 wait as scenario 62 does: until the leader's WAL holds the orders, within the
+time before the leader may act on them, and only then stop it.
+
+**Principles.** None; the tests.
+
+### BUG-0181: When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were {#bug_0181}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| Fixed | 2026-11-08 -- Phase 5 confirms the recovery orders by their ClOrdIDs: `await_new_orders_while_reports_arrive` waits for a New report for each of the orders sent after the failure, named as `await_new_orders` names them, so reports for orders sent earlier cannot stand in for them. Because they can wait behind thousands of orders sent before the failure, the wait goes on while reports keep arriving, and gives up when none has arrived for `--recovery-timeout` seconds, or after 600 seconds in all. The run's output says how many orders were unanswered ahead of them, and how long those took. Made on purpose to look for orders that were never sent, scenario 1 failed. With the fix, scenario 1 passed, and the suites passed 102 of 102 and 39 of 39 with the secondary engine first; in 35 of the scenarios with recovery orders the first of them was answered within 0.1 seconds, and the longest wait behind earlier orders was 2.2 seconds |
+| How | Moving Phase 5's confirmation of the recovery orders from the matching engine's Quill log to the member's reports, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): confirming the recovery orders by name failed in scenario 1, which showed what the old check had been confirming |
+| Impact | A scenario can pass when the orders sent after the failure are lost, provided enough orders sent before it are accepted afterwards. The run's output says "1000 recovery orders confirmed" either way |
+
+**What happens.** In every scenario that leaves orders in flight across the failure (by default Phase 3 sends 20,000
+just before Phase 4 without waiting), Phase 5 sends 1,000 recovery orders and waits for 1,000 further orders to be
+accepted. The FIX test client sends in order, so the recovery orders queue behind those it has not yet sent: in
+scenario 1 the client had been answered for 7,512 of 22,000 orders when the 30 seconds ran out. The orders that
+confirm the wait are therefore orders sent before the failure, and the recovery orders themselves may never be
+reported. The check before phase 6 did the same, by waiting for the matching engine's highest order number at the
+start of Phase 5 plus 1,000.
+
+**What is wanted.** Phase 5 confirms the recovery orders by their ClOrdIDs, as Phase 3 and the interim orders now
+are (`await_new_orders`), with a wait long enough for the orders ahead of them, or with the client allowed to finish
+sending the orders in flight first. Either way the time the in-flight orders take should be printed, so that a run
+shows how long recovery really took.
+
+**Principles.** The tests check what they say they check.
 
 ### BUG-0189: Anyone who reaches first-run setup can create the COMPID editor's first administrator {#bug_0189}
 

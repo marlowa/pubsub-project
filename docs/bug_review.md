@@ -33,7 +33,8 @@ All 81 open entries have been judged. The figures:
 1. Close the thirteen entries above that are fixed or no longer apply. Done, 8 November 2026.
 2. The small breaches, each with a remedy already agreed or obvious: BUG-0129 (a data race; fixed and closed on
    8 November 2026), BUG-0225 (fixed and closed on 8 November 2026, with BUG-0233; BUG-0234 and BUG-0235 found),
-   BUG-0226, BUG-0210, BUG-0095 and BUG-0189 (each fixed and closed on 8 November 2026), and the tests BUG-0181 and BUG-0185.
+   BUG-0226, BUG-0210, BUG-0095 and BUG-0189, and the tests BUG-0181 and BUG-0185, each fixed and closed on 8 November
+   2026. Done.
 3. The breaches that need a short design first: BUG-0142 (statements written in the background),
    BUG-0130 (segments kept ready), BUG-0207 (with its scenario), BUG-0211, BUG-0090 with BUG-0091,
    BUG-0131, and BUG-0072.
@@ -215,8 +216,8 @@ Fifteen entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0181](bug_list.md#bug_0181): with orders in flight, Phase 5 confirms that a thousand further orders were accepted, not the recovery orders themselves | **Test or tool**, and the most serious here: a scenario can pass when the orders sent after a failure are lost | Unchanged: Phase 5 waits with `await_new_orders_since` for any 1,000 further orders | Confirm the recovery orders by their ClOrdIDs, with the wait long enough for the orders ahead of them |
-| [BUG-0185](bug_list.md#bug_0185) and [BUG-0145](bug_list.md#bug_0145): scenarios 59 and 76 stop the leader the moment `inject_order` has sent | **Test or tool**; the two entries describe one fault | Unchanged: both scenarios send `SIGSTOP` straight after reading `inject_order`'s "sent" line. Scenario 62, which BUG-0145 also named, now waits until the leader's WAL holds the orders | Scenarios 59 and 76 wait as scenario 62 does. Close BUG-0145 into BUG-0185 |
+| [BUG-0181](bug_list.md#bug_0181): with orders in flight, Phase 5 confirms that a thousand further orders were accepted, not the recovery orders themselves | **Test or tool**, and the most serious here: a scenario can pass when the orders sent after a failure are lost | Unchanged: Phase 5 waits with `await_new_orders_since` for any 1,000 further orders | **Fixed on 8 November 2026** and closed: Phase 5 names the recovery orders by their ClOrdIDs, and waits while reports keep arriving; made to look for orders never sent, it failed |
+| [BUG-0185](bug_list.md#bug_0185) and [BUG-0145](bug_list.md#bug_0145): scenarios 59 and 76 stop the leader the moment `inject_order` has sent | **Test or tool**; the two entries describe one fault | Unchanged: both scenarios send `SIGSTOP` straight after reading `inject_order`'s "sent" line. Scenario 62, which BUG-0145 also named, now waits until the leader's WAL holds the orders | **Fixed on 8 November 2026** and closed: scenarios 59 and 76 stop the leader only once its WAL holds the orders, through the function scenario 62 now uses too |
 | [BUG-0149](bug_list.md#bug_0149): scenario 62 can crash reading a WAL segment the sequencer deletes | **Test or tool** | Unchanged: `wal_record_ids`, `wal_records_after` and `wal_entries` list the directory and then open each file, with nothing to allow for a file deleted in between | Pass over a segment that has gone, or read only once the sequencer has finished changing the WAL |
 | [BUG-0215](bug_list.md#bug_0215): `perf_run.py` fails every run of the trading-day profile | **Test or tool** | Unchanged: the profile leaves about 11.7 million orders resting, and the development region holds 2 million | A higher cancel ratio in the profile, or the refusals for a full book counted as answered |
 | [BUG-0214](bug_list.md#bug_0214): `fix_load_client.py` reports answered messages as unreported | **Test or tool** | Unchanged | As the entry describes |
