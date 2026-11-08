@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 235 |
+| Bugs recorded | 236 |
 | Open | 65 (44 defects, 21 tasks) |
-| Closed | 170 |
-| Next id | BUG-0236 |
+| Closed | 171 |
+| Next id | BUG-0237 |
 
 ## Open bugs by severity
 
-16 high, 36 medium, 13 low.
+15 high, 37 medium, 13 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,7 +25,6 @@
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
 | [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
-| [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
 | [BUG-0234](#bug_0234) | high | defect | A matching engine catching up from far back sends its reports faster than the sequencer reads them, and the framework closes the connection and loses the rest |
@@ -65,6 +64,7 @@
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0235](#bug_0235) | medium | defect | Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later |
+| [BUG-0236](#bug_0236) | medium | defect | The COMPID editor writes its administrators' file readable by every account on the host |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -173,6 +173,28 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0236: The COMPID editor writes its administrators' file readable by every account on the host {#bug_0236}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-08 |
+| Recorded | 2026-11-08 |
+| How | Trying first-run setup against the deployed editor for [BUG-0189](#bug_0189): the administrator it created was written to `admin_users.toml` with permissions `rw-rw-r--` |
+| Impact | Any account on the host can read the bcrypt hash of every administrator's password and try to guess the passwords offline, at its own pace, with nothing to slow it or see it. An administrator manages every member's credentials and permissions |
+
+**What happens.** `AdminUserStore` writes the file by writing a temporary file with `Files.writeString` and renaming
+it over the old one. It sets no permissions, so the file gets the ones the process's umask allows; on this machine,
+read access for every account.
+
+Found by trying it; the one-time setup secret beside it is written readable only by its owner.
+
+**What is wanted.** The store creates the temporary file readable and writable only by its owner, as `SetupSecret`
+does, so the file it is renamed to is too, whatever the umask. A unit test checks the permissions of the file after a
+write; it is made to fail on purpose first.
+
+**Principles.** None of the design principles; a security defect in the operator's tool.
 
 ### BUG-0234: A matching engine catching up from far back sends its reports faster than the sequencer reads them, and the framework closes the connection and loses the rest {#bug_0234}
 
@@ -2886,24 +2908,6 @@ time before the leader may act on them, and only then stop it.
 
 **Principles.** None; the tests.
 
-### BUG-0189: Anyone who reaches first-run setup can create the COMPID editor's first administrator {#bug_0189}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-20 |
-| Recorded | 2026-10-20 |
-| How | Tracing the COMPID editor's first-run setup route while writing security requirement R-0153 in the functional specification |
-| Impact | A client that reaches the editor before the operator can create an administrator account and then manage member credentials and permissions |
-
-`AuthFilter` allows requests to `/setup` without an authenticated session. `SetupHandler` presents the form while
-the administrator-user store is empty and creates the first account as an administrator when the submitted
-password and confirmation match and the password is at least eight characters long. The route requires no
-one-time secret or proof that the requester has access to the installed host.
-
-The first-run route must require a one-time secret generated for the installation and available only to an
-operator with access to the host. Creating the first administrator must consume that secret and close setup.
-
 ### BUG-0194: A matching engine that is connected but has stopped working looks healthy to everything that watches it {#bug_0194}
 
 | | |
@@ -2960,6 +2964,25 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0189: Anyone who reaches first-run setup can create the COMPID editor's first administrator {#bug_0189}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-20 |
+| Recorded | 2026-10-20 |
+| Fixed | 2026-11-08 -- first-run setup asks for a one-time secret. While no administrator exists, the editor writes 32 random bytes, as hexadecimal, to `admin_setup_secret.txt` beside the administrators' file, readable and writable only by its owner, and logs a warning naming the file (`SetupSecret`, `FirstAdministratorSetup`). Setup checks the secret before the password; a wrong or missing one is refused with HTTP 403 and creates nothing. Creating the first administrator deletes the file. Ten new unit tests; with `SetupSecret` made on purpose to accept any secret, four of them failed. `mvn -o verify` passed, with SpotBugs and JaCoCo, and so did `devsetup.sh`. Against the deployed editor, started alone with no administrator: the file was written readable and writable only by its owner; setup with no secret and with a wrong one was answered 403 and created nothing; setup with the secret created the administrator and deleted the file; and a second setup with the same secret was sent away and created no account. R-0153 in the functional specification no longer records a gap. Trying it found [BUG-0236](#bug_0236) |
+| How | Tracing the COMPID editor's first-run setup route while writing security requirement R-0153 in the functional specification |
+| Impact | A client that reaches the editor before the operator can create an administrator account and then manage member credentials and permissions |
+
+`AuthFilter` allows requests to `/setup` without an authenticated session. `SetupHandler` presents the form while
+the administrator-user store is empty and creates the first account as an administrator when the submitted
+password and confirmation match and the password is at least eight characters long. The route requires no
+one-time secret or proof that the requester has access to the installed host.
+
+The first-run route must require a one-time secret generated for the installation and available only to an
+operator with access to the host. Creating the first administrator must consume that secret and close setup.
 
 ### BUG-0095: Checking the format of a FIX price or quantity overflows a signed integer on long values {#bug_0095}
 

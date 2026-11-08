@@ -9,6 +9,8 @@ import com.pubsub.admin.exception.ForbiddenException;
 import com.pubsub.admin.exception.NotFoundException;
 import com.pubsub.admin.service.AdminUserStore;
 import com.pubsub.admin.service.AuthServiceClient;
+import com.pubsub.admin.service.FirstAdministratorSetup;
+import com.pubsub.admin.service.SetupSecret;
 import com.pubsub.admin.web.AuthFilter;
 import com.pubsub.admin.web.ChangePasswordHandler;
 import com.pubsub.admin.web.CompIdHandler;
@@ -58,6 +60,14 @@ public class Main {
         }
 
         AdminUserStore adminUserStore = new AdminUserStore(Paths.get(config.adminUsersFile()));
+        // The one-time secret first-run setup asks for is kept beside the administrators' file (R-0153).
+        FirstAdministratorSetup firstAdministratorSetup = new FirstAdministratorSetup(adminUserStore,
+                new SetupSecret(Paths.get(config.adminUsersFile()).toAbsolutePath().resolveSibling("admin_setup_secret.txt")));
+        if (firstAdministratorSetup.prepare()) {
+            log.warn("No administrator exists. First-run setup at /setup asks for the one-time secret in {}, which only the account "
+                    + "running this editor can read; creating the first administrator deletes it",
+                    firstAdministratorSetup.secretFile());
+        }
 
         FirmHandler firmHandler = new FirmHandler(firmDao, compIdDao, authServiceClient);
         CompIdHandler compIdHandler = new CompIdHandler(compIdDao, firmDao, authServiceClient);
@@ -65,7 +75,7 @@ public class Main {
                 new GatewayPermissionHandler(gatewayPermissionDao, compIdDao);
         AuthFilter authFilter = new AuthFilter(adminUserStore);
         LoginHandler loginHandler = new LoginHandler(adminUserStore);
-        SetupHandler setupHandler = new SetupHandler(adminUserStore);
+        SetupHandler setupHandler = new SetupHandler(firstAdministratorSetup);
         ChangePasswordHandler changePasswordHandler = new ChangePasswordHandler(adminUserStore);
         UserManagementHandler userMgmtHandler = new UserManagementHandler(adminUserStore);
 

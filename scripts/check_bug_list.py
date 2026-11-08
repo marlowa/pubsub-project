@@ -42,6 +42,7 @@ _BUG_LIST = _PROJECT_ROOT / 'docs' / 'bug_list.md'
 _ENTRY_RE = re.compile(r'^### (BUG-\d{4}): (.+?) \{#(bug_\d{4})\}$')
 _INDEX_RE = re.compile(r'^\| \[(BUG-\d{4})\]\(#(bug_\d{4})\) \| (high|medium|low) \| (defect|task) \| (.+) \|$')
 _CITATION_RE = re.compile(r'BUG-\d{4}')
+_SEPARATOR_RE = re.compile(r'\|[\s:|-]+\|')
 _SEVERITY_RANK = {'high': 0, 'medium': 1, 'low': 2}
 _REQUIRED_ROWS = ('Severity', 'Found', 'Recorded', 'How')
 _CLOSING_ROWS = ('Fixed', 'Dismissed')
@@ -97,7 +98,9 @@ def parse(lines: list[str]) -> tuple[list[Entry], list[tuple[str, str, str, str]
                           f"Sub-headings inside an entry must be '####' or deeper")
             continue
 
-        if line.startswith('| ') and '---' not in line:
+        # A table's separator line is made of bars, dashes, colons and spaces alone; any other line beginning with a bar is a row,
+        # even one whose text contains three dashes.
+        if line.startswith('| ') and not _SEPARATOR_RE.fullmatch(line):
             parts = [p.strip() for p in line.split('|')]
             if len(parts) >= 3 and parts[1]:
                 if current is not None and not current.rows.get('_closed'):

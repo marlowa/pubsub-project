@@ -17,10 +17,16 @@
         </#if>
         <h2>${brandName} – First-Run Setup</h2>
         <p>Create the initial administrator account.</p>
+        <p>Setup asks for a one-time secret, to show that you have access to the host this editor runs on. The editor
+           wrote it to a file there when it started, and its log names the file. Only the account the editor runs as
+           can read it. Once the administrator is created, the file is deleted.</p>
         <#if error??><p><mark>${error}</mark></p></#if>
         <form method="post" action="/setup">
+            <label>One-time setup secret
+                <input type="password" name="secret" required autocomplete="off">
+            </label>
             <label>Username
-                <input type="text" name="username" value="${username!''}" required autofocus>
+                <input type="text" name="username" value="${username!''}" required>
             </label>
             <label>Password
                 <input type="password" name="password" required autocomplete="new-password">

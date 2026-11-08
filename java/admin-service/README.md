@@ -39,8 +39,23 @@ The service starts on port 8080 by default.
 ## First-Run Setup
 
 On the first visit, the service detects that no admin users exist and redirects to
-`/setup`. Enter a username and password (minimum 8 characters) to create the initial
-ADMIN account, then sign in at `/login`.
+`/setup`. Setup creates the initial ADMIN account, and asks for three things: a one-time
+setup secret, a username, and a password of at least 8 characters, entered twice.
+
+The one-time secret shows that the person doing setup has access to the host the editor
+runs on. Anyone who can reach the editor's web page can reach `/setup`, so without the
+secret, whoever got there first would become its administrator.
+
+- While no administrator exists, the editor writes a random secret to
+  `admin_setup_secret.txt`, in the same directory as `admin_users.toml`, when it starts.
+  Only the account the editor runs as can read the file. The editor's log names the file
+  in a warning. If the file is already there, the editor keeps the secret in it.
+- Read the secret from that file on the host, and enter it on the setup page with the
+  username and password.
+- A wrong secret is refused with HTTP 403, and nothing is created. The secret is checked
+  before the password.
+- Once the first administrator is created, the file is deleted and setup is closed. Sign
+  in at `/login`.
 
 Admin user credentials are stored in `admin_users.toml` (path configurable via
 `admin.users-file`). This file is created automatically on first use. It does not

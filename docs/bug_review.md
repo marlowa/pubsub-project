@@ -33,7 +33,7 @@ All 81 open entries have been judged. The figures:
 1. Close the thirteen entries above that are fixed or no longer apply. Done, 8 November 2026.
 2. The small breaches, each with a remedy already agreed or obvious: BUG-0129 (a data race; fixed and closed on
    8 November 2026), BUG-0225 (fixed and closed on 8 November 2026, with BUG-0233; BUG-0234 and BUG-0235 found),
-   BUG-0226, BUG-0210 and BUG-0095 (each fixed and closed on 8 November 2026), BUG-0189, and the tests BUG-0181 and BUG-0185.
+   BUG-0226, BUG-0210, BUG-0095 and BUG-0189 (each fixed and closed on 8 November 2026), and the tests BUG-0181 and BUG-0185.
 3. The breaches that need a short design first: BUG-0142 (statements written in the background),
    BUG-0130 (segments kept ready), BUG-0207 (with its scenario), BUG-0211, BUG-0090 with BUG-0091,
    BUG-0131, and BUG-0072.
@@ -242,7 +242,7 @@ Seven entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0189](bug_list.md#bug_0189): anyone who reaches first-run setup can create the first administrator | **Defect**, of security (R-0153) | Unchanged: nothing in `java/admin-service` asks for a one-time secret on first-run setup | A one-time secret generated at installation, required and consumed by setup |
+| [BUG-0189](bug_list.md#bug_0189): anyone who reaches first-run setup can create the first administrator | **Defect**, of security (R-0153) | Unchanged: nothing in `java/admin-service` asks for a one-time secret on first-run setup | **Fixed on 8 November 2026** and closed: the editor writes a one-time secret, readable only by its owner, while no administrator exists; setup refuses a wrong or missing one with HTTP 403, and creating the first administrator deletes it. Tried against the deployed editor, which found [BUG-0236](bug_list.md#bug_0236): the administrators' file is readable by every account |
 | [BUG-0069](bug_list.md#bug_0069): the sequencer, arbiters and witness report no metrics | **Partly done** | The sequencer now registers seventeen metrics (`SequencerThread.cpp`), among them `sequencer_running_alone` and the measures of a slow disk from BUG-0228. The arbiter, the witness and the authentication service register none of their own | Metrics for the arbiters (which is active, leases granted and refused, statements held) and the witness |
 | [BUG-0041](bug_list.md#bug_0041): five ways the venue will not start on a RHEL8 target host | **Partly done** | The first of the five is fixed: `db/create_db.py` now finds Liquibase with `shutil.which`. The other four were not checked in this review | Check the other four against the scripts, and the Rocky 8 Docker build, which is blocked on network access in the cloud environment (`doc-audit-progress.txt`) |
 | [BUG-0073](bug_list.md#bug_0073): the placeholder environments carry settings nobody chose | **Decision needed** | Unchanged; preprod, prod and test-1 still disable three of the four gateways, and still list `binary_order_gateway_a` among the components started | What each environment is to run, decided before any of them is deployed to |

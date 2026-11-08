@@ -22,6 +22,8 @@
             <Class name="com.pubsub.admin.web.SetupHandler"/>
             <Class name="com.pubsub.admin.web.ChangePasswordHandler"/>
             <Class name="com.pubsub.admin.web.UserManagementHandler"/>
+            <!-- Holds the editor's administrator store and setup secret, which it is given and shares. -->
+            <Class name="com.pubsub.admin.service.FirstAdministratorSetup"/>
             <!--
               PduChannel stores HeaderWriter/HeaderReader functional interfaces by reference.
               These are @FunctionalInterface types — defensive copying is not applicable.

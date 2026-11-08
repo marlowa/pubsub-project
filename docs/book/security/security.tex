@@ -102,10 +102,11 @@ encrypted by the application itself; deployments need to account for this
 when deciding which networks may reach the editor.
 
 When the administrator-user store is empty, the setup page is public and the
-first account created receives the \texttt{ADMIN} role. The current setup
-route checks that the password and confirmation match and that the password
-is at least eight characters long. It does not require proof that the
-requester has access to the installed host.
+first account created receives the \texttt{ADMIN} role. To create it, setup
+asks for a one-time secret as well as the username and password. The editor
+writes the secret, when it starts with no administrator, to a file beside the
+administrator-user store that only the account running the editor can read,
+and deletes it when the first account is created.
 
 \begin{requirement}{R-0153}{First administrator setup requires proof of installation access}
   Before the first administrator account is created, setup shall require a
@@ -116,11 +117,5 @@ requester has access to the installed host.
   unauthenticated client that can reach the editor may claim control of member
   credentials and permissions before the operator does. Requiring proof available
   only from the installed host reserves initial administration for the operator.}
-  \begin{gap}{BUG-0189}
-    The setup page and submission route are public while the administrator-user
-    store is empty. The submission checks only that the passwords match and that
-    the password is at least eight characters long. It requires no
-    installation-specific secret or proof of access to the host.
-  \end{gap}
-  \uncovered{no test verifies that first-run setup rejects a request without a valid one-time secret}
+  \uncovered{the COMPID editor's unit tests check that setup refuses a wrong or missing secret and that creating the first account deletes it; no scenario starts the editor and tries setup}
 \end{requirement}
