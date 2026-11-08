@@ -10,7 +10,8 @@ the arbiter pool is enough. The rules, why each is needed, and what happens in e
 [Deciding leadership by majority, with leases](../availability/majority_leases.md).
 
 Two arbiters form the pool, and it votes through whichever of them is **active**. The other is
-**passive** and votes on nothing. An arbiter is active only while a majority of three voters -- the
+**passive**: it grants and refuses no lease, but it does record each component leader's statement
+about whether its peer may lead, and confirms to the leader that it holds it (below). An arbiter is active only while a majority of three voters -- the
 two arbiters and the [witness](witness.md) -- has granted it a lease in turn, by the same rules. An
 active arbiter that can reach neither its peer nor the witness stops being active when its lease
 runs out, so at most one arbiter is ever active.
@@ -45,12 +46,27 @@ In memory it holds:
   the highest epoch it has granted. See `libraries/pubsub_itc_fw/include/pubsub_itc_fw/ComponentLeaseVoters.hpp`;
 - the highest epoch granted in each group, whether by this arbiter or, as its peer reports, by the
   other one;
-- the newest leader statement for each group, as above.
+- the newest leader statement for each group, as above;
+- when it last heard from the other arbiter, and when it sent the heartbeat whose echo it last
+  received (`ArbiterPeerContact.hpp`).
 
 An arbiter that becomes active does not know what the previously active arbiter promised, so it
 grants no component a lease for one lease period. During that period each component leader renews
 with its peer alone, so a change of active arbiter costs nothing while every pair has both instances
 running.
+
+**A leader's statement that its peer may not lead is held by both arbiters.** Each arbiter, active or
+passive, records the statement from the lease request that carries it, writes it to disk, and then
+sends the leader `StatementHeld`. A sequencer leader acts on a command its follower lacks only once its
+follower has echoed the statement, or both arbiters have confirmed it, or the active arbiter has
+confirmed it alone. The active arbiter confirms alone only after it has heard nothing from the other
+arbiter for two lease periods, one renewal interval and one more lease period, which is ten seconds
+with the timings every environment uses. The two arbiters send each other a heartbeat every tick, each
+echoing the newest one received from the other. An arbiter that becomes active when it last had one of
+its own heartbeats echoed more than two lease periods and one renewal interval earlier (seven seconds)
+may lack a statement the other confirmed alone, so it grants no component a lease until it hears from
+the other arbiter again and receives its state. See
+[A follower behind does not lead](../availability/a_follower_behind_does_not_lead.md), section 4.2.
 
 ---
 
@@ -59,14 +75,16 @@ running.
 ### Component to arbiter
 
 Components connect to **both** arbiters and send each lease request to both, because which arbiter
-is active can change. The active arbiter answers; the passive one stays silent. A refusal from the
-passive one would cancel the request the active one is answering, because both carry the same id.
+is active can change. The active arbiter answers; the passive one does not answer the request for a
+lease. A refusal from the passive one would cancel the request the active one is answering, because
+both carry the same id. Both arbiters confirm a statement the request carries, with `StatementHeld`.
 
 | PDU | ID | Direction | Purpose |
 |-----|----|-----------|---------|
 | `LeaseRequest` | 130 | Component → both arbiters | Ask to lead, or renew a lease already held |
 | `LeaseGrant` | 131 | Active arbiter → component | Grant it; the arbiter promises its vote to no other instance of the pair for one lease period |
 | `LeaseRefusal` | 132 | Active arbiter → component | Refuse it, with the highest epoch granted in the group and the reason |
+| `StatementHeld` | 401 | Either arbiter → component leader | This arbiter holds the leader's statement about whether its peer may lead, on disk; it carries the arbiter's id, the statement's leader, epoch and number, and whether the active arbiter is confirming alone |
 
 The arbiter answers as voter 3. The instances of a pair are 1 and 2.
 
@@ -76,6 +94,7 @@ The arbiter answers as voter 3. The instances of a pair are 1 and 2.
 |-----|----|-----------|---------|
 | `LeaseRequest` / `LeaseGrant` / `LeaseRefusal` | 130-132 | Arbiter ↔ arbiter | Deciding which arbiter is active, in group `arbiter` |
 | `ArbiterStateRecord` | 400 | Arbiter → peer arbiter | The highest epoch granted in one component group, and the newest statement held from that group's leader about whether its peer may lead. Sent when either changes, and for every group when the link comes up |
+| `ArbiterHeartbeat` | 402 | Arbiter ↔ arbiter | Sent every tick on every connection between the two: when it was sent, on the sender's steady clock, and the newest such time the sender has received from the other |
 
 ### Arbiter and witness
 
