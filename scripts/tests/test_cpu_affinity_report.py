@@ -7,14 +7,16 @@ from pathlib import Path
 import sys
 from unittest.mock import Mock
 
+import pytest
+
 SCRIPTS_DIRECTORY = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS_DIRECTORY))
 
-import cpu_affinity_graphic  # noqa: E402
+import cpu_affinity_report  # noqa: E402
 
 
 def test_isolcpus_flags_are_distinguished():
-    settings = cpu_affinity_graphic.parse_isolation_settings(
+    settings = cpu_affinity_report.parse_isolation_settings(
         "quiet isolcpus=domain,managed_irq,2-3 isolcpus=nohz,4-5 nohz_full=6-7"
     )
 
@@ -25,20 +27,20 @@ def test_isolcpus_flags_are_distinguished():
 
 
 def test_isolcpus_without_flags_defaults_to_scheduler_isolation():
-    settings = cpu_affinity_graphic.parse_isolation_settings("isolcpus=2-3")
+    settings = cpu_affinity_report.parse_isolation_settings("isolcpus=2-3")
 
     assert settings["scheduler"] == {2, 3}
 
 
 def test_managed_irq_only_does_not_mark_cpus_scheduler_isolated():
-    settings = cpu_affinity_graphic.parse_isolation_settings("isolcpus=managed_irq,2-3")
+    settings = cpu_affinity_report.parse_isolation_settings("isolcpus=managed_irq,2-3")
 
     assert settings["scheduler"] == set()
     assert settings["managed_irq"] == {2, 3}
 
 
 def test_core_types_use_cpu_capacity_then_cppc_performance():
-    core_types = cpu_affinity_graphic.classify_cpu_core_types(
+    core_types = cpu_affinity_report.classify_cpu_core_types(
         [0, 1, 2, 3, 4],
         {0: 1024, 1: 512},
         {2: 100, 3: 79, 4: 0},
@@ -54,27 +56,61 @@ def test_core_types_use_cpu_capacity_then_cppc_performance():
 
 
 def test_core_type_is_unknown_when_linux_publishes_no_classification():
-    core_types = cpu_affinity_graphic.classify_cpu_core_types([0], {}, {})
+    core_types = cpu_affinity_report.classify_cpu_core_types([0], {}, {})
 
     assert core_types == {0: "Unknown"}
 
 
 def test_unknown_core_type_has_no_display_label():
-    label = cpu_affinity_graphic.CpuAffinityWindow._core_type_label("Unknown")
+    label = cpu_affinity_report.CpuAffinityWindow._core_type_label("Unknown")
 
     assert label == ""
 
 
 def test_summary_option_accepts_a_filename(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["cpu_affinity_graphic.py", "--summary", "summary.txt"])
+    monkeypatch.setattr(sys, "argv", ["cpu_affinity_report.py", "--summary", "summary.txt"])
 
-    arguments = cpu_affinity_graphic.parse_arguments()
+    arguments = cpu_affinity_report.parse_arguments()
 
+    assert arguments.summary == Path("summary.txt")
+    assert not arguments.graphic
+
+
+def test_graphic_and_summary_may_be_chosen_together(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["cpu_affinity_report.py", "--graphic", "--summary", "summary.txt"])
+
+    arguments = cpu_affinity_report.parse_arguments()
+
+    assert arguments.graphic
     assert arguments.summary == Path("summary.txt")
 
 
+def test_an_output_must_be_chosen(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cpu_affinity_report.py"])
+
+    with pytest.raises(SystemExit) as stopped:
+        cpu_affinity_report.parse_arguments()
+
+    assert stopped.value.code != 0
+    assert "--graphic" in capsys.readouterr().err
+
+
+def test_summary_alone_is_written_without_tk(monkeypatch, tmp_path):
+    # Tk cannot be imported, as on a machine with no graphics: the summary must still be written.
+    monkeypatch.setitem(sys.modules, "tkinter", None)
+    summary = tmp_path / "summary.txt"
+    monkeypatch.setattr(sys, "argv", ["cpu_affinity_report.py", "--summary", str(summary), "--sample-seconds", "0.2"])
+
+    status = cpu_affinity_report.main()
+
+    assert status == 0
+    text = summary.read_text(encoding="utf-8")
+    assert text.startswith("CPU affinity summary\n")
+    assert "CPU 0" in text
+
+
 def test_text_summary_includes_cpu_and_thread_details():
-    cards = cpu_affinity_graphic.build_cpu_cards(
+    cards = cpu_affinity_report.build_cpu_cards(
         [
             {
                 "pid": 42,
@@ -89,7 +125,7 @@ def test_text_summary_includes_cpu_and_thread_details():
         None,
         {0: "Unknown", 1: "E-core"},
     )
-    snapshot = cpu_affinity_graphic.SystemSnapshot(
+    snapshot = cpu_affinity_report.SystemSnapshot(
         cards=cards,
         process_count=1,
         thread_count=1,
@@ -100,7 +136,7 @@ def test_text_summary_includes_cpu_and_thread_details():
         updated_at="10:00:00",
     )
 
-    summary = cpu_affinity_graphic.format_system_summary(snapshot)
+    summary = cpu_affinity_report.format_system_summary(snapshot)
 
     assert "CPU 0\n" in summary
     assert "CPU 0 (UNKNOWN)" not in summary
@@ -111,13 +147,13 @@ def test_text_summary_includes_cpu_and_thread_details():
 
 
 def test_summary_waits_for_usage_measurement_from_every_cpu():
-    cards = cpu_affinity_graphic.build_cpu_cards(
+    cards = cpu_affinity_report.build_cpu_cards(
         [],
         [0, 1],
         {},
         None,
     )
-    snapshot = cpu_affinity_graphic.SystemSnapshot(
+    snapshot = cpu_affinity_report.SystemSnapshot(
         cards=cards,
         process_count=0,
         thread_count=0,
@@ -129,24 +165,24 @@ def test_summary_waits_for_usage_measurement_from_every_cpu():
     )
     summary_path = Mock(spec=Path)
 
-    written = cpu_affinity_graphic._write_summary_when_ready(summary_path, snapshot)
+    written = cpu_affinity_report._write_summary_when_ready(summary_path, snapshot)
 
     assert not written
     summary_path.write_text.assert_not_called()
 
     snapshot = replace(snapshot, sample_seconds=1.0)
     cards[0].usage = 25.0
-    written = cpu_affinity_graphic._write_summary_when_ready(summary_path, snapshot)
+    written = cpu_affinity_report._write_summary_when_ready(summary_path, snapshot)
 
     assert not written
     summary_path.write_text.assert_not_called()
 
     cards[1].usage = 0.0
-    written = cpu_affinity_graphic._write_summary_when_ready(summary_path, snapshot)
+    written = cpu_affinity_report._write_summary_when_ready(summary_path, snapshot)
 
     assert written
     summary_path.write_text.assert_called_once_with(
-        cpu_affinity_graphic.format_system_summary(snapshot),
+        cpu_affinity_report.format_system_summary(snapshot),
         encoding="utf-8",
     )
 
@@ -155,7 +191,7 @@ def test_cpu_usage_is_calculated_from_busy_and_total_tick_deltas():
     before = {0: (50, 100), 1: (20, 100)}
     after = {0: (80, 200), 1: (70, 200)}
 
-    usage = cpu_affinity_graphic.calculate_cpu_usage(before, after)
+    usage = cpu_affinity_report.calculate_cpu_usage(before, after)
 
     assert usage == {0: 30.0, 1: 50.0}
 
@@ -164,7 +200,7 @@ def test_cpu_usage_is_unavailable_without_a_valid_interval():
     before = {0: (50, 100), 1: (20, 100)}
     after = {0: (50, 100), 1: (10, 90)}
 
-    usage = cpu_affinity_graphic.calculate_cpu_usage(before, after)
+    usage = cpu_affinity_report.calculate_cpu_usage(before, after)
 
     assert usage == {0: None, 1: None}
 
@@ -176,28 +212,28 @@ def test_thread_status_supplies_name_and_affinity_together():
         "Cpus_allowed_list:\t0-3,8\n"
     )
 
-    details = cpu_affinity_graphic._parse_thread_status(status)
+    details = cpu_affinity_report._parse_thread_status(status)
 
     assert details == ("matching worker", [0, 1, 2, 3, 8])
 
 
 def test_thread_status_without_affinity_is_unreadable():
-    details = cpu_affinity_graphic._parse_thread_status("Name:\tworker\n")
+    details = cpu_affinity_report._parse_thread_status("Name:\tworker\n")
 
     assert details is None
 
 
 def test_thread_rows_are_formatted_as_text_with_category_ranges():
     threads = [
-        cpu_affinity_graphic.AffinityThread(
+        cpu_affinity_report.AffinityThread(
             "risk_worker", "risk", 42, 43, (2,), "single"
         ),
-        cpu_affinity_graphic.AffinityThread(
+        cpu_affinity_report.AffinityThread(
             "gateway", "io", 50, 51, (0, 1, 2), "few"
         ),
     ]
 
-    text, colour_ranges = cpu_affinity_graphic._format_thread_rows(threads)
+    text, colour_ranges = cpu_affinity_report._format_thread_rows(threads)
 
     assert text == (
         "risk_worker / risk\n"
@@ -227,7 +263,7 @@ def test_cpu_cards_separate_single_cpu_threads_from_flexible_threads():
         "nohz_full": {2},
     }
 
-    cards = cpu_affinity_graphic.build_cpu_cards(
+    cards = cpu_affinity_report.build_cpu_cards(
         processes,
         [0, 1, 2, 3],
         {0: 10.0, 1: 25.0, 2: 50.0, 3: 100.0},
@@ -248,7 +284,7 @@ def test_cpu_cards_separate_single_cpu_threads_from_flexible_threads():
 
 
 def test_threads_with_all_online_affinity_are_counted_not_repeated_as_rows():
-    cards = cpu_affinity_graphic.build_cpu_cards(
+    cards = cpu_affinity_report.build_cpu_cards(
         [
             {
                 "pid": 42,

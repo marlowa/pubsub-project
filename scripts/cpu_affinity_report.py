@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Show live process-thread CPU affinity and usage in a scrollable window."""
+"""Report which CPUs each process thread may run on, and how busy each CPU is.
+
+One of two outputs must be chosen, or both:
+
+--graphic           opens a window that shows the CPUs and their threads, refreshed every sample interval. It needs a
+                    graphical display and the Python Tk package.
+--summary FILENAME  writes the same information as plain text to FILENAME, once a full scan of the threads and one
+                    measurement of every CPU's usage have been made. On its own it needs no graphical display and does
+                    not load Tk, so it can be run on a machine with no graphics and no X11 forwarding.
+
+With both, the window opens and the summary is written from the first complete scan the window makes.
+"""
 
 from __future__ import annotations
 
@@ -572,6 +583,86 @@ def build_cpu_cards(
     return [cards[processor] for processor in online_cpu_ids]
 
 
+# How many sample intervals the summary waits for a measurement of every CPU before it gives up.
+_SUMMARY_MAXIMUM_SAMPLES = 10
+
+
+def make_snapshot(
+    usage_by_cpu: dict[int, float | None],
+    sample_seconds: float,
+    survey: dict | None = None,
+) -> SystemSnapshot:
+    """Read the online CPUs, their isolation and core types, and assemble the card for each with the threads from
+    survey. With no survey, the cards have no threads and the snapshot says the affinity scan is not complete."""
+    processors = online_processors()
+    isolation = read_isolation_settings()
+    core_types = read_cpu_core_types(processors)
+    affinity_scan_complete = survey is not None
+    if survey is None:
+        survey = {
+            "processes": [],
+            "unreadable_processes": 0,
+            "unreadable_threads": 0,
+        }
+    cards = build_cpu_cards(
+        survey["processes"],
+        processors,
+        usage_by_cpu,
+        isolation,
+        core_types,
+    )
+    return SystemSnapshot(
+        cards=cards,
+        process_count=len(survey["processes"]),
+        thread_count=sum(len(process["threads"]) for process in survey["processes"]),
+        unreadable_process_count=survey["unreadable_processes"],
+        unreadable_thread_count=survey["unreadable_threads"],
+        affinity_scan_complete=affinity_scan_complete,
+        sample_seconds=sample_seconds,
+        updated_at=time.strftime("%H:%M:%S"),
+    )
+
+
+def write_summary_report(arguments: argparse.Namespace) -> int:
+    """Write the text summary to arguments.summary with no window, and return the exit status.
+
+    CPU usage is the share of time each CPU was busy between two readings of /proc/stat, so the summary waits one sample
+    interval after the first reading. If a CPU still has no measurement, it waits another interval, up to
+    _SUMMARY_MAXIMUM_SAMPLES intervals, and then gives up rather than write a summary with a CPU missing."""
+    try:
+        previous = read_cpu_times()
+    except OSError as error:
+        print(f"error: cannot read /proc/stat: {error}", file=sys.stderr)
+        return 1
+    previous_time = time.monotonic()
+    for _ in range(_SUMMARY_MAXIMUM_SAMPLES):
+        time.sleep(arguments.sample_seconds)
+        try:
+            current = read_cpu_times()
+            current_time = time.monotonic()
+            usage = calculate_cpu_usage(previous, current)
+            survey = survey_processes(arguments.pid, arguments.name, arguments.kernel)
+            snapshot = make_snapshot(usage, current_time - previous_time, survey)
+        except OSError as error:
+            print(f"error: the scan of the system failed: {error}", file=sys.stderr)
+            return 1
+        try:
+            if _write_summary_when_ready(arguments.summary, snapshot):
+                print(f"Summary written to {arguments.summary}")
+                return 0
+        except OSError as error:
+            print(f"error: cannot write the summary file {arguments.summary}: {error}", file=sys.stderr)
+            return 1
+        previous = current
+        previous_time = current_time
+    print(
+        f"error: no usage measurement for every online CPU after {_SUMMARY_MAXIMUM_SAMPLES} samples of "
+        f"{arguments.sample_seconds} seconds, so no summary was written",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def _positive_float(value: str) -> float:
     """Parse a finite positive floating-point command-line value."""
     try:
@@ -584,9 +675,17 @@ def _positive_float(value: str) -> float:
 
 
 def parse_arguments() -> argparse.Namespace:
-    """Parse command-line options."""
+    """Parse command-line options. At least one of --graphic and --summary must be given."""
     parser = argparse.ArgumentParser(
-        description="Show live process-thread CPU affinity and usage in a scrollable window."
+        description=(
+            "Report which CPUs each process thread may run on, and how busy each CPU is. "
+            "Choose --graphic for a window, --summary FILENAME for a text report, or both."
+        )
+    )
+    parser.add_argument(
+        "--graphic",
+        action="store_true",
+        help="open a window showing the CPUs and their threads, refreshed every sample interval (needs a graphical display)",
     )
     parser.add_argument("--pid", type=int, help="show only this process")
     parser.add_argument("--name", help="show processes whose name or command contains this text")
@@ -595,7 +694,10 @@ def parse_arguments() -> argparse.Namespace:
         "--summary",
         type=Path,
         metavar="FILENAME",
-        help="write a text summary after the first complete affinity and CPU usage scan",
+        help=(
+            "write a text summary to FILENAME after the first complete affinity scan and CPU usage measurement; "
+            "without --graphic, no window is opened and no graphical display is needed"
+        ),
     )
     parser.add_argument(
         "--sample-seconds",
@@ -603,7 +705,10 @@ def parse_arguments() -> argparse.Namespace:
         default=1.0,
         help="CPU usage sampling and refresh interval in seconds (default: 1.0)",
     )
-    return parser.parse_args()
+    arguments = parser.parse_args()
+    if not arguments.graphic and arguments.summary is None:
+        parser.error("choose what to produce: --graphic for a window, --summary FILENAME for a text report, or both")
+    return arguments
 
 
 class CpuAffinityWindow:
@@ -1092,33 +1197,7 @@ class CpuAffinityWindow:
         survey: dict | None = None,
     ) -> SystemSnapshot:
         """Collect process data and assemble the card models for the window."""
-        processors = online_processors()
-        isolation = read_isolation_settings()
-        core_types = read_cpu_core_types(processors)
-        affinity_scan_complete = survey is not None
-        if survey is None:
-            survey = {
-                "processes": [],
-                "unreadable_processes": 0,
-                "unreadable_threads": 0,
-            }
-        cards = build_cpu_cards(
-            survey["processes"],
-            processors,
-            usage_by_cpu,
-            isolation,
-            core_types,
-        )
-        return SystemSnapshot(
-            cards=cards,
-            process_count=len(survey["processes"]),
-            thread_count=sum(len(process["threads"]) for process in survey["processes"]),
-            unreadable_process_count=survey["unreadable_processes"],
-            unreadable_thread_count=survey["unreadable_threads"],
-            affinity_scan_complete=affinity_scan_complete,
-            sample_seconds=sample_seconds,
-            updated_at=time.strftime("%H:%M:%S"),
-        )
+        return make_snapshot(usage_by_cpu, sample_seconds, survey)
 
     def _collect_snapshots(self) -> None:
         """Read procfs in the background so the window remains responsive."""
@@ -1200,8 +1279,11 @@ class CpuAffinityWindow:
 
 
 def main() -> int:
-    """Open the live CPU affinity window."""
+    """Write the text summary, or open the window, or both, as the options ask."""
     arguments = parse_arguments()
+    if not arguments.graphic:
+        # Tk is not imported at all, so this works on a machine with no graphical display and no Tk package.
+        return write_summary_report(arguments)
     try:
         import tkinter as tk
     except ModuleNotFoundError:
