@@ -34,7 +34,7 @@ review recommends working on them.
 4. The sequencer's handling of reports (section 4)
 5. The gateways and what a member sees (section 5)
 6. The framework: reactor, timers, allocators and threads (section 6)
-7. Tests and tooling
+7. Tests and tooling (section 7)
 8. Operations, deployment and metrics
 
 ## 1. Leadership, leases and the arbiters
@@ -170,3 +170,30 @@ the two locks on paths an order can take; each needs a design agreed before code
 one. BUG-0087's tool is worth building before those, since it is how their fixes, and BUG-0131's, would
 be shown to work. BUG-0119 with the shutdown sequence. BUG-0184 and BUG-0104 together. The four defects
 are small and can be done when their files are next touched.
+
+## 7. Tests and tooling
+
+Fifteen entries.
+
+| Entry | Judgement | Evidence | What is left |
+|---|---|---|---|
+| [BUG-0181](bug_list.md#bug_0181): with orders in flight, Phase 5 confirms that a thousand further orders were accepted, not the recovery orders themselves | **Test or tool**, and the most serious here: a scenario can pass when the orders sent after a failure are lost | Unchanged: Phase 5 waits with `await_new_orders_since` for any 1,000 further orders | Confirm the recovery orders by their ClOrdIDs, with the wait long enough for the orders ahead of them |
+| [BUG-0185](bug_list.md#bug_0185) and [BUG-0145](bug_list.md#bug_0145): scenarios 59 and 76 stop the leader the moment `inject_order` has sent | **Test or tool**; the two entries describe one fault | Unchanged: both scenarios send `SIGSTOP` straight after reading `inject_order`'s "sent" line. Scenario 62, which BUG-0145 also named, now waits until the leader's WAL holds the orders | Scenarios 59 and 76 wait as scenario 62 does. Close BUG-0145 into BUG-0185 |
+| [BUG-0149](bug_list.md#bug_0149): scenario 62 can crash reading a WAL segment the sequencer deletes | **Test or tool** | Unchanged: `wal_record_ids`, `wal_records_after` and `wal_entries` list the directory and then open each file, with nothing to allow for a file deleted in between | Pass over a segment that has gone, or read only once the sequencer has finished changing the WAL |
+| [BUG-0215](bug_list.md#bug_0215): `perf_run.py` fails every run of the trading-day profile | **Test or tool** | Unchanged: the profile leaves about 11.7 million orders resting, and the development region holds 2 million | A higher cancel ratio in the profile, or the refusals for a full book counted as answered |
+| [BUG-0214](bug_list.md#bug_0214): `fix_load_client.py` reports answered messages as unreported | **Test or tool** | Unchanged | As the entry describes |
+| [BUG-0014](bug_list.md#bug_0014): Python style warnings in the scripts, and a lint gate that ignores them | **Test or tool**, under way | Andrew's commit 2d28b39 dealt with some of the warnings; the gate does not yet fail on style messages | Finish the warnings, then make the gate fail on them |
+| [BUG-0068](bug_list.md#bug_0068): the specification states behaviour that almost nothing tests | **Investigation**, a coverage record | `scripts/check_book_requirements.py` reports the figures on every build | Kept open as the record of coverage; worked with BUG-0229 |
+| [BUG-0229](bug_list.md#bug_0229): the functional specification has not been checked against the code | **Decision needed**: Andrew has left it for now | Unchanged; recorded so as not to be forgotten | When to audit the book, and to specify the ordinary order lifecycle |
+| [BUG-0173](bug_list.md#bug_0173): no scenario withholds a record during a real catch-up | **Test or tool**, a missing scenario | Unchanged | As the entry describes |
+| [BUG-0083](bug_list.md#bug_0083): scenario 26 failed once inside the suite and has not been reproduced | **No longer applies**, as far as can be told | It was one failure in five runs, in August, before phases 3 to 10 replaced the code it ran through; full runs since, such as the 99 of 99 on 7 November 2026, have passed scenario 26 | Close it, if Andrew agrees; a recurrence would be a new entry |
+| [BUG-0144](bug_list.md#bug_0144): `ha_test.py` searches each read of a Quill log separately | **No longer applies** | Phase 6 removed every wait on and count of a Quill log: `poll_log_for` no longer exists, and nothing calls `count_lines_with_all` | Close it, if Andrew agrees |
+| [BUG-0169](bug_list.md#bug_0169): the high availability tests depend on the wording of Quill log messages | **Fixed** by phase 6 | No check reads a Quill log of the venue ([test_events_inventory.md](availability/test_events_inventory.md)). Three `TEST CONTRACT` messages remain, in the arbiter, the witness and the sequencer, each an operator message a scenario checks deliberately, because what it checks is that an operator is told why | Close it, if Andrew agrees |
+| [BUG-0040](bug_list.md#bug_0040): the order-accounting check reports lost orders when it could not count them | **Fixed** | `perf_run.py` now says "NOT VERIFIED -- the run completed, but its order count could not be read" and that this is not a failure of the venue | Close it, if Andrew agrees |
+| [BUG-0030](bug_list.md#bug_0030): restart coverage | **Fixed**: the matrix is complete | All eighteen cells are covered, as the entry records. Row R6, "restart with no arbiter reachable, degraded", describes a degraded path that majority leases removed; those scenarios now check that no instance leads without a majority | Close it, if Andrew agrees |
+
+**Recommended order in this area.** BUG-0181 first, because it lets a scenario pass over lost orders,
+which is the failure the tests exist to catch. Then BUG-0185 (with BUG-0145 closed into it) and BUG-0149,
+which make the suite fail at random and so make its verdict harder to trust. BUG-0215 and BUG-0214 make
+the load tools' verdicts trustworthy. Six entries can be closed if Andrew agrees: BUG-0083, BUG-0144,
+BUG-0169, BUG-0040, BUG-0030, and BUG-0145 into BUG-0185.
