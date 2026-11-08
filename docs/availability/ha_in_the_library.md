@@ -2,8 +2,16 @@
 
 > **Status: the diagnosis and the direction are agreed with Andrew, 11 October 2026.** The design of the
 > boundary between the library and the applications is [ha_library_boundary.md](ha_library_boundary.md),
-> agreed 12 October 2026. Phases 3 to 9 of [the plan for restoring the design](../recovery_plan.md)
-> carry it out.
+> agreed 12 October 2026. Phases 3 to 10 of [the plan for restoring the design](../recovery_plan.md)
+> carry it out, and all of them are finished.
+>
+> **This page is a record of the direction and of why it was chosen.** Section 2 describes the code as it
+> was measured on 11 October 2026, and sections 6 to 8 the questions and the order of work as they stood
+> then. Section 6's first question, whether the matching engine is deterministic, was answered by phase 7
+> ([deterministic_matching_engine.md](deterministic_matching_engine.md)), and the book is no longer
+> replicated: both engines apply every command from the WAL
+> ([both_engines_apply_the_wal.md](both_engines_apply_the_wal.md)). For the venue as it is now, see
+> [wal_and_ha.md](wal_and_ha.md).
 
 ## 1. What this page covers
 

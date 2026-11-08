@@ -70,7 +70,8 @@ of `docs/availability/` says the same. Done: `ha_library_boundary.md`, `lease_cl
 `replicated_wal_in_the_library.md`, `following_the_wal.md`, `test_events.md`,
 `deterministic_matching_engine.md`, `both_engines_apply_the_wal.md`, `voided_commands.md`,
 `far_back_catch_up.md`, `one_check_against_sequencing_twice.md`, `publishers_sent_from_memory.md`,
-`reports_held_until_sessions_are_announced.md`, and `docs/venue/dividing_the_sequencer_and_matching_engine.md`.
+`reports_held_until_sessions_are_announced.md`, `ha_in_the_library.md`, and
+`docs/venue/dividing_the_sequencer_and_matching_engine.md`.
 
 availability: `wal_and_ha.md`, `majority_leases.md`, `gateway_ha.md`, `process_death.md`,
 `change_of_sequencer_leader.md`, `a_follower_behind_does_not_lead.md`,
@@ -79,7 +80,6 @@ availability: `wal_and_ha.md`, `majority_leases.md`, `gateway_ha.md`, `process_d
 `matching_engine_presence.md`
 
 Still to read again: availability
-`ha_in_the_library.md`,
 `test_events_inventory.md`; orientation `architecture.md`. `design_notes.md` waits on
 question 4.
 
