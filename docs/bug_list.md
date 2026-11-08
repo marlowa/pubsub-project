@@ -2,19 +2,18 @@
 
 | | |
 |---|---|
-| Bugs recorded | 236 |
+| Bugs recorded | 237 |
 | Open | 63 (42 defects, 21 tasks) |
-| Closed | 173 |
-| Next id | BUG-0237 |
+| Closed | 174 |
+| Next id | BUG-0238 |
 
 ## Open bugs by severity
 
-15 high, 36 medium, 12 low.
+14 high, 37 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
 | [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
-| [BUG-0029](#bug_0029) | high | defect | A process death on the same host takes the machine-death path |
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
 | [BUG-0061](#bug_0061) | high | defect | With high availability off, a secondary sequencer started alone leads but no gateway can reach it |
 | [BUG-0062](#bug_0062) | high | defect | Two instances led with HA off, and nothing notices when they are reunited |
@@ -64,6 +63,7 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0235](#bug_0235) | medium | defect | Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later |
 | [BUG-0236](#bug_0236) | medium | defect | The COMPID editor writes its administrators' file readable by every account on the host |
+| [BUG-0237](#bug_0237) | medium | defect | After losing a matching engine, the sequencer waits 2 seconds before connecting to it again, which is most of a supervised restart |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -171,6 +171,33 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0237: After losing a matching engine, the sequencer waits 2 seconds before connecting to it again, which is most of a supervised restart {#bug_0237}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-08 |
+| Recorded | 2026-11-08 |
+| How | Dividing a supervised matching engine's restart into its steps from the Quill logs, for [BUG-0029](#bug_0029) |
+| Impact | A matching engine that dies and is restarted on a healthy machine is ready and holds its lease about 0.6 to 1.3 seconds after dying, but takes no orders until the sequencer connects to it again, 2.1 to 2.5 seconds after the death. Every member's orders wait meanwhile |
+
+**What happens.** The sequencer opens the order connection to each matching engine. When an engine
+dies, the sequencer's `OutboundConnectionManager` logs "service 'matching_engine' failed to connect;
+retrying every 2000ms" and next tries 2 seconds later: the framework's default
+`connect_retry_interval_` in `ReactorConfiguration.hpp`, which no component's configuration changes.
+In the two runs measured on 2026-11-08 the restarted engine was waiting for the connection for 1.21
+and 1.54 seconds, the largest single part of the interruption (the table is under
+[BUG-0029](#bug_0029)).
+
+**The remedy in mind.** Try again soon after the loss, rather than only after a full retry
+interval, for example a first retry within a few tens of milliseconds and then the 2-second interval
+for a peer that stays away. Where the change belongs, in the framework for every outbound connection
+or for the matching engine connection only, is to be settled when it is designed. If the other steps
+stay as measured, the interruption would come down to under a second.
+
+**How to check it.** The measurement under [BUG-0029](#bug_0029), repeated: kill a supervised leading
+engine and read the time from its death to "adopting LEADER role" in its Quill log.
 
 ### BUG-0236: The COMPID editor writes its administrators' file readable by every account on the host {#bug_0236}
 
@@ -1978,53 +2005,6 @@ are about, and it rules out a restarted engine keeping the lead within its 3-sec
   the follower builds its book;
 - pre-production and test-1 still allow 1,000,000 open orders.
 
-### BUG-0029: A process death on the same host takes the machine-death path {#bug_0029}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-21 |
-| Recorded | 2026-08-21 (875259f) |
-| How | The trading-day run that proved the order-book stall cured -- the primary was OOM-killed and the venue stopped trading for 16 seconds |
-| Impact | A process that dies on a healthy machine is replaced by its peer taking the lead about two and a half seconds later, by the same path as a machine that has gone silent. The design's target for this kind of failure is under 50 milliseconds |
-
-**What the design asks for.** `docs/availability/design_notes.md` separates two kinds of failure and
-gives them very different targets
-([section 7](availability/design_notes.md#ha_process_vs_machine)):
-
-| | Process death | Machine death |
-|---|---|---|
-| Recovery target | **under 50 ms** | 100 ms to seconds |
-| What happened | the process died; the machine and its kernel are healthy | the whole machine has gone silent |
-| Recovery | restart the process in place, with its state still present | the peer on the other machine takes the lead |
-
-**What happens.** Only the second path exists. When a leading sequencer or matching engine dies, its
-peer takes the lead once the dead leader's lease has run out and a majority grants the peer one
-([majority_leases.md](availability/majority_leases.md)): a lease lasts three seconds and is renewed
-every second, and voters wait a further quarter of a second for differences between clocks, so the
-peer leads within about three and a quarter seconds of the death, and usually sooner. `ha_test.py` measured
-2.5 seconds for the sequencer pair (scenario 1) and 2.6 seconds for the matching engine pair
-(scenario 16) on 2026-10-04.
-
-**Why the wait cannot simply be shortened.** The kernel closes a dead process's connections at once,
-so the peer knows within a millisecond that the process has gone. But the lease is what stops two
-instances leading at once: no voter grants the peer a lease while it may still have promised its vote
-to the dead leader, so the peer cannot lead sooner than the lease period allows. Shortening the lease
-period shortens the outage, at the cost of more renewal traffic and of a leader losing its lease to a
-pause of the same length.
-
-**What would meet the target.** Restarting the dead process in place, on the same machine, quickly
-enough that the lease never runs out and no change of leader happens at all. Measured 2026-08-21:
-rebuilding the matching engine's book by replaying entries costs 438 ms at 2^21 orders, 921 ms at 2^22
-and 2,034 ms at 2^23, with the storage already reserved and no decoding or disk reads, so those are
-lower bounds. Replaying a journal on restart therefore cannot reach 50 milliseconds at any realistic
-book size; only a book that lives in shared memory and is attached again, rather than rebuilt, can.
-
-**What it waits on.** The design of process supervision, `docs/availability/process_death.md`, which
-records what `launch.py` does, the measurement above, and the questions still open, among them how
-long to wait for a restart before letting the peer take over. A component that keeps dying and being
-restarted is [BUG-0066](#bug_0066).
-
 ### BUG-0041: Five ways the venue will not start on a RHEL8 target host {#bug_0041}
 
 | | |
@@ -2958,6 +2938,92 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0029: A process death on the same host takes the machine-death path {#bug_0029}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-21 |
+| Recorded | 2026-08-21 (875259f) |
+| Fixed | 2026-11-08 -- by decision, with Andrew's agreement: the target of under 50 milliseconds is replaced by "the lead never moves". A process that dies on a healthy machine is restarted by its supervisor and leading again within its lease period, so its peer never takes over (rule 6 of [majority_leases.md](availability/majority_leases.md)), and the interruption is stated as a measured figure rather than a goal: about 2 to 2.5 seconds for a matching engine. Measured twice on 2026-11-08 by killing a supervised leading engine with 14,004 open orders: 2.50 and 2.11 seconds from death to leading, and the lease granted 1.3 and 0.6 seconds after the death. The largest part, the sequencer's 2-second wait before connecting to the engine again, is [BUG-0237](#bug_0237) |
+| How | The trading-day run that proved the order-book stall cured -- the primary was OOM-killed and the venue stopped trading for 16 seconds |
+| Impact | A process that dies on a healthy machine is replaced by its peer taking the lead about two and a half seconds later, by the same path as a machine that has gone silent. The design's target for this kind of failure is under 50 milliseconds |
+
+**What the design asks for.** `docs/availability/design_notes.md` separates two kinds of failure and
+gives them very different targets
+([section 7](availability/design_notes.md#ha_process_vs_machine)):
+
+| | Process death | Machine death |
+|---|---|---|
+| Recovery target | **under 50 ms** | 100 ms to seconds |
+| What happened | the process died; the machine and its kernel are healthy | the whole machine has gone silent |
+| Recovery | restart the process in place, with its state still present | the peer on the other machine takes the lead |
+
+**What happens.** Only the second path exists. When a leading sequencer or matching engine dies, its
+peer takes the lead once the dead leader's lease has run out and a majority grants the peer one
+([majority_leases.md](availability/majority_leases.md)): a lease lasts three seconds and is renewed
+every second, and voters wait a further quarter of a second for differences between clocks, so the
+peer leads within about three and a quarter seconds of the death, and usually sooner. `ha_test.py` measured
+2.5 seconds for the sequencer pair (scenario 1) and 2.6 seconds for the matching engine pair
+(scenario 16) on 2026-10-04.
+
+**Why the wait cannot simply be shortened.** The kernel closes a dead process's connections at once,
+so the peer knows within a millisecond that the process has gone. But the lease is what stops two
+instances leading at once: no voter grants the peer a lease while it may still have promised its vote
+to the dead leader, so the peer cannot lead sooner than the lease period allows. Shortening the lease
+period shortens the outage, at the cost of more renewal traffic and of a leader losing its lease to a
+pause of the same length.
+
+**What would meet the target.** Restarting the dead process in place, on the same machine, quickly
+enough that the lease never runs out and no change of leader happens at all. Measured 2026-08-21:
+rebuilding the matching engine's book by replaying entries costs 438 ms at 2^21 orders, 921 ms at 2^22
+and 2,034 ms at 2^23, with the storage already reserved and no decoding or disk reads, so those are
+lower bounds. Replaying a journal on restart therefore cannot reach 50 milliseconds at any realistic
+book size; only a book that lives in shared memory and is attached again, rather than rebuilt, can.
+
+**What it waits on.** The design of process supervision, `docs/availability/process_death.md`, which
+records what `launch.py` does, the measurement above, and the questions still open, among them how
+long to wait for a restart before letting the peer take over. A component that keeps dying and being
+restarted is [BUG-0066](#bug_0066).
+
+#### 2026-11-08: measured, and the target replaced
+
+**Where the time goes.** Two runs, each placing 20,000 orders over four binary sessions with three in
+ten cancelled, leaving 14,004 open orders, then killing the leading matching engine with SIGKILL under
+`launch.py`. The times are from the restarted engine's and the sequencers' Quill logs.
+
+| Step | First run | Second run |
+|---|---|---|
+| The supervisor notices the death and starts the new process | 0.15 s | 0.03 s |
+| Process set-up, as far as opening the open-order region | 0.08 s | 0.08 s |
+| Reading the region back: a 496 MB file with room for 2,000,000 orders, holding 14,004 | 0.85 s | 0.23 s |
+| Starting threads, pinning cores, and a trial of 20 writes to the epoch file | 0.10 s | 0.12 s |
+| Recording the new epoch, and the peer granting the lease | 0.11 s | 0.11 s |
+| Waiting for the sequencer to connect to the engine again | 1.21 s | 1.54 s |
+| Catch-up, 4 records, and taking the lead | 0.004 s | 0.004 s |
+| **From death to leading** | **2.50 s** | **2.11 s** |
+
+The sequencer opens the order connection to the engine, and after losing it tries again every 2
+seconds, the framework's default `connect_retry_interval_`. The sequencers reconnected 2.08 and 2.47
+seconds after the death, so that wait is a floor no change to the engine can get under. It is
+[BUG-0237](#bug_0237).
+
+Reading the region back took 230 ms in one run and 847 ms in the other, from a file of the same size.
+Whether the pages were already in memory has not been checked. The region is on `/mnt/sda1`, which is
+mounted without `lazytime` ([filesystem requirements](operations/filesystem_requirements.md)).
+
+**What 50 milliseconds would need.** Every row above would have to shrink by an order of magnitude at
+once: the reconnect, the pass over the region, the epoch trial and process start. That is a design,
+the book attached again with no pass over it among other things, and not a matter of tuning.
+
+**Decided 2026-11-08: the target is that the lead never moves.** A process that dies on a healthy
+machine is restarted by its supervisor and is leading again within its lease period of 3 seconds, so
+its peer never takes over and no change of leader happens. The interruption is a measured figure, not a
+goal: about 2 to 2.5 seconds for a matching engine today, under 1 second once [BUG-0237](#bug_0237) is
+fixed, if the other steps stay as measured. Members see a pause of a few seconds and no change of leader,
+which is judged reasonable behaviour for a venue, while a target of 50 milliseconds would be a large
+design for an improvement members would rarely see.
 
 ### BUG-0185: Scenarios 59 and 76 stop the leader the moment inject_order has sent, which can beat the leader to reading the last order {#bug_0185}
 

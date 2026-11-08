@@ -14,11 +14,11 @@ document is about the half of it that is not finished.
 
 | | Inner loop -- the process died | Outer loop -- the machine went quiet |
 |---|---|---|
-| Recovery target | **under 50 ms** | 100 ms to seconds |
+| Recovery target | **within the lease period, so the lead never moves** | 100 ms to seconds |
 | What is known | the process is gone; everything else is healthy | nothing, which is the problem |
 | Correct response | restart it in place | decide whether to promote the peer |
 
-The targets differ by two orders of magnitude because the questions differ. A closed socket is
+The targets differ because the questions differ. A closed socket is
 **evidence**: the kernel closed it because the process no longer exists. Silence is not evidence,
 and resolving it needs a third party and a timer.
 
@@ -26,9 +26,9 @@ and resolving it needs a third party and a timer.
 lease period keeps the lead: it reads back the promises its peer and the arbiter made to it, and asks
 again at once ([Majority leases](majority_leases.md), rule 6). Without a supervisor, the follower
 takes over once its promise and the arbiter's have run out, about one lease period plus one renewal
-interval. Either way the interruption is seconds, against a 50 ms target: a matching engine takes
-about 3.5 seconds from dying to leading again (measured below). That is BUG-0029, which is parked
-pending this design.
+interval. A supervised matching engine takes about 2 to 2.5 seconds from dying to leading again
+(measured below), so the lead does not move, and the target is met. Most of that time is the
+sequencer's wait before it connects to the engine again ([BUG-0237](../bug_list.md#bug_0237)).
 
 ## What exists
 
@@ -68,9 +68,10 @@ I/O -- so a lower bound on any journal replay:
 | 2^22 | 921 ms |
 | 2^23 | **2034 ms** |
 
-Fifty milliseconds is not reachable by replaying anything. **Only the book itself living in shared
-memory and being re-attached rather than rebuilt can hit it.** That is a much larger change than a
-journal, and it is the main thing this design has to decide.
+A restart measured in tens of milliseconds is not reachable by replaying anything; only the book
+itself living in shared memory and being attached again, rather than rebuilt, could reach it, and
+every other step of a restart would have to shrink as well (the table under "The target, measured"
+below). The target is therefore set as the lead never moving, not as a number of milliseconds.
 
 ## A slow flap is a loss of service, and the instance is judged for it
 
@@ -154,22 +155,47 @@ it was permanently broken. That is accepted: the peer serves, the venue keeps tr
 can put it back, and the alternative is a member exposed to an open-ended series of interruptions
 nobody is counting.
 
-**Measured, so the figure being traded is known.** An engine goes from process start to leading in
-about 2.4 seconds, and about 3.5 seconds from the moment it dies -- 23,105 open orders recovered
-from its region, 2,000 catch-up records applied, on a venue with a small retained log. That is the
-length of the interruption a member is being asked to accept once. The design target for a process
-dying on a healthy host is under 50 ms, so this figure should fall; the rule does not depend on
-it, but how tolerable one interruption is does.
+**Measured, so the figure being traded is known.** An engine goes from dying to leading in about 2
+to 2.5 seconds, divided into its steps under "The target, measured" below. That is the length of the
+interruption a member is being asked to accept once. The rule does not depend on it, but how
+tolerable one interruption is does.
+
+## The target, measured
+
+**The target for a process that dies on a healthy machine is that the lead never moves.** The
+process is restarted by its supervisor and is leading again within its lease period of 3 seconds, so
+its peer never takes over and no change of leader happens. The interruption is a measured figure,
+not a goal.
+
+Measured on 2026-11-08, twice: 20,000 orders over four binary sessions with three in ten cancelled,
+leaving 14,004 open orders, then the leading matching engine killed with SIGKILL under `launch.py`.
+The times are from the restarted engine's and the sequencers' Quill logs.
+
+| Step | First run | Second run |
+|---|---|---|
+| The supervisor notices the death and starts the new process | 0.15 s | 0.03 s |
+| Process set-up, as far as opening the open-order region | 0.08 s | 0.08 s |
+| Reading the region back: a 496 MB file with room for 2,000,000 orders, holding 14,004 | 0.85 s | 0.23 s |
+| Starting threads, pinning cores, and a trial of 20 writes to the epoch file | 0.10 s | 0.12 s |
+| Recording the new epoch, and the peer granting the lease | 0.11 s | 0.11 s |
+| Waiting for the sequencer to connect to the engine again | 1.21 s | 1.54 s |
+| Catch-up, 4 records, and taking the lead | 0.004 s | 0.004 s |
+| **From death to leading** | **2.50 s** | **2.11 s** |
+
+The lease was granted 1.3 and 0.6 seconds after the death, well inside the lease period. The
+largest step is the sequencer's: after losing the engine it tries to connect again only every 2
+seconds, so the engine, ready within about a second, waits for it. That is
+[BUG-0237](../bug_list.md#bug_0237); fixing it would bring the interruption under a second if the
+other steps stay as measured. Reading the region back took 230 ms in one run and 847 ms in the
+other, from a file of the same size; whether the pages were already in memory has not been checked.
 
 ## What is still open
 
-- **Is re-attaching the book fast enough?** The book now lives in a memory-mapped file of
-  fixed-size records that survives the process, and a restarted engine reads it back rather than
-  replaying a journal ([Open order checkpoint](../durability/open_order_checkpoint.md)). The read is
-  one pass over the whole file, so its cost is fixed by the file's size rather than by the number of
-  orders. The 3.5 seconds measured above includes it, alongside the catch-up and the lease. Whether
-  the restart can reach 50 ms, or the target has to move, is open -- and saying so is better than
-  carrying a number nothing aims at.
+- **Why does reading the region back vary?** The book lives in a memory-mapped file of fixed-size
+  records that survives the process, and a restarted engine reads it back rather than replaying a
+  journal ([Open order checkpoint](../durability/open_order_checkpoint.md)). The read is one pass
+  over the whole file, so its cost is fixed by the file's size rather than by the number of orders.
+  It took 230 ms and 847 ms in two runs with the same file size, and the cause is not known.
 - **How long is the lease period?** It sets two things at once: how quickly a follower takes over
   from a leader that has gone, and how long a supervised restart has to bring a leader back before
   its follower takes over instead. It is three seconds; whether one value suits both is open.

@@ -110,8 +110,10 @@ hardware failure leads to unnecessary complexity. We use two distinct loops.
 ### Dealing with Process Death (Inner Loop)
 
 **Replaced: the shared-memory journal proposed here was measured and ruled out.** Rebuilding the
-matching engine's book by replaying a journal takes about two seconds for eight million entries,
-far beyond the 50 ms target. The engine's open orders are instead kept in a memory-mapped file of
+matching engine's book by replaying a journal takes about two seconds for eight million entries.
+The target for a process that dies is that the lead never moves: the process is restarted and
+leading again within its lease period, so its peer never takes over
+([process_death.md](process_death.md)). The engine's open orders are instead kept in a memory-mapped file of
 fixed-size records that a restarted engine reads back
 ([open_order_checkpoint.md](../durability/open_order_checkpoint.md)), and a command that crashed
 the engine is voided rather than skipped by a filter ([voided_commands.md](voided_commands.md),
@@ -148,7 +150,7 @@ Total silence from a node requires a "Last Resort" failover.
 
 | Feature            | Local (Process) Recovery    | Network (Machine) Failover     |
 | :----------------- | :-------------------------- | :----------------------------- |
-| **Recovery Target**| Less than 50ms              | 100ms - Seconds                |
+| **Recovery Target**| Within the lease period, so the lead never moves | 100ms - Seconds |
 | **Data Locality** | Remains on same hardware    | Must be replicated/moved       |
 | **Complexity** | Low (Single-host state)     | High (Distributed consensus)   |
 | **TCP State** | Often preserved by retries  | Must be re-established         |

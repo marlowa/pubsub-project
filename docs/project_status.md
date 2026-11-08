@@ -37,7 +37,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 63 open entries, 15 of them high severity. Each one is judged,
+The [bug list](bug_list.md) holds 63 open entries, 14 of them high severity. Each one is judged,
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
@@ -55,9 +55,10 @@ they are being fixed. The ones most likely to matter first, by design area:
   that is connected but has stopped working looking healthy ([BUG-0194](bug_list.md#bug_0194)), a
   matching engine catching up from far back sending its reports faster than the sequencer reads them,
   so that the connection is closed and the rest of the reports are lost ([BUG-0234](bug_list.md#bug_0234)),
-  growing the order book needing more memory than the machine has ([BUG-0028](bug_list.md#bug_0028)), a
-  process death on the same host handled as a machine death ([BUG-0029](bug_list.md#bug_0029)), and a
-  venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).
+  growing the order book needing more memory than the machine has ([BUG-0028](bug_list.md#bug_0028)),
+  a restarted matching engine waiting 2 seconds for the sequencer to connect to it again
+  ([BUG-0237](bug_list.md#bug_0237)), and a venue running without a standby saying so too quietly
+  ([BUG-0134](bug_list.md#bug_0134)).
 - **Members can lose information.** A restarted gateway stops honouring cancel-on-disconnect
   ([BUG-0090](bug_list.md#bug_0090)).
 - **The trading day has no start or end procedure.** Nothing archives the day's files, a file left

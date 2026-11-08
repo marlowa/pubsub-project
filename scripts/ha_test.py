@@ -2465,9 +2465,9 @@ _SCENARIOS: list[Scenario] = [
     #
     # The case a supervisor makes ordinary, and the one the follower's grace period exists
     # for. On 2026-08-21 the primary was OOM-killed and the venue stopped for sixteen seconds
-    # against a documented target of under fifty milliseconds for local process recovery --
-    # not because the timer was wrong, but because nothing filled the window it opens. See
-    # docs/bug_list.md, BUG-0029.
+    # -- not because the timer was wrong, but because nothing filled the window it opens. The
+    # target is that a process restarted by its supervisor leads again within its lease period,
+    # so the lead never moves. See docs/bug_list.md, BUG-0029.
     #
     # matching_engine_primary is started under scripts/launch.py so a real supervisor
     # restarts it. The harness doing that itself would prove nothing: the question is whether
