@@ -97,8 +97,8 @@ waiting.
 
 Until the leader has answered a follower's request, it sends that follower no live records, and the
 follower writes none. A live record sent before the two logs agreed would be written after a gap. On
-the follower, the handler on the reactor thread declines every replicated record until the logs agree,
-which passes it to the sequencer thread, and the sequencer thread discards it and logs that it did.
+the follower, every replicated record reaches the sequencer thread as an ordinary message, and until the
+logs agree the library's replicated WAL (`ReplicatedWal`) discards it, logging at Debug that it did.
 
 When the leader stops sending live records to a follower whose log agreed with its own, because a peer
 connection opened or closed or it has just taken the lead, it tells the follower so with a reply marked
@@ -122,8 +122,8 @@ This uses an operation of the framework's write-ahead log, `Wal::truncate_after(
 where record `seq_no` ends, reading from the segment that holds it rather than from the start of the
 log; overwrites everything after it in that segment with zeros, so that a reader stops there and no
 older entry beyond it can be read again once new records are appended; deletes every later segment and
-the snapshot, which may point beyond the new end; and reopens the writer at that point. The sequencer
-trims its table of epochs to match.
+the snapshot, which may point beyond the new end; and reopens the writer at that point. The replicated
+WAL trims its table of epochs to match.
 Only a follower calls it, and only before it writes anything the leader sends it. It runs on the
 sequencer thread, which is the only thread that writes the log, so nothing is written while records are
 discarded.
@@ -194,7 +194,7 @@ passes.
 | `ha_test.py` scenario 61: a follower restarts | The follower is killed, the leader takes 20 orders, the follower is restarted. Once its log agrees with the leader's, it holds the same records, with the same contents, as the leader's from where it stopped, without a gap. Then the leader is killed, and the new leader holds every record the old leader wrote while it was down | Fails: the follower's log lacks all 42 of the records written while it was down |
 | `ha_test.py` scenario 62: an old leader rejoins | The leader's sends to its follower are blocked with `libblock_sends_to_ports.so`, so that it writes three orders the follower does not have. It is killed, the follower takes the lead and takes orders, and the old leader is restarted. It discards the three, and its log ends identical to the new leader's | Fails: the old leader never reaches agreement with the new leader |
 | `LogEpochTableTest` | The epoch of each record; the leader's answer and the follower's step for a follower that is behind, an old leader, a divergence across two changes of leader, a follower whose records are from a later epoch, an empty follower, and an epoch that went backwards | |
-| `WalClassTest`, `truncate_after` and `scan_start_for` | A truncated log reads back up to the record and no further, records appended after it follow it, an older entry beyond the new end is never read again, later segments and the snapshot are removed, and reading from the scan start reaches the record | The test of an older entry fails when the zeroing is left out |
+| `WalTest`, `truncate_after` and `scan_start_for` | A truncated log reads back up to the record and no further, records appended after it follow it, an older entry beyond the new end is never read again, later segments and the snapshot are removed, and reading from the scan start reaches the record | The test of an older entry fails when the zeroing is left out |
 | `WalRecordEncodingTest` | A record carries its epoch, and a record written before the field existed still decodes | The second fails with the generator's earlier handling of optional fields |
 
 Comparing two logs uses the checksum stored with each entry: a follower stores the bytes its leader
