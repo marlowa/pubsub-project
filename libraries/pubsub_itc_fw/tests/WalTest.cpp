@@ -728,6 +728,27 @@ TEST_F(WalClassTest, TruncateAfterZeroKeepsNothing) {
     EXPECT_EQ(records.front().payload.front(), 0xBB);
 }
 
+TEST_F(WalClassTest, TruncateAfterZeroKeepsNothingWhenTheFirstSegmentFileIsMissing) {
+    // A segment of 4096 bytes holds a few dozen of these records, so 200 span several segments.
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        append_records(wal, 1, 200, 0xAA);
+    }
+    ASSERT_TRUE(std::filesystem::remove(dir_ + "/wal_000000.log"));
+    {
+        Wal wal;
+        ASSERT_EQ(wal.open(dir_, segment_size), 200) << "the records in the later segments are still read";
+        wal.truncate_after(0);
+        EXPECT_EQ(wal.last_seq_no(), 0);
+        append_records(wal, 1, 2, 0xBB);
+    }
+    const auto records = read_back(dir_);
+    ASSERT_EQ(records.size(), 2U);
+    EXPECT_EQ(records.front().seq_no, 1);
+    EXPECT_EQ(records.front().payload.front(), 0xBB);
+}
+
 TEST_F(WalClassTest, TruncateAfterRemovesASnapshotThatCouldPointBeyondTheNewEnd) {
     Wal wal;
     wal.open(dir_, segment_size);

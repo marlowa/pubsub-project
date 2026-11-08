@@ -41,6 +41,7 @@
 #include <pubsub_itc_fw/LeasePromiseRecorderInterface.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/LeaseVoter.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReplicatedWal.hpp>
 #include <pubsub_itc_fw/SingleWriterHistogram.hpp>
@@ -806,6 +807,58 @@ TEST(ReplicatedWalTest, TheFollowerWritesNothingAfterAMissingRecordUntilTheTwoWa
     ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
     EXPECT_EQ(pair.wals_[1]->last_seq_no(), after);
     EXPECT_EQ(read_wal(pair.directories_[1]), read_wal(pair.directories_[0]));
+}
+
+namespace {
+
+// Appends records on instance @p i until its WAL has records beyond its first segment: the writer is
+// then in the second segment or a later one.
+void append_beyond_the_first_segment(Pair& pair, int i) {
+    for (int count = 0; count < 100000 && pair.wals_[i]->wal().write_position().segment < 1; ++count) {
+        static_cast<void>(pair.append(i, 60));
+    }
+    ASSERT_GE(pair.wals_[i]->wal().write_position().segment, 1U);
+}
+
+} // namespaces
+
+TEST(ReplicatedWalTest, AFollowerWhoseWalHasLostItsFirstSegmentDiscardsEveryRecordAndIsSentThemAgain) {
+    Pair pair("replicated_wal_first_segment_lost");
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    append_beyond_the_first_segment(pair, 0);
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    const int64_t last = pair.wals_[0]->last_seq_no();
+
+    pair.crash(1);
+    ASSERT_TRUE(std::filesystem::remove(pair.directories_[1] + "/wal_000000.log"));
+    pair.start(1);
+    EXPECT_TRUE(pair.logged("Discarding every record from 1 to")) << "a WAL without its first segment has a gap before its first record";
+    pair.connect();
+
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    EXPECT_EQ(pair.wals_[1]->last_seq_no(), last);
+    EXPECT_EQ(read_wal(pair.directories_[1]), read_wal(pair.directories_[0]));
+}
+
+TEST(ReplicatedWalTest, AnInstanceRunningAloneRefusesAWalWithAGapAndNamesTheMissingSegmentFile) {
+    Pair pair("replicated_wal_alone_first_segment_lost");
+    pair.start(0, /*ha_enabled=*/false);
+    append_beyond_the_first_segment(pair, 0);
+    pair.crash(0);
+    const std::string missing = pair.directories_[0] + "/wal_000000.log";
+    ASSERT_TRUE(std::filesystem::remove(missing));
+
+    try {
+        pair.start(0, /*ha_enabled=*/false);
+        FAIL() << "an instance that leads alone opened a WAL with a gap, and would have discarded records no leader can send again";
+    } catch (const PubSubItcException& refused) {
+        const std::string message = refused.what();
+        EXPECT_NE(message.find(missing), std::string::npos) << message;
+        EXPECT_NE(message.find("It does not start"), std::string::npos) << message;
+    }
+    EXPECT_TRUE(std::filesystem::exists(pair.directories_[0] + "/wal_000001.log")) << "nothing was discarded";
 }
 
 TEST(ReplicatedWalTest, AFollowerThatStopsAcknowledgingIsLeftBehindOnlyOnceAVoterConfirmsTheStatement) {

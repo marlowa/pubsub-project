@@ -198,6 +198,9 @@ class Wal {
      * segment is deleted; and the snapshot is removed, because it may point beyond the new end. The
      * writer is reopened after the record.
      *
+     * When @p seq_no is zero and the log has lost its first segment file, as a log whose first record
+     * is not record 1 may have, there is nothing to zero, and the first segment is created afresh.
+     *
      * @param[in] seq_no The last record to keep, or zero to keep none. Must be in the log.
      */
     void truncate_after(int64_t seq_no);
@@ -300,6 +303,8 @@ class Wal {
     bool load_snapshot(WalPosition& out_pos);
     void delete_segments_before(uint64_t seg_num) const;
     void delete_segments_after(uint64_t seg_num) const;
+    // Writes zeros over segment file @p fd, named @p segment, from @p from_offset to its end, and syncs it to disk.
+    void zero_from(int fd, const std::string& segment, size_t from_offset) const;
     [[nodiscard]] std::vector<uint64_t> segment_numbers() const;
 
     std::string directory_;

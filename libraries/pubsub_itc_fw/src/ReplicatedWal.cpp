@@ -5,12 +5,17 @@
 
 #include <algorithm>
 #include <array>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
+
+#include <fmt/format.h>
 
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/LeaderEpoch.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/WalCursor.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 
@@ -42,6 +47,28 @@ ReplicatedWal::ReplicatedWal(ReplicatedWalConfiguration configuration, QuillLogg
     epoch_recording_.measure_into(configuration_.epoch_record_milliseconds, configuration_.lease_left_when_leading_milliseconds);
 }
 
+void ReplicatedWal::refuse_wal_with_a_gap(int64_t last_before_gap, int64_t first_after_gap) const {
+    const std::vector<uint64_t> on_disk = wal_.segments_on_disk();
+    std::string missing;
+    const uint64_t highest = on_disk.empty() ? 0 : on_disk.back();
+    for (uint64_t segment = 0; segment <= highest; ++segment) {
+        if (!std::binary_search(on_disk.begin(), on_disk.end(), segment)) {
+            missing += (missing.empty() ? "" : ", ") + wal_.segment_path(segment);
+        }
+    }
+    if (missing.empty()) {
+        missing = "none -- every segment file is there, so records are missing from within one";
+    }
+    const std::string message =
+        fmt::format("{}: the write-ahead log in {} has a gap -- record {} follows record {} -- and this instance runs without high availability, so no "
+                    "other instance holds the missing records or could send them again. It does not start. Missing segment files: {}. Put the missing "
+                    "files back from a copy of this WAL if there is one; without them, the day's records cannot all be read, and the venue cannot be "
+                    "started from this WAL",
+                    configuration_.owner_name, configuration_.wal_directory, first_after_gap, last_before_gap, missing);
+    PUBSUB_LOG(logger_, FwLogLevel::Error, "{}", message);
+    throw PubSubItcException(message);
+}
+
 int64_t ReplicatedWal::open(Clock::time_point now) {
     if (!configuration_.helper_cores.empty()) {
         wal_.set_helper_cores(configuration_.helper_cores);
@@ -70,9 +97,16 @@ int64_t ReplicatedWal::open(Clock::time_point now) {
         },
         WalOpenMode{WalOpenMode::IgnoreSnapshot});
 
+    if (last_before_gap >= 0 && !configuration_.ha_enabled) {
+        // Running alone, this instance leads at once, and no other instance holds the records the gap
+        // lost or would send the discarded ones again. Discarding would lose them for good.
+        refuse_wal_with_a_gap(last_before_gap, first_after_gap);
+    }
     if (last_before_gap >= 0) {
         // Records after a gap were sent by a leader, which still holds them and sends them again once
         // this instance's WAL and its leader's agree (docs/availability/follower_log_repair.md, 4.2).
+        // A WAL whose first segment file is lost has a gap before its first record, and is repaired
+        // the same way, by discarding every record and being sent them all again.
         PUBSUB_LOG(logger_, FwLogLevel::Warning,
                    "{}: the write-ahead log has a gap -- record {} follows record {}. Discarding every record from {} to {}; the leader sends them again",
                    configuration_.owner_name, first_after_gap, last_before_gap, last_before_gap + 1, recovered_seq);

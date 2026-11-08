@@ -225,13 +225,30 @@ void Wal::truncate_after(int64_t seq_no) {
     // Zero the rest of the segment the record ends in. Zeroing only the next entry's header would not
     // do: a record appended later could end part way through an older entry, and an older entry
     // after that could then be read as if it followed.
+    //
+    // When no record is kept, the records end at the start of the first segment, and a log that has
+    // lost its first segment file has no such file. There is then nothing to zero: the writer creates
+    // the segment afresh, filled with zeros, when it is reopened below.
     const std::string segment = segment_path_for_delete(end.segment);
     const int fd = ::open(segment.c_str(), O_WRONLY | O_CLOEXEC);
-    if (fd < 0) {
+    if (fd < 0 && !(errno == ENOENT && seq_no == 0)) {
         throw PubSubItcException("Wal::truncate_after: open(" + segment + "): " + StringUtils::get_errno_string());
     }
+    if (fd >= 0) {
+        zero_from(fd, segment, end.offset);
+    }
+
+    delete_segments_after(end.segment);
+    ::unlink(snapshot_path().c_str());
+
+    last_seq_no_ = seq_no;
+    record_count_ = discarded > record_count_ ? 0 : record_count_ - discarded;
+    writer_.open(directory_, segment_size_, end);
+}
+
+void Wal::zero_from(int fd, const std::string& segment, size_t from_offset) const {
     std::vector<uint8_t> zeros(64 * 1024, 0);
-    for (size_t offset = end.offset; offset < segment_size_;) {
+    for (size_t offset = from_offset; offset < segment_size_;) {
         const size_t chunk = std::min(zeros.size(), segment_size_ - offset);
         const ssize_t written = ::pwrite(fd, zeros.data(), chunk, static_cast<off_t>(offset));
         if (written < 0) {
@@ -246,13 +263,6 @@ void Wal::truncate_after(int64_t seq_no) {
     }
     ::fsync(fd);
     ::close(fd);
-
-    delete_segments_after(end.segment);
-    ::unlink(snapshot_path().c_str());
-
-    last_seq_no_ = seq_no;
-    record_count_ = discarded > record_count_ ? 0 : record_count_ - discarded;
-    writer_.open(directory_, segment_size_, end);
 }
 
 WalPosition Wal::scan_start_for(int64_t seq_no) const {

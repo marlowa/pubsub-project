@@ -75,6 +75,15 @@ last record before the first gap, logging at Warning how many records it discard
 they were. The discarded records were all sent to it by a leader, so the leader still holds them and
 sends them again (4.3).
 
+A log whose first segment file is missing has a gap before its first record, and is repaired the same
+way: every record is discarded, and the leader sends them all again. When no record is kept, there is
+no segment to zero, and the writer creates the first segment afresh, filled with zeros
+([BUG-0210](../bug_list.md#bug_0210)).
+
+An instance running without high availability has no leader to send discarded records again, so it
+does not discard them. It refuses a log with a gap: it logs an error naming each missing segment file
+and saying that the files must be put back from a copy of the log, and it does not start.
+
 ### 4.3 Finding the last record on which the two logs agree
 
 When a follower connects to its leader, or when an instance starts following a leader it is already

@@ -321,8 +321,11 @@ class ReplicatedWal {
      * @brief Opens the WAL, trusting it only up to its first gap, and starts deciding who leads.
      *
      * Every record is read, to build the table of epochs and to find a gap. Records after a gap are
-     * discarded: the leader sends them again. With high availability off, this instance leads at once,
-     * and role_changed() is called before this returns.
+     * discarded: the leader sends them again. A WAL that has lost its first segment file has a gap
+     * before its first record, and every record is discarded. With high availability off, this
+     * instance leads at once, and role_changed() is called before this returns; a WAL with a gap is
+     * then refused, with an exception whose message names the missing segment files, because no
+     * leader could send the missing records again.
      *
      * @return The number of the last record the WAL holds, or zero for an empty WAL.
      */
@@ -500,6 +503,10 @@ class ReplicatedWal {
 
   private:
     void write(int64_t seq_no, int32_t leader_epoch, int16_t pdu_id, const uint8_t* bytes, size_t size, int64_t wall_time_ns);
+    // Logs, and throws, that the WAL has a gap after record @p last_before_gap, the next record being
+    // @p first_after_gap, which an instance running without high availability cannot repair. The
+    // message names the missing segment files and says what an operator can do.
+    void refuse_wal_with_a_gap(int64_t last_before_gap, int64_t first_after_gap) const;
     // The body of handle_message, which handle_message follows with note_whether_the_follower_is_waited_for.
     bool dispatch_message(const ConnectionID& from, int16_t pdu_id, const uint8_t* payload, size_t size, Clock::time_point now);
     void act_on(PairLeaseAgent::Change change, Clock::time_point now);

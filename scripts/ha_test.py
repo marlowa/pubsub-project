@@ -1178,6 +1178,11 @@ class Scenario(NamedTuple):
     # and require the new leader to hold every order the engine accepted. See run_scenario's
     # "follower restarts" block, and docs/availability/follower_log_repair.md.
     assert_restarted_follower_log_repaired: bool = False
+    # With assert_restarted_follower_log_repaired: before the follower is killed, send enough orders that its WAL has
+    # records beyond its first segment file, and delete that file while it is dead. The restarted follower must discard
+    # every record and be sent them all again by the leader, and its WAL must then be identical to the leader's from
+    # record 1 (BUG-0210).
+    delete_follower_first_wal_segment: bool = False
     # When True, make the leading sequencer hold records its follower never received, kill it, have
     # the follower lead and take orders, restart the old leader, and require it to discard those
     # records and end with a log identical to the new leader's. Needs block_leader_peer_sends. See
@@ -3907,6 +3912,28 @@ _SCENARIOS: list[Scenario] = [
         orders_during_override=0,
         orders_after_override=0,
         assert_restarted_follower_log_repaired=True,
+        steps=[],
+    ),
+
+    # 102 -- a follower whose WAL has lost its first segment file is sent every record again.
+    #
+    # As scenario 61, but before the follower is killed enough orders are sent that its WAL has records beyond its
+    # first segment file, and that file is deleted while it is dead. Its WAL then has a gap before its first record.
+    # It must discard every record, as for any gap, and be sent them all again; its WAL must end identical to the
+    # leader's from record 1, and it must be able to take over (BUG-0210).
+    Scenario(
+        number=102,
+        short_name="follower_without_first_wal_segment_repaired",
+        description="A follower sequencer whose WAL has lost its first segment file is sent every record again",
+        expected_outcome=(
+            "the restarted follower reports discarding every record because of the gap before its first one, does not stop, "
+            "and its WAL then holds the same records as the leader's from record 1; when the leader is killed it takes over "
+            "holding every record"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_restarted_follower_log_repaired=True,
+        delete_follower_first_wal_segment=True,
         steps=[],
     ),
 
@@ -10705,6 +10732,19 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 if result.returncode != 0:
                     die(f"follower restarts: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
 
+            if scenario.delete_follower_first_wal_segment:
+                # Orders until the follower's WAL has records beyond its first segment file, so that deleting that
+                # file leaves records after a gap rather than an empty WAL.
+                filled = 0
+                while wal_end_position(wal_dirs["secondary"])[0] < 1:
+                    if filled >= 100000:
+                        die(f"follower restarts: {filled} orders sent and the follower's WAL still has no record beyond its first "
+                            "segment file, so deleting that file would test nothing.")
+                    inject_orders(order_ports["primary"], f"fill-{run_tag}-{filled}", 5000)
+                    filled += 5000
+                    time.sleep(1.0)
+                log(f"  {filled} orders sent; the follower's WAL has records beyond its first segment file")
+
             # Where both logs end now, with the follower keeping up.
             time.sleep(1.0)
             start_positions = {which: wal_end_position(path) for which, path in wal_dirs.items()}
@@ -10732,6 +10772,16 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "so an operator alerting on it would not know the venue is running on one machine (BUG-0221).")
             log("  the leader's sequencer_running_alone gauge reads 1 while the follower is dead -- OK")
 
+            if scenario.delete_follower_first_wal_segment:
+                first_segment = wal_dirs["secondary"] / "wal_000000.log"
+                first_segment.unlink()
+                if first_segment.exists():
+                    die(f"follower restarts: {first_segment} is still there after it was deleted.")
+                log(f"  deleted {first_segment}: the follower's WAL now has a gap before its first record")
+                # Its whole WAL is sent again, so the comparisons below start at record 1.
+                stopped_at = 0
+                start_positions = {which: (-1, -1) for which in wal_dirs}
+
             agreed_from = _TEST_EVENTS.mark()
             do_restart_step(RestartStep(proc_name="sequencer_secondary", ready_log_name="sequencer_secondary.log", ready=expect_started("sequencer_secondary"),
                                         ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
@@ -10746,6 +10796,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
                                fields=lambda m: {"side": m.WalSide.Follower}),
                 30.0):
                 die("follower restarts: the restarted follower never reported that its log agrees with the leader's.")
+            if scenario.delete_follower_first_wal_segment:
+                # A follower that discarded every record, because of the gap before its first one, agrees with the leader
+                # through record 0: it holds nothing the leader must not send again.
+                if not has_happened(
+                    expect_message("sequencer_secondary", "its WAL agrees with the leader's through record 0", "WalsAgree",
+                                   fields=lambda m: {"side": m.WalSide.Follower, "through": 0}),
+                    5.0):
+                    die("follower restarts: the restarted follower did not agree with the leader through record 0, so it did not discard every "
+                        "record because of the gap before its first one, and the missing first segment file was not what it repaired.")
+                log("  the restarted follower discarded every record because of the gap before its first one, and agrees with the leader "
+                    "through record 0 -- OK")
             inject_orders(order_ports["primary"], f"after-{run_tag}")
             time.sleep(2.0)
             compared = compare_logs_after("follower restarts", wal_dirs["primary"], start_positions["primary"], wal_dirs["secondary"],

@@ -22,11 +22,13 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 - **A trading day under load.** `perf_run.py --profile profiles/trading_day.toml` runs a shaped day
   of several million orders with cancels.
-- **Failover and restart of each pair.** `ha_test.py` has 101 scenarios: killing each component,
+- **Failover and restart of each pair.** `ha_test.py` has 102 scenarios: killing each component,
   restarting each in each role, stopping a whole machine, a member's open orders surviving a restart
   of the matching engine and a change of engine leader, a command that crashes both engines being
   voided, orders held while no engine leads, and reports held for a gateway surviving the death of
-  the sequencer holding them. All 101 pass, and the 39 that also run with the secondary matching
+  the sequencer holding them, and a follower sequencer that has lost the first file of its WAL being
+  sent every record again. All 102 pass, except that scenario 80's check of the matching engines on its WAL
+  sometimes loses reports, as [BUG-0234](bug_list.md#bug_0234) records; and the 39 that also run with the secondary matching
   engine leading first pass that way too. After each scenario both matching
   engines are run on its WAL and must give the reports the WAL holds.
 - **The FIX session layer.** Resend requests are answered with the real execution reports, a
@@ -35,7 +37,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 67 open entries, 16 of them high severity. Each one is judged,
+The [bug list](bug_list.md) holds 66 open entries, 16 of them high severity. Each one is judged,
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 

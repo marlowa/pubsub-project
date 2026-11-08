@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 235 |
-| Open | 67 (46 defects, 21 tasks) |
-| Closed | 168 |
+| Open | 66 (45 defects, 21 tasks) |
+| Closed | 169 |
 | Next id | BUG-0236 |
 
 ## Open bugs by severity
 
-16 high, 38 medium, 13 low.
+16 high, 37 medium, 13 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -62,7 +62,6 @@
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
 | [BUG-0203](#bug_0203) | medium | defect | The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together |
 | [BUG-0209](#bug_0209) | medium | task | No scenario reaches the halt when a matching engine cannot account for the orders the venue holds |
-| [BUG-0210](#bug_0210) | medium | defect | A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again |
 | [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
@@ -433,27 +432,6 @@ rather than holding a different book.
 
 **Principles.** V8: every report the matching engine produces reaches the member, and says what the venue did.
 
-### BUG-0210: A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again {#bug_0210}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-26 |
-| Recorded | 2026-10-26 |
-| How | Writing a scenario for the halt of [BUG-0209](#bug_0209): the secondary sequencer was restarted with the first segment of its WAL deleted |
-| Impact | The sequencer stops. With its peer leading, the venue trades on and loses its resilience; with the peer down too, it cannot start |
-
-**What happens.** The sequencer opened its WAL, which began at record 281, and logged "the write-ahead log has a gap
--- record 281 follows record 0. Discarding every record from 1 to 2000; the leader sends them again", which is how a
-follower's WAL with a gap is repaired. Discarding then called `Wal::truncate_after`, which opens the WAL's first
-segment, `wal_000000.log`; it was not there, and the sequencer logged "terminating due to exception:
-Wal::truncate_after: open(.../wal_000000.log): No such file or directory" and stopped.
-
-**What is wanted.** A missing segment is repaired as a gap is, by discarding what follows and being sent it again, or,
-on the leader, refused with a message that names the missing file and says what an operator should do.
-
-**Principles.** V11: a loss of resilience is not a loss of service.
-
 ### BUG-0209: No scenario reaches the halt when a matching engine cannot account for the orders the venue holds {#bug_0209}
 
 | | |
@@ -470,8 +448,9 @@ the first command of the trading day, an engine about to lead asks the leading s
 sequencer writes a `TechnicalEvent` that halts trading
 ([deterministic_matching_engine.md](availability/deterministic_matching_engine.md), section 4.2). The state machine's
 handling of the event has unit tests. The engine's decision, the request and the sequencer's answer are not tested:
-the sequencer keeps every record of the day, so its WAL always reaches the first command, and deleting the first
-segment to make it not, as a scenario tried, kills the sequencer ([BUG-0210](#bug_0210)).
+the sequencer keeps every record of the day, so its WAL always reaches the first command. Deleting the first segment
+does not make it not: a follower that has lost it is sent every record again, and an instance running without high
+availability refuses to start ([BUG-0210](#bug_0210)).
 
 It was exercised once, on 26 October 2026, with the engine's decision forced to the second case in a build made for
 the purpose and scenario 52 run against it: the engine asked for the halt, the following sequencer logged that it does
@@ -480,7 +459,7 @@ halted. That build is not the venue's, and the check is not repeated.
 
 **What is wanted.** A scenario in which the WAL begins after the first command of the day and an engine with a damaged
 region takes the lead: trading halts by the command, nothing is cancelled, and an order sent afterwards is refused.
-It becomes possible once the WAL is reclaimed ([BUG-0048](#bug_0048)), or once BUG-0210 is fixed.
+It becomes possible once the WAL is reclaimed ([BUG-0048](#bug_0048)).
 
 ### BUG-0207: A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen {#bug_0207}
 
@@ -3025,6 +3004,28 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0210: A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again {#bug_0210}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-26 |
+| Recorded | 2026-10-26 |
+| Fixed | 2026-11-08 -- `Wal::truncate_after(0)`, which keeps no record, no longer needs the first segment file: when it is missing there is nothing to zero, and the writer creates the segment afresh, filled with zeros. A follower whose WAL has lost its first segment file therefore repairs it as it repairs any gap: it discards every record and the leader sends them all again. An instance running without high availability has no leader to send the records again, so `ReplicatedWal::open` refuses a WAL with a gap: it logs an error naming each missing segment file and saying what an operator can do, and throws, so the instance does not start. Three new unit tests, in `WalTest` and `ReplicatedWalTest`, failed with the old code. New scenario 102 fills the follower's WAL past its first segment file, deletes that file while the follower is dead, and requires the restarted follower to agree with the leader through record 0, then to hold the same records as the leader from record 1, and to take over holding every record; with the old code it failed, because the follower did not start. With the fix, `devsetup.sh` passed, scenario 102 passed 3 times run alone, scenarios 61 and 62 passed, and the suites passed 100 of 102 and 39 of 39 with the secondary engine first. Of the two failures, scenario 102's was its own check, which read the follower's Quill log before the line was written, and now reads a test event instead, which failed when made on purpose to expect record 1; scenario 80's was its check of the engines on the WAL losing reports, as [BUG-0234](#bug_0234) records |
+| How | Writing a scenario for the halt of [BUG-0209](#bug_0209): the secondary sequencer was restarted with the first segment of its WAL deleted |
+| Impact | The sequencer stops. With its peer leading, the venue trades on and loses its resilience; with the peer down too, it cannot start |
+
+**What happens.** The sequencer opened its WAL, which began at record 281, and logged "the write-ahead log has a gap
+-- record 281 follows record 0. Discarding every record from 1 to 2000; the leader sends them again", which is how a
+follower's WAL with a gap is repaired. Discarding then called `Wal::truncate_after`, which opens the WAL's first
+segment, `wal_000000.log`; it was not there, and the sequencer logged "terminating due to exception:
+Wal::truncate_after: open(.../wal_000000.log): No such file or directory" and stopped.
+
+**What is wanted.** A missing segment is repaired as a gap is, by discarding what follows and being sent it again, or,
+on the leader, refused with a message that names the missing file and says what an operator should do.
+
+**Principles.** V11: a loss of resilience is not a loss of service.
 
 ### BUG-0226: A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made {#bug_0226}
 
