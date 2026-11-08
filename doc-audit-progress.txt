@@ -60,7 +60,7 @@ code as it now stands. Done in this pass:
 venue: `README.md`, `matching_engine.md`, `sequencer.md`, `sequencer_app.md`, `arbiter.md`, `witness.md`,
 `trading_phases.md`
 
-durability: `wal.md`, `replay.md`
+durability: `wal.md`, `replay.md`, `open_order_checkpoint.md`
 
 The design records. Andrew decided on 7 November 2026 that the documents each giving the design for one
 phase of the recovery plan or one bug are records of that design. Each begins by describing the venue
@@ -80,8 +80,7 @@ availability: `wal_and_ha.md`, `majority_leases.md`, `gateway_ha.md`, `process_d
 
 Still to read again: availability
 `ha_in_the_library.md`,
-`test_events_inventory.md`; durability
-`open_order_checkpoint.md`; orientation `architecture.md`. `design_notes.md` waits on
+`test_events_inventory.md`; orientation `architecture.md`. `design_notes.md` waits on
 question 4.
 
 ## Building and testing on Rocky 8 in Docker (started, blocked)

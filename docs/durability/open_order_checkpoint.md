@@ -89,7 +89,7 @@ The region is a header followed by an array of fixed-size slots. Nothing else.
 | published sequence number | 8 bytes, aligned. The only field written on the hot path |
 | free-list head | the index of the first free slot, or a sentinel |
 | record format | what the owner's records mean, as the owner numbers it |
-| owner's value | 8 bytes the owner keeps beside the published position. The matching engine keeps there whether trading is halted, written before the position of the command that set it is published |
+| owner's values | four values of 8 bytes each that the owner keeps beside the published position. The matching engine uses three: whether trading is halted, written before the position of the command that set it is published; the latest void of a command it has been told of; and the command it is applying, written before it applies each command and set to zero once the command is finished, so that a restarted engine knows if its previous process died applying one ([voided_commands.md](../availability/voided_commands.md), section 4.1) |
 
 **A slot** holds one open order, and it is the same size whether it is live or
 free:
@@ -130,9 +130,10 @@ break the recovery bound this whole design exists for.
 
 It belongs with the sequencer, which commits every order and every cancellation
 and therefore has the facts already, and the sequencer keeps it
-(`LoggedCommandIdentifiers`, in its replicated WAL). The engine refuses a repeated identifier only while
-the first order is still on its book; refusing one used earlier in the day is
-[BUG-0114](../bug_list.md#bug_0114).
+(`LoggedCommandIdentifiers`, in its replicated WAL). The leading sequencer checks every command against it
+and refuses one that reuses an identifier used earlier in the day
+([one_check_against_sequencing_twice.md](../availability/one_check_against_sequencing_twice.md)). The
+engine also refuses a repeated identifier while the first order is still on its book.
 
 ### On the hot path
 
@@ -215,8 +216,10 @@ could not provide.
    free list is never trusted: it is mutated on every accept and removal, so a
    crash can leave it holding a dangling index or a cycle. The scan is already
    being paid for, so the complement is free.
-5. Ask the sequencer for everything committed after N and apply it silently,
-   which is the existing reconciliation path.
+5. Ask the leading sequencer for everything committed after N and apply it, which
+   is the catch-up every engine does before it acts. The engine sends only the
+   reports the WAL does not already hold, each marked as a possible repeat
+   ([far_back_catch_up.md](../availability/far_back_catch_up.md), section 2).
 
 Step 2 is O(region size), and the region is sized to the peak open orders, which
 is the bound (d) asks for.
@@ -277,8 +280,8 @@ quiet. That is R-0118, and there is a test that a quiet spell before the venue
 went down is not counted.
 
 **What happens.** Longer than the stated period: halt, cancel every order open,
-tell the member that placed each, and reject every order taken meanwhile and not
-yet matched. That is R-0117.
+tell the member that placed each, and reject every order the sequencer held
+meanwhile. That is R-0117.
 
 The period is `[recovery] automatic_recovery_limit_seconds` in the sequencer's configuration, ten seconds in the
 environment templates: the longest recovery the venue does by itself
@@ -289,7 +292,8 @@ member sent — `ExchangeClosed`, with text saying trading is halted. That is th
 answer to the question the member actually asked, and it reaches the member who is
 trading, which is the member who needs to know. A broadcast should exist as well
 and does not replace it; that part is not built. Lifting a halt needs a person,
-under R-0023.
+under R-0023, who does it with `scripts/operator_halt.py`
+([voided_commands.md](../availability/voided_commands.md), section 6).
 
 ## When the region cannot be used
 
@@ -404,11 +408,13 @@ after that position before it acts, as every engine does (principle V5 in
 [design_principles.md](../design_principles.md)), but the amount it replays is bounded by
 the gap rather than by the whole day.
 
-**Two instances now hold two regions and they may disagree.** That is correct
-rather than a fault: each region records what that instance actually holds, which
-is the only thing an instance can honestly write down. The follower's region is
-what it replicated; the leader's is what it accepted. Promotion reads the promoted
-instance's own region and then reconciles, exactly as before.
+**Two instances now hold two regions, and at any moment they may differ.** That is
+correct rather than a fault: each region records what that instance actually holds,
+which is the only thing an instance can honestly write down. Both engines apply the
+same commands from the sequencer's log, so the two regions differ only in how far
+each engine has got through it. A promoted engine already holds its book in memory,
+built from the same commands, and catches up with the sequencer's log before it acts;
+it reads its region only when it starts.
 
 **Primary and secondary are permanent names; leader and follower are positions.**
 The region is fixed to the instance, so it follows the permanent name: each
@@ -476,7 +482,8 @@ not been measured.
 
 - **How the region is sized.** It must hold the peak simultaneously open orders,
   which nobody has measured. It is configured rather than derived, and the
-  environment templates carry the figure; a million is what development uses. The
+  environment templates carry the figure: two million in the development
+  environment, one million in preprod and test-1, and one hundred million in prod. The
   measurement above gives the price of guessing high: 232 bytes and, when the page
   cache has gone cold, about 8 microseconds of restart for every 17 records never
   used.
