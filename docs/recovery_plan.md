@@ -592,6 +592,9 @@ instances of a pair has been checked, with its result written down.
 fixed by phases 3 to 9 or the framework fixes, is a breach of a principle, or is a new requirement. Then agreeing an order for
 those that remain, with Andrew. Each fix from then on follows the same way of working as above.
 
+**Where it stands.** Started 8 November 2026. Each open entry's judgement, with its evidence, is recorded
+area by area in [bug_review.md](bug_review.md).
+
 **Finished when:** there is an agreed set of the guarantees the venue gives, evidence for which of them
 hold, and an explicit decision, recorded, about which remaining risks are accepted. An empty bug list is
 not the aim. Gaps found along the way are recorded, not fixed within the phase. Agreed 17 October 2026.
