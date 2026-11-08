@@ -86,6 +86,16 @@ TEST_F(KeptReportsTest, AReportFromBeforeTheLeaseTheLeaderWasLastGrantedIsNotNee
         << "the leader forwarded everything it received a lease period and the drift allowance before the grant, and only that";
 }
 
+TEST_F(KeptReportsTest, AReportThatSaysWhereItStandsIsNotDiscardedByAge) {
+    keep(1, start_, EngineReportPosition{1, 1});
+    keep(2, start_ + milliseconds{3300}, EngineReportPosition{1, 2});
+    kept_->granted_lease_to_leader(start_ + lease_period + drift_allowance + milliseconds{1});
+    kept_->forward_all();
+    EXPECT_EQ(links_.forwarded, (std::vector<int64_t>{1, 2}))
+        << "the leader may have held the first back for a gateway with no connection, and its records never said it forwarded it";
+    EXPECT_EQ(links_.discarded_as_forwarded, 0);
+}
+
 TEST_F(KeptReportsTest, ReportsDoNotAgeAgainstTheClockOnlyAgainstGrants) {
     keep(1, start_);
     kept_->forward_all();

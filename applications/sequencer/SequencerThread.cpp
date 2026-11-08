@@ -1051,7 +1051,7 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
             }
             sessions_.report_dropped_unbound(routing_identity, er_seq_no);
         }
-        reports_.send_to_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
+        reports_.send_to_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack, position);
         sessions_.report_forwarded(routing_identity);
         if (erase_routing_entry) {
             sessions_.order_ended(er_seq_no);
@@ -2122,7 +2122,8 @@ bool SequencerThread::answer_from_wal(const pubsub_itc_fw_app::WalRecordView& in
     envelope.poss_resend = true;
     // Not timed: the report says nothing about how long the order path takes.
     const bool is_new_order_ack = false;
-    reports_.send_to_gateway(protocol, destination->instance, 0, envelope, is_new_order_ack);
+    // Sent again from the WAL, so it has no place in the engine's reports.
+    reports_.send_to_gateway(protocol, destination->instance, 0, envelope, is_new_order_ack, std::nullopt);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: command ClOrdID={} from comp_id='{}' sent again is answered by the report the WAL holds as record {}, forwarded "
                "again marked as a possible repeat",
@@ -2417,7 +2418,7 @@ void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::Ev
         envelope.poss_resend = report.poss_resend || possible_repeat;
         // Not timed: a report waiting while its member was away says nothing about how long the path takes.
         const bool is_new_order_ack = false;
-        reports_.send_to_gateway(identity.protocol, destination->instance, 0, envelope, is_new_order_ack);
+        reports_.send_to_gateway(identity.protocol, destination->instance, 0, envelope, is_new_order_ack, std::nullopt);
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: session comp_id='{}' protocol={} bound again -- sent it {} report(s) produced while it had no connection (log records {} to "

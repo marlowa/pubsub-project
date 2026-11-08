@@ -24,7 +24,7 @@ KeptReports::Clock::time_point KeptReports::needed_from() const {
 
 void KeptReports::keep(int64_t er_seq_no, const uint8_t* bytes, size_t size, const std::optional<EngineReportPosition>& position, Clock::time_point now) {
     const Clock::time_point from = needed_from();
-    store_.discard_received_before(from);
+    store_.discard_without_position_received_before(from);
     store_.keep(er_seq_no, bytes, size, now, from, position);
     const auto lost_now = static_cast<int64_t>(store_.lost());
     if (lost_now != lost_reported_) {
@@ -79,7 +79,7 @@ void KeptReports::tick(Clock::time_point now) {
 }
 
 void KeptReports::forward_all() {
-    store_.discard_received_before(needed_from());
+    store_.discard_without_position_received_before(needed_from());
     // Those the old leader said it forwarded were discarded just before this, on taking the lead; this says how many.
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
                "KeptReports: taking the lead -- {} kept report(s) discarded because the old leader said it had "

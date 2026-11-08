@@ -163,8 +163,14 @@ class ReportForwarding {
      * @brief Sends @p envelope, a report numbered @p er_seq_no, to gateway @p protocol, @p instance; holds it if this
      *        instance leads, the gateway is configured, and there is no connection for reports to it; otherwise drops it,
      *        saying so.
+     *
+     * @p position is where the report stands in the matching engine's reports, or nothing for a report sent again from
+     * the WAL. A report held for the gateway holds back forwarded_through() at the report before it, until it is sent:
+     * a follower keeps its own copy of the report until the leader says it was forwarded, so that a new leader can send
+     * it if this one dies first.
      */
-    void send_to_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope, bool is_new_order_ack);
+    void send_to_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope, bool is_new_order_ack,
+                         const std::optional<EngineReportPosition>& position);
 
     /// Holds @p pending if this instance leads, some configured gateway has not announced its sessions, and its session
     /// is not one a test expects to have none. @return Whether it was held.
@@ -217,7 +223,10 @@ class ReportForwarding {
     void drop_held_reports_for_sessions_connected_nowhere();
     // Works out the oldest held position afresh, and says how many were dropped while the room was full, if any were.
     void held_reports_left_the_room();
-    bool hold_for_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope);
+    bool hold_for_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope,
+                          const std::optional<EngineReportPosition>& position);
+    // Works out afresh the oldest position of any report held for a gateway.
+    void gateway_held_reports_changed();
     void send_held_for_gateway(int16_t protocol, int16_t instance, const pubsub_itc_fw::ConnectionID& connection);
     static Pending decode_held_report(const uint8_t* bytes, size_t size);
 
@@ -246,6 +255,10 @@ class ReportForwarding {
     std::unordered_set<GatewayKey> gateways_holding_reports_;
     std::unordered_map<GatewayKey, int64_t> gateway_held_reports_dropped_reported_;
     std::vector<uint8_t> held_envelope_encoding_;
+    // The oldest position of any report held for a gateway with no connection for reports, or nothing when none with a
+    // position is held. Lowered as each report is held, and worked out afresh when reports are sent or dropped for room,
+    // so that working out how far reports have been forwarded reads no held report.
+    std::optional<EngineReportPosition> gateway_held_oldest_position_;
 };
 
 } // namespaces

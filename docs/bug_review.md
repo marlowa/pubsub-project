@@ -33,7 +33,7 @@ All 81 open entries have been judged. The figures:
 1. Close the thirteen entries above that are fixed or no longer apply. Done, 8 November 2026.
 2. The small breaches, each with a remedy already agreed or obvious: BUG-0129 (a data race; fixed and closed on
    8 November 2026), BUG-0225 (fixed and closed on 8 November 2026, with BUG-0233; BUG-0234 and BUG-0235 found),
-   BUG-0226, BUG-0210, BUG-0095, BUG-0189, and the tests BUG-0181 and BUG-0185.
+   BUG-0226 (fixed and closed on 8 November 2026), BUG-0210, BUG-0095, BUG-0189, and the tests BUG-0181 and BUG-0185.
 3. The breaches that need a short design first: BUG-0142 (statements written in the background),
    BUG-0130 (segments kept ready), BUG-0207 (with its scenario), BUG-0211, BUG-0090 with BUG-0091,
    BUG-0131, and BUG-0072.
@@ -148,7 +148,7 @@ Three entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0226](bug_list.md#bug_0226): a report held for a gateway with no connection counts as forwarded | **Breach** of V8 | Unchanged after phase 10 moved the code into `ReportForwarding`. `ReportForwarding::forwarded_through` holds the position back for reports waiting on the follower (`pending_`) and for reports held for an unannounced session (`held_reports_oldest_position_`), but not for reports held in `reports_held_for_gateways_` | Take the oldest report held for a gateway into the position; a scenario, as the entry describes, made to fail on purpose first |
+| [BUG-0226](bug_list.md#bug_0226): a report held for a gateway with no connection counts as forwarded | **Breach** of V8 | Unchanged after phase 10 moved the code into `ReportForwarding`. `ReportForwarding::forwarded_through` holds the position back for reports waiting on the follower (`pending_`) and for reports held for an unannounced session (`held_reports_oldest_position_`), but not for reports held in `reports_held_for_gateways_` | **Fixed on 8 November 2026** and closed: the leader takes the oldest report held for a gateway into the position it says it has forwarded through, and the follower discards a kept report by its age only if the report has no position. Scenario 101 kills the leader while it holds a gateway's reports and requires every one to reach the member; it failed with either half put back |
 | [BUG-0131](bug_list.md#bug_0131): the leading sequencer allocates from the heap for every order, and copies waiting reports | **Breach** of F5 and F6 | Unchanged after phase 10. `MemberSessions::origins_` is a `std::unordered_map<int64_t, OriginSession>`, gaining a node for every order; `ReportForwarding::pending_` is a `std::multimap` whose entries hold the report in a `std::vector<uint8_t>` and the ClOrdID in a `std::string` | The five steps agreed on 11 October 2026, with the waiting reports' storage and its limits written up and agreed before any code |
 | [BUG-0227](bug_list.md#bug_0227): an operator whose lift cannot be written is told reports are outstanding | **Defect** | Unchanged in `HaltAndVoidRequests::operator_request`; cannot happen with the buffer the sequencer sizes for a `TechnicalEvent` | An outcome of its own for a command that could not be encoded |
 

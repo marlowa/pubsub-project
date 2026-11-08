@@ -35,11 +35,15 @@ namespace sequencer {
  * copy is written at its start, over the oldest copies. A second, fixed-size list records where
  * each copy is, oldest first. Keeping a report therefore allocates nothing.
  *
- * **A copy is discarded in one of two ways.** The sequencer discards copies that have become too
- * old to be needed, by calling discard_received_before. And when there is no room for a new copy,
- * the oldest copies are overwritten to make room. A copy overwritten while it was still young
- * enough to be needed is a report that may now never reach its member, so those are counted, and
- * the sequencer reports the count.
+ * **A copy is discarded in one of three ways.** The sequencer discards the copies of reports the
+ * leader says it has forwarded, by calling discard_through. It discards copies of reports that do
+ * not say where they stand in the engine's reports once they are too old to be needed, by calling
+ * discard_without_position_received_before. And when there is no room for a new copy, the oldest
+ * copies are overwritten to make room. A copy overwritten while it may still have been needed is a
+ * report that may now never reach its member, so those are counted, and the sequencer reports the
+ * count. A copy that says where it stands may be needed for as long as it is kept, because only
+ * the leader's word that it forwarded the report makes it unneeded, so overwriting one is always
+ * counted.
  *
  * One thread, the sequencer's, calls every member function.
  */
@@ -60,14 +64,16 @@ class KeptReportStore {
     /**
      * @brief Keeps a copy of a report.
      *
-     * Copies older than the room needed are overwritten, oldest first. Each one overwritten that
-     * arrived at or after @p needed_from is counted as lost.
+     * The oldest copies are overwritten until there is room. Each one overwritten that says where
+     * it stands in the engine's reports, or that arrived at or after @p needed_from, is counted as
+     * lost.
      *
      * @param[in] seq_no The sequence number the matching engine sent with the report.
      * @param[in] bytes The report's WalRecord envelope, as received.
      * @param[in] size The number of bytes at @p bytes.
      * @param[in] received_at When the report arrived.
-     * @param[in] needed_from Copies that arrived at or after this time may still be needed.
+     * @param[in] needed_from Copies that do not say where they stand and arrived at or after this
+     *                        time may still be needed.
      * @param[in] position Where the report stands in the engine's reports, when it says.
      */
     void keep(int64_t seq_no, const uint8_t* bytes, size_t size, Clock::time_point received_at, Clock::time_point needed_from,
@@ -86,13 +92,17 @@ class KeptReportStore {
     }
 
     /**
-     * @brief Discards every copy of a report that arrived before @p cutoff.
+     * @brief Discards every copy of a report that does not say where it stands in the engine's
+     *        reports and arrived before @p cutoff.
      *
      * Copies arrive in time order, so this removes copies from the oldest end until it reaches one
-     * that arrived at or after @p cutoff.
+     * that arrived at or after @p cutoff, or one that says where it stands. A copy that says where
+     * it stands is discarded only by discard_through: its age says nothing about whether the leader
+     * forwarded it, because the leader holds back a report for a gateway with no connection, or for
+     * a member's session not yet announced, for as long as that lasts.
      */
-    void discard_received_before(Clock::time_point cutoff) {
-        while (!entries_.empty() && entries_.front().received_at < cutoff) {
+    void discard_without_position_received_before(Clock::time_point cutoff) {
+        while (!entries_.empty() && !entries_.front().position.has_value() && entries_.front().received_at < cutoff) {
             discard_oldest();
         }
     }
@@ -180,7 +190,7 @@ class KeptReportStore {
                     return next_offset_;
                 }
             }
-            if (entries_.front().received_at >= needed_from) {
+            if (entries_.front().position.has_value() || entries_.front().received_at >= needed_from) {
                 ++lost_;
             }
             discard_oldest();

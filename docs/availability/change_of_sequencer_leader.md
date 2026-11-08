@@ -241,14 +241,20 @@ How it works:
   taking one and a half reports an order, that is about 212,000 reports, which the store holds. The
   block allows an average of 512 bytes a report; the acceptances scenario 65 forwards are 182 bytes
   each, envelope included.
-- **How long a report is kept.** A report is discarded once it arrived more than one lease period plus
-  the drift allowance before the follower last granted its leader's request to lead. A leader that has
-  just been granted a lease leads for at least a lease period, and forwards each report within a small
-  fraction of a second, so a report that old has been forwarded. The age is measured against the last
-  grant and not against the clock, and that is what makes it safe. When the leader dies, it stops
-  asking, so nothing more ages, however long the change of leader then takes: a voter that is slow to
-  answer, or an arbiter that is down, cannot make the follower discard a report the old leader never
-  forwarded.
+- **How long a report is kept.** A report the engine has numbered (see the next point; the engine
+  numbers every report it sends) is kept until the leader's records say the leader has forwarded it,
+  and is never discarded by its age. The leader holds a report back, and does not forward it, while
+  the member's gateway has no connection for reports from the leader, or while no gateway has yet
+  announced the member's session, and that can last for any length of time. A report that does not
+  say where it stands in the engine's reports is discarded once it arrived more than one lease period
+  plus the drift allowance before the follower last granted its leader's request to lead: a leader
+  forwards a report it can forward within a small fraction of a second, so a report that old has been
+  forwarded unless the leader was holding it back. That age is measured against the last grant and
+  not against the clock. When the leader dies, it stops asking, so nothing more ages, however long the
+  change of leader then takes: a voter that is slow to answer, or an arbiter that is down, cannot make
+  the follower discard such a report. `ha_test.py` scenario 101 checks that the follower keeps the
+  reports the leader holds for a gateway: it kills the leader five seconds after the first of them,
+  and the new leader must forward every one ([BUG-0226](../bug_list.md#bug_0226)).
 - **Which reports are sent again.** Discarding by age alone keeps every report of the last few
   seconds, almost all of which the old leader had forwarded, so a member would be sent them all again.
   So the matching engine numbers its reports: each carries the epoch of the engine leadership that sent

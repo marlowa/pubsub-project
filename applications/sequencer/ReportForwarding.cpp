@@ -112,7 +112,7 @@ int32_t ReportForwarding::gateways_not_announced() const {
 // ---- Sending ------------------------------------------------------------------------------------------------------
 
 void ReportForwarding::send_to_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope,
-                                       bool is_new_order_ack) {
+                                       bool is_new_order_ack, const std::optional<EngineReportPosition>& position) {
     const auto connection = gateway_connections_.find(gateway_key(protocol, instance));
     if (connection == gateway_connections_.end() || !connection->second.is_valid()) {
         const bool configured = gateway_announcements_.count(gateway_key(protocol, instance)) != 0;
@@ -122,7 +122,7 @@ void ReportForwarding::send_to_gateway(int16_t protocol, int16_t instance, int64
                        "its execution reports cannot be delivered anywhere. Check the gateway's instance_id against the sequencer's endpoints.",
                        protocol, instance);
         }
-        if (configured && hold_for_gateway(protocol, instance, er_seq_no, envelope)) {
+        if (configured && hold_for_gateway(protocol, instance, er_seq_no, envelope, position)) {
             return;
         }
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning, "ReportForwarding: gateway protocol={} instance={} not connected -- dropping ER seq={}",
@@ -230,7 +230,7 @@ void ReportForwarding::deliver(const Pending& pending) {
     envelope.cl_ord_id = pending.cl_ord_id;
     envelope.poss_resend = pending.poss_resend;
     if (destination != nullptr) {
-        send_to_gateway(pending.identity.protocol, destination->instance, pending.seq_no, envelope, pending.is_new_order_ack);
+        send_to_gateway(pending.identity.protocol, destination->instance, pending.seq_no, envelope, pending.is_new_order_ack, pending.position);
         links_.report_forwarded(pending.identity);
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "ReportForwarding: buffered ER seq={} forwarded to protocol={} instance={}", pending.seq_no,
                    pending.identity.protocol, destination->instance);
@@ -258,6 +258,10 @@ std::optional<EngineReportPosition> ReportForwarding::forwarded_through() const 
     }
     if (held_reports_oldest_position_.has_value() && (!oldest_waiting.has_value() || oldest_waiting->is_after(*held_reports_oldest_position_))) {
         oldest_waiting = held_reports_oldest_position_;
+    }
+    // A report held for a gateway with no connection for reports has not been forwarded either (BUG-0226).
+    if (gateway_held_oldest_position_.has_value() && (!oldest_waiting.has_value() || oldest_waiting->is_after(*gateway_held_oldest_position_))) {
+        oldest_waiting = gateway_held_oldest_position_;
     }
     return oldest_waiting.has_value() ? oldest_waiting->just_before() : latest_report_seen_;
 }
@@ -362,7 +366,30 @@ size_t ReportForwarding::release_held_for_session(const fix_common::SessionIdent
     return discarded;
 }
 
-bool ReportForwarding::hold_for_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope) {
+namespace {
+
+// What is written before each envelope held for a gateway: its report number, and where the report stands in the
+// matching engine's reports, if it has a position.
+struct HeldForGatewayHeader {
+    int64_t er_seq_no{0};
+    int64_t position_number{0};
+    int32_t position_epoch{0};
+    int32_t has_position{0};
+};
+
+HeldForGatewayHeader read_held_for_gateway_header(const uint8_t* bytes, size_t size) {
+    HeldForGatewayHeader header{};
+    if (size < sizeof(header)) {
+        throw pubsub_itc_fw::PreconditionAssertion("ReportForwarding: a report held for a gateway is shorter than its header", __FILE__, __LINE__);
+    }
+    std::memcpy(&header, bytes, sizeof(header));
+    return header;
+}
+
+} // un-named namespace
+
+bool ReportForwarding::hold_for_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope,
+                                        const std::optional<EngineReportPosition>& position) {
     if (!links_.leading()) {
         return false;
     }
@@ -371,15 +398,20 @@ bool ReportForwarding::hold_for_gateway(int16_t protocol, int16_t instance, int6
     if (store == reports_held_for_gateways_.end()) {
         return false;
     }
+    HeldForGatewayHeader header{};
+    header.er_seq_no = er_seq_no;
+    header.has_position = position.has_value() ? 1 : 0;
+    header.position_epoch = position.has_value() ? position->epoch : 0;
+    header.position_number = position.has_value() ? position->number : 0;
     size_t bytes_written = 0;
     size_t bytes_needed = 0;
     [[maybe_unused]] const bool measured = pubsub_itc_fw_app::encode(envelope, nullptr, 0, bytes_written, bytes_needed);
-    if (held_envelope_encoding_.size() < sizeof(er_seq_no) + bytes_needed) {
-        held_envelope_encoding_.resize(sizeof(er_seq_no) + bytes_needed);
+    if (held_envelope_encoding_.size() < sizeof(header) + bytes_needed) {
+        held_envelope_encoding_.resize(sizeof(header) + bytes_needed);
     }
-    std::memcpy(held_envelope_encoding_.data(), &er_seq_no, sizeof(er_seq_no));
-    if (!pubsub_itc_fw_app::encode(envelope, held_envelope_encoding_.data() + sizeof(er_seq_no), held_envelope_encoding_.size() - sizeof(er_seq_no),
-                                   bytes_written, bytes_needed)) {
+    std::memcpy(held_envelope_encoding_.data(), &header, sizeof(header));
+    if (!pubsub_itc_fw_app::encode(envelope, held_envelope_encoding_.data() + sizeof(header), held_envelope_encoding_.size() - sizeof(header), bytes_written,
+                                   bytes_needed)) {
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
                    "ReportForwarding: failed to encode ER seq={} for gateway protocol={} instance={} to hold it ({} bytes needed) -- dropping it", er_seq_no,
                    protocol, instance, bytes_needed);
@@ -387,7 +419,14 @@ bool ReportForwarding::hold_for_gateway(int16_t protocol, int16_t instance, int6
     }
     const fix_common::SessionIdentity identity =
         fix_common::SessionIdentity::make(envelope.has_sender_comp_id ? envelope.sender_comp_id : std::string_view{}, protocol);
-    store->second.hold(identity, held_envelope_encoding_.data(), sizeof(er_seq_no) + bytes_written);
+    const int64_t dropped_before = store->second.dropped_for_room();
+    store->second.hold(identity, held_envelope_encoding_.data(), sizeof(header) + bytes_written);
+    if (store->second.dropped_for_room() != dropped_before) {
+        // Older reports were dropped to make room, and the oldest held may have been among them.
+        gateway_held_reports_changed();
+    } else if (position.has_value() && (!gateway_held_oldest_position_.has_value() || gateway_held_oldest_position_->is_after(*position))) {
+        gateway_held_oldest_position_ = position;
+    }
     if (gateways_holding_reports_.insert(gateway).second) {
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                    "ReportForwarding: gateway protocol={} instance={} has no connection for reports from this instance -- ER seq={} held, and every report "
@@ -409,10 +448,10 @@ void ReportForwarding::send_held_for_gateway(int16_t protocol, int16_t instance,
         return;
     }
     const size_t sent = store->second.take_all([this, &connection](const fix_common::SessionIdentity&, const uint8_t* bytes, size_t size) {
-        int64_t er_seq_no = 0;
-        std::memcpy(&er_seq_no, bytes, sizeof(er_seq_no));
-        links_.send_encoded_report(connection, er_seq_no, bytes + sizeof(er_seq_no), size - sizeof(er_seq_no));
+        const HeldForGatewayHeader header = read_held_for_gateway_header(bytes, size);
+        links_.send_encoded_report(connection, header.er_seq_no, bytes + sizeof(header), size - sizeof(header));
     });
+    gateway_held_reports_changed();
     int64_t& dropped_reported = gateway_held_reports_dropped_reported_[gateway];
     const int64_t dropped = store->second.dropped_for_room() - dropped_reported;
     dropped_reported = store->second.dropped_for_room();
@@ -438,6 +477,23 @@ void ReportForwarding::stopped_leading() {
         held.discard_all();
     }
     gateways_holding_reports_.clear();
+    gateway_held_oldest_position_.reset();
+}
+
+void ReportForwarding::gateway_held_reports_changed() {
+    gateway_held_oldest_position_.reset();
+    for (const auto& [gateway, held] : reports_held_for_gateways_) {
+        held.for_each_held([this](const fix_common::SessionIdentity&, const uint8_t* bytes, size_t size) {
+            const HeldForGatewayHeader header = read_held_for_gateway_header(bytes, size);
+            if (header.has_position == 0) {
+                return;
+            }
+            const EngineReportPosition position{header.position_epoch, header.position_number};
+            if (!gateway_held_oldest_position_.has_value() || gateway_held_oldest_position_->is_after(position)) {
+                gateway_held_oldest_position_ = position;
+            }
+        });
+    }
 }
 
 } // namespaces

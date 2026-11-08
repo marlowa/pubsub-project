@@ -612,10 +612,12 @@ forwarded position (`forwarded_samples_`, `forwarded_samples_head_`, `forwarded_
 While this instance does not lead, each report from the matching engine is kept. A kept report is no longer needed
 when either:
 
-- it arrived more than a lease period plus the drift allowance before the last time this instance granted its leader
-  a lease (`kept_reports_needed_from`), because the leader forwarded everything it received in that time; or
 - a record the leader wrote at least 100 milliseconds before the latest record this instance holds says the leader
-  had forwarded it (`discard_kept_reports_the_leader_forwarded`, once a second on the acknowledgement watch timer).
+  had forwarded it (`discard_kept_reports_the_leader_forwarded`, once a second on the acknowledgement watch timer); or
+- it does not say where it stands in the engine's reports, and it arrived more than a lease period plus the drift
+  allowance before the last time this instance granted its leader a lease (`kept_reports_needed_from`). A report that
+  says where it stands is never discarded by its age, because the leader holds a report back for as long as its
+  gateway has no connection for reports, or its session has not been announced.
 
 On taking the lead, those the leader had forwarded are discarded, and the rest forwarded to their members, marked as
 possible repeats. A report lost because the store was full is counted, and said when the loss happens, not for each

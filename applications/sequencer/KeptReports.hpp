@@ -42,13 +42,21 @@ class KeptReportsLinksInterface {
  *
  * A kept report is no longer needed when either:
  *
- * - it arrived more than a lease period plus the drift allowance before the last time this instance granted its leader
- *   a lease, because the leader forwarded everything it received in that time. Reports age only against that time, not
- *   against the clock: once the leader stops asking, because it has died, nothing more ages however long the change of
- *   leader takes; or
  * - a record the leader wrote at least reports_forwarded_delay before the latest record this instance holds says the
  *   leader had forwarded it. The leader's "forwarded" means handed to its connection to the gateway, not received
- *   there, and a report still in its send buffers when its machine fails is lost; hence the delay, by the leader's clock.
+ *   there, and a report still in its send buffers when its machine fails is lost; hence the delay, by the leader's
+ *   clock. The engine numbers every report it sends, so this is how almost every kept report is discarded; or
+ * - it does not say where it stands in the engine's reports, so the leader's records cannot cover it, and it arrived
+ *   more than a lease period plus the drift allowance before the last time this instance granted its leader a lease.
+ *   A leader forwards a report it can forward within a small fraction of a second, so a report that old has been
+ *   forwarded unless the leader was holding it back. Reports age only against that time, not against the clock: once
+ *   the leader stops asking, because it has died, nothing more ages however long the change of leader takes.
+ *
+ * A report that says where it stands is never discarded by age. The leader holds back a report for a gateway that has
+ * no connection for reports, and one for a member's session that no gateway has yet announced, for as long as that
+ * lasts, and its records say it has forwarded only the reports before the oldest it holds back. Discarding by age would
+ * throw away the follower's copy of a report the leader never sent, and if the leader then died, the member would
+ * never receive it.
  *
  * On taking the lead, those the leader had forwarded are discarded, and the rest forwarded to their members, marked as
  * possible repeats.
@@ -57,6 +65,9 @@ class KeptReportsLinksInterface {
  * plus the drift allowance of reports, 4.25 seconds with the usual timings. At about 34,000 orders a second, the highest
  * rate measured on this venue, and one and a half reports an order, that is about 212,000 reports. The store holds up to
  * 262,144, and 128 MiB of their bytes, allocated once.
+ *
+ * A report the leader is holding back is kept for as long as the leader holds it, so a gateway without a connection for
+ * reports for a long time can fill the store; the oldest copies are then overwritten, and counted as lost.
  *
  * One thread, the sequencer's, calls every member function.
  */

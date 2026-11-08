@@ -1242,6 +1242,10 @@ class Scenario(NamedTuple):
     # the relay lets the connection through. See run_scenario's "reports held for a gateway with no connection" block,
     # and BUG-0202.
     assert_reports_held_for_unconnected_gateway: bool = False
+    # With assert_reports_held_for_unconnected_gateway: once sequencer_primary is holding the reports, it is killed, and
+    # sequencer_secondary, taking the lead, must forward every one of them from the copies it kept while following, before
+    # the relay lets its connection for reports to the gateway through (BUG-0226).
+    kill_leader_while_reports_held: bool = False
     # When True, matching_engine_secondary is started holding fewer open orders than matching_engine_primary, so that the two
     # would apply the same commands differently. The engine that leads must say its peer may not lead, and the peer must not
     # take the lead when the leader is killed. See run_scenario's "engines whose settings differ" block, and
@@ -4446,6 +4450,31 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         skip_baseline_orders=True,
         assert_reports_held_for_unconnected_gateway=True,
+        steps=[],
+    ),
+
+    # 101 -- reports the leader holds for a gateway with no connection for reports reach the member when the leader dies.
+    #
+    # As scenario 81, until the leading sequencer is holding the reports. The follower keeps a copy of every report, and
+    # discards it once the leader writes, at least 100 milliseconds later, that it has forwarded it. A report held for a
+    # gateway has not been forwarded, so the leader must not say it has. Here more orders are sent after a pause, so that
+    # the leader writes records later than that, and then the leader is killed. The follower takes the lead, and must
+    # forward every held report from the copies it kept; only then is the relay opened. Every order must reach the member.
+    # If the leader counts a held report as forwarded, the follower discards its copy, and the new leader has nothing to
+    # forward (BUG-0226).
+    Scenario(
+        number=101,
+        short_name="held_gateway_reports_survive_leader_death",
+        description="Reports the leader holds for a gateway with no connection for reports are forwarded by the new leader when it dies",
+        expected_outcome=(
+            "the leading sequencer holds the reports for the gateway; it is killed; the follower takes the lead and forwards every "
+            "held report from the copies it kept, and every order is reported to the member"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        skip_baseline_orders=True,
+        assert_reports_held_for_unconnected_gateway=True,
+        kill_leader_while_reports_held=True,
         steps=[],
     ),
 
@@ -11739,6 +11768,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             sent = [f"gwheld-{run_tag}-{number}" for number in range(1, 51)]
             for cl_ord_id in sent:
                 member.new_order_single(cl_ord_id)
+            first_orders_sent_at = time.monotonic()
             held = component_event("sequencer_primary", sequencer_events, "ReportsHeldForGateway", events_from, 10.0, gateway_protocol=1, gateway_instance=1)
             if held is None:
                 member.close()
@@ -11756,37 +11786,92 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "its gateway, so the relay did not keep the connection away and nothing here was tested.")
             log(f"  {len(sent)} orders sent; sequencer_primary is holding their reports, first seq_no={held.seq_no}")
 
-            relay = PortRelay(_GATEWAY_REPORT_RELAY_PORTS)
-            relay.start()
-            try:
-                released = component_event("sequencer_primary", sequencer_events, "ReportsSentToGateway", events_from, 15.0, gateway_protocol=1,
-                                           gateway_instance=1)
-                if released is None:
+            if scenario.kill_leader_while_reports_held:
+                # More orders after a pause, so that the leader writes records long enough after the held reports for the
+                # follower to discard its copies, if the leader says they were forwarded.
+                time.sleep(1.0)
+                later = [f"gwheld-{run_tag}-later-{number}" for number in range(1, 11)]
+                for cl_ord_id in later:
+                    member.new_order_single(cl_ord_id)
+                sent += later
+                # The kill waits until the first orders' reports are 5 s old. That is older than the lease period (3 s)
+                # plus the drift allowance (250 ms), counted back from the last lease the follower granted the old leader,
+                # so a follower that discarded a kept report by its age alone would have thrown these away, although the
+                # old leader was holding them and never sent them.
+                time.sleep(max(2.0, 5.0 - (time.monotonic() - first_orders_sent_at)))
+                primary = proc_by_name["sequencer_primary"]
+                takeover_from = _TEST_EVENTS.mark()
+                log(f"  SIGKILL -> sequencer_primary (PID {primary.pid}), holding the reports of {len(sent)} orders")
+                primary.kill()
+                primary.wait()
+                if Path(f"/proc/{primary.pid}").exists():
                     member.close()
-                    die("gateway reports: once its connection for reports was let through, sequencer_primary did not send the reports it held.")
-                if released.dropped != 0:
+                    die(f"gateway reports: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
+                if not await_expectation(expect_leads("sequencer_secondary"), args.failover_timeout, takeover_from)[0]:
                     member.close()
-                    die(f"gateway reports: sequencer_primary dropped {released.dropped} held report(s) for want of room.")
-                log(f"  the relay let the connection through, and sequencer_primary sent the {released.sent} report(s) it held")
-                accepted: dict[str, int] = {}
-                deadline = time.monotonic() + 20.0
-                while len(accepted) < len(sent) and time.monotonic() < deadline:
-                    for report in member.receive(timeout=0.5):
+                    die(f"gateway reports: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
+                log("  sequencer_primary confirmed dead, and sequencer_secondary leads")
+                kept = component_event("sequencer_secondary", sequencer_events, "KeptReportsForwarded", takeover_from, 15.0)
+                if kept is None:
+                    member.close()
+                    die("gateway reports: sequencer_secondary took the lead and never said what it did with the reports it kept.")
+                log(f"  sequencer_secondary forwarded {kept.forwarded} kept report(s), and discarded {kept.discarded_as_forwarded} the old "
+                    "leader had said it forwarded")
+                if kept.forwarded < len(sent):
+                    member.close()
+                    die(f"gateway reports: sequencer_secondary forwarded {kept.forwarded} kept report(s), fewer than the {len(sent)} the old leader "
+                        f"held and never sent, and discarded {kept.discarded_as_forwarded} as forwarded. If that number is not 0, the old leader "
+                        "counted reports it held for the gateway as forwarded, so the follower threw its copies away. If it is 0, the follower "
+                        "threw its copies away by their age alone, although the old leader had never said it forwarded them (BUG-0226).")
+                relay = PortRelay(_GATEWAY_REPORT_RELAY_PORTS)
+                relay.start()
+                try:
+                    accepted: dict[str, int] = {}
+                    deadline = time.monotonic() + 30.0
+                    while len(accepted) < len(sent) and time.monotonic() < deadline:
+                        for report in member.receive(timeout=0.5):
+                            if report.get(35) == "8" and report.get(39) == "0":
+                                accepted[report.get(11)] = accepted.get(report.get(11), 0) + 1
+                    member.close()
+                finally:
+                    relay.stop()
+                missing = [c for c in sent if c not in accepted]
+                if missing:
+                    die(f"gateway reports: {len(missing)} of {len(sent)} orders were never reported to the member, for example {missing[:3]} (BUG-0226).")
+                repeated = sum(1 for n in accepted.values() if n > 1)
+                log(f"  every one of the {len(sent)} orders reported to the member; {repeated} more than once, as a possible repeat -- OK")
+            else:
+                relay = PortRelay(_GATEWAY_REPORT_RELAY_PORTS)
+                relay.start()
+                try:
+                    released = component_event("sequencer_primary", sequencer_events, "ReportsSentToGateway", events_from, 15.0, gateway_protocol=1,
+                                               gateway_instance=1)
+                    if released is None:
+                        member.close()
+                        die("gateway reports: once its connection for reports was let through, sequencer_primary did not send the reports it held.")
+                    if released.dropped != 0:
+                        member.close()
+                        die(f"gateway reports: sequencer_primary dropped {released.dropped} held report(s) for want of room.")
+                    log(f"  the relay let the connection through, and sequencer_primary sent the {released.sent} report(s) it held")
+                    accepted: dict[str, int] = {}
+                    deadline = time.monotonic() + 20.0
+                    while len(accepted) < len(sent) and time.monotonic() < deadline:
+                        for report in member.receive(timeout=0.5):
+                            if report.get(35) == "8" and report.get(39) == "0":
+                                accepted[report.get(11)] = accepted.get(report.get(11), 0) + 1
+                    for report in member.receive(timeout=1.0):
                         if report.get(35) == "8" and report.get(39) == "0":
                             accepted[report.get(11)] = accepted.get(report.get(11), 0) + 1
-                for report in member.receive(timeout=1.0):
-                    if report.get(35) == "8" and report.get(39) == "0":
-                        accepted[report.get(11)] = accepted.get(report.get(11), 0) + 1
-                member.close()
-            finally:
-                relay.stop()
-            missing = [c for c in sent if c not in accepted]
-            twice = [c for c, n in accepted.items() if n > 1]
-            if missing:
-                die(f"gateway reports: {len(missing)} of {len(sent)} orders were never reported to the member, for example {missing[:3]}.")
-            if twice:
-                die(f"gateway reports: {len(twice)} orders were reported to the member more than once, for example {twice[:3]}.")
-            log(f"  all {len(sent)} orders reported to the member exactly once -- OK")
+                    member.close()
+                finally:
+                    relay.stop()
+                missing = [c for c in sent if c not in accepted]
+                twice = [c for c, n in accepted.items() if n > 1]
+                if missing:
+                    die(f"gateway reports: {len(missing)} of {len(sent)} orders were never reported to the member, for example {missing[:3]}.")
+                if twice:
+                    die(f"gateway reports: {len(twice)} orders were reported to the member more than once, for example {twice[:3]}.")
+                log(f"  all {len(sent)} orders reported to the member exactly once -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

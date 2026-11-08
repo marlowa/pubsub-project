@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 235 |
-| Open | 68 (47 defects, 21 tasks) |
-| Closed | 167 |
+| Open | 67 (46 defects, 21 tasks) |
+| Closed | 168 |
 | Next id | BUG-0236 |
 
 ## Open bugs by severity
 
-16 high, 39 medium, 13 low.
+16 high, 38 medium, 13 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -65,7 +65,6 @@
 | [BUG-0210](#bug_0210) | medium | defect | A sequencer whose WAL has lost its first segment dies on an exception instead of being sent the records again |
 | [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
-| [BUG-0226](#bug_0226) | medium | defect | A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0235](#bug_0235) | medium | defect | Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
@@ -309,40 +308,6 @@ measures for it.
 halt and the lift, so that a tool reading only the outcome is not misled.
 
 **Principles.** None broken; a message that misstates the venue's condition to a person.
-
-### BUG-0226: A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made {#bug_0226}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-03 |
-| Recorded | 2026-11-03 |
-| How | Writing down the sequencer's report forwarding for phase 10 ([dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md), section 6.11) |
-| Impact | Reports produced while the leading sequencer's connection for reports to a gateway is down, and before it dies, reach no member. The first report of each command is probably recovered, when the gateway sends the command again and the new leader answers it from the WAL; later reports of the same order, such as a cancel's, are not, unless the member asks for a resend. Principle V8 |
-
-**What happens.** The leader writes on every record how far it has forwarded every report from the matching engine
-(`reports_forwarded_through`), and a follower discards the reports it kept while not leading once a record written at
-least 100 milliseconds later says they were forwarded. Two kinds of report the leader holds instead of sending are
-treated differently:
-
-- a report held because its member's session has not been announced (`hold_report_if_sessions_unknown`) holds the
-  position back: `held_reports_oldest_position_` is taken into account, so the follower keeps its copy;
-- a report held because the leader has no connection for reports to the member's gateway
-  (`hold_report_for_gateway`, BUG-0202) does not: `send_er_to_origin_gateway` returns after holding it, and
-  `forward_report_from_engine` moves `latest_report_seen_` past it, so the position says it was forwarded.
-
-A sequencer that stops leading discards both kinds, "because the new leader sends the reports itself", as the BUG-0202
-entry says. The new leader sends the reports its kept store still holds; a report held for a gateway for more than
-100 milliseconds has been discarded from that store.
-
-Found by reading the code; not reproduced.
-
-**What is wanted.** A report held for a gateway holds back the position the leader says it has forwarded through, as a
-report held for an unannounced session does. A scenario holds a gateway's connection for reports down, as scenario
-81 does, kills the leader while reports are held, and requires every report to reach the member; it is made to fail on
-purpose without the fix.
-
-**Principles.** V8: every report the matching engine produces reaches the member.
 
 ### BUG-0222: No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it {#bug_0222}
 
@@ -3060,6 +3025,41 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0226: A report the leader holds for a gateway with no connection for reports counts as forwarded, so it is lost if the leader dies before the connection is made {#bug_0226}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-03 |
+| Recorded | 2026-11-03 |
+| Fixed | 2026-11-08 -- two halves. The leader holds back the position it says it has forwarded through for a report held for a gateway, as it does for one held for an unannounced session: `ReportForwarding::forwarded_through` takes the position of the oldest report held for a gateway (`gateway_held_oldest_position_`) into account, and recomputes it as the held reports change. And the follower discards a kept report by its age only if the report has no position: `KeptReportStore` discards a report that says where it stands only when the leader's records say it was forwarded, and overwriting one for want of room is counted as a loss however old it is. Without the second half the follower threw away, by age alone, reports the leader was still holding. New scenario 101 holds a gateway's connection for reports down, kills the leader while it holds the reports of 60 orders, and requires the new leader to forward all 60 and the member to receive every one. With the leader's half put back, scenario 101 failed ("forwarded 10 kept report(s) ... discarded 49 the old leader had said it forwarded"); with the age rule put back, it failed ("forwarded 10 ... discarded 0"). Three new tests in `ReportForwardingTest` check the leader's half; the three new tests of the age rule, in `KeptReportStoreTest` and `KeptReportsTest`, failed with the old rule. With the fix, `devsetup.sh` passed, scenario 101 passed 3 times run alone, scenarios 65, 69 and 81 passed, and the suites passed 101 of 101, and 39 of 39 with the secondary engine first |
+| How | Writing down the sequencer's report forwarding for phase 10 ([dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md), section 6.11) |
+| Impact | Reports produced while the leading sequencer's connection for reports to a gateway is down, and before it dies, reach no member. The first report of each command is probably recovered, when the gateway sends the command again and the new leader answers it from the WAL; later reports of the same order, such as a cancel's, are not, unless the member asks for a resend. Principle V8 |
+
+**What happens.** The leader writes on every record how far it has forwarded every report from the matching engine
+(`reports_forwarded_through`), and a follower discards the reports it kept while not leading once a record written at
+least 100 milliseconds later says they were forwarded. Two kinds of report the leader holds instead of sending are
+treated differently:
+
+- a report held because its member's session has not been announced (`hold_report_if_sessions_unknown`) holds the
+  position back: `held_reports_oldest_position_` is taken into account, so the follower keeps its copy;
+- a report held because the leader has no connection for reports to the member's gateway
+  (`hold_report_for_gateway`, BUG-0202) does not: `send_er_to_origin_gateway` returns after holding it, and
+  `forward_report_from_engine` moves `latest_report_seen_` past it, so the position says it was forwarded.
+
+A sequencer that stops leading discards both kinds, "because the new leader sends the reports itself", as the BUG-0202
+entry says. The new leader sends the reports its kept store still holds; a report held for a gateway for more than
+100 milliseconds has been discarded from that store.
+
+Found by reading the code; not reproduced.
+
+**What is wanted.** A report held for a gateway holds back the position the leader says it has forwarded through, as a
+report held for an unannounced session does. A scenario holds a gateway's connection for reports down, as scenario
+81 does, kills the leader while reports are held, and requires every report to reach the member; it is made to fail on
+purpose without the fix.
+
+**Principles.** V8: every report the matching engine produces reaches the member.
 
 ### BUG-0233: No scenario makes a restarted matching engine agree that its peer leads before a sequencer connects to it, so the way BUG-0225 was found is shown only by unit tests {#bug_0233}
 

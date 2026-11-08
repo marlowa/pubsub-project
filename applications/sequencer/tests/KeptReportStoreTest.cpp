@@ -121,12 +121,12 @@ TEST(KeptReportStoreTest, AReportLargerThanTheBlockIsNotKeptAndIsCountedAsLost) 
     EXPECT_EQ(take_all(store), (std::vector<int64_t>{1}));
 }
 
-TEST(KeptReportStoreTest, DiscardingByAgeRemovesOnlyCopiesThatArrivedBeforeTheCutoff) {
+TEST(KeptReportStoreTest, DiscardingByAgeRemovesOnlyCopiesWithoutAPositionThatArrivedBeforeTheCutoff) {
     sequencer::KeptReportStore store(1000, 100);
     for (int64_t seq_no = 1; seq_no <= 10; ++seq_no) {
         keep(store, seq_no, 10);
     }
-    store.discard_received_before(start + milliseconds{4});
+    store.discard_without_position_received_before(start + milliseconds{4});
     EXPECT_EQ(store.lost(), 0);
     EXPECT_EQ(take_all(store), (std::vector<int64_t>{4, 5, 6, 7, 8, 9, 10}));
 }
@@ -226,4 +226,25 @@ TEST(KeptReportStoreTest, ACopyThatDoesNotSayWhereItStandsIsNotDiscardedByPositi
     keep(store, 1, 10);
     EXPECT_EQ(store.discard_through(sequencer::EngineReportPosition{9, 1000}), 0U);
     EXPECT_EQ(take_all(store), (std::vector<int64_t>{1}));
+}
+
+TEST(KeptReportStoreTest, DiscardingByAgeStopsAtACopyThatSaysWhereItStands) {
+    sequencer::KeptReportStore store(1000, 100);
+    for (int64_t number = 1; number <= 3; ++number) {
+        const std::vector<uint8_t> bytes = report_bytes(number, 10);
+        store.keep(number, bytes.data(), bytes.size(), start + milliseconds{number}, start, sequencer::EngineReportPosition{3, number});
+    }
+    store.discard_without_position_received_before(start + milliseconds{100});
+    EXPECT_EQ(take_all(store), (std::vector<int64_t>{1, 2, 3}))
+        << "the leader may be holding these back for a gateway with no connection; only its word that it forwarded them makes them unneeded";
+}
+
+TEST(KeptReportStoreTest, OverwritingACopyThatSaysWhereItStandsIsALossHoweverOldItIs) {
+    sequencer::KeptReportStore store(100, 100);
+    const std::vector<uint8_t> first = report_bytes(1, 60);
+    store.keep(1, first.data(), first.size(), start + milliseconds{1}, start, sequencer::EngineReportPosition{3, 1});
+    const std::vector<uint8_t> second = report_bytes(2, 60);
+    store.keep(2, second.data(), second.size(), start + milliseconds{60}, start + milliseconds{50}, sequencer::EngineReportPosition{3, 2});
+    EXPECT_EQ(store.lost(), 1);
+    EXPECT_EQ(take_all(store), (std::vector<int64_t>{2}));
 }

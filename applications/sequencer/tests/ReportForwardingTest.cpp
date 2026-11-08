@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -136,7 +137,7 @@ class ReportForwardingTest : public ::testing::Test {
 TEST_F(ReportForwardingTest, AReportToAConnectedGatewayIsSentAndAnAcknowledgementTimed) {
     member_connected();
     pubsub_itc_fw_app::WalRecord envelope{};
-    forwarding_->send_to_gateway(fix, 1, 5, envelope, true);
+    forwarding_->send_to_gateway(fix, 1, 5, envelope, true, std::nullopt);
     ASSERT_EQ(links_.sent.size(), 1U);
     EXPECT_EQ(links_.sent[0].connection, 31);
     EXPECT_EQ(links_.acknowledgements, 1);
@@ -144,8 +145,8 @@ TEST_F(ReportForwardingTest, AReportToAConnectedGatewayIsSentAndAnAcknowledgemen
 
 TEST_F(ReportForwardingTest, AReportForAGatewayWithNoConnectionIsHeldAndSentWhenTheConnectionIsMade) {
     pubsub_itc_fw_app::WalRecord envelope{};
-    forwarding_->send_to_gateway(fix, 1, 5, envelope, false);
-    forwarding_->send_to_gateway(fix, 1, 6, envelope, false);
+    forwarding_->send_to_gateway(fix, 1, 5, envelope, false, std::nullopt);
+    forwarding_->send_to_gateway(fix, 1, 6, envelope, false, std::nullopt);
     EXPECT_TRUE(links_.sent.empty());
     EXPECT_EQ(links_.held_for_gateway_events, 1) << "said once";
     EXPECT_EQ(forwarding_->held_for_gateway(fix, 1), 2U);
@@ -159,14 +160,14 @@ TEST_F(ReportForwardingTest, AReportForAGatewayWithNoConnectionIsHeldAndSentWhen
 TEST_F(ReportForwardingTest, AFollowerDropsAReportForAGatewayWithNoConnection) {
     links_.is_leading = false;
     pubsub_itc_fw_app::WalRecord envelope{};
-    forwarding_->send_to_gateway(fix, 1, 5, envelope, false);
+    forwarding_->send_to_gateway(fix, 1, 5, envelope, false, std::nullopt);
     EXPECT_EQ(links_.dropped_no_gateway, (std::vector<int64_t>{5}));
     EXPECT_EQ(forwarding_->held_for_gateway(fix, 1), 0U);
 }
 
 TEST_F(ReportForwardingTest, AReportForAGatewayNotConfiguredIsDropped) {
     pubsub_itc_fw_app::WalRecord envelope{};
-    forwarding_->send_to_gateway(fix, 9, 5, envelope, false);
+    forwarding_->send_to_gateway(fix, 9, 5, envelope, false, std::nullopt);
     EXPECT_EQ(links_.dropped_no_gateway, (std::vector<int64_t>{5}));
 }
 
@@ -241,19 +242,39 @@ TEST_F(ReportForwardingTest, HowFarReportsAreForwardedStopsBeforeTheOldestWaitin
     EXPECT_EQ(forwarding_->forwarded_through()->number, 5);
 }
 
-TEST_F(ReportForwardingTest, AReportHeldForAGatewayDoesNotHoldBackHowFarReportsAreForwarded) {
-    // BUG-0226, kept as it is until it is fixed: a report held for a gateway with no connection counts as forwarded.
+TEST_F(ReportForwardingTest, AReportHeldForAGatewayHoldsBackHowFarReportsAreForwardedUntilItIsSent) {
+    // BUG-0226: a report held for a gateway with no connection for reports has not been forwarded.
     forwarding_->report_seen(EngineReportPosition{3, 10});
     pubsub_itc_fw_app::WalRecord envelope{};
-    forwarding_->send_to_gateway(fix, 1, 5, envelope, false);
+    forwarding_->send_to_gateway(fix, 1, 5, envelope, false, EngineReportPosition{3, 8});
+    forwarding_->send_to_gateway(fix, 1, 6, envelope, false, EngineReportPosition{3, 9});
+    ASSERT_EQ(forwarding_->held_for_gateway(fix, 1), 2U);
+    EXPECT_EQ(forwarding_->forwarded_through()->number, 7);
+    forwarding_->gateway_connected(fix, 1, pubsub_itc_fw::ConnectionID{31});
+    EXPECT_EQ(links_.sent.size(), 2U);
+    EXPECT_EQ(forwarding_->forwarded_through()->number, 10) << "sent, so forwarded";
+}
+
+TEST_F(ReportForwardingTest, AReportSentAgainFromTheWalAndHeldForAGatewayHoldsNothingBack) {
+    forwarding_->report_seen(EngineReportPosition{3, 10});
+    pubsub_itc_fw_app::WalRecord envelope{};
+    forwarding_->send_to_gateway(fix, 1, 0, envelope, false, std::nullopt);
     ASSERT_EQ(forwarding_->held_for_gateway(fix, 1), 1U);
+    EXPECT_EQ(forwarding_->forwarded_through()->number, 10);
+}
+
+TEST_F(ReportForwardingTest, StoppingLeadingForgetsTheOldestReportHeldForAGateway) {
+    forwarding_->report_seen(EngineReportPosition{3, 10});
+    pubsub_itc_fw_app::WalRecord envelope{};
+    forwarding_->send_to_gateway(fix, 1, 5, envelope, false, EngineReportPosition{3, 8});
+    forwarding_->stopped_leading();
     EXPECT_EQ(forwarding_->forwarded_through()->number, 10);
 }
 
 TEST_F(ReportForwardingTest, StoppingLeadingDiscardsEveryHeldReport) {
     EXPECT_TRUE(forwarding_->hold_for_unannounced_session(pending("AWAY", 5, "r5")));
     pubsub_itc_fw_app::WalRecord envelope{};
-    forwarding_->send_to_gateway(fix, 1, 6, envelope, false);
+    forwarding_->send_to_gateway(fix, 1, 6, envelope, false, std::nullopt);
     forwarding_->stopped_leading();
     EXPECT_EQ(forwarding_->held_for_sessions(), 0U);
     EXPECT_EQ(forwarding_->held_for_gateway(fix, 1), 0U);
