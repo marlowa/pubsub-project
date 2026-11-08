@@ -1,5 +1,9 @@
 # Phase 6 inventory: every check that reads a Quill log, and what replaces it {#test_events_inventory}
 
+> **Status: done, and phase 6 is finished.** No check in `scripts/ha_test.py` now reads a Quill log of the
+> venue: every one listed here was replaced as its row says. This page is the record of the inventory as it
+> was made on 18 October 2026, and its counts are of that day.
+
 This is step 1 of phase 6 ([test_events.md](test_events.md)): every place `scripts/ha_test.py` reads a Quill log, and
 every phrase a unit test looks for in a captured log, with what each check proves and what replaces it. Andrew reviews it
 before step 3, because it fixes the list of test events.

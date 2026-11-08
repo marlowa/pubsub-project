@@ -70,7 +70,7 @@ of `docs/availability/` says the same. Done: `ha_library_boundary.md`, `lease_cl
 `replicated_wal_in_the_library.md`, `following_the_wal.md`, `test_events.md`,
 `deterministic_matching_engine.md`, `both_engines_apply_the_wal.md`, `voided_commands.md`,
 `far_back_catch_up.md`, `one_check_against_sequencing_twice.md`, `publishers_sent_from_memory.md`,
-`reports_held_until_sessions_are_announced.md`, `ha_in_the_library.md`, and
+`reports_held_until_sessions_are_announced.md`, `ha_in_the_library.md`, `test_events_inventory.md`, and
 `docs/venue/dividing_the_sequencer_and_matching_engine.md`.
 
 availability: `wal_and_ha.md`, `majority_leases.md`, `gateway_ha.md`, `process_death.md`,
@@ -79,8 +79,7 @@ availability: `wal_and_ha.md`, `majority_leases.md`, `gateway_ha.md`, `process_d
 `order_acceptance.md`, `session_binding.md`, `resend_provenance.md`,
 `matching_engine_presence.md`
 
-Still to read again: availability
-`test_events_inventory.md`; orientation `architecture.md`. `design_notes.md` waits on
+Still to read again: orientation `architecture.md`. `design_notes.md` waits on
 question 4.
 
 ## Building and testing on Rocky 8 in Docker (started, blocked)
@@ -284,6 +283,8 @@ Reported to Andrew, and not changed by the audit.
   trip closes here"). If an acknowledgement is ever sent again while the sequencer still remembers the
   order, for example by a matching engine catching up, the gateway would record a round trip as long as
   the time since the order arrived. Whether that case occurs has not been established.
+- `scripts/ha_test.py` defines `count_lines_with_all`, which reads a Quill log, and nothing calls it. Phase 6
+  replaced every check that used it with a test event; the function can be removed.
 - `scripts/ha_test.py`, scenario 21 (`reconnect_inherits_reports`) no longer tests what its name says. It was written
   when a promoted matching engine cancelled every resting order, so the cancel reports were what reached the
   member's new connection. A promoted engine now keeps every order, and the scenario sends no orders after the
