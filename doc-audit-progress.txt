@@ -69,7 +69,7 @@ of `docs/availability/` says the same. Done: `ha_library_boundary.md`, `lease_cl
 `far_back_catch_up.md`, `one_check_against_sequencing_twice.md`, `publishers_sent_from_memory.md`,
 `reports_held_until_sessions_are_announced.md`, and `docs/venue/dividing_the_sequencer_and_matching_engine.md`.
 
-availability: `wal_and_ha.md`, `majority_leases.md`
+availability: `wal_and_ha.md`, `majority_leases.md`, `gateway_ha.md`
 
 Still to read again: availability `gateway_ha.md`,
 `process_death.md`, `change_of_sequencer_leader.md`, `a_follower_behind_does_not_lead.md`,
@@ -273,6 +273,14 @@ Reported to Andrew, and not changed by the audit.
   and `StatusResponse` (PDU 101), and two integration tests use them, but no component sends or handles
   either message any more. Either the messages and their tests are removed, or they are kept for a reason
   that should be written beside them.
+- `scripts/ha_test.py`, scenario 21 (`reconnect_inherits_reports`) no longer tests what its name says. It was written
+  when a promoted matching engine cancelled every resting order, so the cancel reports were what reached the
+  member's new connection. A promoted engine now keeps every order, and the scenario sends no orders after the
+  reconnect, so no execution report is produced after it and nothing is delivered to the new connection. It still
+  checks that the gateway announces the new session and that the promotion keeps the book. To test what its name
+  says, it would have to send orders, or cancels of the resting orders, after the reconnect and check that every
+  report reaches the new connection. Its expected outcome, "the promoted matching engine cancels the resting book",
+  is also wrong.
 - `scripts/ha_test.py`, scenario 16: its expected outcome says the engine that followed "promotes via
   the arbiter (adopts LEADER) after the ~15 s promotion timeout". Leadership is decided by leases from a
   majority of the engine, its peer and the arbiter pool, and there is no promotion timeout.

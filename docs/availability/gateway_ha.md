@@ -58,7 +58,8 @@ not only when it shuts down.
 | It **cancels an order it left resting**, from the new connection | A cancel report, on the new connection | Cancelled | Scenario 21, and `OrderKeyTest` for the key |
 | It **asks for what it missed** | Its execution reports, sent again with `PossDupFlag=Y`, and a gap fill for the administrative messages | Unchanged | Scenario 22 |
 | It logs on to an instance it is **not provisioned for** | Refused, with text naming the instance it should use | Untouched | Scenario 20 |
-| **The matching engine** fails over | Cancel reports for its resting orders, on whichever connection it now has | Cancelled by the promoted engine, and the member is **told** | Scenarios 16 and 21 |
+| **The matching engine** fails over | A pause, and then the reports of orders it sent meanwhile | **Stay live on the book.** The engine that takes over has applied every command from the sequencer's log, so it holds every resting order and cancels none | Scenarios 16 and 21 |
+| **No matching engine can trade for longer than the venue recovers by itself** (10 seconds) | A cancel report for every resting order, and refusals of new orders while trading is halted | Cancelled, and the member is **told** of each | Scenario 18 |
 
 ### Orders that were in flight when the gateway died
 
@@ -242,13 +243,15 @@ itself: a member that reconnects and sends no order would never announce itself.
 carries the connection id and is ignored if it does not name the current binding, so an unbind
 that arrives after the reconnect it raced with cannot undo it.
 
-Three consequences:
+Two consequences:
 
 - **The matching engine's book is keyed on the session identity** and the `ClOrdID`
   (`OrderKey`), which is what lets a member cancel, from a new connection, an order it left resting.
 - **The matching engine stamps whose report it is, never where it goes.** The sequencer resolves
-  the destination. The engine has no way to know where a member is, and on the cancel-on-failover
-  path any address it remembered would be out of date by construction.
+  the destination. The engine has no way to know where a member is. When a `CancelBook` command
+  cancels every order on the book, for example, the orders were placed over many connections, some
+  of which no longer exist, so any address the engine had remembered for an order could be out of
+  date.
 
 ### Keeping a FIX member's message numbering across a reconnect
 
@@ -347,11 +350,11 @@ connection.
 
 | Scenario | What it requires |
 |---|---|
-| 16, `primary_me_death` | After a matching engine failover, the gateway sends at least one report per order and one per cancel, so the cancel-on-failover reports reach the member |
-| 18, `fix_gateway_a_death` | FIX instance `a` is killed and the matching engine then cancels the orders `a`'s members placed. Nothing is elected, instance `b` keeps running, and, with instance `a` never restarted, the leading sequencer holds every cancel report for it, drops none, and sends none to `b` ([BUG-0202](../bug_list.md#bug_0202), fixed). A member that reconnected would be sent them ([BUG-0088](../bug_list.md#bug_0088), fixed); this scenario does not reconnect one |
+| 16, `primary_me_death` | The leading matching engine is killed. The engine that takes over resumes as leader holding the resting orders and cancels none of them, and the gateway drops no execution report for want of a session |
+| 18, `fix_gateway_a_death` | FIX instance `a` is killed. The matching engine is then stopped for twelve seconds, longer than the venue recovers by itself (five seconds in this scenario), so the sequencer writes the commands that halt trading and cancel the book, and the restarted engine cancels the orders `a`'s members placed. Nothing is elected, instance `b` keeps running, and, with instance `a` never restarted, the leading sequencer holds every cancel report for it, drops none, and sends none to `b` ([BUG-0202](../bug_list.md#bug_0202), fixed). A member that reconnected would be sent them ([BUG-0088](../bug_list.md#bug_0088), fixed); this scenario does not reconnect one |
 | 19, `cancel_on_disconnect_grace` | With the gateway running, a dropped member's orders are held for the provisioned grace period, the number itself and not the gateway's default, and a reconnect inside it cancels nothing. It fails if the grace period is zero |
 | 20, `session_provisioning` | The gateway admits a comp id provisioned for its instance, naming both numbers, and refuses it once it is provisioned elsewhere, through the database and a real credentials export |
-| 21, `reconnect_inherits_reports` | 1,000 orders rest, the member reconnects on a new connection, the leading matching engine is killed, and all 1,000 cancel reports reach the new connection |
+| 21, `reconnect_inherits_reports` | 1,000 orders rest, the member reconnects on a new connection, and the gateway announces the new session to the sequencer. The leading matching engine is then killed, and the checks are those of scenario 16. No execution report is produced after the reconnect, so this scenario does not show a report reaching the new connection |
 | 22, `resend_recovery` | With a client that does not reset its numbering, the numbering resumes, the member asks for what it missed, real reports come back carrying `PossDupFlag=Y` as received by the client, and a heartbeat placed inside the gap is gap-filled rather than given a report |
 | 40, `bounded_resend` | A ResendRequest for a range in the middle of the session's history is answered with the reports that were sent on those numbers, not the most recent ones |
 | 23, `inflight_gateway_death` | A gateway killed with orders in flight; the member returns to its backup numbered where it had reached, with its orders still live |
