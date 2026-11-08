@@ -82,8 +82,11 @@ follower with the arbiter, and the follower with the old leader:
 - **The follower with the arbiter.** Either the follower knows it may not lead and does not ask, or the
   arbiter knows and refuses. One of the two knowing is enough.
 
-So the leader needs its own record on disk and one confirmation, from either the follower or the
-arbiter, before it acts on a command the follower lacks.
+So the leader needs its own record on disk, and a confirmation that the statement is held where any
+later election must meet it, before it acts on a command the follower lacks. The confirmation is the
+follower's, or that of both arbiters, because only one arbiter is active at a time and either may be
+the active one later. Section 4.2 explains how, and the one case in which the active arbiter's
+confirmation is enough on its own.
 
 ### 4.2 How the statement travels: on the lease requests the leader already sends
 
@@ -310,7 +313,7 @@ change.
 | Arbiters down | The follower falls behind with the arbiters stopped, records the statement itself, and must not lead | Not built as a scenario: the follower's acknowledgements and its lease grants travel on the same peer connection, so `libblock_sends_to_ports.so` cannot block one without the other. The follower recording and echoing a statement is covered by `PairLeaseAgentTest`, and the property with any voter recording it by the simulation and the TLA+ model |
 | Unit tests | In `LeaseRulesTest.cpp`: a voter keeps only the newest statement and refuses the instance it names; a leader starts each leadership saying "no" and records it itself, so that once its lease has run out it refuses its peer; it may act without its peer only once its peer echoes the current statement, or both arbiters confirm it, or the active arbiter confirms it alone, and one arbiter's ordinary confirmation is not enough; an instance that holds a "no" about itself does not ask to lead; a restored statement is honoured; a pair that makes no statements never stops its peer leading | Done |
 | Simulation | `LeaseSimulationTest.cpp` gains logs, the engine's set of acted-on commands, copying to the peer that sometimes stalls, and statements and echoes, and checks after every step that an instance starting to act as leader holds every acted-on command. Runs with the leader not waiting for an echo, with the arbiter forgetting its statement, and with an instance forgetting its statement each find a violation | Done |
-| TLA+ | `FollowerBehindHA.tla` checks that the instance acting as leader holds every command the engine has acted on, and each part of the rule is removed in turn to show it is needed | Done: section 3 of [tla/findings.md](tla/findings.md). Each counterexample is rerun on every install |
+| TLA+ | `FollowerBehindHA.tla` checks that the instance acting as leader holds every command the engine has acted on, and each part of the rule is removed in turn to show it is needed | Done: section 3 of [tla/findings.md](tla/findings.md). Each counterexample is rerun on every install, unless the build is run with `--skip-tla` |
 
 ## 8. Order of the work
 
@@ -323,9 +326,10 @@ change.
    arbiter's copy to the passive arbiter, with the unit tests. Done: `PairLeaseAgent` carries, records,
    echoes and keeps statements, and the arbiter keeps them in `ComponentStatementStore`.
 4. The sequencer's switch: confirm before acting, the order of going back to waiting, and stopping reading
-   from gateway connections while waiting. Done: the sequencer constructs its agent with
-   `PeerStatementsFlag::SayWhetherPeerMayLead`; reading pauses through
-   `ApplicationThread::pause_reading()`; commands beyond the storage wait in the log. It depends on
+   from gateway connections while waiting. Done. The library's replicated WAL (`ReplicatedWal`), which
+   owns the sequencer's lease agent, constructs it with `PeerStatementsFlag::SayWhetherPeerMayLead`.
+   Reading from the gateways pauses through `ApplicationThread::pause_reading()`, and commands beyond
+   the storage wait in the log. It depends on
    [follower_log_repair.md](follower_log_repair.md), which is built.
 5. The new scenarios. Done: 63 and 64.
 6. Rule 11 added to [majority_leases.md](majority_leases.md), and open question 2 of
