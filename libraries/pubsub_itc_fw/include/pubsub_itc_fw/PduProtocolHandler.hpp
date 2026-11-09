@@ -81,14 +81,15 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      * allocates slab chunks, and dispatches complete FrameworkPdu EventMessages
      * to the target ApplicationThread.
      *
-     * Strategy A (framework PDUs) has its own backpressure mechanism via slab
-     * allocation, so this handler never asks the manager to pause reads. The
-     * third tuple element is always false.
+     * The third tuple element asks the manager to stop watching the socket for
+     * incoming data: true when the connection has a limit on its messages
+     * waiting in the thread's queue and the limit has been reached
+     * (limit_messages_waiting). Otherwise it is false.
      *
-     * @return The tuple returned by PduParser::receive() augmented with a
-     *         hard-coded false: {true, "", false} on a clean read (including
-     *         no bytes available), {false, "", false} on graceful peer
-     *         disconnect, or {false, error_string, false} on protocol failure.
+     * @return The tuple returned by PduParser::receive() with that third
+     *         element: {true, "", stop} on a clean read (including no bytes
+     *         available), {false, "", false} on graceful peer disconnect, or
+     *         {false, error_string, false} on protocol failure.
      */
     [[nodiscard]] std::tuple<bool, std::string, bool> on_data_ready() override;
 
@@ -114,6 +115,18 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      * @brief Returns true if a partial outbound PDU send is in progress.
      */
     [[nodiscard]] bool has_pending_send() const override;
+
+    /// Whether reading is stopped because the limit's worth of messages are waiting in the thread's queue.
+    [[nodiscard]] bool is_reads_paused() const override;
+
+    /**
+     * @brief Limits how many of this connection's messages may wait in the target thread's queue.
+     * @return true, since PDUs are messages to count.
+     */
+    [[nodiscard]] bool limit_messages_waiting(std::shared_ptr<MessagesWaitingLimit> limit) override;
+
+    /// Whether a limit on the messages waiting has been set.
+    [[nodiscard]] bool counts_messages_waiting() const override;
 
     /**
      * @brief Resumes a partial outbound PDU send on EPOLLOUT.

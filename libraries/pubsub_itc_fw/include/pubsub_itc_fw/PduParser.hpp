@@ -49,12 +49,14 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ByteStreamInterface.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/MessagesWaitingLimit.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/SlabHandle.hpp>
@@ -101,15 +103,40 @@ class PduParser {
      * May dispatch zero, one, or multiple FrameworkPdu events in a single call
      * if multiple complete frames are available in the stream.
      *
+     * With a limit on the messages waiting (set_messages_waiting_limit), it stops
+     * reading at the end of the message that reaches the limit, and the caller
+     * must then stop watching the socket for incoming data until the application
+     * thread asks for reading again (stopped_for_messages_waiting()).
+     *
      * @return A tuple of { success, error_string }.
      *         success is false if the connection must be closed (canary mismatch,
      *         slab allocation failure, read error, or peer disconnect).
      */
     [[nodiscard]] std::tuple<bool, std::string> receive();
 
+    /**
+     * @brief Limits how many messages from this connection may wait in the target thread's queue
+     *        (docs/framework/bounding_messages_waiting.md). Set once, for the life of the connection.
+     * @param[in] limit Shared with the target thread, which counts the messages it takes.
+     */
+    void set_messages_waiting_limit(std::shared_ptr<MessagesWaitingLimit> limit) {
+        messages_waiting_limit_ = std::move(limit);
+    }
+
+    /// Whether a limit on the messages waiting has been set.
+    [[nodiscard]] bool counts_messages_waiting() const {
+        return messages_waiting_limit_ != nullptr;
+    }
+
+    /// Whether reading is stopped because the limit's worth of messages are waiting in the target thread's queue.
+    [[nodiscard]] bool stopped_for_messages_waiting() const {
+        return messages_waiting_limit_ != nullptr && messages_waiting_limit_->stopped();
+    }
+
   private:
     [[nodiscard]] bool has_complete_header() const;
-    void dispatch_pdu(SlabHandle slab_id, void* payload_chunk);
+    // Puts the message on the target thread's queue; true if the limit on the messages waiting says to stop reading.
+    [[nodiscard]] bool dispatch_pdu(SlabHandle slab_id, void* payload_chunk);
     void reset_header();
 
     ByteStreamInterface& stream_;
@@ -132,6 +159,9 @@ class PduParser {
     void* payload_chunk_{nullptr};
     SlabHandle payload_slab_id_{invalid_slab_handle};
     size_t payload_bytes_received_{0};
+
+    // Shared with the target thread; null when the connection is not limited.
+    std::shared_ptr<MessagesWaitingLimit> messages_waiting_limit_;
 };
 
 } // namespaces

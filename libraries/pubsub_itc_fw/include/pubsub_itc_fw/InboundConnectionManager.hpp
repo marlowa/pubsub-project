@@ -17,6 +17,7 @@
 #include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/InboundConnection.hpp>
 #include <pubsub_itc_fw/InboundListener.hpp>
+#include <pubsub_itc_fw/MessagesWaitingLimit.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -246,6 +247,24 @@ class InboundConnectionManager {
      * @return false if this manager holds no such connection.
      */
     [[nodiscard]] bool resume_reading(ConnectionID id);
+
+    /**
+     * @brief Limits how many of a connection's messages may wait in its thread's queue
+     *        (docs/framework/bounding_messages_waiting.md).
+     * @param[in] id    The connection.
+     * @param[in] limit Shared with the connection's thread.
+     * @return false if this manager holds no such connection; the connection's protocol not carrying
+     *         messages is reported at Error and counts as held.
+     */
+    [[nodiscard]] bool limit_messages_waiting(ConnectionID id, std::shared_ptr<MessagesWaitingLimit> limit);
+
+    /**
+     * @brief Watch a connection for incoming data again, after its thread has taken enough of the messages
+     *        waiting in its queue. Reading starts only if nothing else has stopped it.
+     * @param[in] id The connection.
+     * @return false if this manager holds no such connection.
+     */
+    [[nodiscard]] bool read_again(ConnectionID id);
 
     /**
      * @brief Advances the inbound MirroredBuffer tail for a RawBytesProtocolHandler

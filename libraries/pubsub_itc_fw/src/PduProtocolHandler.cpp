@@ -24,7 +24,20 @@ PduProtocolHandler::PduProtocolHandler(TcpSocket& socket, ApplicationThread& tar
 
 std::tuple<bool, std::string, bool> PduProtocolHandler::on_data_ready() {
     auto [ok, error] = parser_->receive();
-    return {ok, error, false};
+    return {ok, error, ok && parser_->stopped_for_messages_waiting()};
+}
+
+bool PduProtocolHandler::is_reads_paused() const {
+    return parser_->stopped_for_messages_waiting();
+}
+
+bool PduProtocolHandler::counts_messages_waiting() const {
+    return parser_->counts_messages_waiting();
+}
+
+bool PduProtocolHandler::limit_messages_waiting(std::shared_ptr<MessagesWaitingLimit> limit) {
+    parser_->set_messages_waiting_limit(std::move(limit));
+    return true;
 }
 
 std::tuple<bool, std::string> PduProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator, SlabHandle slab_id, void* chunk_ptr, uint32_t total_bytes) {

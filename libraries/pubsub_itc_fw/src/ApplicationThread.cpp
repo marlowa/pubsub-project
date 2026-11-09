@@ -1,6 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -306,6 +307,47 @@ void ApplicationThread::resume_reading(const ConnectionID& conn_id) {
     ReactorControlCommand command(ReactorControlCommand::CommandTag::ResumeReading);
     command.connection_id_ = conn_id;
     reactor_.enqueue_control_command(command);
+}
+
+void ApplicationThread::limit_messages_waiting(const ConnectionID& conn_id, int64_t limit) {
+    if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
+        throw PreconditionAssertion(
+            fmt::format("ApplicationThread::limit_messages_waiting: ConnectionID {} does not belong to this thread", conn_id.get_value()), __FILE__, __LINE__);
+    }
+    for (const auto& entry : messages_waiting_limits_) {
+        if (entry.first == conn_id) {
+            throw PreconditionAssertion(fmt::format("ApplicationThread::limit_messages_waiting: ConnectionID {} is already limited", conn_id.get_value()),
+                                        __FILE__, __LINE__);
+        }
+    }
+    auto shared = std::make_shared<MessagesWaitingLimit>(limit);
+    messages_waiting_limits_.emplace_back(conn_id, shared);
+    ReactorControlCommand command(ReactorControlCommand::CommandTag::LimitMessagesWaiting);
+    command.connection_id_ = conn_id;
+    command.messages_waiting_limit_ = std::move(shared);
+    reactor_.enqueue_control_command(command);
+}
+
+int64_t ApplicationThread::messages_waiting(const ConnectionID& conn_id) const {
+    for (const auto& entry : messages_waiting_limits_) {
+        if (entry.first == conn_id) {
+            return entry.second->waiting();
+        }
+    }
+    return -1;
+}
+
+void ApplicationThread::message_taken_from(const ConnectionID& conn_id) {
+    for (auto& entry : messages_waiting_limits_) {
+        if (entry.first == conn_id) {
+            if (entry.second->message_taken()) {
+                ReactorControlCommand command(ReactorControlCommand::CommandTag::ReadAgainAfterMessagesTaken);
+                command.connection_id_ = conn_id;
+                reactor_.enqueue_control_command(command);
+            }
+            return;
+        }
+    }
 }
 
 void ApplicationThread::request_writable_notification(const ConnectionID& conn_id) {
@@ -652,6 +694,9 @@ void ApplicationThread::process_message(const EventMessage& message) {
             // reactor reclaims the slab while live allocations still reference it.
             PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: Received PDU message", thread_name_);
             framework_pdu_counter_.increment();
+            if (message.counted_for_messages_waiting()) {
+                message_taken_from(message.connection_id());
+            }
             on_framework_pdu_message(message);
             break;
         }
@@ -672,6 +717,10 @@ void ApplicationThread::process_message(const EventMessage& message) {
         case EventType::ConnectionLost: {
             PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {}: Received connection lost message", thread_name_);
             active_connection_ids_.erase(message.connection_id());
+            // Every message from the connection came before its loss, so the count is no longer needed here.
+            messages_waiting_limits_.erase(std::remove_if(messages_waiting_limits_.begin(), messages_waiting_limits_.end(),
+                                                          [&message](const auto& entry) { return entry.first == message.connection_id(); }),
+                                           messages_waiting_limits_.end());
             on_connection_lost(message.connection_id(), message.reason());
             break;
         }

@@ -4,9 +4,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <tuple>
 
+#include <pubsub_itc_fw/MessagesWaitingLimit.hpp>
 #include <pubsub_itc_fw/SlabHandle.hpp>
 
 namespace pubsub_itc_fw {
@@ -157,6 +159,21 @@ class ProtocolHandlerInterface {
      * overrides this.
      */
     [[nodiscard]] virtual bool is_reads_paused() const {
+        return false;
+    }
+
+    /**
+     * @brief Limits how many of this connection's messages may wait in the target thread's queue
+     *        (docs/framework/bounding_messages_waiting.md).
+     * @return false if the protocol carries no messages to count, which is every protocol but PDUs.
+     */
+    [[nodiscard]] virtual bool limit_messages_waiting([[maybe_unused]] std::shared_ptr<MessagesWaitingLimit> limit) {
+        return false;
+    }
+
+    /// Whether this connection has a limit on its messages waiting, so that reading stopping is routine rather than a
+    /// buffer filling.
+    [[nodiscard]] virtual bool counts_messages_waiting() const {
         return false;
     }
 

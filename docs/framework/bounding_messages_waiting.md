@@ -58,7 +58,13 @@ application thread and the reactor's handler for the connection: the thread make
 limit and passes it to the reactor in the control command. Each holds it for as long as it needs it, the
 reactor until the connection is torn down and the thread until it has handled the connection's loss, which
 comes after every message from the connection. The thread finds it by the message's connection id in a
-short list of its limited connections, so nothing is added to the message.
+short list of its limited connections.
+
+**Only messages the reactor counted are counted as taken.** The thread sets the limit, but the reactor
+acts on the command a little later, and messages it queued before then were not counted. So the parser
+marks each message it counts, with a flag that fits in the message's existing padding, and the thread
+counts as taken only marked messages. Without the mark, the count went to −100,000 in an integration
+test, when a connection's flood was read before its limit took effect.
 
 ### 3.2 Stopping and starting reading
 

@@ -5,12 +5,14 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include <fmt/format.h>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/MessagesWaitingLimit.hpp>
 #include <pubsub_itc_fw/ServiceID.hpp>
 #include <pubsub_itc_fw/SlabHandle.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -41,6 +43,8 @@ namespace pubsub_itc_fw {
  *   CommitRawBytes -- connection_id_, bytes_consumed_
  *   PauseReading   -- connection_id_
  *   ResumeReading  -- connection_id_
+ *   LimitMessagesWaiting -- connection_id_, messages_waiting_limit_
+ *   ReadAgainAfterMessagesTaken -- connection_id_
  *   RequestWritableNotification -- connection_id_, requesting_thread_id_ (zero for the connection's owner)
  *
  * SendPdu vs SendRaw:
@@ -66,7 +70,11 @@ class ReactorControlCommand {
         RequestWritableNotification, ///< Request a one-shot ConnectionWritable event when the connection
                                      ///< can accept another outbound frame (connection_id_).
         PauseReading,                ///< Stop watching a connection for incoming data (connection_id_).
-        ResumeReading                ///< Watch a connection for incoming data again (connection_id_).
+        ResumeReading,               ///< Watch a connection for incoming data again (connection_id_).
+        LimitMessagesWaiting,        ///< Limit a connection's messages waiting in its thread's queue
+                                     ///< (connection_id_, messages_waiting_limit_).
+        ReadAgainAfterMessagesTaken  ///< The thread has taken enough of a connection's waiting messages: read it
+                                     ///< again, if nothing else stops it (connection_id_).
     };
 
   public:
@@ -131,6 +139,12 @@ class ReactorControlCommand {
         }
         if (tag_ == ResumeReading) {
             return "ResumeReading";
+        }
+        if (tag_ == LimitMessagesWaiting) {
+            return "LimitMessagesWaiting";
+        }
+        if (tag_ == ReadAgainAfterMessagesTaken) {
+            return "ReadAgainAfterMessagesTaken";
         }
         return fmt::format("unknown ({})", static_cast<int>(tag_));
     }
@@ -217,6 +231,13 @@ class ReactorControlCommand {
      * event.
      */
     ConnectionID connection_id_{};
+
+    /**
+     * @brief For LimitMessagesWaiting: the count of the connection's messages waiting in its thread's queue, shared
+     *        by the thread, which made it, and the reactor, which keeps it for as long as the connection lasts
+     *        (docs/framework/bounding_messages_waiting.md). Empty for every other command.
+     */
+    std::shared_ptr<MessagesWaitingLimit> messages_waiting_limit_;
 
     // SendPdu payload fields
 

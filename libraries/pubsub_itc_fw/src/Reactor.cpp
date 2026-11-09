@@ -1411,6 +1411,23 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                 }
                 break;
             }
+
+            case ReactorControlCommand::LimitMessagesWaiting: {
+                const ConnectionID cid = command.connection_id_;
+                if (!inbound_manager_.limit_messages_waiting(cid, command.messages_waiting_limit_) &&
+                    !outbound_manager_.limit_messages_waiting(cid, command.messages_waiting_limit_)) {
+                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: unknown connection id {} for LimitMessagesWaiting",
+                               cid.get_value());
+                }
+                break;
+            }
+
+            case ReactorControlCommand::ReadAgainAfterMessagesTaken: {
+                // A connection torn down since its thread asked is not an error: its loss is on the thread's queue.
+                const ConnectionID cid = command.connection_id_;
+                static_cast<void>(inbound_manager_.read_again(cid) || outbound_manager_.read_again(cid));
+                break;
+            }
         }
     }
 

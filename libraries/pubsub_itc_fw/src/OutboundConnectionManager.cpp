@@ -311,6 +311,12 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
 
     // PDU path
     auto [ok, error] = conn.parser()->receive();
+    if (ok && conn.parser()->stopped_for_messages_waiting()) {
+        // The limit's worth of this connection's messages are waiting in the thread's queue: stop watching the socket for
+        // incoming data until the thread asks for reading again.
+        rearm(conn);
+        return;
+    }
     if (!ok) {
         const std::string reason = error.empty() ? fmt::format("peer closed connection on service '{}'", service_name)
                                                  : fmt::format("parse error on service '{}': {}", service_name, error);
@@ -751,7 +757,10 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
 
 bool OutboundConnectionManager::wants_reads(const OutboundConnection& conn) {
     const bool paused_by_handler = conn.protocol_handler() != nullptr && conn.protocol_handler()->is_reads_paused();
-    return !paused_by_handler && !conn.reading_paused_by_application();
+    // A connection carrying PDUs without TLS reads with its own parser, which stops when its limit on the messages
+    // waiting in the thread's queue is reached.
+    const bool paused_by_parser = conn.parser() != nullptr && conn.parser()->stopped_for_messages_waiting();
+    return !paused_by_handler && !paused_by_parser && !conn.reading_paused_by_application();
 }
 
 void OutboundConnectionManager::rearm(OutboundConnection& conn) {
@@ -791,6 +800,31 @@ bool OutboundConnectionManager::resume_reading(ConnectionID id) {
         return false;
     }
     it->second->resume_reading_by_application();
+    rearm(*it->second);
+    return true;
+}
+
+bool OutboundConnectionManager::limit_messages_waiting(ConnectionID id, std::shared_ptr<MessagesWaitingLimit> limit) {
+    const auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
+    OutboundConnection& conn = *it->second;
+    if (conn.parser() != nullptr) {
+        conn.parser()->set_messages_waiting_limit(std::move(limit));
+    } else if (conn.protocol_handler() == nullptr || !conn.protocol_handler()->limit_messages_waiting(std::move(limit))) {
+        PUBSUB_LOG(logger_, FwLogLevel::Error,
+                   "OutboundConnectionManager::limit_messages_waiting: connection {} to '{}' carries no messages to count -- no limit is set", id.get_value(),
+                   conn.service_name());
+    }
+    return true;
+}
+
+bool OutboundConnectionManager::read_again(ConnectionID id) {
+    const auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
     rearm(*it->second);
     return true;
 }

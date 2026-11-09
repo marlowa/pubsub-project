@@ -26,6 +26,7 @@
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/MemberIsWaitingFlag.hpp>
+#include <pubsub_itc_fw/MessagesWaitingLimit.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
@@ -445,6 +446,29 @@ class ApplicationThread {
      * @param[in] conn_id A connection belonging to this thread.
      */
     void resume_reading(const ConnectionID& conn_id);
+
+    /**
+     * @brief Limits how many of a connection's messages may wait in this thread's queue
+     *        (docs/framework/bounding_messages_waiting.md).
+     *
+     * Once that many are waiting, the reactor stops reading the connection, so the peer's further messages stay in
+     * its socket and TCP slows it; once this thread has taken them down to half the limit, the reactor reads the
+     * connection again. Nothing is lost or refused. Set once, for the life of the connection, on a connection
+     * carrying PDUs; on any other the reactor logs an Error and sets nothing.
+     *
+     * Limit only a connection whose peer copes with being slowed: a peer whose sends to it back up may reach its own
+     * limit on waiting sends and close the connection.
+     *
+     * @param[in] conn_id A connection belonging to this thread.
+     * @param[in] limit   The most messages that may wait; at least MessagesWaitingLimit::smallest_limit.
+     */
+    void limit_messages_waiting(const ConnectionID& conn_id, int64_t limit);
+
+    /**
+     * @brief How many of a limited connection's messages are waiting in this thread's queue now, counting the one being
+     *        handled as taken; -1 for a connection with no limit. Called on this thread.
+     */
+    [[nodiscard]] int64_t messages_waiting(const ConnectionID& conn_id) const;
 
     /**
      * @brief Sends raw bytes on a RawBytesProtocolHandler connection.
@@ -1028,6 +1052,16 @@ class ApplicationThread {
      * on the application thread, before any command reaches the reactor.
      * */
     std::unordered_set<ConnectionID> active_connection_ids_;
+
+    /**
+     * The connections this thread has limited, each with the count it shares with the reactor. Few, so a vector,
+     * searched for each message from a connection only when it is not empty.
+     */
+    std::vector<std::pair<ConnectionID, std::shared_ptr<MessagesWaitingLimit>>> messages_waiting_limits_;
+
+    /// A message from @p conn_id has been taken off the queue: count it, and have the reactor read the connection
+    /// again if the count says so.
+    void message_taken_from(const ConnectionID& conn_id);
 };
 
 } // namespaces

@@ -226,7 +226,9 @@ void InboundConnectionManager::on_data_ready(InboundConnection& conn) {
                        "for connection from '{}': {}",
                        peer_desc, StringUtils::get_errno_string());
         } else {
-            PUBSUB_LOG(logger_, FwLogLevel::Warning,
+            // A limit on the messages waiting stops and starts reading routinely while a thread catches up with its peer,
+            // so it is said at Debug; a raw-bytes buffer filling is said at Warning.
+            PUBSUB_LOG(logger_, conn.handler()->counts_messages_waiting() ? FwLogLevel::Debug : FwLogLevel::Warning,
                        "InboundConnectionManager::on_data_ready: read backpressure engaged on "
                        "connection {} from '{}' -- EPOLLIN deregistered",
                        id.get_value(), peer_desc);
@@ -570,6 +572,28 @@ bool InboundConnectionManager::resume_reading(ConnectionID id) {
         return false;
     }
     it->second->resume_reading_by_application();
+    rearm(*it->second);
+    return true;
+}
+
+bool InboundConnectionManager::limit_messages_waiting(ConnectionID id, std::shared_ptr<MessagesWaitingLimit> limit) {
+    const auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
+    if (!it->second->handler()->limit_messages_waiting(std::move(limit))) {
+        PUBSUB_LOG(logger_, FwLogLevel::Error,
+                   "InboundConnectionManager::limit_messages_waiting: connection {} from '{}' carries no messages to count -- no limit is set", id.get_value(),
+                   it->second->peer_description());
+    }
+    return true;
+}
+
+bool InboundConnectionManager::read_again(ConnectionID id) {
+    const auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
     rearm(*it->second);
     return true;
 }

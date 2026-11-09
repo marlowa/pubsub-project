@@ -153,12 +153,18 @@ std::tuple<bool, std::string> PduParser::receive() {
         }
 
         // Complete frame -- offer to inline handler first, then dispatch to target thread.
-        dispatch_pdu(payload_slab_id_, payload_chunk_);
+        const bool stop_reading = dispatch_pdu(payload_slab_id_, payload_chunk_);
 
         payload_chunk_ = nullptr;
         payload_slab_id_ = invalid_slab_handle;
         payload_bytes_received_ = 0;
         reset_header();
+
+        if (stop_reading) {
+            // The limit's worth of this connection's messages are waiting in the thread's queue. Whatever else the socket
+            // holds stays there, so that TCP slows the peer, until the thread asks for reading again.
+            return {true, ""};
+        }
     }
 }
 
@@ -166,7 +172,7 @@ bool PduParser::has_complete_header() const {
     return header_bytes_ >= sizeof(PduHeader);
 }
 
-void PduParser::dispatch_pdu(SlabHandle slab_id, void* payload_chunk) {
+bool PduParser::dispatch_pdu(SlabHandle slab_id, void* payload_chunk) {
     const auto* payload = static_cast<const uint8_t*>(payload_chunk);
     const int payload_size = static_cast<int>(current_payload_size_);
 
@@ -195,7 +201,15 @@ void PduParser::dispatch_pdu(SlabHandle slab_id, void* payload_chunk) {
 
     EventMessage msg = EventMessage::create_framework_pdu_message(payload, payload_size, slab_id, connection_id_, current_pdu_id_, current_seq_no_);
 
+    // Counted before it is queued: counted after, the thread could take it first and leave the count one short. Marked,
+    // so that the thread counts as taken only the messages counted here.
+    bool stop_reading = false;
+    if (messages_waiting_limit_ != nullptr) {
+        msg.mark_counted_for_messages_waiting();
+        stop_reading = messages_waiting_limit_->message_queued();
+    }
     target_thread_.enqueue(std::move(msg));
+    return stop_reading;
 }
 
 void PduParser::reset_header() {

@@ -16,6 +16,7 @@ add_executable(pubsub_itc_fw_integration_tests
     PduProtocolHandlerIntegrationTest.cpp
     RawBytesBackPressureIntegrationTest.cpp
     RawBytesProtocolHandlerIntegrationTest.cpp
+    MessagesWaitingIntegrationTest.cpp
     SlowReaderIntegrationTest.cpp
     StatusQueryResponseTest.cpp
     TlsOutboundIntegrationTest.cpp

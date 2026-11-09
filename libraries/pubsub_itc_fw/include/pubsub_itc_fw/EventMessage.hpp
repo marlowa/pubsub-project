@@ -71,6 +71,10 @@ class EventMessage {
     const uint8_t* payload_{nullptr};
     int itc_message_type_{-1};
     int16_t pdu_id_{-1};
+    // Whether the reactor counted this FrameworkPdu message against its connection's limit on the messages waiting
+    // (docs/framework/bounding_messages_waiting.md). Messages queued before the limit took effect were not counted, and
+    // must not be counted as taken.
+    bool counted_for_messages_waiting_{false};
     int64_t seq_no_{0};
     // Monotonic nanoseconds at the moment this message was handed to a thread's queue.
     // Written by ApplicationThread::enqueue and read once in process_message, so the
@@ -118,6 +122,16 @@ class EventMessage {
      */
     [[nodiscard]] int itc_message_type() const {
         return itc_message_type_;
+    }
+
+    /// Marks a FrameworkPdu message as counted against its connection's limit on the messages waiting. Reactor thread.
+    void mark_counted_for_messages_waiting() {
+        counted_for_messages_waiting_ = true;
+    }
+
+    /// Whether the reactor counted this message against its connection's limit on the messages waiting.
+    [[nodiscard]] bool counted_for_messages_waiting() const {
+        return counted_for_messages_waiting_;
     }
 
     /**
