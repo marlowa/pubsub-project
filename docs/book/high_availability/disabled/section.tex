@@ -74,15 +74,18 @@ error. A test that sent orders and received replies would pass against such a
 venue, and the result would mean nothing.
 
 \textbf{Only the primary instance of each singular component runs.} The gateways
-send orders to the primary sequencer and to no other. A secondary instance has no
-part in this configuration: there is no peer for it to follow and no arbiter to
+send orders to the primary sequencer and to no other. No secondary instance has
+any part in this configuration: there is no peer for it to follow and no arbiter to
 make it lead, and if the primary's machine is lost the venue stops, because this
 configuration does not cope with the loss of a machine.
 
 \begin{requirement}{R-0163}{With high availability off, a secondary instance refuses to start}
-  With high availability off, the secondary instance of the sequencer, of the
-  matching engine and of the publisher shall refuse to start, and shall say that
-  it refused because high availability is off.
+  With high availability off, every secondary instance shall refuse to start:
+  the secondary sequencer, the secondary matching engine and the secondary
+  publisher. Each shall say that it refused because high availability is off. The
+  replicated peers are not secondaries and are not affected: several
+  authentication services and several gateways may run in this configuration as
+  in any other.
   \rationale{A secondary started in this configuration would be a second instance that
   nothing sends orders to. The venue would accept members' logons and orders and
   answer none of them, which is the failure this section exists to prevent. The
