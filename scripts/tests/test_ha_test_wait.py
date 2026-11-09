@@ -21,7 +21,13 @@ class ExitedProcess:
         return 1
 
 
-@pytest.mark.parametrize("wait_function", [ha_test.await_new_orders, ha_test.await_new_orders_since])
+def _wait_while_reports_arrive(process, count, sent_before, timeout):
+    """await_new_orders_while_reports_arrive, given its stall timeout and answering as await_new_orders does."""
+    found, elapsed, _first_reported_after = ha_test.await_new_orders_while_reports_arrive(process, count, sent_before, stall_timeout=timeout)
+    return found, elapsed
+
+
+@pytest.mark.parametrize("wait_function", [ha_test.await_new_orders, _wait_while_reports_arrive])
 def test_order_wait_stops_when_the_client_exits(monkeypatch, wait_function):
     process = ExitedProcess()
     monkeypatch.setitem(ha_test._CLIENT_REPORTS, process.pid, ha_test.ClientReports(Path("not-created.txt")))
