@@ -41,7 +41,10 @@ peer's socket and the thread's queue.
 Each limited connection has a counter of its messages waiting in the thread's queue, shared by the reactor
 thread and the owning application thread, and changed by both without a lock:
 
-- **The reactor adds one** in `PduParser::dispatch_pdu`, when it puts a message on the thread's queue.
+- **The reactor adds one** in `PduParser::dispatch_pdu`, just before it puts a message on the thread's queue.
+  Before, not after: counted after, the thread could take the message first and leave the count one short,
+  which lets one more than the limit wait. A test running the two threads as fast as they can found exactly
+  that.
 - **The application thread takes one away** in `ApplicationThread`, when it takes a `FrameworkPdu` message
   off its queue, just before calling `on_framework_pdu_message`. The count is of messages waiting, not of
   payloads not yet released: an application that keeps a payload for later, as some do, is no longer
@@ -50,11 +53,12 @@ thread and the owning application thread, and changed by both without a lock:
 The counter is an atomic integer. One thread only ever adds and the other only ever subtracts, so plain
 atomic increments and decrements are enough.
 
-**Where the counter lives.** The reactor owns a fixed table of counters, sized at start-up from the most
-connections it is configured for. A limited connection is given an entry when the limit is set; the
-message carries a pointer to the entry, beside the connection id and the slab handle it already carries.
-An entry is freed only once its connection has gone and its count has returned to zero, so a message
-still in the queue after its connection has closed never points at an entry given to another connection.
+**Where the counter lives.** In a `MessagesWaitingLimit`, held by `std::shared_ptr` by both the
+application thread and the reactor's handler for the connection: the thread makes it when it sets the
+limit and passes it to the reactor in the control command. Each holds it for as long as it needs it, the
+reactor until the connection is torn down and the thread until it has handled the connection's loss, which
+comes after every message from the connection. The thread finds it by the message's connection id in a
+short list of its limited connections, so nothing is added to the message.
 
 ### 3.2 Stopping and starting reading
 
@@ -65,8 +69,17 @@ still in the queue after its connection has closed never points at an entry give
 - **Starting again.** After taking one away, the application thread checks the flag. If the flag is set and
   the count has fallen to half the limit, it clears the flag with a compare-and-exchange, so that it does so
   once, and sends the reactor a command to read the connection again. The command is sent only at that
-  crossing, never for each message, so the cost on the thread's path is one atomic subtraction and one
-  load of the flag.
+  crossing, never for each message, so the cost on the thread's path is one atomic subtraction and, when the
+  count is at or below half, two loads.
+
+**Two races, each closed by looking at the count a second time.** If the thread takes every waiting
+message between the reactor reaching the limit and recording the stop, it sees no stop and never asks for
+reading again; so after recording the stop the reactor looks at the count again, and takes the stop back
+itself if it has fallen to half. And if the thread finds the count low, and the reactor then fills the queue
+to the limit and stops before the thread looks at the flag, the count the thread found is out of date; so
+when the thread finds a stop it looks at the count again, and acts only if that is at or below half.
+Whichever of the two clears the flag starts reading again. Both races were found by a test running the two
+threads as fast as they can, and each has a test that makes it happen on every run.
 
 Half the limit, rather than one below it, so that reading is not stopped and started for every message
 when the thread and the peer run at almost the same speed.
@@ -79,8 +92,9 @@ way, so that ending one never ends another.
 ### 3.3 How a connection is limited
 
 `ApplicationThread::limit_messages_waiting(connection, limit)`, called by the owning thread, for an
-inbound or outbound connection carrying PDUs, at any time after it is established. A limit of zero removes
-it. The limit must be at least 16, so that it is never so small that reading stops and starts constantly.
+inbound or outbound connection carrying PDUs, at any time after it is established. It is set once and lasts
+for the life of the connection. The limit must be at least 16, so that it is never so small that reading
+stops and starts constantly.
 Connections are not limited unless the application asks: see decision 1.
 
 ### 3.4 What this does for the matching engine
