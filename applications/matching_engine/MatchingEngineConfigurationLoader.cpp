@@ -28,12 +28,11 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
     try {
         // HA role must be read first -- it controls which other sections are required.
         toml.get_required_except("ha.enabled", config.ha_enabled);
-        if (config.ha_enabled) {
-            toml.get_required_except("ha.role", config.ha_role);
-            if (config.ha_role != "primary" && config.ha_role != "secondary") {
-                throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: ha.role must be 'primary' or 'secondary', got '" +
-                                                            config.ha_role + "'");
-            }
+        // Read whether or not high availability is on: with it off, the secondary refuses to start (R-0163, BUG-0061).
+        toml.get_required_except("ha.role", config.ha_role);
+        if (config.ha_role != "primary" && config.ha_role != "secondary") {
+            throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: ha.role must be 'primary' or 'secondary', got '" + config.ha_role +
+                                                        "'");
         }
 
         // Every HA section is read identically for both roles.

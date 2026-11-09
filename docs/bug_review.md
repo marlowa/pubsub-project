@@ -30,7 +30,7 @@ All 81 open entries have been judged. The figures:
    belong in one design.
 3. **Which sequencer the gateways use with high availability off** (BUG-0061, then BUG-0062). Decided on 8
    November 2026: none but the primary, and a secondary instance refuses to start with high availability off
-   (R-0163).
+   (R-0163). Built and closed on 9 November 2026.
 
 **The order of work**, agreed with Andrew on 8 November 2026:
 
@@ -96,15 +96,15 @@ Eleven entries.
 | [BUG-0135](bug_list.md#bug_0135): while the leader trades alone, a power failure can lose the last seconds of the record | **New requirement** | Nothing syncs the leader's WAL while it runs without its follower; there is no such interval in `ReplicatedWal` or `Wal` | Build it as the entry describes, on a thread of its own (F4), if Andrew agrees |
 | [BUG-0222](bug_list.md#bug_0222): no operator procedure lets the follower lead after the old leader's machine is lost while it ran alone | **New requirement** (R-0161, R-0162) | Not built; [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md), section 4.4, says so | The operator's tool and the procedure for telling members, designed together |
 | [BUG-0136](bug_list.md#bug_0136): whether a copy of the log elsewhere could recover what the leader's machine took with it | **Investigation** | Unchanged. The order activity recorder is not built | Find out what each follower of the log keeps; then decide whether recovering from it is worth designing. Best done with BUG-0222 |
-| [BUG-0061](bug_list.md#bug_0061): with high availability off, a secondary sequencer started alone leads, but no gateway can reach it | **New requirement**, decided on 8 November 2026 | Unchanged: with high availability off, both gateways connect only to the primary sequencer, and a secondary sequencer, matching engine or publisher starts and leads | A secondary instance refuses to start with high availability off (R-0163), as the arbiter and the witness do; scenarios 46 and 47 changed to assert the refusal |
-| [BUG-0062](bug_list.md#bug_0062): two instances that led with high availability off, and nothing notices when they are reunited | **New requirement**, reachable only once BUG-0061 is fixed | Unchanged | Detecting, when the instances come together with high availability on, that both have led, and halting rather than choosing one. Design it with BUG-0061 |
+| [BUG-0061](bug_list.md#bug_0061): with high availability off, a secondary sequencer started alone leads, but no gateway can reach it | **Fixed on 9 November 2026** and closed | Every secondary refuses to start with high availability off (R-0163), and scenarios 46 and 47 check each refuses and says why | Nothing |
+| [BUG-0062](bug_list.md#bug_0062): two instances that led with high availability off, and nothing notices when they are reunited | **No longer arises as described**, recommended for closing | With every secondary refusing to start with high availability off, two instances cannot both lead in that configuration; a primary later joined by its secondary is a follower behind, already handled | Andrew's decision to close it |
 
 **Recommended order in this area.** BUG-0142 and BUG-0207 first, because each breaks a principle, and
 BUG-0207 needs a scenario before it is fixed. Then BUG-0121, because without it the rule that a restarted
 leader keeps the lead fails late in a busy day. BUG-0134's remaining reporting is small. BUG-0237, the sequencer's
 2-second wait before connecting to a restarted engine again, is small and comes after them. BUG-0167
-waits on Andrew's decision; BUG-0135, BUG-0222 with BUG-0136, and BUG-0061 with BUG-0062 are
-new requirements to be placed in the order with the rest.
+waits on Andrew's decision; BUG-0135 and BUG-0222 with BUG-0136 are new requirements to be placed in the order with
+the rest. BUG-0061 is closed, and BUG-0062 is recommended for closing.
 
 ## 2. The write-ahead log, its retention, the disk, and the trading day
 

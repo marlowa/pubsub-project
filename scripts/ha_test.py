@@ -382,12 +382,15 @@ _BINARY_READY_TIMEOUT = 30.0
 # matching engine's book key. Repeated here because the scenario must send one a character longer.
 _MAX_CL_ORD_ID_LENGTH = 64
 
-# Scenarios 43-47. With high availability off a sequencer leads the moment it starts -- there is no
-# election to wait for -- so this only has to cover process start and the log reaching disk.
-_HA_OFF_LEAD_TIMEOUT          = 20.0
-# How long a lone secondary is watched for a gateway connection that is not coming. A silence
-# window, so it only has to outlast the connection retry interval (2s) several times over.
-_HA_OFF_UNREACHABLE_SETTLE    = 8.0
+# What each component that must refuse with high availability off is started as: its binary, and its installed
+# configuration file under etc/.
+_HA_OFF_REFUSERS = {
+    "arbiter": ("arbiter", "arbiter/arbiter_primary.toml"),
+    "witness": ("witness", "witness/witness.toml"),
+    "sequencer_secondary": ("sequencer", "sequencer/sequencer_secondary.toml"),
+    "matching_engine_secondary": ("matching_engine", "matching_engine/matching_engine_secondary.toml"),
+    "matching_engine_publisher_secondary": ("matching_engine_publisher", "matching_engine_publisher/matching_engine_publisher_secondary.toml"),
+}
 # Any past time will do: what matters is that OrigSendingTime is present on a retransmission, not
 # what it says.
 _RAW_ORIG_SENDING_TIME        = "20260101-00:00:00.000"
@@ -1378,16 +1381,11 @@ class Scenario(NamedTuple):
     # started from stops meaning anything without a peer or an arbiter, so this names them
     # explicitly rather than assuming the primary.
     ha_off_sequencers: tuple = ("sequencer_primary",)
-    # Name of an ha_only binary that must REFUSE to start with high availability off: "arbiter" or
-    # "witness". Launched by hand after the venue is up, and expected to exit non-zero saying why.
-    ha_off_refuser: str = ""
-    # When True, assert that two sequencers started with high availability off BOTH lead, and that
-    # each says so loudly enough for an operator to notice before the next start under HA.
-    assert_ha_off_both_lead: bool = False
-    # When True, assert what a secondary started ALONE with high availability off can and cannot do.
-    # It leads, and the gateway cannot reach it -- see the block in run_scenario for why that is
-    # recorded rather than fixed here.
-    assert_ha_off_secondary_alone: bool = False
+    # The components that must REFUSE to start with high availability off, each a key of _HA_OFF_REFUSERS: the arbiter and
+    # the witness, which exist only to arbitrate, and every secondary instance, which has nothing to do without a peer
+    # (R-0163). Each is launched by hand from its own installed file after the venue is up, and expected to exit non-zero
+    # saying why.
+    ha_off_refusers: tuple = ()
     # Skip the baseline burst. Only for a scenario whose subject is a venue that cannot trade, where
     # sending a thousand orders would fail for the reason the scenario exists to state.
     skip_baseline_orders: bool = False
@@ -3512,7 +3510,7 @@ _SCENARIOS: list[Scenario] = [
         description="With high availability off, an arbiter started by hand refuses and says why",
         expected_outcome="the arbiter exits non-zero, naming [ha] enabled = false as the reason",
         ha_disabled=True,
-        ha_off_refuser="arbiter",
+        ha_off_refusers=("arbiter",),
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -3523,49 +3521,34 @@ _SCENARIOS: list[Scenario] = [
         description="With high availability off, a witness started by hand refuses and says why",
         expected_outcome="the witness exits non-zero, naming [ha] enabled = false as the reason",
         ha_disabled=True,
-        ha_off_refuser="witness",
+        ha_off_refusers=("witness",),
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
     ),
 
-    # 46 -- the case someone actually reaches for high availability off to do: run the venue on the
-    # surviving machine after the primary's hardware has died. Refusing to let a secondary lead
-    # would block exactly that, so it must lead and trade like any other instance.
+    # 46, 47 -- with high availability off only the primary of each pair runs (R-0163). High availability off does not cope
+    # with the loss of a machine, so a secondary has no part in it: started anyway, it would be an instance nothing sends
+    # anything to, and the venue would accept orders and answer none. Each secondary must refuse and say why, as the
+    # arbiter and the witness do (BUG-0061).
     Scenario(
         number=46,
-        short_name="ha_off_secondary_alone",
-        description="With high availability off, a secondary started alone leads but cannot be reached",
-        expected_outcome=(
-            "the secondary leads on its own, because role means nothing without a peer or an "
-            "arbiter -- and the gateway cannot reach it, which is recorded rather than fixed here"
-        ),
+        short_name="ha_off_secondary_sequencer_refuses",
+        description="With high availability off, a secondary sequencer started by hand refuses and says why",
+        expected_outcome="the secondary sequencer exits non-zero, naming [ha] enabled = false as the reason",
         ha_disabled=True,
-        ha_off_sequencers=("sequencer_secondary",),
-        assert_ha_off_secondary_alone=True,
-        skip_baseline_orders=True,
+        ha_off_refusers=("sequencer_secondary",),
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
     ),
-
-    # 47 -- both started together, both leading. This is NOT split brain: with high availability
-    # off the gateway reaches only one sequencer, so the same order cannot enter two books. It is
-    # still a trap, because each instance advances its own WAL and burns epochs from the state file
-    # that exists so a restart cannot reuse a spent generation. The damage lands at the next start
-    # under high availability, which is BUG-0062. What this scenario asserts is that the venue says
-    # so at the time, loudly enough that an operator would notice before then.
     Scenario(
         number=47,
-        short_name="ha_off_both_lead",
-        description="With high availability off, two sequencers started together both lead",
-        expected_outcome=(
-            "both instances lead and both say so, so the condition is visible at the time rather "
-            "than only at the next start under high availability"
-        ),
+        short_name="ha_off_secondary_engine_and_publisher_refuse",
+        description="With high availability off, a secondary matching engine and publisher started by hand refuse and say why",
+        expected_outcome="each exits non-zero, naming [ha] enabled = false as the reason",
         ha_disabled=True,
-        ha_off_sequencers=("sequencer_primary", "sequencer_secondary"),
-        assert_ha_off_both_lead=True,
+        ha_off_refusers=("matching_engine_secondary", "matching_engine_publisher_secondary"),
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -5908,7 +5891,9 @@ def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_
         # operators, named relative to its own directory, are named by their full paths.
         certificates = {("operator", key): f'"{sequencer_config.parent / installed_toml_section_value(sequencer_config, "operator", key)}"'
                         for key in ("tls_certificate_path", "tls_private_key_path", "tls_ca_path")}
-        config = config_with_values(sequencer_config, {("ha", "ha_enabled"): "false", ("wal", "directory"): f'"{wal_copy}"',
+        # Each run is one instance on its own with high availability off, so it runs as a primary whichever instance it was:
+        # with high availability off a secondary refuses to start (R-0163).
+        config = config_with_values(sequencer_config, {("ha", "ha_enabled"): "false", ("ha", "role"): '"primary"', ("wal", "directory"): f'"{wal_copy}"',
                                                        ("recovery", "automatic_recovery_limit_seconds"): "86400",
                                                        ("catch_up", "send_every_report"): "true", **certificates}, work / f"{sequencer}.toml")
         since = _TEST_EVENTS.mark()
@@ -5932,7 +5917,7 @@ def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_
             # it pauses the commands arriving: without that pacing the connection would reach the limit, be closed, and
             # lose reports (docs/bug_list.md, BUG-0234).
             config = config_with_values(config_without_report_relay(launched_configs[engine]),
-                                        {("ha", "enabled"): "false", ("order_book", "region_path"): f'"{region}"',
+                                        {("ha", "enabled"): "false", ("ha", "role"): '"primary"', ("order_book", "region_path"): f'"{region}"',
                                          ("network", "listen_port"): engine_port}, work / f"run_{run}_{engine}.toml",
                                         added={("reactor", "connection_waiting_sends_maximum"): "16384"})
             since = _TEST_EVENTS.mark()
@@ -9256,23 +9241,27 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 "not move -- OK")
             member.close()
 
-        # ── High availability off: a component that only arbitrates must refuse ──
-        if scenario.ha_off_refuser:
-            name = scenario.ha_off_refuser
+        # ── High availability off: what has no part in it must refuse ──────────
+        for name in scenario.ha_off_refusers:
+            bin_name, config_name = _HA_OFF_REFUSERS[name]
             log(f"=== Starting {name} by hand against a venue with high availability off ===")
-            config = (etc_dir / "arbiter" / "arbiter_primary.toml") if name == "arbiter" \
-                else (etc_dir / "witness" / "witness.toml")
+            config = etc_dir / config_name
             refuser_log = log_dir / f"{name}_refusal_probe.log"
             refuser_log.unlink(missing_ok=True)
             environment = dict(os.environ)
-            completed = subprocess.run([str(bin_dir / name), str(refuser_log), str(config)],
-                                       capture_output=True, text=True, timeout=30, env=environment,
-                                       check=False)
+            try:
+                completed = subprocess.run([str(bin_dir / bin_name), str(refuser_log), str(config)],
+                                           capture_output=True, text=True, timeout=30, env=environment,
+                                           check=False)
+            except subprocess.TimeoutExpired:
+                die(f"ha off: {name} started and was still running after 30 seconds in a venue with "
+                    "[ha] enabled = false, so it did not refuse (it has been stopped).")
             if completed.returncode == 0:
                 die(f"ha off: {name} started and stayed up in a venue with [ha] enabled = false. "
                     "Not launching it is what devenv.py does; refusing is what covers a "
                     "hand-started process or a stale supervisor manifest. An operator who sees it "
-                    "running will believe the venue has the mechanism it names.")
+                    "running will believe the venue has the mechanism it names, or a secondary that "
+                    "nothing sends anything to will take orders and answer none.")
             said = (refuser_log.read_text(errors="replace") if refuser_log.is_file() else "") \
                 + completed.stdout + completed.stderr
             if "refusing to start" not in said or "[ha] enabled = false" not in said:
@@ -9282,89 +9271,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     f"configured. What it said: {said.strip()[-300:]!r}")
             log(f"  ha off: {name} refused to start (exit {completed.returncode}) and named the "
                 "reason -- OK")
-
-        # ── High availability off: a secondary started alone ────────────────────
-        if scenario.assert_ha_off_secondary_alone:
-            log("=== A secondary sequencer started alone with high availability off ===")
-            found, elapsed = await_expectation(expect_leads("sequencer_secondary"), _HA_OFF_LEAD_TIMEOUT, 0)
-            if not found:
-                die("ha off: the secondary did not lead when started alone. Refusing to lead would "
-                    "block the case someone actually turns high availability off to do -- run the "
-                    "venue on the surviving machine after the primary's hardware has died.")
-            log(f"  ha off: the secondary leads on its own ({elapsed:.1f}s) -- OK")
-
-            # And what it cannot do, asserted so the gap is a stated fact rather than a surprise.
-            #
-            # The gateway sends to the secondary only inside `if (config_.ha_enabled)`, so with high
-            # availability off it talks to the primary and nothing else. A secondary-only venue
-            # therefore leads and trades nothing.
-            #
-            # Recorded here rather than fixed, because the obvious fix is wrong: making the gateway
-            # send to both would put the same order into two books in scenario 47, where both
-            # instances lead. What a non-HA venue needs is to be TOLD which single sequencer to use,
-            # and that is a configuration decision this entry does not settle. See BUG-0061.
-            # Asked of the member rather than of a log marker. The gateway CONNECTS to both
-            # sequencers regardless -- connecting and forwarding are different things, and an
-            # earlier version of this assertion tested the wrong one and failed. What is true is
-            # that `forward_pdu_to_sequencers` sends to the secondary only inside
-            # `if (config_.ha_enabled)`, so with the switch off nothing the member sends is
-            # forwarded anywhere.
-            sys.path.insert(0, str(Path(__file__).resolve().parent))
-            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
-
-            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"),
-                                  FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
-            member.connect()
-            member.logon(reset_seq_num=True)
-            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
-                member.close()
-                die("ha off: the member could not even log on to a secondary-only venue, so this "
-                    "assertion cannot tell an unreachable sequencer from a broken gateway.")
-            log("  ha off: the member logs on -- the gateway is up and serving")
-            member.new_order_single("ha-off-secondary")
-            answered = member.receive_until("8", timeout=_HA_OFF_UNREACHABLE_SETTLE)
-            member.close()
-            if answered is not None:
-                die(f"ha off: the order was answered (OrdStatus={answered.get(39)}) on a "
-                    "secondary-only venue. If the gateway has deliberately been made to forward to "
-                    "the secondary with high availability off, check scenario 47 first -- sending "
-                    "to both when both lead would put the same order into two books.")
-            log("  ha off: the member logs on and its order is never answered, because the gateway "
-                "forwards only to a primary that is not running. A secondary-only venue leads and "
-                "trades nothing -- the known gap, recorded in BUG-0061 -- OK")
-
-        # ── High availability off: two sequencers started together both lead ─────
-        if scenario.assert_ha_off_both_lead:
-            log("=== Two sequencers started with high availability off ===")
-            leading = []
-            for name in scenario.ha_off_sequencers:
-                if await_expectation(expect_leads(name), _HA_OFF_LEAD_TIMEOUT, 0)[0]:
-                    leading.append(name)
-            if len(leading) != len(scenario.ha_off_sequencers):
-                die("ha off: expected every started sequencer to lead, and "
-                    f"{leading} did out of {list(scenario.ha_off_sequencers)}. With no peer and no "
-                    "arbiter an instance has nothing to defer to, and one that sits waiting is a "
-                    "venue that will not trade -- which is BUG-0061 in the other direction.")
-            log(f"  ha off: both instances lead ({', '.join(leading)}) -- OK")
-
-            # Not split brain, and still a trap. Each instance advances its own WAL and burns
-            # epochs from the state file that exists so a restart cannot reuse a spent generation.
-            # The damage lands at the next start under high availability -- BUG-0062 -- so the
-            # question here is whether the venue says anything at the time.
-            announced = 0
-            for name in scenario.ha_off_sequencers:
-                text = (log_dir / f"{name}.log").read_text(errors="replace")
-                if "ha_enabled=false" in text:
-                    announced += 1
-            if announced != len(scenario.ha_off_sequencers):
-                die(f"ha off: only {announced} of {len(scenario.ha_off_sequencers)} instances said "
-                    "why they were leading. Two leaders is the agreed behaviour and it is still a "
-                    "trap: each burns epochs from its own state file and the damage lands at the "
-                    "next start under high availability. An operator has to be able to see it now.")
-            log("  ha off: both instances recorded ha_enabled=false as the reason -- OK")
-            log("  NOTE: two leaders here is agreed behaviour, not split brain -- the gateway "
-                "reaches only one sequencer with high availability off. What it costs is recorded "
-                "as BUG-0062.")
 
         # ── The venue refuses what it cannot process ──────────────────────────
         # The matching engine is killed and not restarted. What is being tested is not that the

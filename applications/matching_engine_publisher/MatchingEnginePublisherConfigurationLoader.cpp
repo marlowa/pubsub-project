@@ -73,6 +73,11 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
 
         toml.get_required_except("ha.ha_enabled", config.ha_enabled);
         toml.get_required_except("ha.instance_id", config.instance_id);
+        toml.get_required_except("ha.role", config.ha_role);
+        if (config.ha_role != "primary" && config.ha_role != "secondary") {
+            throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: ha.role must be 'primary' or 'secondary', got '" +
+                                                        config.ha_role + "'");
+        }
 
         if (config.ha_enabled) {
             toml.get_required_except("ha.arbiter_primary_host", config.arbiter_primary_host);

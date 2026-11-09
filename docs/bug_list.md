@@ -3,19 +3,18 @@
 | | |
 |---|---|
 | Bugs recorded | 238 |
-| Open | 60 (39 defects, 21 tasks) |
-| Closed | 178 |
+| Open | 59 (38 defects, 21 tasks) |
+| Closed | 179 |
 | Next id | BUG-0239 |
 
 ## Open bugs by severity
 
-12 high, 36 medium, 12 low.
+11 high, 36 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
 | [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
-| [BUG-0061](#bug_0061) | high | defect | With high availability off, a secondary sequencer started alone leads but no gateway can reach it |
 | [BUG-0062](#bug_0062) | high | defect | Two instances led with HA off, and nothing notices when they are reunited |
 | [BUG-0065](#bug_0065) | high | task | The venue tells a member of a trading halt only in the reply to an order, and cannot halt one instrument |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
@@ -1354,61 +1353,13 @@ Related: [BUG-0042](#bug_0042), closed, where a restarted primary matching engin
 and produced two leaders. Different mechanism, same underlying fact -- that two instances each
 believing themselves leader is not something the venue currently detects after the event.
 
-### BUG-0061: With high availability off, a secondary sequencer started alone leads but no gateway can reach it {#bug_0061}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-28 |
-| Recorded | 2026-08-28 |
-| How | Using `devenv.py --no-ha` to set up a matching-engine outage while building BUG-0009's step 1, and finding no orders moved |
-| Impact | A venue run with high availability off on the secondary machine, for example after the primary machine has failed, accepts members' logons and trades nothing: the gateways send orders only to the primary sequencer, which is not running |
-
-**What high availability off means, and is built.** One switch, `[ha] enabled` in the environment
-file, reaches every component's configuration. With it off:
-
-- every primary starts and leads at once, with no peer and no arbiter;
-- a secondary started with high availability off also leads. That is the defect: see below;
-- the arbiter and the witness refuse to start, saying why, and `devenv.py --no-ha` refuses when the
-  environment still says high availability is on;
-- each gateway sends orders to one sequencer, the primary, so the same order cannot enter two books.
-
-`ha_test.py` scenarios 43 to 47 check each of these.
-
-**What is wrong.** A secondary sequencer started alone, with high availability off, leads, but the
-gateways send only to the primary, so no order reaches it. The gateway logs *"primary sequencer not
-connected"* for each order, and the order goes nowhere: accepted from the member, and never
-answered. Scenario 46 asserts this gap rather than hiding it.
-
-**Decided 2026-11-08: with high availability off, a secondary instance refuses to start.** The
-secondary sequencer, the secondary matching engine and the secondary publisher each exit at start-up,
-saying that they refused because high availability is off, as the arbiter and the witness already do.
-This is R-0163 in the functional specification.
-
-The reasoning: high availability off is a configuration for development and tests only, and must
-never be deployed in production (the section "High availability disabled" of the functional
-specification). It does not cope with the loss of a machine, so there is nothing for a secondary to
-do: if the primary's machine is lost, the venue stops. Running the venue on the secondary's machine
-with high availability off, which a setting naming the sequencer or the gateways following whichever
-sequencer leads would have made possible, would be coping with the loss of the primary's machine in
-a configuration that has said it will not. Refusing to start makes starting the wrong instance fail
-at once and visibly, where today it fails silently with every order.
-
-**What closing it needs.**
-
-- The refusal in the sequencer, the matching engine and the publisher, when high availability is off
-  and the instance is the secondary.
-- Scenario 46 changed to assert that a secondary sequencer started with high availability off refuses
-  and says why, as scenarios 44 and 45 do for the arbiter and the witness, and the same checked for the
-  matching engine and the publisher. Scenario 47, which starts both sequencers with high availability
-  off and asserts that both lead, changed to assert that the secondary refuses. The comments on both
-  scenarios state the old reasoning and change with them.
-- [BUG-0062](#bug_0062) checked: if no secondary can lead with high availability off, two instances
-  that both led with it off can no longer arise as that entry describes. Close it, or rewrite it with
-  whatever is left.
-
-Related: two instances that both led with high availability off and are later started together with
-it on are [BUG-0062](#bug_0062).
+**Checked 2026-11-09, after [BUG-0061](#bug_0061): this no longer arises as described; recommended for closing, which is
+Andrew's to decide.** With high availability off every secondary refuses to start (R-0163), so two instances can no
+longer both lead in that configuration, and neither WAL nor epoch sequence can diverge that way. What remains is a
+primary that ran alone and is later joined by its secondary with high availability on: the secondary is then a follower
+that is behind, which the rule that a follower behind does not lead, and the follower's repair of its WAL, already
+handle. The cost at the time described above belonged to the old scenario 47, which started both sequencers with high
+availability off; scenario 47 now checks that the secondaries refuse.
 
 ### BUG-0059: No defence against a member reconnecting in a loop with the wrong protocol {#bug_0059}
 
@@ -2820,6 +2771,63 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0061: With high availability off, a secondary sequencer started alone leads but no gateway can reach it {#bug_0061}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| Fixed | 2026-11-09 -- with high availability off every secondary instance refuses to start (R-0163): the secondary sequencer, matching engine and publisher each exit at start-up with an Error saying that the venue has `[ha] enabled = false` and this is the secondary, as the arbiter and the witness already do. Each knows which it is from `[ha] role`, now in the sequencer's and the publisher's files as it already was in the engine's, and read whether or not high availability is on. Scenarios 46 and 47 now start each secondary by hand against a venue with high availability off and require it to refuse and say why; with the sequencer's refusal removed on purpose, scenario 46 failed. Two loader tests check the role is read with high availability off and that a missing or unknown role is refused; making the key optional made one fail. R-0163 in the functional specification is verified by scenarios 46 and 47 and its gap is removed. The engines-on-the-WAL check in `ha_test.py`, which runs one sequencer and each engine on its own with high availability off, now runs each as a primary, since a secondary would rightly refuse; the first suite run showed it. All application unit tests and all 103 `ha_test.py` scenarios pass, with the WALs cleared first. [BUG-0062](#bug_0062) was checked as this entry asked: it no longer arises as described, and is recommended for closing |
+| How | Using `devenv.py --no-ha` to set up a matching-engine outage while building BUG-0009's step 1, and finding no orders moved |
+| Impact | A venue run with high availability off on the secondary machine, for example after the primary machine has failed, accepts members' logons and trades nothing: the gateways send orders only to the primary sequencer, which is not running |
+
+**What high availability off means, and is built.** One switch, `[ha] enabled` in the environment
+file, reaches every component's configuration. With it off:
+
+- every primary starts and leads at once, with no peer and no arbiter;
+- a secondary started with high availability off also leads. That is the defect: see below;
+- the arbiter and the witness refuse to start, saying why, and `devenv.py --no-ha` refuses when the
+  environment still says high availability is on;
+- each gateway sends orders to one sequencer, the primary, so the same order cannot enter two books.
+
+`ha_test.py` scenarios 43 to 47 check each of these.
+
+**What is wrong.** A secondary sequencer started alone, with high availability off, leads, but the
+gateways send only to the primary, so no order reaches it. The gateway logs *"primary sequencer not
+connected"* for each order, and the order goes nowhere: accepted from the member, and never
+answered. Scenario 46 asserts this gap rather than hiding it.
+
+**Decided 2026-11-08: with high availability off, a secondary instance refuses to start.** The
+secondary sequencer, the secondary matching engine and the secondary publisher each exit at start-up,
+saying that they refused because high availability is off, as the arbiter and the witness already do.
+This is R-0163 in the functional specification.
+
+The reasoning: high availability off is a configuration for development and tests only, and must
+never be deployed in production (the section "High availability disabled" of the functional
+specification). It does not cope with the loss of a machine, so there is nothing for a secondary to
+do: if the primary's machine is lost, the venue stops. Running the venue on the secondary's machine
+with high availability off, which a setting naming the sequencer or the gateways following whichever
+sequencer leads would have made possible, would be coping with the loss of the primary's machine in
+a configuration that has said it will not. Refusing to start makes starting the wrong instance fail
+at once and visibly, where today it fails silently with every order.
+
+**What closing it needs.**
+
+- The refusal in the sequencer, the matching engine and the publisher, when high availability is off
+  and the instance is the secondary.
+- Scenario 46 changed to assert that a secondary sequencer started with high availability off refuses
+  and says why, as scenarios 44 and 45 do for the arbiter and the witness, and the same checked for the
+  matching engine and the publisher. Scenario 47, which starts both sequencers with high availability
+  off and asserts that both lead, changed to assert that the secondary refuses. The comments on both
+  scenarios state the old reasoning and change with them.
+- [BUG-0062](#bug_0062) checked: if no secondary can lead with high availability off, two instances
+  that both led with it off can no longer arise as that entry describes. Close it, or rewrite it with
+  whatever is left.
+
+Related: two instances that both led with high availability off and are later started together with
+it on are [BUG-0062](#bug_0062).
 
 ### BUG-0130: The log's helper keeps only one segment ready, so a slow disk during a burst makes the writing thread wait {#bug_0130}
 

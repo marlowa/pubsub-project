@@ -40,6 +40,10 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
         toml.get_required_except("network.er_listen_port", er_listen_port);
         toml.get_required_except("matching_engine.port", matching_engine_port);
         toml.get_required_except("ha.instance_id", config.instance_id);
+        toml.get_required_except("ha.role", config.ha_role);
+        if (config.ha_role != "primary" && config.ha_role != "secondary") {
+            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: ha.role must be 'primary' or 'secondary', got '" + config.ha_role + "'");
+        }
 
         auto validate_port = [&](int32_t port, const std::string& name) {
             if (port < 1 || port > 65535) {

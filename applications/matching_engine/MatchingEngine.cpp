@@ -180,6 +180,17 @@ int main(int argc, char* argv[]) {
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);
 
+    // With high availability off only the primary of each pair runs. A secondary started then would be an instance that
+    // nothing sends anything to: the venue would accept members' orders and answer none of them. So it refuses, as the
+    // arbiter and the witness do, and says why (R-0163; docs/bug_list.md, BUG-0061).
+    if (!config.ha_enabled && config.ha_role == "secondary") {
+        // TEST CONTRACT -- ha_test.py matches "refusing to start" and "[ha] enabled = false" (scenarios 46 and 47).
+        PUBSUB_LOG_STR((*logger), pubsub_itc_fw::FwLogLevel::Error,
+                       "MatchingEngine: refusing to start -- this venue has [ha] enabled = false in its environment, and this is the secondary instance: with "
+                       "high availability off only the primary of each pair runs. Start the primary, or set [ha] enabled = true and redeploy.");
+        return 1;
+    }
+
     // Background by default: mask the whole process to the shared tier before it
     // creates any thread, so every thread inherits it and the Reactor only has to
     // promote the few that were allocated dedicated cores.

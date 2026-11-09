@@ -127,6 +127,9 @@ struct SequencerConfiguration {
 
     /** @brief Unique integer identifier for this sequencer instance. Lowest wins. */
     int32_t instance_id{1};
+    /// Which instance of its pair this is, "primary" or "secondary", from `[ha] role`, read whether or not high
+    /// availability is on: with it off, the secondary refuses to start (R-0163, BUG-0061).
+    std::string ha_role{"primary"};
 
     /** @brief Host address of the primary arbiter's component listener. */
     std::string arbiter_primary_host{"127.0.0.1"};

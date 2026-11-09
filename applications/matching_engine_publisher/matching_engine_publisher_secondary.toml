@@ -27,6 +27,8 @@ snapshot_interval_seconds = 30
 [ha]
 ha_enabled                      = ${ha_enabled}
 instance_id                     = 2
+# Which instance of the pair this is. With high availability off, the secondary refuses to start (R-0163).
+role                        = "secondary"
 arbiter_primary_host            = "${matching_engine_publisher_secondary_ha_arbiter_primary_host}"
 arbiter_primary_port            = ${matching_engine_publisher_secondary_ha_arbiter_primary_port}
 arbiter_secondary_host          = "${matching_engine_publisher_secondary_ha_arbiter_secondary_host}"

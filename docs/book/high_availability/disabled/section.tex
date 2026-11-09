@@ -91,15 +91,9 @@ configuration does not cope with the loss of a machine.
   answer none of them, which is the failure this section exists to prevent. The
   arbiter and the witness refuse to start in this configuration for the same
   reason.}
-  \uncovered{scenario 46 asserts that a secondary sequencer started alone leads and cannot be reached}
+  \covers{ha_test:46}
+  \covers{ha_test:47}
 \end{requirement}
-
-\begin{gap}{BUG-0061}
-  A secondary sequencer, matching engine or publisher started with high
-  availability off starts and leads. The gateways send only to the primary
-  sequencer, so an order sent while only the secondary sequencer runs is
-  accepted from the member and never answered.
-\end{gap}
 
 \input{high_availability/disabled/recovery}
 \input{high_availability/disabled/authentication}

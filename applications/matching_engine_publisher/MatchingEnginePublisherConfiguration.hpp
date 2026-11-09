@@ -65,6 +65,9 @@ struct MatchingEnginePublisherConfiguration {
 
     bool ha_enabled{false};
     int32_t instance_id{1};
+    /// Which instance of its pair this is, "primary" or "secondary", from `[ha] role`, read whether or not high
+    /// availability is on: with it off, the secondary refuses to start (R-0163, BUG-0061).
+    std::string ha_role{"primary"};
 
     std::string arbiter_primary_host{"127.0.0.1"};
     uint16_t arbiter_primary_port{7200};

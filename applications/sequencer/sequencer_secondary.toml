@@ -80,6 +80,8 @@ orders_held_at_most_seconds = ${shared_orders_held_at_most_seconds}
 [ha]
 ha_enabled                  = ${ha_enabled}
 instance_id                 = 2
+# Which instance of the pair this is. With high availability off, the secondary refuses to start (R-0163).
+role                        = "secondary"
 arbiter_primary_host        = "${sequencer_secondary_ha_arbiter_primary_host}"
 arbiter_primary_port        = ${sequencer_secondary_ha_arbiter_primary_port}
 arbiter_secondary_host      = "${sequencer_secondary_ha_arbiter_secondary_host}"

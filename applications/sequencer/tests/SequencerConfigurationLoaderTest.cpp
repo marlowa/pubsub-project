@@ -38,6 +38,7 @@ port = 11023
 [ha]
 ha_enabled                  = true
 instance_id                 = 1
+role                        = "primary"
 arbiter_primary_host        = "127.0.0.1"
 arbiter_primary_port        = 11200
 arbiter_secondary_host      = "127.0.0.1"
@@ -446,6 +447,34 @@ TEST(SequencerConfigurationLoaderTest, RejectsReservingNoCommandIdentifiers) {
     const auto [ok, err] = toml.load_string(sections + one_gateway);
     ASSERT_TRUE(ok) << err;
     EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
+}
+
+// Which instance of the pair this is must be stated, whether or not high availability is on, because with it off the
+// secondary refuses to start (R-0163, BUG-0061).
+TEST(SequencerConfigurationLoaderTest, ReadsTheRoleWithHighAvailabilityOff) {
+    std::string sections(required_sections);
+    const std::string enabled = "ha_enabled                  = true";
+    sections.replace(sections.find(enabled), enabled.size(), "ha_enabled                  = false");
+    const std::string role = "role                        = \"primary\"";
+    sections.replace(sections.find(role), role.size(), "role                        = \"secondary\"");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    const auto config = sequencer::SequencerConfigurationLoader::load(toml);
+    EXPECT_FALSE(config.ha_enabled);
+    EXPECT_EQ(config.ha_role, "secondary");
+}
+
+TEST(SequencerConfigurationLoaderTest, RejectsAMissingOrUnknownRole) {
+    for (const std::string& replacement : {std::string(""), std::string("role                        = \"tertiary\"")}) {
+        std::string sections(required_sections);
+        const std::string role = "role                        = \"primary\"";
+        sections.replace(sections.find(role), role.size(), replacement);
+        pubsub_itc_fw::TomlConfiguration toml;
+        const auto [ok, err] = toml.load_string(sections + one_gateway);
+        ASSERT_TRUE(ok) << err;
+        EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException) << "with '" << replacement << "'";
+    }
 }
 
 // The leader checks every command against its record of identifiers with high availability off too, so the record's
