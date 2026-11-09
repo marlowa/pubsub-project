@@ -45,13 +45,13 @@ class MessagesWaitingLimit {
     /// The smallest limit allowed, so that reading is never stopped and started for almost every message.
     static constexpr int64_t smallest_limit = 16;
 
-    /// @param[in] limit The most messages that may wait; at least smallest_limit.
     ~MessagesWaitingLimit() = default;
     MessagesWaitingLimit(const MessagesWaitingLimit&) = delete;
     MessagesWaitingLimit& operator=(const MessagesWaitingLimit&) = delete;
     MessagesWaitingLimit(MessagesWaitingLimit&&) = delete;
     MessagesWaitingLimit& operator=(MessagesWaitingLimit&&) = delete;
 
+    /// @param[in] limit The most messages that may wait; at least smallest_limit.
     explicit MessagesWaitingLimit(int64_t limit) : limit_(limit) {
         if (limit < smallest_limit) {
             throw PreconditionAssertion("MessagesWaitingLimit: the limit must be at least 16", __FILE__, __LINE__);
