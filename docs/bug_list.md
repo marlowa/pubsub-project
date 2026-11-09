@@ -274,7 +274,18 @@ not yet written, tens of gigabytes for a catch-up from the start of a busy day.
 The design is [pacing_the_engines_reports.md](availability/pacing_the_engines_reports.md), agreed on 2026-11-09
 with its three decisions: pace on the connection to the leading sequencer only; apply the rule at all times, not only
 during a catch-up; and, when a connection for reports is lost, stop sending on it and log one Error naming the
-commands whose reports may not have been written. While the engine waits it pauses reading its connections from the sequencers, so the
+commands whose reports may not have been written.
+
+**Measured 2026-11-09: the design does not hold the reports waiting to its limit.** The pacing was built
+(`EngineReportPacing`, committed aeff550c, and wired into the engine with each sequencer announcing its role on the
+engine's connection for reports to it, not yet committed) and run in scenario 80's check, with the limit on waiting
+sends set to 16,384. With pacing on, the second engine had at most 34,121 reports not known to be written, against
+the 4,096 that pause the commands, and paused 7 times. With pacing off, it had at most 200,000. Neither run lost a
+report, so the loss was not reproduced either. Section 3.2 of the design assumed that only a few commands would
+already have been read when a pause takes effect. In fact the reactor goes on reading the sequencer's connection into
+the engine thread's queue while that thread is busy, and the framework bounds that queue only for connections carrying
+raw bytes, so tens of thousands of commands are queued ahead of the pause, and the notification that ends it waits
+behind them. A decision on how to bound that queue is with Andrew. While the engine waits it pauses reading its connections from the sequencers, so the
 commands the sequencer goes on sending wait in the kernel and the sequencer's reading thread, which already sends only
 as fast as the connection takes, stops sending.
 
