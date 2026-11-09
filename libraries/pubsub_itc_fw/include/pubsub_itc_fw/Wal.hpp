@@ -286,13 +286,16 @@ class Wal {
         return writer_.segments_filled_inline();
     }
 
-    /**
-     * @brief How many rolls had to wait for a preparation that was still in progress.
-     *
-     * Expected to be zero. See WalWriter.
-     */
-    [[nodiscard]] uint64_t segments_waited_for() const {
-        return writer_.segments_waited_for();
+    /// How many segments the log's helper keeps ready ahead of the one being written; at least one. Before
+    /// open(). See WalWriter::set_segments_kept_ready() and docs/durability/keeping_segments_ready.md.
+    void set_segments_kept_ready(size_t count) {
+        writer_.set_segments_kept_ready(count);
+    }
+
+    /// Where the log says it had to make a segment on the writing thread, or found a short segment when
+    /// opened; the owner logs it at Warning. Before open(). See WalWriter::set_warning_sink().
+    void set_warning_sink(std::function<void(const std::string&)> sink) {
+        writer_.set_warning_sink(std::move(sink));
     }
 
   private:

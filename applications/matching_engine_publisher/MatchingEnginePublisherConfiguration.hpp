@@ -56,6 +56,9 @@ struct MatchingEnginePublisherConfiguration {
     /// guess at a machine-wide location.
     std::string wal_directory;
     size_t wal_segment_size{4 * 1024 * 1024};
+    /// How many segments the WAL's helper keeps ready ahead of the one being written, from the optional
+    /// `[wal] segments_kept_ready`; four when it is absent (docs/durability/keeping_segments_ready.md).
+    size_t wal_segments_kept_ready{4};
     int32_t snapshot_interval_seconds{30};
 
     // HA -- leader-follower via arbiter pool

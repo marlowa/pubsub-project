@@ -185,7 +185,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // finished -- a log line, correlated by hand.
     pubsub_itc_fw::HistogramHandle wal_append_histogram_;
     pubsub_itc_fw::GaugeHandle wal_segments_filled_inline_gauge_;
-    pubsub_itc_fw::GaugeHandle wal_segments_waited_for_gauge_;
 
     // Four points on the order's journey, each recording how much of the round trip had
     // already elapsed when it got here. The sequencer contributes four of the family's

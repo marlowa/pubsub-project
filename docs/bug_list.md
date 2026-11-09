@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 238 |
-| Open | 61 (40 defects, 21 tasks) |
-| Closed | 177 |
+| Open | 60 (39 defects, 21 tasks) |
+| Closed | 178 |
 | Next id | BUG-0239 |
 
 ## Open bugs by severity
 
-12 high, 37 medium, 12 low.
+12 high, 36 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -43,7 +43,6 @@
 | [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
 | [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
 | [BUG-0128](#bug_0128) | medium | defect | Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread |
-| [BUG-0130](#bug_0130) | medium | defect | The log's helper keeps only one segment ready, so a slow disk during a burst makes the writing thread wait |
 | [BUG-0131](#bug_0131) | medium | defect | The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower |
 | [BUG-0132](#bug_0132) | medium | task | Orders still open at the end of the trading day are never cancelled, and their members are never told |
 | [BUG-0134](#bug_0134) | medium | defect | A venue running without a standby says so once, and not at all when no follower is connected |
@@ -810,56 +809,6 @@ designed with them.
 The waiting reports' storage and its limits are to be written up and agreed before any code.
 
 **Principles.** F5 and F6 in `docs/design_principles.md`.
-
-### BUG-0130: The log's helper keeps only one segment ready, so a slow disk during a burst makes the writing thread wait {#bug_0130}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-11 |
-| Recorded | 2026-10-11 |
-| How | Reviewing principle F4 (no order-handling thread waits for the disk) in `docs/design_principles.md`, and reading `WalWriter::ensure_capacity` to see what happens when the helper is late |
-| Impact | If filling the next segment stalls for longer than one segment's lifetime, the sequencer's thread that writes the log waits, and the wait falls on the order being written. In a burst a 4 MiB segment can fill in about a tenth of a second, so a journal stall of a few hundred milliseconds is enough |
-
-**What happens now.** The sequencer's log is a series of segment files, 4 MiB each in the sequencer's
-configuration. Each new segment is filled with zeros when it is created, so that later writes into it
-allocate no disk blocks (BUG-0070). Filling is the one step that can wait for the disk, so the helper
-thread `WalSegmentPrep` fills segment N+1 while the writer appends to segment N. It keeps one segment
-ready, no more. When the current segment is full, `WalWriter::ensure_capacity` does one of three
-things:
-
-1. The helper has finished: the writer takes over the prepared segment, and nothing waits.
-2. The helper is still filling it: the writer spins with `std::this_thread::yield()` in
-   `await_helper` until it finishes, counted by `wal_segments_waited_for`. It cannot create the
-   segment itself, because the helper is writing that very file, and mapping a partly written file
-   makes an ordinary append fail with SIGBUS. This is a wait for another thread, which F2 forbids, and
-   that thread is waiting for the disk.
-3. The helper is not working on it, because it failed, lost its wake-up or could not be started: the
-   writer creates and fills the segment itself, counted by `wal_segments_filled_inline`. Nothing is
-   logged.
-
-In the run recorded under BUG-0070, 686 rolls gave counts of 1 (the first segment at start-up) and 0,
-with about 1.7 seconds between rolls. The risk is a burst of orders together with a slow disk.
-
-**What is wanted.** Agreed with Andrew, 11 October 2026:
-
-1. The helper keeps a configurable number of filled segments ready instead of one, four by default,
-   so that the writer waits only if the disk stalls for longer than it takes to fill that many
-   segments.
-2. When the writer creates a segment itself because the helper has failed, it logs a warning, so that
-   it is treated as an incident and not only counted. The first segment at start-up is not a warning.
-
-**Principle.** F4 in `docs/design_principles.md`: a segment created by the writing thread because
-the helper has failed is the one accepted exception, and waiting for the helper is not accepted.
-
-**Designed and agreed 2026-11-09**:
-[keeping_segments_ready.md](durability/keeping_segments_ready.md). Every segment is filled under a temporary name and
-renamed to its final name only when full, so the writer never has to wait for the helper: if the next segment is
-not ready it makes it itself, under the same rule, and logs a Warning. The helper keeps `segments_kept_ready`
-segments ready, four by default. The rename also closes a hazard found while designing it: a process that dies
-while filling a segment today leaves a short file under the final name, which the next start maps in full, so an
-append past its end would fail with SIGBUS. That was found by reading `WalWriter::create_and_map` and has not been
-reproduced; the design's first step reproduces it.
 
 ### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
 
@@ -2871,6 +2820,57 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0130: The log's helper keeps only one segment ready, so a slow disk during a burst makes the writing thread wait {#bug_0130}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| Fixed | 2026-11-09 -- the WAL's helper keeps `[wal] segments_kept_ready` segments ready, four by default, and the writing thread never waits for it ([keeping_segments_ready.md](durability/keeping_segments_ready.md)). Every segment is filled under a temporary name, `filling_wal_NNNNNN.helper` or `.writer`, and linked to its final name only when full, so a file named `wal_NNNNNN.log` is always complete; if no segment is ready the writer makes the next itself and logs a Warning naming it and how long it took; the writer and the helper pass segments through a ring of slots, each handed over with an atomic flag. At opening, temporary files are deleted and a segment shorter than the segment size is completed with zeros, keeping its records. That closes a hazard found while designing this: a segment left short under its final name was mapped in full on the next start, and an append past its end was killed by SIGBUS, which a death test showed before the fix. The gauge `wal_segments_waited_for` is removed, since the writer no longer waits. 42 WAL tests pass; breaking the writer five ways (short segments left alone, waiting for the helper, passed slots never freed, temporary files kept, one segment kept ready) each made a test fail, the first by SIGBUS; under ThreadSanitizer seven runs of 91 tests reported nothing, and a deliberate race was reported in three runs of three. Building it found two assumptions of one ready segment: three readers matched temporary names beginning `wal_` as segments, and `ha_test.py` read only the newest two files for orders; both corrected. All 1,301 library unit tests and all 103 `ha_test.py` scenarios pass, with the WALs cleared first. The trading-day run the design asks for has not yet been made |
+| How | Reviewing principle F4 (no order-handling thread waits for the disk) in `docs/design_principles.md`, and reading `WalWriter::ensure_capacity` to see what happens when the helper is late |
+| Impact | If filling the next segment stalls for longer than one segment's lifetime, the sequencer's thread that writes the log waits, and the wait falls on the order being written. In a burst a 4 MiB segment can fill in about a tenth of a second, so a journal stall of a few hundred milliseconds is enough |
+
+**What happens now.** The sequencer's log is a series of segment files, 4 MiB each in the sequencer's
+configuration. Each new segment is filled with zeros when it is created, so that later writes into it
+allocate no disk blocks (BUG-0070). Filling is the one step that can wait for the disk, so the helper
+thread `WalSegmentPrep` fills segment N+1 while the writer appends to segment N. It keeps one segment
+ready, no more. When the current segment is full, `WalWriter::ensure_capacity` does one of three
+things:
+
+1. The helper has finished: the writer takes over the prepared segment, and nothing waits.
+2. The helper is still filling it: the writer spins with `std::this_thread::yield()` in
+   `await_helper` until it finishes, counted by `wal_segments_waited_for`. It cannot create the
+   segment itself, because the helper is writing that very file, and mapping a partly written file
+   makes an ordinary append fail with SIGBUS. This is a wait for another thread, which F2 forbids, and
+   that thread is waiting for the disk.
+3. The helper is not working on it, because it failed, lost its wake-up or could not be started: the
+   writer creates and fills the segment itself, counted by `wal_segments_filled_inline`. Nothing is
+   logged.
+
+In the run recorded under BUG-0070, 686 rolls gave counts of 1 (the first segment at start-up) and 0,
+with about 1.7 seconds between rolls. The risk is a burst of orders together with a slow disk.
+
+**What is wanted.** Agreed with Andrew, 11 October 2026:
+
+1. The helper keeps a configurable number of filled segments ready instead of one, four by default,
+   so that the writer waits only if the disk stalls for longer than it takes to fill that many
+   segments.
+2. When the writer creates a segment itself because the helper has failed, it logs a warning, so that
+   it is treated as an incident and not only counted. The first segment at start-up is not a warning.
+
+**Principle.** F4 in `docs/design_principles.md`: a segment created by the writing thread because
+the helper has failed is the one accepted exception, and waiting for the helper is not accepted.
+
+**Designed and agreed 2026-11-09**:
+[keeping_segments_ready.md](durability/keeping_segments_ready.md). Every segment is filled under a temporary name and
+renamed to its final name only when full, so the writer never has to wait for the helper: if the next segment is
+not ready it makes it itself, under the same rule, and logs a Warning. The helper keeps `segments_kept_ready`
+segments ready, four by default. The rename also closes a hazard found while designing it: a process that dies
+while filling a segment today leaves a short file under the final name, which the next start maps in full, so an
+append past its end would fail with SIGBUS. That was found by reading `WalWriter::create_and_map` and has not been
+reproduced; the design's first step reproduces it.
 
 ### BUG-0142: The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader {#bug_0142}
 

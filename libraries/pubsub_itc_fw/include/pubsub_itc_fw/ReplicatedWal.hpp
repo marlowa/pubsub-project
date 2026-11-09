@@ -168,6 +168,9 @@ struct ReplicatedWalConfiguration {
     size_t wal_segment_size{0};
     /// The processors the WAL's helper thread may run on; empty to leave it where it lands.
     std::vector<CpuId> helper_cores;
+    /// How many segments the WAL's helper keeps ready ahead of the one being written
+    /// (docs/durability/keeping_segments_ready.md).
+    size_t segments_kept_ready{WalWriter::default_segments_kept_ready};
     /// False for an instance that runs alone: it leads at once, and every record is committed once written.
     bool ha_enabled{true};
     /// The number of the pair, which every voter in the pair is configured with.

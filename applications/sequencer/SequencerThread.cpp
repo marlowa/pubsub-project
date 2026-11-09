@@ -171,6 +171,7 @@ void SequencerThread::on_initial_event() {
     wal_configuration.owner_name = "SequencerThread";
     wal_configuration.wal_directory = config_.wal_directory;
     wal_configuration.wal_segment_size = config_.wal_segment_size;
+    wal_configuration.segments_kept_ready = config_.wal_segments_kept_ready;
     if (helper_layout_loaded) {
         wal_configuration.helper_cores = helper_layout.background_cores();
         background_cores_ = helper_layout.background_cores();
@@ -293,14 +294,12 @@ void SequencerThread::on_initial_event() {
                    wal_mount_options);
     }
 
-    // Whether the log's next segment is being created ahead of the writer, or the writer is
-    // having to do it. The append histogram says what a commit cost; these two say why. Without
-    // them a tail that fails to improve cannot be told apart from a helper that never kept up.
+    // Whether the log's segments are being created ahead of the writer, or the writer is having
+    // to do it. The append histogram says what a commit cost; this says why. Without it a tail
+    // that fails to improve cannot be told apart from a helper that never kept up.
     wal_segments_filled_inline_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "wal_segments_filled_inline",
         "Log segments the writer created itself instead of adopting one prepared ahead of it. Expected to be 1, for the first segment");
-    wal_segments_waited_for_gauge_ = get_reactor().metrics().register_gauge(
-        "sequencer_thread", "wal_segments_waited_for", "Segment rolls that had to wait for a preparation still in progress. Expected to be 0");
     damaged_record_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "sequencer_wal_damaged_record",
         "The number of a record in the write-ahead log that could not be read when a follower was being caught up, so that the follower "
@@ -1135,7 +1134,6 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         }
         const pubsub_itc_fw::Wal& wal = replicated_wal_->wal();
         wal_segments_filled_inline_gauge_.set(static_cast<double>(wal.segments_filled_inline()));
-        wal_segments_waited_for_gauge_.set(static_cast<double>(wal.segments_waited_for()));
 
         try {
             replicated_wal_->take_snapshot();

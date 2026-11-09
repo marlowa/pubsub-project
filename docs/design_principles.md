@@ -196,31 +196,29 @@ reading them can wait for the disk ([following_the_wal.md](availability/followin
 
 **What checks it.** Check 30 of `scripts/check_standards.py` fails the build on any read of the log in the
 sequencer that is not in its table of permitted reads, `_PERMITTED_WAL_READS`, each entry with its reason.
-Nothing in the build checks the rest of this principle. Two metrics show whether the log's helper keeps pace:
-`wal_segments_waited_for` counts the times the writing thread had to wait for the helper to finish a
-segment, and `wal_segments_filled_inline` counts the segments the writing thread created itself. The
-first should be 0, and the second 1, for the first segment at start-up, which nothing can prepare in
-advance.
+Nothing in the build checks the rest of this principle. The metric `wal_segments_filled_inline` shows
+whether the log's helper keeps pace: it counts the segments the writing thread made itself, and should be
+1, for the first segment at start-up, which nothing can prepare in advance. Each one after the first is
+also logged at Warning.
 
 **Creating log segments.** Each new segment is filled with zeros when it is created, so that later
 writes into it allocate nothing; filling is the one step that can wait for the disk. The helper
 thread does it ahead of the writer, and keeps a configurable number of filled segments ready, four by
-default, so that the writer only waits if the disk stalls for longer than it takes to fill four
-segments with records. If the helper has failed, the writing thread creates and fills the next
-segment itself. That is the one accepted exception to this principle: it is counted, logged as a
-warning, and treated as an incident.
+default (`[wal] segments_kept_ready`). Each is filled under a temporary name and given its final name
+only when full, so the writer never has to wait for the helper: if no segment is ready, because the disk
+has stalled for longer than it takes to fill that many or the helper has failed, the writing thread
+makes the next segment itself. That is the one accepted exception to this principle: it is counted,
+logged as a warning, and treated as an incident
+([keeping_segments_ready.md](durability/keeping_segments_ready.md)).
 
-**Today: broken in two places.**
+**Today: broken in one place.**
 
 - The sequencer's thread still reads its log in the cases its table of permitted reads lists: resends and
   requests for undelivered reports ([BUG-0113](bug_list.md#bug_0113)), the duplicate check
   ([BUG-0122](bug_list.md#bug_0122)), records read back for publishers already handed over
   ([BUG-0171](bug_list.md#bug_0171)), and orders counted as deferred while no matching engine is connected
   ([BUG-0174](bug_list.md#bug_0174)).
-- The log's helper keeps only one segment ready. If it is still filling that segment when the writer
-  needs it, the writer waits for it, spinning until it finishes; and the writer creates a segment
-  itself, if the helper has failed, without logging a warning. Recorded as
-  [BUG-0130](bug_list.md#bug_0130).
+
 
 ### F5. Nothing on the order path allocates from the heap
 

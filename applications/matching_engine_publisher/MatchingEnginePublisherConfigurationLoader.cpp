@@ -56,6 +56,14 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
             throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: wal.segment_size must be positive");
         }
         config.wal_segment_size = static_cast<size_t>(wal_segment_size);
+        if (toml.has_key("wal.segments_kept_ready")) {
+            int64_t segments_kept_ready = 0;
+            toml.get_required_except("wal.segments_kept_ready", segments_kept_ready);
+            if (segments_kept_ready < 1) {
+                throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: wal.segments_kept_ready must be at least 1");
+            }
+            config.wal_segments_kept_ready = static_cast<size_t>(segments_kept_ready);
+        }
         int32_t snapshot_interval_seconds = 0;
         toml.get_required_except("wal.snapshot_interval_seconds", snapshot_interval_seconds);
         if (snapshot_interval_seconds <= 0) {

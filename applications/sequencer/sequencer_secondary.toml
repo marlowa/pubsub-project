@@ -132,6 +132,10 @@ tls_ca_path          = "${sequencer_secondary_operator_tls_ca}"
 [wal]
 directory                 = "${sequencer_secondary_wal_directory}"
 segment_size              = 4194304
+# How many segments the WAL's helper keeps filled and ready ahead of the one being written, so that
+# the writing thread makes one itself only if the disk stalls for as long as filling this many takes
+# (docs/durability/keeping_segments_ready.md).
+segments_kept_ready       = 4
 snapshot_interval_seconds = 30
 
 # How many records, and how many bytes of records, the leader keeps in memory from when it writes each one

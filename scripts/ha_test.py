@@ -6793,19 +6793,31 @@ def block_confirmation(flag: Path) -> Path:
     return flag.with_suffix(".blocking")
 
 
+def _segment_holds_a_record(segment: Path) -> bool:
+    """Whether a WAL segment file begins with a record, by the record marker in its first four bytes. A segment kept ready
+    ahead of the one being written is all zeros."""
+    with open(segment, "rb") as stream:
+        return stream.read(4) == (0xFEEDFACE).to_bytes(4, "little")
+
+
 def stop_leader_once_it_has_written(leader: subprocess.Popen, wal_dir: Path, cl_ord_ids: list[str]) -> bool:
     """Stops the leading sequencer with SIGSTOP as soon as its WAL holds every one of cl_ord_ids, or after 80 ms.
 
     inject_order's "sent" line means only that the orders are on their way, so stopping the leader at once can beat it
     to reading the last of them, and it then never writes it. The leader holds orders at least the follower's
     acknowledgement timeout, 100 ms, before a voter can confirm that it may act without its follower, so waiting up to
-    80 ms still stops it before it acts on them. Only the newest two segments are read, so that each look is quick.
+    80 ms still stops it before it acts on them. Only the newest two segments that hold records are read, so that each
+    look is quick: the WAL keeps several empty segments ready beyond the one being written
+    (docs/durability/keeping_segments_ready.md), so the newest files hold nothing.
 
     Returns whether the WAL held every order when the leader was stopped.
     """
     def written() -> bool:
-        newest = sorted(wal_dir.glob("wal_*.log"))[-2:]
-        data = b"".join(path.read_bytes() for path in newest)
+        segments = sorted(wal_dir.glob("wal_*.log"))
+        newest_written = len(segments)
+        while newest_written > 0 and not _segment_holds_a_record(segments[newest_written - 1]):
+            newest_written -= 1
+        data = b"".join(path.read_bytes() for path in segments[max(0, newest_written - 2):newest_written])
         return all(cl_ord_id.encode() in data for cl_ord_id in cl_ord_ids)
 
     give_up_at = time.monotonic() + 0.080

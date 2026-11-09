@@ -1,6 +1,12 @@
 # Keeping WAL segments ready {#keeping_segments_ready}
 
-**Status: designed and agreed, not built.** This is the design for [BUG-0130](../bug_list.md#bug_0130).
+**Status: built (BUG-0130 closed 9 November 2026).** This is the design for [BUG-0130](../bug_list.md#bug_0130). As
+built, two details differ from the text below. The final name is given with `link()`, which fails if the name
+exists, rather than `renameat2` with `RENAME_NOREPLACE`: the same effect, without depending on a newer call. And the
+temporary names are `filling_wal_NNNNNN.helper` and `filling_wal_NNNNNN.writer`, not `wal_NNNNNN.filling`: three
+readers (`WalReader`, `WalCursor` and `WalCommandSearch`) find segments with `sscanf("wal_%06" ... ".log")`, which
+matches any name that merely begins like a segment's, and a temporary name beginning `wal_` was taken for the segment
+itself, which two random replication tests showed by failing to open it. Section 3.6 missed those three.
 It builds what was agreed with Andrew on 11 October 2026; the two additions in section 6 were agreed on 9
 November 2026.
 

@@ -6,10 +6,13 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <thread>
 #include <vector>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/eventfd.h>
@@ -45,21 +48,37 @@ static_assert(sizeof(WalEntryHeader) == 24, "WalEntryHeader must be 24 bytes");
 
 WalWriter::~WalWriter() {
     stop_helper();
-    discard_prepared();
+    release_all_slots();
     close_segment();
 }
 
 void WalWriter::close() {
     stop_helper();
-    discard_prepared();
+    release_all_slots();
     close_segment();
-    prep_state_.store(PrepState::Idle, std::memory_order_release);
+}
+
+void WalWriter::set_segments_kept_ready(size_t count) {
+    if (count < 1) {
+        throw PreconditionAssertion("WalWriter: segments_kept_ready must be at least 1", __FILE__, __LINE__);
+    }
+    segments_kept_ready_ = count;
 }
 
 // Path helper
 
 std::string WalWriter::segment_path(uint64_t seg_num) const {
     return fmt::format("{}/wal_{:06}.log", directory_, seg_num);
+}
+
+std::string WalWriter::temporary_path(uint64_t seg_num, const char* ending) const {
+    return fmt::format("{}/{}wal_{:06}.{}", directory_, temporary_prefix, seg_num, ending);
+}
+
+void WalWriter::warn(const std::string& message) const {
+    if (warn_) {
+        warn_(message);
+    }
 }
 
 void WalWriter::open(const std::string& directory, size_t segment_size, WalPosition start) {
@@ -75,45 +94,70 @@ void WalWriter::open(const std::string& directory, size_t segment_size, WalPosit
         throw PubSubItcException("WalWriter: " + mkdir_err);
     }
 
+    // Before anything maps a segment: a temporary file is a fill cut short, and a short segment can
+    // only have been left by a writer that filled segments under their final names. Mapped in full, a
+    // short segment makes an append past its end fail with SIGBUS.
+    remove_temporary_files();
+    complete_short_segments(start.segment);
+
     current_segment_ = start.segment;
     write_offset_ = start.offset;
 
-    open_segment(current_segment_);
+    // Nothing can prepare the first segment, so that one is always made or opened by the writer.
+    ++segments_filled_inline_;
+    adopt(create_and_map(current_segment_, writer_temporary_ending));
 
-    // Nothing can prepare the first segment, so that one is always made by the writer. From
-    // here on the helper stays a segment ahead, and has the whole life of the current segment
-    // to do it in.
+    slots_ = std::make_unique<Slot[]>(segments_kept_ready_);
+    writing_.store(current_segment_, std::memory_order_release);
+    prepared_through_.store(current_segment_, std::memory_order_release);
+    helper_failed_.store(false, std::memory_order_release);
     if (preparation_enabled_) {
         start_helper();
-        request_preparation(current_segment_ + 1);
     }
 }
 
-// open_segment() -- open or create a segment for writing
-
-// create_and_map() -- the whole mechanism, with no thread in it.
+// create_and_map() -- the whole mechanism for one segment, with no thread in it.
 //
-// Called by the writer for the first segment and whenever the helper was not ready, and by the
-// helper for every other segment. It touches nothing the other thread can see: a segment number
-// in, a descriptor and a mapping out.
+// Called by the writer for the first segment and whenever the helper had none ready, and by the
+// helper for every other segment. A file under the final name is always complete, because a new
+// segment is filled under a temporary name and only then linked to its final name; link() fails if
+// the name already exists, so if the writer and the helper both make the same segment, the first
+// to link wins and the other opens that file.
 
-WalWriter::OpenedSegment WalWriter::create_and_map(uint64_t seg_num) {
+WalWriter::OpenedSegment WalWriter::create_and_map(uint64_t seg_num, const char* temporary_ending) {
     const std::string path = segment_path(seg_num);
     OpenedSegment opened;
     opened.seg_num = seg_num;
 
-    // Try exclusive create first: succeeds only for a brand-new file.
-    opened.fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL, 0644);
-    if (opened.fd >= 0) {
-        fill_new_segment(opened.fd, path);
-    } else if (errno == EEXIST) {
-        // Resuming after replay, or adopting a segment prepared before the last shutdown.
-        opened.fd = ::open(path.c_str(), O_RDWR, 0644);
-        if (opened.fd < 0) {
+    opened.fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC, 0644);
+    if (opened.fd < 0) {
+        if (errno != ENOENT) {
             throw PubSubItcException("WalWriter: open(" + path + "): " + std::strerror(errno));
         }
-    } else {
-        throw PubSubItcException("WalWriter: open(" + path + "): " + std::strerror(errno));
+        const std::string temporary = temporary_path(seg_num, temporary_ending);
+        ::unlink(temporary.c_str());
+        const int fd = ::open(temporary.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+        if (fd < 0) {
+            throw PubSubItcException("WalWriter: open(" + temporary + "): " + std::strerror(errno));
+        }
+        fill_new_segment(fd, temporary);
+        if (::link(temporary.c_str(), path.c_str()) == 0) {
+            ::unlink(temporary.c_str());
+            opened.fd = fd;
+        } else if (errno == EEXIST) {
+            // The other thread linked its copy first, and that one is complete.
+            ::close(fd);
+            ::unlink(temporary.c_str());
+            opened.fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC, 0644);
+            if (opened.fd < 0) {
+                throw PubSubItcException("WalWriter: open(" + path + "): " + std::strerror(errno));
+            }
+        } else {
+            const std::string reason = std::strerror(errno);
+            ::close(fd);
+            ::unlink(temporary.c_str());
+            throw PubSubItcException("WalWriter: link(" + temporary + ", " + path + "): " + reason);
+        }
     }
 
     void* ptr = ::mmap(nullptr, segment_size_, PROT_READ | PROT_WRITE, MAP_SHARED, opened.fd, 0);
@@ -127,6 +171,16 @@ WalWriter::OpenedSegment WalWriter::create_and_map(uint64_t seg_num) {
     return opened;
 }
 
+void WalWriter::release(OpenedSegment& segment) {
+    if (segment.mmap_ptr != nullptr) {
+        ::munmap(segment.mmap_ptr, segment_size_);
+    }
+    if (segment.fd >= 0) {
+        ::close(segment.fd);
+    }
+    segment = OpenedSegment{};
+}
+
 void WalWriter::adopt(const OpenedSegment& segment) {
     close_segment();
     fd_ = segment.fd;
@@ -134,9 +188,69 @@ void WalWriter::adopt(const OpenedSegment& segment) {
     current_segment_ = segment.seg_num;
 }
 
-void WalWriter::open_segment(uint64_t seg_num) {
-    ++segments_filled_inline_;
-    adopt(create_and_map(seg_num));
+void WalWriter::remove_temporary_files() {
+    DIR* dir = ::opendir(directory_.c_str());
+    if (dir == nullptr) {
+        return;
+    }
+    std::vector<std::string> temporary;
+    while (const dirent* entry = ::readdir(dir)) {
+        const std::string name(entry->d_name);
+        if (name.rfind(std::string(temporary_prefix) + "wal_", 0) == 0) {
+            temporary.push_back(name);
+        }
+    }
+    ::closedir(dir);
+    for (const std::string& name : temporary) {
+        ::unlink((directory_ + "/" + name).c_str());
+    }
+}
+
+void WalWriter::complete_short_segments(uint64_t from) {
+    DIR* dir = ::opendir(directory_.c_str());
+    if (dir == nullptr) {
+        return;
+    }
+    std::vector<uint64_t> segments;
+    while (const dirent* entry = ::readdir(dir)) {
+        const std::string name(entry->d_name);
+        if (name.size() != 14 || name.compare(0, 4, "wal_") != 0 || name.compare(10, 4, ".log") != 0) {
+            continue;
+        }
+        char* parsed_end = nullptr;
+        const unsigned long long number = std::strtoull(name.c_str() + 4, &parsed_end, 10);
+        if (parsed_end == name.c_str() + 10 && number >= from) {
+            segments.push_back(number);
+        }
+    }
+    ::closedir(dir);
+    for (const uint64_t segment : segments) {
+        const std::string path = segment_path(segment);
+        struct stat info {};
+        if (::stat(path.c_str(), &info) != 0 || static_cast<size_t>(info.st_size) >= segment_size_) {
+            continue;
+        }
+        const int fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+        if (fd < 0) {
+            throw PubSubItcException("WalWriter: open(" + path + "): " + std::strerror(errno));
+        }
+        std::vector<uint8_t> zeros(fill_chunk_bytes, 0);
+        size_t offset = static_cast<size_t>(info.st_size);
+        while (offset < segment_size_) {
+            const size_t chunk = std::min(segment_size_ - offset, zeros.size());
+            const ssize_t written = ::pwrite(fd, zeros.data(), chunk, static_cast<off_t>(offset));
+            if (written <= 0) {
+                const std::string reason = std::strerror(errno);
+                ::close(fd);
+                throw PubSubItcException("WalWriter: completing " + path + ": " + reason);
+            }
+            offset += static_cast<size_t>(written);
+        }
+        ::close(fd);
+        warn(fmt::format("WalWriter: {} was {} bytes, shorter than the segment size of {}: a process died while filling it. Completed with zeros, "
+                         "keeping what it held",
+                         path, info.st_size, segment_size_));
+    }
 }
 
 void WalWriter::fill_new_segment(int fd, const std::string& path) {
@@ -183,9 +297,9 @@ void WalWriter::fill_new_segment(int fd, const std::string& path) {
     }
 }
 
-// The helper waits on an eventfd, creates one segment when asked, and publishes it. The writer
-// reads what it published only after seeing Ready, and writes requested_segment_ only while the
-// state is Idle or Failed, so the two never touch the same field at the same time.
+// The helper. It keeps up to segments_kept_ready segments ready ahead of the one being written, each in
+// the slot for its number, and sleeps on an eventfd when it has nothing to do. The writer wakes it at
+// each roll.
 
 void WalWriter::start_helper() {
     helper_wake_fd_ = ::eventfd(0, EFD_CLOEXEC);
@@ -195,6 +309,7 @@ void WalWriter::start_helper() {
         preparation_enabled_ = false;
         return;
     }
+    stopping_.store(false, std::memory_order_release);
     helper_.start([this]() { helper_loop(); });
     helper_running_ = true;
 }
@@ -208,7 +323,7 @@ void WalWriter::stop_helper() {
         return;
     }
 
-    prep_state_.store(PrepState::Stopping, std::memory_order_release);
+    stopping_.store(true, std::memory_order_release);
     wake_helper();
 
     // A generous timeout: the helper can be inside a write of one segment, and on a filesystem
@@ -221,50 +336,18 @@ void WalWriter::stop_helper() {
     helper_wake_fd_ = -1;
 }
 
-void WalWriter::request_preparation(uint64_t seg_num) {
-    if (!helper_running_) {
-        return;
-    }
-
-    // Only ever one request outstanding, and only issued from a state in which the helper is
-    // not looking at requested_segment_. Writing it while the helper was reading it was a real
-    // race, found by ThreadSanitizer and by nothing else: the functional tests passed.
-    const PrepState state = prep_state_.load(std::memory_order_acquire);
-    if (state != PrepState::Idle && state != PrepState::Failed) {
-        return;
-    }
-
-    requested_segment_ = seg_num;
-    prep_state_.store(PrepState::Requested, std::memory_order_release);
-    wake_helper();
-}
-
-// await_helper() -- waits for a preparation already in progress to finish.
-//
-// Reached only when the helper has not kept pace, which in steady state does not happen: it has
-// the whole life of a segment to prepare the next one. Waiting is not a cost this adds. If the
-// writer gave up and made the segment itself it would pay the same block allocation, and it
-// would be creating the very file the helper is still writing -- which mmaps a partly written
-// file and makes an ordinary append a SIGBUS. Waiting is therefore both safer and no slower.
-
-void WalWriter::await_helper() {
-    ++segments_waited_for_;
-    while (prep_state_.load(std::memory_order_acquire) == PrepState::Requested) {
-        std::this_thread::yield();
-    }
-}
-
 // wake_helper() -- one eventfd write.
 //
 // A failure here cannot be reported from where it happens and must not throw: the writer calls
-// this at roll-over, on the order path. The consequence of a lost wake is that the helper stays
-// asleep and the writer makes the next segment itself, which segments_filled_inline() counts.
+// this at roll-over, on the order path. The consequence of a lost wake is that the helper sleeps
+// until the next one and the writer may make a segment itself, which segments_filled_inline()
+// counts and the warning function reports.
 
 void WalWriter::wake_helper() {
     const uint64_t one = 1;
-    const ssize_t written = ::write(helper_wake_fd_, &one, sizeof(one));
-    if (written != static_cast<ssize_t>(sizeof(one))) {
-        prep_state_.store(PrepState::Failed, std::memory_order_release);
+    if (::write(helper_wake_fd_, &one, sizeof(one)) != static_cast<ssize_t>(sizeof(one))) {
+        // A lost wake: see above. Nothing to do here.
+        return;
     }
 }
 
@@ -274,16 +357,11 @@ void WalWriter::helper_loop() {
     //
     // It names itself. Linux gives a new thread the name of the thread that created it, so
     // without this the helper appears in every diagnostic as a second thread with the same name
-    // as the component's application thread -- two threads called SequencerThread, on the same
-    // processor, one of them the one whose latency matters. That is confusing when reading a
-    // report and actively misleading when reading a profile.
+    // as the component's application thread.
     //
     // It puts itself where it belongs. A new thread also inherits the processor mask of its
     // creator, and the log is opened by the application thread, by then pinned to a processor
-    // reserved for the order path. Left alone the helper does its file opening, truncating and
-    // memory mapping there, sharing that processor with the thread that sequences every order.
-    // Where no processors were named, it is left where it lands: a test, or any use without a
-    // layout, has nowhere better to put it.
+    // reserved for the order path. Where no processors were named, it is left where it lands.
     pthread_setname_np(pthread_self(), "WalSegmentPrep");
     if (!helper_cores_.empty() && !apply_thread_affinity_mask(0, helper_cores_)) {
         // Not fatal, and not worth stopping a log for. The helper still works; it is merely in
@@ -291,94 +369,84 @@ void WalWriter::helper_loop() {
         helper_placement_failed_ = true;
     }
 
-    while (true) {
-        uint64_t drained = 0;
-        const ssize_t got = ::read(helper_wake_fd_, &drained, sizeof(drained));
-        if (got != static_cast<ssize_t>(sizeof(drained))) {
-            if (errno == EINTR) {
-                continue;
+    const uint64_t kept = segments_kept_ready_;
+    while (!stopping_.load(std::memory_order_acquire)) {
+        const uint64_t writing = writing_.load(std::memory_order_acquire);
+        const uint64_t next = std::max(prepared_through_.load(std::memory_order_relaxed), writing) + 1;
+        Slot& slot = slots_[next % kept];
+        // Nothing to do while enough are ready, or while the slot still holds a segment the writer
+        // has not yet freed; the writer wakes this thread at its next roll.
+        if (next > writing + kept || slot.full.load(std::memory_order_acquire)) {
+            uint64_t drained = 0;
+            const ssize_t got = ::read(helper_wake_fd_, &drained, sizeof(drained));
+            if (got != static_cast<ssize_t>(sizeof(drained)) && errno != EINTR) {
+                return;
             }
-            return;
-        }
-
-        const PrepState state = prep_state_.load(std::memory_order_acquire);
-        if (state == PrepState::Stopping) {
-            return;
-        }
-        if (state != PrepState::Requested) {
             continue;
         }
-
-        // requested_segment_ was written before the release-store of Requested that this thread
-        // has just acquired, so it is visible and will not change until the state leaves Ready.
-        const uint64_t wanted = requested_segment_;
-        PrepState outcome = PrepState::Ready;
-        try {
-            prepared_ = create_and_map(wanted);
-        } catch (const std::exception& e) {
-            // Never let an exception cross a thread boundary. The writer finds Failed at the
-            // next roll, makes the segment itself, and throws there if it cannot -- so the
-            // failure is reported on the thread that can do something about it.
-            failure_ = e.what();
-            outcome = PrepState::Failed;
+        OpenedSegment made;
+        if (helper_delay_for_tests_.count() > 0) {
+            std::this_thread::sleep_for(helper_delay_for_tests_);
         }
+        try {
+            made = create_and_map(next, helper_temporary_ending);
+        } catch (const std::exception& e) {
+            // Never let an exception cross a thread boundary. The writer finds no segment ready,
+            // makes it itself, says why, and throws there if it cannot.
+            if (!helper_failed_.load(std::memory_order_acquire)) {
+                helper_failure_ = e.what();
+                helper_failed_.store(true, std::memory_order_release);
+            }
+            // Waits for the writer's next roll before trying again; a failed read is the same as a wake.
+            uint64_t drained = 0;
+            if (::read(helper_wake_fd_, &drained, sizeof(drained)) < 0) {
+                continue;
+            }
+            continue;
+        }
+        // Published even if the writer has passed it meanwhile: a slot the writer has passed is freed
+        // by the writer at its next roll, and only the writer frees a full slot.
+        slot.segment = made;
+        slot.full.store(true, std::memory_order_release);
+        prepared_through_.store(next, std::memory_order_release);
+    }
+}
 
-        // Publish only if nobody asked us to stop while we were working. A plain store here
-        // would overwrite Stopping, and the next read() would then block forever with no wake
-        // left to come: the destructor would wait out its whole join timeout on every close.
-        PrepState expected = PrepState::Requested;
-        if (!prep_state_.compare_exchange_strong(expected, outcome, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            if (prepared_.mmap_ptr != nullptr) {
-                ::munmap(prepared_.mmap_ptr, segment_size_);
-            }
-            if (prepared_.fd >= 0) {
-                ::close(prepared_.fd);
-            }
-            prepared_ = OpenedSegment{};
-            return;
+void WalWriter::release_passed_slots(uint64_t through) {
+    for (size_t index = 0; index < segments_kept_ready_; ++index) {
+        Slot& slot = slots_[index];
+        if (slot.full.load(std::memory_order_acquire) && slot.segment.seg_num <= through) {
+            release(slot.segment);
+            slot.full.store(false, std::memory_order_release);
         }
     }
 }
 
-void WalWriter::release_prepared_if_ready() {
-    // Only safe while the state is Ready: that is the one state in which the helper has
-    // finished with prepared_ and is waiting, so this thread may touch it. In any other state
-    // the helper may be writing those fields, and the segment it eventually publishes is
-    // released at a later roll, or by discard_prepared() at close.
-    if (prep_state_.load(std::memory_order_acquire) != PrepState::Ready) {
+void WalWriter::release_all_slots() {
+    if (slots_ == nullptr) {
         return;
     }
-    discard_prepared();
-    prep_state_.store(PrepState::Idle, std::memory_order_release);
-}
-
-void WalWriter::discard_prepared() {
-    // Frees whatever prepared_ holds, whatever the state says. Called at close, after the
-    // helper has been joined, so there is no other thread to disagree with -- and it must not
-    // consult the state, because stop_helper() leaves it at Stopping while a segment the helper
-    // published just beforehand is still sitting in prepared_ with a descriptor and a mapping.
-    if (prepared_.mmap_ptr != nullptr) {
-        ::munmap(prepared_.mmap_ptr, segment_size_);
+    for (size_t index = 0; index < segments_kept_ready_; ++index) {
+        Slot& slot = slots_[index];
+        if (slot.full.load(std::memory_order_acquire)) {
+            release(slot.segment);
+            slot.full.store(false, std::memory_order_release);
+        }
     }
-    if (prepared_.fd >= 0) {
-        ::close(prepared_.fd);
-    }
-    prepared_ = OpenedSegment{};
 }
 
 bool WalWriter::wait_until_prepared(std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-        const PrepState state = prep_state_.load(std::memory_order_acquire);
-        if (state == PrepState::Ready) {
+        if (prepared_through_.load(std::memory_order_acquire) >= writing_.load(std::memory_order_acquire) + segments_kept_ready_) {
             return true;
         }
-        if (state == PrepState::Failed) {
+        if (helper_failed_.load(std::memory_order_acquire)) {
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
-    return prep_state_.load(std::memory_order_acquire) == PrepState::Ready;
+    return prepared_through_.load(std::memory_order_acquire) >= writing_.load(std::memory_order_acquire) + segments_kept_ready_;
 }
 
 void WalWriter::close_segment() {
@@ -403,28 +471,39 @@ void WalWriter::ensure_capacity(size_t bytes_needed) {
     }
 
     const uint64_t next = current_segment_ + 1;
-
-    // The helper owns requested_segment_ and prepared_ for as long as the state says Requested,
-    // and owns the file it is building. Nothing here may touch any of them until it is done.
-    if (prep_state_.load(std::memory_order_acquire) == PrepState::Requested) {
-        await_helper();
-    }
-
-    if (prep_state_.load(std::memory_order_acquire) == PrepState::Ready && prepared_.seg_num == next) {
+    Slot* slot = slots_ == nullptr ? nullptr : &slots_[next % segments_kept_ready_];
+    if (helper_running_ && slot != nullptr && slot->full.load(std::memory_order_acquire) && slot->segment.seg_num == next) {
         // The common path, and the point of the whole arrangement: no open, no fill, no mmap on
         // this thread, so nothing here can wait on the filesystem.
-        adopt(prepared_);
-        prepared_ = OpenedSegment{};
-        prep_state_.store(PrepState::Idle, std::memory_order_release);
+        adopt(slot->segment);
+        slot->segment = OpenedSegment{};
+        slot->full.store(false, std::memory_order_release);
     } else {
-        // Not ready. Make it here rather than wait, and never append into a segment whose
-        // blocks do not exist -- that is the defect this exists to prevent, not a fallback.
-        release_prepared_if_ready();
-        open_segment(next);
+        // None ready. Make it here rather than wait for the helper, and never append into a segment
+        // whose blocks do not exist -- that is the defect this exists to prevent. This is the one
+        // wait for the disk an order-handling thread may make (principle F4), so it is said.
+        const auto began = std::chrono::steady_clock::now();
+        adopt(create_and_map(next, writer_temporary_ending));
+        ++segments_filled_inline_;
+        if (helper_running_) {
+            const auto took = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - began).count();
+            const bool failed = helper_failed_.load(std::memory_order_acquire);
+            warn(fmt::format("WalWriter: segment {} in {} was made by the writing thread, taking {} us, because none of the {} segment(s) kept ready "
+                             "was ready{}",
+                             next, directory_, took, segments_kept_ready_, failed ? " -- the helper failed: " + helper_failure_ : ""));
+        }
     }
 
+    // Any ready segment the writer has now passed, including one the helper finished just after the
+    // writer made it here, is freed, so that its slot can take another.
+    if (slots_ != nullptr) {
+        release_passed_slots(next);
+    }
     write_offset_ = 0;
-    request_preparation(current_segment_ + 1);
+    writing_.store(next, std::memory_order_release);
+    if (helper_running_) {
+        wake_helper();
+    }
 }
 
 // append() -- the commit act

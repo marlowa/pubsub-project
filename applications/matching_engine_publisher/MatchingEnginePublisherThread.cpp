@@ -75,7 +75,10 @@ void MatchingEnginePublisherThread::on_initial_event() {
     const auto [helper_layout_loaded, helper_layout_error] = helper_layout.load(config_.cpu_layout_file, config_.cpu_layout_component);
     if (helper_layout_loaded) {
         wal_.set_helper_cores(helper_layout.background_cores());
-    } else {
+    }
+    wal_.set_segments_kept_ready(config_.wal_segments_kept_ready);
+    wal_.set_warning_sink([this](const std::string& message) { PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: {}", message); });
+    if (!helper_layout_loaded) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "MepThread: could not read the CPU layout, so the log's helper thread stays where it lands: {}", helper_layout_error);
     }

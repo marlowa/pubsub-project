@@ -3,10 +3,13 @@
 
 #include <array>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -535,6 +538,177 @@ TEST_F(WalTest, AnUnusedPreparedSegmentReadsAsEmptyAndIsResumedInto) {
     ASSERT_EQ(after.size(), 2U);
     EXPECT_EQ(after[0], 7);
     EXPECT_EQ(after[1], 8);
+}
+
+// BUG-0130: a segment left short under its final name, as a process that died while filling it would leave it under
+// the writer that filled segments in place, was mapped in full on the next start, and an append past its end was killed
+// by SIGBUS. Shown with this same setup on 2026-11-09, as a test that expected the writer to die and passed. Now open()
+// completes the segment with zeros, keeps what it held, and says so.
+TEST_F(WalTest, AShortSegmentFoundAtOpenIsCompletedAndAppendsPastItsOldEndSucceed) {
+    constexpr size_t big_segment = 64 * 1024;
+    {
+        const int fd = ::open((dir_ + "/wal_000000.log").c_str(), O_RDWR | O_CREAT | O_EXCL, 0644);
+        ASSERT_GE(fd, 0);
+        std::vector<uint8_t> zeros(4096, 0);
+        ASSERT_EQ(::write(fd, zeros.data(), zeros.size()), static_cast<ssize_t>(zeros.size()));
+        ::close(fd);
+    }
+    std::vector<std::string> warnings;
+    {
+        WalWriter w;
+        w.set_warning_sink([&warnings](const std::string& message) { warnings.push_back(message); });
+        w.open(dir_, big_segment, {0, 0});
+        const std::vector<uint8_t> payload(200, 0x11u);
+        for (int i = 0; i < 100; ++i) {
+            w.append(i, payload.data(), payload.size());
+        }
+    }
+    struct stat info {};
+    ASSERT_EQ(::stat((dir_ + "/wal_000000.log").c_str(), &info), 0);
+    EXPECT_EQ(static_cast<size_t>(info.st_size), big_segment);
+    ASSERT_EQ(warnings.size(), 1U);
+    EXPECT_NE(warnings[0].find("shorter than the segment size"), std::string::npos) << warnings[0];
+    std::vector<int64_t> seen;
+    static_cast<void>(WalReader::replay(dir_, {0, 0}, [&](int64_t id, const void*, size_t) { seen.push_back(id); }));
+    ASSERT_EQ(seen.size(), 100U);
+    EXPECT_EQ(seen.back(), 99);
+}
+
+TEST_F(WalTest, AfterOpeningTheKeptNumberOfCompleteSegmentsAreReadyAhead) {
+    WalWriter w;
+    w.set_segments_kept_ready(4);
+    w.open(dir_, small_segment_size, {0, 0});
+    ASSERT_TRUE(w.wait_until_prepared(std::chrono::seconds{5})) << "the helper did not make four segments ready";
+    for (int seg = 1; seg <= 4; ++seg) {
+        struct stat info {};
+        const std::string path = fmt::format("{}/wal_{:06}.log", dir_, seg);
+        ASSERT_EQ(::stat(path.c_str(), &info), 0) << path;
+        EXPECT_EQ(static_cast<size_t>(info.st_size), small_segment_size) << path;
+        EXPECT_GE(info.st_blocks, static_cast<blkcnt_t>(small_segment_size / 512)) << path << " is sparse";
+    }
+    EXPECT_FALSE(std::filesystem::exists(fmt::format("{}/wal_{:06}.log", dir_, 5))) << "more than four were made ready";
+}
+
+TEST_F(WalTest, ManyRollsTakeReadySegmentsAndMakeNoneOnTheWritingThread) {
+    WalWriter w;
+    std::vector<std::string> warnings;
+    w.set_warning_sink([&warnings](const std::string& message) { warnings.push_back(message); });
+    w.open(dir_, small_segment_size, {0, 0});
+    const std::vector<uint8_t> payload(16, 0xABu);
+    for (int roll = 1; roll <= 20; ++roll) {
+        ASSERT_TRUE(w.wait_until_prepared(std::chrono::seconds{5}));
+        while (w.current_position().segment < static_cast<uint64_t>(roll)) {
+            w.append(roll, payload.data(), payload.size());
+        }
+    }
+    EXPECT_EQ(w.segments_filled_inline(), 1U) << "the writer made a segment itself";
+    EXPECT_TRUE(warnings.empty()) << warnings.front();
+}
+
+// The writer never waits for the helper: with the helper made as slow as a stalled disk, each roll makes its segment on
+// the writing thread at once, and says so.
+TEST_F(WalTest, WhenTheHelperIsSlowTheWriterMakesTheSegmentItselfWithoutWaiting) {
+    std::vector<std::string> warnings;
+    size_t appended = 0;
+    const auto before = std::chrono::steady_clock::now();
+    {
+        WalWriter w;
+        w.set_segments_kept_ready(2);
+        w.delay_helper_for_tests(std::chrono::milliseconds{3000});
+        w.set_warning_sink([&warnings](const std::string& message) { warnings.push_back(message); });
+        w.open(dir_, small_segment_size, {0, 0});
+        const std::vector<uint8_t> payload(16, 0xCDu);
+        while (w.current_position().segment < 5) {
+            w.append(1, payload.data(), payload.size());
+            ++appended;
+        }
+        EXPECT_LT(std::chrono::steady_clock::now() - before, std::chrono::milliseconds{1000}) << "the rolls waited for the helper";
+        EXPECT_EQ(w.segments_filled_inline(), 6U);
+        ASSERT_EQ(warnings.size(), 5U);
+        EXPECT_NE(warnings[0].find("was made by the writing thread"), std::string::npos) << warnings[0];
+    }
+    std::vector<int64_t> seen;
+    static_cast<void>(WalReader::replay(dir_, {0, 0}, [&](int64_t id, const void*, size_t) { seen.push_back(id); }));
+    EXPECT_EQ(seen.size(), appended);
+}
+
+// The writer makes a segment while the helper is making the same one: whichever links its file first wins, the other
+// opens that file, nothing is mapped while it is being filled, the records read back intact, no temporary file is left,
+// and no descriptor leaks.
+TEST_F(WalTest, WhenTheWriterAndTheHelperMakeTheSameSegmentRecordsAndDescriptorsAreIntact) {
+    const auto open_descriptors = []() {
+        size_t count = 0;
+        for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+            (void)entry;
+            ++count;
+        }
+        return count;
+    };
+    const size_t descriptors_before = open_descriptors();
+    constexpr int record_count = 3000;
+    {
+        WalWriter w;
+        w.set_segments_kept_ready(2);
+        w.delay_helper_for_tests(std::chrono::milliseconds{1});
+        w.open(dir_, small_segment_size, {0, 0});
+        std::vector<uint8_t> payload(24, 0);
+        for (int i = 0; i < record_count; ++i) {
+            payload[0] = static_cast<uint8_t>(i & 0xFF);
+            w.append(i, payload.data(), payload.size());
+        }
+        EXPECT_GT(w.segments_filled_inline(), 1U) << "the writer never had to make a segment itself, so the race was not exercised";
+    }
+    EXPECT_LE(open_descriptors(), descriptors_before) << "a segment's descriptor was not closed";
+    std::vector<int64_t> seen;
+    static_cast<void>(WalReader::replay(dir_, {0, 0}, [&](int64_t id, const void*, size_t) { seen.push_back(id); }));
+    ASSERT_EQ(seen.size(), static_cast<size_t>(record_count));
+    for (int i = 0; i < record_count; ++i) {
+        ASSERT_EQ(seen[static_cast<size_t>(i)], i);
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(dir_)) {
+        const std::string name = entry.path().filename().string();
+        EXPECT_NE(name.rfind("filling_", 0), 0U) << name << " was left behind";
+    }
+}
+
+// A segment the helper makes ready after the writer has already made it itself fills a slot the helper needs again. The
+// writer frees it at its next roll, so the helper carries on keeping segments ready. Made to happen here by delaying the
+// helper: it starts on segment 1 while the writer rolls to segment 3 at once.
+TEST_F(WalTest, ASegmentTheHelperMadeReadyAfterTheWriterPassedItIsFreedAndTheHelperCarriesOn) {
+    WalWriter w;
+    w.set_segments_kept_ready(2);
+    w.delay_helper_for_tests(std::chrono::milliseconds{300});
+    w.open(dir_, small_segment_size, {0, 0});
+    const std::vector<uint8_t> payload(16, 0x42u);
+    const auto roll_to = [&](uint64_t segment) {
+        while (w.current_position().segment < segment) {
+            w.append(1, payload.data(), payload.size());
+        }
+    };
+    roll_to(3);
+    ASSERT_EQ(w.segments_filled_inline(), 4U) << "segments 0 to 3 should all have been made by the writer";
+    // The helper publishes segment 1, which the writer has passed, then makes segment 4 ready, and then finds segment 1's
+    // slot, which segment 5 needs, still full.
+    std::this_thread::sleep_for(std::chrono::milliseconds{1000});
+    roll_to(4);
+    EXPECT_EQ(w.segments_filled_inline(), 4U) << "segment 4 was not ready";
+    // The roll to 4 freed segment 1's slot, so the helper can make segment 5 ready.
+    std::this_thread::sleep_for(std::chrono::milliseconds{1000});
+    roll_to(5);
+    EXPECT_EQ(w.segments_filled_inline(), 4U) << "segment 5 was not ready: the slot the helper needed was never freed";
+}
+
+TEST_F(WalTest, ATemporaryFileLeftByAFillCutShortIsDeletedAtOpen) {
+    for (const char* name : {"/filling_wal_000001.helper", "/filling_wal_000002.writer"}) {
+        const int fd = ::open((dir_ + name).c_str(), O_RDWR | O_CREAT, 0644);
+        ASSERT_GE(fd, 0);
+        ::close(fd);
+    }
+    WalWriter w;
+    w.disable_preparation();
+    w.open(dir_, small_segment_size, {0, 0});
+    EXPECT_FALSE(std::filesystem::exists(dir_ + "/filling_wal_000001.helper"));
+    EXPECT_FALSE(std::filesystem::exists(dir_ + "/filling_wal_000002.writer"));
 }
 
 TEST_F(WalTest, ClosingWithAPreparedSegmentOutstandingLeaksNoDescriptors) {

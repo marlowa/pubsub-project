@@ -7,7 +7,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include <pubsub_itc_fw/CpuPinning.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
@@ -42,19 +45,21 @@ namespace pubsub_itc_fw {
  *
  * Threading: single-writer -- every public method must be called from the same thread.
  *
- * One private helper thread exists, which creates the *next* segment while the writer is still
- * appending to the current one. Segments must have their blocks allocated before use, or the
- * first write to each page allocates one inside a page fault and can wait on the filesystem
- * journal for hundreds of milliseconds (BUG-0070). Allocating costs the same wherever it
- * happens, so the only question is which thread can afford to wait for it, and the answer is a
- * thread with nothing else to do. The writer and the helper share one slot and one atomic; they
- * touch different files, different descriptors and different mappings, so nothing on the append
- * path is shared at all.
+ * **Segments kept ready** (docs/durability/keeping_segments_ready.md). Segments must have their
+ * blocks allocated before use, or the first write to each page allocates one inside a page fault
+ * and can wait on the filesystem journal for hundreds of milliseconds (BUG-0070). So one private
+ * helper thread fills segments with zeros ahead of the one being written, keeping up to
+ * segments_kept_ready of them ready, four by default. Each is filled under a temporary name,
+ * `filling_wal_NNNNNN.helper` or `.writer`, and linked to its final name only when it is full, so a
+ * file named `wal_NNNNNN.log` is always complete: a process that dies while filling one leaves only
+ * a temporary file, which the next open() deletes.
  *
- * If the helper has not finished when the writer needs to roll, the writer creates the segment
- * itself rather than waiting or -- far worse -- appending into one whose blocks do not exist.
- * That case is counted by segments_filled_inline(): if it is ever non-zero under load, the
- * helper is not keeping pace and that is a measurement rather than a guess.
+ * When the current segment is full the writer takes the next one from the helper if it is ready,
+ * and otherwise makes it itself, under the same rule, and reports that through the warning
+ * function (set_warning_sink). It never waits for the helper: if both make the same segment,
+ * whichever links its file first wins and the other opens that file. The writer and the helper
+ * share a ring of slots, one for each ready segment, and two counters; each slot is handed from one
+ * to the other with an atomic flag, so nothing on the append path takes a lock.
  *
  * Typical lifecycle:
  * @code
@@ -68,6 +73,9 @@ class WalWriter {
   public:
     static constexpr uint32_t entry_magic = 0xFEEDFACEU;
 
+    /// How many segments the helper keeps ready ahead of the one being written, unless set otherwise.
+    static constexpr size_t default_segments_kept_ready = 4;
+
     ~WalWriter();
 
     WalWriter() = default;
@@ -78,9 +86,11 @@ class WalWriter {
     /**
      * @brief Opens the WAL directory and positions the writer at `start`.
      *
-     * The directory is created if it does not exist. The segment file at
-     * `start.segment` is opened (or created) and mapped. The writer will
-     * append from `start.offset` within that segment.
+     * The directory is created if it does not exist. Temporary files left by a segment being filled
+     * when a process died are deleted, and a segment from `start.segment` on that is shorter than
+     * the segment size, which only a writer that filled segments under their final names can have
+     * left, is completed with zeros, keeping any records in it. The segment file at `start.segment`
+     * is then opened (or created) and mapped, and the writer appends from `start.offset` within it.
      *
      * @param[in] directory    Directory for segment files.
      * @param[in] segment_size Pre-allocation size of each segment in bytes.
@@ -104,8 +114,8 @@ class WalWriter {
      * @brief Closes the current segment and stops the segment-preparing helper, so that the log can
      *        be changed on disk and the writer opened again with open().
      *
-     * Used by Wal::truncate_after(). A segment the helper had prepared is released; its file stays
-     * on disk for the caller to keep or delete.
+     * Used by Wal::truncate_after(). Segments the helper had made ready are released; their files
+     * stay on disk for the caller to keep or delete.
      */
     void close();
 
@@ -124,44 +134,54 @@ class WalWriter {
     }
 
     /**
-     * @brief How many segments the writer had to create itself because the helper was not ready.
+     * @brief How many segments the writer had to make itself because the helper had none ready.
      *
-     * Expected to be one for the first segment, which nothing can prepare in advance, and zero
-     * thereafter. A rising count means preparation is not keeping pace with appends.
+     * Expected to be one, for the first segment, which nothing can prepare in advance, and zero
+     * thereafter. Each one after the first is also reported through the warning function.
      */
     [[nodiscard]] uint64_t segments_filled_inline() const {
         return segments_filled_inline_;
     }
 
     /**
-     * @brief How many rolls had to wait for a preparation that was still in progress.
+     * @brief Waits until segments_kept_ready segments are ready ahead of the current one, or the
+     *        timeout expires. For tests.
      *
-     * Expected to be zero: the helper has the whole life of a segment to prepare the next one.
-     * A non-zero count means segments are being consumed faster than they can be created, which
-     * is a property of the storage rather than of this class.
-     */
-    [[nodiscard]] uint64_t segments_waited_for() const {
-        return segments_waited_for_;
-    }
-
-    /**
-     * @brief Waits until the next segment is ready, or the timeout expires. For tests.
+     * Production never waits: the writer either finds a ready segment or makes one. This exists so
+     * a test can assert on ready segments without sleeping and hoping.
      *
-     * Production never waits: the writer either finds a prepared segment or makes one. This
-     * exists so a test can assert on a prepared segment without sleeping and hoping.
-     *
-     * @return true if a prepared segment is ready.
+     * @return true if they are all ready.
      */
     [[nodiscard]] bool wait_until_prepared(std::chrono::milliseconds timeout);
 
     /**
-     * @brief Turns off preparation, so every segment is created by the writer. For tests.
+     * @brief Turns off preparation, so every segment is made by the writer. For tests.
      *
-     * Must be called before open(). Gives a test the pre-BUG-0070 scheduling with the
-     * post-BUG-0070 allocation, which is what the fallback path does in production.
+     * Must be called before open().
      */
     void disable_preparation() {
         preparation_enabled_ = false;
+    }
+
+    /// For tests only: the helper waits this long before making each segment, as a disk that stalled
+    /// would make it. Must be called before open().
+    void delay_helper_for_tests(std::chrono::milliseconds delay) {
+        helper_delay_for_tests_ = delay;
+    }
+
+    /**
+     * @brief How many segments the helper keeps ready ahead of the one being written; at least one.
+     *        Must be called before open(). From `[wal] segments_kept_ready` in a component's file.
+     */
+    void set_segments_kept_ready(size_t count);
+
+    /**
+     * @brief Where the writer says it had to make a segment itself, or found a short segment at
+     *        open(), which are incidents rather than routine; the owner logs it at Warning. Called on
+     *        the writing thread. Must be set before open() to report what open() finds.
+     */
+    void set_warning_sink(std::function<void(const std::string&)> sink) {
+        warn_ = std::move(sink);
     }
 
     /**
@@ -181,8 +201,19 @@ class WalWriter {
     // Minimum space for any entry (header + 1 byte payload + CRC32).
     static constexpr size_t min_entry_bytes = 24 + 1 + sizeof(uint32_t);
 
+    /// A segment's temporary name while it is filled is `filling_wal_NNNNNN.` followed by one of these:
+    /// different for the helper and the writer, so that the two never write the same file. It starts
+    /// `filling_` rather than `wal_` because some readers find segments with sscanf("wal_%06" ...
+    /// ".log"), which matches any name that merely begins like a segment's: a name such as
+    /// `wal_000001.log.preparing` was taken for segment 1, and opening segment 1 then failed.
+    static constexpr const char* temporary_prefix = "filling_";
+    static constexpr const char* helper_temporary_ending = "helper";
+    static constexpr const char* writer_temporary_ending = "writer";
+
+    /// The temporary name segment @p seg_num is filled under, by the thread whose ending is @p ending.
+    [[nodiscard]] std::string temporary_path(uint64_t seg_num, const char* ending) const;
+
     [[nodiscard]] std::string segment_path(uint64_t seg_num) const;
-    void open_segment(uint64_t seg_num);
     /// Writes a newly created segment out in full, so that its blocks exist before anything
     /// is appended. See the definition for why ftruncate is not enough and fallocate is not
     /// either.
@@ -195,42 +226,45 @@ class WalWriter {
     void close_segment();
     void ensure_capacity(size_t bytes_needed);
 
-    /// Creates, fills and maps one segment. The whole mechanism, with no thread in it, so that
-    /// the writer and the helper can both use it and it can be tested on its own.
+    /// One segment's descriptor and mapping.
     struct OpenedSegment {
         uint64_t seg_num{0};
         int fd{-1};
         uint8_t* mmap_ptr{nullptr};
     };
-    [[nodiscard]] OpenedSegment create_and_map(uint64_t seg_num);
+
+    /// Opens segment @p seg_num complete and mapped: the existing file if there is one, otherwise a
+    /// new one filled under a temporary name ending @p temporary_ending and linked to its final name
+    /// when full. If another thread links its own copy first, that one is opened instead. No thread
+    /// in it, so that the writer and the helper can both use it.
+    [[nodiscard]] OpenedSegment create_and_map(uint64_t seg_num, const char* temporary_ending);
+
+    /// Frees one segment's mapping and descriptor.
+    void release(OpenedSegment& segment);
 
     /// Adopts an already-opened segment as the one being written to, closing the previous one.
     void adopt(const OpenedSegment& segment);
 
+    /// Deletes the temporary files of segments whose filling was cut short. Before the helper starts.
+    void remove_temporary_files();
+
+    /// Completes with zeros every segment numbered @p from or later that is shorter than the segment
+    /// size, keeping what it holds. Before the helper starts.
+    void complete_short_segments(uint64_t from);
+
+    /// Says something on the warning function, if there is one.
+    void warn(const std::string& message) const;
+
     void start_helper();
     void stop_helper();
     void helper_loop();
-    void request_preparation(uint64_t seg_num);
-    void await_helper();
     void wake_helper();
-    /// Discards a prepared segment that will not be used, if the helper has finished with it.
-    /// The file stays: replay stops at the first record whose magic does not match, so an unused
-    /// segment reads as empty and is adopted, already filled, on the next start.
-    void release_prepared_if_ready();
 
-    /// Frees whatever is in prepared_, regardless of state. Only valid once the helper has been
-    /// joined, which is why it is called from the destructor and nowhere else.
-    void discard_prepared();
+    /// Frees every ready segment the writer has passed, numbered @p through or lower. Writer only.
+    void release_passed_slots(uint64_t through);
 
-    /// What the helper has prepared, and whether it may be read.
-    ///
-    /// Idle      nothing asked for; Requested  helper is working; Ready  prepared_ may be read;
-    /// Failed    the helper could not, and failure_ says why.
-    ///
-    /// The helper publishes prepared_ then release-stores Ready; the writer acquire-loads Ready
-    /// then reads prepared_. That pairing is the whole of the synchronisation. No mutex: one on
-    /// the writer's side would put back the blocking this exists to remove.
-    enum class PrepState : uint8_t { Idle, Requested, Ready, Failed, Stopping };
+    /// Frees every ready segment. Only once the helper has been joined.
+    void release_all_slots();
 
     std::string directory_;
     size_t segment_size_{0};
@@ -241,12 +275,33 @@ class WalWriter {
     int fd_{-1};
 
     bool preparation_enabled_{true};
+    std::chrono::milliseconds helper_delay_for_tests_{0};
+    size_t segments_kept_ready_{default_segments_kept_ready};
     uint64_t segments_filled_inline_{0};
-    uint64_t segments_waited_for_{0};
+    std::function<void(const std::string&)> warn_;
 
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
     ThreadConfinementCheck writer_thread_{"WalWriter"};
 #endif
+
+    /// A ready segment, handed from the helper to the writer. The helper fills an empty slot and then
+    /// sets `full` with a release store; the writer reads a slot only after seeing `full` with an
+    /// acquire load, and empties it by clearing `full` with a release store. That pairing is the whole
+    /// of the synchronisation for the slot.
+    struct Slot {
+        OpenedSegment segment{};
+        std::atomic<bool> full{false};
+    };
+    /// Segment n is in slot n modulo segments_kept_ready.
+    std::unique_ptr<Slot[]> slots_;
+
+    /// The highest segment the helper has dealt with: made ready, or found the writer already past.
+    /// Written by the helper only.
+    std::atomic<uint64_t> prepared_through_{0};
+    /// The segment being written. Written by the writer only; the helper keeps at most
+    /// segments_kept_ready segments ahead of it.
+    std::atomic<uint64_t> writing_{0};
+    std::atomic<bool> stopping_{false};
 
     ThreadWithJoinTimeout helper_;
     bool helper_running_{false};
@@ -268,10 +323,10 @@ class WalWriter {
     // works from the wrong processor is better than a component that will not start.
     std::atomic<bool> helper_placement_failed_{false};
 
-    std::atomic<PrepState> prep_state_{PrepState::Idle};
-    OpenedSegment prepared_{};
-    uint64_t requested_segment_{0};
-    std::string failure_;
+    // Why the helper last failed to make a segment, for the writer's warning; written by the helper
+    // before it sets helper_failed_, read by the writer after it sees it.
+    std::string helper_failure_;
+    std::atomic<bool> helper_failed_{false};
 };
 
 } // namespaces

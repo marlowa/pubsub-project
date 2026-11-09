@@ -207,6 +207,14 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
             throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: wal.segment_size must be positive");
         }
         config.wal_segment_size = static_cast<size_t>(segment_size_bytes);
+        if (toml.has_key("wal.segments_kept_ready")) {
+            int64_t segments_kept_ready = 0;
+            toml.get_required_except("wal.segments_kept_ready", segments_kept_ready);
+            if (segments_kept_ready < 1) {
+                throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: wal.segments_kept_ready must be at least 1");
+            }
+            config.wal_segments_kept_ready = static_cast<size_t>(segments_kept_ready);
+        }
 
         // Zero is allowed for either: nothing is kept, and every record is read back from the WAL.
         int64_t records_kept_for_publishers = 0;

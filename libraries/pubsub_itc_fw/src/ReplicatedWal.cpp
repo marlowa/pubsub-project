@@ -73,6 +73,8 @@ int64_t ReplicatedWal::open(Clock::time_point now) {
     if (!configuration_.helper_cores.empty()) {
         wal_.set_helper_cores(configuration_.helper_cores);
     }
+    wal_.set_segments_kept_ready(configuration_.segments_kept_ready);
+    wal_.set_warning_sink([this](const std::string& message) { PUBSUB_LOG(logger_, FwLogLevel::Warning, "{}: {}", configuration_.owner_name, message); });
 
     // The whole WAL is read, rather than from the snapshot onwards, because the table of epochs needs
     // every record's epoch, and the check for a gap needs every record's number.

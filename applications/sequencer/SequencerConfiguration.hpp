@@ -211,6 +211,9 @@ struct SequencerConfiguration {
 
     /** @brief Pre-allocation size of each WAL segment file in bytes. */
     size_t wal_segment_size{4 * 1024 * 1024};
+    /// How many segments the WAL's helper keeps ready ahead of the one being written, from the optional
+    /// `[wal] segments_kept_ready`; four when it is absent (docs/durability/keeping_segments_ready.md).
+    size_t wal_segments_kept_ready{4};
 
     /**
      * @brief How many records, and how many bytes of records, the leader keeps in memory from when it writes
