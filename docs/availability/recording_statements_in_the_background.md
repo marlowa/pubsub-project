@@ -1,7 +1,7 @@
 # Recording leaders' statements in the background {#recording_statements_in_the_background}
 
-**Status: designed, not built.** This is the design for [BUG-0142](../bug_list.md#bug_0142), written for
-review before any code. Section 7 lists the decision it needs.
+**Status: designed and agreed, not built.** This is the design for [BUG-0142](../bug_list.md#bug_0142).
+Section 7 records its decision, agreed with Andrew on 9 November 2026.
 
 ## 1. The problem
 
@@ -110,7 +110,24 @@ commands. The design keeps each part of that:
 - **Refusing a lease from the statement in memory, before it is written**, can only refuse more, never
   grant more, so it cannot elect an instance that lacks commands.
 
-### 3.5 At start and at shutdown
+### 3.5 Why the file is synced to disk, not kept in shared memory
+
+A statement must survive whatever can make an arbiter forget it, or a restarted arbiter can elect an
+instance that lacks commands its leader acted on (the TLA+ trace
+[behind-4-arbiter-forgets](tla/traces/behind-4-arbiter-forgets.txt)). An arbiter forgets in two ways:
+
+- **Its process dies and its machine stays up.** Shared memory survives this, and so does a file written
+  without `fsync`, because its data stays in the kernel's page cache and is written out later whether or
+  not the process exists.
+- **Its machine dies**, by a loss of power, a kernel panic or a restart. Shared memory and the page cache
+  are both lost. Only what `fsync` has put on the disk survives.
+
+Arbiters run on separate machines precisely so that one machine can be lost, so the record must survive
+the second case, and `fsync` is the cost of that. Shared memory would make the write fast and lose the
+guarantee. With the write on a thread of its own, the wait for the disk delays only the confirmation of
+a statement, which must wait for it anyway, and never the answer to a lease request.
+
+### 3.6 At start and at shutdown
 
 At start the arbiter reads the statement file on its own thread, as now, before it answers anything. At
 shutdown the writer thread is stopped as the promise recorder's is: the arbiter waits up to a second for
@@ -159,5 +176,5 @@ statements an arbiter keeps are all unchanged. Only the thread that writes the f
 - **B, a class of its own** for statements, copying the same pattern. Nothing that exists changes, at
   the cost of a second copy of the hand-over to test and keep right.
 
-Recommended: **A**. The hand-over between the two threads, with its two counters and its slot, is the
-part easiest to get wrong, and it is better tested once and used twice.
+**Decided: A.** The hand-over between the two threads, with its two counters and its slot, is the part
+easiest to get wrong, and it is better tested once and used twice.

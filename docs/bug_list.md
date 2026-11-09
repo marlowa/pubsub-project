@@ -729,8 +729,10 @@ which must keep the rule that an arbiter echoes a statement only once it is reco
 the high availability machinery that [ha_library_boundary.md](availability/ha_library_boundary.md)
 proposes moving into the library.
 
-**Designed 2026-11-09**, for Andrew's review before any code:
-[recording_statements_in_the_background.md](availability/recording_statements_in_the_background.md). The statement
+**Designed and agreed 2026-11-09**:
+[recording_statements_in_the_background.md](availability/recording_statements_in_the_background.md), with the promise
+recorder made general so that the same class writes both promises and statements. The file stays synced to disk
+rather than kept in shared memory, because it must survive the arbiter's machine dying, not only its process. The statement
 file is written on a writer thread of its own, as lease promises already are; a lease request is answered at once;
 and `StatementHeld` is sent on the arbiter's next 100-millisecond tick after a successful write, so a statement is
 still confirmed only once it is on disk. The epoch half of this entry is already dealt with: rule 13 of
