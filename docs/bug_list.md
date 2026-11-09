@@ -3,19 +3,18 @@
 | | |
 |---|---|
 | Bugs recorded | 238 |
-| Open | 59 (38 defects, 21 tasks) |
-| Closed | 179 |
+| Open | 58 (37 defects, 21 tasks) |
+| Closed | 180 |
 | Next id | BUG-0239 |
 
 ## Open bugs by severity
 
-11 high, 36 medium, 12 low.
+10 high, 36 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
 | [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
-| [BUG-0062](#bug_0062) | high | defect | Two instances led with HA off, and nothing notices when they are reunited |
 | [BUG-0065](#bug_0065) | high | task | The venue tells a member of a trading halt only in the reply to an order, and cannot halt one instrument |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
@@ -195,7 +194,7 @@ stay as measured, the interruption would come down to under a second.
 **How to check it.** The measurement under [BUG-0029](#bug_0029), repeated: kill a supervised leading
 engine and read the time from its death to "adopting LEADER role" in its Quill log.
 
-**Designed 2026-11-09, for Andrew's review before any code:** [reconnecting_to_a_restarted_engine.md](availability/reconnecting_to_a_restarted_engine.md).
+**Designed 2026-11-09:** [reconnecting_to_a_restarted_engine.md](availability/reconnecting_to_a_restarted_engine.md). Option B agreed with Andrew on 9 November 2026: when a matching engine's connection for reports arrives, the sequencer connects to that engine at once.
 
 ### BUG-0236: The COMPID editor writes its administrators' file readable by every account on the host {#bug_0236}
 
@@ -434,7 +433,7 @@ rather than holding a different book.
 
 **Principles.** V8: every report the matching engine produces reaches the member, and says what the venue did.
 
-**Designed 2026-11-09, for Andrew's review before any code:** [region_capacity_changed_during_a_day.md](availability/region_capacity_changed_during_a_day.md).
+**Designed 2026-11-09:** [region_capacity_changed_during_a_day.md](availability/region_capacity_changed_during_a_day.md). Option A agreed with Andrew on 9 November 2026: the engine refuses to start whenever its region's capacity differs from its configuration.
 
 ### BUG-0209: No scenario reaches the halt when a matching engine cannot account for the orders the venue holds {#bug_0209}
 
@@ -491,7 +490,7 @@ written into the WAL's own records of leadership.
 
 **Principles.** V11: a loss of resilience is not a loss of service.
 
-**Designed 2026-11-09, for Andrew's review before any code:** [engine_absence_after_a_restart.md](availability/engine_absence_after_a_restart.md).
+**Designed 2026-11-09:** [engine_absence_after_a_restart.md](availability/engine_absence_after_a_restart.md). Option A agreed with Andrew on 9 November 2026: an `EngineRouted` record in the WAL in quiet spells, with the scenario that shows the fault written first.
 
 ### BUG-0166: The reactor writes a Warning for every send to a connection that has gone, not one for each connection {#bug_0166}
 
@@ -815,7 +814,7 @@ The waiting reports' storage and its limits are to be written up and agreed befo
 
 **Principles.** F5 and F6 in `docs/design_principles.md`.
 
-**Designed 2026-11-09, for Andrew's review before any code:** [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md).
+**Designed 2026-11-09:** [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md). Both decisions agreed with Andrew on 9 November 2026: reading the engines' report connections pauses while the ring of waiting reports is full, and the venue is built for 2,000,000 open orders.
 
 ### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
 
@@ -1290,85 +1289,6 @@ constant in `GatewayMetrics.hpp`, which is where the gateway's existing metrics 
 that is a larger change than the checking it would observe. See
 [Inbound sequence checking](fix/inbound_sequence_checking.md).
 
-### BUG-0062: Two instances led with HA off, and nothing notices when they are reunited {#bug_0062}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-28 |
-| Recorded | 2026-08-28 |
-| How | Reasoning through what HA-off should mean while recording [BUG-0061](#bug_0061) |
-| Impact | Two WALs and two epoch sequences that both look authoritative. Nothing detects it, and the harm lands at a later start rather than at the time |
-
-**Recorded on its own rather than left inside BUG-0061, because fixing BUG-0061 is what makes this
-reachable.** Today HA cannot properly be turned off, so this cannot happen by that route. Make it
-possible -- which is what BUG-0061 asks for, and rightly -- and it can.
-
-With HA off, a primary and a secondary can both be started and both lead. That is the agreed
-behaviour and it is right: role means nothing without a peer or an arbiter, and refusing would
-block running a venue on the surviving machine after the primary's hardware has died.
-
-**While it lasts, nothing is wrong.** The gateway reaches only one sequencer with HA off --
-`forward_pdu_to_sequencers` sends to the secondary only inside `if (config_.ha_enabled)` -- so the
-same order cannot enter two books. It is not split brain.
-
-**Correction, 2026-08-28: that was true of the code and false of the configuration.** The gateway's
-`ha_enabled` lived under `[sequencer]` in its own template and was **hardcoded `true`**, so it never
-followed the venue switch at all. With high availability off the gateway went on sending to both
-sequencers, and two instances leading would have put the same order into two books -- real split
-brain, not the deferred trap described above. The reasoning was checked against the branch and not
-against the value reaching it.
-
-Fixed while completing [BUG-0061](#bug_0061): every component config now expands `${ha_enabled}`
-from the one `[ha] enabled`, so the gateway follows the venue and the paragraph above is true as
-written. There were **four** places able to disagree, and this was the one that mattered most.
-
-**The damage is deferred, which is what makes it nasty.** Both instances advance state that is
-meant to be single-valued:
-
-- **Each grows its own WAL**, from its own sequence numbers, with no relationship between them.
-- **Each burns leadership epochs** from the `epoch_state_file`, which exists precisely so that a
-  restart cannot reuse a generation the venue has already spent.
-
-Nothing records that this happened. When someone later starts the pair **with HA on** -- the
-obvious thing to do once the failed machine is back -- the venue has two divergent histories and
-two epoch sequences, and no mechanism compares them. The arbiter arbitrates leadership; it does not
-ask whether the two candidates have been leading separately since Tuesday.
-
-**What is wanted is detection, not prevention.** Preventing it would block the legitimate case. The
-venue should be able to tell, when instances come together, that they have diverged -- and halt
-rather than pick one. Halting is the venue's established answer to exactly this class of thing:
-an engine that cannot account for its open-order region halts rather than guess, and no instance
-leads without a majority, and a sequencer whose write-ahead log is damaged in the middle stops rather
-than read past it ([BUG-0106](#bug_0106)).
-
-Where to look first, none of it investigated: whether a WAL carries anything identifying the
-instance and generation that wrote it; whether the epoch state file records enough to spot a
-sequence that has advanced without this instance's involvement; and what a component should do on
-finding it -- refuse to join, most likely, and say so in terms an operator can act on.
-
-**What it costs at the time, not only later.** `ha_test.py` scenario 47 starts the two sequencers
-together with high availability off. The gateway sends orders only to the primary, but the matching
-engine catches up with whichever sequencer reaches it first. In the runs of 2026-10-06 the
-secondary reached it first, because the primary's first attempt came before the engine was
-listening. The primary then held its orders for an engine that never asked it for them: the engine
-had already caught up with the secondary and did not catch up with the primary when its connection
-arrived. None of the 1,000 orders was matched, and nothing told the member. Which sequencer reaches
-the engine first depends on how long each takes to start, so the scenario passes or fails with the
-timing.
-
-Related: [BUG-0042](#bug_0042), closed, where a restarted primary matching engine promoted itself
-and produced two leaders. Different mechanism, same underlying fact -- that two instances each
-believing themselves leader is not something the venue currently detects after the event.
-
-**Checked 2026-11-09, after [BUG-0061](#bug_0061): this no longer arises as described; recommended for closing, which is
-Andrew's to decide.** With high availability off every secondary refuses to start (R-0163), so two instances can no
-longer both lead in that configuration, and neither WAL nor epoch sequence can diverge that way. What remains is a
-primary that ran alone and is later joined by its secondary with high availability on: the secondary is then a follower
-that is behind, which the rule that a follower behind does not lead, and the follower's repair of its WAL, already
-handle. The cost at the time described above belonged to the old scenario 47, which started both sequencers with high
-availability off; scenario 47 now checks that the secondaries refuse.
-
 ### BUG-0059: No defence against a member reconnecting in a loop with the wrong protocol {#bug_0059}
 
 | | |
@@ -1534,7 +1454,7 @@ Related: [BUG-0048](#bug_0048), for the memory figures this came out of, and
 [BUG-0028](#bug_0028), which is the same class of problem in the order book -- growth sized by
 doubling rather than by a stated expectation.
 
-**2026-11-09:** the figure this entry needs, how many orders may be open at once in the venue, is asked as decision 2 of [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md), so that the gateways' pools, the sequencer's map and the engine's region are sized from one figure.
+**2026-11-09:** the figure this entry needs, how many orders may be open at once in the venue, is decided as 2,000,000, with Andrew, in decision 2 of [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md), the figure the matching engine's region is already configured for. The gateways' pools and the sequencer's map are to be sized from it.
 
 ### BUG-0073: The placeholder environments carry settings nobody chose {#bug_0073}
 
@@ -2491,7 +2411,7 @@ design decision.
 Related: R-0103 and R-0113 in `docs/book` and the gap beneath the gateway's durable-state
 subsection, which now cites this entry.
 
-**Designed 2026-11-09, for Andrew's review before any code:** [cancel_on_disconnect_where_the_orders_are.md](availability/cancel_on_disconnect_where_the_orders_are.md).
+**Designed 2026-11-09:** [cancel_on_disconnect_where_the_orders_are.md](availability/cancel_on_disconnect_where_the_orders_are.md). All three decisions agreed with Andrew on 9 November 2026: the leading sequencer holds the grace period and writes `CancelSessionOrders`; a gateway's death ends every session it held without a clean Logout; one command for each session.
 
 ### BUG-0091: A member's standing instructions die with the gateway that received them {#bug_0091}
 
@@ -2541,7 +2461,7 @@ something happened.
 Related: R-0103 and R-0113 in `docs/book`, [BUG-0090](#bug_0090),
 [session_binding.md](availability/session_binding.md).
 
-**Designed 2026-11-09, for Andrew's review before any code:** [cancel_on_disconnect_where_the_orders_are.md](availability/cancel_on_disconnect_where_the_orders_are.md).
+**Designed 2026-11-09:** [cancel_on_disconnect_where_the_orders_are.md](availability/cancel_on_disconnect_where_the_orders_are.md). All three decisions agreed with Andrew on 9 November 2026: the leading sequencer holds the grace period and writes `CancelSessionOrders`; a gateway's death ends every session it held without a clean Logout; one command for each session.
 
 ### BUG-0173: No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests {#bug_0173}
 
@@ -2785,6 +2705,85 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0062: Two instances led with HA off, and nothing notices when they are reunited {#bug_0062}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| Fixed | 2026-11-09 -- closed by decision, with Andrew's agreement, because it no longer arises as described: with high availability off every secondary instance refuses to start ([BUG-0061](#bug_0061), R-0163), so two instances cannot both lead in that configuration, and neither WALs nor epoch sequences can diverge that way. A primary that ran alone and is later joined by its secondary with high availability on finds the secondary a follower that is behind, which the rule that a follower behind does not lead, and the follower's repair of its WAL, already handle |
+| How | Reasoning through what HA-off should mean while recording [BUG-0061](#bug_0061) |
+| Impact | Two WALs and two epoch sequences that both look authoritative. Nothing detects it, and the harm lands at a later start rather than at the time |
+
+**Recorded on its own rather than left inside BUG-0061, because fixing BUG-0061 is what makes this
+reachable.** Today HA cannot properly be turned off, so this cannot happen by that route. Make it
+possible -- which is what BUG-0061 asks for, and rightly -- and it can.
+
+With HA off, a primary and a secondary can both be started and both lead. That is the agreed
+behaviour and it is right: role means nothing without a peer or an arbiter, and refusing would
+block running a venue on the surviving machine after the primary's hardware has died.
+
+**While it lasts, nothing is wrong.** The gateway reaches only one sequencer with HA off --
+`forward_pdu_to_sequencers` sends to the secondary only inside `if (config_.ha_enabled)` -- so the
+same order cannot enter two books. It is not split brain.
+
+**Correction, 2026-08-28: that was true of the code and false of the configuration.** The gateway's
+`ha_enabled` lived under `[sequencer]` in its own template and was **hardcoded `true`**, so it never
+followed the venue switch at all. With high availability off the gateway went on sending to both
+sequencers, and two instances leading would have put the same order into two books -- real split
+brain, not the deferred trap described above. The reasoning was checked against the branch and not
+against the value reaching it.
+
+Fixed while completing [BUG-0061](#bug_0061): every component config now expands `${ha_enabled}`
+from the one `[ha] enabled`, so the gateway follows the venue and the paragraph above is true as
+written. There were **four** places able to disagree, and this was the one that mattered most.
+
+**The damage is deferred, which is what makes it nasty.** Both instances advance state that is
+meant to be single-valued:
+
+- **Each grows its own WAL**, from its own sequence numbers, with no relationship between them.
+- **Each burns leadership epochs** from the `epoch_state_file`, which exists precisely so that a
+  restart cannot reuse a generation the venue has already spent.
+
+Nothing records that this happened. When someone later starts the pair **with HA on** -- the
+obvious thing to do once the failed machine is back -- the venue has two divergent histories and
+two epoch sequences, and no mechanism compares them. The arbiter arbitrates leadership; it does not
+ask whether the two candidates have been leading separately since Tuesday.
+
+**What is wanted is detection, not prevention.** Preventing it would block the legitimate case. The
+venue should be able to tell, when instances come together, that they have diverged -- and halt
+rather than pick one. Halting is the venue's established answer to exactly this class of thing:
+an engine that cannot account for its open-order region halts rather than guess, and no instance
+leads without a majority, and a sequencer whose write-ahead log is damaged in the middle stops rather
+than read past it ([BUG-0106](#bug_0106)).
+
+Where to look first, none of it investigated: whether a WAL carries anything identifying the
+instance and generation that wrote it; whether the epoch state file records enough to spot a
+sequence that has advanced without this instance's involvement; and what a component should do on
+finding it -- refuse to join, most likely, and say so in terms an operator can act on.
+
+**What it costs at the time, not only later.** `ha_test.py` scenario 47 starts the two sequencers
+together with high availability off. The gateway sends orders only to the primary, but the matching
+engine catches up with whichever sequencer reaches it first. In the runs of 2026-10-06 the
+secondary reached it first, because the primary's first attempt came before the engine was
+listening. The primary then held its orders for an engine that never asked it for them: the engine
+had already caught up with the secondary and did not catch up with the primary when its connection
+arrived. None of the 1,000 orders was matched, and nothing told the member. Which sequencer reaches
+the engine first depends on how long each takes to start, so the scenario passes or fails with the
+timing.
+
+Related: [BUG-0042](#bug_0042), closed, where a restarted primary matching engine promoted itself
+and produced two leaders. Different mechanism, same underlying fact -- that two instances each
+believing themselves leader is not something the venue currently detects after the event.
+
+**Checked 2026-11-09, after [BUG-0061](#bug_0061): this no longer arises as described; closed.** With high availability off every secondary refuses to start (R-0163), so two instances can no
+longer both lead in that configuration, and neither WAL nor epoch sequence can diverge that way. What remains is a
+primary that ran alone and is later joined by its secondary with high availability on: the secondary is then a follower
+that is behind, which the rule that a follower behind does not lead, and the follower's repair of its WAL, already
+handle. The cost at the time described above belonged to the old scenario 47, which started both sequencers with high
+availability off; scenario 47 now checks that the secondaries refuse.
 
 ### BUG-0061: With high availability off, a secondary sequencer started alone leads but no gateway can reach it {#bug_0061}
 

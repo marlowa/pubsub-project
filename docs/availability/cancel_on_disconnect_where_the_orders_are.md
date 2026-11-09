@@ -1,7 +1,7 @@
 # Cancel on disconnect, carried out where the orders are {#cancel_on_disconnect_where_the_orders_are}
 
-**Status: designed, not built.** This is the design for [BUG-0090](../bug_list.md#bug_0090) and
-[BUG-0091](../bug_list.md#bug_0091), written for review before any code. Section 7 lists the decisions it needs.
+**Status: agreed, not built.** This is the design for [BUG-0090](../bug_list.md#bug_0090) and
+[BUG-0091](../bug_list.md#bug_0091). All three decisions in section 7 were agreed with Andrew on 9 November 2026.
 
 ## 1. The problem
 
@@ -97,17 +97,17 @@ gateway restart or death.
 
 ### Decision 1. Does the leading sequencer hold the grace period and write the cancel as a command? (Yes or no.)
 
-Recommended: **yes**. Only the sequencer is running in every case that matters, it already learns of every session from
+Agreed: **yes**. Only the sequencer is running in every case that matters, it already learns of every session from
 `SessionBound`, and writing both the pending cancel and the cancel itself into the WAL keeps them through a change of
 leader and makes the engine's action deterministic. The alternative, a timer in the engine, would have to be reproduced on
 replay, which the engine's design does not allow for timers of its own.
 
 ### Decision 2. Is a gateway's death treated as every session it held ending without a clean Logout? (Yes or no.)
 
-Recommended: **yes**. It is what R-0113 asks for, and the grace period still protects a member whose gateway died: it
+Agreed: **yes**. It is what R-0113 asks for, and the grace period still protects a member whose gateway died: it
 reconnects through the other gateway within the grace period and keeps its orders.
 
 ### Decision 3. One `CancelSessionOrders` command for each session, rather than one cancel for each order? (Yes or no.)
 
-Recommended: **yes**. The engine knows the session's orders; the gateway, after a restart or death, does not. One command
+Agreed: **yes**. The engine knows the session's orders; the gateway, after a restart or death, does not. One command
 also replaces the burst of per-order cancels a large session produces today.

@@ -1,7 +1,7 @@
 # A matching engine whose region's capacity differs from its configuration {#region_capacity_changed_during_a_day}
 
-**Status: designed, not built.** This is the design for [BUG-0211](../bug_list.md#bug_0211), written for review
-before any code. Section 5 lists the decision it needs.
+**Status: agreed, not built.** This is the design for [BUG-0211](../bug_list.md#bug_0211). Option A was agreed with
+Andrew on 9 November 2026 (section 5).
 
 ## 1. The problem
 
@@ -55,5 +55,5 @@ would otherwise change what members were told.
 - **B. Only when smaller**, as the bug entry first proposed. A larger capacity is then allowed, and gives a different book
   only on a day when the region was full at some moment.
 
-Recommended: **A**. A larger region gives a different book exactly on the day it matters, the day the region filled, and
+Agreed: **A**. A larger region gives a different book exactly on the day it matters, the day the region filled, and
 the operator's fix in both directions is the same: put the capacity back until the day ends.

@@ -1,7 +1,7 @@
 # Reconnecting promptly to a restarted matching engine {#reconnecting_to_a_restarted_engine}
 
-**Status: designed, not built.** This is the design for [BUG-0237](../bug_list.md#bug_0237), written for review
-before any code. Section 5 lists the decision it needs.
+**Status: agreed, not built.** This is the design for [BUG-0237](../bug_list.md#bug_0237). Option B was agreed with
+Andrew on 9 November 2026 (section 5).
 
 ## 1. The problem
 
@@ -49,7 +49,7 @@ that.
 
 ### Decision 1. A or B? (Choose one.)
 
-Recommended: **B**. It reconnects at the moment the engine is ready rather than up to an interval after, wastes no
+Agreed: **B**. It reconnects at the moment the engine is ready rather than up to an interval after, wastes no
 attempts on a peer that is down, and changes only the sequencer's behaviour towards a restarted engine, where A changes
 how every outbound connection in every component is retried. A can still be done later, separately, if other
 reconnections prove slow.

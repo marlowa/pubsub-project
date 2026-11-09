@@ -1,7 +1,7 @@
 # Measuring the engine's absence after the whole venue restarts {#engine_absence_after_a_restart}
 
-**Status: designed, not built.** This is the design for [BUG-0207](../bug_list.md#bug_0207), written for review
-before any code. Section 6 lists the decision it needs.
+**Status: agreed, not built.** This is the design for [BUG-0207](../bug_list.md#bug_0207). Option A was agreed with
+Andrew on 9 November 2026 (section 6).
 
 ## 1. The problem
 
@@ -68,7 +68,7 @@ code as it is now, it must fail.
 
 ### Decision 1. A or B? (Choose one.)
 
-Recommended: **A**. It makes the WAL, which both sequencers agree on, the record of when an engine was last routed to, so
+Agreed: **A**. It makes the WAL, which both sequencers agree on, the record of when an engine was last routed to, so
 a sequencer that missed that period either cannot lead or has caught up with it; B depends on the peer being there at
 exactly the moment it is least likely to be. The cost of A is one small record a second in a quiet market, nothing in a
 busy one, and one more record kind for the engines to count.

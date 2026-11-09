@@ -42,7 +42,9 @@ All 81 open entries have been judged. The figures:
 3. The breaches that need a short design first: BUG-0142 (statements written in the background; fixed and closed on 9
    November 2026),
    BUG-0130 (segments kept ready; fixed and closed on 9 November 2026), BUG-0207 (with its scenario), BUG-0211, BUG-0090 with BUG-0091,
-   BUG-0131, and BUG-0072.
+   BUG-0131, and BUG-0072. The designs for BUG-0207, BUG-0211, BUG-0090 with BUG-0091, and BUG-0131 were agreed with
+   Andrew on 9 November 2026, as was the design for BUG-0237; BUG-0131's decision sets the venue's figure for open orders
+   at 2,000,000, which is the figure BUG-0072 needs.
 4. BUG-0087's tool for counting heap allocations, then the framework's locks, BUG-0127 and BUG-0128,
    and BUG-0119.
 5. The three decisions above, and the designs they lead to: retention and the recovery service; the
@@ -97,14 +99,14 @@ Eleven entries.
 | [BUG-0222](bug_list.md#bug_0222): no operator procedure lets the follower lead after the old leader's machine is lost while it ran alone | **New requirement** (R-0161, R-0162) | Not built; [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md), section 4.4, says so | The operator's tool and the procedure for telling members, designed together |
 | [BUG-0136](bug_list.md#bug_0136): whether a copy of the log elsewhere could recover what the leader's machine took with it | **Investigation** | Unchanged. The order activity recorder is not built | Find out what each follower of the log keeps; then decide whether recovering from it is worth designing. Best done with BUG-0222 |
 | [BUG-0061](bug_list.md#bug_0061): with high availability off, a secondary sequencer started alone leads, but no gateway can reach it | **Fixed on 9 November 2026** and closed | Every secondary refuses to start with high availability off (R-0163), and scenarios 46 and 47 check each refuses and says why | Nothing |
-| [BUG-0062](bug_list.md#bug_0062): two instances that led with high availability off, and nothing notices when they are reunited | **No longer arises as described**, recommended for closing | With every secondary refusing to start with high availability off, two instances cannot both lead in that configuration; a primary later joined by its secondary is a follower behind, already handled | Andrew's decision to close it |
+| [BUG-0062](bug_list.md#bug_0062): two instances that led with high availability off, and nothing notices when they are reunited | **Closed** on 9 November 2026, with Andrew's agreement, because it no longer arises as described | With every secondary refusing to start with high availability off, two instances cannot both lead in that configuration; a primary later joined by its secondary is a follower behind, already handled | None |
 
 **Recommended order in this area.** BUG-0142 and BUG-0207 first, because each breaks a principle, and
 BUG-0207 needs a scenario before it is fixed. Then BUG-0121, because without it the rule that a restarted
 leader keeps the lead fails late in a busy day. BUG-0134's remaining reporting is small. BUG-0237, the sequencer's
 2-second wait before connecting to a restarted engine again, is small and comes after them. BUG-0167
 waits on Andrew's decision; BUG-0135 and BUG-0222 with BUG-0136 are new requirements to be placed in the order with
-the rest. BUG-0061 is closed, and BUG-0062 is recommended for closing.
+the rest. BUG-0061 and BUG-0062 are closed.
 
 ## 2. The write-ahead log, its retention, the disk, and the trading day
 
