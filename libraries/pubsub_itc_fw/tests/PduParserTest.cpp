@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <gtest/gtest.h>
@@ -65,6 +66,13 @@ class PduParserTestStream : public ByteStreamInterface {
         const auto* b = reinterpret_cast<const uint8_t*>(&hdr);
         for (size_t i = 0; i < sizeof(PduHeader); ++i) {
             receive_bytes.push_back(b[i]);
+        }
+    }
+
+    void feed_message(int16_t pdu_id, const std::vector<uint8_t>& payload) {
+        feed_header_only(pdu_id, 1, static_cast<uint32_t>(payload.size()));
+        for (uint8_t b : payload) {
+            receive_bytes.push_back(b);
         }
     }
 
@@ -242,6 +250,38 @@ TEST_F(PduParserErrorTest, ReadErrorDuringHeaderReturnsError) {
     EXPECT_FALSE(ok);
     EXPECT_FALSE(error.empty());
     EXPECT_TRUE(thread_->get_queue().empty());
+}
+
+// BUG-0238: one call dispatches no more than messages_per_receive complete messages and leaves the rest in the stream,
+// so that a peer keeping the socket full cannot hold the reactor in one call.
+TEST_F(PduParserErrorTest, OneCallDispatchesNoMoreThanTheBoundAndLeavesTheRestToBeRead) {
+    PduParser parser(stream_, *thread_, slab_, logger_->logger, nullptr, ConnectionID{});
+    const std::vector<uint8_t> payload{0x01, 0x02, 0x03, 0x04};
+    constexpr int fed = 100;
+    for (int index = 0; index < fed; ++index) {
+        stream_.feed_message(10, payload);
+    }
+    const size_t one_message = sizeof(PduHeader) + payload.size();
+
+    const auto drain = [this]() {
+        int taken = 0;
+        while (auto msg = thread_->get_queue().dequeue()) {
+            slab_.deallocate(msg->slab_id(), const_cast<uint8_t*>(msg->payload()));
+            ++taken;
+        }
+        return taken;
+    };
+
+    auto [ok1, err1] = parser.receive();
+    EXPECT_TRUE(ok1) << err1;
+    EXPECT_EQ(drain(), PduParser::messages_per_receive);
+    EXPECT_EQ(stream_.receive_bytes.size(), static_cast<size_t>(fed - PduParser::messages_per_receive) * one_message)
+        << "the messages after the bound were read from the stream";
+
+    auto [ok2, err2] = parser.receive();
+    EXPECT_TRUE(ok2) << err2;
+    EXPECT_EQ(drain(), fed - PduParser::messages_per_receive);
+    EXPECT_TRUE(stream_.receive_bytes.empty());
 }
 
 } // namespaces

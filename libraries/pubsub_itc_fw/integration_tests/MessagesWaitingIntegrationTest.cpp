@@ -13,6 +13,9 @@
  *
  * What is measured is the count the limit keeps, read by the receiving thread itself as it takes each PDU. A run
  * "without a limit" sets one so large that reading is never stopped, so that both runs are measured the same way.
+ *
+ * The last tests are for docs/bug_list.md BUG-0238: a connection without a limit, flooded by its peer, must not hold its
+ * reactor in one read, so the reactor goes on serving the timers of another thread it runs.
  */
 
 #include <algorithm>
@@ -307,6 +310,49 @@ class Receiver : public ApplicationThread {
     std::vector<int64_t> waiting_at_tick_;
 };
 
+// Counts the ticks of a one-millisecond timer and records the longest gap between two, and does nothing else, so that
+// the gap shows how promptly its reactor comes back to its timers.
+class TickCounter : public ApplicationThread {
+  public:
+    TickCounter(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "TickCounter", ThreadID{2}, make_queue_config(), make_allocator_config("TickCounterPool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    std::atomic<int64_t> longest_gap_us{0};
+    std::atomic<int> ticks{0};
+
+  protected:
+    void on_app_ready_event() override {
+        timer_ = start_recurring_timer(std::chrono::milliseconds{1});
+    }
+    void on_timer_event(TimerID id) override {
+        if (id != timer_) {
+            return;
+        }
+        ticks.fetch_add(1);
+        const auto now = std::chrono::steady_clock::now();
+        if (last_ != std::chrono::steady_clock::time_point{}) {
+            const int64_t gap = std::chrono::duration_cast<std::chrono::microseconds>(now - last_).count();
+            if (gap > longest_gap_us.load()) {
+                longest_gap_us.store(gap);
+            }
+        }
+        last_ = now;
+    }
+    void on_connection_established(ConnectionID) override {}
+    void on_connection_failed(const std::string&) override {}
+    void on_connection_lost(const ConnectionID&, const std::string&) override {}
+    void on_raw_socket_message(const EventMessage&) override {}
+    void on_framework_pdu_message(const EventMessage& message) override {
+        release_pdu_payload(message);
+    }
+    void on_itc_message(const EventMessage&) override {}
+
+  private:
+    TimerID timer_{};
+    std::chrono::steady_clock::time_point last_{};
+};
+
 // True when `received` is exactly 1..count, in order.
 ::testing::AssertionResult exactly_once_in_order(const std::vector<int64_t>& received, int count) {
     if (static_cast<int>(received.size()) != count) {
@@ -371,9 +417,12 @@ class MessagesWaitingIntegrationTest : public ::testing::Test {
 
     // A receiver listening, and one sender connecting to it for each entry of `senders`: (count, stamped, interval).
     Receiver& make_listening_receiver(const std::vector<int64_t>& limits, const std::vector<std::tuple<int, bool, std::chrono::milliseconds>>& senders,
-                                      TakingPlan plan) {
+                                      TakingPlan plan, bool with_tick_counter = false) {
         static const ServiceRegistry empty_registry;
         Reactor& receiver_reactor = new_reactor(empty_registry);
+        if (with_tick_counter) {
+            tick_counter_ = &new_thread<TickCounter>(receiver_reactor);
+        }
         receiver_reactor.register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", any_os_assigned_port}, ThreadID{1});
         std::vector<bool> stamped;
         for (const auto& sender : senders) {
@@ -433,6 +482,7 @@ class MessagesWaitingIntegrationTest : public ::testing::Test {
     std::vector<std::shared_ptr<ApplicationThread>> threads_;
     std::vector<std::pair<Reactor*, std::thread>> running_;
     std::vector<Sender*> senders_;
+    TickCounter* tick_counter_{nullptr};
 };
 
 constexpr int flood = 100'000;
@@ -487,12 +537,14 @@ TEST_F(MessagesWaitingIntegrationTest, AFloodOnALimitedConnectionDoesNotHoldUpAn
     EXPECT_LT(receiver.longest_tick_gap_us.load(), 20'000) << "the receiver's timer went more than 20 ms without a tick";
 }
 
-// The same without an effective limit, to show the test above can tell the difference.
+// The same without an effective limit, to show the test above can tell the difference: the same measurement exceeds the
+// 20 ms that test allows.
 TEST_F(MessagesWaitingIntegrationTest, WithoutAnEffectiveLimitAFloodHoldsUpAnotherConnection) {
     const auto trickle = std::make_tuple(500, true, std::chrono::milliseconds{1});
     Receiver& receiver = make_listening_receiver({no_effective_limit, 0}, {unstamped, trickle}, TakingPlan{});
     ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(flood) && receiver.count(1) == 500U; }));
-    EXPECT_GT(receiver.connection(1).longest_wait_ns, 50'000'000) << "without a limit the trickle was expected to wait behind the flood";
+    EXPECT_GT(receiver.connection(1).longest_wait_ns, 20'000'000)
+        << "without a limit a trickled PDU was expected to wait behind the flood for longer than the 20 ms the test with a limit allows";
 }
 
 // Fairness between limited connections: two floods into one thread, each limited, are both served throughout.
@@ -538,6 +590,30 @@ TEST_F(MessagesWaitingIntegrationTest, AThreadAlternatingSlowAndFastLosesNothing
     }
     EXPECT_GT(receiver.switches.load(), 20) << "the thread changed speed too few times for this to be a soak";
     EXPECT_EQ(senders_[0]->connections_lost.load() + senders_[1]->connections_lost.load() + senders_[2]->connections_lost.load(), 0);
+}
+
+// BUG-0238: a flood on a connection without a limit, into a thread that takes each PDU at once, must not hold the reactor
+// in one read: another thread on the same reactor goes on getting its timer every millisecond or so.
+TEST_F(MessagesWaitingIntegrationTest, AFloodWithoutALimitDoesNotStopItsReactorServingAnotherThreadsTimer) {
+    constexpr int big_flood = 1'000'000;
+    const auto big = std::make_tuple(big_flood, false, std::chrono::milliseconds{0});
+    Receiver& receiver = make_listening_receiver({0}, {big}, TakingPlan{0, 0, std::chrono::milliseconds{0}}, true);
+    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(big_flood); }, 120000));
+    EXPECT_TRUE(exactly_once_in_order(receiver.connection(0).received, big_flood));
+    EXPECT_GT(tick_counter_->ticks.load(), 100) << "the flood was too short for the timer to be tested";
+    EXPECT_LT(tick_counter_->longest_gap_us.load(), 20'000) << "the reactor went more than 20 ms without ringing another thread's timer";
+}
+
+// BUG-0238: two floods without a limit into one reactor are both served throughout, neither held up by the other.
+TEST_F(MessagesWaitingIntegrationTest, TwoFloodsWithoutALimitAreBothServedThroughout) {
+    constexpr int big_flood = 500'000;
+    const auto big = std::make_tuple(big_flood, false, std::chrono::milliseconds{0});
+    Receiver& receiver = make_listening_receiver({0, 0}, {big, big}, TakingPlan{0, 0, std::chrono::milliseconds{0}});
+    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(big_flood) || receiver.count(1) == static_cast<size_t>(big_flood); }, 120000));
+    const size_t behind = std::min(receiver.count(0), receiver.count(1));
+    EXPECT_GT(behind, static_cast<size_t>(big_flood) / 2)
+        << "one flood was served while the other waited: " << receiver.count(0) << " and " << receiver.count(1);
+    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(big_flood) && receiver.count(1) == static_cast<size_t>(big_flood); }, 120000));
 }
 
 } // namespaces

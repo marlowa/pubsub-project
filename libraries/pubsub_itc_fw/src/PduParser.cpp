@@ -29,6 +29,7 @@ PduParser::PduParser(ByteStreamInterface& stream, ApplicationThread& target_thre
     , connection_id_(connection_id) {}
 
 std::tuple<bool, std::string> PduParser::receive() {
+    int dispatched = 0;
     for (;;) {
         // Phase 1: accumulate header bytes.
         if (!header_validated_) {
@@ -163,6 +164,11 @@ std::tuple<bool, std::string> PduParser::receive() {
         if (stop_reading) {
             // The limit's worth of this connection's messages are waiting in the thread's queue. Whatever else the socket
             // holds stays there, so that TCP slows the peer, until the thread asks for reading again.
+            return {true, ""};
+        }
+        if (++dispatched >= messages_per_receive) {
+            // Enough from this connection for one pass: the reactor serves its other sources, and epoll reports this
+            // socket again at once if it still has data (BUG-0238).
             return {true, ""};
         }
     }

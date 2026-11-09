@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 238 |
-| Open | 64 (43 defects, 21 tasks) |
-| Closed | 174 |
+| Open | 63 (42 defects, 21 tasks) |
+| Closed | 175 |
 | Next id | BUG-0239 |
 
 ## Open bugs by severity
 
-15 high, 37 medium, 12 low.
+14 high, 37 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -27,7 +27,6 @@
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
 | [BUG-0234](#bug_0234) | high | defect | A matching engine catching up from far back sends its reports faster than the sequencer reads them, and the framework closes the connection and loses the rest |
-| [BUG-0238](#bug_0238) | high | defect | A peer that keeps a connection's socket full holds its reactor in one read for as long as it does, so the reactor serves nothing else |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0041](#bug_0041) | medium | defect | Five ways the venue will not start on a RHEL8 target host |
 | [BUG-0045](#bug_0045) | medium | task | A member has no defined way to discover its primary gateway is down |
@@ -172,33 +171,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0238: A peer that keeps a connection's socket full holds its reactor in one read for as long as it does, so the reactor serves nothing else {#bug_0238}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-11-09 |
-| Recorded | 2026-11-09 |
-| How | Building the integration tests for the limit on messages waiting ([BUG-0234](#bug_0234)): a command sent to a receiving reactor was acted on two seconds late, while a second connection flooded it |
-| Impact | While one connection floods, its reactor reads nothing from its other connections, rings none of its timers and acts on none of its threads' commands. A reactor that renews leases, or carries orders on other connections, stops doing so for as long as the flood lasts |
-
-**What happens.** `PduParser::receive` reads in a loop until the socket has nothing more (`EAGAIN`). The reactor calls
-it once for each time epoll reports the socket readable, and carries on with its other work only when it returns. A
-peer that keeps the socket full, as a sender does that writes as fast as the connection takes, therefore keeps the
-reactor inside that one call.
-
-**Seen 2026-11-09**, in `MessagesWaitingIntegrationTest`: a receiving thread asked its reactor to limit a second
-connection the moment it was established, and the reactor picked that command up 1.99 seconds later, which was how long
-the second sender took to send all of its 100,000 messages. In that time the reactor read nothing from the first
-connection and acted on no command, and the first flood stalled at about 2,000 messages. A connection with a limit on
-its messages waiting is not affected, because the parser stops after the limit's worth; the integration tests make
-their senders wait until the limits are set so that they test the limit and not this.
-
-**What is wanted.** A bound on how much one call reads, after which the parser returns and the reactor serves its other
-sources before coming back: epoll here is level-triggered, so a socket left with data is reported again at once. This is
-a change to how the reactor serves its sources, so it needs the integration, soak and fairness tests that any such change
-needs, each made to fail first.
 
 ### BUG-0237: After losing a matching engine, the sequencer waits 2 seconds before connecting to it again, which is most of a supervised restart {#bug_0237}
 
@@ -3033,6 +3005,34 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0238: A peer that keeps a connection's socket full holds its reactor in one read for as long as it does, so the reactor serves nothing else {#bug_0238}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-11-09 |
+| Recorded | 2026-11-09 |
+| Fixed | 2026-11-09 -- `PduParser::receive` returns after `messages_per_receive`, 64, complete messages, leaving the rest in the socket; epoll here is level-triggered, so the socket is reported again at once and the reactor serves its other sources in between. 64 is the bound the reactor already uses for its commands per pass and its epoll events per call. A unit test reads 64 of 100 waiting messages and leaves 36; two integration tests flood a reactor without a limit: another thread's timer must keep ticking within 20 ms, and two floods must both be served throughout. Without the bound the timer went 0.88 to 0.98 seconds without a tick and one flood got 32,000 messages to the other's 500,000; the unit test failed every time, and the two integration tests between them failed in every run of three. All 1,289 library unit tests and 79 integration tests pass, and all 102 `ha_test.py` scenarios passed with the WALs cleared first |
+| How | Building the integration tests for the limit on messages waiting ([BUG-0234](#bug_0234)): a command sent to a receiving reactor was acted on two seconds late, while a second connection flooded it |
+| Impact | While one connection floods, its reactor reads nothing from its other connections, rings none of its timers and acts on none of its threads' commands. A reactor that renews leases, or carries orders on other connections, stops doing so for as long as the flood lasts |
+
+**What happens.** `PduParser::receive` reads in a loop until the socket has nothing more (`EAGAIN`). The reactor calls
+it once for each time epoll reports the socket readable, and carries on with its other work only when it returns. A
+peer that keeps the socket full, as a sender does that writes as fast as the connection takes, therefore keeps the
+reactor inside that one call.
+
+**Seen 2026-11-09**, in `MessagesWaitingIntegrationTest`: a receiving thread asked its reactor to limit a second
+connection the moment it was established, and the reactor picked that command up 1.99 seconds later, which was how long
+the second sender took to send all of its 100,000 messages. In that time the reactor read nothing from the first
+connection and acted on no command, and the first flood stalled at about 2,000 messages. A connection with a limit on
+its messages waiting is not affected, because the parser stops after the limit's worth; the integration tests make
+their senders wait until the limits are set so that they test the limit and not this.
+
+**What is wanted.** A bound on how much one call reads, after which the parser returns and the reactor serves its other
+sources before coming back: epoll here is level-triggered, so a socket left with data is reported again at once. This is
+a change to how the reactor serves its sources, so it needs the integration, soak and fairness tests that any such change
+needs, each made to fail first.
 
 ### BUG-0029: A process death on the same host takes the machine-death path {#bug_0029}
 

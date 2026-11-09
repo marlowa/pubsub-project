@@ -76,6 +76,13 @@ namespace pubsub_itc_fw {
  */
 class PduParser {
   public:
+    /// The most complete messages one call of receive() dispatches. A peer that keeps the socket full would otherwise
+    /// hold the reactor in one call for as long as it did, so that the reactor served none of its other connections,
+    /// timers or commands (docs/bug_list.md, BUG-0238). Epoll here is level-triggered, so a socket left with data is
+    /// reported again at once. The same bound as the reactor's commands per pass and epoll events per call, so that one
+    /// connection gets no more of a pass than any other source.
+    static constexpr int messages_per_receive = 64;
+
     ~PduParser() = default;
 
     /**
@@ -100,8 +107,9 @@ class PduParser {
      * @brief Reads available bytes from the stream and dispatches any complete frames.
      *
      * Must be called by the reactor when the socket is readable (EPOLLIN).
-     * May dispatch zero, one, or multiple FrameworkPdu events in a single call
-     * if multiple complete frames are available in the stream.
+     * May dispatch zero, one, or several FrameworkPdu events in a single call
+     * if several complete frames are available in the stream, but no more than
+     * messages_per_receive: it then returns with the rest left in the socket.
      *
      * With a limit on the messages waiting (set_messages_waiting_limit), it stops
      * reading at the end of the message that reaches the limit, and the caller
