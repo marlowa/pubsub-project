@@ -1,6 +1,7 @@
 add_executable(matching_engine
         DiedApplyingCheck.cpp
         EngineCatchUp.cpp
+        EngineReportPacing.cpp
         EngineReportSending.cpp
         EngineRole.cpp
         Ff1Cipher.cpp
@@ -31,6 +32,7 @@ add_dependencies(matching_engine fix_orders_generated matching_engine_replicatio
 target_sources(matching_engine PRIVATE
         DiedApplyingCheck.hpp
         EngineCatchUp.hpp
+        EngineReportPacing.hpp
         EngineReportSending.hpp
         EngineRole.hpp
         Ff1Cipher.hpp
@@ -121,6 +123,7 @@ add_executable(matching_engine_tests
         tests/MatchingEngineStateMachineFuzzTest.cpp
         tests/ReportIdentifiersTest.cpp
         tests/EngineReportSendingTest.cpp
+        tests/EngineReportPacingTest.cpp
         tests/FollowerReportComparisonTest.cpp
         tests/EngineCatchUpTest.cpp
         tests/EngineRoleTest.cpp
@@ -129,6 +132,7 @@ add_executable(matching_engine_tests
         DiedApplyingCheck.cpp
         EngineCatchUp.cpp
         EngineRole.cpp
+        EngineReportPacing.cpp
         EngineReportSending.cpp
         FollowerReportComparison.cpp
         Ff1Cipher.cpp
