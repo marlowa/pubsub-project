@@ -61,6 +61,12 @@ struct TestEventsConfiguration {
     /// (docs/availability/pacing_the_engines_reports.md, BUG-0234).
     int32_t read_reports_slowly_us{0};
 
+    /// How long the arbiter waits before each write of its leaders' statements to disk, in milliseconds, from the optional
+    /// `delay_statement_writes_ms` key; 0, no wait, when it is absent. Read by the arbiter. A test uses it to make the disk
+    /// as slow as one that stalled, and show that the arbiter goes on answering lease requests meanwhile
+    /// (docs/availability/recording_statements_in_the_background.md, BUG-0142).
+    int32_t delay_statement_writes_ms{0};
+
     /// The ClOrdID of a new order the matching engine dies applying, from the optional `die_applying_cl_ord_id` key;
     /// empty, for none, when it is absent. Read by the matching engine, which aborts where it would apply a new order
     /// with this ClOrdID, after recording in its open-order region that it is applying it, unless the order is voided or
@@ -134,9 +140,8 @@ struct TestEventsConfiguration {
  * The section is optional as a whole, and absent means no test events. Once present, host, port and component are
  * required: a half-filled section is a mistake in the test, and guessing the missing part would hide it.
  * `report_orders_of` is optional, and only an application that reports the outcome of orders reads it. So are
- * `comp_ids_without_session` and `read_reports_slowly_us`, read by the sequencer, `delay_session_announcements_ms`, read by the
- * gateways, and
- * `die_applying_cl_ord_id`, `die_applying_once`, `lose_and_regain_lease_after_cl_ord_id`,
+ * `comp_ids_without_session` and `read_reports_slowly_us`, read by the sequencer, `delay_statement_writes_ms`, read by the arbiter,
+ * `delay_session_announcements_ms`, read by the gateways, and `die_applying_cl_ord_id`, `die_applying_once`, `lose_and_regain_lease_after_cl_ord_id`,
  * `hold_sequencer_connections_until_role_decided` and `pace_reports`, read by the matching engine.
  */
 class TestEventsConfigurationLoader {
@@ -168,6 +173,13 @@ class TestEventsConfigurationLoader {
         }
         if (toml.has_key("test_events.comp_ids_without_session")) {
             toml.get_required_except("test_events.comp_ids_without_session", configuration.comp_ids_without_session);
+        }
+        if (toml.has_key("test_events.delay_statement_writes_ms")) {
+            toml.get_required_except("test_events.delay_statement_writes_ms", configuration.delay_statement_writes_ms);
+            if (configuration.delay_statement_writes_ms < 0) {
+                throw ConfigurationException(
+                    fmt::format("test_events.delay_statement_writes_ms must not be negative, got {}", configuration.delay_statement_writes_ms));
+            }
         }
         if (toml.has_key("test_events.read_reports_slowly_us")) {
             toml.get_required_except("test_events.read_reports_slowly_us", configuration.read_reports_slowly_us);

@@ -56,6 +56,7 @@ add_executable(pubsub_itc_fw_tests
     FixedCapacityRingBufferTest.cpp
     WaitingSendQueueTest.cpp
     MessagesWaitingLimitTest.cpp
+    BackgroundRecorderTest.cpp
     WalWriterReaderTest.cpp
     WallClockTest.cpp
     EpochStoreTest.cpp

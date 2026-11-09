@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <array>
 #include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <map>
@@ -20,6 +21,7 @@
 
 #include <lease_messages.hpp>
 #include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
+#include <pubsub_itc_fw/BackgroundRecorder.hpp>
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
@@ -147,8 +149,25 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // The newest statement from each component pair's leader about whether its peer may lead,
     // kept on disk beside the promise record, so that a restart does not forget it.
     ComponentStatementStore component_statement_store_;
-    // Whether the statements held in memory differ from those last written to disk, because a write failed.
-    bool component_statements_unsaved_{false};
+
+    // The statements held, as handed to the writer thread: fixed in size, so that handing them over allocates nothing.
+    // An arbiter votes in a few pairs, one for each kind of component that leads (docs/availability/recording_statements_in_the_background.md).
+    static constexpr size_t most_pairs_voted_in = 8;
+    struct StatementsRecord {
+        std::array<std::pair<int32_t, pubsub_itc_fw::LeaderStatement>, most_pairs_voted_in> entries{};
+        size_t count{0};
+    };
+    // Writes the statement file on a thread of its own, so that this thread never waits for the disk to answer a lease
+    // request (BUG-0142). Declared after the store it writes to, so it is destroyed first.
+    std::optional<pubsub_itc_fw::BackgroundRecorder<StatementsRecord>> statement_writer_;
+    // Whether the statements held differ from those last written or being written, so that another write is owed.
+    bool statements_unwritten_{false};
+    // The statements in the write in progress, and those the last successful write put on disk.
+    StatementsRecord statements_being_written_{};
+    std::map<int32_t, pubsub_itc_fw::LeaderStatement> statements_written_;
+    // For each pair, the connection of the latest request whose statement is held but not yet on disk, to be confirmed on
+    // with StatementHeld once it is.
+    std::map<int32_t, pubsub_itc_fw::ConnectionID> confirmation_owed_;
 
     // When this arbiter last heard from the other, and the echoes of its heartbeats: whether it may confirm statements alone,
     // and whether, on becoming active, it may lack a statement the other confirmed alone. Constructed at the initial event.
@@ -193,8 +212,17 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     /// neither is forgotten if the peer becomes active.
     void send_group_state_to_peer(const pubsub_itc_fw::ConnectionID& conn_id, int32_t pair_id);
 
-    /// Writes every statement held to disk. Logs, and returns false, when it cannot.
-    [[nodiscard]] bool save_component_statements();
+    /// The statements held have changed: write them, now or once the write in progress has finished.
+    void statements_changed();
+    /// Starts a write of every statement held, unless one is in progress.
+    void start_writing_statements();
+    /// Reads the outcome of the write in progress, confirms the statements it put on disk, and starts another if one is owed.
+    /// Called on each lease tick.
+    void check_statement_writing();
+    /// Whether @p statement, held for @p pair_id, is on disk.
+    [[nodiscard]] bool statement_written(int32_t pair_id, const pubsub_itc_fw::LeaderStatement& statement) const;
+    /// Tells the leader on @p conn_id that this arbiter holds @p statement for @p pair_id, which is on disk.
+    void confirm_statement(const pubsub_itc_fw::ConnectionID& conn_id, int32_t pair_id, const pubsub_itc_fw::LeaderStatement& statement);
 
     /// Sends the other arbiter, on @p conn_id, the highest epoch granted and the newest statement held for every pair.
     void send_whole_state_to_peer(const pubsub_itc_fw::ConnectionID& conn_id);
@@ -205,12 +233,13 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     void handle_arbiter_heartbeat(const pubsub_itc_fw::EventMessage& message);
 
     /**
-     * @brief Records the statement a component's leader carries on @p request, writes it to disk if it is new, and tells the
-     *        leader this arbiter holds it.
+     * @brief Records the statement a component's leader carries on @p request, has it written to disk if it is new, and tells
+     *        the leader this arbiter holds it once it is on disk: at once if it already is, otherwise on the lease tick after
+     *        the write that puts it there.
      *
      * Done by the active and the passive arbiter alike, so that a statement the leader relies on survives a change of
-     * active arbiter. Nothing is confirmed while the statements are held in memory only, or when this arbiter already
-     * holds a newer statement from the pair.
+     * active arbiter. Nothing is confirmed that is not on disk, or when this arbiter already holds a newer statement from
+     * the pair. Nothing here waits for the disk (BUG-0142).
      *
      * @return Whether the statement this arbiter holds for the pair changed.
      */

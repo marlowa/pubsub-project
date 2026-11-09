@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 238 |
-| Open | 62 (41 defects, 21 tasks) |
-| Closed | 176 |
+| Open | 61 (40 defects, 21 tasks) |
+| Closed | 177 |
 | Next id | BUG-0239 |
 
 ## Open bugs by severity
 
-13 high, 37 medium, 12 low.
+12 high, 37 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -22,7 +22,6 @@
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
-| [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
 | [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
@@ -619,67 +618,6 @@ between listing the directory and reading the file, or it reads the WAL only onc
 finished changing it.
 
 **Evidence kept.** The scenario's output and logs are in `tmp/bug0149/scenario-62`.
-
-### BUG-0142: The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader {#bug_0142}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-11 |
-| Recorded | 2026-10-11 |
-| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenario 8 failed before its kills began: its baseline orders never completed |
-| Impact | While the arbiter's thread waits for the disk it renews no lease. A pair whose leader depends on the arbiter's vote, because its peer is down, loses its leader, and trading stops until a leader is chosen again. The arbiter's own lease can run out in the same wait, as it did here |
-
-**What happened.** In scenario 8, against the Debug install:
-
-1. The secondary sequencer discarded records from its log at 23:06:42.43 and then stopped
-   ([BUG-0141](#bug_0141)), so the primary sequencer could keep its lease only with the arbiter's vote.
-2. At 23:06:43.64 the primary sequencer sent the arbiter a new statement, that its follower may not lead.
-3. The arbiter's application thread took that statement in and did not finish handling it until
-   23:06:48.53: its reactor logged "callback not finished yet" every half second, up to 4,788 ms.
-4. Meanwhile the primary sequencer's lease ran out at 23:06:46.33, "neither the peer nor the arbiter
-   renewed it in time", and it stopped leading while holding 1,000 orders. The arbiter's own lease ran
-   out at 23:06:48.53 as well. The baseline orders never completed and the scenario failed.
-
-**Where the arbiter waits.** When a request for a lease carries a changed statement, `ArbiterThread`
-calls `save_component_statements()` before it sends the grant (`ArbiterThread.cpp`, in the handling of a
-lease request). That writes the statements through `ComponentStatementStore`, which writes a temporary
-file, calls `fsync` on it, renames it and syncs the directory, all on the arbiter's application thread.
-The arbiter logged the statement only after the save returned, at 23:06:48.53.
-
-**A suspected cause of the long `fsync`, not established.** The statement file is on `/mnt/sda2`, the
-`lazytime` device, which also holds both sequencers' logs. About a second before the stall, the
-secondary sequencer's log repair had overwritten the rest of a segment with zeros, synced it, and
-deleted the later segments (`Wal::truncate_after`), on the same filesystem. On ext4, an `fsync` of a
-small file waits for the journal commit, which may have to write out other files' data first. Showing
-it needs the arbiter's kernel stack caught during such a stall.
-
-**Whatever the cause,** this is the weakness [BUG-0107](#bug_0107) described: code that renews leases
-must not be able to block for seconds on the disk. BUG-0107 moved the lease promise records onto a
-thread of their own; the statement records were not moved.
-
-**The same wait, recording an epoch.** In scenario 53 of the same run, the restarted primary matching
-engine was granted a lease and then spent 5.5 seconds in one callback, which ended with "epoch advanced
-2161 -> 2165 (recorded)": `EpochStore::store` syncing the new epoch on the engine's thread. The lease it
-had just been granted ran out during the wait. Principle F4 allows this wait, because the instance is
-changing role and handles no orders meanwhile. But a wait longer than the lease defeats the change of
-role it belongs to, and here it led on to [BUG-0143](#bug_0143). So F4's exception needs a bound, or the
-lease must not run out while the epoch is being recorded; that is a design question for Andrew.
-
-**What is wanted.** A design for recording statements without the lease thread waiting for the disk,
-which must keep the rule that an arbiter echoes a statement only once it is recorded. This belongs with
-the high availability machinery that [ha_library_boundary.md](availability/ha_library_boundary.md)
-proposes moving into the library.
-
-**Designed and agreed 2026-11-09**:
-[recording_statements_in_the_background.md](availability/recording_statements_in_the_background.md), with the promise
-recorder made general so that the same class writes both promises and statements. The file stays synced to disk
-rather than kept in shared memory, because it must survive the arbiter's machine dying, not only its process. The statement
-file is written on a writer thread of its own, as lease promises already are; a lease request is answered at once;
-and `StatementHeld` is sent on the arbiter's next 100-millisecond tick after a successful write, so a statement is
-still confirmed only once it is on disk. The epoch half of this entry is already dealt with: rule 13 of
-[majority_leases.md](availability/majority_leases.md), built for [BUG-0228](#bug_0228), records the epoch before the
-instance asks to lead, so the write no longer comes out of the lease.
 
 ### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
 
@@ -2933,6 +2871,68 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0142: The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader {#bug_0142}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| Fixed | 2026-11-09 -- the arbiter writes leaders' statements on a thread of its own ([recording_statements_in_the_background.md](availability/recording_statements_in_the_background.md)), so the thread that answers lease requests never waits for the disk: a changed statement takes effect in memory at once and is handed to `StatementWriter`; `StatementHeld` is sent only once the statement is on disk, at once if it already is and otherwise on the lease tick after the write; a failed write is logged as an Error and tried again. The write uses `BackgroundRecorder`, the promise recorder's hand-over made a class template, which `BackgroundPromiseRecorder` now uses too. Scenario 103 kills the secondary sequencer, so the primary keeps its lease only through the arbiter, makes the arbiter's statement writes take 5 seconds, and requires the primary's lease never to run out and every order to be answered: with the change the orders waited 7 seconds for the confirmation and the lease held; with the arbiter made to wait for the write on its own thread, the lease ran out and the scenario failed. The arbiter's handling is tested by that scenario, not by unit tests: no harness for `ArbiterThread` exists. `BackgroundRecorder` has 5 unit tests, each of three deliberate breaks failing one. All 1,294 library unit tests and all 103 `ha_test.py` scenarios pass, with the WALs cleared first. The epoch half of this entry was dealt with by rule 13 ([BUG-0228](#bug_0228)) |
+| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenario 8 failed before its kills began: its baseline orders never completed |
+| Impact | While the arbiter's thread waits for the disk it renews no lease. A pair whose leader depends on the arbiter's vote, because its peer is down, loses its leader, and trading stops until a leader is chosen again. The arbiter's own lease can run out in the same wait, as it did here |
+
+**What happened.** In scenario 8, against the Debug install:
+
+1. The secondary sequencer discarded records from its log at 23:06:42.43 and then stopped
+   ([BUG-0141](#bug_0141)), so the primary sequencer could keep its lease only with the arbiter's vote.
+2. At 23:06:43.64 the primary sequencer sent the arbiter a new statement, that its follower may not lead.
+3. The arbiter's application thread took that statement in and did not finish handling it until
+   23:06:48.53: its reactor logged "callback not finished yet" every half second, up to 4,788 ms.
+4. Meanwhile the primary sequencer's lease ran out at 23:06:46.33, "neither the peer nor the arbiter
+   renewed it in time", and it stopped leading while holding 1,000 orders. The arbiter's own lease ran
+   out at 23:06:48.53 as well. The baseline orders never completed and the scenario failed.
+
+**Where the arbiter waits.** When a request for a lease carries a changed statement, `ArbiterThread`
+calls `save_component_statements()` before it sends the grant (`ArbiterThread.cpp`, in the handling of a
+lease request). That writes the statements through `ComponentStatementStore`, which writes a temporary
+file, calls `fsync` on it, renames it and syncs the directory, all on the arbiter's application thread.
+The arbiter logged the statement only after the save returned, at 23:06:48.53.
+
+**A suspected cause of the long `fsync`, not established.** The statement file is on `/mnt/sda2`, the
+`lazytime` device, which also holds both sequencers' logs. About a second before the stall, the
+secondary sequencer's log repair had overwritten the rest of a segment with zeros, synced it, and
+deleted the later segments (`Wal::truncate_after`), on the same filesystem. On ext4, an `fsync` of a
+small file waits for the journal commit, which may have to write out other files' data first. Showing
+it needs the arbiter's kernel stack caught during such a stall.
+
+**Whatever the cause,** this is the weakness [BUG-0107](#bug_0107) described: code that renews leases
+must not be able to block for seconds on the disk. BUG-0107 moved the lease promise records onto a
+thread of their own; the statement records were not moved.
+
+**The same wait, recording an epoch.** In scenario 53 of the same run, the restarted primary matching
+engine was granted a lease and then spent 5.5 seconds in one callback, which ended with "epoch advanced
+2161 -> 2165 (recorded)": `EpochStore::store` syncing the new epoch on the engine's thread. The lease it
+had just been granted ran out during the wait. Principle F4 allows this wait, because the instance is
+changing role and handles no orders meanwhile. But a wait longer than the lease defeats the change of
+role it belongs to, and here it led on to [BUG-0143](#bug_0143). So F4's exception needs a bound, or the
+lease must not run out while the epoch is being recorded; that is a design question for Andrew.
+
+**What is wanted.** A design for recording statements without the lease thread waiting for the disk,
+which must keep the rule that an arbiter echoes a statement only once it is recorded. This belongs with
+the high availability machinery that [ha_library_boundary.md](availability/ha_library_boundary.md)
+proposes moving into the library.
+
+**Designed and agreed 2026-11-09**:
+[recording_statements_in_the_background.md](availability/recording_statements_in_the_background.md), with the promise
+recorder made general so that the same class writes both promises and statements. The file stays synced to disk
+rather than kept in shared memory, because it must survive the arbiter's machine dying, not only its process. The statement
+file is written on a writer thread of its own, as lease promises already are; a lease request is answered at once;
+and `StatementHeld` is sent on the arbiter's next 100-millisecond tick after a successful write, so a statement is
+still confirmed only once it is on disk. The epoch half of this entry is already dealt with: rule 13 of
+[majority_leases.md](availability/majority_leases.md), built for [BUG-0228](#bug_0228), records the epoch before the
+instance asks to lead, so the write no longer comes out of the lease.
 
 ### BUG-0234: A matching engine catching up from far back sends its reports faster than the sequencer reads them, and the framework closes the connection and loses the rest {#bug_0234}
 

@@ -1136,6 +1136,9 @@ class Scenario(NamedTuple):
     # lead before it has been told of the member's session. See
     # docs/availability/reports_held_until_sessions_are_announced.md.
     delay_session_announcements_ms: int = 0
+    # How long each arbiter waits before each write of its leaders' statements ([test_events] delay_statement_writes_ms);
+    # 0 for no wait. Lets a scenario make the arbiter's disk as slow as one that stalled (BUG-0142).
+    delay_statement_writes_ms: int = 0
     # When True, the restarted primary sequencer must hold the cancels the promoted matching engine sends for the
     # member's session, which it has not yet been told of, and send them when the gateway announces it; and the member
     # must receive a cancel for every order the engine cancelled. See run_scenario's "held reports" block.
@@ -3937,6 +3940,40 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 103 -- the arbiter goes on answering lease requests while its disk is slow to take a leader's statement.
+    #
+    # BUG-0142. The secondary sequencer is killed, so the primary keeps its lease only with the arbiter's vote, and the
+    # arbiter's writes of leaders' statements are made to take 5 seconds, longer than the 3-second lease. Orders sent
+    # then make the primary act on commands its follower lacks, so it states that its follower may not lead, and the
+    # arbiter has a statement to write. An arbiter that wrote it on the thread that answers lease requests would answer
+    # nothing for those 5 seconds, and the primary's lease would run out, as it did in scenario 8 on 2026-10-11. The
+    # primary's lease must never run out, and every order must be answered.
+    Scenario(
+        number=103,
+        short_name="arbiter_answers_while_statement_written",
+        description="The arbiter goes on answering lease requests while a slow disk takes a leader's statement",
+        expected_outcome=(
+            "with the arbiter's statement writes taking 5 seconds, sequencer_primary, whose follower is dead, keeps its lease "
+            "throughout, and every order is answered"
+        ),
+        delay_statement_writes_ms=5000,
+        orders_during_override=0,
+        steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="sequencer_secondary",
+                takeover=None,
+                settle_secs=SETTLE_AFTER_KILL,
+            ),
+            InterimOrdersStep(count_batches=1),
+            AssertAbsentStep(
+                absent=expect_lease("sequencer_primary", "RanOut"),
+                after_secs=12.0,
+                description="sequencer_primary's lease never ran out while the arbiter wrote its statement",
+            ),
+        ],
+    ),
+
     # 62 -- an old leader that rejoins discards the records its new leader does not have.
     #
     # The primary sequencer is started with libblock_sends_to_ports.so preloaded. Once the flag file
@@ -6226,6 +6263,9 @@ _HOLD_SEQUENCER_CONNECTIONS_NOW: set[str] = set()
 # pace_reports). Set around a launch that asks for them (docs/bug_list.md, BUG-0234).
 _READ_REPORTS_SLOWLY_US_NOW = 0
 _PACE_REPORTS_NOW = True
+# How long each arbiter launched now waits before each write of its leaders' statements, in milliseconds ([test_events]
+# delay_statement_writes_ms); set from the scenario before its processes start.
+_STATEMENT_WRITE_DELAY_MS_NOW = 0
 # How long the sequencer in the engines-on-the-WAL check spends on each report, in microseconds: slower than an engine
 # applying a catch-up sends them, so that every run of the check depends on the engine's pacing.
 _ENGINES_ON_THE_WAL_READ_REPORTS_SLOWLY_US = 20
@@ -6237,7 +6277,8 @@ _TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter", "fix_order_
 def config_with_test_events(config: Path, listener: TestEventListener, name: str, report_orders_of: tuple = (),
                             comp_ids_without_session: tuple = (), delay_session_announcements_ms: int = 0,
                             die_applying: tuple[str, bool] | None = None, lose_and_regain_lease_after: str | None = None,
-                            hold_sequencer_connections: bool = False, read_reports_slowly_us: int = 0, pace_reports: bool = True) -> Path:
+                            hold_sequencer_connections: bool = False, read_reports_slowly_us: int = 0, pace_reports: bool = True,
+                            delay_statement_writes_ms: int = 0) -> Path:
     """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
     knows the component by, which its threads give when they introduce themselves. report_orders_of lists the comp ids
     whose orders a matching engine reports the outcome of. comp_ids_without_session lists the comp ids whose reports a
@@ -6272,6 +6313,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
         text += f"read_reports_slowly_us = {read_reports_slowly_us}\n"
     if not pace_reports:
         text += "pace_reports = false\n"
+    if delay_statement_writes_ms > 0:
+        text += f"delay_statement_writes_ms = {delay_statement_writes_ms}\n"
     copy = config.with_name(f"{name}_test_events.toml")
     copy.write_text(text)
     return copy
@@ -6306,7 +6349,8 @@ def launch_app(name: str, bin_name: str, config: Path,
                                          _LEASE_LOST_AND_REGAINED_NOW.get(name) if bin_name == "matching_engine" else None,
                                          bin_name == "matching_engine" and name in _HOLD_SEQUENCER_CONNECTIONS_NOW,
                                          _READ_REPORTS_SLOWLY_US_NOW if bin_name == "sequencer" else 0,
-                                         _PACE_REPORTS_NOW if bin_name == "matching_engine" else True)
+                                         _PACE_REPORTS_NOW if bin_name == "matching_engine" else True,
+                                         _STATEMENT_WRITE_DELAY_MS_NOW if bin_name == "arbiter" else 0)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -7918,9 +7962,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         # ── Phase 1: start all processes ──────────────────────────────────────
         global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW, _DIE_APPLYING_NOW  # pylint: disable=global-statement
-        global _LEASE_LOST_AND_REGAINED_NOW  # pylint: disable=global-statement
+        global _LEASE_LOST_AND_REGAINED_NOW, _STATEMENT_WRITE_DELAY_MS_NOW  # pylint: disable=global-statement
         _INSTALL_PREFIX = prefix
         _ANNOUNCEMENT_DELAY_MS_NOW = scenario.delay_session_announcements_ms
+        _STATEMENT_WRITE_DELAY_MS_NOW = scenario.delay_statement_writes_ms
         # The engine that leads at the start is the one started first, which must lead before the other starts, and
         # otherwise the primary.
         dies_first = engine_first or "matching_engine_primary"

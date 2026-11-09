@@ -4,7 +4,10 @@
 #include <pubsub_itc_fw/ArbiterThread.hpp>
 
 #include <chrono>
+#include <map>
+#include <optional>
 #include <string>
+#include <thread>
 
 #include <lease_messages.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
@@ -15,6 +18,7 @@
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PeerStatementsFlag.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
@@ -130,6 +134,25 @@ void ArbiterThread::on_initial_event() {
                        pair_name(pair_id), statement.leader_id, statement.epoch, statement.instance_that_may_not_lead());
         }
     }
+    statements_written_ = component_voters_.statements();
+    if (config_.voting_pairs.size() > most_pairs_voted_in) {
+        throw pubsub_itc_fw::PubSubItcException(fmt::format("ArbiterThread: configured to vote in {} pairs, more than the {} its record of statements holds",
+                                                            config_.voting_pairs.size(), most_pairs_voted_in));
+    }
+    const std::chrono::milliseconds write_delay{config_.test_events.delay_statement_writes_ms};
+    statement_writer_.emplace(
+        [store = &component_statement_store_, write_delay](const StatementsRecord& record) {
+            if (write_delay.count() > 0) {
+                // A test setting that makes the disk as slow as one that stalled.
+                std::this_thread::sleep_for(write_delay);
+            }
+            ComponentStatementStore::Statements statements;
+            for (size_t index = 0; index < record.count; ++index) {
+                statements.emplace(record.entries[index].first, record.entries[index].second);
+            }
+            return store->save(statements);
+        },
+        "StatementWriter");
     peer_contact_.emplace(config_.lease, std::chrono::steady_clock::now());
     lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -232,6 +255,7 @@ void ArbiterThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         const auto now = std::chrono::steady_clock::now();
         act_on(pool_lease_->on_tick(now));
         send_heartbeats_to_peer(now);
+        check_statement_writing();
     }
 }
 
@@ -484,17 +508,24 @@ bool ArbiterThread::record_component_statement(const pubsub_itc_fw::ConnectionID
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: group={} instance {} says at epoch {} (statement {}) that its peer {}",
                    pair_name(request.pair_id), statement.leader_id, statement.epoch, statement.number, statement.peer_may_lead ? "may lead" : "may not lead");
     }
-    if (changed || component_statements_unsaved_) {
-        component_statements_unsaved_ = !save_component_statements();
-    }
-    if (component_statements_unsaved_) {
-        // Held in memory only, so not confirmed: the leader goes on sending it, and the write is tried again then.
-        return changed;
+    if (changed) {
+        statements_changed();
     }
     if (held == 0) {
         // This arbiter holds a newer statement than the one on the request, so it does not confirm it.
         return changed;
     }
+    if (statement_written(request.pair_id, statement)) {
+        confirm_statement(conn_id, request.pair_id, statement);
+        confirmation_owed_.erase(request.pair_id);
+    } else {
+        // Held in memory only, so not yet confirmed: it is confirmed on this connection once a write puts it on disk.
+        confirmation_owed_[request.pair_id] = conn_id;
+    }
+    return changed;
+}
+
+void ArbiterThread::confirm_statement(const pubsub_itc_fw::ConnectionID& conn_id, int32_t pair_id, const pubsub_itc_fw::LeaderStatement& statement) {
     // The active arbiter confirms alone once it has heard nothing from the other arbiter for long enough that the other, if it
     // becomes active, knows it may lack this statement. It then owes the other its whole state before its next echo.
     const bool alone = component_voters_.active() && peer_contact_->may_confirm_alone(std::chrono::steady_clock::now());
@@ -505,12 +536,71 @@ bool ArbiterThread::record_component_statement(const pubsub_itc_fw::ConnectionID
     pubsub_itc_fw::StatementHeld confirmation{};
     confirmation.alone = alone;
     confirmation.arbiter_instance_id = static_cast<int64_t>(config_.instance_id);
-    confirmation.pair_id = request.pair_id;
+    confirmation.pair_id = pair_id;
     confirmation.statement_leader_id = statement.leader_id;
     confirmation.statement_epoch = statement.epoch;
     confirmation.statement_number = statement.number;
     send_pdu(conn_id, pubsub_itc_fw::StatementHeld::message_pdu_id, 0, confirmation);
-    return changed;
+}
+
+bool ArbiterThread::statement_written(int32_t pair_id, const pubsub_itc_fw::LeaderStatement& statement) const {
+    const auto found = statements_written_.find(pair_id);
+    return found != statements_written_.end() && found->second.same_as(statement);
+}
+
+void ArbiterThread::statements_changed() {
+    statements_unwritten_ = true;
+    start_writing_statements();
+}
+
+void ArbiterThread::start_writing_statements() {
+    if (!statement_writer_.has_value() || statement_writer_->in_progress()) {
+        // The write in progress is followed by another, with the statements as they are then, when it finishes.
+        return;
+    }
+    StatementsRecord record;
+    for (const auto& [pair_id, statement] : component_voters_.statements()) {
+        if (record.count == most_pairs_voted_in) {
+            break;
+        }
+        record.entries[record.count++] = {pair_id, statement};
+    }
+    if (statement_writer_->start(record)) {
+        statements_being_written_ = record;
+        statements_unwritten_ = false;
+    }
+}
+
+void ArbiterThread::check_statement_writing() {
+    if (!statement_writer_.has_value()) {
+        return;
+    }
+    if (const std::optional<bool> written = statement_writer_->result(); written.has_value()) {
+        if (*written) {
+            statements_written_.clear();
+            for (size_t index = 0; index < statements_being_written_.count; ++index) {
+                statements_written_.emplace(statements_being_written_.entries[index].first, statements_being_written_.entries[index].second);
+            }
+            for (auto owed = confirmation_owed_.begin(); owed != confirmation_owed_.end();) {
+                const pubsub_itc_fw::LeaderStatement held = component_voters_.statement(owed->first);
+                if (statement_written(owed->first, held)) {
+                    confirm_statement(owed->second, owed->first, held);
+                    owed = confirmation_owed_.erase(owed);
+                } else {
+                    ++owed;
+                }
+            }
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "ArbiterThread: could not write the component statements to '{}' -- the newest statements are held in memory only, and are "
+                       "not confirmed; the write is tried again",
+                       component_statement_store_.path());
+            statements_unwritten_ = true;
+        }
+    }
+    if (statements_unwritten_) {
+        start_writing_statements();
+    }
 }
 
 void ArbiterThread::send_whole_state_to_peer(const pubsub_itc_fw::ConnectionID& conn_id) {
@@ -572,16 +662,6 @@ void ArbiterThread::send_group_state_to_peer(const pubsub_itc_fw::ConnectionID& 
     send_pdu(conn_id, pubsub_itc_fw::ArbiterStateRecord::message_pdu_id, 0, record);
 }
 
-bool ArbiterThread::save_component_statements() {
-    if (component_statement_store_.save(component_voters_.statements())) {
-        return true;
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "ArbiterThread: could not write the component statements to '{}' -- the newest statement is held in memory only, and is not echoed",
-               component_statement_store_.path());
-    return false;
-}
-
 void ArbiterThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = message.pdu_id();
     peer_contact_->heard(std::chrono::steady_clock::now());
@@ -614,10 +694,9 @@ void ArbiterThread::handle_arbiter_state_record(const pubsub_itc_fw::EventMessag
     component_voters_.learn_epoch(record.pair_id, record.epoch);
     const pubsub_itc_fw::LeaderStatement statement{record.statement_leader_id, record.statement_epoch, record.statement_number, record.peer_may_lead};
     if (statement.leader_id != 0 && component_voters_.learn_statement(record.pair_id, statement)) {
-        const bool saved = save_component_statements();
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: peer reports group={} instance {} said at epoch {} that its peer {}{}",
-                   pair_name(record.pair_id), statement.leader_id, statement.epoch, statement.peer_may_lead ? "may lead" : "may not lead",
-                   saved ? "" : " -- held in memory only");
+        statements_changed();
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: peer reports group={} instance {} said at epoch {} that its peer {}",
+                   pair_name(record.pair_id), statement.leader_id, statement.epoch, statement.peer_may_lead ? "may lead" : "may not lead");
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: peer reports group={} has been granted epoch {}", pair_name(record.pair_id),
                record.epoch);

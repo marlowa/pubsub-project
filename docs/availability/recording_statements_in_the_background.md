@@ -1,6 +1,8 @@
 # Recording leaders' statements in the background {#recording_statements_in_the_background}
 
-**Status: designed and agreed, not built.** This is the design for [BUG-0142](../bug_list.md#bug_0142).
+**Status: built (BUG-0142 closed 9 November 2026).** This is the design for [BUG-0142](../bug_list.md#bug_0142). Step 2's unit
+tests of the arbiter were not written, because no harness for `ArbiterThread` exists; scenario 103 tests its handling
+with real processes instead.
 Section 7 records its decision, agreed with Andrew on 9 November 2026.
 
 ## 1. The problem
