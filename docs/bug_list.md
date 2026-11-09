@@ -972,6 +972,15 @@ with about 1.7 seconds between rolls. The risk is a burst of orders together wit
 **Principle.** F4 in `docs/design_principles.md`: a segment created by the writing thread because
 the helper has failed is the one accepted exception, and waiting for the helper is not accepted.
 
+**Designed 2026-11-09**, for Andrew's review before any code:
+[keeping_segments_ready.md](durability/keeping_segments_ready.md). Every segment is filled under a temporary name and
+renamed to its final name only when full, so the writer never has to wait for the helper: if the next segment is
+not ready it makes it itself, under the same rule, and logs a Warning. The helper keeps `segments_kept_ready`
+segments ready, four by default. The rename also closes a hazard found while designing it: a process that dies
+while filling a segment today leaves a short file under the final name, which the next start maps in full, so an
+append past its end would fail with SIGBUS. That was found by reading `WalWriter::create_and_map` and has not been
+reproduced; the design's first step reproduces it.
+
 ### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
 
 | | |
