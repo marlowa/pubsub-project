@@ -729,6 +729,14 @@ which must keep the rule that an arbiter echoes a statement only once it is reco
 the high availability machinery that [ha_library_boundary.md](availability/ha_library_boundary.md)
 proposes moving into the library.
 
+**Designed 2026-11-09**, for Andrew's review before any code:
+[recording_statements_in_the_background.md](availability/recording_statements_in_the_background.md). The statement
+file is written on a writer thread of its own, as lease promises already are; a lease request is answered at once;
+and `StatementHeld` is sent on the arbiter's next 100-millisecond tick after a successful write, so a statement is
+still confirmed only once it is on disk. The epoch half of this entry is already dealt with: rule 13 of
+[majority_leases.md](availability/majority_leases.md), built for [BUG-0228](#bug_0228), records the epoch before the
+instance asks to lead, so the write no longer comes out of the lease.
+
 ### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
 
 | | |
