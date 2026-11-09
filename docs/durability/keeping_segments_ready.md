@@ -1,8 +1,8 @@
 # Keeping WAL segments ready {#keeping_segments_ready}
 
-**Status: designed, not built.** This is the design for [BUG-0130](../bug_list.md#bug_0130), written for
-review before any code. It builds what was agreed with Andrew on 11 October 2026, and section 6 says what
-is new beyond that.
+**Status: designed and agreed, not built.** This is the design for [BUG-0130](../bug_list.md#bug_0130).
+It builds what was agreed with Andrew on 11 October 2026; the two additions in section 6 were agreed on 9
+November 2026.
 
 ## 1. The problem
 
@@ -156,7 +156,7 @@ make another, and that is logged as a Warning.
 
 ## 6. What is new beyond what was agreed
 
-Two things, both for review rather than for a choice between options:
+Two things, both agreed on 9 November 2026:
 
 - **The rename in 3.1.** Without it the writer must either wait for the helper or risk mapping a file the
   helper is still filling, so it is what makes "never wait for the helper" possible. It also closes the
