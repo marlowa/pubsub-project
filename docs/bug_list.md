@@ -195,6 +195,8 @@ stay as measured, the interruption would come down to under a second.
 **How to check it.** The measurement under [BUG-0029](#bug_0029), repeated: kill a supervised leading
 engine and read the time from its death to "adopting LEADER role" in its Quill log.
 
+**Designed 2026-11-09, for Andrew's review before any code:** [reconnecting_to_a_restarted_engine.md](availability/reconnecting_to_a_restarted_engine.md).
+
 ### BUG-0236: The COMPID editor writes its administrators' file readable by every account on the host {#bug_0236}
 
 | | |
@@ -432,6 +434,8 @@ rather than holding a different book.
 
 **Principles.** V8: every report the matching engine produces reaches the member, and says what the venue did.
 
+**Designed 2026-11-09, for Andrew's review before any code:** [region_capacity_changed_during_a_day.md](availability/region_capacity_changed_during_a_day.md).
+
 ### BUG-0209: No scenario reaches the halt when a matching engine cannot account for the orders the venue holds {#bug_0209}
 
 | | |
@@ -486,6 +490,8 @@ carried in the exchange of status the two sequencers make when they connect (`St
 written into the WAL's own records of leadership.
 
 **Principles.** V11: a loss of resilience is not a loss of service.
+
+**Designed 2026-11-09, for Andrew's review before any code:** [engine_absence_after_a_restart.md](availability/engine_absence_after_a_restart.md).
 
 ### BUG-0166: The reactor writes a Warning for every send to a connection that has gone, not one for each connection {#bug_0166}
 
@@ -808,6 +814,8 @@ designed with them.
 The waiting reports' storage and its limits are to be written up and agreed before any code.
 
 **Principles.** F5 and F6 in `docs/design_principles.md`.
+
+**Designed 2026-11-09, for Andrew's review before any code:** [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md).
 
 ### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
 
@@ -1525,6 +1533,8 @@ per order once the pool runs out.
 Related: [BUG-0048](#bug_0048), for the memory figures this came out of, and
 [BUG-0028](#bug_0028), which is the same class of problem in the order book -- growth sized by
 doubling rather than by a stated expectation.
+
+**2026-11-09:** the figure this entry needs, how many orders may be open at once in the venue, is asked as decision 2 of [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md), so that the gateways' pools, the sequencer's map and the engine's region are sized from one figure.
 
 ### BUG-0073: The placeholder environments carry settings nobody chose {#bug_0073}
 
@@ -2481,6 +2491,8 @@ design decision.
 Related: R-0103 and R-0113 in `docs/book` and the gap beneath the gateway's durable-state
 subsection, which now cites this entry.
 
+**Designed 2026-11-09, for Andrew's review before any code:** [cancel_on_disconnect_where_the_orders_are.md](availability/cancel_on_disconnect_where_the_orders_are.md).
+
 ### BUG-0091: A member's standing instructions die with the gateway that received them {#bug_0091}
 
 | | |
@@ -2528,6 +2540,8 @@ something happened.
 
 Related: R-0103 and R-0113 in `docs/book`, [BUG-0090](#bug_0090),
 [session_binding.md](availability/session_binding.md).
+
+**Designed 2026-11-09, for Andrew's review before any code:** [cancel_on_disconnect_where_the_orders_are.md](availability/cancel_on_disconnect_where_the_orders_are.md).
 
 ### BUG-0173: No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests {#bug_0173}
 
