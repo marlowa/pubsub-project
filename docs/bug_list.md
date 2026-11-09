@@ -263,6 +263,18 @@ first, and the choice between at least two directions is for Andrew:
 
 **Principle.** A report the venue owes a member reaches the member, or the venue knows and says which did not.
 
+**Decided 2026-11-09: the engine paces its reports during a catch-up.** It applies a batch of commands, sends
+their reports, asks its connection for reports to say when everything sent has been written, and applies the next
+batch only then, using the notification the gateways' paced resend of unanswered commands already uses
+(`request_writable_notification`, `PacedResend`). The queue of waiting sends then never fills, and the catch-up runs
+at the speed the sequencer reads. Keeping every unwritten report and sending them again on a new connection was not
+chosen: it lets the connection be closed and made again, two seconds each time, and needs memory for every report
+not yet written, tens of gigabytes for a catch-up from the start of a busy day.
+
+The design, written for Andrew's review before any code, has to settle how the wait reaches the sequencer: while
+the engine waits, the commands the sequencer goes on sending must wait too, rather than pile up in the engine's own
+queue.
+
 ### BUG-0235: Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later {#bug_0235}
 
 | | |
