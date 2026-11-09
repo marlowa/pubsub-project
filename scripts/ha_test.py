@@ -5785,26 +5785,40 @@ def run_wal_replay_check(prefix: Path, launched_configs: dict[str, Path]) -> tup
     return sequencer, region_capacity, secret_file, int(produced.group(1))
 
 
-def config_with_values(config: Path, values: dict[tuple[str, str], str], copy: Path) -> Path:
-    """A copy of a configuration, written to copy, with each (section, key) in values set to the text given.
+def config_with_values(config: Path, values: dict[tuple[str, str], str], copy: Path,
+                       added: dict[tuple[str, str], str] | None = None) -> Path:
+    """A copy of a configuration, written to copy, with each (section, key) in values set to the text given, and each
+    (section, key) in added inserted at the start of its section.
 
     Only a key already in its section is changed, and every one must be found, so that a renamed setting fails here
-    rather than leaving the copy as the original."""
+    rather than leaving the copy as the original. A key in added is for an optional setting the file leaves out: its
+    section must be in the file and the key must not be, so that a setting already there is never set twice."""
+    added = added or {}
     lines = config.read_text().splitlines()
     section = ""
     found: set[tuple[str, str]] = set()
+    sections: set[str] = set()
     for index, line in enumerate(lines):
         header = re.match(r"^\[([^\]]+)\]\s*$", line)
         if header:
             section = header.group(1)
+            sections.add(section)
             continue
         assignment = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        if assignment and (section, assignment.group(1)) in added:
+            die(f"config_with_values: {config} already has [{section}] {assignment.group(1)}, which was to be added")
         if assignment and (section, assignment.group(1)) in values:
             lines[index] = f"{assignment.group(1)} = {values[(section, assignment.group(1))]}"
             found.add((section, assignment.group(1)))
     missing = set(values) - found
     if missing:
         die(f"config_with_values: {config} has no {', '.join(f'[{s}] {k}' for s, k in sorted(missing))} to change")
+    no_section = {s for s, _ in added} - sections
+    if no_section:
+        die(f"config_with_values: {config} has no section {', '.join(sorted(no_section))} to add a setting to")
+    for (section_name, key), text in added.items():
+        position = next(index for index, line in enumerate(lines) if re.match(rf"^\[{re.escape(section_name)}\]\s*$", line))
+        lines.insert(position + 1, f"{key} = {text}")
     copy.write_text("\n".join(lines) + "\n")
     return copy
 
@@ -5861,16 +5875,29 @@ def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_
                                                        ("recovery", "automatic_recovery_limit_seconds"): "86400",
                                                        ("catch_up", "send_every_report"): "true", **certificates}, work / f"{sequencer}.toml")
         since = _TEST_EVENTS.mark()
-        processes.append((sequencer, launch_app(sequencer, "sequencer", config, bin_dir, log_dir)))
+        # The sequencer reads the engines' reports slowly, so that each engine catching up sends its reports faster than
+        # they are read, as one did when it lost them (docs/bug_list.md, BUG-0234): the engine's pacing must keep every
+        # one. With the pacing turned off the copy is short of reports.
+        global _READ_REPORTS_SLOWLY_US_NOW
+        _READ_REPORTS_SLOWLY_US_NOW = _ENGINES_ON_THE_WAL_READ_REPORTS_SLOWLY_US
+        try:
+            processes.append((sequencer, launch_app(sequencer, "sequencer", config, bin_dir, log_dir)))
+        finally:
+            _READ_REPORTS_SLOWLY_US_NOW = 0
         if _TEST_EVENTS.wait_for(leads(_TEST_EVENTS.messages, sequencer), timeout=15.0, since=since) is None:
             die(f"engines on the WAL: {sequencer}, started on the copy of its WAL, did not lead within 15s")
         for run, engine in enumerate(runs, start=1):
             region = work / f"run_{run}.region"
             region.write_bytes(b"\xDE\xAD\xBE\xEF" * 16)
-            # The engine's own configuration, but sending its reports to the sequencer directly: no relay runs here.
+            # The engine's own configuration, but sending its reports to the sequencer directly: no relay runs here. The
+            # engine sends a report for every command far faster than the sequencer reads them, so the limit on sends
+            # waiting on a connection is set to the lowest the engine accepts, four times the reports it lets wait before
+            # it pauses the commands arriving: without that pacing the connection would reach the limit, be closed, and
+            # lose reports (docs/bug_list.md, BUG-0234).
             config = config_with_values(config_without_report_relay(launched_configs[engine]),
                                         {("ha", "enabled"): "false", ("order_book", "region_path"): f'"{region}"',
-                                         ("network", "listen_port"): engine_port}, work / f"run_{run}_{engine}.toml")
+                                         ("network", "listen_port"): engine_port}, work / f"run_{run}_{engine}.toml",
+                                        added={("reactor", "connection_waiting_sends_maximum"): "16384"})
             since = _TEST_EVENTS.mark()
             process = launch_app(engine, "matching_engine", config, bin_dir, log_dir)
             processes.append((engine, process))
@@ -6193,6 +6220,15 @@ _LEASE_LOST_AND_REGAINED_NOW: dict[str, str] = {}
 # The matching engines being restarted with [test_events] hold_sequencer_connections_until_role_decided, by a restart step
 # that asks for it; the name is added just before the engine is launched and removed just after.
 _HOLD_SEQUENCER_CONNECTIONS_NOW: set[str] = set()
+# How long each sequencer launched now spends on each report from an engine, in microseconds, with its connections for
+# reports limited so that the reports it cannot keep up with back up into the engine ([test_events]
+# read_reports_slowly_us); 0 for none. And whether each matching engine launched now paces its reports ([test_events]
+# pace_reports). Set around a launch that asks for them (docs/bug_list.md, BUG-0234).
+_READ_REPORTS_SLOWLY_US_NOW = 0
+_PACE_REPORTS_NOW = True
+# How long the sequencer in the engines-on-the-WAL check spends on each report, in microseconds: slower than an engine
+# applying a catch-up sends them, so that every run of the check depends on the engine's pacing.
+_ENGINES_ON_THE_WAL_READ_REPORTS_SLOWLY_US = 20
 
 # The components that send test events so far. Others are added as their checks move onto test events.
 _TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter", "fix_order_gateway", "binary_order_gateway")
@@ -6201,7 +6237,7 @@ _TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter", "fix_order_
 def config_with_test_events(config: Path, listener: TestEventListener, name: str, report_orders_of: tuple = (),
                             comp_ids_without_session: tuple = (), delay_session_announcements_ms: int = 0,
                             die_applying: tuple[str, bool] | None = None, lose_and_regain_lease_after: str | None = None,
-                            hold_sequencer_connections: bool = False) -> Path:
+                            hold_sequencer_connections: bool = False, read_reports_slowly_us: int = 0, pace_reports: bool = True) -> Path:
     """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
     knows the component by, which its threads give when they introduce themselves. report_orders_of lists the comp ids
     whose orders a matching engine reports the outcome of. comp_ids_without_session lists the comp ids whose reports a
@@ -6210,7 +6246,9 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
     new order it dies applying, and whether it dies only once. lose_and_regain_lease_after, for a matching engine, is the
     ClOrdID of a new order after which it acts as if its lease ran out and was at once granted again.
     hold_sequencer_connections, for a matching engine, makes it hold each sequencer's order connection until it knows
-    whether it leads or follows.
+    whether it leads or follows. read_reports_slowly_us, for a sequencer, is how long it spends on each report from an
+    engine, with its connections for reports limited; pace_reports false, for a matching engine, stops it pausing the
+    commands when its reports back up.
 
     Written beside the original, so that the paths in it still resolve, and used instead of it. Named after the
     component, not the original file, because two components can be started from one file."""
@@ -6230,6 +6268,10 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
         text += f"lose_and_regain_lease_after_cl_ord_id = \"{lose_and_regain_lease_after}\"\n"
     if hold_sequencer_connections:
         text += "hold_sequencer_connections_until_role_decided = true\n"
+    if read_reports_slowly_us > 0:
+        text += f"read_reports_slowly_us = {read_reports_slowly_us}\n"
+    if not pace_reports:
+        text += "pace_reports = false\n"
     copy = config.with_name(f"{name}_test_events.toml")
     copy.write_text(text)
     return copy
@@ -6262,7 +6304,9 @@ def launch_app(name: str, bin_name: str, config: Path,
                                          _ANNOUNCEMENT_DELAY_MS_NOW if bin_name in ("fix_order_gateway", "binary_order_gateway") else 0,
                                          _DIE_APPLYING_NOW.get(name) if bin_name == "matching_engine" else None,
                                          _LEASE_LOST_AND_REGAINED_NOW.get(name) if bin_name == "matching_engine" else None,
-                                         bin_name == "matching_engine" and name in _HOLD_SEQUENCER_CONNECTIONS_NOW)
+                                         bin_name == "matching_engine" and name in _HOLD_SEQUENCER_CONNECTIONS_NOW,
+                                         _READ_REPORTS_SLOWLY_US_NOW if bin_name == "sequencer" else 0,
+                                         _PACE_REPORTS_NOW if bin_name == "matching_engine" else True)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are

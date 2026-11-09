@@ -1,6 +1,6 @@
 # Bounding the messages waiting from one connection {#bounding_messages_waiting}
 
-**Status: designed and agreed, not built.** This is the framework change chosen on 9 November 2026 for
+**Status: built.** This is the framework change chosen on 9 November 2026 for
 [BUG-0234](../bug_list.md#bug_0234). Section 8 records its two decisions, agreed with Andrew the same day.
 
 ## 1. The problem

@@ -236,6 +236,14 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // This instance's role, as the replicated WAL last said it changed.
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
+    // The epoch role_ is held under, for the role this instance announces to the matching engines.
+    int32_t role_epoch_{0};
+    // The connections on which the matching engines send this instance their reports. This instance announces its role
+    // on each, so that an engine knows which of its connections for reports goes to the leading sequencer and paces its
+    // reports by that one (docs/availability/pacing_the_engines_reports.md, BUG-0234).
+    std::vector<pubsub_itc_fw::ConnectionID> report_connections_;
+    // Sends this instance's role and epoch on @p connection, a connection from a matching engine for reports.
+    void announce_role_to_engine(const pubsub_itc_fw::ConnectionID& connection);
 
     // How the lease rules reach the other two voters in deciding which sequencer leads: the peer
     // sequencer, and the arbiter pool on both arbiter connections.

@@ -53,6 +53,14 @@ struct TestEventsConfiguration {
     /// docs/availability/reports_held_until_sessions_are_announced.md.
     int32_t delay_session_announcements_ms{0};
 
+    /// How long the sequencer spends on each report from a matching engine, in microseconds, from the optional
+    /// `read_reports_slowly_us` key; 0, no extra time, when it is absent. Read by the sequencer. When set, it also limits
+    /// each connection for reports from an engine to 64 messages waiting in its queue, so that the reports it cannot keep
+    /// up with stay in the engine's socket and back up into the engine's own queue of waiting sends, as they would behind a
+    /// sequencer that truly could not keep up. A test uses it to show what an engine's pacing prevents
+    /// (docs/availability/pacing_the_engines_reports.md, BUG-0234).
+    int32_t read_reports_slowly_us{0};
+
     /// The ClOrdID of a new order the matching engine dies applying, from the optional `die_applying_cl_ord_id` key;
     /// empty, for none, when it is absent. Read by the matching engine, which aborts where it would apply a new order
     /// with this ClOrdID, after recording in its open-order region that it is applying it, unless the order is voided or
@@ -83,6 +91,13 @@ struct TestEventsConfiguration {
     /// otherwise happens only when a lease request from its peer happens to arrive before the sequencers connect. It
     /// lets a test take that way every time (docs/bug_list.md BUG-0225 and BUG-0233).
     bool hold_sequencer_connections_until_role_decided{false};
+
+    /// Whether the matching engine pauses the commands arriving when too many of its reports wait on the leading
+    /// sequencer's connection, from the optional `pace_reports` key; true when it is absent. Read by the matching engine.
+    /// Set false, the engine still counts the reports waiting and says at the end of a catch-up how many there were at
+    /// most, but never pauses, so that a test can show what pacing prevents (docs/availability/pacing_the_engines_reports.md,
+    /// BUG-0234).
+    bool pace_reports{true};
 
     /// Whether reports for @p comp_id are expected to reach no member's session.
     [[nodiscard]] bool expects_no_session_for(std::string_view comp_id) const {
@@ -119,9 +134,10 @@ struct TestEventsConfiguration {
  * The section is optional as a whole, and absent means no test events. Once present, host, port and component are
  * required: a half-filled section is a mistake in the test, and guessing the missing part would hide it.
  * `report_orders_of` is optional, and only an application that reports the outcome of orders reads it. So are
- * `comp_ids_without_session`, read by the sequencer, `delay_session_announcements_ms`, read by the gateways, and
- * `die_applying_cl_ord_id`, `die_applying_once`, `lose_and_regain_lease_after_cl_ord_id` and
- * `hold_sequencer_connections_until_role_decided`, read by the matching engine.
+ * `comp_ids_without_session` and `read_reports_slowly_us`, read by the sequencer, `delay_session_announcements_ms`, read by the
+ * gateways, and
+ * `die_applying_cl_ord_id`, `die_applying_once`, `lose_and_regain_lease_after_cl_ord_id`,
+ * `hold_sequencer_connections_until_role_decided` and `pace_reports`, read by the matching engine.
  */
 class TestEventsConfigurationLoader {
   public:
@@ -153,6 +169,13 @@ class TestEventsConfigurationLoader {
         if (toml.has_key("test_events.comp_ids_without_session")) {
             toml.get_required_except("test_events.comp_ids_without_session", configuration.comp_ids_without_session);
         }
+        if (toml.has_key("test_events.read_reports_slowly_us")) {
+            toml.get_required_except("test_events.read_reports_slowly_us", configuration.read_reports_slowly_us);
+            if (configuration.read_reports_slowly_us < 0) {
+                throw ConfigurationException(
+                    fmt::format("test_events.read_reports_slowly_us must not be negative, got {}", configuration.read_reports_slowly_us));
+            }
+        }
         if (toml.has_key("test_events.delay_session_announcements_ms")) {
             toml.get_required_except("test_events.delay_session_announcements_ms", configuration.delay_session_announcements_ms);
             if (configuration.delay_session_announcements_ms < 0) {
@@ -171,6 +194,9 @@ class TestEventsConfigurationLoader {
         }
         if (toml.has_key("test_events.hold_sequencer_connections_until_role_decided")) {
             toml.get_required_except("test_events.hold_sequencer_connections_until_role_decided", configuration.hold_sequencer_connections_until_role_decided);
+        }
+        if (toml.has_key("test_events.pace_reports")) {
+            toml.get_required_except("test_events.pace_reports", configuration.pace_reports);
         }
         return configuration;
     }

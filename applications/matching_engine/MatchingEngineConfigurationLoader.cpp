@@ -3,6 +3,8 @@
 
 #include "MatchingEngineConfigurationLoader.hpp"
 
+#include "EngineReportPacing.hpp"
+
 #include <OrderPathMetrics.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
@@ -181,6 +183,21 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
                 throw pubsub_itc_fw::ConfigurationException("reactor.quiet_spins_between_polls must not be negative");
             }
             config.reactor_quiet_spins_between_polls = quiet_spins_from_file;
+        }
+
+        // Optional: absent means the framework's default. A test sets it low.
+        int64_t waiting_sends_from_file{0};
+        const auto [has_waiting_sends, waiting_sends_error] = toml.get_required("reactor.connection_waiting_sends_maximum", waiting_sends_from_file);
+        if (has_waiting_sends) {
+            // The engine pauses the commands arriving once EngineReportPacing::pause_at_reports reports wait on the leading
+            // sequencer's connection; reports go on being sent while the pause takes effect, so the limit must leave room
+            // for them.
+            if (waiting_sends_from_file < 4 * EngineReportPacing::pause_at_reports) {
+                throw pubsub_itc_fw::ConfigurationException("reactor.connection_waiting_sends_maximum must be at least " +
+                                                            std::to_string(4 * EngineReportPacing::pause_at_reports) +
+                                                            ", four times the reports the engine lets wait before it pauses the commands arriving");
+            }
+            config.reactor_connection_waiting_sends_maximum = waiting_sends_from_file;
         }
 
         toml.get_required_except("event_queue_pool.objects_per_slab", config.event_queue_pool_objects_per_slab);

@@ -175,6 +175,30 @@ TEST_F(EngineReportPacingTest, PacingOnANewConnectionResumesAPauseOnTheOld) {
     EXPECT_EQ(links_.actions.back(), "resume");
 }
 
+TEST_F(EngineReportPacingTest, WithPausingTurnedOffNothingIsPausedButTheReportsAreStillCounted) {
+    pacing_.set_pausing(false);
+    pacing_.pace_on(leader_);
+    send(leader_, limit * 2);
+    EXPECT_FALSE(pacing_.paused());
+    EXPECT_EQ(links_.actions, (std::vector<std::string>{"notify 11"}));
+    const EngineReportPacing::Summary summary = pacing_.take_summary();
+    EXPECT_EQ(summary.most_not_known_written, limit * 2);
+    EXPECT_EQ(summary.pauses, 0);
+}
+
+TEST_F(EngineReportPacingTest, TheSummarySaysTheMostWaitingAndThePausesAndStartsAgain) {
+    pacing_.pace_on(leader_);
+    send(leader_, limit + 5);
+    pacing_.connection_written(leader_);
+    send(leader_, 2, limit + 6);
+    EngineReportPacing::Summary summary = pacing_.take_summary();
+    EXPECT_EQ(summary.most_not_known_written, limit + 5);
+    EXPECT_EQ(summary.pauses, 1);
+    summary = pacing_.take_summary();
+    EXPECT_EQ(summary.most_not_known_written, 0);
+    EXPECT_EQ(summary.pauses, 0);
+}
+
 TEST_F(EngineReportPacingTest, PacingOnAConnectionAlreadyAtTheLimitPausesAtOnce) {
     send(follower_, limit + 3);
     pacing_.pace_on(follower_);

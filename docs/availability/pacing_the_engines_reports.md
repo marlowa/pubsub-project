@@ -1,6 +1,6 @@
 # Pacing the matching engine's reports {#pacing_the_engines_reports}
 
-**Status: designed and agreed, not built.** This is the design for [BUG-0234](../bug_list.md#bug_0234).
+**Status: built (BUG-0234 closed 9 November 2026).** This is the design for [BUG-0234](../bug_list.md#bug_0234).
 Section 6 records the three decisions it needed, each agreed with Andrew on 9 November 2026.
 
 ## 1. The problem

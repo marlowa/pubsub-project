@@ -231,6 +231,7 @@ void MatchingEngineThread::on_app_ready_event() {
 
     // Both roles connect outbound to the sequencer ER listeners (pre-warmed so
     // ERs, including the cancel-on-failover burst, flow immediately on promotion).
+    report_pacing_.set_pausing(config_.test_events.pace_reports);
     connect_to_service("sequencer_er");
     connect_to_service("sequencer_er_secondary");
 
@@ -370,6 +371,13 @@ void MatchingEngineThread::release_held_sequencer_connections() {
 
 void MatchingEngineThread::sequencer_order_connection_established(const pubsub_itc_fw::ConnectionID& id) {
     sequencer_order_conn_ids_.insert(id);
+    // So that pausing the commands for the reports' sake takes effect within this many commands, rather than after every
+    // command the reactor has already read into this thread's queue (docs/framework/bounding_messages_waiting.md).
+    limit_messages_waiting(id, EngineReportPacing::commands_waiting_at_most);
+    if (report_pacing_.paused()) {
+        // Commands are not read while the leading sequencer catches up with the reports, from any sequencer.
+        pause_reading(id);
+    }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} established", id.get_value());
     died_applying_check_.sequencer_connected();
     if (role_.role() == MeRole::Reconciling) {
@@ -407,11 +415,17 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
         return;
     }
     if (id == report_sending_.connection(EngineReportSending::Sequencer::primary)) {
+        report_pacing_.connection_lost(id, "primary");
+        primary_sequencer_role_ = AnnouncedSequencerRole{};
         report_sending_.connection_lost(EngineReportSending::Sequencer::primary);
+        pace_on_leading_sequencer();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: primary sequencer ER connection {} lost: {}", id.get_value(),
                    reason);
     } else if (id == report_sending_.connection(EngineReportSending::Sequencer::secondary)) {
+        report_pacing_.connection_lost(id, "secondary");
+        secondary_sequencer_role_ = AnnouncedSequencerRole{};
         report_sending_.connection_lost(EngineReportSending::Sequencer::secondary);
+        pace_on_leading_sequencer();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: secondary sequencer ER connection {} lost: {}", id.get_value(),
                    reason);
     } else if (id == outbound_peer_conn_id_) {
@@ -481,8 +495,10 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         return;
     }
     if (pdu_id == pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id) {
-        // Engines send their announcements only to the sequencers, which route orders by them. One arriving from the
-        // peer is ignored: which instance leads is decided by leases.
+        // A sequencer announces its role on this engine's connection for reports to it, so that the engine paces its
+        // reports by the one that leads. One arriving from the peer engine is ignored: which instance leads is decided by
+        // leases.
+        handle_sequencer_role_announcement(message);
         release_pdu_payload(message);
         return;
     }
@@ -840,6 +856,76 @@ void MatchingEngineThread::ReportSendingLinks::send_report(const pubsub_itc_fw::
                                                            const pubsub_itc_fw_app::WalRecord& envelope) {
     owner_.send_pdu(connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope,
                     pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
+    owner_.report_pacing_.report_sent(connection, seq_no);
+}
+
+void MatchingEngineThread::ReportPacingLinks::pause_reading_commands() {
+    PUBSUB_LOG(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+               "MatchingEngineThread: {} reports wait to be written to the leading sequencer -- reading the commands from the sequencers paused",
+               EngineReportPacing::pause_at_reports);
+    for (const pubsub_itc_fw::ConnectionID& connection : owner_.sequencer_order_conn_ids_) {
+        owner_.pause_reading(connection);
+    }
+}
+
+void MatchingEngineThread::ReportPacingLinks::resume_reading_commands() {
+    PUBSUB_LOG_STR(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "MatchingEngineThread: the leading sequencer has read the reports waiting -- reading the commands from the sequencers again");
+    for (const pubsub_itc_fw::ConnectionID& connection : owner_.sequencer_order_conn_ids_) {
+        owner_.resume_reading(connection);
+    }
+}
+
+void MatchingEngineThread::ReportPacingLinks::request_written_notification(const pubsub_itc_fw::ConnectionID& connection) {
+    owner_.request_writable_notification(connection);
+}
+
+void MatchingEngineThread::on_connection_writable(pubsub_itc_fw::ConnectionID id) {
+    report_pacing_.connection_written(id);
+}
+
+void MatchingEngineThread::pace_on_leading_sequencer() {
+    const pubsub_itc_fw::ConnectionID& primary = report_sending_.connection(EngineReportSending::Sequencer::primary);
+    const pubsub_itc_fw::ConnectionID& secondary = report_sending_.connection(EngineReportSending::Sequencer::secondary);
+    const bool primary_leads = primary.is_valid() && primary_sequencer_role_.role == pubsub_itc_fw_app::Role::leader;
+    const bool secondary_leads = secondary.is_valid() && secondary_sequencer_role_.role == pubsub_itc_fw_app::Role::leader;
+    if (primary_leads && (!secondary_leads || primary_sequencer_role_.epoch >= secondary_sequencer_role_.epoch)) {
+        report_pacing_.pace_on(primary);
+    } else if (secondary_leads) {
+        report_pacing_.pace_on(secondary);
+    } else {
+        report_pacing_.pace_on(pubsub_itc_fw::ConnectionID{});
+    }
+}
+
+void MatchingEngineThread::handle_sequencer_role_announcement(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::RoleAnnouncementView announcement{};
+    if (!pubsub_itc_fw_app::decode(announcement, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode a sequencer's RoleAnnouncement -- dropping");
+        return;
+    }
+    const pubsub_itc_fw::ConnectionID& connection = message.connection_id();
+    AnnouncedSequencerRole* announced = nullptr;
+    const char* which = "";
+    if (connection == report_sending_.connection(EngineReportSending::Sequencer::primary)) {
+        announced = &primary_sequencer_role_;
+        which = "primary";
+    } else if (connection == report_sending_.connection(EngineReportSending::Sequencer::secondary)) {
+        announced = &secondary_sequencer_role_;
+        which = "secondary";
+    } else {
+        return;
+    }
+    announced->role = announcement.current_role;
+    announced->epoch = announcement.epoch;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: the {} sequencer (instance {}) says on connection {} that it is {} at epoch {}", which, announcement.instance_id,
+               connection.get_value(), pubsub_itc_fw_app::to_string(announcement.current_role), announcement.epoch);
+    pace_on_leading_sequencer();
 }
 
 void MatchingEngineThread::ReportSendingLinks::reports_held(int64_t count) {
@@ -1644,6 +1730,12 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     }
     state_machine_.note_caught_up_to(ack.last_seq_no);
     report_catch_up(pubsub_itc_fw_app::CatchUpStage::Completed, ack.last_seq_no, ack.records_sent);
+    const EngineReportPacing::Summary pacing = report_pacing_.take_summary();
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: during the catch-up at most {} report(s) waited on one connection for reports, against the {} that pause the commands, "
+               "which were paused {} time(s){}",
+               pacing.most_not_known_written, EngineReportPacing::pause_at_reports, pacing.pauses,
+               config_.test_events.pace_reports ? "" : " -- pacing is turned off by a test setting");
 
     if (role_.situation() == EngineRole::Situation::catching_up_to_follow_again) {
         static_cast<void>(role_.catch_up_completed_now());

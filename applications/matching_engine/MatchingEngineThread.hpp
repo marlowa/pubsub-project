@@ -33,6 +33,7 @@
 
 #include "DiedApplyingCheck.hpp"
 #include "EngineCatchUp.hpp"
+#include "EngineReportPacing.hpp"
 #include "EngineReportSending.hpp"
 #include "EngineRole.hpp"
 #include "FixOrderLimits.hpp"
@@ -90,6 +91,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
     void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override;
     void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
+    void on_connection_writable(pubsub_itc_fw::ConnectionID id) override;
     void on_timer_event(pubsub_itc_fw::TimerID id) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
@@ -233,6 +235,34 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // docs/venue/dividing_the_sequencer_and_matching_engine.md). Each report goes to both: the leading sequencer routes it
     // to the member's gateway, and the other keeps it in case it takes the lead.
     EngineReportSending report_sending_{config_.ha_enabled, report_sending_links_, get_logger()};
+
+    // How EngineReportPacing pauses and resumes the commands from the sequencers, and asks to be told what is written.
+    class ReportPacingLinks : public EngineReportPacingLinksInterface {
+      public:
+        explicit ReportPacingLinks(MatchingEngineThread& owner) : owner_(owner) {}
+        void pause_reading_commands() override;
+        void resume_reading_commands() override;
+        void request_written_notification(const pubsub_itc_fw::ConnectionID& connection) override;
+
+      private:
+        MatchingEngineThread& owner_;
+    };
+    ReportPacingLinks report_pacing_links_{*this};
+    // Keeps the reports sent ahead of what the leading sequencer's connection has written to a fixed number, by pausing
+    // the commands arriving (docs/availability/pacing_the_engines_reports.md, BUG-0234).
+    EngineReportPacing report_pacing_{report_pacing_links_, get_logger()};
+    // What each sequencer last announced on this engine's connection for reports to it: its role and the epoch it holds
+    // it under. The connection to the one that says it leads, under the higher epoch if both say so, is paced.
+    struct AnnouncedSequencerRole {
+        pubsub_itc_fw_app::Role role{pubsub_itc_fw_app::Role::unknown};
+        int32_t epoch{0};
+    };
+    AnnouncedSequencerRole primary_sequencer_role_{};
+    AnnouncedSequencerRole secondary_sequencer_role_{};
+    // Paces on the connection for reports to the sequencer that leads now, if one is known to.
+    void pace_on_leading_sequencer();
+    // A sequencer's RoleAnnouncement, sent on this engine's connection for reports to it.
+    void handle_sequencer_role_announcement(const pubsub_itc_fw::EventMessage& message);
 
     // How FollowerReportComparison acts on what it finds.
     class ReportComparisonLinks : public FollowerReportComparisonLinksInterface {

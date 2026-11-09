@@ -106,6 +106,7 @@ void EngineReportPacing::report_sent(const pubsub_itc_fw::ConnectionID& connecti
     }
     Connection& entry = find_or_add(connection);
     entry.since_request.add(seq_no);
+    summary_.most_not_known_written = std::max(summary_.most_not_known_written, entry.before_request.count + entry.since_request.count);
     ask_if_needed(entry);
 }
 
@@ -165,6 +166,10 @@ int64_t EngineReportPacing::not_known_written(const pubsub_itc_fw::ConnectionID&
 }
 
 void EngineReportPacing::pause() {
+    if (!pausing_) {
+        return;
+    }
+    ++summary_.pauses;
     paused_ = true;
     links_.pause_reading_commands();
 }

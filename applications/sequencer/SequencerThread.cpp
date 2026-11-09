@@ -414,6 +414,15 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
     } else if (svc == wal_subscriber_inbound_svc_) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: publisher connection {} established -- awaiting WalFollowRequest",
                    id.get_value());
+    } else if (svc == "inbound:" + std::to_string(config_.er_listen_port)) {
+        report_connections_.push_back(id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: connection {} from a matching engine for reports established",
+                   id.get_value());
+        if (config_.test_events.read_reports_slowly_us > 0) {
+            // A test setting: the reports this instance cannot keep up with stay in the engine's socket.
+            limit_messages_waiting(id, 64);
+        }
+        announce_role_to_engine(id);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound connection {} established ({})", id.get_value(), svc);
     }
@@ -422,6 +431,15 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
     if (engine_routing_.is_engine_connection(id)) {
         engine_routing_changed();
     }
+}
+
+void SequencerThread::announce_role_to_engine(const pubsub_itc_fw::ConnectionID& connection) {
+    pubsub_itc_fw_app::RoleAnnouncement announcement{};
+    announcement.instance_id = static_cast<int64_t>(config_.instance_id);
+    announcement.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
+    announcement.current_role = role_;
+    announcement.epoch = role_epoch_;
+    send_pdu(connection, pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id, 0, announcement);
 }
 
 void SequencerThread::engine_routing_changed() {
@@ -440,6 +458,7 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
                    "SequencerThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
         return;
     }
+    report_connections_.erase(std::remove(report_connections_.begin(), report_connections_.end(), id), report_connections_.end());
     if (const std::optional<int64_t> instance = presence_.connection_lost(id); instance.has_value()) {
         // The engine that said it leads has gone, or at least the connection it said so on has: it is no longer taken to
         // lead when a void is asked for, and is sent no orders until it is caught up to lead or says so again, so that a
@@ -801,6 +820,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER PDU on connection {} pdu_id={} seq={} -- forwarding to gateway",
                    message.connection_id().get_value(), message.pdu_id(), message.seq_no());
+        if (config_.test_events.read_reports_slowly_us > 0) {
+            // A test setting that makes this instance read reports more slowly than an engine catching up sends them.
+            const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds{config_.test_events.read_reports_slowly_us};
+            while (std::chrono::steady_clock::now() < until) {}
+        }
         forward_report_from_engine(message.payload(), static_cast<size_t>(message.payload_size()), message.seq_no(), ReportSource::matching_engine);
         release_pdu_payload(message);
     } else {
@@ -1276,6 +1300,10 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
 
     const bool stops_leading = role_ == pubsub_itc_fw_app::Role::leader;
     role_ = new_role;
+    role_epoch_ = epoch;
+    for (const pubsub_itc_fw::ConnectionID& connection : report_connections_) {
+        announce_role_to_engine(connection);
+    }
 
     // Only the leader serves followers. Every one being served stops, with the reading thread's
     // confirmation, so that a WAL about to be cut back is not being read; each asks again of whichever

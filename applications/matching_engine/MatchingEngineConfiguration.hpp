@@ -108,6 +108,17 @@ struct MatchingEngineConfiguration {
      */
     int32_t reactor_quiet_spins_between_polls{-1};
 
+    /**
+     * @brief How many sends may wait on one connection before the framework closes it as one whose peer is not
+     *        reading, from the optional `[reactor] connection_waiting_sends_maximum`; 0 when it is absent, which leaves
+     *        the framework's default.
+     *
+     * A test sets it low, so that a sequencer reading the engine's reports more slowly than the engine sends them
+     * reaches the limit quickly. It must be at least four times EngineReportPacing::pause_at_reports, so that the
+     * reports sent while a pause takes effect cannot reach it.
+     */
+    int64_t reactor_connection_waiting_sends_maximum{0};
+
     // Event queue pool  (ApplicationThread inbound EventMessage queue)
 
     /** @brief Number of objects in each fixed-size memory pool slab.

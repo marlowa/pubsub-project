@@ -58,6 +58,11 @@ class EngineReportPacing {
     /// cannot carry the connection to that limit.
     static constexpr int64_t pause_at_reports = 4096;
 
+    /// The most commands from one sequencer that may wait in the engine thread's queue: the reactor stops reading the
+    /// connection at this many, so that a pause of the commands takes effect within this many (agreed with Andrew, 9
+    /// November 2026; docs/framework/bounding_messages_waiting.md, decision 2).
+    static constexpr int64_t commands_waiting_at_most = 1024;
+
     /**
      * @param[in] links  How the commands are paused and resumed, and notification asked for.
      * @param[in] logger Where a loss is logged.
@@ -75,6 +80,27 @@ class EngineReportPacing {
 
     /// @p connection, a connection for reports to the sequencer named @p sequencer_name, is lost.
     void connection_lost(const pubsub_itc_fw::ConnectionID& connection, const std::string& sequencer_name);
+
+    /// Whether a connection reaching the limit pauses the commands, which it does unless a test turns it off to show what
+    /// happens without it. Counting goes on either way.
+    void set_pausing(bool pausing) {
+        pausing_ = pausing;
+    }
+
+    /// What pacing did over a period, for the Quill log.
+    struct Summary {
+        /// The most reports on any one connection not known to be written at any moment.
+        int64_t most_not_known_written{0};
+        /// How many times the commands were paused.
+        int64_t pauses{0};
+    };
+
+    /// What pacing has done since the last call, which starts a new period.
+    [[nodiscard]] Summary take_summary() {
+        const Summary summary = summary_;
+        summary_ = Summary{};
+        return summary;
+    }
 
     /// Whether reading the commands is paused now.
     [[nodiscard]] bool paused() const {
@@ -120,6 +146,8 @@ class EngineReportPacing {
     std::array<Connection, 2> connections_{};
     pubsub_itc_fw::ConnectionID paced_{};
     bool paused_{false};
+    bool pausing_{true};
+    Summary summary_{};
 };
 
 } // namespaces

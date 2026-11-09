@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 238 |
-| Open | 63 (42 defects, 21 tasks) |
-| Closed | 175 |
+| Open | 62 (41 defects, 21 tasks) |
+| Closed | 176 |
 | Next id | BUG-0239 |
 
 ## Open bugs by severity
 
-14 high, 37 medium, 12 low.
+13 high, 37 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -26,7 +26,6 @@
 | [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
-| [BUG-0234](#bug_0234) | high | defect | A matching engine catching up from far back sends its reports faster than the sequencer reads them, and the framework closes the connection and loses the rest |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0041](#bug_0041) | medium | defect | Five ways the venue will not start on a RHEL8 target host |
 | [BUG-0045](#bug_0045) | medium | task | A member has no defined way to discover its primary gateway is down |
@@ -220,77 +219,6 @@ does, so the file it is renamed to is too, whatever the umask. A unit test check
 write; it is made to fail on purpose first.
 
 **Principles.** None of the design principles; a security defect in the operator's tool.
-
-### BUG-0234: A matching engine catching up from far back sends its reports faster than the sequencer reads them, and the framework closes the connection and loses the rest {#bug_0234}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-11-08 |
-| Recorded | 2026-11-08 |
-| How | `ha_test.py` scenario 80, in the check that runs a matching engine on a copy of the scenario's WAL, in the full suite run for [BUG-0225](#bug_0225); logs kept in `tmp/ha_test_failures/20261108-084443-scenario-80-catch_up_survives_second_connection` |
-| Impact | Execution reports are lost: members are not told what the venue did with their orders, and nothing says which reports were lost or for whom. It happens whenever an engine produces reports faster than the sequencer reads them for long enough to fill the engine's queue of waiting sends, which a catch-up of a few hundred thousand commands does in well under a second |
-
-**What was seen.** The check runs one engine, with high availability off and `[catch_up] send_every_report` on, against
-a copy of the scenario's WAL of 400,000 records holding 200,000 orders, from an empty book. The engine is expected to
-add 200,000 reports to the copy. From the engine's Quill log:
-
-1. At 08:43:42.353 it asked to be caught up. By 08:43:42.791 it had applied all 200,000 orders, and sent a report for
-   each to the sequencer on its connection for reports.
-2. The sequencer read them more slowly than they were sent. At 08:43:42.845 the engine's framework had 65,536 sends,
-   18,097,338 bytes, waiting to be written on that connection, which is `ReactorConfiguration::connection_waiting_sends_maximum`.
-   It closed the connection as "not reading what is sent to it", told the engine it was lost, and began to reconnect.
-3. The engine went on sending reports on the closed connection. The reactor logged "unknown connection id 2 for
-   SendPdu" 47,091 times and dropped each one.
-4. The connection was made again at 08:43:44.930, two seconds later. The reports already dropped were not sent again.
-
-The copy then held 487,371 records, not 600,000: 87,371 reports reached the sequencer, and 112,629 did not. The same
-check passed in the suite run earlier the same day, in which the catch-up took 1.26 seconds rather than 0.44, so whether
-the queue fills depends on how fast the engine applies the commands against how fast the sequencer reads.
-
-**Where it can happen in the venue.** By default an engine catching up leaves out every report the WAL already holds
-(`docs/availability/far_back_catch_up.md`, section 2), so a catch-up sends few reports, and only this check sends
-200,000 at once. But `send_every_report` is a supported setting, and an engine whose open-order region cannot be read
-catches up from the first record of the day. Any burst of reports long enough to fill the queue loses reports the same
-way.
-
-**What is wanted.** No report is lost when the sequencer reads more slowly than the engine writes. This needs a design
-first, and the choice between at least two directions is for Andrew:
-
-- the engine paces its reports during a catch-up, waiting for the queue of waiting sends to drain before it applies
-  more, as the sequencer's reading thread already paces what it sends a follower ([BUG-0172](#bug_0172));
-- or the engine keeps every report it has not had written, and sends them again when the connection is made again.
-
-**Principle.** A report the venue owes a member reaches the member, or the venue knows and says which did not.
-
-**Decided 2026-11-09: the engine paces its reports during a catch-up.** It applies a batch of commands, sends
-their reports, asks its connection for reports to say when everything sent has been written, and applies the next
-batch only then, using the notification the gateways' paced resend of unanswered commands already uses
-(`request_writable_notification`, `PacedResend`). The queue of waiting sends then never fills, and the catch-up runs
-at the speed the sequencer reads. Keeping every unwritten report and sending them again on a new connection was not
-chosen: it lets the connection be closed and made again, two seconds each time, and needs memory for every report
-not yet written, tens of gigabytes for a catch-up from the start of a busy day.
-
-The design is [pacing_the_engines_reports.md](availability/pacing_the_engines_reports.md), agreed on 2026-11-09
-with its three decisions: pace on the connection to the leading sequencer only; apply the rule at all times, not only
-during a catch-up; and, when a connection for reports is lost, stop sending on it and log one Error naming the
-commands whose reports may not have been written.
-
-**Measured 2026-11-09: the design does not hold the reports waiting to its limit.** The pacing was built
-(`EngineReportPacing`, committed aeff550c, and wired into the engine with each sequencer announcing its role on the
-engine's connection for reports to it, not yet committed) and run in scenario 80's check, with the limit on waiting
-sends set to 16,384. With pacing on, the second engine had at most 34,121 reports not known to be written, against
-the 4,096 that pause the commands, and paused 7 times. With pacing off, it had at most 200,000. Neither run lost a
-report, so the loss was not reproduced either. Section 3.2 of the design assumed that only a few commands would
-already have been read when a pause takes effect. In fact the reactor goes on reading the sequencer's connection into
-the engine thread's queue while that thread is busy, and the framework bounds that queue only for connections carrying
-raw bytes, so tens of thousands of commands are queued ahead of the pause, and the notification that ends it waits
-behind them. **Decided 2026-11-09: the framework bounds how many messages from one connection may wait in an
-application thread's queue**, and the reactor does not read the connection while that many wait; the design is
-[bounding_messages_waiting.md](framework/bounding_messages_waiting.md), agreed the same day: the limit is set per
-connection by the application, and the engine sets 1,024 on its order connections from the sequencers. While the engine waits it pauses reading its connections from the sequencers, so the
-commands the sequencer goes on sending wait in the kernel and the sequencer's reading thread, which already sends only
-as fast as the connection takes, stops sending.
 
 ### BUG-0235: Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later {#bug_0235}
 
@@ -3005,6 +2933,78 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0234: A matching engine catching up from far back sends its reports faster than the sequencer reads them, and the framework closes the connection and loses the rest {#bug_0234}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-11-08 |
+| Recorded | 2026-11-08 |
+| Fixed | 2026-11-09 -- the matching engine paces its reports ([pacing_the_engines_reports.md](availability/pacing_the_engines_reports.md)): `EngineReportPacing` counts the reports sent to the leading sequencer and not yet known to be written, and at 4,096 pauses reading the commands until the connection has written them; each sequencer announces its role with `RoleAnnouncement` on the engine's connection for reports to it, so the engine knows which connection to pace; the engine limits each order connection from a sequencer to 1,024 messages waiting ([bounding_messages_waiting.md](framework/bounding_messages_waiting.md), 9650f5c4), so a pause takes effect within that many commands; and a connection for reports lost with reports not known to be written is logged as one Error naming the commands. Reproduced with a sequencer test setting, `read_reports_slowly_us`, that reads each report slowly with its connections for reports limited: at 20 microseconds a report, with pacing off a catch-up lost about 167,000 of 200,000 reports twice, and with pacing on lost none twice, with at most 5,127 to 5,137 reports outstanding against the 5,120 predicted. The engines-on-the-WAL check now always runs its sequencer that way, so it fails without pacing, as a trial with pacing off showed. Fixing [BUG-0238](#bug_0238) first was needed for the limit to take effect before a catch-up's stream. 15 unit tests for the pacing, 203 matching engine unit tests, and all 102 `ha_test.py` scenarios pass, with the WALs cleared first |
+| How | `ha_test.py` scenario 80, in the check that runs a matching engine on a copy of the scenario's WAL, in the full suite run for [BUG-0225](#bug_0225); logs kept in `tmp/ha_test_failures/20261108-084443-scenario-80-catch_up_survives_second_connection` |
+| Impact | Execution reports are lost: members are not told what the venue did with their orders, and nothing says which reports were lost or for whom. It happens whenever an engine produces reports faster than the sequencer reads them for long enough to fill the engine's queue of waiting sends, which a catch-up of a few hundred thousand commands does in well under a second |
+
+**What was seen.** The check runs one engine, with high availability off and `[catch_up] send_every_report` on, against
+a copy of the scenario's WAL of 400,000 records holding 200,000 orders, from an empty book. The engine is expected to
+add 200,000 reports to the copy. From the engine's Quill log:
+
+1. At 08:43:42.353 it asked to be caught up. By 08:43:42.791 it had applied all 200,000 orders, and sent a report for
+   each to the sequencer on its connection for reports.
+2. The sequencer read them more slowly than they were sent. At 08:43:42.845 the engine's framework had 65,536 sends,
+   18,097,338 bytes, waiting to be written on that connection, which is `ReactorConfiguration::connection_waiting_sends_maximum`.
+   It closed the connection as "not reading what is sent to it", told the engine it was lost, and began to reconnect.
+3. The engine went on sending reports on the closed connection. The reactor logged "unknown connection id 2 for
+   SendPdu" 47,091 times and dropped each one.
+4. The connection was made again at 08:43:44.930, two seconds later. The reports already dropped were not sent again.
+
+The copy then held 487,371 records, not 600,000: 87,371 reports reached the sequencer, and 112,629 did not. The same
+check passed in the suite run earlier the same day, in which the catch-up took 1.26 seconds rather than 0.44, so whether
+the queue fills depends on how fast the engine applies the commands against how fast the sequencer reads.
+
+**Where it can happen in the venue.** By default an engine catching up leaves out every report the WAL already holds
+(`docs/availability/far_back_catch_up.md`, section 2), so a catch-up sends few reports, and only this check sends
+200,000 at once. But `send_every_report` is a supported setting, and an engine whose open-order region cannot be read
+catches up from the first record of the day. Any burst of reports long enough to fill the queue loses reports the same
+way.
+
+**What is wanted.** No report is lost when the sequencer reads more slowly than the engine writes. This needs a design
+first, and the choice between at least two directions is for Andrew:
+
+- the engine paces its reports during a catch-up, waiting for the queue of waiting sends to drain before it applies
+  more, as the sequencer's reading thread already paces what it sends a follower ([BUG-0172](#bug_0172));
+- or the engine keeps every report it has not had written, and sends them again when the connection is made again.
+
+**Principle.** A report the venue owes a member reaches the member, or the venue knows and says which did not.
+
+**Decided 2026-11-09: the engine paces its reports during a catch-up.** It applies a batch of commands, sends
+their reports, asks its connection for reports to say when everything sent has been written, and applies the next
+batch only then, using the notification the gateways' paced resend of unanswered commands already uses
+(`request_writable_notification`, `PacedResend`). The queue of waiting sends then never fills, and the catch-up runs
+at the speed the sequencer reads. Keeping every unwritten report and sending them again on a new connection was not
+chosen: it lets the connection be closed and made again, two seconds each time, and needs memory for every report
+not yet written, tens of gigabytes for a catch-up from the start of a busy day.
+
+The design is [pacing_the_engines_reports.md](availability/pacing_the_engines_reports.md), agreed on 2026-11-09
+with its three decisions: pace on the connection to the leading sequencer only; apply the rule at all times, not only
+during a catch-up; and, when a connection for reports is lost, stop sending on it and log one Error naming the
+commands whose reports may not have been written.
+
+**Measured 2026-11-09: the design does not hold the reports waiting to its limit.** The pacing was built
+(`EngineReportPacing`, committed aeff550c, and wired into the engine with each sequencer announcing its role on the
+engine's connection for reports to it, not yet committed) and run in scenario 80's check, with the limit on waiting
+sends set to 16,384. With pacing on, the second engine had at most 34,121 reports not known to be written, against
+the 4,096 that pause the commands, and paused 7 times. With pacing off, it had at most 200,000. Neither run lost a
+report, so the loss was not reproduced either. Section 3.2 of the design assumed that only a few commands would
+already have been read when a pause takes effect. In fact the reactor goes on reading the sequencer's connection into
+the engine thread's queue while that thread is busy, and the framework bounds that queue only for connections carrying
+raw bytes, so tens of thousands of commands are queued ahead of the pause, and the notification that ends it waits
+behind them. **Decided 2026-11-09: the framework bounds how many messages from one connection may wait in an
+application thread's queue**, and the reactor does not read the connection while that many wait; the design is
+[bounding_messages_waiting.md](framework/bounding_messages_waiting.md), agreed the same day: the limit is set per
+connection by the application, and the engine sets 1,024 on its order connections from the sequencers. While the engine waits it pauses reading its connections from the sequencers, so the
+commands the sequencer goes on sending wait in the kernel and the sequencer's reading thread, which already sends only
+as fast as the connection takes, stops sending.
 
 ### BUG-0238: A peer that keeps a connection's socket full holds its reactor in one read for as long as it does, so the reactor serves nothing else {#bug_0238}
 
