@@ -141,8 +141,9 @@ change to the reactor or to the hand-over to an application thread.
 ### Decision 1. Is the limit set per connection by the application, with no connection limited unless asked? (Yes or no.)
 
 Recommended: **yes.** Limiting every connection by default would slow every peer that outruns its reader,
-including a gateway sending to the sequencer, whose queue of waiting sends would then fill and close the
-connection ([BUG-0112](../bug_list.md#bug_0112) describes that knock-on). Each connection where being slowed
+including a gateway sending to the sequencer: the gateway's sends would wait in its own queue, and once that
+queue reached its limit the gateway would close the connection, which is the rule added for
+[BUG-0112](../bug_list.md#bug_0112). Each connection where being slowed
 is safe can be limited as it is understood.
 
 ### Decision 2. Is the matching engine's limit on its order connections from the sequencers 1,024 messages? (Yes, or give a number.)
