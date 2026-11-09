@@ -271,8 +271,10 @@ at the speed the sequencer reads. Keeping every unwritten report and sending the
 chosen: it lets the connection be closed and made again, two seconds each time, and needs memory for every report
 not yet written, tens of gigabytes for a catch-up from the start of a busy day.
 
-The design is [pacing_the_engines_reports.md](availability/pacing_the_engines_reports.md), written for Andrew's
-review before any code. While the engine waits it pauses reading its connections from the sequencers, so the
+The design is [pacing_the_engines_reports.md](availability/pacing_the_engines_reports.md), agreed on 2026-11-09
+with its three decisions: pace on the connection to the leading sequencer only; apply the rule at all times, not only
+during a catch-up; and, when a connection for reports is lost, stop sending on it and log one Error naming the
+commands whose reports may not have been written. While the engine waits it pauses reading its connections from the sequencers, so the
 commands the sequencer goes on sending wait in the kernel and the sequencer's reading thread, which already sends only
 as fast as the connection takes, stops sending.
 

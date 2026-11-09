@@ -1,7 +1,7 @@
 # Pacing the matching engine's reports {#pacing_the_engines_reports}
 
-**Status: designed, not built.** This is the design for [BUG-0234](../bug_list.md#bug_0234), written for
-review before any code. Section 6 lists the decisions it needs.
+**Status: designed and agreed, not built.** This is the design for [BUG-0234](../bug_list.md#bug_0234).
+Section 6 records the three decisions it needed, each agreed with Andrew on 9 November 2026.
 
 ## 1. The problem
 
@@ -99,7 +99,7 @@ do for their paced resend.
 
 ## 4. A connection for reports lost while reports are owed
 
-Separate from pacing, and asked as a separate question in decision 3. Today, when a connection for
+Separate from pacing, and agreed as decision 3. Today, when a connection for
 reports is closed, the engine carries on sending on it and the reactor drops every report, logging
 "unknown connection id" for each. In the failing run that was 47,091 lines, and no line said which
 reports were lost.
@@ -127,24 +127,24 @@ did not.
    times each way.
 4. **The time a catch-up takes**, measured with pacing on and off, so that the cost is known. It should
    be close to the time the sequencer takes to read the reports, since that was always the real limit.
-5. **Section 4, if agreed**, with a unit test of the Error and a run in which the connection for reports
+5. **Section 4**, with a unit test of the Error and a run in which the connection for reports
    is closed during a catch-up on purpose.
 
 ## 6. Decisions
 
 ### Decision 1. Is pacing on the leading sequencer's connection only? (Yes or no.)
 
-Recommended: yes. Pacing on both connections would let a slow follower sequencer slow the venue, against
+**Decided: yes.** Pacing on both connections would let a slow follower sequencer slow the venue, against
 principle V11. The cost is that the follower can still lose reports it keeps for a change of leader
 during a long catch-up, and section 4 says so when it happens.
 
 ### Decision 2. Does the rule apply at all times, not only during a catch-up? (Yes or no.)
 
-Recommended: yes. In normal running it never pauses anything, it costs one counter for each report, and
+**Decided: yes.** In normal running it never pauses anything, it costs one counter for each report, and
 one rule is simpler than a rule that switches on and off. It also covers bursts that have nothing to do
 with a catch-up.
 
 ### Decision 3. When a connection for reports is lost, does the engine stop sending on it and log one Error naming the commands whose reports may be lost? (Yes or no.)
 
-Recommended: yes. Today the loss is silent apart from one line per dropped report, and none of those
+**Decided: yes.** Today the loss is silent apart from one line per dropped report, and none of those
 lines says which member's report it was.
