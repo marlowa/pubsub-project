@@ -271,9 +271,10 @@ at the speed the sequencer reads. Keeping every unwritten report and sending the
 chosen: it lets the connection be closed and made again, two seconds each time, and needs memory for every report
 not yet written, tens of gigabytes for a catch-up from the start of a busy day.
 
-The design, written for Andrew's review before any code, has to settle how the wait reaches the sequencer: while
-the engine waits, the commands the sequencer goes on sending must wait too, rather than pile up in the engine's own
-queue.
+The design is [pacing_the_engines_reports.md](availability/pacing_the_engines_reports.md), written for Andrew's
+review before any code. While the engine waits it pauses reading its connections from the sequencers, so the
+commands the sequencer goes on sending wait in the kernel and the sequencer's reading thread, which already sends only
+as fast as the connection takes, stops sending.
 
 ### BUG-0235: Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later {#bug_0235}
 
