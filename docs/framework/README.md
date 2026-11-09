@@ -7,6 +7,7 @@ the primitive rather than the venue: a component here is a building block, not a
 - [threading.md](threading.md) — ApplicationThread, the ITC message system, and the idle-blocking wake strategy
 - [application_thread_itc.md](application_thread_itc.md) — EventMessage, who owns each payload, and sending a message from one thread to another
 - [single_writer_histogram.md](single_writer_histogram.md) — A histogram the recording thread updates without a lock, read by the scrape without stopping it. **Agreed for BUG-0125, not built**
+- [bounding_messages_waiting.md](bounding_messages_waiting.md) — A limit on how many messages from one connection may wait in an application thread's queue, with the reactor not reading the connection while that many wait. **Designed for BUG-0234, not built**
 - [allocators.md](allocators.md) — Pool, slab and bump allocators, chaining on exhaustion, and the tripwire
 - [tla/findings.md](tla/findings.md) — TLA+ models of the lock-free allocators and queues, checked with TLC: what each checks, and what was found
 - [cpu_pinning.md](cpu_pinning.md) — Pinning threads to cores, and the registry that records what is pinned

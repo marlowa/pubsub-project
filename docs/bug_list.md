@@ -285,7 +285,9 @@ report, so the loss was not reproduced either. Section 3.2 of the design assumed
 already have been read when a pause takes effect. In fact the reactor goes on reading the sequencer's connection into
 the engine thread's queue while that thread is busy, and the framework bounds that queue only for connections carrying
 raw bytes, so tens of thousands of commands are queued ahead of the pause, and the notification that ends it waits
-behind them. A decision on how to bound that queue is with Andrew. While the engine waits it pauses reading its connections from the sequencers, so the
+behind them. **Decided 2026-11-09: the framework bounds how many messages from one connection may wait in an
+application thread's queue**, and the reactor does not read the connection while that many wait; the design is
+[bounding_messages_waiting.md](framework/bounding_messages_waiting.md), for review before any code. While the engine waits it pauses reading its connections from the sequencers, so the
 commands the sequencer goes on sending wait in the kernel and the sequencer's reading thread, which already sends only
 as fast as the connection takes, stops sending.
 
