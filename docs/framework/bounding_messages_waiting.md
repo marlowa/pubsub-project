@@ -1,8 +1,7 @@
 # Bounding the messages waiting from one connection {#bounding_messages_waiting}
 
-**Status: designed, not built.** This is the framework change chosen on 9 November 2026 for
-[BUG-0234](../bug_list.md#bug_0234), written for review before any code. Section 8 lists the decisions it
-needs.
+**Status: designed and agreed, not built.** This is the framework change chosen on 9 November 2026 for
+[BUG-0234](../bug_list.md#bug_0234). Section 8 records its two decisions, agreed with Andrew the same day.
 
 ## 1. The problem
 
@@ -140,7 +139,7 @@ change to the reactor or to the hand-over to an application thread.
 
 ### Decision 1. Is the limit set per connection by the application, with no connection limited unless asked? (Yes or no.)
 
-Recommended: **yes.** Limiting every connection by default would slow every peer that outruns its reader,
+**Decided: yes.** Limiting every connection by default would slow every peer that outruns its reader,
 including a gateway sending to the sequencer: the gateway's sends would wait in its own queue, and once that
 queue reached its limit the gateway would close the connection, which is the rule added for
 [BUG-0112](../bug_list.md#bug_0112). Each connection where being slowed
@@ -148,7 +147,7 @@ is safe can be limited as it is understood.
 
 ### Decision 2. Is the matching engine's limit on its order connections from the sequencers 1,024 messages? (Yes, or give a number.)
 
-Recommended: **1,024.** Small enough that pacing reacts within a few milliseconds and the reports outstanding
+**Decided: 1,024.** Small enough that pacing reacts within a few milliseconds and the reports outstanding
 stay far below any limit on waiting sends; large enough that, at the engine's rate of applying commands,
 reading stops and starts no more than a few hundred times a second during a catch-up and never in normal
 running.

@@ -287,7 +287,8 @@ the engine thread's queue while that thread is busy, and the framework bounds th
 raw bytes, so tens of thousands of commands are queued ahead of the pause, and the notification that ends it waits
 behind them. **Decided 2026-11-09: the framework bounds how many messages from one connection may wait in an
 application thread's queue**, and the reactor does not read the connection while that many wait; the design is
-[bounding_messages_waiting.md](framework/bounding_messages_waiting.md), for review before any code. While the engine waits it pauses reading its connections from the sequencers, so the
+[bounding_messages_waiting.md](framework/bounding_messages_waiting.md), agreed the same day: the limit is set per
+connection by the application, and the engine sets 1,024 on its order connections from the sequencers. While the engine waits it pauses reading its connections from the sequencers, so the
 commands the sequencer goes on sending wait in the kernel and the sequencer's reading thread, which already sends only
 as fast as the connection takes, stops sending.
 

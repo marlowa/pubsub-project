@@ -85,10 +85,18 @@ a loss of resilience is not a loss of service. The cost is that the follower's c
 fill and be closed during a long catch-up, and the follower sequencer then lacks some of the reports
 it keeps for a change of leader. Section 4 makes that visible. This is decision 1.
 
-**To be checked when this is built:** how the engine knows which of its connections for reports goes
-to the leading sequencer. It knows which sequencer leads from the order connections, and its
-connections for reports are named by sequencer instance (`sequencer_er`, `sequencer_er_secondary`),
-so the link is probably direct; it has not been confirmed.
+**How the engine knows which connection goes to the leading sequencer.** The order connections the
+sequencers open to the engine say nothing about which sequencer opened them, so each sequencer announces
+its role and epoch with `RoleAnnouncement` on the engine's connection for reports to it: when the
+connection is established, and again on every change of role. The engine paces on the connection whose
+sequencer says it leads, under the higher epoch if both say so (agreed with Andrew, 9 November 2026).
+
+**What made the pause too late, and the change that fixes it.** Measured on 9 November 2026, the pause
+took effect only after tens of thousands of commands already in the engine's queue had been applied:
+up to 34,121 reports were outstanding. The reactor reads a connection carrying messages into the
+thread's queue without limit. The framework therefore limits the messages from one connection waiting
+in a thread's queue ([bounding_messages_waiting.md](../framework/bounding_messages_waiting.md)), and the
+engine limits its order connections from the sequencers to 1,024.
 
 ### 3.5 The limit
 
