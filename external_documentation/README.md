@@ -40,14 +40,22 @@ the download ("Access Denied"); the copy above is the one London Stock Exchange 
 **How an exchange answers a message its gateway refuses**, for the design in
 [gateway_refusals.md](../docs/venue/gateway_refusals.md):
 
-- The FIX standard's OrderCancelReject requires an OrderID, and defines "NONE" for it only when the reason is that the
-  order is unknown (the two FIX 5.0 SP2 pages; the Cboe page shows a venue following it).
+- The FIX standard's OrderCancelReject requires an OrderID, defines "NONE" for it only when the reason is that the order
+  is unknown, and defines OrdStatus as the order's status after the reject, Rejected for an unknown order (the two FIX
+  5.0 SP2 pages; the Cboe page shows a venue following it).
 - The London Stock Exchange answers a message over a user's rate limit with a Business Message Reject, and disconnects
   a user that exceeds it repeatedly (MIT201, "message rate"); it answers an Order Cancel Request its gateway rejects for
   a missing field with a Business Message Reject too, and fills in the OrderID on the Order Cancel Reject its trading
   system sends (MIT202).
-- Euronext answers a message over the throttling limit with a session-level Reject, and a message rejected for
-  technical reasons is not processed by the matching engine, so it carries no Order ID (Optiq client specifications).
+- Euronext answers each kind of request with an acknowledgement, a functional or technical rejection (an
+  OrderCancelReject, for a cancel) or a session-level Reject (35=3); the Reject is for a message that is badly formed,
+  missing a mandatory field, out of range or over the throttling limit, and carries no Order ID, since the matching
+  engine never processed it (Optiq client specifications, sections 4.8 and 4.10). Its own SessionRejectReason values
+  for throttling are 25, 26 and 27 (Optiq FIX 5.0 messages). Its OrderCancelReject carries OrdStatus as the order's
+  current status (section 5.3.7).
+- The London Stock Exchange's OrderCancelReject carries OrdStatus as the order's current status, Rejected if the order is
+  unknown or the request cannot be processed, and OrderID "NONE" if the order is unknown (MIT202, section 6.4.6); a
+  message missing a required tag gets a session-level Reject (MIT202, section 2.9).
 - CME answers messages over a session's messaging-control threshold with a Business Message Reject (messaging controls).
 - Deutsche Börse's T7 FIX LF interface lists no OrderCancelReject among its messages, and answers a refused request with
   a Business Message Reject (cash message reference).

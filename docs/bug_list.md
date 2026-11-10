@@ -1438,11 +1438,17 @@ doubling rather than by a stated expectation.
 **2026-11-09:** the figure this entry needs, how many orders may be open at once in the venue, is decided, with Andrew, in decision 2 of [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md): each environment's `order_book_region_capacity`, the figure its matching engine's region is sized by (2,000,000 in development, 100,000,000 in production). The gateways' pools and the sequencer's map are to be sized from it.
 
 
-**Designed 2026-11-10, for Andrew's review before any code:** [gateway_refusals.md](venue/gateway_refusals.md). With the
-venue cancelling on disconnect since [BUG-0090](#bug_0090), the gateways' list of open orders is used only for the OrderID
-and status of an OrderCancelReject the gateway sends when it refuses a cancel itself. The design removes the list, so
-there is nothing left to size, and answers those refusals with a Business Message Reject, as the London Stock Exchange,
-Euronext, CME and Deutsche Börse publish that they do; it needs R-0151 amended.
+**Designed 2026-11-10, and agreed with Andrew the same day:** [gateway_refusals.md](venue/gateway_refusals.md). With
+the venue cancelling on disconnect since [BUG-0090](#bug_0090), the gateways' list of open orders is used only for the
+OrderID and status of an OrderCancelReject the gateway sends when it refuses a cancel itself. The design removes the
+list, so there is nothing left to size, and answers those refusals as Euronext does, with a session-level Reject that
+says nothing of the order; the binary gateway gains a counterpart, `RequestRefused`; R-0151 is amended to match.
+
+**Found 2026-11-10, writing the design: the status a gateway reports is assumed.** Every OrderCancelReject a gateway
+sends for a cancel it refuses itself says the order is New, open (`39=0`, `FixRejections.cpp`), whatever the order's
+state: the gateway has never known it. For an order the venue does not hold, or one already filled or cancelled, that is
+wrong, where the FIX standard and the London Stock Exchange report Rejected. The design removes it, since the gateway
+then sends no OrderCancelReject, and every one a member receives carries the status the matching engine states.
 ### BUG-0073: The placeholder environments carry settings nobody chose {#bug_0073}
 
 | | |
