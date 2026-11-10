@@ -371,6 +371,53 @@ TEST_F(WalClassTest, CorruptedSnapshotFallsBackToFullReplay) {
     EXPECT_EQ(records.size(), 5u);
 }
 
+// BUG-0183: a sequencer restarted on a WAL whose last written segment holds records and is shorter than the segment size
+// was killed by SIGBUS on the first append past the end of that file. The restart goes through Wal::open, which finds where
+// the records end and opens the writer there, so this test does the same.
+TEST_F(WalClassTest, ARestartOnAShortLastSegmentKeepsItsRecordsAndAppendsPastItsOldEnd) {
+    constexpr size_t larger_segment_size = 64 * 1024;
+    constexpr int records_before_restart = 500;
+    constexpr int records_after_restart = 200;
+    const std::vector<uint8_t> payload(200, 0x22u);
+    WalPosition end_of_records{};
+    {
+        Wal wal;
+        wal.open(dir_, larger_segment_size);
+        for (int record = 1; record <= records_before_restart; ++record) {
+            wal.append(record, 1000, payload.data(), static_cast<int>(payload.size()), 0, 0);
+        }
+        end_of_records = wal.write_position();
+    }
+    ASSERT_GT(end_of_records.segment, 0U) << "the records must reach a second segment, as they had on the recorded failure";
+    ASSERT_LT(end_of_records.offset + 4096, larger_segment_size) << "the appends after the restart must go past the old end within this segment";
+    std::filesystem::resize_file(fmt::format("{}/wal_{:06}.log", dir_, end_of_records.segment), end_of_records.offset);
+
+    std::vector<std::string> warnings;
+    {
+        Wal wal;
+        wal.set_warning_sink([&warnings](const std::string& message) { warnings.push_back(message); });
+        wal.open(dir_, larger_segment_size);
+        EXPECT_EQ(wal.last_seq_no(), records_before_restart);
+        for (int record = records_before_restart + 1; record <= records_before_restart + records_after_restart; ++record) {
+            wal.append(record, 1000, payload.data(), static_cast<int>(payload.size()), 0, 0);
+        }
+    }
+    // Only this warning is counted: appending this fast can also outrun the helper, which is warned about separately.
+    EXPECT_EQ(std::count_if(warnings.begin(), warnings.end(),
+                            [](const std::string& warning) { return warning.find("shorter than the segment size") != std::string::npos; }),
+              1);
+
+    std::vector<int64_t> seen;
+    Wal wal;
+    wal.open(
+        dir_, larger_segment_size, [&seen](int64_t seq_no, int16_t, const uint8_t*, size_t, int64_t, int32_t) { seen.push_back(seq_no); },
+        WalOpenMode{WalOpenMode::IgnoreSnapshot});
+    ASSERT_EQ(seen.size(), static_cast<size_t>(records_before_restart + records_after_restart));
+    for (size_t index = 0; index < seen.size(); ++index) {
+        ASSERT_EQ(seen[index], static_cast<int64_t>(index) + 1);
+    }
+}
+
 // Resume writing after reopen
 
 TEST_F(WalClassTest, ResumeWritingAfterReopenNoGap) {

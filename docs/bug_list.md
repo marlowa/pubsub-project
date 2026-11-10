@@ -2443,6 +2443,17 @@ well as by the scenarios. Started again from fresh WALs (`devenv.py --fresh-wal 
 grown, from the swap of binaries, or from a process killed while creating one. A write that cannot be backed must be
 refused with a message saying so, not kill the process. Until then, every full run starts from fresh WALs.
 
+**Where this stands, 10 November 2026.** The failure cannot now happen by the route it is thought to have taken, although
+which segment was short on 18 October, and why, cannot be established: the core dumps are gone. A segment now receives
+its final name only once it has been filled in full, and a segment found shorter than the segment size when the WAL is
+opened is completed with zeros, keeping its records, with a Warning ([BUG-0130](#bug_0130)). A segment's blocks are all
+written before it is mapped, so a disk with no room left fails the write that fills it, with an exception naming the
+file, and not a later write through the mapping. `WalClassTest.ARestartOnAShortLastSegmentKeepsItsRecordsAndAppendsPastItsOldEnd`
+reproduces the recorded shape through `Wal::open`: records in a second segment, that segment cut short at the end of
+its records, and appends past its old end. With the completion removed the test program dies by SIGBUS; with it, every
+record is read back in order. No sequencer has died by SIGBUS since 18 October 2026. Whether this entry can close with
+the original cause unknown is a decision for Andrew.
+
 **Principles.** V2: the log is the record. V12: every trading day starts fresh, which the tests do not yet do between
 runs.
 
