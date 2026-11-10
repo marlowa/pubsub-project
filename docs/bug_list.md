@@ -172,21 +172,22 @@ went looking.
 | Found | 2026-11-10 |
 | Recorded | 2026-11-10 |
 | How | Moving the gateways' limits on Symbol and OrderQty into `FixOrderLimits.hpp` while building [BUG-0072](#bug_0072), and comparing them with the matching engine's |
-| Impact | An order whose symbol is longer than 16 characters is accepted, and the matching engine stores the symbol cut short, with nothing logged and nothing refused. Two symbols that share their first 16 characters become one in the engine's book |
+| Impact | An order whose symbol is longer than 16 characters is accepted, and the matching engine stores the symbol cut short, with nothing logged and nothing refused. The engine's book is not keyed on the symbol, so orders are not confused; but every report the engine builds from its stored copy of the order, the cancel of an order and the cancels on disconnect and at a halt, gives the member a symbol other than the one it sent |
 
 **What happens.** Both gateways accept a symbol up to their configured `max_symbol_length`, which is 32 in every
 environment and may be configured up to `fix_order_limits::max_supported_symbol_length`, 64. The matching engine's
 `OrderEntry` holds `matching_engine::max_symbol_length` characters, 16 (`applications/matching_engine/OrderEntry.hpp`), and
 `OrderEntry::set_symbol` copies `std::min(sv.size(), max_symbol_length)` of them. No component refuses a symbol of 17
 to 32 characters. The engine's own comment, "Symbol max ~12; 16 is ample", states an assumption that the gateways do not
-enforce.
+enforce. The engine reads the stored symbol back in two places, both building an execution report for a cancel
+(`MatchingEngineStateMachine.cpp`, `er.symbol = entry.get_symbol()`); the book does not use it as a key.
 
 The same shape applies to OrderQty and price: the engine holds 24 characters of each, and the gateways' configured
 limit on OrderQty is 24 in every environment, but may be configured up to 32.
 
-This is the fault R-0152 exists to prevent for identifiers: "an identifier longer than the matching
-engine's book key is cut short there, so two orders can become one". For `ClOrdID` the limit is one shared constant,
-`fix_order_limits::max_cl_ord_id_length`; for the symbol and the quantity there are two numbers that disagree.
+R-0152 requires each gateway to refuse "an identifier, symbol or quantity longer than the venue holds". For `ClOrdID`
+the limit is one shared constant, `fix_order_limits::max_cl_ord_id_length`; for the symbol and the quantity there are two
+numbers that disagree, so the gateways pass on symbols the venue does not hold in full.
 
 **The fix.** One limit for each field, shared by the gateways and the matching engine, as `ClOrdID` has, with the
 gateways' configured limits bounded by it; and the matching engine refusing a field longer than it holds rather than
