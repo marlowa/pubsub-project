@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 244 |
-| Open | 49 (28 defects, 21 tasks) |
-| Closed | 195 |
+| Open | 48 (27 defects, 21 tasks) |
+| Closed | 196 |
 | Next id | BUG-0245 |
 
 ## Open bugs by severity
 
-8 high, 32 medium, 9 low.
+7 high, 32 medium, 9 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -19,7 +19,6 @@
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
-| [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0041](#bug_0041) | medium | defect | Five ways the venue will not start on a RHEL8 target host |
@@ -2287,46 +2286,6 @@ that says whether each value is one the definition allows.
 
 **Principles.** None; the DSL compiler.
 
-### BUG-0183: A sequencer dies with SIGBUS appending to a WAL left by earlier runs {#bug_0183}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-18 |
-| Recorded | 2026-10-18 |
-| How | A full run of the high availability scenarios started without fresh WALs, after round-trip measurements had added to them, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): from scenario 3 on, every scenario failed at its baseline orders |
-| Impact | The leading sequencer dies on the first order it appends, with nothing in its Quill log and no crash report of its own; its follower takes over, and each restart dies the same way. A venue whose WAL reaches this state cannot sequence |
-
-**What was seen.** Eleven SIGBUS core dumps of the sequencer between 21:32 and 21:52 on 18 October 2026, none before.
-The one examined (`coredumpctl`, process 3039788) died in `memcpy`, called from `pubsub_itc_fw::Wal::append`, from
-`ReplicatedWal::write` and `SequencerThread::append_envelope_to_wal`, writing the first record after record 151,891.
-The WAL directory held 50 MB in segments of 4 MiB (`segment_size = 4194304`), and the filesystem had 1.7 TB free, so
-the write did not fail for want of space. SIGBUS from a write to a memory-mapped file usually means the page lies
-beyond the end of the file: the segment being written is shorter than the region mapped for it. The sequencer's Quill
-log simply stops, because the process is killed before its background thread writes the last lines.
-
-The WAL had been written by the round-trip measurements of that afternoon (three arms of five runs of 6,000 orders,
-each started with `devenv.py`, with the installed binaries swapped between the build before and after each change) as
-well as by the scenarios. Started again from fresh WALs (`devenv.py --fresh-wal --fresh-book`), the scenarios run.
-
-**What is wanted.** The cause found: which segment was short, and why, whether from how a segment is created or
-grown, from the swap of binaries, or from a process killed while creating one. A write that cannot be backed must be
-refused with a message saying so, not kill the process. Until then, every full run starts from fresh WALs.
-
-**Where this stands, 10 November 2026.** The failure cannot now happen by the route it is thought to have taken, although
-which segment was short on 18 October, and why, cannot be established: the core dumps are gone. A segment now receives
-its final name only once it has been filled in full, and a segment found shorter than the segment size when the WAL is
-opened is completed with zeros, keeping its records, with a Warning ([BUG-0130](#bug_0130)). A segment's blocks are all
-written before it is mapped, so a disk with no room left fails the write that fills it, with an exception naming the
-file, and not a later write through the mapping. `WalClassTest.ARestartOnAShortLastSegmentKeepsItsRecordsAndAppendsPastItsOldEnd`
-reproduces the recorded shape through `Wal::open`: records in a second segment, that segment cut short at the end of
-its records, and appends past its old end. With the completion removed the test program dies by SIGBUS; with it, every
-record is read back in order. No sequencer has died by SIGBUS since 18 October 2026. Whether this entry can close with
-the original cause unknown is a decision for Andrew.
-
-**Principles.** V2: the log is the record. V12: every trading day starts fresh, which the tests do not yet do between
-runs.
-
 ### BUG-0184: A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five {#bug_0184}
 
 | | |
@@ -2426,6 +2385,46 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0183: A sequencer dies with SIGBUS appending to a WAL left by earlier runs {#bug_0183}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| Fixed | 2026-11-10 -- closed by Andrew's decision with the original cause unknown, because the core dumps are gone. A segment receives its final name only once filled in full, and a short segment found at opening is completed with zeros, keeping its records ([BUG-0130](#bug_0130)). `WalClassTest.ARestartOnAShortLastSegmentKeepsItsRecordsAndAppendsPastItsOldEnd` reproduces the recorded shape, and dies by SIGBUS with the completion removed |
+| How | A full run of the high availability scenarios started without fresh WALs, after round-trip measurements had added to them, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): from scenario 3 on, every scenario failed at its baseline orders |
+| Impact | The leading sequencer dies on the first order it appends, with nothing in its Quill log and no crash report of its own; its follower takes over, and each restart dies the same way. A venue whose WAL reaches this state cannot sequence |
+
+**What was seen.** Eleven SIGBUS core dumps of the sequencer between 21:32 and 21:52 on 18 October 2026, none before.
+The one examined (`coredumpctl`, process 3039788) died in `memcpy`, called from `pubsub_itc_fw::Wal::append`, from
+`ReplicatedWal::write` and `SequencerThread::append_envelope_to_wal`, writing the first record after record 151,891.
+The WAL directory held 50 MB in segments of 4 MiB (`segment_size = 4194304`), and the filesystem had 1.7 TB free, so
+the write did not fail for want of space. SIGBUS from a write to a memory-mapped file usually means the page lies
+beyond the end of the file: the segment being written is shorter than the region mapped for it. The sequencer's Quill
+log simply stops, because the process is killed before its background thread writes the last lines.
+
+The WAL had been written by the round-trip measurements of that afternoon (three arms of five runs of 6,000 orders,
+each started with `devenv.py`, with the installed binaries swapped between the build before and after each change) as
+well as by the scenarios. Started again from fresh WALs (`devenv.py --fresh-wal --fresh-book`), the scenarios run.
+
+**What is wanted.** The cause found: which segment was short, and why, whether from how a segment is created or
+grown, from the swap of binaries, or from a process killed while creating one. A write that cannot be backed must be
+refused with a message saying so, not kill the process. Until then, every full run starts from fresh WALs.
+
+**Where this stands, 10 November 2026.** The failure cannot now happen by the route it is thought to have taken, although
+which segment was short on 18 October, and why, cannot be established: the core dumps are gone. A segment now receives
+its final name only once it has been filled in full, and a segment found shorter than the segment size when the WAL is
+opened is completed with zeros, keeping its records, with a Warning ([BUG-0130](#bug_0130)). A segment's blocks are all
+written before it is mapped, so a disk with no room left fails the write that fills it, with an exception naming the
+file, and not a later write through the mapping. `WalClassTest.ARestartOnAShortLastSegmentKeepsItsRecordsAndAppendsPastItsOldEnd`
+reproduces the recorded shape through `Wal::open`: records in a second segment, that segment cut short at the end of
+its records, and appends past its old end. With the completion removed the test program dies by SIGBUS; with it, every
+record is read back in order. No sequencer has died by SIGBUS since 18 October 2026.
+
+**Principles.** V2: the log is the record. V12: every trading day starts fresh, which the tests do not yet do between
+runs.
 
 ### BUG-0240: A recurring timer asked for with no interval never fires, and nothing says so {#bug_0240}
 
