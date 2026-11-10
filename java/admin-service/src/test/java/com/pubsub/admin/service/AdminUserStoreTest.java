@@ -5,7 +5,9 @@ import com.pubsub.admin.model.AdminUser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -26,6 +28,17 @@ class AdminUserStoreTest {
     void emptyWhenFileAbsent() {
         assertTrue(store().isEmpty());
         assertTrue(store().loadAll().isEmpty());
+    }
+
+    @Test
+    void theFileIsReadableOnlyByItsOwnerWhateverTheTemporaryFileLeftBehindAllowed() throws Exception {
+        Path leftBehind = tempDir.resolve("users.toml.tmp");
+        Files.createFile(leftBehind);
+        Files.setPosixFilePermissions(leftBehind, PosixFilePermissions.fromString("rw-rw-rw-"));
+
+        store().createUser("alice", "Password1", AdminRole.ADMIN, false);
+
+        assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(tempDir.resolve("users.toml")));
     }
 
     @Test

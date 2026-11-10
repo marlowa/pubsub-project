@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 242 |
-| Open | 55 (34 defects, 21 tasks) |
-| Closed | 187 |
+| Open | 54 (33 defects, 21 tasks) |
+| Closed | 188 |
 | Next id | BUG-0243 |
 
 ## Open bugs by severity
 
-8 high, 33 medium, 14 low.
+8 high, 32 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -52,7 +52,6 @@
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0235](#bug_0235) | medium | defect | Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later |
-| [BUG-0236](#bug_0236) | medium | defect | The COMPID editor writes its administrators' file readable by every account on the host |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -252,28 +251,6 @@ for a recurring timer that would mean firing continuously, so it was left as it 
 
 **What is wanted.** A recurring timer of no interval refused where it is asked for, with `PreconditionAssertion` on the calling
 thread as for other misuse of the framework, after checking every caller whose interval comes from configuration.
-
-### BUG-0236: The COMPID editor writes its administrators' file readable by every account on the host {#bug_0236}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-08 |
-| Recorded | 2026-11-08 |
-| How | Trying first-run setup against the deployed editor for [BUG-0189](#bug_0189): the administrator it created was written to `admin_users.toml` with permissions `rw-rw-r--` |
-| Impact | Any account on the host can read the bcrypt hash of every administrator's password and try to guess the passwords offline, at its own pace, with nothing to slow it or see it. An administrator manages every member's credentials and permissions |
-
-**What happens.** `AdminUserStore` writes the file by writing a temporary file with `Files.writeString` and renaming
-it over the old one. It sets no permissions, so the file gets the ones the process's umask allows; on this machine,
-read access for every account.
-
-Found by trying it; the one-time setup secret beside it is written readable only by its owner.
-
-**What is wanted.** The store creates the temporary file readable and writable only by its owner, as `SetupSecret`
-does, so the file it is renamed to is too, whatever the umask. A unit test checks the permissions of the file after a
-write; it is made to fail on purpose first.
-
-**Principles.** None of the design principles; a security defect in the operator's tool.
 
 ### BUG-0235: Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later {#bug_0235}
 
@@ -2556,6 +2533,29 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0236: The COMPID editor writes its administrators' file readable by every account on the host {#bug_0236}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-08 |
+| Recorded | 2026-11-08 |
+| Fixed | 2026-11-10 -- `AdminUserStore` creates its temporary file readable and writable only by its owner before writing to it, first removing any temporary file left behind, so the file renamed over the old one is private whatever the umask. A file already on a host keeps its permissions until the next change to it. A unit test checks the permissions after a write that starts from a temporary file left behind readable by everyone; creating the file with wider permissions makes it fail. |
+| How | Trying first-run setup against the deployed editor for [BUG-0189](#bug_0189): the administrator it created was written to `admin_users.toml` with permissions `rw-rw-r--` |
+| Impact | Any account on the host can read the bcrypt hash of every administrator's password and try to guess the passwords offline, at its own pace, with nothing to slow it or see it. An administrator manages every member's credentials and permissions |
+
+**What happens.** `AdminUserStore` writes the file by writing a temporary file with `Files.writeString` and renaming
+it over the old one. It sets no permissions, so the file gets the ones the process's umask allows; on this machine,
+read access for every account.
+
+Found by trying it; the one-time setup secret beside it is written readable only by its owner.
+
+**What is wanted.** The store creates the temporary file readable and writable only by its owner, as `SetupSecret`
+does, so the file it is renamed to is too, whatever the umask. A unit test checks the permissions of the file after a
+write; it is made to fail on purpose first.
+
+**Principles.** None of the design principles; a security defect in the operator's tool.
 
 ### BUG-0241: The matching engine keeps only the first 16 characters of a symbol, and the gateways accept up to 32 {#bug_0241}
 

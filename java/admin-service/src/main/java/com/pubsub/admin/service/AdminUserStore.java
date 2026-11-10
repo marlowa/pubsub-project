@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -117,6 +118,11 @@ public class AdminUserStore {
             sb.append("force_password_change = ").append(u.forcePasswordChange()).append("\n\n");
         }
         try {
+            // Created owner-only before anything is written to it, so that the password hashes are never readable by another
+            // account, whatever the umask. An earlier temporary file is removed because createFile refuses an existing name
+            // and that file's permissions could be wider.
+            Files.deleteIfExists(tmp);
+            Files.createFile(tmp, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
             Files.writeString(tmp, sb.toString());
             Files.move(tmp, filePath,
                     StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
