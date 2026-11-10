@@ -108,9 +108,9 @@ do for their paced resend.
 ## 4. A connection for reports lost while reports are owed
 
 Separate from pacing, and agreed as decision 3. Today, when a connection for
-reports is closed, the engine carries on sending on it and the reactor drops every report, logging
-"unknown connection id" for each. In the failing run that was 47,091 lines, and no line said which
-reports were lost.
+reports is closed, the engine carries on sending on it and the reactor drops every report. The reactor
+writes one Warning for each such connection at each housekeeping tick, with the number dropped, and no
+line says which reports were lost.
 
 The proposal: when a connection for reports is lost, the engine stops sending on it, and logs one
 Error naming the sequencer and the range of commands whose reports were sent on it and may not have
