@@ -9,6 +9,7 @@ add_executable(pubsub_itc_fw_tests
     CpuRegistryTest.cpp
     ExternalWalSubscriberRegistryTest.cpp
     Crc32Test.cpp
+    SendsToGoneConnectionsTest.cpp
     MetricKeyTest.cpp
     PrometheusEndpointTest.cpp
     SingleWriterHistogramTest.cpp

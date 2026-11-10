@@ -9211,6 +9211,16 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if not refused:
                 die("recovery limit: the venue accepted an order while halted, so it resumed trading by itself (R-0023)")
             log("  recovery limit: an order sent into the halt was refused -- OK")
+            # BUG-0109. Every order here was answered once and then cancelled by the matching engine, so a health report that
+            # counted the cancellation reports as answers would say that fewer than no orders are awaited.
+            progress_report = _TEST_EVENTS.wait_for(message_of(gateway_events.ProgressReported, "fix_order_gateway_a"), timeout=8.0, since=_TEST_EVENTS.mark())
+            if progress_report is None:
+                die("recovery limit: fix_order_gateway_a sent no progress report within 8s")
+            if progress_report.message.awaiting < 0:
+                die(f"recovery limit: the gateway says {progress_report.message.awaiting} orders are awaited, because it counted reports that do not "
+                    "answer a new order")
+            log(f"  recovery limit: the gateway's health report says {progress_report.message.awaiting} order(s) awaited, after every order was "
+                "answered and cancelled -- OK")
 
         if scenario.assert_no_recovery_halt:
             gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]

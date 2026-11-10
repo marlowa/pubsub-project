@@ -347,6 +347,18 @@ TEST_F(ApplicationThreadTest, ThreadIDOfZeroReserved) {
         PreconditionAssertion); // NOLINT(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
 }
 
+TEST_F(ApplicationThreadTest, ARecurringTimerOfNoIntervalIsRefused) {
+    auto thread = ApplicationThread::create<TestThread>(logger_with_sink_.logger, *reactor_, "NoIntervalTest", ThreadID(124), make_queue_config(),
+                                                        make_allocator_config());
+    // The text is checked because this thread is not the one that owns the timer, which is refused with the same exception.
+    try {
+        static_cast<void>(thread->start_recurring_timer(std::chrono::microseconds{0}));
+        FAIL() << "a recurring timer of no interval was accepted";
+    } catch (const PreconditionAssertion& refusal) {
+        EXPECT_NE(std::string(refusal.what()).find("greater than zero"), std::string::npos) << refusal.what();
+    }
+}
+
 // TEST 1: Start and shutdown
 // What: Verifies that the thread transitions to running and then cleanly
 //       shuts down via ApplicationThread::shutdown.

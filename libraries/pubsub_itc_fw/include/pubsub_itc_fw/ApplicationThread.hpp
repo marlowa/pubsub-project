@@ -344,7 +344,8 @@ class ApplicationThread {
 
     /**
      * @brief Starts a recurring timer.
-     * @param [in] interval The timer interval.
+     * @param [in] interval The timer interval, which must be greater than zero. A timer of no interval could only never
+     *                      fire or fire without pause, so it is refused with PreconditionAssertion on the calling thread.
      * @return the TimerID for the timer created; retain it to cancel the timer
      *         or to recognise it in on_timer_event.
      */

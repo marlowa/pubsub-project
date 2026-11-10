@@ -238,6 +238,11 @@ TimerID ApplicationThread::start_one_off_timer(std::chrono::microseconds interva
 }
 
 TimerID ApplicationThread::start_recurring_timer(std::chrono::microseconds interval) {
+    if (interval <= std::chrono::microseconds::zero()) {
+        throw PreconditionAssertion(
+            fmt::format("ApplicationThread {}: a recurring timer needs an interval greater than zero, or it would never fire", thread_name_), __FILE__,
+            __LINE__);
+    }
     return schedule_timer(interval, TimerType(TimerType::Recurring));
 }
 

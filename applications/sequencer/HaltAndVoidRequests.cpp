@@ -46,7 +46,7 @@ void HaltAndVoidRequests::operator_request(const pubsub_itc_fw::ConnectionID& co
         const pubsub_itc_fw_app::TechnicalEvent event = technical_event(Trading::halts, pubsub_itc_fw_app::TechnicalEventReason::DeclaredByOperator, now_ns);
         const int64_t seq_no = links_.next_seq_no();
         if (!links_.write_technical_event(event)) {
-            answer(connection, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::NotHalted, 0,
+            answer(connection, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::NotWritten, 0,
                    "the TechnicalEvent could not be encoded, so nothing was written");
             return;
         }
@@ -83,7 +83,7 @@ void HaltAndVoidRequests::operator_request(const pubsub_itc_fw::ConnectionID& co
     const pubsub_itc_fw_app::TechnicalEvent event = technical_event(Trading::lifts, pubsub_itc_fw_app::TechnicalEventReason::LiftedByOperator, now_ns);
     const int64_t seq_no = links_.next_seq_no();
     if (!links_.write_technical_event(event)) {
-        answer(connection, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::ReportsOutstanding, 0,
+        answer(connection, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::NotWritten, 0,
                "the TechnicalEvent could not be encoded, so nothing was written");
         return;
     }

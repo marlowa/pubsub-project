@@ -63,6 +63,9 @@ struct RecordingLinks : public HaltAndVoidRequestsLinksInterface {
         return in_record;
     }
     bool write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) override {
+        if (technical_event_cannot_be_encoded) {
+            return false;
+        }
         written.push_back(std::string("TechnicalEvent ") + (event.halted ? "halts " : "lifts ") + std::string(pubsub_itc_fw_app::to_string(event.reason)));
         halt.note_technical_event(next, event.halted, event.reason);
         ++next;
@@ -97,6 +100,7 @@ struct RecordingLinks : public HaltAndVoidRequestsLinksInterface {
     int64_t leading_instance{0};
     TradingHaltState halt;
     int64_t answered_through{0};
+    bool technical_event_cannot_be_encoded{false};
     int64_t released{0};
     int64_t next{11};
     int64_t voided{0};
@@ -149,6 +153,13 @@ TEST_F(HaltAndVoidRequestsTest, AHaltWhileHaltedWritesNothing) {
     operator_asks(true);
     EXPECT_EQ(links_.written.size(), 1U);
     EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::Halted, Outcome::AlreadyHalted}));
+}
+
+TEST_F(HaltAndVoidRequestsTest, AHaltThatCannotBeEncodedIsAnsweredAsNotWritten) {
+    links_.technical_event_cannot_be_encoded = true;
+    operator_asks(true);
+    EXPECT_TRUE(links_.written.empty());
+    EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::NotWritten}));
 }
 
 TEST_F(HaltAndVoidRequestsTest, LiftingWhenNotHaltedWritesNothing) {

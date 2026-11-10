@@ -763,6 +763,8 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     int64_t orders_received_{0};
     int64_t execution_reports_sent_{0};
     int64_t execution_reports_dropped_{0};
+    /// New orders that the matching engine has accepted or rejected. Reports of cancels are not counted here.
+    int64_t orders_answered_{0};
 
     /**
      * @brief Orders refused because the venue said it could not process them, and cancels likewise.

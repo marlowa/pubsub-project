@@ -39,6 +39,7 @@
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ReactorLifecycleState.hpp>
+#include <pubsub_itc_fw/SendsToGoneConnections.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
@@ -786,6 +787,9 @@ class Reactor : public ThreadLookupInterface {
 
     // Written once, by the caller that claims the shutdown, before the request is published in
     // lifecycle_; read only by a thread that has seen the request. See shutdown().
+    // Reported at each housekeeping tick, one line for each connection, however many sends arrived for it.
+    SendsToGoneConnections sends_to_gone_connections_;
+
     std::string shutdown_reason_;
     std::atomic<bool> shutdown_claimed_{false};
 

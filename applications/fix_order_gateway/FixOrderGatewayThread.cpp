@@ -771,6 +771,13 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
         static_cast<void>(unanswered_commands_->answered(envelope.sender_comp_id, envelope.cl_ord_id));
     }
 
+    // Counted here, before the report is routed, because an order is answered whether or not its member is still there to
+    // hear it. Only the first report of an order answers it: a later cancel report, or the refusal of a cancel, does not.
+    if (!envelope.poss_resend && (view.exec_type == pubsub_itc_fw_app::ExecType::New || view.exec_type == pubsub_itc_fw_app::ExecType::Rejected) &&
+        !fix_common::is_cancel_rejection(view)) {
+        ++orders_answered_;
+    }
+
     // Route to the exact FIX session identified by gateway_session_conn_id, which
     // the gateway stamped on the original NOS envelope and the sequencer echoes here.
     if (!envelope.has_gateway_session_conn_id) {
@@ -2558,7 +2565,10 @@ void FixOrderGatewayThread::emit_order_progress(int64_t accounted) {
     // the incident and was not lying -- nothing was dropped, the orders were queued behind a
     // matching engine that no longer existed. The gap between what arrived and what has
     // been accounted for already carried that, and was thrown away.
-    const int64_t awaiting = orders_received_ - accounted;
+    //
+    // Only reports that answer a new order are subtracted. `accounted` also holds every report of a cancel, and subtracting
+    // those would take the figure below zero.
+    const int64_t awaiting = orders_received_ - orders_answered_ - orders_refused_;
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "GW-PROGRESS accounted={} sent={} dropped={} nos_received={} awaiting={} refused={} refused_cancels={}", accounted, execution_reports_sent_,

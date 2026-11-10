@@ -985,6 +985,10 @@ void Reactor::on_housekeeping_tick() {
 
     check_for_exited_threads();
     check_for_stuck_threads();
+    sends_to_gone_connections_.report_and_forget([this](int connection_id, int64_t sends) {
+        PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor: {} send(s) dropped since the last housekeeping tick, because connection id {} has gone", sends,
+                   connection_id);
+    });
     inbound_manager_.check_for_inactive_connections();
     outbound_manager_.check_for_timed_out_connections();
 
@@ -1362,8 +1366,7 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                     disposition = inbound_manager_.process_send_pdu_command(command);
                 }
                 if (disposition == SendDisposition::NoSuchConnection) {
-                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: unknown connection id {} for SendPdu",
-                               command.connection_id_.get_value());
+                    sends_to_gone_connections_.count_send(command.connection_id_.get_value());
                     command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
                 }
                 // Not recorded when the send waits: its bytes go out when the sends before it on the
@@ -1380,8 +1383,7 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                     disposition = inbound_manager_.process_send_raw_command(command);
                 }
                 if (disposition == SendDisposition::NoSuchConnection) {
-                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: unknown connection id {} for SendRaw",
-                               command.connection_id_.get_value());
+                    sends_to_gone_connections_.count_send(command.connection_id_.get_value());
                     command.allocator_->deallocate(command.slab_id_, command.raw_chunk_ptr_);
                 }
                 if (disposition == SendDisposition::Started) {

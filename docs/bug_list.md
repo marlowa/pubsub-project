@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 242 |
-| Open | 51 (30 defects, 21 tasks) |
-| Closed | 191 |
+| Open | 47 (26 defects, 21 tasks) |
+| Closed | 195 |
 | Next id | BUG-0243 |
 
 ## Open bugs by severity
 
-8 high, 31 medium, 12 low.
+8 high, 31 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -55,15 +55,11 @@
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
-| [BUG-0109](#bug_0109) | low | defect | The FIX gateway's health line counts cancel reports as answered orders |
-| [BUG-0166](#bug_0166) | low | defect | The reactor writes a Warning for every send to a connection that has gone, not one for each connection |
 | [BUG-0177](#bug_0177) | low | defect | The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value |
 | [BUG-0179](#bug_0179) | low | defect | The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again |
 | [BUG-0215](#bug_0215) | low | defect | `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds |
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
-| [BUG-0227](#bug_0227) | low | defect | An operator whose request to lift the halt cannot be written is told that reports are outstanding |
-| [BUG-0240](#bug_0240) | low | defect | A recurring timer asked for with no interval never fires, and nothing says so |
 
 ---
 
@@ -232,23 +228,6 @@ Twice in about 250 scenario runs, each in a different scenario, so a full run of
 without any fault in the venue. The cause is still not known; the next step is to capture the client's own exit status
 and standard error when it happens, which the harness does not keep.
 
-### BUG-0240: A recurring timer asked for with no interval never fires, and nothing says so {#bug_0240}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-11-10 |
-| Recorded | 2026-11-10 |
-| How | Fixing [BUG-0239](#bug_0239), the same cause for a one-off timer |
-| Impact | A component that starts a recurring timer from a configured interval of zero gets a timer that never fires, with no Warning or Error. Not known to happen in the venue; not checked |
-
-**What happens.** `TimerHandler` sets the timerfd's first expiry and its interval from the timer's interval. An interval of
-zero gives a time of zero, which disarms the timerfd. [BUG-0239](#bug_0239) made a one-off timer of no interval fire at once;
-for a recurring timer that would mean firing continuously, so it was left as it is.
-
-**What is wanted.** A recurring timer of no interval refused where it is asked for, with `PreconditionAssertion` on the calling
-thread as for other misuse of the framework, after checking every caller whose interval comes from configuration.
-
 ### BUG-0229: The functional specification has not been checked against the code, and specifies recovery far more than normal operation {#bug_0229}
 
 | | |
@@ -287,30 +266,6 @@ thread as for other misuse of the framework, after checking every caller whose i
       or its rejection.
    7. Checking the behaviour through both gateways: the same order, rejection, cancellation and reporting outcomes
       through FIX and through the binary gateway.
-
-### BUG-0227: An operator whose request to lift the halt cannot be written is told that reports are outstanding {#bug_0227}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-11-04 |
-| Recorded | 2026-11-04 |
-| How | Moving the sequencer's handling of requests to halt trading into a part of its own for phase 10 ([dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md), step 14) |
-| Impact | None in practice: a TechnicalEvent is a few fixed-size fields and always encodes. If it ever did not, the operator would be told the wrong reason the halt was not lifted |
-
-**What happens.** When an operator asks to lift the halt, every check passes, and the TechnicalEvent that lifts it cannot
-be encoded, `HaltAndVoidRequests::operator_request` answers with the outcome `ReportsOutstanding`, which tells the
-operator that the leading matching engine is still working through the orders the venue held. The explanation sent with
-it says, correctly, that the TechnicalEvent could not be encoded and nothing was written. The same failure when halting
-answers `NotHalted`, which is at least true.
-
-Found by reading the code; not reproduced, because encoding a TechnicalEvent cannot fail with the buffer the sequencer
-measures for it.
-
-**What is wanted.** An outcome that says nothing was written because the command could not be encoded, used for both the
-halt and the lift, so that a tool reading only the outcome is not misled.
-
-**Principles.** None broken; a message that misstates the venue's condition to a person.
 
 ### BUG-0222: No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it {#bug_0222}
 
@@ -420,21 +375,6 @@ halted. That build is not the venue's, and the check is not repeated.
 **What is wanted.** A scenario in which the WAL begins after the first command of the day and an engine with a damaged
 region takes the lead: trading halts by the command, nothing is cancelled, and an order sent afterwards is refused.
 It becomes possible once the WAL is reclaimed ([BUG-0048](#bug_0048)).
-
-### BUG-0166: The reactor writes a Warning for every send to a connection that has gone, not one for each connection {#bug_0166}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-10-14 |
-| Recorded | 2026-10-15 |
-| How | The measurement for [BUG-0155](#bug_0155): every record queued for a peer connection already closed wrote "Reactor::process_control_commands: unknown connection id ... for SendPdu" |
-| Impact | 48.9 million Warning lines, and a Quill log of 10 GB in three minutes, when a thread had queued many sends for a connection that then closed. With the reading thread now paced by its connection, few sends are ever waiting, so this is now unlikely, but any thread that queues sends without pacing can still cause it |
-
-**What is wanted.** One Warning for each connection that sends arrive for after it has gone, with a count
-of the sends dropped, written when the count stops growing or at a fixed interval; not one line for each send.
-
-**Principles.** None; how much the Quill log says.
 
 ### BUG-0161: The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send {#bug_0161}
 
@@ -966,27 +906,6 @@ reader finds the segment holding any moment or any record in one step, and every
 time can be removed by deleting whole segments. Files covering a period such as two hours were
 considered: they would reach about 25 GB each on a busy day, and the writer prepares each file at its
 full size and maps it into memory, which is not built for files that large.
-
-### BUG-0109: The FIX gateway's health line counts cancel reports as answered orders {#bug_0109}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-10-03 |
-| Recorded | 2026-10-03 |
-| How | Reading `GW-PROGRESS` after latency runs in which nine orders in ten are cancelled |
-| Impact | `awaiting`, meant to say how many orders have had no answer, goes negative whenever cancels are answered, so it says nothing in exactly the traffic a venue has: `accounted=48000 sent=45535 dropped=2465 nos_received=24000 awaiting=-24000` |
-
-**Why.** `accounted` is `sent + dropped + refused`, and `execution_reports_sent_` is incremented for
-every report sent to a member, including those that answer cancels, while `awaiting` is
-`orders_received_ - accounted` and counts only new orders. The two sides count different things.
-[order_acceptance.md](availability/order_acceptance.md) describes `awaiting` as intended.
-
-**Not established:** what the 2,465 dropped reports were. A likely explanation is the reports for
-orders deferred in an earlier run, produced after the engine caught up while the member's session was
-connected nowhere ([BUG-0088](#bug_0088)), but that was not checked.
-
----
 
 ### BUG-0104: A connection whose reads were paused can stay stalled for seconds after they resume {#bug_0104}
 
@@ -2458,6 +2377,87 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0240: A recurring timer asked for with no interval never fires, and nothing says so {#bug_0240}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-10 |
+| Recorded | 2026-11-10 |
+| Fixed | 2026-11-10 -- `ApplicationThread::start_recurring_timer` refuses an interval of zero or less with `PreconditionAssertion` on the calling thread. Every caller was checked: each interval is a constant or a configuration value the loader already refuses unless it is positive. A unit test checks the text of the refusal, because a call from a thread that does not own the timer is refused with the same exception; with the check removed it fails. |
+| How | Fixing [BUG-0239](#bug_0239), the same cause for a one-off timer |
+| Impact | A component that starts a recurring timer from a configured interval of zero gets a timer that never fires, with no Warning or Error. Not known to happen in the venue; not checked |
+
+**What happens.** `TimerHandler` sets the timerfd's first expiry and its interval from the timer's interval. An interval of
+zero gives a time of zero, which disarms the timerfd. [BUG-0239](#bug_0239) made a one-off timer of no interval fire at once;
+for a recurring timer that would mean firing continuously, so it was left as it is.
+
+**What is wanted.** A recurring timer of no interval refused where it is asked for, with `PreconditionAssertion` on the calling
+thread as for other misuse of the framework, after checking every caller whose interval comes from configuration.
+
+### BUG-0166: The reactor writes a Warning for every send to a connection that has gone, not one for each connection {#bug_0166}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-15 |
+| Fixed | 2026-11-10 -- The reactor counts sends for a connection that has gone (`SendsToGoneConnections`) and at each housekeeping tick writes one Warning for each such connection, with the number of sends dropped. Two unit tests check the counting and that a report is not repeated. No test makes the reactor itself drop a send. |
+| How | The measurement for [BUG-0155](#bug_0155): every record queued for a peer connection already closed wrote "Reactor::process_control_commands: unknown connection id ... for SendPdu" |
+| Impact | 48.9 million Warning lines, and a Quill log of 10 GB in three minutes, when a thread had queued many sends for a connection that then closed. With the reading thread now paced by its connection, few sends are ever waiting, so this is now unlikely, but any thread that queues sends without pacing can still cause it |
+
+**What is wanted.** One Warning for each connection that sends arrive for after it has gone, with a count
+of the sends dropped, written when the count stops growing or at a fixed interval; not one line for each send.
+
+**Principles.** None; how much the Quill log says.
+
+### BUG-0109: The FIX gateway's health line counts cancel reports as answered orders {#bug_0109}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| Fixed | 2026-11-10 -- The FIX gateway counts orders answered (`orders_answered_`): the first report of a new order, accepted or rejected, whether or not its member is still connected. `awaiting` is the orders received less those answered and those refused. `accounted`, which `perf_run.py` reads, is unchanged. Scenario 51 now checks that the figure is not negative after every order was answered and then cancelled; with the earlier formula it fails, reporting -1000. |
+| How | Reading `GW-PROGRESS` after latency runs in which nine orders in ten are cancelled |
+| Impact | `awaiting`, meant to say how many orders have had no answer, goes negative whenever cancels are answered, so it says nothing in exactly the traffic a venue has: `accounted=48000 sent=45535 dropped=2465 nos_received=24000 awaiting=-24000` |
+
+**Why.** `accounted` is `sent + dropped + refused`, and `execution_reports_sent_` is incremented for
+every report sent to a member, including those that answer cancels, while `awaiting` is
+`orders_received_ - accounted` and counts only new orders. The two sides count different things.
+[order_acceptance.md](availability/order_acceptance.md) describes `awaiting` as intended.
+
+**Not established:** what the 2,465 dropped reports were. A likely explanation is the reports for
+orders deferred in an earlier run, produced after the engine caught up while the member's session was
+connected nowhere ([BUG-0088](#bug_0088)), but that was not checked.
+
+---
+
+### BUG-0227: An operator whose request to lift the halt cannot be written is told that reports are outstanding {#bug_0227}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-04 |
+| Recorded | 2026-11-04 |
+| Fixed | 2026-11-10 -- A new outcome, `NotWritten`, says that the TechnicalEvent could not be encoded and nothing was written, and is used for both the halt and the lift. A unit test covers the halt and fails when the halt answers `NotHalted`. |
+| How | Moving the sequencer's handling of requests to halt trading into a part of its own for phase 10 ([dividing_the_sequencer_and_matching_engine.md](venue/dividing_the_sequencer_and_matching_engine.md), step 14) |
+| Impact | None in practice: a TechnicalEvent is a few fixed-size fields and always encodes. If it ever did not, the operator would be told the wrong reason the halt was not lifted |
+
+**What happens.** When an operator asks to lift the halt, every check passes, and the TechnicalEvent that lifts it cannot
+be encoded, `HaltAndVoidRequests::operator_request` answers with the outcome `ReportsOutstanding`, which tells the
+operator that the leading matching engine is still working through the orders the venue held. The explanation sent with
+it says, correctly, that the TechnicalEvent could not be encoded and nothing was written. The same failure when halting
+answers `NotHalted`, which is at least true.
+
+Found by reading the code; not reproduced, because encoding a TechnicalEvent cannot fail with the buffer the sequencer
+measures for it.
+
+**What is wanted.** An outcome that says nothing was written because the command could not be encoded, used for both the
+halt and the lift, so that a tool reading only the outcome is not misled.
+
+**Principles.** None broken; a message that misstates the venue's condition to a person.
 
 ### BUG-0149: `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment {#bug_0149}
 

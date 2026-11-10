@@ -1001,6 +1001,7 @@ enum OperatorHaltOutcome : i8 {
     NotLeader = 5            # this sequencer does not lead, so it wrote nothing; the one that leads acts
     NoEngineLeads = 6        # no matching engine leads, so the halt cannot be lifted yet
     ReportsOutstanding = 7   # the WAL does not yet hold a report of every order and cancel written before the halt
+    NotWritten = 8           # the TechnicalEvent could not be encoded, so nothing was written and trading is as it was
 }
 
 # ------------------------------------------------------------
