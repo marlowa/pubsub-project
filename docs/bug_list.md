@@ -1437,6 +1437,12 @@ doubling rather than by a stated expectation.
 
 **2026-11-09:** the figure this entry needs, how many orders may be open at once in the venue, is decided, with Andrew, in decision 2 of [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md): each environment's `order_book_region_capacity`, the figure its matching engine's region is sized by (2,000,000 in development, 100,000,000 in production). The gateways' pools and the sequencer's map are to be sized from it.
 
+
+**Designed 2026-11-10, for Andrew's review before any code:** [gateway_refusals.md](venue/gateway_refusals.md). With the
+venue cancelling on disconnect since [BUG-0090](#bug_0090), the gateways' list of open orders is used only for the OrderID
+and status of an OrderCancelReject the gateway sends when it refuses a cancel itself. The design removes the list, so
+there is nothing left to size, and answers those refusals with a Business Message Reject, as the London Stock Exchange,
+Euronext, CME and Deutsche Börse publish that they do; it needs R-0151 amended.
 ### BUG-0073: The placeholder environments carry settings nobody chose {#bug_0073}
 
 | | |

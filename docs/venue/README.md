@@ -16,6 +16,7 @@ the order flow. The clickable [architecture map](../orientation/architecture.md)
 - [admin_service.md](admin_service.md) — The Java administration service
 - [fix_test_client.md](fix_test_client.md) — The web client used to drive the venue by hand or by script, through either gateway
 - [trading_phases.md](trading_phases.md) — What the venue is doing, how it says so, and why a halt cannot leave the process that declares it
+- [gateway_refusals.md](gateway_refusals.md) — the design for BUG-0072: a gateway refusing a request to cancel itself answers with a Business Message Reject, as other exchanges do, and keeps no list of open orders
 - [sequencer_order_path_without_the_heap.md](sequencer_order_path_without_the_heap.md) — the design for BUG-0131: the leading sequencer's map of which session placed each order, and its reports waiting for a commit, without heap allocation or copying (designed, not built)
 
 ---
