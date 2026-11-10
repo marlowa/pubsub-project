@@ -262,6 +262,16 @@ public final class BinaryEngine {
                     blotterStore.add(BinaryBlotterRows.fromCancelReject(blotterStore.nextRowId(), reject));
                     continue;
                 }
+                if (frame.pduId == BinarySession.RequestRefused.PDU_ID) {
+                    BinarySession.RequestRefused refused = BinarySession.RequestRefused.decode(ByteBuffer.wrap(frame.payload));
+                    if (refused == null) {
+                        log.warn("RequestRefused from the binary gateway could not be decoded");
+                        continue;
+                    }
+                    log.info("The binary gateway refused request ClOrdID={}: reason {}, {}", refused.cl_ord_id, refused.reason, refused.text);
+                    blotterStore.add(BinaryBlotterRows.fromRequestRefused(blotterStore.nextRowId(), refused));
+                    continue;
+                }
                 if (frame.pduId != FixOrders.ExecutionReport.PDU_ID) {
                     log.debug("Ignoring PDU id {} from the binary gateway", frame.pduId);
                     continue;

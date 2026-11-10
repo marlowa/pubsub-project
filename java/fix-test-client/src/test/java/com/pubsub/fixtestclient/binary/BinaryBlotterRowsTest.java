@@ -1,6 +1,7 @@
 package com.pubsub.fixtestclient.binary;
 
 import com.pubsub.fixtestclient.blotter.BlotterRow;
+import com.pubsub.fixtestclient.protocol.BinarySession;
 import com.pubsub.fixtestclient.protocol.FixOrders;
 
 import org.junit.jupiter.api.Test;
@@ -206,6 +207,24 @@ class BinaryBlotterRowsTest {
         assertEquals("1", row.ordType());
         assertEquals("100", row.ordQty());
         assertEquals("42.50", row.price());
+    }
+
+    @Test
+    void fromRequestRefused_showsARejectThatSaysNothingOfTheOrder() {
+        BinarySession.RequestRefused refused = new BinarySession.RequestRefused();
+        refused.cl_ord_id = "ORD-001-CANCEL";
+        refused.refused_pdu_id = FixOrders.OrderCancelRequest.PDU_ID;
+        refused.reason = BinarySession.RefusalReason.ThrottleLimitExceeded;
+        refused.text = "Throttled: at most 3 cancels per second for this session";
+
+        BlotterRow row = BinaryBlotterRows.fromRequestRefused(3L, refused);
+
+        assertEquals(3L, row.id());
+        assertEquals("IN", row.direction());
+        assertEquals("3", row.msgType(), "the FIX session-level Reject it is the counterpart of");
+        assertEquals("ORD-001-CANCEL", row.clOrdId());
+        assertEquals("", row.orderId(), "a refusal by the gateway says nothing of the order");
+        assertEquals("", row.ordStatus(), "a refusal by the gateway says nothing of the order");
     }
 
 }

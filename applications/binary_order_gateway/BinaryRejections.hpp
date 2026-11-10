@@ -6,7 +6,10 @@
 #include <cstdint>
 #include <string_view>
 
+#include <binary_session.hpp>
 #include <fix_orders.hpp>
+
+#include "RequestRefusal.hpp"
 
 namespace binary_order_gateway {
 
@@ -50,36 +53,39 @@ namespace binary_order_gateway {
 }
 
 /**
- * @brief An OrderCancelReject refusing a request to cancel that the gateway, or the sequencer, refused without passing
- *        it to the matching engine.
+ * @brief The RequestRefused message answering a request to cancel that the gateway, or the sequencer, refused before it
+ *        reached the matching engine.
  *
- * The reply says the order is still open (OrdStatus New), because the refusal has not touched it. The gateway's record
- * of a member's open orders is not the book, so the gateway never claims an order has gone. The views it holds point at
- * the arguments, which must outlive it.
+ * It refuses the request and says nothing of the order the request names: no OrderID and no order status, since the
+ * component that holds the order never saw the request (R-0151, docs/venue/gateway_refusals.md). The views it holds
+ * point at the arguments, which must outlive it.
  *
- * @param[in] order_id The OrderID of the order the request names, or "NONE" when the gateway does not know it.
  * @param[in] request The refused request.
- * @param[in] reason The text to send.
- * @param[in] cxl_rej_reason The reason code to send.
- * @param[in] transact_time_ns When the gateway refused the request, in nanoseconds since the Unix epoch.
+ * @param[in] reason The kind of refusal, the same number the FIX gateway gives in SessionRejectReason (373).
+ * @param[in] text The reason in words.
+ * @param[in] field The field at fault, as the binary protocol names it; empty when no one field is at fault.
  */
-[[nodiscard]] inline pubsub_itc_fw_app::OrderCancelReject make_cancel_reject(std::string_view order_id,
-                                                                             const pubsub_itc_fw_app::OrderCancelRequestView& request, std::string_view reason,
-                                                                             pubsub_itc_fw_app::CxlRejReason cxl_rej_reason, int64_t transact_time_ns) {
-    pubsub_itc_fw_app::OrderCancelReject reject{};
-    reject.order_id = order_id;
-    reject.cl_ord_id = request.cl_ord_id;
-    reject.has_orig_cl_ord_id = true;
-    reject.orig_cl_ord_id = request.orig_cl_ord_id;
-    reject.ord_status = pubsub_itc_fw_app::OrdStatus::New;
-    reject.has_transact_time = true;
-    reject.transact_time = transact_time_ns;
-    reject.cxl_rej_response_to = pubsub_itc_fw_app::CxlRejResponseTo::OrderCancelRequest;
-    reject.has_cxl_rej_reason = true;
-    reject.cxl_rej_reason = cxl_rej_reason;
-    reject.has_text = true;
-    reject.text = reason;
-    return reject;
+[[nodiscard]] inline pubsub_itc_fw_app::RequestRefused make_cancel_refused(const pubsub_itc_fw_app::OrderCancelRequestView& request,
+                                                                           fix_common::RefusalReason reason, std::string_view text, std::string_view field) {
+    pubsub_itc_fw_app::RequestRefused refused{};
+    refused.cl_ord_id = request.cl_ord_id;
+    refused.refused_pdu_id = pubsub_itc_fw_app::OrderCancelRequest::message_pdu_id;
+    refused.reason = static_cast<pubsub_itc_fw_app::RefusalReason>(static_cast<int32_t>(reason));
+    refused.text = text;
+    if (!field.empty()) {
+        refused.has_field = true;
+        refused.field = field;
+    }
+    return refused;
 }
+
+// The binary protocol's reasons are the shared ones, number for number, so that converting one to the other is a cast.
+static_assert(static_cast<int32_t>(pubsub_itc_fw_app::RefusalReason::RequiredFieldMissing) ==
+              static_cast<int32_t>(fix_common::RefusalReason::RequiredFieldMissing));
+static_assert(static_cast<int32_t>(pubsub_itc_fw_app::RefusalReason::ValueIncorrect) == static_cast<int32_t>(fix_common::RefusalReason::ValueIncorrect));
+static_assert(static_cast<int32_t>(pubsub_itc_fw_app::RefusalReason::Other) == static_cast<int32_t>(fix_common::RefusalReason::Other));
+static_assert(static_cast<int32_t>(pubsub_itc_fw_app::RefusalReason::ThrottleLimitExceeded) ==
+              static_cast<int32_t>(fix_common::RefusalReason::ThrottleLimitExceeded));
+static_assert(static_cast<int32_t>(pubsub_itc_fw_app::RefusalReason::VenueUnavailable) == static_cast<int32_t>(fix_common::RefusalReason::VenueUnavailable));
 
 } // namespaces

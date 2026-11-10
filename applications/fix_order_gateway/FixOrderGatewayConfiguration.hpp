@@ -302,16 +302,10 @@ struct FixOrderGatewayConfiguration {
     // FIX field-length limits
 
     // Runtime field-length limits for inbound FIX strings (symbol, qty). Must be <= the
-    // compile-time hard ceilings in FixSession.hpp; over-length values get a FIX BusinessReject.
+    // compile-time hard ceilings in FixOrderLimits.hpp; over-length values get a FIX BusinessReject.
     // ClOrdID is NOT here: it is the shared compile-time fix_order_limits::max_cl_ord_id_length.
     int32_t max_symbol_length{32};
     int32_t max_order_qty_length{24};
-
-    // Open-order pool
-
-    // Pool for open-order string storage.
-    int32_t open_order_pool_objects_per_pool{4096};
-    int32_t open_order_pool_initial_pools{1};
 
     // The store of commands sent to the sequencers and not yet answered, kept to be sent again after
     // a change of sequencer leader. Used only with high availability on. See pubsub_itc_fw::UnansweredCommands and

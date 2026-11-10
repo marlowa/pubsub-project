@@ -6,8 +6,6 @@
 #include "FixErEncoder.hpp"
 #include "FixGroupExtractor.hpp"
 #include "GatewayMetrics.hpp"
-#include "OpenOrderRemoval.hpp"
-#include "OpenOrderTracking.hpp"
 #include "OrderPathMetrics.hpp"
 #include "SessionThrottles.hpp"
 #include "ThrottleLimits.hpp"
@@ -258,23 +256,6 @@ void FixOrderGatewayThread::on_app_ready_event() {
                                      "FixOrderGatewayThread");
     }
 
-    // Initialise the open-order pool.
-    open_order_pool_ = std::make_unique<pubsub_itc_fw::ExpandablePoolAllocator<OpenOrderEntry>>(
-        "OpenOrderPool", config_.open_order_pool_objects_per_pool, config_.open_order_pool_initial_pools,
-        /*expansion_threshold_hint=*/0,
-        /*handler_for_pool_exhausted=*/
-        [this](void* /*context*/, int objects_per_pool) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "OpenOrderPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
-        },
-        /*handler_for_invalid_free=*/nullptr,
-        /*handler_for_huge_pages_error=*/nullptr, pubsub_itc_fw::UseHugePagesFlag{pubsub_itc_fw::UseHugePagesFlag::DoNotUseHugePages});
-
-    // Sampled from a timer because PrometheusEndpoint is push-style: a gauge holds whatever
-    // was last set into it and there is no scrape-time callback. Safe on this thread because
-    // the pool is touched only here, and cheap because the snapshot reads counters the
-    // allocator maintains as it goes rather than traversing a free list.
-    open_order_pool_metrics_.register_metrics(get_reactor().metrics(), gateway_metrics::open_order_pool_metrics_scope);
-    pool_metrics_timer_id_ = start_recurring_timer(gateway_metrics::pool_metrics_sample_interval);
     order_progress_timer_id_ = start_recurring_timer(order_progress_timer_interval);
 
     connect_to_service("authentication_service_primary");
@@ -829,18 +810,6 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
         return;
     }
 
-    // Maintain the open-orders set from ME acknowledgements (not from NOS
-    // forward time) so only orders genuinely on the book are tracked.
-    // The view's string_views are backed by the PDU payload, which is valid
-    // until release_pdu_payload() below. The rule is shared with the binary
-    // gateway: see open_orders::track_open_order.
-    if (open_orders::track_open_order(session.open_orders, *open_order_pool_, view) == open_orders::TrackOutcome::FieldTooLong) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "FixOrderGatewayThread: connection {} ExecutionReport field too long to track (ClOrdID {} bytes, symbol {}, qty {}) -- order not "
-                   "tracked for cancel",
-                   session.conn_id.get_value(), view.cl_ord_id.size(), view.symbol.size(), view.has_order_qty ? view.order_qty.size() : 0);
-    }
-
     ++execution_reports_sent_;
     progress_metrics_.count_report_sent();
     report_order_progress();
@@ -1009,13 +978,6 @@ void FixOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
 
     if (timer_id == order_progress_timer_id_) {
         report_order_progress_on_timer();
-        return;
-    }
-
-    if (timer_id == pool_metrics_timer_id_) {
-        if (open_order_pool_ != nullptr) {
-            open_order_pool_metrics_.update(open_order_pool_->get_pool_statistics(), open_order_pool_->get_behaviour_statistics());
-        }
         return;
     }
 
@@ -1304,12 +1266,10 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
     // If this comp id dropped and got back inside its grace period, its orders are still
     // resting and must not be cancelled. This is the case the whole feature exists for: a
     // gateway dies, the member reconnects to another instance, and its book survives.
-    const size_t reclaimed = reclaim_grace_session(session.client_comp_id);
-    if (reclaimed > 0) {
+    if (reclaim_grace_session(session.client_comp_id)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "FixOrderGatewayThread: comp_id='{}' reconnected within the grace period -- the venue leaves its {} order(s) resting",
-                   session.client_comp_id, reclaimed);
-        report(pubsub_itc_fw_app::SessionReclaimed{session.client_comp_id, static_cast<int64_t>(reclaimed)});
+                   "FixOrderGatewayThread: comp_id='{}' reconnected within the grace period -- the venue leaves its orders resting", session.client_comp_id);
+        report(pubsub_itc_fw_app::SessionReclaimed{session.client_comp_id});
     }
 }
 
@@ -1660,8 +1620,8 @@ void FixOrderGatewayThread::handle_command_refused(const pubsub_itc_fw::EventMes
                "FixOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused by the sequencer: the ClOrdID was "
                "first used by record {}",
                session->conn_id.get_value(), session->client_comp_id, request.cl_ord_id, request.orig_cl_ord_id, view.first_seq_no);
-    send_order_cancel_reject(*session, request.cl_ord_id, request.orig_cl_ord_id, fix_common::identifier_already_used_text,
-                             pubsub_itc_fw_app::CxlRejReason::DuplicateClOrdId);
+    refuse_cancel(*session, view.has_member_msg_seq_num ? view.member_msg_seq_num : 0, request.cl_ord_id, fix_common::RefusalReason::Other,
+                  fix_common::identifier_already_used_text);
 }
 
 void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMessage& message) {
@@ -2212,7 +2172,7 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
     // wrapped in that envelope to both sequencer instances.
     const fix_common::GatewayRefusal refusal =
         forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), nos, session.conn_id.get_value(),
-                                  session.client_comp_id, current_read_ingress_ns_, WhenStoreFull::refuse);
+                                  session.client_comp_id, current_read_ingress_ns_, inbound_seq_num_of(msg));
     if (refusal == fix_common::GatewayRefusal::StoreFull) {
         // So many commands wait for an answer that the venue is not answering them. Refused with a
         // reply, never dropped.
@@ -2261,6 +2221,15 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
     // that follows the specification. See R-0142 in the book's applications chapter.
     const std::string missing = missing_field_names({{"ClOrdID", cl_ord_id}, {"OrigClOrdID", orig_cl_ord_id}, {"Symbol", symbol}, {"Side", side_str}});
     if (!missing.empty()) {
+        // RefTagID holds one tag, so it names the first missing; the text names them all.
+        int first_missing_tag = Tag::Side;
+        if (cl_ord_id.empty()) {
+            first_missing_tag = Tag::ClOrdID;
+        } else if (orig_cl_ord_id.empty()) {
+            first_missing_tag = Tag::OrigClOrdID;
+        } else if (symbol.empty()) {
+            first_missing_tag = Tag::Symbol;
+        }
         // Same reasoning as the NewOrderSingle path above. This one matters more: a member
         // who believes a cancel was accepted, and whose order is in fact still live, is
         // exposed to a market they think they have left.
@@ -2269,16 +2238,13 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
         // the order by the OrderID the venue assigned instead, and the venue does not offer
         // that, because the matching engine's book is keyed on the member's own identifier.
         // See R-0142 and R-0143 in the book's applications chapter.
-        if (cl_ord_id.empty()) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "FixOrderGatewayThread: connection {} OrderCancelRequest has no ClOrdID (missing: {}) -- cannot reject, dropping",
-                       session.conn_id.get_value(), missing);
-            return;
-        }
+        //
+        // A request with no ClOrdID is refused too: the Reject names the refused message by its MsgSeqNum, not by
+        // ClOrdID.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} missing required field(s): {} -- rejecting", session.conn_id.get_value(),
                    cl_ord_id, missing);
-        send_order_cancel_reject(session, msg, "missing required field(s): " + missing);
+        refuse_cancel(session, msg, fix_common::RefusalReason::RequiredFieldMissing, "missing required field(s): " + missing, first_missing_tag);
         return;
     }
 
@@ -2288,7 +2254,11 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID/OrigClOrdID exceeds limit {} -- rejecting", session.conn_id.get_value(),
                    fix_order_limits::max_cl_ord_id_length);
-        send_order_cancel_reject(session, msg, "ClOrdID exceeds maximum length of " + std::to_string(fix_order_limits::max_cl_ord_id_length));
+        const bool cl_ord_id_too_long = cl_ord_id.size() > fix_order_limits::max_cl_ord_id_length;
+        refuse_cancel(session, msg, fix_common::RefusalReason::ValueIncorrect,
+                      std::string(cl_ord_id_too_long ? "ClOrdID" : "OrigClOrdID") + " exceeds maximum length of " +
+                          std::to_string(fix_order_limits::max_cl_ord_id_length),
+                      cl_ord_id_too_long ? Tag::ClOrdID : Tag::OrigClOrdID);
         return;
     }
 
@@ -2299,7 +2269,7 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
                    "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} "
                    "OrigClOrdID={} rejected locally -- no sequencer connected",
                    session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id);
-        send_order_cancel_reject(session, msg, "Sequencer unavailable");
+        refuse_cancel(session, msg, fix_common::RefusalReason::VenueUnavailable, "Sequencer unavailable");
         return;
     }
 
@@ -2320,15 +2290,15 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
                    "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused -- the venue is not accepting orders "
                    "({} cancels refused so far)",
                    session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id, cancels_refused_);
-        send_order_cancel_reject(session, msg,
-                                 venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong
-                                     ? "Venue is halted while it recovers and cannot process cancels now. The order is unchanged"
-                                     : "Venue cannot process cancels: no matching engine available. The order is unchanged");
+        refuse_cancel(session, msg, fix_common::RefusalReason::VenueUnavailable,
+                      venue_refusal_reason_ == pubsub_itc_fw_app::OrderAcceptanceReason::RecoveryTooLong
+                          ? "Venue is halted while it recovers and cannot process cancels now. The order is unchanged"
+                          : "Venue cannot process cancels: no matching engine available. The order is unchanged");
         return;
     }
 
     if (!admit_throttled_command(session, fix_common::ThrottledCommand::Cancel)) {
-        send_order_cancel_reject(session, msg, session.throttles.refusal_text(fix_common::ThrottledCommand::Cancel));
+        refuse_cancel(session, msg, fix_common::RefusalReason::ThrottleLimitExceeded, session.throttles.refusal_text(fix_common::ThrottledCommand::Cancel));
         return;
     }
 
@@ -2349,10 +2319,10 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
     // WalRecord envelope, not inside the PDU (same mechanism as NOS).
     const fix_common::GatewayRefusal refusal =
         forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, session.conn_id.get_value(),
-                                  session.client_comp_id, current_read_ingress_ns_, WhenStoreFull::refuse);
+                                  session.client_comp_id, current_read_ingress_ns_, inbound_seq_num_of(msg));
     if (refusal == fix_common::GatewayRefusal::StoreFull) {
         ++cancels_refused_;
-        send_order_cancel_reject(session, msg, "the venue is busy: too many commands are waiting to be answered");
+        refuse_cancel(session, msg, fix_common::RefusalReason::VenueUnavailable, "the venue is busy: too many commands are waiting to be answered");
         return;
     }
     if (refusal == fix_common::GatewayRefusal::IdentifierHeldUnanswered) {
@@ -2361,7 +2331,7 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
                    "FixOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused: a command with this ClOrdID is "
                    "already waiting for its answer",
                    session.conn_id.get_value(), session.client_comp_id, cl_ord_id, orig_cl_ord_id);
-        send_order_cancel_reject(session, msg, std::string(fix_common::identifier_already_used_text), pubsub_itc_fw_app::CxlRejReason::DuplicateClOrdId);
+        refuse_cancel(session, msg, fix_common::RefusalReason::Other, fix_common::identifier_already_used_text);
     }
 }
 
@@ -2422,27 +2392,37 @@ void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, st
     send_fix_to_session(session, er);
 }
 
-void FixOrderGatewayThread::send_order_cancel_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason,
-                                                     pubsub_itc_fw_app::CxlRejReason cxl_rej_reason) {
-    send_order_cancel_reject(session, inbound.get(Tag::ClOrdID), inbound.get(Tag::OrigClOrdID), reason, cxl_rej_reason);
-}
-
-void FixOrderGatewayThread::send_order_cancel_reject(FixSession& session, std::string_view cl_ord_id, std::string_view orig_cl_ord_id, std::string_view reason,
-                                                     pubsub_itc_fw_app::CxlRejReason cxl_rej_reason) {
-    // FIX requires the order's OrderID. The session's record holds it for an order the matching
-    // engine acknowledged; otherwise FIX's convention for an identifier not known is "NONE".
-    std::string_view order_id = "NONE";
-    const auto tracked = session.open_orders.find(orig_cl_ord_id);
-    if (tracked != session.open_orders.end() && tracked->second->order_id_len > 0) {
-        order_id = std::string_view(tracked->second->order_id, tracked->second->order_id_len);
-    }
-
-    const FixMessage reject = make_order_cancel_reject(order_id, cl_ord_id, orig_cl_ord_id, reason, cxl_rej_reason);
+void FixOrderGatewayThread::refuse_cancel(FixSession& session, const ParsedFixMessage& inbound, fix_common::RefusalReason reason, std::string_view text,
+                                          int ref_tag) {
+    const std::string_view ref_seq_num = inbound.get(Tag::MsgSeqNum);
+    const FixMessage reject =
+        make_request_reject(ref_seq_num.empty() ? std::string_view("0") : ref_seq_num, MsgType::OrderCancelRequest, ref_tag, static_cast<int>(reason), text);
 
     // Debug, for the reason given in send_reject_execution_report.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-               "FixOrderGatewayThread: connection {} sending OrderCancelReject OrderID={} ClOrdID={} OrigClOrdID={} reason='{}'", session.conn_id.get_value(),
-               order_id, cl_ord_id, orig_cl_ord_id, reason);
+               "FixOrderGatewayThread: connection {} sending Reject (35=3) for OrderCancelRequest MsgSeqNum={} ClOrdID={} SessionRejectReason={} reason='{}'",
+               session.conn_id.get_value(), ref_seq_num, inbound.get(Tag::ClOrdID), static_cast<int>(reason), text);
+
+    send_fix_to_session(session, reject);
+}
+
+void FixOrderGatewayThread::refuse_cancel(FixSession& session, int64_t member_msg_seq_num, std::string_view cl_ord_id, fix_common::RefusalReason reason,
+                                          std::string_view text) {
+    if (member_msg_seq_num <= 0) {
+        // Every command this gateway sends carries the number, so this is a defect, logged as one. The member is still
+        // answered, with RefSeqNum 0, rather than left with no answer at all.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "FixOrderGatewayThread: connection {} the refusal of OrderCancelRequest ClOrdID={} carries no MsgSeqNum -- the Reject names "
+                   "RefSeqNum 0",
+                   session.conn_id.get_value(), cl_ord_id);
+    }
+    const std::string ref_seq_num = std::to_string(std::max<int64_t>(member_msg_seq_num, 0));
+    const FixMessage reject = make_request_reject(ref_seq_num, MsgType::OrderCancelRequest, 0, static_cast<int>(reason), text);
+
+    // Debug, for the reason given in send_reject_execution_report.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+               "FixOrderGatewayThread: connection {} sending Reject (35=3) for OrderCancelRequest MsgSeqNum={} ClOrdID={} SessionRejectReason={} reason='{}'",
+               session.conn_id.get_value(), ref_seq_num, cl_ord_id, static_cast<int>(reason), text);
 
     send_fix_to_session(session, reject);
 }
@@ -2588,66 +2568,54 @@ void FixOrderGatewayThread::emit_order_progress(int64_t accounted) {
 }
 
 void FixOrderGatewayThread::note_session_ended(FixSession& session) {
-    if (session.open_orders.empty()) {
-        return;
+    if (session.client_comp_id.empty()) {
+        return; // the session never logged on, so the venue holds no orders for it
     }
-    const size_t total_orders = session.open_orders.size();
 
-    // What the venue does with them: the member's instruction where it gave one, this gateway's own setting otherwise,
-    // as the sequencer applies them.
+    // What the venue does with the member's orders: the member's instruction where it gave one, this gateway's own
+    // setting otherwise, as the sequencer applies them.
     const bool cancel_enabled = session.cancel_on_disconnect_enabled.value_or(config_.cancel_on_disconnect_enabled);
     const std::chrono::seconds grace_period = session.cancel_on_disconnect_grace_period_seconds.has_value()
                                                   ? std::chrono::seconds{*session.cancel_on_disconnect_grace_period_seconds}
                                                   : config_.cancel_on_disconnect_grace_period;
-    // A GoodTillCancel or GoodTillDate order was placed to outlive the session, so it is not among those the venue cancels.
-    size_t persistent_orders = 0;
-    for (const auto& [cl_ord_id, entry] : session.open_orders) {
-        if (open_orders::is_persistent_time_in_force(entry->time_in_force)) {
-            ++persistent_orders;
-        }
-        open_order_pool_->deallocate(entry);
-    }
-    session.open_orders.clear();
 
     if (!cancel_enabled) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "FixOrderGatewayThread: connection {} disconnected with {} open order(s) -- cancel-on-disconnect is disabled, leaving them resting",
-                   session.conn_id.get_value(), total_orders);
-        report(pubsub_itc_fw_app::SessionDisconnectedWithOrders{session.client_comp_id, session.conn_id.get_value(), static_cast<int64_t>(total_orders), false,
-                                                                0});
-        return;
-    }
-    if (persistent_orders > 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "FixOrderGatewayThread: connection {} disconnected -- {} persistent order(s) (GTC/GTD) left resting", session.conn_id.get_value(),
-                   persistent_orders);
-    }
-    const size_t to_cancel = total_orders - persistent_orders;
-    if (to_cancel == 0) {
+                   "FixOrderGatewayThread: connection {} (comp_id='{}') disconnected -- cancel-on-disconnect is disabled, so the venue leaves its orders "
+                   "resting",
+                   session.conn_id.get_value(), session.client_comp_id);
+        report(pubsub_itc_fw_app::SessionDisconnected{session.client_comp_id, session.conn_id.get_value(), false, 0});
         return;
     }
 
     // A clean Logout means the member has said what it wants, so there is nothing to wait for. An unexpected drop has
     // said nothing, and gets its full window to come back -- which is what stops a gateway failure from flattening every
-    // book on the instance.
+    // book on the instance. GoodTillCancel and GoodTillDate orders are left resting either way, by the venue.
     if (session.clean_logout || grace_period.count() == 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} {} with {} open order(s) -- the venue cancels them now",
-                   session.conn_id.get_value(), session.clean_logout ? "logged out" : "disconnected", to_cancel);
-        report(pubsub_itc_fw_app::SessionDisconnectedWithOrders{session.client_comp_id, session.conn_id.get_value(), static_cast<int64_t>(to_cancel), true, 0});
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} (comp_id='{}') {} -- the venue cancels its orders now",
+                   session.conn_id.get_value(), session.client_comp_id, session.clean_logout ? "logged out" : "disconnected");
+        report(pubsub_itc_fw_app::SessionDisconnected{session.client_comp_id, session.conn_id.get_value(), true, 0});
         return;
     }
 
     DeadSession dead;
-    dead.order_count = to_cancel;
     dead.client_comp_id = session.client_comp_id;
     dead.cancel_due = std::chrono::steady_clock::now() + grace_period;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixOrderGatewayThread: connection {} (comp_id='{}') disconnected with {} open order(s) -- the venue cancels them in {}s unless the member "
-               "logs on again first",
-               session.conn_id.get_value(), dead.client_comp_id, to_cancel, grace_period.count());
-    report(pubsub_itc_fw_app::SessionDisconnectedWithOrders{dead.client_comp_id, session.conn_id.get_value(), static_cast<int64_t>(to_cancel), true,
-                                                            static_cast<int64_t>(grace_period.count())});
-    grace_sessions_.push_back(std::move(dead));
+               "FixOrderGatewayThread: connection {} (comp_id='{}') disconnected -- the venue cancels its orders in {}s unless the member logs on again "
+               "first",
+               session.conn_id.get_value(), dead.client_comp_id, grace_period.count());
+    report(pubsub_itc_fw_app::SessionDisconnected{dead.client_comp_id, session.conn_id.get_value(), true, static_cast<int64_t>(grace_period.count())});
+    // In deadline order: members may have different grace periods, so a later disconnection can be due sooner.
+    const auto place = std::upper_bound(grace_sessions_.begin(), grace_sessions_.end(), dead.cancel_due,
+                                        [](const std::chrono::steady_clock::time_point& due, const DeadSession& entry) { return due < entry.cancel_due; });
+    const bool new_front = place == grace_sessions_.begin();
+    grace_sessions_.insert(place, std::move(dead));
+    if (new_front && grace_timer_active_) {
+        // The timer is set for a later deadline than this one: set it again for this one.
+        cancel_timer(grace_timer_id_);
+        grace_timer_active_ = false;
+    }
     arm_grace_timer();
 }
 
@@ -2655,9 +2623,8 @@ void FixOrderGatewayThread::arm_grace_timer() {
     if (grace_timer_active_ || grace_sessions_.empty()) {
         return;
     }
-    // Every entry takes the same grace period and they are appended in the order their
-    // connections died, so the front is always the earliest due. A deadline already in the
-    // past asks for the shortest timer the reactor will honour rather than a negative one.
+    // The entries are kept in deadline order, so the front is always the earliest due. A deadline
+    // already in the past asks for the shortest timer the reactor will honour rather than a negative one.
     const auto now = std::chrono::steady_clock::now();
     const auto due = grace_sessions_.front().cancel_due;
     // Rounded up, not down: a timer that fires before the earliest deadline finds nothing due, and is armed again for what
@@ -2724,9 +2691,7 @@ void FixOrderGatewayThread::expire_grace_sessions() {
 
     const auto now = std::chrono::steady_clock::now();
     size_t expired_sessions = 0;
-    size_t expired_orders = 0;
     while (!grace_sessions_.empty() && grace_sessions_.front().cancel_due <= now) {
-        expired_orders += grace_sessions_.front().order_count;
         ++expired_sessions;
         // The session has ended for good, so its unanswered commands are not sent again.
         if (unanswered_commands_.has_value()) {
@@ -2737,22 +2702,21 @@ void FixOrderGatewayThread::expire_grace_sessions() {
 
     if (expired_sessions > 0) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "FixOrderGatewayThread: grace period expired for {} session(s) -- the venue cancels their {} order(s); no reconnect arrived",
-                   expired_sessions, expired_orders);
+                   "FixOrderGatewayThread: grace period expired for {} session(s) -- the venue cancels their orders; no reconnect arrived", expired_sessions);
     }
 
     arm_grace_timer();
 }
 
-size_t FixOrderGatewayThread::reclaim_grace_session(std::string_view comp_id) {
-    size_t reclaimed = 0;
+bool FixOrderGatewayThread::reclaim_grace_session(std::string_view comp_id) {
+    bool reclaimed = false;
     for (auto it = grace_sessions_.begin(); it != grace_sessions_.end();) {
         if (it->client_comp_id != comp_id) {
             ++it;
             continue;
         }
         // Back inside the window: the venue leaves the orders resting, which is the whole reason the grace period exists.
-        reclaimed += it->order_count;
+        reclaimed = true;
         it = grace_sessions_.erase(it);
     }
     return reclaimed;

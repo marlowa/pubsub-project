@@ -35,21 +35,21 @@ namespace fix_order_gateway {
                                                       pubsub_itc_fw_app::OrdRejReason ord_rej_reason);
 
 /**
- * @brief An OrderCancelReject (35=9) refusing a request to cancel that the gateway, or the sequencer, refused without
- *        passing it to the matching engine.
+ * @brief A session-level Reject (35=3) refusing a member's request that the gateway refused itself, before it reached the
+ *        matching engine.
  *
- * Tag values follow FIX 5.0SP2: 37 = @p order_id; 11 and 41 echoed from the request; 39 = 0 (New: the order the request
- * names is still open, because the refusal has not touched it); 434 = 1 (a request to cancel); 102 = @p cxl_rej_reason;
- * 58 = @p reason.
+ * It refuses the request and says nothing of any order: no OrderID and no order status (R-0151,
+ * docs/venue/gateway_refusals.md). Tag values follow FIX 5.0 SP2: 45 = @p ref_seq_num; 372 = @p ref_msg_type; 371 =
+ * @p ref_tag when it is not 0; 373 = @p session_reject_reason; 58 = @p text.
  *
- * @param[in] order_id The OrderID of the order the request names, or "NONE" when the gateway does not know it.
- * @param[in] cl_ord_id The request's ClOrdID.
- * @param[in] orig_cl_ord_id The OrigClOrdID of the order the request names; empty to leave tag 41 out.
- * @param[in] reason The text for tag 58.
- * @param[in] cxl_rej_reason The value for tag 102.
+ * @param[in] ref_seq_num The refused message's MsgSeqNum.
+ * @param[in] ref_msg_type The refused message's MsgType.
+ * @param[in] ref_tag The tag of the field at fault; 0 to leave tag 371 out.
+ * @param[in] session_reject_reason The value for tag 373.
+ * @param[in] text The text for tag 58.
  * @return The message, with every value copied into it.
  */
-[[nodiscard]] FixMessage make_order_cancel_reject(std::string_view order_id, std::string_view cl_ord_id, std::string_view orig_cl_ord_id,
-                                                  std::string_view reason, pubsub_itc_fw_app::CxlRejReason cxl_rej_reason);
+[[nodiscard]] FixMessage make_request_reject(std::string_view ref_seq_num, std::string_view ref_msg_type, int ref_tag, int session_reject_reason,
+                                             std::string_view text);
 
 } // namespaces

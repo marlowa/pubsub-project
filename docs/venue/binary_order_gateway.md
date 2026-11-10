@@ -37,12 +37,13 @@ Two message types are specific to this gateway, defined in `applications/binary_
 |-----|-----------|---------|
 | `Logon` | client → gateway | `comp_id`, `password`, `target_comp_id` |
 | `LogonAck` | gateway → client | `LogonOutcome`, plus optional text for logs |
+| `RequestRefused` | gateway → client | The gateway's answer to a request to cancel it refuses itself: the request's `cl_ord_id`, the refused message's PDU id, a `RefusalReason`, the reason in text, and the field at fault where there is one |
 
 Everything else is the DD-derived order messages from `fix_orders.dsl` (ids 1000+):
 `NewOrderSingle` (1000) and `OrderCancelRequest` (1001) inbound, `ExecutionReport` (1002) and
-`OrderCancelReject` (1003) outbound. `OrderCancelReject` answers a refused request to cancel, with
-the same fields as FIX's 35=9, and says the order's status rather than reporting the order
-rejected (R-0151).
+`OrderCancelReject` (1003) outbound. `OrderCancelReject` answers a request to cancel the matching
+engine refuses, with the same fields as FIX's 35=9, and gives the order's status as the engine
+reports it rather than reporting the order rejected (R-0151).
 
 A session is: connect, `Logon`, SCRAM exchange with the authentication service, `LogonAck`,
 then orders. Any other PDU before the session is authenticated is refused and the connection
@@ -80,8 +81,8 @@ order, and then the bytes the member sent are passed on unchanged: the gateway w
 payload in a `WalRecord` envelope carrying the routing metadata and forwards that to the
 sequencers. Decoding the binary layout reads fields at fixed positions, which costs less than
 parsing FIX text, so the binary gateway keeps its advantage over the FIX gateway. Outbound reports
-are relayed with `send_pdu_payload` as the bytes that arrived; each is decoded as well, to keep the
-session's record of open orders.
+are relayed with `send_pdu_payload` as the bytes that arrived; each is decoded as well, for the
+gateway's metrics and to find the matching engine's refusals of a cancel.
 
 **The checks**, in order, each refusing the command if it fails (R-0152):
 
@@ -104,28 +105,41 @@ session's record of open orders.
    (`[unanswered_commands]`). When that store is full the command is refused with the text "the
    venue is busy: too many commands are waiting to be answered".
 7. **No command with the same `ClOrdID` from this member is still waiting for its answer.** If
-   one is, the second is refused with reason 6 and the text "ClOrdID already used today", and not
-   passed on, because an answer to it could not be told from an answer to the first.
+   one is, the second is refused with the text "ClOrdID already used today", and not passed on,
+   because an answer to it could not be told from an answer to the first.
 
 Checks 1 to 3 are `BinaryCommandChecks.hpp`; 4 to 7 are the gateway thread's. The texts of the
 refusals for check 4 are the FIX gateway's. A command whose ClOrdID is empty, or which cannot be
 decoded at all, cannot be named in a reply, so it is dropped and logged at Info.
 
 **Refusals** are answered by the gateway: a new order with a rejected `ExecutionReport` whose
-OrderID the gateway assigns (`GW-ORD-n`), and a cancel with an `OrderCancelReject` reporting the
-order still open (OrdStatus New), with CxlRejReason 99 (Other). That reject carries the order's
-OrderID when the session's record of open orders holds it, and FIX's "NONE" otherwise. A refused
-command is never passed on. A new order refused for its `ClOrdID` carries OrdRejReason 6 (duplicate
-order), and a cancel CxlRejReason 6 (duplicate ClOrdID).
+OrderID the gateway assigns (`GW-ORD-n`), and a cancel with `RequestRefused`, which refuses the
+request and says nothing of the order (R-0151, [gateway_refusals.md](gateway_refusals.md)). A
+refused command is never passed on. A new order refused for its `ClOrdID` carries OrdRejReason 6
+(duplicate order).
+
+`RequestRefused` gives the kind of refusal as a `RefusalReason`, whose numbers are the ones the FIX
+gateway gives in SessionRejectReason (373) for the same refusal, so the two gateways answer alike:
+
+| `RefusalReason` | The gateway refused the cancel because |
+|---|---|
+| 1, `RequiredFieldMissing` | A required string field is empty; `field` names it |
+| 5, `ValueIncorrect` | A field holds a value the protocol does not define, is too long, or is not a decimal number; `field` names it |
+| 99, `Other` | The `ClOrdID` has been used before; the text is "ClOrdID already used today" |
+| 100, `ThrottleLimitExceeded` | The session is over its limit on cancels; the text names the limit |
+| 101, `VenueUnavailable` | No sequencer is connected, the venue is not accepting orders, or too many commands are waiting to be answered |
+
+The binary protocol has no sequence numbers, so `RequestRefused` names the refused request by its
+ClOrdID.
 
 **A `ClOrdID` the member has used before today** is refused by the leading sequencer, which sends
 `CommandRefused` on the connection the command went out on; the gateway answers the member with the
-same rejection as above, built from the command the message carries
+same answer as above, built from the command the message carries
 ([One check against sequencing a command twice](../availability/one_check_against_sequencing_twice.md)).
 
 **The matching engine's refusal of a cancel** arrives as a rejected `ExecutionReport` carrying the
-OrigClOrdID of the order named. The gateway decodes every report it relays, to keep the session's
-record of open orders, and sends this one to the member as an `OrderCancelReject` instead. The
+OrigClOrdID of the order named. The gateway decodes every report it relays, and sends this one to
+the member as an `OrderCancelReject` instead. The
 reject carries the order status from the engine's report, and CxlRejReason 1 (Unknown order) when
 the engine's report gives OrdRejReason Unknown order, or 99 (Other) when it does not
 (`applications/fix_common/CancelRejection.hpp`). Every other report is relayed as the bytes that
@@ -250,16 +264,13 @@ logs on again inside it has nothing cancelled. See
 [Gateway High Availability](../availability/gateway_ha.md) and
 [cancel_on_disconnect_where_the_orders_are.md](../availability/cancel_on_disconnect_where_the_orders_are.md).
 
-The gateway still keeps each session's open orders, from the matching engine's acknowledgements, to
-say at Info how many orders a session left and what the venue will do with them, and keeps the
-session for its grace period, so that it can say whether the member came back in time and stop keeping
-the session's unanswered commands once it has not. A non-terminal `ExecutionReport` records an order,
-a terminal one (Filled, Canceled, DoneForDay, Rejected, Expired) retires it, and a repeated
-non-terminal report for an order already tracked updates the entry rather than adding a second.
+The gateway keeps no list of a session's orders ([gateway_refusals.md](gateway_refusals.md)). When a
+session ends it says at Info what the venue will do with the member's orders, and keeps the session
+for its grace period, so that it can say whether the member came back in time and stop keeping the
+session's unanswered commands once it has not.
 
-Entries come from a pool (`[open_order_pool]`), so tracking an order allocates nothing. A report
-that cannot be decoded is still relayed: the member is its audience, and a gateway that cannot read
-a message has no business withholding it.
+A report that cannot be decoded is still relayed: the member is its audience, and a gateway that
+cannot read a message has no business withholding it.
 
 ## Known differences from the FIX order gateway
 

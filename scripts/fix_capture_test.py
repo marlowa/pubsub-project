@@ -388,10 +388,6 @@ def _write_gateway_toml(path: Path, fix_port: int, er_port: int,
         f'[fix_limits]\n'
         f'max_symbol_length    = 32\n'
         f'max_order_qty_length = 24\n'
-        f'\n'
-        f'[open_order_pool]\n'
-        f'objects_per_pool = 4096\n'
-        f'initial_pools    = 1\n'
     )
 
 

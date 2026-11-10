@@ -176,13 +176,6 @@ ring_bytes  = ${fix_order_gateway_a_fix_capture_ring_bytes}
 max_symbol_length    = ${fix_order_gateway_a_fix_limits_max_symbol_length}
 max_order_qty_length = ${fix_order_gateway_a_fix_limits_max_order_qty_length}
 
-[open_order_pool]
-# Pre-allocated pool for open-order string storage (ExpandablePoolAllocator).
-# objects_per_pool: how many OpenOrderEntry slots per pool slab.
-# Size to the maximum expected concurrent open orders with headroom.
-objects_per_pool = ${fix_order_gateway_a_open_order_pool_objects_per_pool}
-initial_pools    = ${fix_order_gateway_a_open_order_pool_initial_pools}
-
 [unanswered_commands]
 # The commands this gateway has sent to the sequencers and not yet seen answered, kept so that they
 # can be sent again to a new sequencer leader. A command is normally answered in a tenth of a

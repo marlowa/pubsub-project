@@ -37,30 +37,30 @@ message ReportDroppedNoSession (id=191, version=1)
 end
 
 # ------------------------------------------------------------
-#  192 -- SessionDisconnectedWithOrders
-#  A member's connection went with orders open, and what the venue does
-#  with them, as this gateway reckons it: the leading sequencer cancels
-#  them at once when the member logged out or its grace period is zero;
-#  or once the grace period ends, unless the member logs on again first;
-#  or, when cancel-on-disconnect is off for the member, leaves them
-#  resting. The gateway itself cancels nothing.
+#  192 -- SessionDisconnected
+#  A member's session ended at this gateway, and what the venue does
+#  with the member's orders, as the member's instruction or this
+#  gateway's setting says: the leading sequencer cancels them at once
+#  when the member logged out or its grace period is zero; or once the
+#  grace period ends, unless the member logs on again first; or, when
+#  cancel-on-disconnect is off for the member, leaves them resting. The
+#  gateway itself cancels nothing, and keeps no list of a member's
+#  orders, so it does not say how many there are.
 # ------------------------------------------------------------
-message SessionDisconnectedWithOrders (id=192, version=1)
+message SessionDisconnected (id=192, version=1)
     string comp_id         # the member's comp id; empty if the session never had one
     i32    connection      # the framework's id for the connection that went
-    i64    open_orders     # the orders it had open
-    bool   cancel_enabled  # whether they are to be cancelled once the grace period ends
+    bool   cancel_enabled  # whether the member's orders are to be cancelled
     i64    grace_seconds   # the grace period the venue waits; 0 when they are cancelled at once or left resting
 end
 
 # ------------------------------------------------------------
 #  194 -- SessionReclaimed
-#  A member reconnected within the grace period, so the orders held for
-#  it are left resting and none is cancelled.
+#  A member logged on again within its grace period, so the venue
+#  leaves its orders resting and cancels none.
 # ------------------------------------------------------------
 message SessionReclaimed (id=194, version=1)
     string comp_id
-    i64    orders_left_resting
 end
 
 # ------------------------------------------------------------

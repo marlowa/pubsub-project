@@ -53,8 +53,10 @@ struct Options {
     // the first one placed -- which is the only way to test, from outside, that an order
     // outlives the connection that created it.
     std::string cl_ord_id;
-    // When set, send an OrderCancelRequest for this OrigClOrdID instead of placing orders.
-    std::string cancel_cl_ord_id;
+    // When not empty, send an OrderCancelRequest for each of these OrigClOrdIDs, in order and
+    // without waiting between them, instead of placing orders. Naming several sends a burst on
+    // one connection, which is how a test reaches a session's limit on cancels.
+    std::vector<std::string> cancel_cl_ord_ids;
     // The order's fields, settable so that a test can send an order the venue must refuse: a
     // Side the protocol does not define, a quantity that is not a number, and so on.
     char side{'1'};
@@ -86,7 +88,7 @@ bool parse_options(int argc, char** argv, Options& options) {
         } else if (argument == "--cl-ord-id" && has_value) {
             options.cl_ord_id = argv[++index];
         } else if (argument == "--cancel" && has_value) {
-            options.cancel_cl_ord_id = argv[++index];
+            options.cancel_cl_ord_ids.emplace_back(argv[++index]);
         } else if (argument == "--side" && has_value && std::string_view(argv[index + 1]).size() == 1) {
             options.side = argv[++index][0];
         } else if (argument == "--order-qty" && has_value) {
@@ -104,7 +106,8 @@ bool parse_options(int argc, char** argv, Options& options) {
             fmt::print("  --cl-ord-id  use this ClOrdID instead of a generated one, so a later\n");
             fmt::print("               run on a new connection can refer to the same order\n");
             fmt::print("  --cancel     send an OrderCancelRequest for this OrigClOrdID rather\n");
-            fmt::print("               than placing an order\n");
+            fmt::print("               than placing an order; give it more than once to send\n");
+            fmt::print("               several cancels at once on one connection\n");
             fmt::print("  --side, --order-qty, --price\n");
             fmt::print("               the order's fields, sent as given even when invalid, so a\n");
             fmt::print("               test can check what the venue refuses (default 1, 100, 100.00)\n");
@@ -217,6 +220,54 @@ bool receive_pdu(int socket_fd, int16_t& pdu_id, int64_t& seq_no, std::vector<ui
     return payload.empty() || read_fully(socket_fd, payload.data(), payload.size());
 }
 
+/// What came back for one cancel.
+enum class CancelOutcome { Cancelled, Refused, Failed };
+
+/**
+ * @brief Decodes and prints one reply to a cancel: an ExecutionReport, an OrderCancelReject from the matching engine, or a
+ *        RequestRefused from the gateway.
+ *
+ * Only an ExecutionReport whose status is not Rejected counts as the order being cancelled. A RequestRefused and an
+ * OrderCancelReject both mean the venue did not cancel it.
+ */
+CancelOutcome print_cancel_reply(int16_t pdu_id, int64_t seq_no, const std::vector<uint8_t>& payload, std::vector<uint8_t>& arena_buffer) {
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    if (pdu_id == pubsub_itc_fw_app::RequestRefused::message_pdu_id) {
+        pubsub_itc_fw_app::RequestRefusedView refused{};
+        if (!pubsub_itc_fw_app::decode(refused, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
+            fmt::print("failed to decode RequestRefused\n");
+            return CancelOutcome::Failed;
+        }
+        fmt::print("RequestRefused seq={} ClOrdID={} RefusedPduId={} Reason={} Field={} Text={}\n", seq_no, refused.cl_ord_id, refused.refused_pdu_id,
+                   static_cast<int>(refused.reason), refused.has_field ? refused.field : std::string_view(), refused.text);
+        return CancelOutcome::Refused;
+    }
+    if (pdu_id == pubsub_itc_fw_app::OrderCancelReject::message_pdu_id) {
+        pubsub_itc_fw_app::OrderCancelRejectView reject{};
+        if (!pubsub_itc_fw_app::decode(reject, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
+            fmt::print("failed to decode OrderCancelReject\n");
+            return CancelOutcome::Failed;
+        }
+        fmt::print("OrderCancelReject seq={} ClOrdID={} OrigClOrdID={} OrdStatus={} CxlRejReason={} Text={}\n", seq_no, reject.cl_ord_id, reject.orig_cl_ord_id,
+                   pubsub_itc_fw_app::to_string(reject.ord_status), reject.has_cxl_rej_reason ? static_cast<int>(reject.cxl_rej_reason) : -1,
+                   reject.has_text ? reject.text : std::string_view());
+        return CancelOutcome::Refused;
+    }
+    pubsub_itc_fw_app::ExecutionReportView report{};
+    if (pdu_id != pubsub_itc_fw_app::ExecutionReport::message_pdu_id ||
+        !pubsub_itc_fw_app::decode(report, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
+        fmt::print("unexpected reply to the cancel: PDU id {}\n", pdu_id);
+        return CancelOutcome::Failed;
+    }
+    // The same layout as an order's report, so one parser reads both.
+    fmt::print("ExecutionReport seq={} ClOrdID={} OrderID={} OrdStatus={} ExecType={} Symbol={} OrdRejReason={} Text={}\n", seq_no, report.cl_ord_id,
+               report.order_id, pubsub_itc_fw_app::to_string(report.ord_status), pubsub_itc_fw_app::to_string(report.exec_type), report.symbol,
+               report.has_ord_rej_reason ? static_cast<int>(report.ord_rej_reason) : -1, report.has_text ? report.text : std::string_view());
+    return report.ord_status == pubsub_itc_fw_app::OrdStatus::Rejected ? CancelOutcome::Refused : CancelOutcome::Cancelled;
+}
+
 int64_t now_nanoseconds() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
@@ -276,67 +327,53 @@ int main(int argc, char** argv) {
     // Cancel mode: refer to an order by ClOrdID and say nothing about where it was placed.
     // The venue is expected to find it from this session's identity, which is the same
     // whichever connection -- or gateway instance -- this tool is run against.
-    if (!options.cancel_cl_ord_id.empty()) {
-        pubsub_itc_fw_app::OrderCancelRequest cancel{};
-        const std::string cancel_cl_ord_id = options.cancel_cl_ord_id + "-CANCEL";
-        cancel.cl_ord_id = cancel_cl_ord_id;
-        cancel.orig_cl_ord_id = options.cancel_cl_ord_id;
-        cancel.side = static_cast<pubsub_itc_fw_app::Side>(options.side);
-        cancel.symbol = options.symbol;
-        cancel.transact_time = now_nanoseconds();
+    if (!options.cancel_cl_ord_ids.empty()) {
+        // Every cancel is sent before any reply is read, so that a burst reaches the gateway
+        // within the same second. The first cancel's ClOrdID is the OrigClOrdID followed by
+        // "-CANCEL"; each later one adds its position, so that no two share a ClOrdID.
+        for (size_t position = 0; position < options.cancel_cl_ord_ids.size(); ++position) {
+            const std::string& orig_cl_ord_id = options.cancel_cl_ord_ids[position];
+            const std::string cancel_cl_ord_id = orig_cl_ord_id + "-CANCEL" + (position == 0 ? std::string() : "-" + std::to_string(position + 1));
+            pubsub_itc_fw_app::OrderCancelRequest cancel{};
+            cancel.cl_ord_id = cancel_cl_ord_id;
+            cancel.orig_cl_ord_id = orig_cl_ord_id;
+            cancel.side = static_cast<pubsub_itc_fw_app::Side>(options.side);
+            cancel.symbol = options.symbol;
+            cancel.transact_time = now_nanoseconds();
 
-        if (!send_pdu(socket_fd, pubsub_itc_fw_app::OrderCancelRequest::message_pdu_id, cancel)) {
-            fmt::print("failed to send OrderCancelRequest\n");
-            ::close(socket_fd);
-            return 1;
-        }
-        fmt::print("sent OrderCancelRequest OrigClOrdID={}\n", options.cancel_cl_ord_id);
-
-        if (!receive_pdu(socket_fd, pdu_id, seq_no, payload)) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                fmt::print("no reply to the cancel within {}s\n", options.reply_timeout_seconds);
-                ::close(socket_fd);
-                return 3;
-            }
-            fmt::print("connection closed with no reply to the cancel\n");
-            ::close(socket_fd);
-            return 1;
-        }
-        pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
-        size_t bytes_consumed = 0;
-        size_t arena_bytes_needed = 0;
-        // A refused cancel comes back as an OrderCancelReject. That is a failed run, for the same
-        // reason as below: the venue did not cancel the order.
-        if (pdu_id == pubsub_itc_fw_app::OrderCancelReject::message_pdu_id) {
-            pubsub_itc_fw_app::OrderCancelRejectView reject{};
-            if (!pubsub_itc_fw_app::decode(reject, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
-                fmt::print("failed to decode OrderCancelReject\n");
+            if (!send_pdu(socket_fd, pubsub_itc_fw_app::OrderCancelRequest::message_pdu_id, cancel)) {
+                fmt::print("failed to send OrderCancelRequest\n");
                 ::close(socket_fd);
                 return 1;
             }
-            fmt::print("OrderCancelReject seq={} ClOrdID={} OrigClOrdID={} OrdStatus={} CxlRejReason={} Text={}\n", seq_no, reject.cl_ord_id,
-                       reject.orig_cl_ord_id, pubsub_itc_fw_app::to_string(reject.ord_status),
-                       reject.has_cxl_rej_reason ? static_cast<int>(reject.cxl_rej_reason) : -1, reject.has_text ? reject.text : std::string_view());
-            ::close(socket_fd);
-            fmt::print("done\n");
-            return 1;
+            fmt::print("sent OrderCancelRequest ClOrdID={} OrigClOrdID={}\n", cancel_cl_ord_id, orig_cl_ord_id);
         }
-        pubsub_itc_fw_app::ExecutionReportView report{};
-        if (pdu_id != pubsub_itc_fw_app::ExecutionReport::message_pdu_id ||
-            !pubsub_itc_fw_app::decode(report, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
-            fmt::print("unexpected reply to the cancel: PDU id {}\n", pdu_id);
-            ::close(socket_fd);
-            return 1;
+
+        // The run succeeds only if every order was cancelled. A refused or rejected cancel is a
+        // failed run: for a reconnected session it means the venue could not find the order,
+        // which is exactly the defect this mode exists to detect.
+        bool every_order_cancelled = true;
+        for (size_t received = 0; received < options.cancel_cl_ord_ids.size(); ++received) {
+            if (!receive_pdu(socket_fd, pdu_id, seq_no, payload)) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    fmt::print("no reply to the cancel within {}s, after {} repl{}\n", options.reply_timeout_seconds, received, received == 1 ? "y" : "ies");
+                    ::close(socket_fd);
+                    return 3;
+                }
+                fmt::print("connection closed with no reply to the cancel\n");
+                ::close(socket_fd);
+                return 1;
+            }
+            const CancelOutcome outcome = print_cancel_reply(pdu_id, seq_no, payload, arena_buffer);
+            if (outcome == CancelOutcome::Failed) {
+                ::close(socket_fd);
+                return 1;
+            }
+            every_order_cancelled = every_order_cancelled && outcome == CancelOutcome::Cancelled;
         }
-        // The same layout as an order's report, so one parser reads both.
-        fmt::print("ExecutionReport seq={} ClOrdID={} OrderID={} OrdStatus={} ExecType={} Symbol={} OrdRejReason={} Text={}\n", seq_no, report.cl_ord_id,
-                   report.order_id, pubsub_itc_fw_app::to_string(report.ord_status), pubsub_itc_fw_app::to_string(report.exec_type), report.symbol,
-                   report.has_ord_rej_reason ? static_cast<int>(report.ord_rej_reason) : -1, report.has_text ? report.text : std::string_view());
         ::close(socket_fd);
         fmt::print("done\n");
-        // A rejected cancel is a failed run: it means the venue could not find the order,
-        // which for a reconnected session is exactly the defect this mode exists to detect.
-        return report.ord_status == pubsub_itc_fw_app::OrdStatus::Rejected ? 1 : 0;
+        return every_order_cancelled ? 0 : 1;
     }
 
     for (int order = 0; order < options.order_count; ++order) {

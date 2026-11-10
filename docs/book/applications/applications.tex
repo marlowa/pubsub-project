@@ -70,9 +70,11 @@ a field the venue reads and discards.
 \label{subsec:refused_message_reply}
 
 A member that sends a message the venue refuses is told so. The gateways answer a refused
-new order with an execution report that rejects the order, and a refused request to cancel
-with a reply that refuses the request and reports the order as still open. Each answer
-names the reason, such as the fields that were missing.
+new order with an execution report that rejects the order. A request to cancel that a gateway
+refuses itself, before it reaches the matching engine, is answered with a reply that refuses
+the request and says nothing of the order: in FIX, a session-level Reject. A request to cancel
+that the matching engine refuses is answered with an OrderCancelReject reporting the order's
+status. Each answer names the reason, such as the fields that were missing.
 
 \begin{requirement}{R-0143}{A message missing a field the venue requires is answered}
   Where the venue refuses a member's order or request to cancel because a field the venue
@@ -88,25 +90,37 @@ names the reason, such as the fields that were missing.
   were missing has to search a message of thirty fields for the one the venue objected to,
   and the venue already knows which it was.
 
-  The exception is narrow. An answer is addressed by the identifier the member put on the
-  message, so a message without one cannot be answered at all.}
+  The exception is narrow. A rejected order is answered with a report addressed by the
+  identifier the member put on the order, so an order without one cannot be answered. A
+  refused request to cancel is answered with a reply that names the message itself, so it is
+  answered whether or not it carries an identifier.}
   \uncovered{no scenario sends a message with a required field absent}
 \end{requirement}
 
 \begin{requirement}{R-0151}{A refused request to cancel is not answered as a rejected order}
-  Where a gateway refuses a member's request to cancel or amend an order, it shall answer
-  with a reply that refuses the request, and shall not answer with a reply that rejects the
-  order. The reply shall report the order's current status. In FIX, the reply shall be an
-  OrderCancelReject.
-  \rationale{The order a refused request names is still on the book. FIX gives an execution
-  report rejecting an order one meaning: that the order is not on the book. A member that
-  receives one in answer to a cancel believes it has no order in the market, while the
-  venue can still trade the order it holds. A member exposed to a market it believes it has
-  left is the most dangerous outcome a reply can produce.
+  Where a gateway refuses a member's request to cancel or amend an order, before it reaches
+  the matching engine, it shall answer with a reply that refuses the request and says nothing
+  of the order. In FIX, the reply shall be a session-level Reject naming the refused message.
+  Where the matching engine refuses the request, the reply shall be an OrderCancelReject
+  reporting the order's current status, which is Rejected for an order the venue does not
+  hold.
+  \rationale{The order a refused request names may still be on the book. FIX gives an
+  execution report rejecting an order one meaning: that the order is not on the book. A
+  member that receives one in answer to a cancel believes it has no order in the market,
+  while the venue can still trade the order it holds. A member exposed to a market it
+  believes it has left is the most dangerous outcome a reply can produce.
+
+  Only the component that holds the order can say what its status is. A gateway that
+  refuses a request before the matching engine sees it does not know the order's status, so
+  it says only that the request was refused. This is how Euronext answers a message its
+  gateway refuses: with a session-level Reject, which carries no order identifier because
+  the matching engine never processed the message. An OrderCancelReject, which FIX requires
+  to carry the order's status, comes only from the matching engine.
 
   The rule holds whatever the reason for refusing the request: a missing field, the venue
   not accepting orders, or a limit on how fast the member may send (\reqref{R-0150}).}
   \covers{ha_test:42}
+  \covers{ha_test:56}
 \end{requirement}
 
 \begin{requirement}{R-0152}{Both gateways refuse the same commands for the same reasons}

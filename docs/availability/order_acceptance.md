@@ -104,9 +104,11 @@ While the venue is not accepting:
   (8), `OrdRejReason` 99 and the text *"Venue is not accepting orders: no matching engine
   available"*. That is an ordinary outcome for an order, which a member already handles, and its
   risk systems see the order as dead rather than pending.
-- **A cancel** is answered with an `OrderCancelReject` saying the order is still open, with the text
-  *"Venue cannot process cancels: no matching engine available. The order is unchanged"*, as every
-  cancel refusal is (R-0151). Cancels must be refused too: a cancel needs a matching engine exactly
+- **A cancel** is answered with a session-level `Reject` in FIX, or `RequestRefused` in the binary
+  protocol, which refuses the request and says nothing of the order, with reason 101 (the venue
+  cannot take the request now) and the text *"Venue cannot process cancels: no matching engine
+  available. The order is unchanged"*, as every cancel a gateway refuses is (R-0151,
+  [gateway_refusals.md](../venue/gateway_refusals.md)). Cancels must be refused too: a cancel needs a matching engine exactly
   as an order does, and a member believing it had cancelled would be more dangerously wrong than one
   believing it had traded.
 

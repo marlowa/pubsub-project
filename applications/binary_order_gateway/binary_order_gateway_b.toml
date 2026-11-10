@@ -123,13 +123,6 @@ initial_slabs    = ${binary_order_gateway_b_event_queue_pool_initial_slabs}
 objects_per_slab = ${binary_order_gateway_b_command_queue_pool_objects_per_slab}
 initial_slabs    = ${binary_order_gateway_b_command_queue_pool_initial_slabs}
 
-# Backs cancel-on-disconnect: one entry per order a session has resting on the book,
-# held until a terminal ExecutionReport retires it or the session's cancels are drained.
-# Size to the maximum expected concurrent open orders with headroom.
-[open_order_pool]
-objects_per_pool = ${binary_order_gateway_b_open_order_pool_objects_per_pool}
-initial_pools    = ${binary_order_gateway_b_open_order_pool_initial_pools}
-
 # The commands this gateway has sent to the sequencers and not yet seen answered, kept so that they
 # can be sent again to a new sequencer leader. A command is normally answered in a tenth of a
 # millisecond, so the store fills only while answers stop arriving, chiefly during a change of

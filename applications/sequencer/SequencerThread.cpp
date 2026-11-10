@@ -1806,6 +1806,8 @@ void SequencerThread::CommandLinks::refuse(const pubsub_itc_fw::ConnectionID& ca
     refused.command = inbound.payload;
     refused.reason = pubsub_itc_fw_app::CommandRefusedReason::IdentifierAlreadyUsed;
     refused.first_seq_no = first_seq_no;
+    refused.has_member_msg_seq_num = inbound.has_member_msg_seq_num;
+    refused.member_msg_seq_num = inbound.member_msg_seq_num;
     // On the connection the command came by, which the gateway dialled and certainly has open: the connection this
     // sequencer dials to send the gateway its reports may not be open yet, after the gateway has restarted. A refused
     // command has no reports, so nothing on that connection needs to arrive before this.

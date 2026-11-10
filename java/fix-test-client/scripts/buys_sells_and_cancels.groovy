@@ -8,10 +8,9 @@
 // Buy price (100.00) is below sell price (105.00) so orders do not cross --
 // all rest on the book and generate New ERs only, no fills.
 //
-// clordId() wraps fix.uniqueId() with a realistic multi-component prefix so
-// that ClOrdIDs exceed the std::string SSO boundary (~16 bytes), exercising
-// the gateway's OpenOrderEntry pool with strings that require pool storage.
-// The script is safe to re-run without generating duplicate IDs.
+// clordId() wraps fix.uniqueId() with a realistic multi-component prefix, so
+// that ClOrdIDs are as long as a real member's. The script is safe to re-run
+// without generating duplicate IDs.
 
 def clordId = { "APM-ALGO-EQUITY-${fix.uniqueId()}" }
 

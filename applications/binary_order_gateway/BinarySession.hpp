@@ -11,7 +11,6 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 
-#include "OpenOrderEntry.hpp"
 #include "SessionThrottles.hpp"
 
 namespace binary_order_gateway {
@@ -90,16 +89,6 @@ struct BinarySession {
 
     /** @brief Fires if the authentication service does not answer, so a logon cannot hang. */
     pubsub_itc_fw::TimerID scram_auth_timeout_timer_id{};
-
-    /**
-     * @brief Orders this session has resting on the book, keyed by ClOrdID.
-     *
-     * Populated from the matching engine's acknowledgements rather than at order-forward
-     * time, so it holds only orders genuinely on the book -- an order that was rejected,
-     * or is still in flight, was never the session's to cancel. Released when the client
-     * disconnects; the venue, not the gateway, cancels them if the member asked for that.
-     */
-    open_orders::OpenOrderMap open_orders;
 };
 
 } // namespaces

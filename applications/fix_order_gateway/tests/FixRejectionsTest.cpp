@@ -10,8 +10,8 @@
 #include <GatewayRefusal.hpp>
 
 using fix_order_gateway::FixMessage;
-using fix_order_gateway::make_order_cancel_reject;
 using fix_order_gateway::make_reject_execution_report;
+using fix_order_gateway::make_request_reject;
 namespace Tag = fix_codec::tag;
 
 TEST(FixRejectionsTest, ANewOrderWhoseClOrdIdIsInUseIsRejectedAsADuplicateOrder) {
@@ -40,21 +40,20 @@ TEST(FixRejectionsTest, ARejectionWithoutSideOrQuantityLeavesThoseTagsOut) {
     EXPECT_TRUE(er.get(Tag::LeavesQty).empty());
 }
 
-TEST(FixRejectionsTest, ACancelWhoseClOrdIdIsInUseIsRefusedAsADuplicateClOrdIdAndTheOrderStaysOpen) {
-    const FixMessage reject =
-        make_order_cancel_reject("NONE", "CANCEL-1", "ORDER-1", fix_common::identifier_already_used_text, pubsub_itc_fw_app::CxlRejReason::DuplicateClOrdId);
-    EXPECT_EQ(reject.get(Tag::MsgType), "9");
-    EXPECT_EQ(reject.get(Tag::CxlRejReason), "6") << "102 = 6 is duplicate ClOrdID received";
-    EXPECT_EQ(reject.get(Tag::Text), "ClOrdID already used today");
-    EXPECT_EQ(reject.get(Tag::OrdStatus), "0") << "the refusal has not touched the order, so it is still open";
-    EXPECT_EQ(reject.get(Tag::CxlRejResponseTo), "1");
-    EXPECT_EQ(reject.get(Tag::ClOrdID), "CANCEL-1");
-    EXPECT_EQ(reject.get(Tag::OrigClOrdID), "ORDER-1");
-    EXPECT_EQ(reject.get(Tag::OrderID), "NONE");
+TEST(FixRejectionsTest, ACancelTheGatewayRefusesIsAnsweredWithASessionLevelRejectNamingTheMessage) {
+    const FixMessage reject = make_request_reject("42", "F", 0, 100, "Throttled: at most 3 cancels per second for this session");
+    EXPECT_EQ(reject.get(Tag::MsgType), "3");
+    EXPECT_EQ(reject.get(Tag::RefSeqNum), "42");
+    EXPECT_EQ(reject.get(Tag::RefMsgType), "F");
+    EXPECT_EQ(reject.get(Tag::SessionRejectReason), "100");
+    EXPECT_EQ(reject.get(Tag::Text), "Throttled: at most 3 cancels per second for this session");
+    EXPECT_TRUE(reject.get(Tag::RefTagID).empty()) << "no one field is at fault, so tag 371 is left out";
+    EXPECT_TRUE(reject.get(Tag::OrderID).empty()) << "the Reject says nothing of the order";
+    EXPECT_TRUE(reject.get(Tag::OrdStatus).empty()) << "the Reject says nothing of the order";
 }
 
-TEST(FixRejectionsTest, ACancelRefusedForAReasonOfTheGatewaysOwnSaysOther) {
-    const FixMessage reject = make_order_cancel_reject("NONE", "CANCEL-1", "", "the venue is busy", pubsub_itc_fw_app::CxlRejReason::Other);
-    EXPECT_EQ(reject.get(Tag::CxlRejReason), "99");
-    EXPECT_TRUE(reject.get(Tag::OrigClOrdID).empty());
+TEST(FixRejectionsTest, ARejectForAMissingFieldNamesTheField) {
+    const FixMessage reject = make_request_reject("7", "F", 41, 1, "missing required field(s): OrigClOrdID");
+    EXPECT_EQ(reject.get(Tag::RefTagID), "41");
+    EXPECT_EQ(reject.get(Tag::SessionRejectReason), "1");
 }

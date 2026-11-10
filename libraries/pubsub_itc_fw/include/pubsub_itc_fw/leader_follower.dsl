@@ -238,6 +238,11 @@ message WalRecord (id=103, version=1)
     # from it, so every engine and every replay of the WAL makes the same identifiers, even on a day that runs past
     # midnight (docs/availability/deterministic_matching_engine.md, section 3.3).
     optional i32 trading_date
+    # On a command from the FIX gateway: the MsgSeqNum (tag 34) of the member's FIX message that carried it. If the
+    # sequencer refuses the command, it returns the number on CommandRefused, so that the gateway can answer with a
+    # session-level Reject naming the refused message by it, as FIX requires (docs/venue/gateway_refusals.md). Absent
+    # on a command from the binary gateway, whose protocol has no sequence numbers, and on every other record.
+    optional i64 member_msg_seq_num
 end
 
 # ------------------------------------------------------------
@@ -1024,7 +1029,8 @@ enum CommandRefusedReason : i8 {
 #  refuses the command without writing it into the WAL. Nothing in
 #  the WAL, the book or the matching engines changes. The gateway
 #  answers the member with a rejection: an execution report for a
-#  new order, an order cancel reject for a cancel. The message
+#  new order; for a cancel, a session-level Reject (FIX) or a
+#  RequestRefused (binary). The message
 #  carries the refused command as the gateway sent it, so that the
 #  gateway can answer from it whether or not it kept a copy. See
 #  docs/availability/one_check_against_sequencing_twice.md, section 4.
@@ -1037,4 +1043,5 @@ message CommandRefused (id=164, version=1)
     bytes command                   # the command, encoded, exactly as the envelope's payload carried it
     CommandRefusedReason reason
     i64 first_seq_no                # the position in the WAL of the command that used the identifier first, for the Quill log
+    optional i64 member_msg_seq_num # the command's member_msg_seq_num, as its envelope carried it; absent when the envelope had none
 end

@@ -278,25 +278,18 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
         int32_t max_order_qty_length = 0;
         toml.get_required_except("fix_limits.max_symbol_length", max_symbol_length);
         toml.get_required_except("fix_limits.max_order_qty_length", max_order_qty_length);
-        if (max_symbol_length < 1 || static_cast<size_t>(max_symbol_length) > max_supported_symbol_length) {
+        if (max_symbol_length < 1 || static_cast<size_t>(max_symbol_length) > fix_order_limits::max_supported_symbol_length) {
             throw pubsub_itc_fw::ConfigurationException("FixOrderGatewayConfigurationLoader: fix_limits.max_symbol_length must be in [1, " +
-                                                        std::to_string(max_supported_symbol_length) + "], got " + std::to_string(max_symbol_length));
+                                                        std::to_string(fix_order_limits::max_supported_symbol_length) + "], got " +
+                                                        std::to_string(max_symbol_length));
         }
-        if (max_order_qty_length < 1 || static_cast<size_t>(max_order_qty_length) > max_supported_order_qty_length) {
+        if (max_order_qty_length < 1 || static_cast<size_t>(max_order_qty_length) > fix_order_limits::max_supported_order_qty_length) {
             throw pubsub_itc_fw::ConfigurationException("FixOrderGatewayConfigurationLoader: fix_limits.max_order_qty_length must be in [1, " +
-                                                        std::to_string(max_supported_order_qty_length) + "], got " + std::to_string(max_order_qty_length));
+                                                        std::to_string(fix_order_limits::max_supported_order_qty_length) + "], got " +
+                                                        std::to_string(max_order_qty_length));
         }
         config.max_symbol_length = max_symbol_length;
         config.max_order_qty_length = max_order_qty_length;
-
-        toml.get_required_except("open_order_pool.objects_per_pool", config.open_order_pool_objects_per_pool);
-        toml.get_required_except("open_order_pool.initial_pools", config.open_order_pool_initial_pools);
-        if (config.open_order_pool_objects_per_pool < 1) {
-            throw pubsub_itc_fw::ConfigurationException("FixOrderGatewayConfigurationLoader: open_order_pool.objects_per_pool must be >= 1");
-        }
-        if (config.open_order_pool_initial_pools < 1) {
-            throw pubsub_itc_fw::ConfigurationException("FixOrderGatewayConfigurationLoader: open_order_pool.initial_pools must be >= 1");
-        }
 
         int64_t unanswered_commands = 0;
         int64_t unanswered_bytes = 0;

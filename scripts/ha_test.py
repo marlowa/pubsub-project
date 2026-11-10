@@ -3766,19 +3766,23 @@ _SCENARIOS: list[Scenario] = [
     # Then a burst of new orders, sent faster than the limit, must be split exactly: the first
     # orders up to the limit accepted and every one after refused with the limit in its text. A
     # second later one more is accepted. A burst of cancels is split the same way, the refused
-    # ones answered with an OrderCancelReject that says the order is still open. Finally a comp
-    # id with no limit sends the same burst and nothing is refused.
+    # ones answered with a session-level Reject that names the refused message and says nothing
+    # of the order (R-0151). The binary gateway is sent a burst of cancels too, and refuses those
+    # beyond the limit with RequestRefused. Finally a comp id with no limit sends the same burst
+    # and nothing is refused.
     Scenario(
         number=56,
         short_name="gateway_throttles",
         description="Each session is limited in how many new orders and cancels it may send a second",
         expected_outcome=(
             "the gateway applies the provisioned limits; a burst of new orders and a burst of cancels are each "
-            "accepted up to the limit and refused beyond it with the limit in the text; a command a second later "
-            "is accepted; and a comp id with no limit is never refused"
+            "accepted up to the limit and refused beyond it with the limit in the text; the binary gateway refuses "
+            "cancels beyond the same limit; a command a second later is accepted; and a comp id with no limit is "
+            "never refused"
         ),
         orders_during_override=0,
         orders_after_override=0,
+        binary_gateway=True,
         assert_gateway_throttles=True,
         steps=[],
     ),
@@ -3798,7 +3802,7 @@ _SCENARIOS: list[Scenario] = [
         expected_outcome=(
             "a valid order and a valid cancel are accepted; an order with an undefined Side, a quantity or price that "
             "is not a number, an over-long ClOrdID or an over-long Symbol is refused by the gateway with the field "
-            "named; a cancel with an undefined Side is refused with an OrderCancelReject; and the matching engine's "
+            "named; a cancel with an undefined Side is refused with RequestRefused naming the field; and the matching engine's "
             "refusal of a cancel for an unknown order arrives as an OrderCancelReject with CxlRejReason 1"
         ),
         orders_during_override=0,
@@ -5158,8 +5162,9 @@ _SCENARIOS: list[Scenario] = [
     # places an order and cancels it, and places a second order that rests. It then sends a new order under the ClOrdID
     # of the cancelled order, and a cancel of the resting order under the ClOrdID of its earlier cancel. Each must be
     # refused by the leading sequencer, which the sequencer's IdentifierRefused event shows, and answered with
-    # OrdRejReason 6 or CxlRejReason 6 and the text "ClOrdID already used today", and neither may reach the matching
-    # engine. The same is then done through the binary gateway with an order and its cancel. The engine does not match
+    # OrdRejReason 6 for the order, or for the cancel a session-level Reject, SessionRejectReason 99, naming the cancel
+    # by the MsgSeqNum the sequencer returns (RequestRefused, reason 99, through the binary gateway), each with the text
+    # "ClOrdID already used today", and neither may reach the matching engine. The same is then done through the binary gateway with an order and its cancel. The engine does not match
     # orders, so the case of an order that has been filled cannot be run; a cancelled order is one whose first use has
     # ended and is off the book, which is the case R-0119 is about.
     Scenario(
@@ -5168,7 +5173,8 @@ _SCENARIOS: list[Scenario] = [
         description="A member reusing the ClOrdID of a cancelled order or of a cancel is refused, through both gateways",
         expected_outcome=(
             "through each gateway, a new order reusing the ClOrdID of a cancelled order is rejected with OrdRejReason 6, and a cancel "
-            "reusing a cancel's ClOrdID is refused with CxlRejReason 6; the leading sequencer refuses each, and none reaches the matching engine"
+            "reusing a cancel's ClOrdID is refused with a Reject or RequestRefused, reason 99; the leading sequencer refuses each, and none "
+            "reaches the matching engine"
         ),
         binary_gateway=True,
         assert_identifier_reuse_refused=True,
@@ -7230,17 +7236,21 @@ _BINARY_REPORT_LINE = re.compile(
 _BINARY_CANCEL_REJECT_LINE = re.compile(
     r"^OrderCancelReject seq=(?P<seq>\S+) ClOrdID=(?P<cl_ord_id>\S*) OrigClOrdID=(?P<orig_cl_ord_id>\S*) OrdStatus=(?P<ord_status>\S+) "
     r"CxlRejReason=(?P<cxl_rej_reason>\S+) Text=(?P<text>.*)$")
+# The gateway's answer to a request it refused itself (RequestRefused in binary_session.dsl). Reason is the number the FIX
+# gateway gives in SessionRejectReason (373) for the same refusal.
+_BINARY_REQUEST_REFUSED_LINE = re.compile(
+    r"^RequestRefused seq=(?P<seq>\S+) ClOrdID=(?P<cl_ord_id>\S*) RefusedPduId=(?P<refused_pdu_id>\S+) Reason=(?P<reason>\S+) "
+    r"Field=(?P<field>\S*) Text=(?P<text>.*)$")
 
 
-def run_binary_client(bin_dir: Path, port: int, *arguments: str) -> tuple[int, list[dict[str, str]], str]:
-    """Run binary_client once as the binary test comp id, and parse the replies it printed.
+def run_binary_client(bin_dir: Path, port: int, *arguments: str, comp_id: str = _BINARY_COMP_ID) -> tuple[int, list[dict[str, str]], str]:
+    """Run binary_client once as comp_id, the binary test comp id unless another is named, and parse the replies it printed.
 
-    Returns its exit status, one dictionary for each ExecutionReport or OrderCancelReject it
-    printed (with "kind" naming which), and its whole output for a failure message. Exit status 3
-    means it gave up waiting for a reply.
+    Returns its exit status, one dictionary for each ExecutionReport, OrderCancelReject or RequestRefused it printed (with
+    "kind" naming which), and its whole output for a failure message. Exit status 3 means it gave up waiting for a reply.
     """
     command = [str(bin_dir / "binary_client"), "--host", "127.0.0.1", "--port", str(port),
-               "--comp-id", _BINARY_COMP_ID, "--password", FIX8_PASSWORD,
+               "--comp-id", comp_id, "--password", FIX8_PASSWORD,
                "--reply-timeout", str(_BINARY_REPLY_TIMEOUT), *arguments]
     result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=_BINARY_REPLY_TIMEOUT * 4)
     replies: list[dict[str, str]] = []
@@ -7252,6 +7262,10 @@ def run_binary_client(bin_dir: Path, port: int, *arguments: str) -> tuple[int, l
         reject = _BINARY_CANCEL_REJECT_LINE.match(line)
         if reject:
             replies.append({"kind": "OrderCancelReject", **reject.groupdict()})
+            continue
+        refused = _BINARY_REQUEST_REFUSED_LINE.match(line)
+        if refused:
+            replies.append({"kind": "RequestRefused", **refused.groupdict()})
     return result.returncode, replies, result.stdout + result.stderr
 
 
@@ -7304,6 +7318,17 @@ def fix_reply(member, cl_ord_id: str, timeout: float = _RAW_REPLY_TIMEOUT) -> di
     return None
 
 
+def fix_session_reject(member, ref_seq_num: int, timeout: float = _RAW_REPLY_TIMEOUT) -> dict[int, str] | None:
+    """The next session-level Reject (35=3) the member receives naming its message ref_seq_num, or None within timeout
+    seconds. A gateway refuses a cancel with one, which names the cancel by its MsgSeqNum, not by ClOrdID."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        reply = member.receive_until("3", timeout=max(0.1, deadline - time.monotonic()))
+        if reply is not None and reply.get(45) == str(ref_seq_num):
+            return reply
+    return None
+
+
 def check_fix_status(member, cl_ord_id: str, ord_status: str, what: str) -> dict[int, str]:
     """The member's report for cl_ord_id with OrdStatus ord_status, passing over the reports before it, such as the
     acknowledgement (OrdStatus 0) that comes before a fill; dies if none arrives within the reply timeout."""
@@ -7323,16 +7348,17 @@ def check_fix_status(member, cl_ord_id: str, ord_status: str, what: str) -> dict
 
 def check_fix_identifier_refusal(reply: dict[int, str] | None, cl_ord_id: str, kind: str, what: str) -> None:
     """reply must refuse cl_ord_id for reusing a ClOrdID: an ExecutionReport with OrdRejReason 6 for a new order (kind
-    "order"), or an OrderCancelReject with CxlRejReason 6 for a cancel (kind "cancel")."""
+    "order"), or a session-level Reject with SessionRejectReason 99 naming an OrderCancelRequest for a cancel (kind
+    "cancel"; R-0151)."""
     if reply is None:
         die(f"{what}: no reply to ClOrdID {cl_ord_id}. A refused command must be answered.")
     if kind == "order":
         if reply.get(35) != "8" or reply.get(39) != "8" or reply.get(103) != "6" or not reply.get(37, "").startswith("GW-ORD-"):
             die(f"{what}: ClOrdID {cl_ord_id} was answered MsgType={reply.get(35)} OrdStatus={reply.get(39)} OrdRejReason={reply.get(103)} "
                 f"OrderID={reply.get(37)}; expected a rejection with OrdRejReason 6 and an OrderID the gateway made.")
-    elif reply.get(35) != "9" or reply.get(102) != "6":
-        die(f"{what}: cancel ClOrdID {cl_ord_id} was answered MsgType={reply.get(35)} CxlRejReason={reply.get(102)}; expected an "
-            "OrderCancelReject with CxlRejReason 6.")
+    elif reply.get(35) != "3" or reply.get(373) != "99" or reply.get(372) != "F":
+        die(f"{what}: cancel ClOrdID {cl_ord_id} was answered MsgType={reply.get(35)} SessionRejectReason={reply.get(373)} "
+            f"RefMsgType={reply.get(372)}; expected a session-level Reject with SessionRejectReason 99 naming an OrderCancelRequest.")
     if reply.get(58) != _IDENTIFIER_USED_TEXT:
         die(f"{what}: ClOrdID {cl_ord_id} was refused with Text={reply.get(58)!r}; expected {_IDENTIFIER_USED_TEXT!r}.")
 
@@ -7346,8 +7372,9 @@ def check_binary_identifier_refusal(replies: list[dict[str, str]], output: str, 
         if (reply["kind"] != "ExecutionReport" or reply["ord_status"] != "Rejected" or reply["ord_rej_reason"] != "6"
                 or not reply["order_id"].startswith("GW-ORD-")):
             die(f"{what}: ClOrdID {cl_ord_id} was answered {reply}; expected a rejection with OrdRejReason 6 and an OrderID the gateway made.")
-    elif reply["kind"] != "OrderCancelReject" or reply["cxl_rej_reason"] != "6":
-        die(f"{what}: cancel ClOrdID {cl_ord_id} was answered {reply}; expected an OrderCancelReject with CxlRejReason 6.")
+    elif reply["kind"] != "RequestRefused" or reply["reason"] != "99" or reply["refused_pdu_id"] != "1001":
+        die(f"{what}: cancel ClOrdID {cl_ord_id} was answered {reply}; expected RequestRefused with Reason 99 naming an "
+            "OrderCancelRequest (1001).")
     if reply["text"] != _IDENTIFIER_USED_TEXT:
         die(f"{what}: ClOrdID {cl_ord_id} was refused with Text={reply['text']!r}; expected {_IDENTIFIER_USED_TEXT!r}.")
 
@@ -9326,25 +9353,25 @@ def run_scenario(scenario: Scenario, args) -> bool:
             gateway_from = _TEST_EVENTS.mark()
             cancels_from = _TEST_EVENTS.mark()
 
+            # How many orders the member was told are open, which the venue then cancels: one answer from the engine is
+            # wanted for each. Counted from the member's own reports, before its session is dropped, because the gateway
+            # keeps no list of a member's orders.
+            expected = len(client_reports(f8proc).open_orders())
+            if expected <= 0:
+                die(f"open orders: the member was told {expected} order(s) are open before its session was dropped, so nothing "
+                    "would be cancelled and the question would not be asked")
+
             log("=== Dropping the client session, so the venue cancels the member's open orders ===")
             stop_f8test(f8proc)
             f8proc = None
 
             found, _ = await_expectation(
-                expect_message("fix_order_gateway_a", "the dropped session's open orders",
-                               "SessionDisconnectedWithOrders", "fix_order_gateway_test_events"),
+                expect_message("fix_order_gateway_a", "the dropped session's end",
+                               "SessionDisconnected", "fix_order_gateway_test_events"),
                 _CANCEL_GRACE_HOLD_TIMEOUT, gateway_from)
             if not found:
-                die("open orders: the gateway never reported the dropped session's open orders, so "
-                    "nothing was cancelled and the question was not asked")
-
-            # How many orders the gateway believed open, which the venue then cancels: one answer from the engine is wanted
-            # for each.
-            disconnected = component_event("fix_order_gateway_a", "fix_order_gateway_test_events", "SessionDisconnectedWithOrders", gateway_from, 0.0)
-            expected = disconnected.open_orders if disconnected is not None else 0
-            if expected <= 0:
-                die(f"open orders: the gateway reported {expected} open order(s) for the dropped session, so nothing was "
-                    "cancelled and the question was not asked")
+                die("open orders: the gateway never reported the dropped session's end, so nothing was cancelled and the "
+                    "question was not asked")
 
             # Whichever answer comes back, it comes back from the engine. The member has gone, so the engine's events
             # are the only record of the answers. They are read until there is one for every order the gateway cancelled,
@@ -9364,15 +9391,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
             cancelled = outcome_count(engine, cancels_from, "Cancelled")
 
             if unknown:
-                die(f"open orders: the matching engine refused {unknown} of the {expected} cancels the gateway sent as "
+                die(f"open orders: the matching engine refused {unknown} cancel(s) of the member's {expected} open order(s) as "
                     "orders it does not recognise. Orders the member was told are open are gone, and "
-                    "neither the member nor the gateway was told -- see R-0018, and docs/bug_list.md "
-                    "BUG-0064")
+                    "the member was not told -- see R-0018, and docs/bug_list.md BUG-0064")
             if cancelled != expected:
-                die(f"open orders: the gateway believed {expected} order(s) open, and within {_OPEN_ORDER_CANCEL_TIMEOUT:.0f}s "
+                die(f"open orders: the member was told {expected} order(s) are open, and within {_OPEN_ORDER_CANCEL_TIMEOUT:.0f}s "
                     f"the engine cancelled {cancelled} -- the orders it holds after its restart are not the ones the member "
                     "was told are open (R-0018)")
-            log(f"  the engine cancelled all {cancelled} order(s) the gateway believed open -- OK")
+            log(f"  the engine cancelled all {cancelled} order(s) the member was told are open -- OK")
 
         # ── Cancel on disconnect after the member's gateway has gone ─────────
         # BUG-0090, BUG-0091 and R-0113. The gateway that received the member's instructions is restarted or killed, so it
@@ -9461,7 +9487,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             #    distinguishes the new behaviour from the old one.
             found, elapsed = await_expectation(
                 expect_message("fix_order_gateway_a", "the dropped session's orders held for the grace period",
-                               "SessionDisconnectedWithOrders", "fix_order_gateway_test_events",
+                               "SessionDisconnected", "fix_order_gateway_test_events",
                                fields=lambda m: {"cancel_enabled": True}),
                 _CANCEL_GRACE_HOLD_TIMEOUT, gateway_from)
             if not found:
@@ -9482,7 +9508,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # gateway ignoring the setting. write_scram_credential now preserves non-SCRAM
             # keys; this assertion is what would catch it happening again.
             gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
-            hold = _TEST_EVENTS.find(message_of(gateway_events.SessionDisconnectedWithOrders, "fix_order_gateway_a", cancel_enabled=True), since=gateway_from)
+            hold = _TEST_EVENTS.find(message_of(gateway_events.SessionDisconnected, "fix_order_gateway_a", cancel_enabled=True), since=gateway_from)
             held = hold.message.grace_seconds if hold is not None else None
             if held is None:
                 die("cancel grace: the gateway's report of holding the orders was not found")
@@ -10669,24 +10695,30 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "retry the one and not the other.")
 
             # 3. Cancels are refused too -- the half that reads as the wrong way round.
+            cancel_seq_num = member.next_send_seq_num
             member.order_cancel_request("refuse-cancel", "refuse-early")
-            reply = member.receive_until("8", "9", timeout=_RAW_REPLY_TIMEOUT)
+            reply = member.receive_until("8", "9", "3", timeout=_RAW_REPLY_TIMEOUT)
             if reply is None:
                 die("order refusal: the cancel got no answer at all.")
-            # The refusal must be an OrderCancelReject, which refuses the request, and not a rejected
-            # ExecutionReport, which in FIX says the order itself was rejected (R-0151, BUG-0099).
-            # A member told its order was rejected believes it has no order in the market while
-            # the order still rests. The reply must not report the order as rejected either.
-            if reply.get(35) != "9":
-                die(f"order refusal: the cancel was refused with MsgType={reply.get(35)}, not an "
-                    "OrderCancelReject (35=9). A rejected ExecutionReport tells a FIX member its order "
-                    "was rejected, when what was refused is the request and the order is untouched.")
-            if reply.get(39) == "8":
-                die("order refusal: the OrderCancelReject reports the order as rejected (39=8). The "
-                    "gateway did not touch the order, so it must report it as open.")
-            if reply.get(434) != "1":
-                die(f"order refusal: CxlRejResponseTo={reply.get(434)}, expected 1 (a request to cancel)")
-            log(f"  order refusal: cancels are refused too, with an OrderCancelReject, OrdStatus={reply.get(39)}, "
+            # The gateway refuses the cancel itself, before it reaches a matching engine, so the
+            # answer is a session-level Reject naming the refused message (R-0151): it refuses the
+            # request and says nothing of the order. A rejected ExecutionReport would tell the member
+            # its order was rejected while the order still rests, and an OrderCancelReject would have
+            # to report a status the gateway does not know (docs/venue/gateway_refusals.md).
+            if reply.get(35) != "3":
+                die(f"order refusal: the cancel was refused with MsgType={reply.get(35)}, not a session-level "
+                    "Reject (35=3). A gateway that refuses a cancel itself must refuse the request and say nothing "
+                    "of the order (R-0151).")
+            if reply.get(45) != str(cancel_seq_num) or reply.get(372) != "F":
+                die(f"order refusal: the Reject names RefSeqNum={reply.get(45)} RefMsgType={reply.get(372)}; "
+                    f"expected {cancel_seq_num} and F, the cancel it refuses.")
+            if reply.get(373) != "101":
+                die(f"order refusal: SessionRejectReason={reply.get(373)}, expected 101, the venue cannot take the "
+                    "request now.")
+            if 37 in reply or 39 in reply:
+                die(f"order refusal: the Reject carries OrderID={reply.get(37)} OrdStatus={reply.get(39)}; it must "
+                    "say nothing of the order.")
+            log(f"  order refusal: cancels are refused too, with a session-level Reject, SessionRejectReason=101, "
                 f"Text='{reply.get(58, '')}' -- OK")
 
             # 3a. The binary gateway refuses on the same outage, with the same texts (BUG-0100). It
@@ -10705,9 +10737,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 _, replies, output = run_binary_client(bin_dir, binary_port, "--cancel", binary_order_id)
                 answer = next((r for r in replies if r["cl_ord_id"] == f"{binary_order_id}-CANCEL"), None)
                 expected = "Venue cannot process cancels: no matching engine available. The order is unchanged"
-                if answer is None or answer["kind"] != "OrderCancelReject" or answer["ord_status"] != "New" or answer["text"] != expected:
-                    die(f"order refusal: the binary gateway answered a cancel during the outage with {answer}; expected an "
-                        f"OrderCancelReject, OrdStatus New, Text='{expected}'.\n{output}")
+                if answer is None or answer["kind"] != "RequestRefused" or answer["reason"] != "101" or answer["text"] != expected:
+                    die(f"order refusal: the binary gateway answered a cancel during the outage with {answer}; expected "
+                        f"RequestRefused, Reason 101, Text='{expected}', as the FIX gateway's Reject (R-0151).\n{output}")
                 log("  order refusal: the binary gateway refuses orders and cancels on the same outage, with the same texts -- OK")
 
             # 4. The health line keeps reporting while nothing progresses.
@@ -10762,12 +10794,12 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  order refusal: acceptance resumed on its own after {attempt} probe(s), with no "
                 "operator action -- OK")
 
-            # 6. The matching engine's own refusal of a cancel is an OrderCancelReject too.
+            # 6. The matching engine's own refusal of a cancel is an OrderCancelReject, not a Reject.
             #
             # With an engine running again, a cancel naming an order the venue never held is
             # refused by the engine, not the gateway. The engine says so with a rejected report,
             # which the gateway must turn into an OrderCancelReject with CxlRejReason 1, Unknown
-            # order (R-0151, BUG-0099).
+            # order, reporting the status the engine gives (R-0151, BUG-0099).
             member.order_cancel_request("unknown-cancel", "never-placed")
             # Reports for the orders held earlier arrive now that an engine leads again,
             # so the reply is recognised by the ClOrdID it answers, not by being the first to come.
@@ -10785,8 +10817,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"order refusal: the engine's refusal of a cancel for an unknown order came back as "
                     f"MsgType={reply.get(35)} CxlRejResponseTo={reply.get(434)} CxlRejReason={reply.get(102)}; "
                     "expected an OrderCancelReject (35=9) with 434=1 and 102=1, Unknown order.")
+            # FIX defines OrdStatus here as the order's status after the reject, Rejected for an unknown order, and OrderID
+            # NONE for an order the venue does not hold (docs/venue/gateway_refusals.md, section 2).
+            if reply.get(39) != "8" or reply.get(37) != "NONE":
+                member.close()
+                die(f"order refusal: the engine's refusal of a cancel for an unknown order says OrdStatus={reply.get(39)} "
+                    f"OrderID={reply.get(37)}; expected OrdStatus 8 (Rejected) and OrderID NONE.")
             log("  order refusal: the engine's refusal of a cancel for an unknown order is an "
-                "OrderCancelReject with CxlRejReason 1 -- OK")
+                "OrderCancelReject with CxlRejReason 1, OrdStatus Rejected and OrderID NONE -- OK")
             member.close()
 
         # ── The matching engine's own refusal of over-long identifiers ────────
@@ -12452,15 +12490,15 @@ def run_scenario(scenario: Scenario, args) -> bool:
                                  "--symbol", "S" * (max_symbol_length + 1))
             expect_refused_order("empty Symbol", "symbol is missing or holds a value the protocol does not define", "--symbol", "")
 
-            # 3. A cancel the gateway must refuse is answered with an OrderCancelReject that says the
-            #    order is still open (R-0151).
+            # 3. A cancel the gateway must refuse is answered with RequestRefused, which refuses the request and says
+            #    nothing of the order (R-0151), with the field at fault named.
             bad_cancel_id = f"{accepted['cl_ord_id']}-CANCEL"
             reply = binary_reply(bad_cancel_id, "--cancel", accepted["cl_ord_id"], "--side", "Z")
-            if (reply["kind"] != "OrderCancelReject" or reply["ord_status"] != "New" or reply["cxl_rej_reason"] != "99"
+            if (reply["kind"] != "RequestRefused" or reply["reason"] != "5" or reply["field"] != "side"
                     or reply["text"] != "side is missing or holds a value the protocol does not define"):
-                die(f"binary checks: a cancel with an undefined Side came back as {reply}; expected an OrderCancelReject "
-                    "with OrdStatus New, CxlRejReason 99 and the field named.")
-            log("  binary checks: a cancel with an undefined Side was refused with an OrderCancelReject, OrdStatus New -- OK")
+                die(f"binary checks: a cancel with an undefined Side came back as {reply}; expected RequestRefused with "
+                    "Reason 5 and the field side named.")
+            log("  binary checks: a cancel with an undefined Side was refused with RequestRefused, Reason 5, Field side -- OK")
 
             # 4. A valid cancel of the valid order goes through.
             reply = binary_reply(bad_cancel_id, "--cancel", accepted["cl_ord_id"])
@@ -12589,11 +12627,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 if not await_identifier_refusal(refused_from, cancelled, _RAW_REPLY_TIMEOUT):
                     die(f"{what}: the reuse of {cancelled} was rejected, but no sequencer says it refused it, so something else did.")
                 log("  FIX: a new order reusing the ClOrdID of the cancelled order was refused by the sequencer with OrdRejReason 6 -- OK")
+                cancel_seq_num = member.next_send_seq_num
                 member.order_cancel_request(cancel, resting, symbol=_REUSE_SYMBOL, side="1")
-                check_fix_identifier_refusal(fix_reply(member, cancel), cancel, "cancel", what)
+                check_fix_identifier_refusal(fix_session_reject(member, cancel_seq_num), cancel, "cancel", what)
                 if not await_identifier_refusal(refused_from, cancel, _RAW_REPLY_TIMEOUT):
                     die(f"{what}: the reuse of cancel {cancel} was refused, but no sequencer says it refused it.")
-                log("  FIX: a cancel reusing the ClOrdID of an earlier cancel was refused by the sequencer with CxlRejReason 6 -- OK")
+                log("  FIX: a cancel reusing the ClOrdID of an earlier cancel was refused by the sequencer, and answered with a Reject "
+                    "naming the message, SessionRejectReason 99 -- OK")
             finally:
                 member.close()
 
@@ -12614,7 +12654,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
             for reused in (binary_order, binary_cancel):
                 if not await_identifier_refusal(binary_from, reused, _RAW_REPLY_TIMEOUT):
                     die(f"{what}: the binary member's reuse of {reused} was refused, but no sequencer says it refused it.")
-            log("  binary: a new order and a cancel reusing ClOrdIDs were refused by the sequencer with reason 6 -- OK")
+            log("  binary: a new order and a cancel reusing ClOrdIDs were refused by the sequencer, with OrdRejReason 6 and "
+                "RequestRefused reason 99 -- OK")
 
             # The engine reports these comp ids' orders, which the orders it accepted show; the refused ones it never saw.
             _TEST_EVENTS.pump(1.0)
@@ -12886,34 +12927,69 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 "started being throttled and once when it stopped -- OK")
 
             # 4. A burst of cancels for the orders now open. The first up to the cancel limit are
-            #    accepted, and the rest are refused with an OrderCancelReject that says the order
-            #    is still open.
+            #    accepted, and the rest are refused with a session-level Reject that names the
+            #    refused message and says nothing of the order (R-0150, R-0151). A Reject carries no
+            #    ClOrdID, so it is matched to its cancel by RefSeqNum.
             cancel_text = f"Throttled: at most {_THROTTLE_CANCEL_LIMIT} cancels per second for this session"
             open_orders = accepted + [later]
             cancels = {f"{cl_ord_id}-cancel": cl_ord_id for cl_ord_id in open_orders}
+            cancel_by_seq_num: dict[str, str] = {}
             for cancel_cl_ord_id, orig_cl_ord_id in cancels.items():
+                cancel_by_seq_num[str(member.next_send_seq_num)] = cancel_cl_ord_id
                 member.order_cancel_request(cancel_cl_ord_id, orig_cl_ord_id)
-            cancel_replies = replies_by_cl_ord_id(member, set(cancels), _RAW_REPLY_TIMEOUT)
+            cancel_replies: dict[str, dict[int, str]] = {}
+            deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
+            while len(cancel_replies) < len(cancels) and time.monotonic() < deadline:
+                reply = member.receive_until("8", "9", "3", timeout=max(0.1, deadline - time.monotonic()))
+                if reply is None:
+                    continue
+                answered = cancel_by_seq_num.get(reply.get(45, "")) if reply.get(35) == "3" else reply.get(11)
+                if answered in cancels and answered not in cancel_replies:
+                    cancel_replies[answered] = reply
             if len(cancel_replies) != len(cancels):
                 member.close()
                 die(f"throttles: {len(cancels) - len(cancel_replies)} of {len(cancels)} cancels got no answer.")
             cancel_order = list(cancels)
-            refused_cancels = [c for c in cancel_order if cancel_replies[c].get(35) == "9"]
-            accepted_cancels = [c for c in cancel_order if cancel_replies[c].get(35) != "9"]
-            if accepted_cancels != cancel_order[:_THROTTLE_CANCEL_LIMIT]:
+            refused_cancels = [c for c in cancel_order if cancel_replies[c].get(35) == "3"]
+            accepted_cancels = [c for c in cancel_order if cancel_replies[c].get(35) == "8" and cancel_replies[c].get(39) == "4"]
+            if accepted_cancels != cancel_order[:_THROTTLE_CANCEL_LIMIT] or len(refused_cancels) != len(cancels) - _THROTTLE_CANCEL_LIMIT:
                 member.close()
-                die(f"throttles: the cancels accepted were {accepted_cancels}; expected exactly the first "
-                    f"{_THROTTLE_CANCEL_LIMIT}, {cancel_order[:_THROTTLE_CANCEL_LIMIT]}.")
+                die(f"throttles: the cancels carried out were {accepted_cancels} and {len(refused_cancels)} were refused with a "
+                    f"Reject; expected exactly the first {_THROTTLE_CANCEL_LIMIT}, {cancel_order[:_THROTTLE_CANCEL_LIMIT]}, carried "
+                    f"out and every other refused. Replies: {[(c, r.get(35), r.get(39), r.get(58)) for c, r in cancel_replies.items()]}")
             for cancel_cl_ord_id in refused_cancels:
                 reply = cancel_replies[cancel_cl_ord_id]
-                if reply.get(39) != "0" or reply.get(434) != "1" or reply.get(102) != "99" or reply.get(58) != cancel_text:
+                if reply.get(372) != "F" or reply.get(373) != "100" or reply.get(58) != cancel_text or 37 in reply or 39 in reply:
                     member.close()
-                    die(f"throttles: cancel {cancel_cl_ord_id} was refused with OrdStatus={reply.get(39)} "
-                        f"CxlRejResponseTo={reply.get(434)} CxlRejReason={reply.get(102)} Text='{reply.get(58)}'; expected "
-                        f"OrdStatus 0 (the order is open), 434=1, 102=99 and Text='{cancel_text}' (R-0150, R-0151).")
-            log(f"  throttles: of {len(cancels)} cancels, the first {len(accepted_cancels)} were accepted and "
-                f"{len(refused_cancels)} refused with an OrderCancelReject, OrdStatus 0, Text='{cancel_text}' -- OK")
+                    die(f"throttles: cancel {cancel_cl_ord_id} was refused with RefMsgType={reply.get(372)} "
+                        f"SessionRejectReason={reply.get(373)} Text='{reply.get(58)}' OrderID={reply.get(37)} "
+                        f"OrdStatus={reply.get(39)}; expected RefMsgType F, SessionRejectReason 100, Text='{cancel_text}', and "
+                        "nothing said of the order (R-0150, R-0151).")
+            log(f"  throttles: of {len(cancels)} cancels, the first {len(accepted_cancels)} were carried out and "
+                f"{len(refused_cancels)} refused with a session-level Reject, SessionRejectReason 100, Text='{cancel_text}' -- OK")
             member.close()
+
+            # 4a. The binary gateway applies the same limit to cancels, and refuses those beyond it with RequestRefused,
+            #     reason 100, with the same text. The cancels name orders that do not exist: those within the limit go on to
+            #     the matching engine, which refuses them as unknown, and that is the point -- they were not throttled.
+            binary_port = binary_gateway_listen_port(prefix)
+            binary_cancels = [f"bthrottle-{run_tag}-{index}" for index in range(_THROTTLE_BURST)]
+            cancel_arguments = [argument for orig in binary_cancels for argument in ("--cancel", orig)]
+            status, binary_replies, output = run_binary_client(bin_dir, binary_port, *cancel_arguments, comp_id=_THROTTLED_COMP_ID)
+            if status == 3 or len(binary_replies) != len(binary_cancels):
+                die(f"throttles: binary_client printed {len(binary_replies)} replies to {len(binary_cancels)} cancels "
+                    f"(exit {status}). A refused cancel must be answered.\n{output}")
+            binary_refused = [r for r in binary_replies if r["kind"] == "RequestRefused"]
+            binary_passed = [r for r in binary_replies if r["kind"] != "RequestRefused"]
+            if len(binary_passed) != _THROTTLE_CANCEL_LIMIT:
+                die(f"throttles: the binary gateway let {len(binary_passed)} of {len(binary_cancels)} cancels through to the "
+                    f"matching engine; expected exactly {_THROTTLE_CANCEL_LIMIT}, the limit.\n{output}")
+            for reply in binary_refused:
+                if reply["reason"] != "100" or reply["text"] != cancel_text or reply["refused_pdu_id"] != "1001":
+                    die(f"throttles: the binary gateway refused a cancel with {reply}; expected RequestRefused, Reason 100, "
+                        f"Text='{cancel_text}', naming an OrderCancelRequest (1001).\n{output}")
+            log(f"  throttles: the binary gateway let {len(binary_passed)} of {len(binary_cancels)} cancels through and refused "
+                f"{len(binary_refused)} with RequestRefused, Reason 100, Text='{cancel_text}' -- OK")
 
             # 5. A comp id with no limit sends the same burst and nothing is refused, so the
             #    refusals above came from the limit and not from the venue refusing a burst.

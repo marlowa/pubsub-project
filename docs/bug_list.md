@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 240 |
+| Bugs recorded | 241 |
 | Open | 55 (35 defects, 20 tasks) |
-| Closed | 185 |
-| Next id | BUG-0241 |
+| Closed | 186 |
+| Next id | BUG-0242 |
 
 ## Open bugs by severity
 
@@ -30,7 +30,6 @@
 | [BUG-0059](#bug_0059) | medium | task | No defence against a member reconnecting in a loop with the wrong protocol |
 | [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
-| [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
 | [BUG-0087](#bug_0087) | medium | task | Whether the hot path allocates cannot be established on demand |
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
@@ -54,6 +53,7 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0235](#bug_0235) | medium | defect | Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later |
 | [BUG-0236](#bug_0236) | medium | defect | The COMPID editor writes its administrators' file readable by every account on the host |
+| [BUG-0241](#bug_0241) | medium | defect | The matching engine keeps only the first 16 characters of a symbol, and the gateways accept up to 32 |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -164,7 +164,35 @@ went looking.
 
 ## Open
 
-### BUG-0223: The fix8 test client once logged on and exited without sending its baseline orders, failing scenario 22 {#bug_0223}
+### BUG-0241: The matching engine keeps only the first 16 characters of a symbol, and the gateways accept up to 32 {#bug_0241}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-10 |
+| Recorded | 2026-11-10 |
+| How | Moving the gateways' limits on Symbol and OrderQty into `FixOrderLimits.hpp` while building [BUG-0072](#bug_0072), and comparing them with the matching engine's |
+| Impact | An order whose symbol is longer than 16 characters is accepted, and the matching engine stores the symbol cut short, with nothing logged and nothing refused. Two symbols that share their first 16 characters become one in the engine's book |
+
+**What happens.** Both gateways accept a symbol up to their configured `max_symbol_length`, which is 32 in every
+environment and may be configured up to `fix_order_limits::max_supported_symbol_length`, 64. The matching engine's
+`OrderEntry` holds `matching_engine::max_symbol_length` characters, 16 (`applications/matching_engine/OrderEntry.hpp`), and
+`OrderEntry::set_symbol` copies `std::min(sv.size(), max_symbol_length)` of them. No component refuses a symbol of 17
+to 32 characters. The engine's own comment, "Symbol max ~12; 16 is ample", states an assumption that the gateways do not
+enforce.
+
+The same shape applies to OrderQty and price: the engine holds 24 characters of each, and the gateways' configured
+limit on OrderQty is 24 in every environment, but may be configured up to 32.
+
+This is the fault R-0152 exists to prevent for identifiers: "an identifier longer than the matching
+engine's book key is cut short there, so two orders can become one". For `ClOrdID` the limit is one shared constant,
+`fix_order_limits::max_cl_ord_id_length`; for the symbol and the quantity there are two numbers that disagree.
+
+**The fix.** One limit for each field, shared by the gateways and the matching engine, as `ClOrdID` has, with the
+gateways' configured limits bounded by it; and the matching engine refusing a field longer than it holds rather than
+cutting it short, as it refuses an over-long `ClOrdID` (scenario 58).
+
+### BUG-0223: The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario {#bug_0223}
 
 | | |
 |---|---|
@@ -1378,77 +1406,6 @@ the arbiters and witness are quieter and can wait until something needs explaini
 
 ---
 
-### BUG-0072: The gateway's open-order pool is sized by nothing in particular {#bug_0072}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-08-31 |
-| Recorded | 2026-08-31 |
-| How | Working out the venue's memory cost for [BUG-0048](#bug_0048), and finding the four figures disagree by a factor of 256 |
-| Impact | The binary gateway is configured to hold 4,096 open orders before it must grow its pool, and growing it is an allocation on the order path. Not yet live -- see the note on enablement |
-
-**The four configured values, and they do not agree with each other.**
-
-| Environment | Gateway | Slots | As memory |
-|---|---|---|---|
-| dev | `binary_order_gateway_a` | 1,048,576 | 192 MiB |
-| dev | `binary_order_gateway_b` | 65,536 | 12 MiB |
-| dev | both FIX gateways | 65,536 | 12 MiB each |
-| prod, preprod, test-1 | `binary_order_gateway_a` | **4,096** | 768 KiB |
-
-One slot costs 192 bytes. The production figure is the same as the compiled-in default in
-`BinaryOrderGatewayConfiguration.hpp:182`, which is what a value looks like when nobody chose it.
-
-**Why 4,096 is the number to look at.** The venue expects hundreds to a few thousand member
-comp ids. If each rests even a handful of orders, the pool is exhausted at once -- and this is
-`ExpandablePoolAllocator`, so exhaustion is not a refusal. It chains another slab and logs a
-warning. **Chaining is an allocation, and it happens on the path an order takes.** For a
-framework whose stated aim is no heap allocation on the hot path, a production configuration
-that guarantees routine chaining is a defect in the configuration rather than in the code.
-
-**The dev asymmetry is a second, smaller thing.** `binary_order_gateway_a` has sixteen times the
-slots of `binary_order_gateway_b`, its standby. Were B to take A's load it would begin chaining
-at a sixteenth of the volume. It matters less than it appears, because
-`binary_order_gateway_b_enabled = false` in production -- but a figure that is wrong in dev is
-the figure that gets copied when the standby is switched on.
-
-**What settling this needs is a stated expectation**, in the same way [BUG-0048](#bug_0048)
-needs a stated retention period: how many orders may be open at once, per gateway and for the
-venue. The matching engine's region already asserts an answer -- 2,000,000 slots, 0.46 GiB --
-and no document says where that came from either, so the two should be settled together and
-should agree. A gateway that can hold 4,096 in front of an engine sized for 2,000,000 is not a
-considered pair of numbers.
-
-**It is not live yet, and that is the reason to fix it now rather than later.**
-`binary_order_gateway_a_enabled = false` in prod, preprod and test-1, so the 4,096 has never run
-under load anywhere -- see [BUG-0073](#bug_0073). Configuration that has never been exercised is
-exactly the configuration that is wrong, and it will be switched on one day by someone who
-assumes it was considered.
-
-**Cheap to be generous, which is the argument for deciding rather than defaulting.** A million
-slots is 192 MiB against 31 GiB on the development machine. The cost of choosing a figure well
-above the true peak is small; the cost of discovering the peak in production is an allocation
-per order once the pool runs out.
-
-Related: [BUG-0048](#bug_0048), for the memory figures this came out of, and
-[BUG-0028](#bug_0028), which is the same class of problem in the order book -- growth sized by
-doubling rather than by a stated expectation.
-
-**2026-11-09:** the figure this entry needs, how many orders may be open at once in the venue, is decided, with Andrew, in decision 2 of [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md): each environment's `order_book_region_capacity`, the figure its matching engine's region is sized by (2,000,000 in development, 100,000,000 in production). The gateways' pools and the sequencer's map are to be sized from it.
-
-
-**Designed 2026-11-10, and agreed with Andrew the same day:** [gateway_refusals.md](venue/gateway_refusals.md). With
-the venue cancelling on disconnect since [BUG-0090](#bug_0090), the gateways' list of open orders is used only for the
-OrderID and status of an OrderCancelReject the gateway sends when it refuses a cancel itself. The design removes the
-list, so there is nothing left to size, and answers those refusals as Euronext does, with a session-level Reject that
-says nothing of the order; the binary gateway gains a counterpart, `RequestRefused`; R-0151 is amended to match.
-
-**Found 2026-11-10, writing the design: the status a gateway reports is assumed.** Every OrderCancelReject a gateway
-sends for a cancel it refuses itself says the order is New, open (`39=0`, `FixRejections.cpp`), whatever the order's
-state: the gateway has never known it. For an order the venue does not hold, or one already filled or cancelled, that is
-wrong, where the FIX standard and the London Stock Exchange report Rejected. The design removes it, since the gateway
-then sends no OrderCancelReject, and every one a member receives carries the status the matching engine states.
 ### BUG-0073: The placeholder environments carry settings nobody chose {#bug_0073}
 
 | | |
@@ -2578,6 +2535,78 @@ logs on many sessions together, repeated, which fails now some of the time.
 
 ## Closed
 
+### BUG-0072: The gateway's open-order pool is sized by nothing in particular {#bug_0072}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-31 |
+| Recorded | 2026-08-31 |
+| Fixed | 2026-11-10 -- the gateways keep no list of open orders, so there is no pool to size ([gateway_refusals.md](venue/gateway_refusals.md)). The pool, its configuration in every environment, the compiled-in default, its metrics, and the code that kept the list as reports passed back, are removed from both gateways. A request to cancel that a gateway refuses itself is answered as Euronext does: by the FIX gateway with a session-level Reject (35=3) naming the refused message and saying nothing of the order, with SessionRejectReason 1, 5, 99, or the venue's own 100 (throttled) and 101 (the venue cannot take the request now); by the binary gateway with a new message, `RequestRefused` (702), with the same reason codes. The gateway's own OrderCancelReject, which always said the order was New, is gone; every OrderCancelReject now comes from the matching engine, with the order's status as the engine has it. A cancel the leading sequencer refuses for a reused `ClOrdID` is answered with the same Reject, named by the member's MsgSeqNum, which the FIX gateway puts on the command's envelope and the sequencer returns on `CommandRefused` (decision 3). R-0151 amended. Found and fixed on the way: the FIX gateway dropped a cancel with no `ClOrdID` unanswered, which a Reject can now answer; and each gateway kept the sessions waiting out a grace period in the order they ended, assuming one grace period for all, so a member with a shorter period than one before it was dropped late; they are now kept in deadline order. Unit tests `FixRejectionsTest`, `BinaryRejectionsTest`, `BinaryCommandChecksTest` and `BinaryBlotterRowsTest`, one made to fail on purpose. Scenarios 42, 56 (now with a burst of binary cancels too), 57, 96, 19 and 50 pass with the new checks; scenario 56 fails when it is made to expect a different reason. The full high-availability suite, with the WALs cleared first, passes 109 of 109 |
+| How | Working out the venue's memory cost for [BUG-0048](#bug_0048), and finding the four figures disagree by a factor of 256 |
+| Impact | The binary gateway is configured to hold 4,096 open orders before it must grow its pool, and growing it is an allocation on the order path. Not yet live -- see the note on enablement |
+
+**The four configured values, and they do not agree with each other.**
+
+| Environment | Gateway | Slots | As memory |
+|---|---|---|---|
+| dev | `binary_order_gateway_a` | 1,048,576 | 192 MiB |
+| dev | `binary_order_gateway_b` | 65,536 | 12 MiB |
+| dev | both FIX gateways | 65,536 | 12 MiB each |
+| prod, preprod, test-1 | `binary_order_gateway_a` | **4,096** | 768 KiB |
+
+One slot costs 192 bytes. The production figure is the same as the compiled-in default in
+`BinaryOrderGatewayConfiguration.hpp:182`, which is what a value looks like when nobody chose it.
+
+**Why 4,096 is the number to look at.** The venue expects hundreds to a few thousand member
+comp ids. If each rests even a handful of orders, the pool is exhausted at once -- and this is
+`ExpandablePoolAllocator`, so exhaustion is not a refusal. It chains another slab and logs a
+warning. **Chaining is an allocation, and it happens on the path an order takes.** For a
+framework whose stated aim is no heap allocation on the hot path, a production configuration
+that guarantees routine chaining is a defect in the configuration rather than in the code.
+
+**The dev asymmetry is a second, smaller thing.** `binary_order_gateway_a` has sixteen times the
+slots of `binary_order_gateway_b`, its standby. Were B to take A's load it would begin chaining
+at a sixteenth of the volume. It matters less than it appears, because
+`binary_order_gateway_b_enabled = false` in production -- but a figure that is wrong in dev is
+the figure that gets copied when the standby is switched on.
+
+**What settling this needs is a stated expectation**, in the same way [BUG-0048](#bug_0048)
+needs a stated retention period: how many orders may be open at once, per gateway and for the
+venue. The matching engine's region already asserts an answer -- 2,000,000 slots, 0.46 GiB --
+and no document says where that came from either, so the two should be settled together and
+should agree. A gateway that can hold 4,096 in front of an engine sized for 2,000,000 is not a
+considered pair of numbers.
+
+**It is not live yet, and that is the reason to fix it now rather than later.**
+`binary_order_gateway_a_enabled = false` in prod, preprod and test-1, so the 4,096 has never run
+under load anywhere -- see [BUG-0073](#bug_0073). Configuration that has never been exercised is
+exactly the configuration that is wrong, and it will be switched on one day by someone who
+assumes it was considered.
+
+**Cheap to be generous, which is the argument for deciding rather than defaulting.** A million
+slots is 192 MiB against 31 GiB on the development machine. The cost of choosing a figure well
+above the true peak is small; the cost of discovering the peak in production is an allocation
+per order once the pool runs out.
+
+Related: [BUG-0048](#bug_0048), for the memory figures this came out of, and
+[BUG-0028](#bug_0028), which is the same class of problem in the order book -- growth sized by
+doubling rather than by a stated expectation.
+
+**2026-11-09:** the figure this entry needs, how many orders may be open at once in the venue, is decided, with Andrew, in decision 2 of [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md): each environment's `order_book_region_capacity`, the figure its matching engine's region is sized by (2,000,000 in development, 100,000,000 in production). The gateways' pools and the sequencer's map are to be sized from it.
+
+
+**Designed 2026-11-10, and agreed with Andrew the same day:** [gateway_refusals.md](venue/gateway_refusals.md). With
+the venue cancelling on disconnect since [BUG-0090](#bug_0090), the gateways' list of open orders is used only for the
+OrderID and status of an OrderCancelReject the gateway sends when it refuses a cancel itself. The design removes the
+list, so there is nothing left to size, and answers those refusals as Euronext does, with a session-level Reject that
+says nothing of the order; the binary gateway gains a counterpart, `RequestRefused`; R-0151 is amended to match.
+
+**Found 2026-11-10, writing the design: the status a gateway reports is assumed.** Every OrderCancelReject a gateway
+sends for a cancel it refuses itself says the order is New, open (`39=0`, `FixRejections.cpp`), whatever the order's
+state: the gateway has never known it. For an order the venue does not hold, or one already filled or cancelled, that is
+wrong, where the FIX standard and the London Stock Exchange report Rejected. The design removes it, since the gateway
+then sends no OrderCancelReject, and every one a member receives carries the status the matching engine states.
 ### BUG-0207: A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen {#bug_0207}
 
 | | |

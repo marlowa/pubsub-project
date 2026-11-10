@@ -18,19 +18,10 @@
 
 #include "FixOrderLimits.hpp"
 #include "FixParser.hpp"
-#include "OpenOrderEntry.hpp"
 #include "SeqNumRanges.hpp"
 #include "SessionThrottles.hpp"
 
 namespace fix_order_gateway {
-
-// Open-order tracking lives in fix_common: cancelling a dead session's resting orders is
-// a property of being a gateway, not of speaking FIX, so the binary gateway shares these.
-// Re-exported here under the names the FIX gateway has always used.
-using open_orders::max_supported_order_qty_length;
-using open_orders::max_supported_symbol_length;
-using open_orders::OpenOrderEntry;
-using open_orders::OpenOrderMap;
 
 /**
  * @brief Holds the state for a single active FIX 5.0SP2 / FIXT 1.1 session.
@@ -353,15 +344,6 @@ struct FixSession {
      * @brief Counter for generating unique ExecID values for this session.
      */
     int exec_id_counter{1};
-
-    /**
-     * @brief Orders forwarded to the sequencer that have not yet received a
-     *        terminal ExecutionReport (Filled, Canceled, Rejected, Expired,
-     *        DoneForDay).  Keyed by ClOrdID.  On client disconnect, one
-     *        OrderCancelRequest is sent to the ME for each entry so that orders
-     *        do not remain live on the book after the originating session is gone.
-     */
-    OpenOrderMap open_orders;
 
     // Raw-bytes commit bookkeeping
     //

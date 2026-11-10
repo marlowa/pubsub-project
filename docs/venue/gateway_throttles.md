@@ -66,16 +66,14 @@ or forwarded later, and the session is not disconnected. Nothing about it reache
   Rejected, as it already does when the venue is not accepting orders
   (`send_reject_execution_report`), with `OrdRejReason` 99 (Other) and a `Text` such as
   *"Throttled: at most 50 new orders per second for this session"*.
-- **FIX, a cancel or an amend:** the gateway sends an `OrderCancelReject` (35=9), with
-  `CxlRejResponseTo` 1 for a cancel or 2 for an amend, `CxlRejReason` 99 (Other), the limit in
-  `Text`, and `OrdStatus` New: the order is open. The throttle has not touched the order, and the
-  reply must say so: a rejected `ExecutionReport` would tell the member its order had been
-  rejected. The gateway refuses every cancel this way, whatever the reason
-  ([BUG-0099](../bug_list.md#bug_0099), R-0151).
-- **Binary:** the gateway sends the binary protocol's equivalent replies: a rejected
-  `ExecutionReport` for a new order, and an `OrderCancelReject` (PDU 1003) for a cancel, with the
-  same fields and values as the FIX message. The binary protocol is generated from
-  `applications/fix_orders.dd.xml`, and `OrderCancelReject` is one of the messages generated from it.
+- **FIX, a cancel or an amend:** the gateway sends a session-level `Reject` (35=3) naming the
+  refused message (`RefSeqNum` and `RefMsgType`), with `SessionRejectReason` 100 (over the throttle
+  limit, a value the venue defines from the range FIX leaves to the parties) and the limit in
+  `Text`. It says nothing of the order: the throttle has not touched it, and a rejected
+  `ExecutionReport` would tell the member its order had been rejected. The gateway refuses every
+  cancel this way, whatever the reason (R-0151, [gateway_refusals.md](gateway_refusals.md)).
+- **Binary:** the gateway sends a rejected `ExecutionReport` for a new order, and `RequestRefused`
+  for a cancel, with reason 100 (`ThrottleLimitExceeded`) and the same text as the FIX gateway.
   The binary gateway decodes every command to check it before the throttle is asked, so the
   refusal can name the command from the decoded fields.
 
@@ -275,10 +273,12 @@ cancels per second, so its limits never throttle the comp ids other tests use. I
    order sent just over a second after the burst is accepted, which it would not be if the refused
    orders had been counted. The gateway must have logged exactly once that the session started
    being throttled, and exactly once that it stopped, with the number refused.
-4. **A burst of cancels** for the orders left open: exactly the first 3 are accepted, and the rest
-   are refused with an `OrderCancelReject` carrying OrdStatus 0 (the order is open),
-   `CxlRejResponseTo` 1, `CxlRejReason` 99 and the throttle's text.
-5. **A comp id with no limit**, the test client's ordinary comp id, sends the same burst, and nothing
+4. **A burst of cancels** for the orders left open: exactly the first 3 are carried out, and the
+   rest are refused with a session-level `Reject` naming each cancel by its sequence number, with
+   `SessionRejectReason` 100, the throttle's text, and no OrderID or OrdStatus.
+5. **A burst of cancels through the binary gateway**, by the same comp id: exactly 3 reach the
+   matching engine, and the rest are refused with `RequestRefused`, reason 100, and the same text.
+6. **A comp id with no limit**, the test client's ordinary comp id, sends the same burst, and nothing
    is refused.
 
 ---

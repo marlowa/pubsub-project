@@ -18,7 +18,6 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
-#include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
@@ -39,8 +38,8 @@
 #include "GatewayIds.hpp"
 #include "GatewayProgressMetrics.hpp"
 #include "GatewayRefusal.hpp"
-#include "PoolMetricsReporter.hpp"
 #include "RefusedCommand.hpp"
+#include "RequestRefusal.hpp"
 #include "SentAgainEnvelope.hpp"
 #include "ThrottleRefusalMetrics.hpp"
 #include "ThrottledCommand.hpp"
@@ -177,8 +176,8 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     /// stands, that held something the venue cannot replay. See FixSession::report_seq_nums.
     void gap_fill_unreplayable_run(FixSession& session);
 
-    // A session's connection has gone. Its record of the session's open orders is released, and what the venue will do
-    // with them is said, at Info and as a test event. The gateway cancels nothing itself: the leading sequencer carries
+    // A session's connection has gone. What the venue will do with the member's orders is said, at Info and as a test
+    // event. The gateway cancels nothing itself: the leading sequencer carries
     // out the member's cancel-on-disconnect instruction where the orders are, which it can do after this gateway has
     // restarted or died too (docs/availability/cancel_on_disconnect_where_the_orders_are.md). The session is kept in
     // grace_sessions_ for its grace period, so that the gateway can say whether the member came back in time, and stop
@@ -213,8 +212,8 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      *        sequencer not connected).
      *
      * For a NewOrderSingle only. A refused request to cancel is answered with
-     * send_order_cancel_reject instead, because a rejected ExecutionReport says the
-     * order was rejected, and the order a refused cancel names is still open.
+     * refuse_cancel instead, because a rejected ExecutionReport says the order was
+     * rejected, and the order a refused cancel names is still open.
      *
      * The reject is built locally by the gateway -- the matching engine never
      * sees the order -- so OrderID and ExecID are synthesised from
@@ -253,47 +252,43 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
                                       std::string_view order_qty, std::string_view reason, pubsub_itc_fw_app::OrdRejReason ord_rej_reason);
 
     /**
-     * @brief Sends an OrderCancelReject (35=9) when the gateway refuses a request to cancel.
+     * @brief Refuses a request to cancel, which has not reached the matching engine, with a session-level Reject (35=3).
      *
-     * The order the request names is still open: the gateway has not passed the request on,
-     * and the order is as it was. So the reply refuses the request and does not reject the
-     * order (R-0151, docs/bug_list.md BUG-0099).
+     * The reply refuses the request and says nothing of the order it names: no OrderID and no order status, since the
+     * component holding the order never saw the request (R-0151, docs/venue/gateway_refusals.md). A request the matching
+     * engine refuses is answered by the engine, with an OrderCancelReject that reports the order's status. The session
+     * stays open (R-0150).
      *
-     * Tag values follow FIX 5.0SP2:
-     *   - 35  = 9          (OrderCancelReject)
-     *   - 37  = OrderID    (from the session's record of its open orders, or "NONE")
-     *   - 11, 41           (ClOrdID and OrigClOrdID, echoed from the request)
-     *   - 39  = 0          (OrdStatus = New: the order is open)
-     *   - 434 = 1          (CxlRejResponseTo = Order cancel request)
-     *   - 102              (CxlRejReason: 99 Other when the gateway refuses for a reason of its own, 6 when the ClOrdID is in use)
-     *   - 58  = reason
+     * Tag values follow FIX 5.0 SP2:
+     *   - 35  = 3          (Reject)
+     *   - 45  = the request's MsgSeqNum (RefSeqNum)
+     *   - 372 = F          (RefMsgType: an OrderCancelRequest)
+     *   - 371 = @p ref_tag (RefTagID), only when one field is at fault
+     *   - 373 = @p reason  (SessionRejectReason)
+     *   - 58  = @p text
      *
-     * OrdStatus is New even when the order is not in the session's record. The record is not
-     * the book: after the gateway restarts, for example, a member's orders still rest in the
-     * matching engine and the record no longer holds them. Reporting such an order as anything
-     * but open could tell a member its order had gone while it still rests, which is the
-     * danger this reply exists to avoid. Erring the other way, a member told that an order the
-     * venue never accepted is open, costs it nothing but a second cancel.
-     *
-     * @param[in] session  The originating FIX client session. Its outbound seq num is advanced.
-     * @param[in] inbound  The OrderCancelRequest. String_views in it are valid for this call only.
-     * @param[in] reason   Text for tag 58.
-     * @param[in] cxl_rej_reason Value for tag 102.
+     * @param[in,out] session The member's session. Its outbound seq num is advanced.
+     * @param[in] inbound The refused OrderCancelRequest. String_views in it are valid for this call only.
+     * @param[in] reason The kind of refusal.
+     * @param[in] text The reason in words, for tag 58.
+     * @param[in] ref_tag The tag of the field at fault; 0 when no one field is at fault.
      */
-    void send_order_cancel_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason,
-                                  pubsub_itc_fw_app::CxlRejReason cxl_rej_reason = pubsub_itc_fw_app::CxlRejReason::Other);
+    void refuse_cancel(FixSession& session, const ParsedFixMessage& inbound, fix_common::RefusalReason reason, std::string_view text, int ref_tag = 0);
 
     /**
-     * @brief The same OrderCancelReject, built from the request's identifiers rather than from a FIX message the member
-     *        sent, for a request refused after it was sent to the sequencers.
+     * @brief The same Reject, for a request to cancel that was sent to the sequencers and refused by the leading one, so
+     *        that the member's FIX message is no longer to hand.
+     *
+     * The refused message is named by the MsgSeqNum the gateway put on the command's envelope, which the sequencer returns
+     * on CommandRefused.
+     *
      * @param[in,out] session The member's session. Its outbound seq num is advanced.
-     * @param[in] cl_ord_id The request's ClOrdID.
-     * @param[in] orig_cl_ord_id The OrigClOrdID of the order the request names; empty to leave tag 41 out.
-     * @param[in] reason Text for tag 58.
-     * @param[in] cxl_rej_reason Value for tag 102.
+     * @param[in] member_msg_seq_num The refused message's MsgSeqNum; 0 if the refusal did not carry it.
+     * @param[in] cl_ord_id The request's ClOrdID, for the Quill log.
+     * @param[in] reason The kind of refusal.
+     * @param[in] text The reason in words, for tag 58.
      */
-    void send_order_cancel_reject(FixSession& session, std::string_view cl_ord_id, std::string_view orig_cl_ord_id, std::string_view reason,
-                                  pubsub_itc_fw_app::CxlRejReason cxl_rej_reason);
+    void refuse_cancel(FixSession& session, int64_t member_msg_seq_num, std::string_view cl_ord_id, fix_common::RefusalReason reason, std::string_view text);
 
     /**
      * @brief Asks the session's throttle whether a member command of kind @p command may go on.
@@ -353,25 +348,17 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // (for audit) -- rides on the envelope, not the PDU. The sequencer stamps seq_no
     // and wall_time_ns; both are left zero here. See docs/fix/pdu_generation.md.
     // @param[in] gateway_ingress_ns When the originating bytes were read off the client
-    //            socket, or 0 for an order this gateway generated itself (the cancels
-    //            issued on client disconnect). Zero is stamped as absent, so a
-    //            gateway-invented order never contributes a round trip that no client
-    //            ever waited for.
-    // What to do with a command when the store of unanswered commands is full.
-    enum class WhenStoreFull {
-        // Do not send it; the caller refuses it with a reply. For a member's own command.
-        refuse,
-        // Send it without keeping a copy. For a cancel this gateway generates itself when a member
-        // disconnects, which no member is waiting to have refused.
-        send_without_keeping
-    };
-
+    //            socket. Zero is stamped as absent, so a command with no such time never
+    //            contributes a round trip that no client waited for.
+    // @param[in] member_msg_seq_num The MsgSeqNum of the member's FIX message that carried the
+    //            command, or 0 if it is not known. The sequencer returns it if it refuses the
+    //            command, so that the refusal can name the message (docs/venue/gateway_refusals.md).
     // @return The refusal the caller must send the member, if the command was not sent: the store of unanswered
-    //         commands is full, or a command with the same comp id and ClOrdID is already waiting for its answer. A
-    //         cancel this gateway generates is sent whatever the store says, and this returns GatewayRefusal::None.
+    //         commands is full, or a command with the same comp id and ClOrdID is already waiting for its answer.
     template <typename MsgT>
     [[nodiscard]] fix_common::GatewayRefusal forward_order_in_envelope(int16_t inner_pdu_id, const MsgT& msg, int32_t gateway_session_conn_id,
-                                                                       std::string_view sender_comp_id, int64_t gateway_ingress_ns, WhenStoreFull when_full) {
+                                                                       std::string_view sender_comp_id, int64_t gateway_ingress_ns,
+                                                                       int64_t member_msg_seq_num) {
         size_t bytes_written = 0;
         size_t bytes_needed = 0;
         // Measure then fit: a zero-size out buffer makes encode report bytes_needed
@@ -415,6 +402,8 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         // without decoding the command (docs/availability/commands_during_a_change_of_leader.md, 3.4).
         envelope.has_cl_ord_id = !msg.cl_ord_id.empty();
         envelope.cl_ord_id = msg.cl_ord_id;
+        envelope.has_member_msg_seq_num = member_msg_seq_num > 0;
+        envelope.member_msg_seq_num = member_msg_seq_num;
         if (!sender_comp_id.empty()) {
             envelope.has_sender_comp_id = true;
             envelope.sender_comp_id = sender_comp_id;
@@ -426,8 +415,7 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         // NewOrderSingle only, which is the population the round-trip histogram measures,
         // so the two can be read against each other without correcting for message mix.
         //
-        // Skipped without an ingress stamp, on the same reasoning as the round trip: a
-        // cancel this gateway invented when a client disconnected had nobody waiting on it.
+        // Skipped without an ingress stamp, on the same reasoning as the round trip.
         if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) && gateway_ingress_ns != 0) {
             const int64_t ingress_to_forward_ns = config_.wall_clock->now_ns() - gateway_ingress_ns;
             if (ingress_to_forward_ns >= 0) {
@@ -438,7 +426,7 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         // A copy is kept until a report answers the command, so that it can be sent again to a new
         // sequencer leader (docs/availability/commands_during_a_change_of_leader.md, section 3.1).
         const fix_common::GatewayRefusal refusal = keep_until_answered(envelope, sender_comp_id, msg.cl_ord_id);
-        if (refusal != fix_common::GatewayRefusal::None && when_full == WhenStoreFull::refuse) {
+        if (refusal != fix_common::GatewayRefusal::None) {
             return refusal;
         }
         forward_pdu_to_sequencers(pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope);
@@ -547,10 +535,6 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
     // FIX capture: non-null only when fix_capture_enabled=true in config.
     std::unique_ptr<FixCapture> capture_;
-
-    // Pool for open-order string storage. Allocated in on_initial_event once
-    // configuration is available. Owned for the lifetime of this thread.
-    std::unique_ptr<pubsub_itc_fw::ExpandablePoolAllocator<OpenOrderEntry>> open_order_pool_;
 
     // gateway_session_conn_id -> FixSession lookup: O(1) direct map lookup by
     // the internal connection ID stamped by the gateway on each NOS and echoed
@@ -700,18 +684,15 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // Returns nullptr if no matching session is found.
     FixSession* find_session_by_comp_id(const std::string& comp_id);
 
-    // A session whose connection has gone with orders to be cancelled, while its grace period runs.
+    // A session whose connection has gone, whose member asked for its orders to be cancelled, while its grace period runs.
     struct DeadSession {
-        size_t order_count{0};
         std::string client_comp_id;
         // When the grace period runs out.
         std::chrono::steady_clock::time_point cancel_due{};
     };
 
-    // Sessions whose connection dropped and whose grace period has not yet expired.
-    // Ordered by cancel_due, which is automatic: every entry takes the same grace period
-    // and they are appended in the order their connections died, so the front is always
-    // the earliest due.
+    // Sessions whose connection dropped and whose grace period has not yet expired, ordered by cancel_due, earliest
+    // first. Each member may have its own grace period, so an entry is inserted in its place rather than appended.
     //
     // A session leaves here one of two ways: the grace timer expires, and its unanswered commands are no longer kept, or
     // the same comp id logs on again in time.
@@ -748,8 +729,8 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // Discards any grace-period entry belonging to this comp id. Called when a comp id logs on: if it got back inside its
     // window, the venue leaves its orders resting.
     //
-    // Returns the number of orders reclaimed, for logging.
-    size_t reclaim_grace_session(std::string_view comp_id);
+    // Returns whether there was such an entry, for logging.
+    bool reclaim_grace_session(std::string_view comp_id);
 
     // When the current raw-socket read event was handled, in wall-clock nanoseconds.
     // Stamped on every order forwarded out of that event and returned on the acknowledging
@@ -775,13 +756,6 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
     // The running totals below, and the sessions and gap fills, published as counters for programs to read.
     fix_common::GatewayProgressMetrics progress_metrics_;
-
-    // Publishes the open-order pool's statistics. Deliberately identical to the binary
-    // gateway's -- same metric family, same scope, same sample interval -- since a
-    // difference in any of them would make a comparison between the two protocols measure
-    // the instrumentation. See applications/fix_common/GatewayMetrics.hpp.
-    fix_common::PoolMetricsReporter open_order_pool_metrics_;
-    pubsub_itc_fw::TimerID pool_metrics_timer_id_{};
 
     // Running totals behind the GW-PROGRESS line. Per-order logging was moved to Debug
     // because it cost roughly a third of this gateway's CPU under load; these keep the

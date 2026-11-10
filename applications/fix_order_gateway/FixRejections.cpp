@@ -32,19 +32,16 @@ FixMessage make_reject_execution_report(std::string_view order_id, std::string_v
     return er;
 }
 
-FixMessage make_order_cancel_reject(std::string_view order_id, std::string_view cl_ord_id, std::string_view orig_cl_ord_id, std::string_view reason,
-                                    pubsub_itc_fw_app::CxlRejReason cxl_rej_reason) {
+FixMessage make_request_reject(std::string_view ref_seq_num, std::string_view ref_msg_type, int ref_tag, int session_reject_reason, std::string_view text) {
     FixMessage reject;
-    reject.set(Tag::MsgType, MsgType::OrderCancelReject);
-    reject.set(Tag::OrderID, order_id);
-    reject.set(Tag::ClOrdID, cl_ord_id);
-    if (!orig_cl_ord_id.empty()) {
-        reject.set(Tag::OrigClOrdID, orig_cl_ord_id);
+    reject.set(Tag::MsgType, MsgType::Reject);
+    reject.set(Tag::RefSeqNum, ref_seq_num);
+    reject.set(Tag::RefMsgType, ref_msg_type);
+    if (ref_tag != 0) {
+        reject.set(Tag::RefTagID, ref_tag);
     }
-    reject.set(Tag::OrdStatus, std::string(1, '0'));        // 39 = 0 New: the order is open
-    reject.set(Tag::CxlRejResponseTo, std::string(1, '1')); // 434 = 1 Order cancel request
-    reject.set(Tag::CxlRejReason, static_cast<int>(cxl_rej_reason));
-    reject.set(Tag::Text, reason);
+    reject.set(Tag::SessionRejectReason, session_reject_reason);
+    reject.set(Tag::Text, text);
     return reject;
 }
 

@@ -591,8 +591,6 @@ sequencer_primary_host   = "gateway.test-1.exchange.internal"                 # 
 sequencer_primary_port   = 11001
 sequencer_secondary_host = "gateway.test-1.exchange.internal"                 # REPLACE
 sequencer_secondary_port = 11002
-open_order_pool_objects_per_pool = 4096
-open_order_pool_initial_pools    = 1
 # The longest Symbol and OrderQty a member's command may carry; the same as the FIX gateway's.
 order_limits_max_symbol_length = 32
 order_limits_max_order_qty_length = 24

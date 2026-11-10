@@ -51,7 +51,15 @@ class BinaryCommandChecksTest : public ::testing::Test {
     }
 
     std::string_view check(const OrderCancelRequestView& request) {
-        return check_cancel(request, limits, buffer_, sizeof(buffer_));
+        return check_cancel(request, limits, buffer_, sizeof(buffer_)).reason;
+    }
+
+    std::string_view field_at_fault(const OrderCancelRequestView& request) {
+        return check_cancel(request, limits, buffer_, sizeof(buffer_)).field;
+    }
+
+    fix_common::RefusalReason kind_of_refusal(const OrderCancelRequestView& request) {
+        return check_cancel(request, limits, buffer_, sizeof(buffer_)).kind;
     }
 
     char buffer_[command_refusal_text_capacity]{};
@@ -172,6 +180,27 @@ TEST_F(BinaryCommandChecksTest, ACancelWithoutAnOrigClOrdIdIsRefused) {
     OrderCancelRequestView request = valid_cancel();
     request.orig_cl_ord_id = "";
     EXPECT_EQ(check(request), "orig_cl_ord_id is missing or holds a value the protocol does not define");
+    EXPECT_EQ(field_at_fault(request), "orig_cl_ord_id");
+    EXPECT_EQ(kind_of_refusal(request), fix_common::RefusalReason::RequiredFieldMissing) << "an empty string is a field left out";
+}
+
+TEST_F(BinaryCommandChecksTest, ACancelWithASideTheProtocolDoesNotDefineNamesSideAsHoldingAWrongValue) {
+    OrderCancelRequestView request = valid_cancel();
+    request.side = static_cast<pubsub_itc_fw_app::Side>('Z');
+    EXPECT_EQ(field_at_fault(request), "side");
+    EXPECT_EQ(kind_of_refusal(request), fix_common::RefusalReason::ValueIncorrect);
+}
+
+TEST_F(BinaryCommandChecksTest, ACancelRefusedForATooLongIdentifierNamesTheIdentifier) {
+    const std::string too_long(fix_order_limits::max_cl_ord_id_length + 1, 'A');
+    OrderCancelRequestView request = valid_cancel();
+    request.orig_cl_ord_id = too_long;
+    EXPECT_EQ(field_at_fault(request), "orig_cl_ord_id");
+    EXPECT_EQ(kind_of_refusal(request), fix_common::RefusalReason::ValueIncorrect);
+}
+
+TEST_F(BinaryCommandChecksTest, ACancelThatPassesNamesNoField) {
+    EXPECT_EQ(field_at_fault(valid_cancel()), "");
 }
 
 TEST_F(BinaryCommandChecksTest, ACancelsQuantityWhenGivenMustBeADecimalNumber) {

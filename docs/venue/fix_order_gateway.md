@@ -7,11 +7,12 @@ members, in plain TCP on port 9879 and with TLS on port 9880 for instance `a`. T
 environment also runs instance `b`, on 9881 and 9882; the preprod, prod and test-1 environments run
 instance `a` only. It authenticates each member with SCRAM-SHA-256, checks every order and cancel, and
 sends those it accepts to the sequencers. It turns the execution reports the leading sequencer
-sends back into FIX ExecutionReports and OrderCancelRejects for the member's session.
+sends back into FIX ExecutionReports and, for a cancel the matching engine refuses,
+OrderCancelRejects for the member's session.
 
 What the gateway holds is the state of the sessions connected to it: each session's message
-numbering, its open orders (for the OrderID of an OrderCancelReject, and to say what a session left when it ends), and its
-throttles. It holds nothing the
+numbering and its throttles. It keeps no list of a member's orders
+([How a gateway answers a request to cancel that it refuses itself](gateway_refusals.md)). It holds nothing the
 venue needs after the gateway dies. Where each session can be reached, how far each session's
 message numbering has got in each direction, and which session placed each order, are held by the
 sequencer. A member that reconnects to the other instance of the gateway therefore finds its
@@ -90,25 +91,44 @@ Two layers of checks, in this order:
 | Layer | Checks | Answer |
 |---|---|---|
 | `FixMessageValidator`, before dispatch | InvalidTagNumber (0), RequiredTagMissing (1), TagNotDefinedForThisMessage (2), ValueIsIncorrect (5), IncorrectDataFormat (6), TagAppearsMoreThanOnce (13), IncorrectNumInGroupCount (16) | A FIX **Reject (35=3)**: `373` the reason, `371` the tag, `372` the message type, `45` the message's sequence number, `58` a description. The session stays up and the message is not acted on. A Logon that fails, or any message that fails before the session is established, is answered by disconnecting instead |
-| The order and cancel handlers | That the required fields have values; the length of `ClOrdID` (and of `OrigClOrdID` on a cancel); whether a sequencer is connected; whether the venue is accepting orders; the session's throttles | An order is answered with an `ExecutionReport` with OrdStatus Rejected; a cancel with an `OrderCancelReject` that says the order is still open. The text names what was wrong |
+| The order and cancel handlers | That the required fields have values; the length of `ClOrdID` (and of `OrigClOrdID` on a cancel); whether a sequencer is connected; whether the venue is accepting orders; the session's throttles | An order is answered with an `ExecutionReport` with OrdStatus Rejected. A cancel is answered with a **Reject (35=3)** that refuses the request and says nothing of the order (R-0151): `45` the cancel's sequence number, `372` = F, `371` the tag at fault where there is one, `373` the kind of refusal (see below), `58` the reason. The text names what was wrong |
 | The order handler | The lengths of `Symbol` and `OrderQty` on an order | A **BusinessMessageReject (35=j)** with BusinessRejectReason 0 (Other), whose text gives the limit |
 
 A message missing a field the dictionary requires is answered with a Reject, not dropped. A cancel
-does not need `OrderQty`. An order or cancel with no `ClOrdID` at all cannot be answered, because
-every answer has to echo it; it is logged at Warning and not acted on.
+does not need `OrderQty`. An order with no `ClOrdID` at all cannot be answered, because the
+execution report that rejects it has to echo it; it is logged at Warning and not acted on. A cancel
+with no `ClOrdID` is answered with a Reject, which names the cancel by its sequence number.
+
+The gateway's Reject for a cancel it refuses gives one of these values in SessionRejectReason (373).
+1, 5 and 99 are the FIX standard's; the standard leaves values from 100 to be agreed between the
+parties, and 100 and 101 are the venue's own:
+
+| SessionRejectReason | The gateway refused the cancel because |
+|---|---|
+| 1, required tag missing | A required field is absent; RefTagID (371) names the first missing, and the text names them all |
+| 5, value is incorrect | `ClOrdID` or `OrigClOrdID` is longer than 64 bytes; RefTagID names it |
+| 99, other | The `ClOrdID` has been used before; the text is "ClOrdID already used today" |
+| 100, over the throttle limit | The session is over its limit on cancels; the text names the limit |
+| 101, venue cannot take the request now | No sequencer is connected, the venue is not taking commands, or too many commands are waiting to be answered |
+
+A cancel the matching engine refuses, such as one for an order the venue does not hold, is
+answered with an OrderCancelReject reporting the order's status as the engine gives it: OrdStatus
+Rejected and OrderID "NONE" for an order it does not hold.
 
 `ClOrdID` may be up to 64 bytes. That limit is compiled in (`fix_order_limits::max_cl_ord_id_length`
-in `applications/fix_common/FixOrderLimits.hpp`), because the same number sizes the gateway's
-open-order entry and the matching engine's key for an order. The limits on `Symbol` and `OrderQty`
+in `applications/fix_common/FixOrderLimits.hpp`), because the same number sizes the matching
+engine's key for an order. The limits on `Symbol` and `OrderQty`
 come from the configuration (`[fix_limits]`), and every environment sets them to 32 and 24 bytes.
 
 A member that sends a command under a `ClOrdID` it has already used today is refused. If the first
 command is still waiting for its answer, the gateway refuses the second itself and does not pass it
 on, because an answer to it could not be told from an answer to the first. Otherwise the leading
-sequencer refuses it, finding the `ClOrdID` in its log, and sends the gateway `CommandRefused` on the
+sequencer refuses it, finding the `ClOrdID` in its WAL, and sends the gateway `CommandRefused` on the
 connection the command went out on. Either way the member gets a rejected ExecutionReport with
-OrdRejReason 6 (duplicate order) for a new order, or an OrderCancelReject with CxlRejReason 6
-(duplicate ClOrdID) for a cancel, each with the text "ClOrdID already used today"
+OrdRejReason 6 (duplicate order) for a new order, or a Reject with SessionRejectReason 99 for a
+cancel, each with the text "ClOrdID already used today". The sequencer cannot know the cancel's
+sequence number, so the gateway puts it on the command's envelope (`member_msg_seq_num`), and the
+sequencer returns it on `CommandRefused` for the Reject to name
 ([One check against sequencing a command twice](../availability/one_check_against_sequencing_twice.md)).
 
 When neither sequencer is connected, the gateway refuses orders and cancels itself, with the text
@@ -217,7 +237,6 @@ file.
 | `[fix_limits] max_symbol_length`, `max_order_qty_length` | The longest `Symbol` and `OrderQty` the gateway accepts, 32 and 24 bytes in every environment |
 | `[timeouts] logon_timeout`, `scram_auth_timeout` | How long a logon, and its authentication, may take |
 | `[fix_capture] enabled`, `file`, `ring_bytes` | FIX capture, off by default |
-| `[open_order_pool]` | The pool from which open-order entries are taken, so tracking an order allocates nothing |
 | `[unanswered_commands] commands`, `bytes` | The store of orders and cancels sent to the sequencers and not yet answered, kept so they can be sent again to a new sequencer leader: 262,144 commands in 64 MiB. When it is full, new commands are refused. Used only with high availability on; see [Commands during a change of leader](../availability/commands_during_a_change_of_leader.md) |
 | `[event_queue_pool]`, `[command_queue_pool]` | The pools the reactor's queues to and from the gateway's thread take their entries from |
 | `[reactor]` | CPU pinning, and how long the reactor looks for work before it sleeps (`spin_before_block`: 50 ms for instance `a` in the development environment, none elsewhere) |

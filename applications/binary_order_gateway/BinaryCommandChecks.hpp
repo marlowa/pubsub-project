@@ -14,6 +14,7 @@
 #include <fix_orders.hpp>
 
 #include "FixOrderLimits.hpp"
+#include "RequestRefusal.hpp"
 
 namespace binary_order_gateway {
 
@@ -132,35 +133,64 @@ inline constexpr size_t command_refusal_text_capacity = 128;
 }
 
 /**
+ * @brief Why check_cancel refused a request to cancel: the reason in words, the field at fault, as the binary protocol
+ *        names it, and the kind of refusal. The reason and the field are empty when the request passes.
+ *
+ * The gateway sends all three back in its RequestRefused message, the field and the kind so that a member's software
+ * can tell what to correct without reading the text.
+ */
+struct CancelRefusal {
+    std::string_view reason;
+    std::string_view field;
+    fix_common::RefusalReason kind{fix_common::RefusalReason::ValueIncorrect};
+
+    [[nodiscard]] bool refused() const {
+        return !reason.empty();
+    }
+};
+
+/**
  * @brief Checks a member's request to cancel an order.
  * @param[in]  request  The decoded request. Its ClOrdID is not empty.
  * @param[in]  limits   The configured field lengths.
  * @param[out] buffer   Where a reason is written.
  * @param[in]  capacity The size of @p buffer.
- * @return An empty view if the request passes, otherwise the reason it is refused.
+ * @return Nothing if the request passes, otherwise the reason it is refused, the field at fault and the kind of refusal.
  */
-[[nodiscard]] inline std::string_view check_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& request, const CommandFieldLimits& limits, char* buffer,
-                                                   size_t capacity) {
+[[nodiscard]] inline CancelRefusal check_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& request, const CommandFieldLimits& limits, char* buffer,
+                                                size_t capacity) {
     const std::string_view invalid = pubsub_itc_fw_app::first_invalid_field(request);
     if (!invalid.empty()) {
-        return detail::write_reason(buffer, capacity, "{} is missing or holds a value the protocol does not define", invalid);
+        // An empty string is a field the member left out; anything else the generated check refuses is an enumerated
+        // field holding a value the protocol does not define.
+        const bool absent = (invalid == "cl_ord_id" && request.cl_ord_id.empty()) || (invalid == "orig_cl_ord_id" && request.orig_cl_ord_id.empty()) ||
+                            (invalid == "symbol" && request.symbol.empty());
+        return {detail::write_reason(buffer, capacity, "{} is missing or holds a value the protocol does not define", invalid), invalid,
+                absent ? fix_common::RefusalReason::RequiredFieldMissing : fix_common::RefusalReason::ValueIncorrect};
     }
-    std::string_view reason = detail::check_length("cl_ord_id", request.cl_ord_id, fix_order_limits::max_cl_ord_id_length, buffer, capacity);
-    if (reason.empty()) {
-        reason = detail::check_length("orig_cl_ord_id", request.orig_cl_ord_id, fix_order_limits::max_cl_ord_id_length, buffer, capacity);
+    // Each check names its field, and the first to refuse decides the answer. A field too long, or a quantity that is
+    // not a number, holds a value the venue does not accept.
+    const auto checked = [](std::string_view reason, std::string_view field) {
+        return CancelRefusal{reason, reason.empty() ? std::string_view() : field, fix_common::RefusalReason::ValueIncorrect};
+    };
+    CancelRefusal refusal =
+        checked(detail::check_length("cl_ord_id", request.cl_ord_id, fix_order_limits::max_cl_ord_id_length, buffer, capacity), "cl_ord_id");
+    if (!refusal.refused()) {
+        refusal =
+            checked(detail::check_length("orig_cl_ord_id", request.orig_cl_ord_id, fix_order_limits::max_cl_ord_id_length, buffer, capacity), "orig_cl_ord_id");
     }
-    if (reason.empty()) {
-        reason = detail::check_length("symbol", request.symbol, limits.max_symbol_length, buffer, capacity);
+    if (!refusal.refused()) {
+        refusal = checked(detail::check_length("symbol", request.symbol, limits.max_symbol_length, buffer, capacity), "symbol");
     }
     // OrderQty is optional on a cancel (R-0142); when it is given, it is held to the same rules as
     // an order's.
-    if (reason.empty() && request.has_order_qty) {
-        reason = detail::check_length("order_qty", request.order_qty, limits.max_order_qty_length, buffer, capacity);
-        if (reason.empty()) {
-            reason = detail::check_decimal("order_qty", request.order_qty, buffer, capacity);
+    if (!refusal.refused() && request.has_order_qty) {
+        refusal = checked(detail::check_length("order_qty", request.order_qty, limits.max_order_qty_length, buffer, capacity), "order_qty");
+        if (!refusal.refused()) {
+            refusal = checked(detail::check_decimal("order_qty", request.order_qty, buffer, capacity), "order_qty");
         }
     }
-    return reason;
+    return refusal;
 }
 
 } // namespaces

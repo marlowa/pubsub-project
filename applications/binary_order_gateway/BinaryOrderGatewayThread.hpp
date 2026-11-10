@@ -17,7 +17,6 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
-#include <pubsub_itc_fw/ExpandablePoolAllocator.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
@@ -47,8 +46,8 @@
 #include "GatewayIds.hpp"
 #include "GatewayProgressMetrics.hpp"
 #include "GatewayRefusal.hpp"
-#include "PoolMetricsReporter.hpp"
 #include "RefusedCommand.hpp"
+#include "RequestRefusal.hpp"
 #include "SentAgainEnvelope.hpp"
 #include "ThrottleRefusalMetrics.hpp"
 #include "ThrottledCommand.hpp"
@@ -137,19 +136,19 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
                           pubsub_itc_fw_app::OrdRejReason ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other);
 
     /**
-     * @brief Refuses a request to cancel with an OrderCancelReject carrying @p reason.
+     * @brief Refuses a request to cancel, which has not reached the matching engine, with a RequestRefused message.
      *
-     * The reply says the order is still open (OrdStatus New), because a refusal by the gateway has
-     * not touched it.
+     * The reply refuses the request and says nothing of the order it names, since the component holding the order never
+     * saw the request (R-0151). A request the matching engine refuses is answered by send_engine_cancel_rejection.
      *
      * @param[in] session The session the request arrived on.
      * @param[in] request The decoded request.
-     * @param[in] reason  The text to send. Must stay valid for the call.
-     * @param[in] cxl_rej_reason The reason code to send: Other when the gateway refuses for a reason of its own,
-     *                           DuplicateClOrdId when the request's ClOrdID is already in use.
+     * @param[in] reason  The kind of refusal, the same number the FIX gateway gives in SessionRejectReason (373).
+     * @param[in] text    The reason in words. Must stay valid for the call.
+     * @param[in] field   The field at fault, as the binary protocol names it; empty when no one field is at fault.
      */
-    void refuse_cancel(const BinarySession& session, const pubsub_itc_fw_app::OrderCancelRequestView& request, std::string_view reason,
-                       pubsub_itc_fw_app::CxlRejReason cxl_rej_reason = pubsub_itc_fw_app::CxlRejReason::Other);
+    void refuse_cancel(const BinarySession& session, const pubsub_itc_fw_app::OrderCancelRequestView& request, fix_common::RefusalReason reason,
+                       std::string_view text, std::string_view field = std::string_view());
 
     /**
      * @brief Decodes a member's command into @p view, growing the decode buffer once if its groups need more room.
@@ -304,20 +303,7 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::TimerID announce_to_secondary_timer_id_{};
 
     /**
-     * @brief Records or retires an order in the session's open set from an ER.
-     *
-     * Tracking is driven by the matching engine's acknowledgements, not by order-forward
-     * time: only an order the engine has accepted is actually on the book and therefore
-     * the session's to cancel. A terminal status retires the entry.
-     *
-     * @param[in,out] session The session the report belongs to.
-     * @param[in]     report  The decoded ExecutionReport.
-     */
-    void track_open_order(BinarySession& session, const pubsub_itc_fw_app::ExecutionReportView& report);
-
-    /**
-     * @brief A session's connection has gone: its record of the session's open orders is released, and what the venue will
-     *        do with them is said at Info.
+     * @brief A session's connection has gone: what the venue will do with the member's orders is said at Info.
      *
      * The gateway cancels nothing itself: the leading sequencer carries out the member's cancel-on-disconnect instruction
      * where the orders are, which it can do after this gateway has restarted or died too
@@ -371,13 +357,8 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // no fixed cap that could silently drop a large order.
     std::vector<uint8_t> envelope_encode_buffer_;
 
-    // Storage for the open-order entries of every session, so tracking an order costs no
-    // heap allocation. Created in on_app_ready_event, once the thread is running.
-    std::unique_ptr<pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>> open_order_pool_;
-
-    // A session whose connection has gone with orders to be cancelled, while its grace period runs.
+    // A session whose connection has gone, whose member asked for its orders to be cancelled, while its grace period runs.
     struct DeadSession {
-        size_t order_count{0};
         std::string comp_id;
         // When the grace period runs out.
         std::chrono::steady_clock::time_point cancel_due{};
@@ -386,8 +367,8 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // Sessions whose connection dropped and whose grace period has not yet expired. Same
     // contract as the FIX order gateway's: an entry leaves either because its deadline
     // passed, when the session's unanswered commands are no longer kept, or because the
-    // same comp id logged on again in time. Ordered by deadline, which is automatic since every entry takes
-    // the same grace period and they are appended as connections die.
+    // same comp id logged on again in time. Ordered by deadline, earliest first; each member may have its
+    // own grace period, so an entry is inserted in its place rather than appended.
     std::deque<DeadSession> grace_sessions_;
 
     pubsub_itc_fw::TimerID grace_timer_id_{};
@@ -395,12 +376,13 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
     void expire_grace_sessions();
     void arm_grace_timer();
-    size_t reclaim_grace_session(std::string_view comp_id);
+    // Discards any grace-period entry belonging to this comp id, and returns whether there was one.
+    bool reclaim_grace_session(std::string_view comp_id);
 
     // When the current client PDU was taken off the connection, in wall-clock nanoseconds.
     // Stamped on the order forwarded out of it and returned on the acknowledging ER, where
     // it becomes the start of the round-trip measurement. Zero until the first client PDU,
-    // which only a gateway-generated cancel can precede.
+    // which nothing can precede.
     int64_t current_pdu_ingress_ns_{0};
 
     // Nanoseconds from taking an order off the client connection to starting to send its
@@ -421,13 +403,6 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
     // The running totals below, and the sessions, published as counters for programs to read.
     fix_common::GatewayProgressMetrics progress_metrics_;
-
-    // Publishes the open-order pool's statistics. The pool records nothing itself -- it
-    // computes the numbers and offers them -- so something has to sample it, and this
-    // thread is the only one allowed to touch the pool. Refreshed from a recurring timer
-    // rather than at scrape time because PrometheusEndpoint has no scrape-time callback.
-    fix_common::PoolMetricsReporter open_order_pool_metrics_;
-    pubsub_itc_fw::TimerID pool_metrics_timer_id_{};
 
     // Running totals behind the GW-PROGRESS line, matching the FIX order gateway's so the two
     // gateways log the same amount and a perf comparison is not measuring logging.

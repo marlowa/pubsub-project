@@ -1,10 +1,8 @@
 // Example: logon, send 5 limit buy orders (each carrying three underlying
 // instruments), logout.
 //
-// clordId() wraps fix.uniqueId() with a realistic multi-component prefix so
-// that ClOrdIDs are well beyond the std::string SSO boundary (~16 bytes).
-// This exercises the gateway's OpenOrderEntry pool with strings that actually
-// require the pool storage rather than fitting in SSO.
+// clordId() wraps fix.uniqueId() with a realistic multi-component prefix, so
+// that ClOrdIDs are as long as a real member's.
 //
 // The gateway FIX listener (port 9879) requires TLS -- useTls must be true.
 

@@ -43,23 +43,29 @@ TEST(BinaryRejectionsTest, ANewOrderWhoseClOrdIdIsInUseIsRejectedAsADuplicateOrd
     EXPECT_EQ(report.transact_time, refused_at_ns);
 }
 
-TEST(BinaryRejectionsTest, ACancelWhoseClOrdIdIsInUseIsRefusedAsADuplicateClOrdIdAndTheOrderStaysOpen) {
+TEST(BinaryRejectionsTest, ACancelWhoseClOrdIdIsInUseIsRefusedWithoutSayingAnythingOfTheOrder) {
     pubsub_itc_fw_app::OrderCancelRequestView request{};
     request.cl_ord_id = "CANCEL-1";
     request.orig_cl_ord_id = "ORDER-1";
 
-    const pubsub_itc_fw_app::OrderCancelReject reject =
-        make_cancel_reject("NONE", request, fix_common::identifier_already_used_text, pubsub_itc_fw_app::CxlRejReason::DuplicateClOrdId, refused_at_ns);
-    ASSERT_TRUE(reject.has_cxl_rej_reason);
-    EXPECT_EQ(reject.cxl_rej_reason, pubsub_itc_fw_app::CxlRejReason::DuplicateClOrdId);
-    EXPECT_EQ(reject.ord_status, pubsub_itc_fw_app::OrdStatus::New) << "the refusal has not touched the order, so it is still open";
-    EXPECT_EQ(reject.cxl_rej_response_to, pubsub_itc_fw_app::CxlRejResponseTo::OrderCancelRequest);
-    EXPECT_EQ(reject.cl_ord_id, "CANCEL-1");
-    ASSERT_TRUE(reject.has_orig_cl_ord_id);
-    EXPECT_EQ(reject.orig_cl_ord_id, "ORDER-1");
-    EXPECT_EQ(reject.order_id, "NONE");
-    ASSERT_TRUE(reject.has_text);
-    EXPECT_EQ(reject.text, "ClOrdID already used today");
+    const pubsub_itc_fw_app::RequestRefused refused =
+        make_cancel_refused(request, fix_common::RefusalReason::Other, fix_common::identifier_already_used_text, std::string_view());
+    EXPECT_EQ(refused.cl_ord_id, "CANCEL-1");
+    EXPECT_EQ(refused.refused_pdu_id, pubsub_itc_fw_app::OrderCancelRequest::message_pdu_id);
+    EXPECT_EQ(static_cast<int32_t>(refused.reason), 99) << "99 is Other, as in the FIX gateway's SessionRejectReason";
+    EXPECT_EQ(refused.text, "ClOrdID already used today");
+    EXPECT_FALSE(refused.has_field) << "no one field is at fault";
+}
+
+TEST(BinaryRejectionsTest, ACancelWithAFieldAtFaultNamesTheField) {
+    pubsub_itc_fw_app::OrderCancelRequestView request{};
+    request.cl_ord_id = "CANCEL-1";
+
+    const pubsub_itc_fw_app::RequestRefused refused =
+        make_cancel_refused(request, fix_common::RefusalReason::ValueIncorrect, "side is missing or holds a value the protocol does not define", "side");
+    EXPECT_EQ(static_cast<int32_t>(refused.reason), 5);
+    ASSERT_TRUE(refused.has_field);
+    EXPECT_EQ(refused.field, "side");
 }
 
 } // namespaces

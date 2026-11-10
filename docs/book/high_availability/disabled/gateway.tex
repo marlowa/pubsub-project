@@ -63,14 +63,6 @@ venue. The venue therefore does not attempt to recover an uncommitted order. It
 guarantees that such an order never takes effect afterwards, that the member can
 establish this, and that the member can send the order again.
 
-\begin{gap}{BUG-0090}
-  The gateway keeps its own view of what each session has resting, and acts on
-  that view when a connection ends. The view is built only as execution reports
-  arrive, so a restarted gateway holds nothing for orders placed before the
-  restart, and a member that asked for cancel-on-disconnect is no longer
-  protected by it, is not told, and cannot tell.
-\end{gap}
-
 \begin{requirement}{R-0008}{The most recent messages to each member remain recoverable}
   For each comp id, the venue shall keep the most recent application messages it
   has sent to that comp id during the current trading day, up to 100,000 messages.

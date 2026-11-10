@@ -1,6 +1,7 @@
 package com.pubsub.fixtestclient.binary;
 
 import com.pubsub.fixtestclient.blotter.BlotterRow;
+import com.pubsub.fixtestclient.protocol.BinarySession;
 import com.pubsub.fixtestclient.protocol.FixOrders;
 
 import java.time.Instant;
@@ -75,8 +76,8 @@ public final class BinaryBlotterRows {
     }
 
     /**
-     * A refused request to cancel. The order it names is left as OrdStatus says: a refusal by
-     * the gateway reports the order still open.
+     * A request to cancel that the matching engine refused. The order it names is as OrdStatus
+     * says, which is the status the engine reports.
      */
     public static BlotterRow fromCancelReject(long id, FixOrders.OrderCancelReject reject) {
         return new BlotterRow(
@@ -88,6 +89,19 @@ public final class BinaryBlotterRows {
                 asFixChar(reject.ord_status.value),
                 "",
                 reject.has_cxl_rej_reason ? String.valueOf(reject.cxl_rej_reason.value) : "",
+                "", "", "", "", "", "", "", "", "", "", "", "");
+    }
+
+    /**
+     * A request the gateway refused itself, before it reached the matching engine. It says
+     * nothing of the order, so the row has no order status; its message type is shown as 3, the
+     * FIX session-level Reject it is the counterpart of, as the FIX blotter shows one.
+     */
+    public static BlotterRow fromRequestRefused(long id, BinarySession.RequestRefused refused) {
+        return new BlotterRow(
+                id, Instant.now(), "IN", "3", 0,
+                refused.cl_ord_id,
+                "", "", "", "", "", "", "",
                 "", "", "", "", "", "", "", "", "", "", "", "");
     }
 

@@ -72,10 +72,10 @@ part the member has not stated, the default of the gateway that last bound the s
 
 ### 3.5 What the gateway keeps
 
-The gateway sends no cancels. It keeps its view of a session's open orders, because it names an order's OrderID in an
-OrderCancelReject, and uses it to say, at Info and as a test event, how many orders a session left and what the venue will
-do with them. It keeps a session that ended for its grace period, so that it can say whether the member came back in
-time, and stop keeping the session's unanswered commands once it has not.
+The gateway sends no cancels, and keeps no list of a session's orders ([gateway_refusals.md](../venue/gateway_refusals.md)).
+It says, at Info and as a test event, what the venue will do with a session's orders when the session ends. It keeps a
+session that ended for its grace period, so that it can say whether the member came back in time, and stop keeping the
+session's unanswered commands once it has not.
 
 ## 4. What this costs
 

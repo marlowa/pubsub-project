@@ -581,10 +581,11 @@ messages to the channel first. `ha_test.py` starts every FIX gateway with the se
 
 **The gateway's events.** `applications/fix_order_gateway/fix_order_gateway_test_events.dsl` (message ids 190 to 199)
 defines four: a member's session announced to the sequencers as bound or unbound (`SessionAnnounced`); a report dropped
-because it carries no member connection (`ReportDroppedNoSession`); a member gone with orders open, whether the venue
-cancels them at once, after a grace period, or leaves them resting, with the grace period
-(`SessionDisconnectedWithOrders`); and a member reconnected within its grace period, its orders left resting
-(`SessionReclaimed`). None is sent for each order. The gateway cancels nothing itself: the leading sequencer writes the
+because it carries no member connection (`ReportDroppedNoSession`); a member's session ended, and whether the venue
+cancels its orders at once, after a grace period, or leaves them resting, with the grace period (`SessionDisconnected`);
+and a member reconnected within its grace period, its orders left resting (`SessionReclaimed`). The gateway keeps no
+list of a member's orders, so neither says how many there are; scenario 50 counts the orders the member was told are
+open. None is sent for each order. The gateway cancels nothing itself: the leading sequencer writes the
 cancel, and what was cancelled is read from the matching engine's `OrderOutcome` events for the member's comp id.
 
 **The sequencer's events.** `sequencer_test_events.dsl` gains three: a report dropped because the gateway instance it is

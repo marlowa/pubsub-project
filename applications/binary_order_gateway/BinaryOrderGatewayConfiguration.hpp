@@ -217,12 +217,6 @@ struct BinaryOrderGatewayConfiguration {
     /** @brief Initial number of slabs in the event queue pool. */
     int32_t event_queue_pool_initial_slabs{1};
 
-    /** @brief Objects per pool in the open-order pool, which backs cancel-on-disconnect. */
-    int32_t open_order_pool_objects_per_pool{4096};
-
-    /** @brief Initial number of pools in the open-order pool. */
-    int32_t open_order_pool_initial_pools{1};
-
     /**
      * @brief The store of commands sent to the sequencers and not yet answered, kept to be sent again
      * after a change of sequencer leader: how many commands, and how many bytes of their envelopes.

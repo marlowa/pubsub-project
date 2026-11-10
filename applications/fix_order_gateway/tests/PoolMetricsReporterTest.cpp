@@ -35,11 +35,11 @@ MetricsConfiguration enabled_configuration() {
     return configuration;
 }
 
-// The gateway's real shape: 21 pools of 2^20 OpenOrderEntry, which is the case the
+// A large pool: 21 pools of 2^20 objects of 168 bytes, about 3.7 GB, which is the size the
 // arithmetic has to survive.
-PoolStatistics gateway_shaped_pool() {
+PoolStatistics large_pool() {
     PoolStatistics statistics;
-    statistics.pool_name_ = "BinaryOpenOrderPool";
+    statistics.pool_name_ = "ExamplePool";
     statistics.object_size_ = 168U;
     statistics.number_of_objects_per_pool_ = 1048576;
     statistics.number_of_pools_ = 21;
@@ -86,7 +86,7 @@ TEST(PoolMetricsReporterTest, IsNotRegisteredUntilRegisterMetricsIsCalled) {
     EXPECT_FALSE(reporter.is_registered());
 
     PrometheusEndpoint endpoint(enabled_configuration());
-    reporter.register_metrics(endpoint, "open_order_pool");
+    reporter.register_metrics(endpoint, "example_pool");
     EXPECT_TRUE(reporter.is_registered());
 }
 
@@ -95,7 +95,7 @@ TEST(PoolMetricsReporterTest, IsNotRegisteredUntilRegisterMetricsIsCalled) {
 // sampled earlier would otherwise have to know not to.
 TEST(PoolMetricsReporterTest, UpdatingBeforeRegistrationDoesNothingAndDoesNotCrash) {
     PoolMetricsReporter reporter;
-    reporter.update(gateway_shaped_pool(), busy_allocator());
+    reporter.update(large_pool(), busy_allocator());
     EXPECT_FALSE(reporter.is_registered());
 }
 
@@ -105,37 +105,37 @@ TEST(PoolMetricsReporterTest, RegisteringTwiceIsHarmless) {
     PrometheusEndpoint endpoint(enabled_configuration());
     PoolMetricsReporter reporter;
 
-    reporter.register_metrics(endpoint, "open_order_pool");
-    EXPECT_NO_THROW(reporter.register_metrics(endpoint, "open_order_pool"));
+    reporter.register_metrics(endpoint, "example_pool");
+    EXPECT_NO_THROW(reporter.register_metrics(endpoint, "example_pool"));
     EXPECT_TRUE(reporter.is_registered());
 }
 
 TEST(PoolMetricsReporterTest, NamesThePoolWithTheScopeLabelRatherThanTheMetricName) {
     PrometheusEndpoint endpoint(enabled_configuration());
     PoolMetricsReporter reporter;
-    reporter.register_metrics(endpoint, "open_order_pool");
-    reporter.update(gateway_shaped_pool(), busy_allocator());
+    reporter.register_metrics(endpoint, "example_pool");
+    reporter.update(large_pool(), busy_allocator());
 
     const std::string exposition = endpoint.exposition_text();
     EXPECT_TRUE(contains(exposition, "# TYPE pool_bytes_reserved gauge")) << exposition;
-    EXPECT_TRUE(contains(exposition, "scope=\"open_order_pool\"")) << exposition;
+    EXPECT_TRUE(contains(exposition, "scope=\"example_pool\"")) << exposition;
     EXPECT_TRUE(contains(exposition, "component=\"binary_order_gateway_a\"")) << exposition;
     // The pool must not appear in the metric name, or one family per pool follows and with
     // it one panel and one alert per pool.
-    EXPECT_FALSE(contains(exposition, "open_order_pool_bytes_reserved")) << exposition;
+    EXPECT_FALSE(contains(exposition, "example_pool_bytes_reserved")) << exposition;
 }
 
 // Two pools in one process are two children of one family, not two families. This is the
 // property that keeps a third pool costing a label value rather than thirteen new metrics.
 TEST(PoolMetricsReporterTest, TwoPoolsShareOneFamily) {
     PrometheusEndpoint endpoint(enabled_configuration());
-    PoolMetricsReporter open_orders;
+    PoolMetricsReporter example;
     PoolMetricsReporter event_queue;
 
-    open_orders.register_metrics(endpoint, "open_order_pool");
+    example.register_metrics(endpoint, "example_pool");
     event_queue.register_metrics(endpoint, "event_queue_pool");
-    open_orders.update(gateway_shaped_pool(), busy_allocator());
-    event_queue.update(gateway_shaped_pool(), busy_allocator());
+    example.update(large_pool(), busy_allocator());
+    event_queue.update(large_pool(), busy_allocator());
 
     const std::string exposition = endpoint.exposition_text();
     size_t help_lines = 0;
@@ -145,7 +145,7 @@ TEST(PoolMetricsReporterTest, TwoPoolsShareOneFamily) {
         position = exposition.find("# HELP pool_bytes_reserved", position + 1);
     }
     EXPECT_EQ(help_lines, 1U) << "expected one family for one metric name:\n" << exposition;
-    EXPECT_TRUE(contains(exposition, "scope=\"open_order_pool\"")) << exposition;
+    EXPECT_TRUE(contains(exposition, "scope=\"example_pool\"")) << exposition;
     EXPECT_TRUE(contains(exposition, "scope=\"event_queue_pool\"")) << exposition;
 }
 
@@ -155,8 +155,8 @@ TEST(PoolMetricsReporterTest, TwoPoolsShareOneFamily) {
 TEST(PoolMetricsReporterTest, ReservedBytesSurvivesAPoolChainLargerThanThirtyTwoBits) {
     PrometheusEndpoint endpoint(enabled_configuration());
     PoolMetricsReporter reporter;
-    reporter.register_metrics(endpoint, "open_order_pool");
-    reporter.update(gateway_shaped_pool(), busy_allocator());
+    reporter.register_metrics(endpoint, "example_pool");
+    reporter.update(large_pool(), busy_allocator());
 
     const std::string exposition = endpoint.exposition_text();
     EXPECT_DOUBLE_EQ(rendered_value(exposition, "pool_bytes_reserved"), 3699376128.0);
@@ -168,8 +168,8 @@ TEST(PoolMetricsReporterTest, ReservedBytesSurvivesAPoolChainLargerThanThirtyTwo
 TEST(PoolMetricsReporterTest, ReportsReservedAndInUseSeparately) {
     PrometheusEndpoint endpoint(enabled_configuration());
     PoolMetricsReporter reporter;
-    reporter.register_metrics(endpoint, "open_order_pool");
-    reporter.update(gateway_shaped_pool(), busy_allocator());
+    reporter.register_metrics(endpoint, "example_pool");
+    reporter.update(large_pool(), busy_allocator());
 
     const std::string exposition = endpoint.exposition_text();
     EXPECT_DOUBLE_EQ(rendered_value(exposition, "pool_bytes_in_use"), 3000000.0 * 168.0);
@@ -185,8 +185,8 @@ TEST(PoolMetricsReporterTest, ReportsReservedAndInUseSeparately) {
 TEST(PoolMetricsReporterTest, PublishesTheBehaviourTotals) {
     PrometheusEndpoint endpoint(enabled_configuration());
     PoolMetricsReporter reporter;
-    reporter.register_metrics(endpoint, "open_order_pool");
-    reporter.update(gateway_shaped_pool(), busy_allocator());
+    reporter.register_metrics(endpoint, "example_pool");
+    reporter.update(large_pool(), busy_allocator());
 
     const std::string exposition = endpoint.exposition_text();
     EXPECT_DOUBLE_EQ(rendered_value(exposition, "pool_expansion_events"), 3.0);
@@ -201,10 +201,10 @@ TEST(PoolMetricsReporterTest, PublishesTheBehaviourTotals) {
 TEST(PoolMetricsReporterTest, ASecondUpdateReplacesTheFirst) {
     PrometheusEndpoint endpoint(enabled_configuration());
     PoolMetricsReporter reporter;
-    reporter.register_metrics(endpoint, "open_order_pool");
-    reporter.update(gateway_shaped_pool(), busy_allocator());
+    reporter.register_metrics(endpoint, "example_pool");
+    reporter.update(large_pool(), busy_allocator());
 
-    PoolStatistics fewer = gateway_shaped_pool();
+    PoolStatistics fewer = large_pool();
     fewer.number_of_allocated_objects_ = 5;
     reporter.update(fewer, busy_allocator());
 

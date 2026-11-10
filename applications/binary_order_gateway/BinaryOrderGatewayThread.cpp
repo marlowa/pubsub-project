@@ -24,8 +24,6 @@
 
 #include "CancelRejection.hpp"
 #include "GatewayMetrics.hpp"
-#include "OpenOrderRemoval.hpp"
-#include "OpenOrderTracking.hpp"
 #include "OrderPathMetrics.hpp"
 #include "SessionThrottles.hpp"
 #include "ThrottleLimits.hpp"
@@ -122,27 +120,6 @@ void BinaryOrderGatewayThread::on_app_ready_event() {
                                      std::vector<std::string>{"primary sequencer", "secondary sequencer"}, resend_links_, get_logger(),
                                      "BinaryOrderGatewayThread");
     }
-    open_order_pool_ = std::make_unique<pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>>(
-        "BinaryOpenOrderPool", config_.open_order_pool_objects_per_pool, config_.open_order_pool_initial_pools,
-        /*expansion_threshold_hint=*/0,
-        /*handler_for_pool_exhausted=*/
-        [this](void* /*context*/, int objects_per_pool) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOpenOrderPool exhausted: chaining new pool slab ({} objects)",
-                       objects_per_pool);
-        },
-        /*handler_for_invalid_free=*/nullptr,
-        /*handler_for_huge_pages_error=*/nullptr, pubsub_itc_fw::UseHugePagesFlag{pubsub_itc_fw::UseHugePagesFlag::DoNotUseHugePages});
-
-    // Registered after the pool exists, and sampled from a timer because PrometheusEndpoint
-    // is push-style -- a gauge holds whatever was last set into it and there is no
-    // scrape-time callback. Five seconds matches the scrape interval, so the value a scrape
-    // reads is at most one interval stale and no work is done that nothing collects.
-    //
-    // Sampling on this thread is what makes it safe: the pool is touched only here. The cost
-    // is a walk of the pool chain reading counters the allocator maintains atomically as it
-    // goes, never a free-list traversal, so it is a couple of dozen atomic loads.
-    open_order_pool_metrics_.register_metrics(get_reactor().metrics(), gateway_metrics::open_order_pool_metrics_scope);
-    pool_metrics_timer_id_ = start_recurring_timer(gateway_metrics::pool_metrics_sample_interval);
 
     connect_to_service("authentication_service_primary");
     if (config_.ha_enabled) {
@@ -165,13 +142,6 @@ void BinaryOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
     }
     if (timer_id == grace_timer_id_) {
         expire_grace_sessions();
-        return;
-    }
-
-    if (timer_id == pool_metrics_timer_id_) {
-        if (open_order_pool_ != nullptr) {
-            open_order_pool_metrics_.update(open_order_pool_->get_pool_statistics(), open_order_pool_->get_behaviour_statistics());
-        }
         return;
     }
 
@@ -723,11 +693,9 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
     announce_session_bound(session);
 
     // Back inside its grace period: the orders this comp id left resting stay resting.
-    const size_t reclaimed = reclaim_grace_session(session.comp_id);
-    if (reclaimed > 0) {
+    if (reclaim_grace_session(session.comp_id)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "BinaryOrderGatewayThread: comp_id='{}' reconnected within the grace period -- the venue leaves its {} order(s) resting", session.comp_id,
-                   reclaimed);
+                   "BinaryOrderGatewayThread: comp_id='{}' reconnected within the grace period -- the venue leaves its orders resting", session.comp_id);
     }
     send_logon_ack(session.conn_id, pubsub_itc_fw_app::LogonOutcome::Accepted, {});
 }
@@ -821,12 +789,12 @@ void BinaryOrderGatewayThread::handle_order_cancel_request(BinarySession& sessio
     }
 
     const CommandFieldLimits limits{static_cast<size_t>(config_.max_symbol_length), static_cast<size_t>(config_.max_order_qty_length)};
-    const std::string_view invalid = check_cancel(request, limits, command_refusal_text_, sizeof(command_refusal_text_));
-    if (!invalid.empty()) {
+    const CancelRefusal invalid = check_cancel(request, limits, command_refusal_text_, sizeof(command_refusal_text_));
+    if (invalid.refused()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "BinaryOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused: {}", session.conn_id.get_value(),
-                   request.cl_ord_id, request.orig_cl_ord_id, invalid);
-        refuse_cancel(session, request, invalid);
+                   request.cl_ord_id, request.orig_cl_ord_id, invalid.reason);
+        refuse_cancel(session, request, invalid.kind, invalid.reason, invalid.field);
         release_pdu_payload(message);
         return;
     }
@@ -837,13 +805,13 @@ void BinaryOrderGatewayThread::handle_order_cancel_request(BinarySession& sessio
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "BinaryOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused: {}", session.conn_id.get_value(),
                    request.cl_ord_id, request.orig_cl_ord_id, unavailable);
-        refuse_cancel(session, request, unavailable);
+        refuse_cancel(session, request, fix_common::RefusalReason::VenueUnavailable, unavailable);
         release_pdu_payload(message);
         return;
     }
 
     if (!admit_throttled_command(session, fix_common::ThrottledCommand::Cancel)) {
-        refuse_cancel(session, request, session.throttles.refusal_text(fix_common::ThrottledCommand::Cancel));
+        refuse_cancel(session, request, fix_common::RefusalReason::ThrottleLimitExceeded, session.throttles.refusal_text(fix_common::ThrottledCommand::Cancel));
         release_pdu_payload(message);
         return;
     }
@@ -851,14 +819,14 @@ void BinaryOrderGatewayThread::handle_order_cancel_request(BinarySession& sessio
         forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), message.payload(),
                                   static_cast<size_t>(message.payload_size()), session, request.cl_ord_id);
     if (refusal == fix_common::GatewayRefusal::StoreFull) {
-        refuse_cancel(session, request, "the venue is busy: too many commands are waiting to be answered");
+        refuse_cancel(session, request, fix_common::RefusalReason::VenueUnavailable, "the venue is busy: too many commands are waiting to be answered");
     } else if (refusal == fix_common::GatewayRefusal::IdentifierHeldUnanswered) {
         ++cancels_refused_;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "BinaryOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused: a command with this "
                    "ClOrdID is already waiting for its answer",
                    session.conn_id.get_value(), session.comp_id, request.cl_ord_id, request.orig_cl_ord_id);
-        refuse_cancel(session, request, fix_common::identifier_already_used_text, pubsub_itc_fw_app::CxlRejReason::DuplicateClOrdId);
+        refuse_cancel(session, request, fix_common::RefusalReason::Other, fix_common::identifier_already_used_text);
     }
     release_pdu_payload(message);
 }
@@ -1180,7 +1148,7 @@ void BinaryOrderGatewayThread::handle_command_refused(const pubsub_itc_fw::Event
                "BinaryOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused by the sequencer: the ClOrdID "
                "was first used by record {}",
                session->conn_id.get_value(), session->comp_id, command->cancel.cl_ord_id, command->cancel.orig_cl_ord_id, view.first_seq_no);
-    refuse_cancel(*session, command->cancel, fix_common::identifier_already_used_text, pubsub_itc_fw_app::CxlRejReason::DuplicateClOrdId);
+    refuse_cancel(*session, command->cancel, fix_common::RefusalReason::Other, fix_common::identifier_already_used_text);
 }
 
 void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::EventMessage& message) {
@@ -1248,15 +1216,13 @@ void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::Even
         return;
     }
 
-    // Decode the report to maintain the open-order set. The bytes relayed to the client
-    // are still the ones that arrived -- this reads the report, it does not rebuild it.
+    // Decode the report for the metrics below. The bytes relayed to the client are still
+    // the ones that arrived -- this reads the report, it does not rebuild it.
     pubsub_itc_fw_app::ExecutionReportView report{};
     size_t report_bytes_consumed = 0;
     const bool report_decoded =
         pubsub_itc_fw_app::decode(report, envelope.payload.data, envelope.payload.size, report_bytes_consumed, arena, arena_bytes_needed);
     if (report_decoded) {
-        track_open_order(it->second, report);
-
         // The outbound half begins here. Placed and restricted identically to the FIX
         // gateway's, because the whole point of the pair is to compare the two protocols on
         // the way out, and a checkpoint taken at a different point on each would measure the
@@ -1269,7 +1235,7 @@ void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::Even
         // Relay it regardless: the client is the report's audience, and a gateway that
         // cannot read a message still has no business withholding it.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "BinaryOrderGatewayThread: ER seq={} could not be decoded for order tracking -- relaying it but not tracking the order", envelope.seq_no);
+                   "BinaryOrderGatewayThread: ER seq={} could not be decoded for its metrics -- relaying it without measuring it", envelope.seq_no);
     }
 
     // The round trip closes here, with the report about to be handed to the reactor for
@@ -1364,17 +1330,10 @@ void BinaryOrderGatewayThread::refuse_new_order(BinarySession& session, const pu
     send_pdu(session.conn_id, pubsub_itc_fw_app::ExecutionReport::message_pdu_id, 0, report);
 }
 
-void BinaryOrderGatewayThread::refuse_cancel(const BinarySession& session, const pubsub_itc_fw_app::OrderCancelRequestView& request, std::string_view reason,
-                                             pubsub_itc_fw_app::CxlRejReason cxl_rej_reason) {
-    // FIX requires the order's OrderID. The session's record holds it for an order the matching
-    // engine acknowledged; otherwise FIX's convention for an identifier not known is "NONE".
-    std::string_view order_id = "NONE";
-    const auto tracked = session.open_orders.find(request.orig_cl_ord_id);
-    if (tracked != session.open_orders.end() && tracked->second->order_id_len > 0) {
-        order_id = std::string_view(tracked->second->order_id, tracked->second->order_id_len);
-    }
-    const pubsub_itc_fw_app::OrderCancelReject reject = make_cancel_reject(order_id, request, reason, cxl_rej_reason, config_.wall_clock->now_ns());
-    send_pdu(session.conn_id, pubsub_itc_fw_app::OrderCancelReject::message_pdu_id, 0, reject);
+void BinaryOrderGatewayThread::refuse_cancel(const BinarySession& session, const pubsub_itc_fw_app::OrderCancelRequestView& request,
+                                             fix_common::RefusalReason reason, std::string_view text, std::string_view field) {
+    const pubsub_itc_fw_app::RequestRefused refused = make_cancel_refused(request, reason, text, field);
+    send_pdu(session.conn_id, pubsub_itc_fw_app::RequestRefused::message_pdu_id, 0, refused);
 }
 
 void BinaryOrderGatewayThread::send_engine_cancel_rejection(const BinarySession& session, const pubsub_itc_fw_app::ExecutionReportView& report,
@@ -1398,15 +1357,6 @@ void BinaryOrderGatewayThread::send_engine_cancel_rejection(const BinarySession&
     send_pdu(session.conn_id, pubsub_itc_fw_app::OrderCancelReject::message_pdu_id, seq_no, reject);
 }
 
-void BinaryOrderGatewayThread::track_open_order(BinarySession& session, const pubsub_itc_fw_app::ExecutionReportView& report) {
-    // The rule is shared with the FIX gateway: see open_orders::track_open_order.
-    if (open_orders::track_open_order(session.open_orders, *open_order_pool_, report) == open_orders::TrackOutcome::FieldTooLong) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "BinaryOrderGatewayThread: ExecutionReport field too long to track (ClOrdID {} bytes, symbol {}, qty {}) -- order not tracked for cancel",
-                   report.cl_ord_id.size(), report.symbol.size(), report.has_order_qty ? report.order_qty.size() : 0);
-    }
-}
-
 void BinaryOrderGatewayThread::report_order_progress() {
     const int64_t accounted = execution_reports_sent_ + execution_reports_dropped_;
     if (accounted % order_progress_interval != 0) {
@@ -1417,60 +1367,51 @@ void BinaryOrderGatewayThread::report_order_progress() {
 }
 
 void BinaryOrderGatewayThread::note_session_ended(BinarySession& session) {
-    if (session.open_orders.empty()) {
-        return;
+    if (session.comp_id.empty()) {
+        return; // the session never logged on, so the venue holds no orders for it
     }
-    const size_t total_orders = session.open_orders.size();
 
-    // What the venue does with them: the member's instruction where it gave one, this gateway's own setting otherwise, as
-    // the sequencer applies them.
+    // What the venue does with the member's orders: the member's instruction where it gave one, this gateway's own
+    // setting otherwise, as the sequencer applies them.
     const bool cancel_enabled = session.cancel_on_disconnect_enabled.value_or(config_.cancel_on_disconnect_enabled);
     const std::chrono::seconds grace_period = session.cancel_on_disconnect_grace_period_seconds.has_value()
                                                   ? std::chrono::seconds{*session.cancel_on_disconnect_grace_period_seconds}
                                                   : config_.cancel_on_disconnect_grace_period;
-    // GoodTillCancel and GoodTillDate orders were placed to outlive the session, so they are not among those cancelled.
-    size_t persistent_orders = 0;
-    for (const auto& [cl_ord_id, entry] : session.open_orders) {
-        if (open_orders::is_persistent_time_in_force(entry->time_in_force)) {
-            ++persistent_orders;
-        }
-        open_order_pool_->deallocate(entry);
-    }
-    session.open_orders.clear();
 
     if (!cancel_enabled) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "BinaryOrderGatewayThread: connection {} disconnected with {} open order(s) -- cancel-on-disconnect is disabled, leaving them resting",
-                   session.conn_id.get_value(), total_orders);
-        return;
-    }
-    if (persistent_orders > 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "BinaryOrderGatewayThread: connection {} disconnected -- {} persistent order(s) (GTC/GTD) left resting", session.conn_id.get_value(),
-                   persistent_orders);
-    }
-    const size_t to_cancel = total_orders - persistent_orders;
-    if (to_cancel == 0) {
+                   "BinaryOrderGatewayThread: connection {} (comp_id='{}') disconnected -- cancel-on-disconnect is disabled, so the venue leaves its orders "
+                   "resting",
+                   session.conn_id.get_value(), session.comp_id);
         return;
     }
 
-    // No clean-logout equivalent in this protocol, so every disconnect takes the window.
+    // No clean-logout equivalent in this protocol, so every disconnect takes the window. GoodTillCancel and GoodTillDate
+    // orders are left resting either way, by the venue.
     if (grace_period.count() == 0) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "BinaryOrderGatewayThread: connection {} disconnected with {} open order(s) -- the venue cancels them now", session.conn_id.get_value(),
-                   to_cancel);
+                   "BinaryOrderGatewayThread: connection {} (comp_id='{}') disconnected -- the venue cancels its orders now", session.conn_id.get_value(),
+                   session.comp_id);
         return;
     }
 
     DeadSession dead;
-    dead.order_count = to_cancel;
     dead.comp_id = session.comp_id;
     dead.cancel_due = std::chrono::steady_clock::now() + grace_period;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "BinaryOrderGatewayThread: connection {} (comp_id='{}') disconnected with {} open order(s) -- the venue cancels them in {}s unless the member "
-               "logs on again first",
-               session.conn_id.get_value(), dead.comp_id, to_cancel, grace_period.count());
-    grace_sessions_.push_back(std::move(dead));
+               "BinaryOrderGatewayThread: connection {} (comp_id='{}') disconnected -- the venue cancels its orders in {}s unless the member logs on again "
+               "first",
+               session.conn_id.get_value(), dead.comp_id, grace_period.count());
+    // In deadline order: members may have different grace periods, so a later disconnection can be due sooner.
+    const auto place = std::upper_bound(grace_sessions_.begin(), grace_sessions_.end(), dead.cancel_due,
+                                        [](const std::chrono::steady_clock::time_point& due, const DeadSession& entry) { return due < entry.cancel_due; });
+    const bool new_front = place == grace_sessions_.begin();
+    grace_sessions_.insert(place, std::move(dead));
+    if (new_front && grace_timer_active_) {
+        // The timer is set for a later deadline than this one: set it again for this one.
+        cancel_timer(grace_timer_id_);
+        grace_timer_active_ = false;
+    }
     arm_grace_timer();
 }
 
@@ -1546,9 +1487,7 @@ void BinaryOrderGatewayThread::expire_grace_sessions() {
 
     const auto now = std::chrono::steady_clock::now();
     size_t expired_sessions = 0;
-    size_t expired_orders = 0;
     while (!grace_sessions_.empty() && grace_sessions_.front().cancel_due <= now) {
-        expired_orders += grace_sessions_.front().order_count;
         ++expired_sessions;
         // The session has ended for good, so its unanswered commands are not sent again.
         if (unanswered_commands_.has_value()) {
@@ -1559,22 +1498,22 @@ void BinaryOrderGatewayThread::expire_grace_sessions() {
 
     if (expired_sessions > 0) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "BinaryOrderGatewayThread: grace period expired for {} session(s) -- the venue cancels their {} order(s); no reconnect arrived",
-                   expired_sessions, expired_orders);
+                   "BinaryOrderGatewayThread: grace period expired for {} session(s) -- the venue cancels their orders; no reconnect arrived",
+                   expired_sessions);
     }
 
     arm_grace_timer();
 }
 
-size_t BinaryOrderGatewayThread::reclaim_grace_session(std::string_view comp_id) {
-    size_t reclaimed = 0;
+bool BinaryOrderGatewayThread::reclaim_grace_session(std::string_view comp_id) {
+    bool reclaimed = false;
     for (auto it = grace_sessions_.begin(); it != grace_sessions_.end();) {
         if (it->comp_id != comp_id) {
             ++it;
             continue;
         }
         // Back inside the window: the venue leaves the orders resting.
-        reclaimed += it->order_count;
+        reclaimed = true;
         it = grace_sessions_.erase(it);
     }
     return reclaimed;

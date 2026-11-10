@@ -119,7 +119,7 @@ another thread by other means.
 
 | Lock | Where | Taken | Bug |
 |---|---|---|---|
-| The expansion mutex in `ExpandablePoolAllocator` | Every queue between threads, and the gateways' open-order pools | Only when a pool runs out, and then while a new pool is mapped from the operating system | [BUG-0127](bug_list.md#bug_0127) |
+| The expansion mutex in `ExpandablePoolAllocator` | Every queue between threads | Only when a pool runs out, and then while a new pool is mapped from the operating system | [BUG-0127](bug_list.md#bug_0127) |
 
 One more lock is taken during the trading day, but not for each order.
 

@@ -4,7 +4,7 @@ The deployable components. Each is a process you can start, with its own configu
 the order flow. The clickable [architecture map](../orientation/architecture.md) is the fastest way in.
 
 - [fix_order_gateway.md](fix_order_gateway.md) — The FIX session layer: logon, sequence numbers, execution reports
-- [binary_order_gateway.md](binary_order_gateway.md) — The binary protocol gateway and its open-order pool
+- [binary_order_gateway.md](binary_order_gateway.md) — The binary protocol gateway
 - [gateway_throttles.md](gateway_throttles.md) — Per-session limits on placing and cancelling, configured per comp id. The amend limit is provisioned too, but neither gateway supports amends yet
 - [matching_engine.md](matching_engine.md) — The book of open orders, which survives the process; the standby applies the same commands from the WAL; leadership and catch-up. It does not match orders
 - [sequencer.md](sequencer.md) — The sequencing design: ordering, the WAL commit, and fanout
@@ -16,7 +16,7 @@ the order flow. The clickable [architecture map](../orientation/architecture.md)
 - [admin_service.md](admin_service.md) — The Java administration service
 - [fix_test_client.md](fix_test_client.md) — The web client used to drive the venue by hand or by script, through either gateway
 - [trading_phases.md](trading_phases.md) — What the venue is doing, how it says so, and why a halt cannot leave the process that declares it
-- [gateway_refusals.md](gateway_refusals.md) — the design for BUG-0072: a gateway refusing a request to cancel itself answers with a Business Message Reject, as other exchanges do, and keeps no list of open orders
+- [gateway_refusals.md](gateway_refusals.md) — how a gateway answers a request to cancel that it refuses itself: a session-level Reject in FIX and `RequestRefused` in the binary protocol, as Euronext does, and why the gateways keep no list of open orders
 - [sequencer_order_path_without_the_heap.md](sequencer_order_path_without_the_heap.md) — the design for BUG-0131: the leading sequencer's map of which session placed each order, and its reports waiting for a commit, without heap allocation or copying (designed, not built)
 
 ---

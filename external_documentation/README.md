@@ -30,6 +30,7 @@ All downloaded on 10 November 2026.
 | `cme_ilink_order_cancel_reject.html` | CME Group client systems wiki: the iLink Order Cancel Reject message | [cmegroupclientsite.atlassian.net](https://cmegroupclientsite.atlassian.net/wiki/spaces/EPICSANDBOX/pages/715423974/iLink+3+Order+Cancel+Reject) |
 | `cboe_titanium_us_options_fix_cancel_reject.html` | Cboe: Titanium US Options FIX specification, the Cancel Reject message | [cboe.com](https://www.cboe.com/document/tech-spec/content/technical-specifications/cboe-titanium-u.s.-options-fix-specification/fix-messages/order-protocol---cboe-to-member/cancel-reject) |
 | `fix_5_0_sp2_ordercancelreject_fixtrading.html` | FIX Trading Community: the FIX 5.0 SP2 OrderCancelReject message | [fiximate.fixtrading.org](https://fiximate.fixtrading.org/legacy/en/FIX.5.0SP2/body_494857.html) |
+| `fix_5_0_sp2_sessionrejectreason_onixs.html` | OnixS FIX dictionary: SessionRejectReason (373), the reason a session-level Reject gives | [onixs.biz](https://onixs.biz/fix-dictionary/latest/tagNum_373.html) |
 | `fix_5_0_sp2_ordercancelreject_b2bits.html` | B2BITS FIXopaedia: the FIX 5.0 SP2 OrderCancelReject message | [b2bits.com](https://www.b2bits.com/fixopaedia/fixdic50-sp2/message_Order_Cancel_Reject_9_.html) |
 
 The London Stock Exchange's MIT202 at docs.londonstockexchange.com, Issues 17.0 and 13.1, and Turquoise's TQ201, refused
@@ -53,6 +54,8 @@ the download ("Access Denied"); the copy above is the one London Stock Exchange 
   engine never processed it (Optiq client specifications, sections 4.8 and 4.10). Its own SessionRejectReason values
   for throttling are 25, 26 and 27 (Optiq FIX 5.0 messages). Its OrderCancelReject carries OrdStatus as the order's
   current status (section 5.3.7).
+- The FIX standard's SessionRejectReason values are 0 to 18 and 99 (Other), and the field accepts "any value conforming
+  to the data type Reserved100Plus", values from 100 that the parties agree (the OnixS page).
 - The London Stock Exchange's OrderCancelReject carries OrdStatus as the order's current status, Rejected if the order is
   unknown or the request cannot be processed, and OrderID "NONE" if the order is unknown (MIT202, section 6.4.6); a
   message missing a required tag gets a session-level Reject (MIT202, section 2.9).
