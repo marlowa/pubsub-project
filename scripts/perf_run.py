@@ -607,7 +607,8 @@ def generate_reports(app_names: list[str], perf_dir: Path) -> None:
                 capture_output=True, text=True, check=False,
             )
             if result.returncode != 0:
-                die(f"perf report failed for {data} with exit code {result.returncode}:\n{result.stderr.strip()}")
+                log(f"  WARNING: perf report failed for {data} with exit code {result.returncode}: {result.stderr.strip()}")
+                continue
 
             print(result.stdout)
             report_fh.write(result.stdout + "\n")

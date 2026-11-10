@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 242 |
-| Open | 47 (26 defects, 21 tasks) |
+| Bugs recorded | 244 |
+| Open | 49 (28 defects, 21 tasks) |
 | Closed | 195 |
-| Next id | BUG-0243 |
+| Next id | BUG-0245 |
 
 ## Open bugs by severity
 
-8 high, 31 medium, 8 low.
+8 high, 32 medium, 9 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -52,6 +52,7 @@
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
+| [BUG-0243](#bug_0243) | medium | defect | In a trading-day run, a few orders took up to 1.5 seconds and the cause is not known |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -60,6 +61,7 @@
 | [BUG-0215](#bug_0215) | low | defect | `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds |
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
+| [BUG-0244](#bug_0244) | low | defect | An idle connection to the authentication service is closed every ten minutes and reported as a Warning |
 
 ---
 
@@ -155,6 +157,53 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0243: In a trading-day run, a few orders took up to 1.5 seconds and the cause is not known {#bug_0243}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-10 |
+| Recorded | 2026-11-10 |
+| How | The trading-day run made to finish checking [BUG-0130](#bug_0130): `perf_run.py --gateway binary --clients 4 --client-cpus 0,1 --profile profiles/trading_day_latency.toml`, with the machine in its measuring state. Quill logs, resource usage and the manifest are in `tmp/nov10/run-logs`; the profiling data is in `installed/perf/20261110_151139` |
+| Impact | At 1,925 orders a second, every order that arrives during a stall waits for it. In the worst thirty seconds of this run the 99.9th percentile was 1.5 seconds. The 90-minute phase's 99.9th percentile was 27 ms, while its 99th was 237 microseconds |
+
+**What was measured.** Every order was acknowledged: 13,016,000 sent, and 13,016,000 counted by `orders_processed_total` on the primary matching engine, which led throughout. The round trip, from Prometheus, in microseconds:
+
+| Phase | Orders | Median | 99th percentile | 99.9th percentile |
+|---|---|---|---|---|
+| pre-open | 35,876 | 178 | 246 | 480 |
+| open auction | 840,731 | 184 | 248 | 474 |
+| morning steady | 207,704 | 175 | 234 | 294 |
+| sustained elevated | 10,389,533 | 171 | 237 | 27,330 |
+| midday lull | 20,032 | 177 | 237 | 368 |
+| afternoon burst | 598,830 | 175 | 238 | 413 |
+| close | 925,271 | 181 | 239 | 469 |
+
+Within the 90-minute phase, 22 of 180 windows of thirty seconds had a 99.9th percentile above 1 ms. Most were between 2 and 25 ms. Two episodes were far larger: 413 and 886 ms in the windows sampled at 15:44:35 and 15:45:05, and 1,511, 458 and 232 ms in those sampled at 16:51:05 to 16:52:05. The other phases, including the two at the highest rates, show none.
+
+**Not established.** Which stage of the order path the time went to, and whether something else on the machine caused it. No component wrote a Warning or an Error that explains it. Both sequencers made only their first WAL segment on the writing thread, so waiting for a new segment is ruled out.
+
+**What is wanted.** The order path's stage histograms read for those two episodes, to find which thread held the orders, then the cause found. The run must be repeated on an otherwise idle machine before the stalls are attributed to the venue.
+
+**Principles.** None directly.
+
+### BUG-0244: An idle connection to the authentication service is closed every ten minutes and reported as a Warning {#bug_0244}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-10 |
+| Recorded | 2026-11-10 |
+| How | Reading the binary gateway's Quill log after the trading-day run recorded in [BUG-0243](#bug_0243) |
+| Impact | Each gateway writes Warnings about every ten minutes on a healthy venue, and for the two seconds before it reconnects it has no connection to that authentication service |
+
+**What happens.** After logon, a gateway sends nothing to the authentication services. Each service closes the connection with "no data received for 600s", the gateway writes Warnings saying that it was lost, and it reconnects two seconds later.
+
+**What is wanted.** The connection is kept open by a heartbeat, or is exempt from the inactivity check; then a loss of it is worth a Warning. To be checked: what a member's logon in those two seconds receives.
+
+**Principles.** None directly; a Warning is for something that needs attention.
+
 
 ### BUG-0242: The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol {#bug_0242}
 
@@ -3071,7 +3120,7 @@ it on are [BUG-0062](#bug_0062).
 | Severity | medium |
 | Found | 2026-10-11 |
 | Recorded | 2026-10-11 |
-| Fixed | 2026-11-09 -- the WAL's helper keeps `[wal] segments_kept_ready` segments ready, four by default, and the writing thread never waits for it ([keeping_segments_ready.md](durability/keeping_segments_ready.md)). Every segment is filled under a temporary name, `filling_wal_NNNNNN.helper` or `.writer`, and linked to its final name only when full, so a file named `wal_NNNNNN.log` is always complete; if no segment is ready the writer makes the next itself and logs a Warning naming it and how long it took; the writer and the helper pass segments through a ring of slots, each handed over with an atomic flag. At opening, temporary files are deleted and a segment shorter than the segment size is completed with zeros, keeping its records. That closes a hazard found while designing this: a segment left short under its final name was mapped in full on the next start, and an append past its end was killed by SIGBUS, which a death test showed before the fix. The gauge `wal_segments_waited_for` is removed, since the writer no longer waits. 42 WAL tests pass; breaking the writer five ways (short segments left alone, waiting for the helper, passed slots never freed, temporary files kept, one segment kept ready) each made a test fail, the first by SIGBUS; under ThreadSanitizer seven runs of 91 tests reported nothing, and a deliberate race was reported in three runs of three. Building it found two assumptions of one ready segment: three readers matched temporary names beginning `wal_` as segments, and `ha_test.py` read only the newest two files for orders; both corrected. All 1,301 library unit tests and all 103 `ha_test.py` scenarios pass, with the WALs cleared first. The trading-day run the design asks for has not yet been made |
+| Fixed | 2026-11-09 -- the WAL's helper keeps `[wal] segments_kept_ready` segments ready, four by default, and the writing thread never waits for it ([keeping_segments_ready.md](durability/keeping_segments_ready.md)). Every segment is filled under a temporary name, `filling_wal_NNNNNN.helper` or `.writer`, and linked to its final name only when full, so a file named `wal_NNNNNN.log` is always complete; if no segment is ready the writer makes the next itself and logs a Warning naming it and how long it took; the writer and the helper pass segments through a ring of slots, each handed over with an atomic flag. At opening, temporary files are deleted and a segment shorter than the segment size is completed with zeros, keeping its records. That closes a hazard found while designing this: a segment left short under its final name was mapped in full on the next start, and an append past its end was killed by SIGBUS, which a death test showed before the fix. The gauge `wal_segments_waited_for` is removed, since the writer no longer waits. 42 WAL tests pass; breaking the writer five ways (short segments left alone, waiting for the helper, passed slots never freed, temporary files kept, one segment kept ready) each made a test fail, the first by SIGBUS; under ThreadSanitizer seven runs of 91 tests reported nothing, and a deliberate race was reported in three runs of three. Building it found two assumptions of one ready segment: three readers matched temporary names beginning `wal_` as segments, and `ha_test.py` read only the newest two files for orders; both corrected. All 1,301 library unit tests and all 103 `ha_test.py` scenarios pass, with the WALs cleared first. The trading-day run the design asks for was made on 10 November 2026 with `profiles/trading_day_latency.toml` and 13,016,000 orders: `wal_segments_filled_inline` was 1 on each sequencer, the first segment, and neither sequencer wrote the Warning for a segment made on the writing thread |
 | How | Reviewing principle F4 (no order-handling thread waits for the disk) in `docs/design_principles.md`, and reading `WalWriter::ensure_capacity` to see what happens when the helper is late |
 | Impact | If filling the next segment stalls for longer than one segment's lifetime, the sequencer's thread that writes the log waits, and the wait falls on the order being written. In a burst a 4 MiB segment can fill in about a tenth of a second, so a journal stall of a few hundred milliseconds is enough |
 
