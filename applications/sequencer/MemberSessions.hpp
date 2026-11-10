@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include <pubsub_itc_fw/IncrementalRehashMap.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
 #include "SeqNumRanges.hpp"
@@ -234,9 +235,19 @@ class MemberSessions {
 
     // ---- Orders --------------------------------------------------------------------------------------------------
 
+    /**
+     * @brief Makes the calling thread the owner of the map of which session placed each order, and reserves it for
+     *        @p open_orders_expected orders, so that it does not grow while the venue trades. Called once, by the
+     *        sequencer's own thread, before it sequences anything.
+     */
+    void reserve_orders(size_t open_orders_expected) {
+        origins_.hand_over_ownership();
+        origins_.reserve(open_orders_expected);
+    }
+
     /// The order numbered @p seq_no was placed by @p origin.
     void order_placed(int64_t seq_no, const OriginSession& origin) {
-        origins_[seq_no] = origin;
+        static_cast<void>(origins_.insert_or_assign(seq_no, origin));
     }
     /// The session that placed the order numbered @p seq_no, or nullptr when none is kept.
     [[nodiscard]] const OriginSession* origin(int64_t seq_no) const {
@@ -261,7 +272,10 @@ class MemberSessions {
     std::unordered_map<fix_common::SessionIdentity, CancelOnDisconnect, fix_common::SessionIdentityHash> instructions_;
     // The default of the gateway that last bound each session (gateway_default_stated()).
     std::unordered_map<fix_common::SessionIdentity, CancelOnDisconnectApplied, fix_common::SessionIdentityHash> gateway_defaults_;
-    std::unordered_map<int64_t, OriginSession> origins_;
+    // Which session placed each order still open, by the order's sequence number. Reserved at start-up for every order
+    // that may be open at once (reserve_orders()), and grown a few entries at a time if a day exceeds that, rather than
+    // rehashed all at once on the thread that sequences orders.
+    pubsub_itc_fw::IncrementalRehashMap<int64_t, OriginSession> origins_;
     // Every session that has had a report dropped since it was last connected, so that the first is said as a Warning.
     std::unordered_set<fix_common::SessionIdentity, fix_common::SessionIdentityHash> sessions_with_reports_dropped_;
     int64_t reports_dropped_unbound_{0};

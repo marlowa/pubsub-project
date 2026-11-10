@@ -160,6 +160,15 @@ struct SequencerConfiguration {
     size_t identifiers_reserved{0};
 
     /**
+     * @brief How many orders may be open at once: `[commands] open_orders_expected`, the matching engine's
+     *        `order_book_region_capacity` in each environment.
+     *
+     * The map of which session placed each open order (MemberSessions) is reserved for this many when the sequencer
+     * starts, so that it does not grow while the venue trades (docs/venue/sequencer_order_path_without_the_heap.md).
+     */
+    size_t open_orders_expected{0};
+
+    /**
      * @brief How many orders the leader holds at most while waiting for the follower's acknowledgement
      * or a voter's confirmation. Orders that arrive with the storage full wait in the WAL instead, and
      * are sent to the matching engine from there when they are released, by the reading thread. When

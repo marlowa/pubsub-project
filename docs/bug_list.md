@@ -824,6 +824,14 @@ The waiting reports' storage and its limits are to be written up and agreed befo
 
 **Designed 2026-11-09:** [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md). Both decisions agreed with Andrew on 9 November 2026: reading the engines' report connections pauses while the ring of waiting reports is full, and the session map is sized from each environment's figure for open orders, `order_book_region_capacity`.
 
+
+**Part built 2026-11-10: the session map** (section 4 of the design). `MemberSessions::origins_` is an
+`IncrementalRehashMap`, reserved at start-up for `[commands] open_orders_expected`, each environment's matching engine
+region capacity, so that it no longer allocates a node for each order or rehashes all at once. Reserving writes only the
+table's state bytes; the entries are faulted in as orders first use each page, about one fault for every 46 new orders,
+as in the engine's book, and whether to touch them at start-up is still to be decided. The reports waiting for their
+record to be committed (section 3) are not yet changed, and the allocation-counting test of step 2 waits for
+[BUG-0087](#bug_0087)'s tool.
 ### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
 
 | | |

@@ -110,6 +110,13 @@ renewal_interval_milliseconds = ${shared_lease_renewal_interval_milliseconds}
 [commands]
 identifiers_reserved = 200000000
 
+# How many orders may be open at once in this environment: the matching engine's order_book_region_capacity,
+# the figure its open-order region is sized by. The sequencer's map of which session placed each open order
+# is sized for it when the sequencer starts, so that it does not grow during the day. It costs 89 bytes for
+# each slot, with at least twice as many slots as orders, rounded up to a power of two: about 370 MB at two
+# million orders, about 24 GB at a hundred million (docs/venue/sequencer_order_path_without_the_heap.md).
+open_orders_expected = ${matching_engine_order_book_region_capacity}
+
 # How many orders the leader holds at most while it waits for the follower's acknowledgement or a voter's
 # confirmation. Orders that arrive with this storage full wait in the write-ahead log instead, and are sent
 # to the matching engine from there once released. 16,384 is about half a second at the highest rate

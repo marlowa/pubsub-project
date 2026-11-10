@@ -184,6 +184,14 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
         }
         config.identifiers_reserved = static_cast<size_t>(identifiers_reserved);
 
+        // With high availability on or off: the leader records which session placed every order it sequences.
+        int64_t open_orders_expected = 0;
+        toml.get_required_except("commands.open_orders_expected", open_orders_expected);
+        if (open_orders_expected <= 0) {
+            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: commands.open_orders_expected must be positive");
+        }
+        config.open_orders_expected = static_cast<size_t>(open_orders_expected);
+
         int32_t wal_subscriber_listen_port = 0;
         toml.get_required_except("wal_subscriber.listen_host", config.wal_subscriber_listen_host);
         toml.get_required_except("wal_subscriber.listen_port", wal_subscriber_listen_port);

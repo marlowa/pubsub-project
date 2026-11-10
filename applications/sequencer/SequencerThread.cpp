@@ -120,6 +120,9 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
 }
 
 void SequencerThread::on_initial_event() {
+    // Reserved here, on the thread that records which session placed each order, for every order that may be open at once,
+    // so that the map does not grow while the venue trades (docs/venue/sequencer_order_path_without_the_heap.md).
+    sessions_.reserve_orders(config_.open_orders_expected);
     // The log starts a helper thread to prepare its next segment, and a new thread inherits the
     // processor mask of whichever thread created it. This one is created from here, on the
     // application thread, by then pinned to a processor reserved for the order path -- so

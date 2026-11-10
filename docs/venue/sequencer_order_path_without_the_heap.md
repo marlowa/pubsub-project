@@ -1,6 +1,7 @@
 # The leading sequencer's order path without the heap {#sequencer_order_path_without_the_heap}
 
-**Status: agreed, not built.** This is the design for [BUG-0131](../bug_list.md#bug_0131). Items 1 to 4 below were
+**Status: section 4, the session map, is built; section 3, the waiting reports, is not.** This is the design for
+[BUG-0131](../bug_list.md#bug_0131). Items 1 to 4 below were
 agreed with Andrew on 11 October 2026, and both decisions in section 6 on 9 November 2026: the venue's figure for open orders is each environment's
 `order_book_region_capacity`.
 
@@ -50,9 +51,18 @@ engine's own pacing (BUG-0234) keeps it from piling up reports meanwhile.
 
 ## 4. The session map
 
-`MemberSessions::origins_` becomes an `IncrementalRehashMap<int64_t, OriginSession>`, sized at start-up for the expected
-number of open orders (decision 2). `OriginSession` is a fixed size already. Inserting then allocates nothing, and a day
-with more open orders than expected moves entries a few at a time rather than stalling.
+`MemberSessions::origins_` is an `IncrementalRehashMap<int64_t, OriginSession>`, sized at start-up for the expected
+number of open orders (decision 2): `[commands] open_orders_expected` in each sequencer's configuration, set from the
+environment's `matching_engine_order_book_region_capacity`, and reserved by `MemberSessions::reserve_orders` on the
+sequencer's own thread before it sequences anything. `OriginSession` is a fixed size already. Inserting then allocates
+nothing, and a day with more open orders than expected moves entries a few at a time rather than stalling.
+
+Reserving writes only the table's one byte of state for each slot, 4 MB at two million orders, which costs the
+sequencer's start-up a few milliseconds. The entries, 352 MB at two million orders, are left for the operating system to
+give real memory to as orders first use each page: about one page fault for every 46 new orders, on the thread that
+sequences them. The matching engine's book uses the same map in the same way. Touching every page at start-up would
+remove those faults at the cost of holding the whole table in memory from the start, about 24 GB in production; that is
+a decision not yet taken.
 
 ## 5. Steps, and how each is known to be right
 

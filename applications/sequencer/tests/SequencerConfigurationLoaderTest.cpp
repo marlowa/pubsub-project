@@ -57,6 +57,7 @@ renewal_interval_milliseconds = 1000
 
 [commands]
 identifiers_reserved = 1000
+open_orders_expected = 2000
 orders_held_at_most = 64
 
 [wal_subscriber]
@@ -349,6 +350,7 @@ port     = 7010
 TEST(SequencerConfigurationLoaderTest, ReadsHowManyCommandIdentifiersToReserve) {
     const auto config = load_with_gateways(one_gateway);
     EXPECT_EQ(config.identifiers_reserved, 1000U);
+    EXPECT_EQ(config.open_orders_expected, 2000U);
 }
 
 TEST(SequencerConfigurationLoaderTest, ReadsHowManyOrdersTheLeaderHoldsAtMost) {
@@ -439,6 +441,16 @@ TEST(SequencerConfigurationLoaderTest, RejectsHoldingNoOrders) {
     EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
 }
 
+TEST(SequencerConfigurationLoaderTest, RejectsExpectingNoOpenOrders) {
+    std::string sections(required_sections);
+    const std::string expected = "open_orders_expected = 2000";
+    sections.replace(sections.find(expected), expected.size(), "open_orders_expected = 0");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
+}
+
 TEST(SequencerConfigurationLoaderTest, RejectsReservingNoCommandIdentifiers) {
     std::string sections(required_sections);
     const std::string reserved = "identifiers_reserved = 1000";
@@ -489,4 +501,5 @@ TEST(SequencerConfigurationLoaderTest, ReadsHowManyCommandIdentifiersToReserveWi
     const auto config = sequencer::SequencerConfigurationLoader::load(toml);
     EXPECT_FALSE(config.ha_enabled);
     EXPECT_EQ(config.identifiers_reserved, 1000U);
+    EXPECT_EQ(config.open_orders_expected, 2000U);
 }
