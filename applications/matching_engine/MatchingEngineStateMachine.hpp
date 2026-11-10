@@ -83,6 +83,9 @@ class MatchingEngineOutputsInterface {
 
     /// A live order was accepted onto the book. Called once for each.
     virtual void order_accepted() = 0;
+
+    /// A new order refused because the open-order region is full, on the live path only.
+    virtual void order_refused_for_a_full_book() = 0;
 };
 
 /**

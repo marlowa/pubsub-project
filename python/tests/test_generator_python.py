@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from dsl import pdu_framing
+from dsl.generator_cpp import CppGenerator
 from dsl.generator_python import PythonGenerator
 from dsl.loader import load
 from dsl.parser import Parser
@@ -247,7 +248,6 @@ def test_a_string_that_is_not_utf8_survives_decoding_and_encoding(every_type):  
 
 
 def test_a_list_of_enums_round_trips():
-    # Not checked against the C++ code, which cannot yet write a list of enums (BUG-0177).
     module = _generate("enum Colour : i16 {\n Red = 1\n Blue = -2\n}\nmessage M (id=1)\n list<Colour> colours\nend\n")
     message = module.M(colours=[module.Colour.Red, module.Colour.Blue, 9])
     encoded = message.encode()
@@ -305,3 +305,12 @@ def test_the_command_line_writes_a_python_module():
     module = _import(output.read_text())
     assert module.MESSAGES_BY_ID[2] is module.Text
     output.unlink()
+
+
+def test_the_cpp_generator_treats_a_list_of_enums_as_integers_and_spells_the_smallest_i64():
+    source = "enum Colour : i16 {\n Red = 1\n}\nenum Huge : i64 {\n Least = -9223372036854775808\n}\nmessage M (id=1)\n list<Colour> colours\nend\n"
+    tree = Parser(source).parse()
+    Validator(tree).validate()
+    header = CppGenerator(namespace="ns").emit(tree)
+    assert "ListView<int16_t> colours" in header and "ColourView" not in header
+    assert "Least = (-9223372036854775807LL - 1)" in header

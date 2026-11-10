@@ -17,6 +17,7 @@ from .ast import (
     ReferenceType,
     StringType,
 )
+from .generator_cpp import CppGenerator
 
 
 @dataclass
@@ -43,6 +44,7 @@ class Pybind11Generator:
 
     def emit(self, ast: DslFile) -> str:
         """Generate and return the complete pybind11 bindings source as a string."""
+        ast = CppGenerator.with_lists_of_enums_as_lists_of_integers(ast)
         lines: List[str] = []
         w = lines.append
 

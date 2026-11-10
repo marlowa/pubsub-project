@@ -195,3 +195,22 @@ def test_roundtrip_empty_list_of_string():
     buf = mod.encode_Foo(foo)
     foo2 = mod.decode_Foo(buf)
     assert foo2.tags.size == 0
+
+
+# =============================================================================
+# A list of enums is bound as a list of the enum's underlying integers
+# =============================================================================
+
+def test_roundtrip_list_of_enums():
+    """A list of enums compiles and round-trips, including a value the enum does not list."""
+    mod = build("""
+        enum Colour : i16 {
+            Red = 1
+            Blue = -2
+        }
+        message Foo (id=1)
+            list<Colour> colours
+        end
+    """)
+    decoded = mod.decode_Foo(mod.encode_Foo(mod.Foo(colours=[1, -2, 9])))
+    assert list(decoded.colours) == [1, -2, 9]

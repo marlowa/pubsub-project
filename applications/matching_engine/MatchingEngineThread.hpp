@@ -136,6 +136,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      * order, and folding the two together would leave neither rate readable.
      */
     pubsub_itc_fw::CounterHandle orders_processed_counter_;
+    pubsub_itc_fw::CounterHandle orders_refused_full_book_counter_;
 
     // HA role flags (set from configuration at construction).
     bool ha_enabled_{false};
@@ -212,6 +213,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         void order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
                            ReportIsRepeat repeat, int64_t sequence_number, std::string_view orig_cl_ord_id) override;
         void order_accepted() override;
+        void order_refused_for_a_full_book() override;
 
       private:
         MatchingEngineThread& owner_;

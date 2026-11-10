@@ -1,6 +1,5 @@
 # Every kind of field the DSL has, for checking each code generator byte for byte against the C++ one
-# (python/tests/test_generator_python.py). Not used by the venue. A list of enums is left out: the C++ generator
-# cannot yet write one (BUG-0177).
+# (python/tests/test_generator_python.py). Not used by the venue.
 
 enum Small : i8 {
     Low = -128
@@ -64,6 +63,7 @@ message Lists (id=5)
     list<Inner> inners
     list<list<i16>> grid
     list<list<string>> words
+    list<Small> smalls
 end
 
 message Arrays (id=6)

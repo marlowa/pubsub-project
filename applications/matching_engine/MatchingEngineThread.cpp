@@ -159,6 +159,8 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     // configuration rather than from here. See docs/operations/metrics.md.
     orders_processed_counter_ = get_reactor().metrics().register_counter("matching_engine_thread", "orders_processed_total",
                                                                          "New orders accepted onto the book by the matching engine");
+    orders_refused_full_book_counter_ = get_reactor().metrics().register_counter("matching_engine_thread", "orders_refused_full_book_total",
+                                                                                 "New orders refused because the open-order region is full");
     follower_report_differences_counter_ =
         get_reactor().metrics().register_counter("matching_engine_thread", "follower_report_differences_total",
                                                  "Reports this engine produced while following that differ from the leader's of the same command");
@@ -841,6 +843,10 @@ void MatchingEngineThread::EngineOutputs::order_accepted() {
     // book without this, and a follower discards them, so counting arrivals would make the series jump
     // by the whole replayed backlog at each change of leader and stop meaning orders the venue processed.
     owner_.orders_processed_counter_.increment();
+}
+
+void MatchingEngineThread::EngineOutputs::order_refused_for_a_full_book() {
+    owner_.orders_refused_full_book_counter_.increment();
 }
 
 bool MatchingEngineThread::holding_reports_until_entitled() const {

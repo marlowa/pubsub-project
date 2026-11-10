@@ -84,6 +84,7 @@ class Outputs : public MatchingEngineOutputsInterface {
     void order_outcome(const fix_common::SessionIdentity& /*session*/, std::string_view /*cl_ord_id*/, pubsub_itc_fw_app::OrderOutcomeKind /*outcome*/,
                        ReportIsRepeat /*repeat*/, int64_t /*sequence_number*/, std::string_view /*orig_cl_ord_id*/) override {}
     void order_accepted() override {}
+    void order_refused_for_a_full_book() override {}
 
     std::vector<Report> reports;
 };

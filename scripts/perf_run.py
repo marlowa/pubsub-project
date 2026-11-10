@@ -1546,6 +1546,7 @@ def main() -> None:
         # the drain wait so it counts
         # everything the pipeline had in flight.
         me_accepted_total = read_counter(me_metrics_port, "orders_processed_total")
+        me_refused_full_book = read_counter(me_metrics_port, "orders_refused_full_book_total")
         # The gateway's counters likewise, for the same reason.
         gateway_counts = read_gateway_counters(gateway_metrics_port)
 
@@ -1592,6 +1593,12 @@ def main() -> None:
     # Debug now. None means the endpoint could not be read, which is a different failure
     # from "accepted nothing" and must not be reported as a count of zero.
     me_final = -1 if me_accepted_total is None else int(me_accepted_total)
+    # An order refused because the open-order region is full has been answered. trading_day.toml fills the region on purpose.
+    if me_final >= 0:
+        refused_full_book = int(me_refused_full_book or 0)
+        if refused_full_book:
+            log(f"  {refused_full_book:,} order(s) were refused because the matching engine's open-order region is full, and count as answered")
+        me_final += refused_full_book
 
     if args.gateway == "binary":
         # The binary gateway logs no line per execution report, deliberately: doing so

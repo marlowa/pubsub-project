@@ -58,10 +58,10 @@ CASES: List[Tuple[str, str, dict]] = [
     ("enums_lowest", "Enums", {"small": I8_MIN, "medium": I16_MIN, "large": I32_MIN, "huge": I64_MIN, "letter": ord("1")}),
     ("enums_highest", "Enums", {"small": I8_MAX, "medium": I16_MAX, "large": I32_MAX, "huge": I64_MAX, "letter": ord("2")}),
     ("enums_unlisted", "Enums", {"small": 5, "medium": 7, "large": 8, "huge": 9, "letter": ord("x")}),
-    ("lists_empty", "Lists", {"numbers": [], "names": [], "blobs": [], "inners": [], "grid": [], "words": []}),
+    ("lists_empty", "Lists", {"numbers": [], "names": [], "blobs": [], "inners": [], "grid": [], "words": [], "smalls": []}),
     ("lists_full", "Lists", {"numbers": [1, -1, I32_MAX], "names": ["", "a", "ü"], "blobs": [b"", b"\x00\xff"],
                              "inners": [INNER_ONE, INNER_TWO],
-                             "grid": [[1, 2], [], [I16_MIN]], "words": [["a"], [], ["b", "c"]]}),
+                             "grid": [[1, 2], [], [I16_MIN]], "words": [["a"], [], ["b", "c"]], "smalls": [-128, 0, 127]}),
     ("arrays", "Arrays", {"small_array": [I8_MIN, 0, 1, I8_MAX], "pair": [I16_MIN, I16_MAX], "numbers": [1, 2, 3],
                           "wide": [I64_MIN, I64_MAX]}),
     ("nested_absent", "Nested", {"inner": {"number": 5, "label": "in"}, "maybe_inner": None, "after": 9}),
@@ -178,10 +178,16 @@ class _CppWriter:
         if isinstance(type_node, BytesType):
             return "BytesView"
         if isinstance(type_node, ListType):
-            return f"ListView<{self.element_type(type_node.element_type)}>"
+            return f"ListView<{self.element_type(self.as_list_element(type_node.element_type))}>"
         if isinstance(type_node, ReferenceType):
             return type_node.name
         raise RuntimeError(f"no C++ element type for {type_node}")
+
+    def as_list_element(self, type_node):
+        """A list of an enum holds integers of the enum's type in the C++ code."""
+        if isinstance(type_node, ReferenceType) and type_node.name in self.enums:
+            return PrimitiveType(self.enums[type_node.name].underlying_type)
+        return type_node
 
     def value(self, type_node, value) -> str:  # pylint: disable=too-many-return-statements
         if isinstance(type_node, PrimitiveType):
@@ -207,10 +213,11 @@ class _CppWriter:
             items = ", ".join(self.value(type_node.element_type, item) for item in value)
             return f"std::array<{self.element_type(type_node.element_type)}, {type_node.length}>{{{{{items}}}}}"
         if isinstance(type_node, ListType):
-            element = self.element_type(type_node.element_type)
+            element_node = self.as_list_element(type_node.element_type)
+            element = self.element_type(element_node)
             if not value:
                 return f"ListView<{element}>{{}}"
-            items = [self.value(type_node.element_type, item) for item in value]
+            items = [self.value(element_node, item) for item in value]
             name = self.fresh("items")
             self.lines.append(f"    static {element} {name}[] = {{{', '.join(items)}}};")
             return f"ListView<{element}>{{{name}, {len(value)}}}"

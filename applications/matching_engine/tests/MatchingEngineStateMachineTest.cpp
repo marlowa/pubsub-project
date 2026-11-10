@@ -114,6 +114,10 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
         ++accepted;
     }
 
+    void order_refused_for_a_full_book() override {
+        ++refused_for_a_full_book;
+    }
+
     // Set by a test to make the next call of that kind throw, as a defect reached while applying a command would.
     bool fail_next_report{false};
     bool fail_next_outcome{false};
@@ -121,6 +125,7 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
     std::vector<RecordedReport> reports;
     std::vector<RecordedOutcome> outcomes;
     int accepted{0};
+    int refused_for_a_full_book{0};
 };
 
 constexpr OrderBook::SlotIndex region_capacity = 4;
@@ -373,6 +378,7 @@ TEST_F(MatchingEngineStateMachineTest, RefusesAnOrderWhenTheRegionIsFull) {
     EXPECT_EQ(refusal.exec_type, pubsub_itc_fw_app::ExecType::Rejected);
     EXPECT_EQ(refusal.text, "the venue is holding as many open orders as it can");
     EXPECT_EQ(outputs_.accepted, region_capacity);
+    EXPECT_EQ(outputs_.refused_for_a_full_book, 1);
 }
 
 // The sequencer writes the time of every command into its WAL record, so a record with none is the sequencer's

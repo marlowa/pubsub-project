@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 244 |
-| Open | 48 (27 defects, 21 tasks) |
-| Closed | 196 |
+| Open | 46 (25 defects, 21 tasks) |
+| Closed | 198 |
 | Next id | BUG-0245 |
 
 ## Open bugs by severity
 
-7 high, 32 medium, 9 low.
+7 high, 32 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -55,9 +55,7 @@
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
-| [BUG-0177](#bug_0177) | low | defect | The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value |
 | [BUG-0179](#bug_0179) | low | defect | The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again |
-| [BUG-0215](#bug_0215) | low | defect | `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds |
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
 | [BUG-0244](#bug_0244) | low | defect | An idle connection to the authentication service is closed every ten minutes and reported as a Warning |
@@ -376,25 +374,6 @@ the 99th percentile are not firmly established.
    send each, since a commit usually covers several records at the rates measured; another is to move the sending to
    a thread other than the one that sequences orders. Neither has been designed or measured.
 
-### BUG-0215: `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds {#bug_0215}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-10-29 |
-| Recorded | 2026-10-31 |
-| How | Measuring the cost of phase 8 with `perf_run.py --profile profiles/trading_day.toml` on the build at b46b0dd |
-| Impact | The run ends "FAIL — the matching engine did not accept every order" and exits 1 although the venue behaved as configured, so the check cannot tell a lost order from a full book |
-
-**What happens.** The profile sends 13,016,000 orders with one in ten cancelled, so about 11.7 million are left
-resting. The open-order region in `dev.toml` holds 2,000,000 (`order_book.region_capacity`), and once it is full the
-engine refuses each new order with a report ("order book region full"), as it is meant to. `perf_run.py` compares the
-leading engine's `orders_processed_total` with every order offered, so it reports 3,147,184 of 13,016,000 accepted as
-a mismatch. `trading_day_load.md` says the region bounds the book; the check does not allow for it.
-
-**What is wanted.** Either the profile keeps the resting orders within the region, with a higher cancel ratio, or the
-check counts the refusals for a full book as answered, and reports how many there were.
-
 ### BUG-0209: No scenario reaches the halt when a matching engine cannot account for the orders the venue holds {#bug_0209}
 
 | | |
@@ -630,6 +609,13 @@ been set on it, and Prometheus is optional.
    only on its machine. When the follower holds everything again, it logs that too, with how long it
    lasted.
 3. The operations dashboard alerts on the gauge.
+
+**Where it stands, 10 November 2026.** Points 1 and 2 are built. The gauge reads 1 in both situations
+(`ReplicatedWal`). Starting to trade without a standby for one of those two reasons is logged at Error, and while it
+lasts the leader logs at Error once a minute (`report_without_standby_interval`) how long it has lasted and how many
+records exist only on its machine. When the follower holds everything again it logs how long it went without
+waiting for it. `ReplicatedWalTest.ALeaderWithNoFollowerKeepsSayingSoOnceAMinute` fails with the repeated report
+removed. Point 3, the dashboard's alert, is not built.
 
 **No time limit.** Decided with Andrew, 11 October 2026: the venue does not halt itself after running
 without a standby for some time, because that would turn a loss of resilience into a loss of service
@@ -2242,30 +2228,6 @@ permits.
 
 **Principles.** F4.
 
-### BUG-0177: The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value {#bug_0177}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-10-18 |
-| Recorded | 2026-10-18 |
-| How | Building the C++ reference program for checking the Python and Java generators, in step 2 of phase 6 ([test_events.md](availability/test_events.md)), from a test DSL file holding every kind of field |
-| Impact | None on the venue today: no DSL file of the project has a list of enums or an `i64` enum entry at the smallest value, and one that did would stop the build, not misbehave. But a list of enums cannot be used in any message until this is fixed, and the cross-language check cannot cover it |
-
-**What happens.**
-
-- For a field such as `list<Small> smalls`, the decoder `generator_cpp.py` writes refers to `SmallView`, a type it
-  writes only for messages, and the compiler refuses it. A plain enum field, `Small small`, is fine. The pybind11
-  bindings (`generator_pybind11.py`) fail for the same field, because they include that header.
-- An `i64` enum entry of -9223372036854775808 is written as that literal, which the compiler warns "is so large
-  that it is unsigned": the magnitude does not fit in a signed 64-bit integer before the minus sign is applied.
-  The venue's build treats warnings as errors. The usual spelling is `(-9223372036854775807LL - 1)`.
-
-**What is wanted.** The decoder treats a list of enums as a list of integers of the enum's type, as the Java and
-Python generators do; and the smallest `i64` value is written so that it compiles cleanly.
-
-**Principles.** None; the DSL compiler.
-
 ### BUG-0179: The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again {#bug_0179}
 
 | | |
@@ -2385,6 +2347,51 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0177: The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value {#bug_0177}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| Fixed | 2026-11-10 -- `generator_cpp.py` and `generator_pybind11.py` treat a list of an enum as a list of the enum's underlying integers, as the Java and Python generators do, and the smallest `i64` value is written `(-9223372036854775807LL - 1)`. `every_type.dsl` now holds `list<Small> smalls`, so the C++, Python and Java code are checked against one another byte for byte for it; with the change removed the C++ reference program does not compile. A pybind11 module with a list of enums compiles and round-trips a value the enum does not list. |
+| How | Building the C++ reference program for checking the Python and Java generators, in step 2 of phase 6 ([test_events.md](availability/test_events.md)), from a test DSL file holding every kind of field |
+| Impact | None on the venue today: no DSL file of the project has a list of enums or an `i64` enum entry at the smallest value, and one that did would stop the build, not misbehave. But a list of enums cannot be used in any message until this is fixed, and the cross-language check cannot cover it |
+
+**What happens.**
+
+- For a field such as `list<Small> smalls`, the decoder `generator_cpp.py` writes refers to `SmallView`, a type it
+  writes only for messages, and the compiler refuses it. A plain enum field, `Small small`, is fine. The pybind11
+  bindings (`generator_pybind11.py`) fail for the same field, because they include that header.
+- An `i64` enum entry of -9223372036854775808 is written as that literal, which the compiler warns "is so large
+  that it is unsigned": the magnitude does not fit in a signed 64-bit integer before the minus sign is applied.
+  The venue's build treats warnings as errors. The usual spelling is `(-9223372036854775807LL - 1)`.
+
+**What is wanted.** The decoder treats a list of enums as a list of integers of the enum's type, as the Java and
+Python generators do; and the smallest `i64` value is written so that it compiles cleanly.
+
+**Principles.** None; the DSL compiler.
+
+### BUG-0215: `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds {#bug_0215}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-29 |
+| Recorded | 2026-10-31 |
+| Fixed | 2026-11-10 -- The matching engine counts each live order it refuses because the open-order region is full (`orders_refused_full_book_total`), and `perf_run.py` counts those refusals as answered and says how many there were. A unit test checks the count, and fails with it removed. The changed arithmetic in `perf_run.py` has not yet been run against a profile that fills the region. |
+| How | Measuring the cost of phase 8 with `perf_run.py --profile profiles/trading_day.toml` on the build at b46b0dd |
+| Impact | The run ends "FAIL — the matching engine did not accept every order" and exits 1 although the venue behaved as configured, so the check cannot tell a lost order from a full book |
+
+**What happens.** The profile sends 13,016,000 orders with one in ten cancelled, so about 11.7 million are left
+resting. The open-order region in `dev.toml` holds 2,000,000 (`order_book.region_capacity`), and once it is full the
+engine refuses each new order with a report ("order book region full"), as it is meant to. `perf_run.py` compares the
+leading engine's `orders_processed_total` with every order offered, so it reports 3,147,184 of 13,016,000 accepted as
+a mismatch. `trading_day_load.md` says the region bounds the book; the check does not allow for it.
+
+**What is wanted.** Either the profile keeps the resting orders within the region, with a higher cancel ratio, or the
+check counts the refusals for a full book as answered, and reports how many there were.
 
 ### BUG-0183: A sequencer dies with SIGBUS appending to a WAL left by earlier runs {#bug_0183}
 

@@ -284,7 +284,7 @@ namespace {
 
 // Why a leader does not wait for its follower, and how loudly that is logged. A follower that is connected and is
 // being brought up to date is expected after every start and every change of leader, and is logged at Info; no
-// follower at all, or one too far behind to keep up, is a fault and is logged at Warning.
+// follower at all, or one too far behind to keep up, means trading without a standby, and is logged at Error.
 struct WithoutFollowerReason {
     std::string_view words;
     FwLogLevel level;
@@ -312,9 +312,9 @@ void ReplicatedWal::note_whether_the_follower_is_waited_for(Clock::time_point no
 
     WithoutFollowerReason reason{"the follower has not yet acknowledged every record it was sent when it rejoined", FwLogLevel::Info};
     if (!links_.peer_connected()) {
-        reason = WithoutFollowerReason{"no follower is connected", FwLogLevel::Warning};
+        reason = WithoutFollowerReason{"no follower is connected", FwLogLevel::Error};
     } else if (running_alone_) {
-        reason = WithoutFollowerReason{"the follower is too far behind", FwLogLevel::Warning};
+        reason = WithoutFollowerReason{"the follower is too far behind", FwLogLevel::Error};
     } else if (peer_catching_up_) {
         reason = WithoutFollowerReason{"the follower is being sent the records it missed", FwLogLevel::Info};
     } else if (!follower_wal_matches_) {
@@ -324,6 +324,7 @@ void ReplicatedWal::note_whether_the_follower_is_waited_for(Clock::time_point no
     if (!committing_without_follower_) {
         committing_without_follower_ = true;
         committing_without_follower_since_ = now;
+        last_report_without_standby_at_ = now;
         without_follower_reason_ = reason.words;
         configuration_.running_alone_gauge.set(1.0);
         PUBSUB_LOG(logger_, reason.level,
@@ -335,9 +336,15 @@ void ReplicatedWal::note_whether_the_follower_is_waited_for(Clock::time_point no
     if (reason.words != without_follower_reason_) {
         without_follower_reason_ = reason.words;
         // A rejoining follower passes through several of the Info reasons within a millisecond, so only a change to a
-        // Warning reason is worth a line in the ordinary log.
-        const FwLogLevel level = reason.level == FwLogLevel::Warning ? FwLogLevel::Warning : FwLogLevel::Debug;
+        // reason for trading without a standby is worth a line in the ordinary log.
+        const FwLogLevel level = reason.level == FwLogLevel::Error ? FwLogLevel::Error : FwLogLevel::Debug;
         PUBSUB_LOG(logger_, level, "{}: still committing records without waiting for the follower -- now because {}", configuration_.owner_name, reason.words);
+    }
+    if (reason.level == FwLogLevel::Error && now - last_report_without_standby_at_ >= report_without_standby_interval) {
+        last_report_without_standby_at_ = now;
+        const auto lasted = std::chrono::duration_cast<std::chrono::seconds>(now - committing_without_follower_since_);
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "{}: still trading without a standby, for {} s -- {}. {} record(s) exist only on this machine",
+                   configuration_.owner_name, lasted.count(), reason.words, log_epochs_.last_seq_no() - peer_acked_through_);
     }
 }
 

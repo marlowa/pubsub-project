@@ -592,6 +592,24 @@ class Pair {
     prometheus::Counter leases_run_out_[2];
 };
 
+TEST(ReplicatedWalTest, ALeaderWithNoFollowerKeepsSayingSoOnceAMinute) {
+    Pair pair("replicated_wal_without_standby_reports");
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    pair.crash(1);
+    const int steps_in_a_minute = static_cast<int>(ReplicatedWal::report_without_standby_interval / LeaseTiming::tick_interval);
+    for (int step = 0; step < steps_in_a_minute - 5; ++step) {
+        pair.step();
+    }
+    EXPECT_FALSE(pair.logged("still trading without a standby")) << "said before a minute had passed";
+    for (int step = 0; step < 10; ++step) {
+        pair.step();
+    }
+    EXPECT_TRUE(pair.logged("still trading without a standby"));
+    EXPECT_EQ(pair.wals_[0]->role(), ReplicaRole::leader) << "losing the standby must not cost the lead";
+}
+
 TEST(ReplicatedWalTest, AnInstanceRunningAloneLeadsAtOnceAndCommitsEachRecordOnceWritten) {
     Pair pair("replicated_wal_alone");
     pair.start(0, /*ha_enabled=*/false);

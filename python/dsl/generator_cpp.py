@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import List
 
@@ -42,6 +42,7 @@ class CppGenerator:
 
     def emit(self, ast: DslFile, pdu_id_enum: bool = False) -> str:
         """Generate and return the complete C++ header as a string."""
+        ast = self.with_lists_of_enums_as_lists_of_integers(ast)
         lines: List[str] = []
         w = lines.append
 
@@ -294,11 +295,37 @@ class CppGenerator:
     # Enum
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def with_lists_of_enums_as_lists_of_integers(ast: DslFile) -> DslFile:
+        """The same declarations, with each list of an enum made a list of the enum's underlying integer type.
+
+        A list is decoded by pointing into the received bytes, so its elements must be able to hold any value that arrives,
+        including one the enum does not list.
+        """
+        enums = {decl.name: decl for decl in ast.declarations if isinstance(decl, EnumDecl)}
+
+        def converted(type_node):
+            if not isinstance(type_node, ListType):
+                return type_node
+            element = type_node.element_type
+            if isinstance(element, ReferenceType) and element.name in enums:
+                return replace(type_node, element_type=PrimitiveType(enums[element.name].underlying_type))
+            return replace(type_node, element_type=converted(element))
+
+        declarations = [replace(decl, fields=[replace(field, type=converted(field.type)) for field in decl.fields]) if isinstance(decl, MessageDecl) else decl
+                        for decl in ast.declarations]
+        return replace(ast, declarations=declarations)
+
+    @staticmethod
+    def _enum_value_literal(value: int) -> str:
+        """The value as C++ source. The magnitude of the smallest 64-bit integer does not fit before the minus sign is applied."""
+        return "(-9223372036854775807LL - 1)" if value == -(2**63) else str(value)
+
     def _emit_enum(self, enum: EnumDecl, w):
         w(f"enum class {enum.name} : {self._cpp_int_type(enum.underlying_type)} {{")
         for index, entry in enumerate(enum.entries):
             comma = "," if index + 1 < len(enum.entries) else ""
-            w(f"    {entry.name} = {entry.value}{comma}")
+            w(f"    {entry.name} = {self._enum_value_literal(entry.value)}{comma}")
         w("};")
         w("")
         w(f"constexpr std::string_view to_string({enum.name} value) {{")
@@ -336,7 +363,7 @@ class CppGenerator:
         w("public:")
         w(f"    enum {tag} : {cpp_type} {{")
         for entry in enum.entries:
-            w(f"        {entry.name} = {entry.value},")
+            w(f"        {entry.name} = {self._enum_value_literal(entry.value)},")
         w("    };")
         w("")
         w(f"    constexpr explicit {enum.name}({tag} t) : tag_(t) {{}}")

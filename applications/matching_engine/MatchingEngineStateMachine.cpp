@@ -348,6 +348,9 @@ void MatchingEngineStateMachine::apply_new_order_unguarded(const pubsub_itc_fw_a
                    "MatchingEngineStateMachine: order book region full at {} order(s) -- rejecting NOS seq={} ClOrdID={} (session comp_id='{}'){}",
                    book_.region_capacity(), sequence_number, view.cl_ord_id, session.comp_id_view(),
                    live ? "" : " -- during catch-up, reported as a possible repeat");
+        if (live) {
+            outputs_.order_refused_for_a_full_book();
+        }
 
         pubsub_itc_fw_app::ExecutionReport full_er{};
         full_er.order_id = "NONE";

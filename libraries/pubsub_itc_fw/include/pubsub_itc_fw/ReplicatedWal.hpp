@@ -250,6 +250,9 @@ class ReplicatedWal {
     /// microseconds, so a tenth of a second without one means it has stalled.
     static constexpr std::chrono::milliseconds follower_acknowledgement_timeout{100};
 
+    /// How often a leader with no usable follower logs at Error that it is still trading without a standby.
+    static constexpr std::chrono::seconds report_without_standby_interval{60};
+
     /// How often on_acknowledgement_watch() is meant to be called: a tenth of the timeout above, so that a
     /// stalled follower is noticed between 100 and 110 milliseconds after its last acknowledgement.
     static constexpr std::chrono::milliseconds acknowledgement_watch_interval{10};
@@ -607,6 +610,7 @@ class ReplicatedWal {
     // views a string literal.
     bool committing_without_follower_{false};
     Clock::time_point committing_without_follower_since_{};
+    Clock::time_point last_report_without_standby_at_{};
     std::string_view without_follower_reason_;
 
     // As the leader: the last record committed. Only ever advances within one leadership.
