@@ -183,6 +183,32 @@ Within the 90-minute phase, 22 of 180 windows of thirty seconds had a 99.9th per
 
 **What is wanted.** The order path's stage histograms read for those two episodes, to find which thread held the orders, then the cause found. The run must be repeated on an otherwise idle machine before the stalls are attributed to the venue.
 
+**Repeated on an idle machine, 10 November 2026, 21:38 to 23:35.** The same command, with nothing else in use. Every
+order was processed again (13,016,000 of 13,016,000). Medians 178 to 185 microseconds and 99th percentiles 238 to
+241 in every phase. The 90-minute phase's 99.9th percentile was 940 microseconds, and 14 of its 180 windows were above
+1 ms. Two episodes were large: 224 ms in the window sampled at 22:23:55, and 439, 940, 432, 389 and 971 ms from 23:09:55
+to 23:11:55. So the stalls are not caused by other use of the machine. Logs and resource usage are kept in
+`tmp/nov10/run2-logs`, and the profiling data in `installed/perf/20261110_213828`.
+
+**What the two runs show.**
+
+- In the windows of the 23:10 episode, the time an order waited in the queue of commands for the matching engine's
+  thread (`itc_queue_latency_nanoseconds`) reached the top of its histogram, 100 ms, in both engines at once, the
+  follower as well as the leader. The reactors' own command latency stayed below 5 ms. The orders were waiting for
+  the engines' application threads.
+- The matching engines grow their order book's storage in steps, logging "order book storage growing -- allocating".
+  Both engines grew it to 564 MB at 22:23:25.247, the moment of the 224 ms stall. Both runs' largest stalls followed
+  the growth to 1,128 MB: it happened at 16:39:44 and 23:06:34, and the stalls began at 16:51 and 23:09. The first run's
+  stall at 15:44 followed a growth to 282 MB at 15:43:15.
+- Swap did not change during the 23:10 episode (608 to 613 MB free), and at least 4.3 GB of memory was available.
+- The open-order regions are on `/mnt/sda1`, which is mounted without `lazytime`; the WALs are on `/nvme`, which has
+  it. `lazytime` is what removed the stalls of [BUG-0070](#bug_0070).
+
+**Not established.** Which of these is the cause. The growth explains the stall at 22:23 directly, but not why the
+largest stalls come minutes after a growth. Next: the engine's own time for each command around those moments, and a
+run with the regions on a file system mounted with `lazytime`, or with the book's storage sized for the run at
+start-up, each changed alone.
+
 **Principles.** None directly.
 
 ### BUG-0244: An idle connection to the authentication service is closed every ten minutes and reported as a Warning {#bug_0244}
