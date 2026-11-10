@@ -109,6 +109,7 @@ MSG_TYPE, SENDER_COMP_ID, TARGET_COMP_ID, MSG_SEQ_NUM, SENDING_TIME = 35, 49, 56
 ENCRYPT_METHOD, HEART_BT_INT, RESET_SEQ_NUM_FLAG, TEST_REQ_ID = 98, 108, 141, 112
 USERNAME, PASSWORD, DEFAULT_APPL_VER_ID_TAG = 553, 554, 1137
 CL_ORD_ID, ORIG_CL_ORD_ID, SYMBOL, SIDE, ORDER_QTY, ORD_TYPE = 11, 41, 55, 54, 38, 40
+EXEC_TYPE = 150
 PRICE, TIME_IN_FORCE, TRANSACT_TIME, TEXT, ACCOUNT = 44, 59, 60, 58, 1
 SECURITY_ID, SECURITY_ID_SOURCE, EX_DESTINATION = 48, 22, 100
 EXEC_INST, MIN_QTY, MAX_FLOOR = 18, 110, 111
@@ -118,6 +119,8 @@ NO_PARTY_SUB_IDS, PARTY_SUB_ID, PARTY_SUB_ID_TYPE = 802, 523, 803
 
 MSG_LOGON, MSG_LOGOUT, MSG_HEARTBEAT, MSG_TEST_REQUEST = "A", "5", "0", "1"
 MSG_RESEND_REQUEST, MSG_REJECT, MSG_EXECUTION_REPORT = "2", "3", "8"
+MSG_ORDER_CANCEL_REJECT = "9"
+EXEC_TYPE_REJECTED = "8"
 MSG_NEW_ORDER_SINGLE, MSG_ORDER_CANCEL_REQUEST = "D", "F"
 
 
@@ -255,11 +258,17 @@ class FixSession:
                 continue
             if msg_type == MSG_RESEND_REQUEST:
                 fail_loudly(f"{self.comp_id}: gateway sent a ResendRequest, which this client does not implement")
+            # A cancel the matching engine refuses is answered with an OrderCancelReject, and one the gateway refuses with a
+            # session-level Reject. Each is the answer to a message this client sent, as an execution report is.
+            if msg_type in (MSG_ORDER_CANCEL_REJECT, MSG_REJECT):
+                self.reports_received += 1
             if msg_type == MSG_EXECUTION_REPORT:
                 self.reports_received += 1
                 cl_ord_id = field(message, CL_ORD_ID)
                 if cl_ord_id and not cl_ord_id.endswith("-CANCEL"):
-                    self.resting.append(cl_ord_id)
+                    # A refused order is not resting, so a cancel of it could only be refused in its turn.
+                    if field(message, EXEC_TYPE) != EXEC_TYPE_REJECTED:
+                        self.resting.append(cl_ord_id)
                     sent = self.unanswered_since.pop(cl_ord_id, None)
                     if sent is not None:
                         self.answer_times.append((sent[0], time.monotonic() - sent[1], cl_ord_id))

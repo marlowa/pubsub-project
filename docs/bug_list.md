@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 242 |
-| Open | 54 (33 defects, 21 tasks) |
-| Closed | 188 |
+| Open | 51 (30 defects, 21 tasks) |
+| Closed | 191 |
 | Next id | BUG-0243 |
 
 ## Open bugs by severity
 
-8 high, 32 medium, 14 low.
+8 high, 31 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -51,17 +51,14 @@
 | [BUG-0209](#bug_0209) | medium | task | No scenario reaches the halt when a matching engine cannot account for the orders the venue holds |
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
-| [BUG-0235](#bug_0235) | medium | defect | Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
 | [BUG-0109](#bug_0109) | low | defect | The FIX gateway's health line counts cancel reports as answered orders |
-| [BUG-0149](#bug_0149) | low | defect | `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment |
 | [BUG-0166](#bug_0166) | low | defect | The reactor writes a Warning for every send to a connection that has gone, not one for each connection |
 | [BUG-0177](#bug_0177) | low | defect | The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value |
 | [BUG-0179](#bug_0179) | low | defect | The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again |
-| [BUG-0214](#bug_0214) | low | defect | `fix_load_client.py` reports messages unreported that the venue answered, because it cancels orders the venue refused and does not count the OrderCancelReject that answers each |
 | [BUG-0215](#bug_0215) | low | defect | `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds |
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
@@ -252,34 +249,6 @@ for a recurring timer that would mean firing continuously, so it was left as it 
 **What is wanted.** A recurring timer of no interval refused where it is asked for, with `PreconditionAssertion` on the calling
 thread as for other misuse of the framework, after checking every caller whose interval comes from configuration.
 
-### BUG-0235: Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later {#bug_0235}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-08 |
-| Recorded | 2026-11-08 |
-| How | Scenario 80 run alone after the full suite run for [BUG-0225](#bug_0225); logs kept in `tmp/ha_test_failures/20261108-092325-scenario-80-catch_up_survives_second_connection` |
-| Impact | Scenario 80 fails although nothing in the venue is wrong, which costs a run and can hide a real failure among false ones |
-
-**What happens.** Scenario 80 exists to show that a matching engine catching up from far back finishes its catch-up
-when the second sequencer connects to it during that catch-up. It restarts the primary engine with its region damaged,
-waits for the engine to report that its catch-up has started, and only then restarts the follower sequencer, which
-connects to the engine about half a second later. The catch-up of 400,000 records lasts 0.5 to 1.3 seconds on this
-machine. If the follower sequencer connects after it has finished, the scenario fails with "the scenario did not make
-the window it exists for".
-
-On 8 November 2026 it failed this way: the engine's catch-up ran from 09:23:22.710 to 09:23:23.210, and the follower
-sequencer connected at 09:23:23.249, 39 milliseconds late. In the suite run before it, the catch-up lasted 0.57 seconds
-and the follower connected 0.51 seconds into it; in the run before that, 1.26 seconds and 0.55.
-
-**What is wanted.** The scenario makes its window rather than hoping for it: for instance, the follower sequencer is
-started before the engine, and its order connection to the engine held back by a setting used only by tests until the
-engine's catch-up has started, as `hold_sequencer_connections_until_role_decided` does for scenario 100; or the
-catch-up is made long enough, by the number of orders, that half a second is a small part of it.
-
-**Principle.** None; a test that fails without a defect costs runs and trust.
-
 ### BUG-0229: The functional specification has not been checked against the code, and specifies recovery far more than normal operation {#bug_0229}
 
 | | |
@@ -423,26 +392,6 @@ a mismatch. `trading_day_load.md` says the region bounds the book; the check doe
 **What is wanted.** Either the profile keeps the resting orders within the region, with a higher cancel ratio, or the
 check counts the refusals for a full book as answered, and reports how many there were.
 
-### BUG-0214: `fix_load_client.py` reports messages unreported that the venue answered, because it cancels orders the venue refused and does not count the OrderCancelReject that answers each {#bug_0214}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-10-27 |
-| Recorded | 2026-10-27 |
-| How | Measuring a far-back catch-up of the matching engine with `tmp/phase5/engine_catchup.sh`, whose probe ran on into the halt the absence rule wrote |
-| Impact | A load run that crosses a halt, or any refusal, ends INCOMPLETE and exits 1 although the venue answered every message, so the verdict cannot be trusted and a real loss would look the same |
-
-**What happens.** The client adds every order that is sent an execution report to its list of resting orders, a
-Rejected one included, and sends its cancels from that list. A cancel of an order the venue refused is answered with
-an OrderCancelReject (35=9), and the client counts only execution reports (35=8). On 27 October 2026 the probe sent
-24,000 orders and 19,676 cancels, the venue was halted for most of it, and the client counted 27,342 reports and said
-16,334 messages were unreported; the FIX gateway's own progress line shows it sent the probe's session 45,002
-messages in that time and dropped none.
-
-**What is wanted.** A Rejected order is not put on the list of resting orders, and an OrderCancelReject is counted
-as the answer to a cancel, so that INCOMPLETE means a message that got no answer at all.
-
 ### BUG-0209: No scenario reaches the halt when a matching engine cannot account for the orders the venue holds {#bug_0209}
 
 | | |
@@ -577,30 +526,6 @@ nothing. The secondary's reactor lap was between 27 and 38 microseconds at the m
 every trading-day figure from those runs was measured on the order path through the engine that
 does not keep looking for work. The before-and-after comparison in phase 8 step 5 is not affected,
 because the same engine led on both sides of it.
-
-### BUG-0149: `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment {#bug_0149}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-10-12 |
-| Recorded | 2026-10-12 |
-| How | Running every high availability scenario against the Release install after step 2 of phase 3 of the recovery plan |
-| Impact | Scenario 62 fails now and then with a Python traceback instead of a verdict, so a run of every scenario reports a failure that says nothing about the venue |
-
-**What was found.** Scenario 62 restarts the old leading sequencer and waits for it to log that it has
-discarded the records its new leader does not hold. It then reads every file in the old leader's
-write-ahead log (WAL) directory, in `occurrences_in_log` in `scripts/ha_test.py`, to check that those
-records are gone. The sequencer is still running at that moment, and it deletes whole segment files
-when it discards records (`Wal.cpp`, at lines 336 and 343). In one run the harness listed the
-directory, the sequencer then deleted `wal_000040.log`, and reading it failed with
-`FileNotFoundError`. Three further runs of scenario 62 passed.
-
-**What is wanted.** The check reads the WAL in a way that does not fail when a segment disappears
-between listing the directory and reading the file, or it reads the WAL only once the sequencer has
-finished changing it.
-
-**Evidence kept.** The scenario's output and logs are in `tmp/bug0149/scenario-62`.
 
 ### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
 
@@ -2533,6 +2458,81 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0149: `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment {#bug_0149}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-12 |
+| Recorded | 2026-10-12 |
+| Fixed | 2026-11-10 -- `ha_test.py` reads each segment through `wal_segment_bytes`, which treats a segment deleted after the directory was listed as holding nothing, in all four places that read a WAL segment by segment. A test lists a symbolic link to nothing, which cannot be read, as a deleted segment cannot; with the handling removed it fails with `FileNotFoundError`. |
+| How | Running every high availability scenario against the Release install after step 2 of phase 3 of the recovery plan |
+| Impact | Scenario 62 fails now and then with a Python traceback instead of a verdict, so a run of every scenario reports a failure that says nothing about the venue |
+
+**What was found.** Scenario 62 restarts the old leading sequencer and waits for it to log that it has
+discarded the records its new leader does not hold. It then reads every file in the old leader's
+write-ahead log (WAL) directory, in `occurrences_in_log` in `scripts/ha_test.py`, to check that those
+records are gone. The sequencer is still running at that moment, and it deletes whole segment files
+when it discards records (`Wal.cpp`, at lines 336 and 343). In one run the harness listed the
+directory, the sequencer then deleted `wal_000040.log`, and reading it failed with
+`FileNotFoundError`. Three further runs of scenario 62 passed.
+
+**What is wanted.** The check reads the WAL in a way that does not fail when a segment disappears
+between listing the directory and reading the file, or it reads the WAL only once the sequencer has
+finished changing it.
+
+**Evidence kept.** The scenario's output and logs are in `tmp/bug0149/scenario-62`.
+
+### BUG-0214: `fix_load_client.py` reports messages unreported that the venue answered, because it cancels orders the venue refused and does not count the OrderCancelReject that answers each {#bug_0214}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-27 |
+| Recorded | 2026-10-27 |
+| Fixed | 2026-11-10 -- `fix_load_client.py` keeps a Rejected order off the list of resting orders, and counts an OrderCancelReject and a session-level Reject as the answer to the message each refers to. Two tests, each failing with its half of the change removed. |
+| How | Measuring a far-back catch-up of the matching engine with `tmp/phase5/engine_catchup.sh`, whose probe ran on into the halt the absence rule wrote |
+| Impact | A load run that crosses a halt, or any refusal, ends INCOMPLETE and exits 1 although the venue answered every message, so the verdict cannot be trusted and a real loss would look the same |
+
+**What happens.** The client adds every order that is sent an execution report to its list of resting orders, a
+Rejected one included, and sends its cancels from that list. A cancel of an order the venue refused is answered with
+an OrderCancelReject (35=9), and the client counts only execution reports (35=8). On 27 October 2026 the probe sent
+24,000 orders and 19,676 cancels, the venue was halted for most of it, and the client counted 27,342 reports and said
+16,334 messages were unreported; the FIX gateway's own progress line shows it sent the probe's session 45,002
+messages in that time and dropped none.
+
+**What is wanted.** A Rejected order is not put on the list of resting orders, and an OrderCancelReject is counted
+as the answer to a cancel, so that INCOMPLETE means a message that got no answer at all.
+
+### BUG-0235: Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later {#bug_0235}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-08 |
+| Recorded | 2026-11-08 |
+| Fixed | 2026-11-10 -- Scenario 80 sends 600,000 baseline orders rather than 200,000, so the catch-up holds 1,200,000 records and lasts about 3 seconds. The follower sequencer connected about 1.0 second into it in three runs, leaving about 2 seconds of margin where there was none. |
+| How | Scenario 80 run alone after the full suite run for [BUG-0225](#bug_0225); logs kept in `tmp/ha_test_failures/20261108-092325-scenario-80-catch_up_survives_second_connection` |
+| Impact | Scenario 80 fails although nothing in the venue is wrong, which costs a run and can hide a real failure among false ones |
+
+**What happens.** Scenario 80 exists to show that a matching engine catching up from far back finishes its catch-up
+when the second sequencer connects to it during that catch-up. It restarts the primary engine with its region damaged,
+waits for the engine to report that its catch-up has started, and only then restarts the follower sequencer, which
+connects to the engine about half a second later. The catch-up of 400,000 records lasts 0.5 to 1.3 seconds on this
+machine. If the follower sequencer connects after it has finished, the scenario fails with "the scenario did not make
+the window it exists for".
+
+On 8 November 2026 it failed this way: the engine's catch-up ran from 09:23:22.710 to 09:23:23.210, and the follower
+sequencer connected at 09:23:23.249, 39 milliseconds late. In the suite run before it, the catch-up lasted 0.57 seconds
+and the follower connected 0.51 seconds into it; in the run before that, 1.26 seconds and 0.55.
+
+**What is wanted.** The scenario makes its window rather than hoping for it: for instance, the follower sequencer is
+started before the engine, and its order connection to the engine held back by a setting used only by tests until the
+engine's catch-up has started, as `hold_sequencer_connections_until_role_decided` does for scenario 100; or the
+catch-up is made long enough, by the number of orders, that half a second is a small part of it.
+
+**Principle.** None; a test that fails without a defect costs runs and trust.
 
 ### BUG-0236: The COMPID editor writes its administrators' file readable by every account on the host {#bug_0236}
 

@@ -4680,7 +4680,8 @@ _SCENARIOS: list[Scenario] = [
 
     # 80 -- a matching engine catching up from far back finishes the catch-up when the second sequencer connects.
     #
-    # BUG-0200. The secondary engine is started first and leads. 200,000 baseline orders make the WAL long. The follower
+    # BUG-0200. The secondary engine is started first and leads. 600,000 baseline orders make the WAL long enough that the
+    # catch-up lasts well over the half second the follower sequencer takes to start and connect. The follower
     # sequencer is killed, so that only the leading sequencer connects to the primary engine when it restarts. The
     # primary engine is then killed, its region damaged so that it holds nothing it can use, and restarted without its
     # record of the lease promises it made, so that it does not follow at once but catches up from the start of the WAL
@@ -4700,7 +4701,7 @@ _SCENARIOS: list[Scenario] = [
         me_ha=True,
         recovery_on_primary=True,
         engine_started_first="matching_engine_secondary",
-        orders_before_override=200,
+        orders_before_override=600,
         assert_catch_up_survives_second_connection=True,
         orders_during_override=0,
         orders_after_override=0,
@@ -4722,7 +4723,7 @@ _SCENARIOS: list[Scenario] = [
                 ready_log_name="matching_engine_primary.log",
                 ready=expect_catch_up("matching_engine_primary", "Started"),
                 # The engine creates a new region, writing every block of it, before it starts its catch-up. That took 2.3
-                # seconds when this scenario ran alone, and more than 15 in a full suite, after the fill of 200,000 orders.
+                # seconds when this scenario ran alone, and more than 15 in a full suite, after the fill of baseline orders.
                 ready_timeout=60.0,
                 resets_me_counter=False,
                 settle_secs=0.0,
@@ -6819,6 +6820,14 @@ _WAL_ENTRY_HEADER = struct.Struct("<IIqQ")
 _WAL_CONTENTS_HEADER = struct.Struct("<qih")
 
 
+def wal_segment_bytes(segment_path: Path) -> bytes:
+    """The contents of a segment, or nothing if a running sequencer deleted it after its directory was listed."""
+    try:
+        return segment_path.read_bytes()
+    except FileNotFoundError:
+        return b""
+
+
 def wal_record_ids(wal_dir: Path, after: tuple[int, int] = (-1, -1)) -> list[tuple[tuple[int, int], int]]:
     """The sequence numbers in a sequencer's write-ahead log, in the order the entries are written.
 
@@ -6832,7 +6841,7 @@ def wal_record_ids(wal_dir: Path, after: tuple[int, int] = (-1, -1)) -> list[tup
         segment = int(segment_path.stem.split("_")[1])
         if segment < after[0]:
             continue
-        data = segment_path.read_bytes()
+        data = wal_segment_bytes(segment_path)
         offset = 0
         while offset + _WAL_ENTRY_HEADER.size <= len(data):
             magic, size, record_id, _ = _WAL_ENTRY_HEADER.unpack_from(data, offset)
@@ -6856,7 +6865,7 @@ def wal_records_after(wal_dir: Path, after_seq_no: int, from_position: tuple[int
         segment = int(segment_path.stem.split("_")[1])
         if segment < from_position[0]:
             continue
-        data = segment_path.read_bytes()
+        data = wal_segment_bytes(segment_path)
         offset = 0
         while offset + _WAL_ENTRY_HEADER.size <= len(data):
             magic, size, record_id, _ = _WAL_ENTRY_HEADER.unpack_from(data, offset)
@@ -6927,7 +6936,7 @@ def wal_entries(wal_dir: Path):
     entry whose magic number is wrong. A generator, so that a long log is never held in memory whole.
     """
     for segment_path in sorted(wal_dir.glob("wal_*.log")):
-        data = segment_path.read_bytes()
+        data = wal_segment_bytes(segment_path)
         offset = 0
         while offset + _WAL_ENTRY_HEADER.size <= len(data):
             magic, size, record_id, _ = _WAL_ENTRY_HEADER.unpack_from(data, offset)
@@ -6972,7 +6981,7 @@ def wal_problems(wal_dir: Path) -> tuple[list[tuple[int, int]], str, int]:
     stopped_at = ""  # where the last segment read stopped at bytes that were neither a valid entry nor unwritten space
     magic_bytes = struct.pack("<I", _WAL_ENTRY_MAGIC)
     for segment_path in sorted(wal_dir.glob("wal_*.log")):
-        data = segment_path.read_bytes()
+        data = wal_segment_bytes(segment_path)
         offset = 0
         if stopped_at and wal_entry_size_if_valid(data, 0):
             return out_of_order, f"{stopped_at} is not a valid entry, and {segment_path.name} holds valid entries after it", records
