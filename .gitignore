@@ -91,3 +91,8 @@ order_book_test_*/
 # Working directories of the third-party build scripts (scripts/build_*.sh), made under the
 # directory a script is run from.
 /tmp/
+
+# Other exchanges' published documents, kept in a working copy for reference. They are their publishers' copyright, so
+# only the README listing them, and where to download each, is in the repository.
+/external_documentation/*
+!/external_documentation/README.md
