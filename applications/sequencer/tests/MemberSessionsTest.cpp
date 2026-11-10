@@ -79,6 +79,67 @@ class MemberSessionsTest : public ::testing::Test {
 
 } // namespaces
 
+// ---- The member's instruction for its resting orders when its connection ends ------------------------------------
+
+namespace {
+MemberSessions::CancelOnDisconnect stated(std::optional<bool> enabled, std::optional<int32_t> grace) {
+    MemberSessions::CancelOnDisconnect instruction{};
+    instruction.enabled = enabled;
+    instruction.grace_period_seconds = grace;
+    return instruction;
+}
+} // namespaces
+
+// Never stated, both parts are empty: the member has said nothing, which is not the same as saying no.
+TEST_F(MemberSessionsTest, AnInstructionNeverStatedIsEmptyNotNo) {
+    const MemberSessions::CancelOnDisconnect held = sessions_->instruction(member_);
+    EXPECT_FALSE(held.enabled.has_value());
+    EXPECT_FALSE(held.grace_period_seconds.has_value());
+}
+
+// "No" is kept as no, not as nothing.
+TEST_F(MemberSessionsTest, AnInstructionOfNoIsKeptAsNo) {
+    sessions_->instruction_stated(member_, stated(false, std::nullopt));
+    const MemberSessions::CancelOnDisconnect held = sessions_->instruction(member_);
+    ASSERT_TRUE(held.enabled.has_value());
+    EXPECT_FALSE(*held.enabled);
+    EXPECT_FALSE(held.grace_period_seconds.has_value());
+}
+
+// A binding that states nothing, as from a gateway that has just taken the session on and was not told, leaves what an
+// earlier binding stated; a part it does state replaces what was held, and the other part is left.
+TEST_F(MemberSessionsTest, AnInstructionIsKeptUntilAPartOfItIsStatedAgain) {
+    sessions_->instruction_stated(member_, stated(true, 30));
+    sessions_->instruction_stated(member_, stated(std::nullopt, std::nullopt));
+    EXPECT_EQ(sessions_->instruction(member_).enabled, std::optional<bool>(true));
+    EXPECT_EQ(sessions_->instruction(member_).grace_period_seconds, std::optional<int32_t>(30));
+
+    sessions_->instruction_stated(member_, stated(std::nullopt, 5));
+    EXPECT_EQ(sessions_->instruction(member_).enabled, std::optional<bool>(true));
+    EXPECT_EQ(sessions_->instruction(member_).grace_period_seconds, std::optional<int32_t>(5));
+
+    sessions_->instruction_stated(member_, stated(false, std::nullopt));
+    EXPECT_EQ(sessions_->instruction(member_).enabled, std::optional<bool>(false));
+    EXPECT_EQ(sessions_->instruction(member_).grace_period_seconds, std::optional<int32_t>(5));
+}
+
+// A logon that restarts the session's numbering discards the numbering, not the member's instruction.
+TEST_F(MemberSessionsTest, AnInstructionSurvivesALogonThatResetsTheNumbering) {
+    sessions_->instruction_stated(member_, stated(true, 30));
+    ASSERT_TRUE(log_on(at(1, 7)).has_value());
+    sessions_->unbind(member_, 1, 7, reported(40, 30));
+    ASSERT_TRUE(log_on(at(1, 8), 100, true).has_value());
+    EXPECT_EQ(sessions_->instruction(member_).enabled, std::optional<bool>(true));
+    EXPECT_EQ(sessions_->instruction(member_).grace_period_seconds, std::optional<int32_t>(30));
+}
+
+// Each session's instruction is its own: the same comp id over the other protocol is another session.
+TEST_F(MemberSessionsTest, AnInstructionBelongsToOneSession) {
+    const fix_common::SessionIdentity binary = fix_common::SessionIdentity::make("MEMBER", gateway_ids::binary_order_gateway);
+    sessions_->instruction_stated(member_, stated(true, 30));
+    EXPECT_FALSE(sessions_->instruction(binary).enabled.has_value());
+}
+
 TEST_F(MemberSessionsTest, ANewSessionIsBoundAndStartsItsNumberingAtOne) {
     const auto resumed = log_on(at(1, 11));
     ASSERT_TRUE(resumed.has_value());

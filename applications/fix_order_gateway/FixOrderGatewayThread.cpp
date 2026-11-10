@@ -1770,6 +1770,15 @@ void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventM
     if (session == nullptr) {
         return; // the session went away between binding and the reply
     }
+    // The member's instruction for its resting orders when its connection ends, as the venue holds it from an earlier
+    // logon. A part this gateway was told at this logon stands; a part it was not told is taken from the venue, so that
+    // the member's own instruction applies rather than this gateway's default (docs/bug_list.md, BUG-0091).
+    if (!session->cancel_on_disconnect_enabled.has_value() && view.has_cancel_on_disconnect_enabled) {
+        session->cancel_on_disconnect_enabled = view.cancel_on_disconnect_enabled;
+    }
+    if (!session->cancel_on_disconnect_grace_period_seconds.has_value() && view.has_cancel_on_disconnect_grace_period_seconds) {
+        session->cancel_on_disconnect_grace_period_seconds = view.cancel_on_disconnect_grace_period_seconds;
+    }
     if (!view.known) {
         // First time the venue has seen this session, so the defaults already apply -- but
         // the reply is still owed, and the session is not open until it goes out.
@@ -2919,6 +2928,12 @@ void FixOrderGatewayThread::announce_session_bound(const FixSession& session) {
     // the member asked for a reset, but the sequencer would otherwise keep it -- and keep the
     // report-number ranges with it, which then describe a numbering that no longer exists.
     bound.reset_seq_nums = session.reset_seq_num_requested;
+    // The member's instruction for its resting orders when its connection ends, as far as this gateway was told it,
+    // so that the sequencer keeps it with the session.
+    bound.has_cancel_on_disconnect_enabled = session.cancel_on_disconnect_enabled.has_value();
+    bound.cancel_on_disconnect_enabled = session.cancel_on_disconnect_enabled.value_or(false);
+    bound.has_cancel_on_disconnect_grace_period_seconds = session.cancel_on_disconnect_grace_period_seconds.has_value();
+    bound.cancel_on_disconnect_grace_period_seconds = session.cancel_on_disconnect_grace_period_seconds.value_or(0);
     forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionBound::message_pdu_id, bound);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: announced session comp_id='{}' bound to instance {} connection {}",
                session.client_comp_id, config_.instance_id, session.conn_id.get_value());
@@ -2941,6 +2956,12 @@ void FixOrderGatewayThread::announce_sessions_on_new_link(pubsub_itc_fw::Connect
         bound.gateway_protocol_id = gateway_ids::fix_order_gateway;
         bound.gateway_instance_id = config_.instance_id;
         bound.gateway_session_conn_id = session.conn_id.get_value();
+        // The member's instruction for its resting orders when its connection ends, as far as this gateway was told it,
+        // so that the sequencer keeps it with the session.
+        bound.has_cancel_on_disconnect_enabled = session.cancel_on_disconnect_enabled.has_value();
+        bound.cancel_on_disconnect_enabled = session.cancel_on_disconnect_enabled.value_or(false);
+        bound.has_cancel_on_disconnect_grace_period_seconds = session.cancel_on_disconnect_grace_period_seconds.has_value();
+        bound.cancel_on_disconnect_grace_period_seconds = session.cancel_on_disconnect_grace_period_seconds.value_or(0);
         if (session.awaiting_sequence_state) {
             // Its numbering is still unsettled, so it is asked for again, as at its logon.
             send_pdu(sequencer_conn_id, pubsub_itc_fw_app::SessionBound::message_pdu_id, 0, bound);

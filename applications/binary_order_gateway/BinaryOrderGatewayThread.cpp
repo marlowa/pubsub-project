@@ -1033,6 +1033,12 @@ void BinaryOrderGatewayThread::announce_session_bound(const BinarySession& sessi
     bound.gateway_protocol_id = gateway_ids::binary_order_gateway;
     bound.gateway_instance_id = config_.instance_id;
     bound.gateway_session_conn_id = session.conn_id.get_value();
+    // The member's instruction for its resting orders when its connection ends, as far as this gateway was told it,
+    // so that the sequencer keeps it with the session.
+    bound.has_cancel_on_disconnect_enabled = session.cancel_on_disconnect_enabled.has_value();
+    bound.cancel_on_disconnect_enabled = session.cancel_on_disconnect_enabled.value_or(false);
+    bound.has_cancel_on_disconnect_grace_period_seconds = session.cancel_on_disconnect_grace_period_seconds.has_value();
+    bound.cancel_on_disconnect_grace_period_seconds = session.cancel_on_disconnect_grace_period_seconds.value_or(0);
     forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionBound::message_pdu_id, bound);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: announced session comp_id='{}' bound to instance {} connection {}",
                session.comp_id, config_.instance_id, session.conn_id.get_value());
@@ -1052,6 +1058,12 @@ void BinaryOrderGatewayThread::announce_sessions_on_new_link(const pubsub_itc_fw
         bound.gateway_protocol_id = gateway_ids::binary_order_gateway;
         bound.gateway_instance_id = config_.instance_id;
         bound.gateway_session_conn_id = session.conn_id.get_value();
+        // The member's instruction for its resting orders when its connection ends, as far as this gateway was told it,
+        // so that the sequencer keeps it with the session.
+        bound.has_cancel_on_disconnect_enabled = session.cancel_on_disconnect_enabled.has_value();
+        bound.cancel_on_disconnect_enabled = session.cancel_on_disconnect_enabled.value_or(false);
+        bound.has_cancel_on_disconnect_grace_period_seconds = session.cancel_on_disconnect_grace_period_seconds.has_value();
+        bound.cancel_on_disconnect_grace_period_seconds = session.cancel_on_disconnect_grace_period_seconds.value_or(0);
         bound.still_connected = true;
         send_pdu(sequencer_conn_id, pubsub_itc_fw_app::SessionBound::message_pdu_id, 0, bound);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,

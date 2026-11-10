@@ -373,6 +373,14 @@ message SessionBound (id=120, version=1)
     # the binding as the previous connection having died, which would raise the number the
     # session resumes from. See docs/availability/session_binding.md.
     bool   still_connected        # an established session, announced again; not a logon
+    # The member's instruction for its resting orders when its connection ends, as the authentication service gave it to
+    # the gateway at this logon: whether they are to be cancelled, and how many seconds to wait first. Each is absent when
+    # the member said nothing, which is not the same as saying no: the venue's default then applies. The sequencer keeps
+    # them with the session, so that a gateway taking the session on is handed them back on SessionBoundAck, and so that
+    # the venue can carry the instruction out when the gateway cannot. See
+    # docs/availability/cancel_on_disconnect_where_the_orders_are.md.
+    optional bool cancel_on_disconnect_enabled
+    optional i32  cancel_on_disconnect_grace_period_seconds
 end
 
 # ------------------------------------------------------------
@@ -515,6 +523,11 @@ message SessionBoundAck (id=122, version=1)
     # not send: the instance that did send them is gone, and this is the only record of what
     # its numbering carried. Empty when known = false.
     list<SeqNumRange> report_seq_nums
+    # The member's instruction for its resting orders when its connection ends, as the sequencer holds it: the latest
+    # each part was stated on a SessionBound for this session. Each is absent when the member has never said, which is
+    # not the same as saying no.
+    optional bool cancel_on_disconnect_enabled
+    optional i32  cancel_on_disconnect_grace_period_seconds
 end
 
 # ------------------------------------------------------------

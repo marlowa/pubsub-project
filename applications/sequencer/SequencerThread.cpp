@@ -2269,6 +2269,16 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
     destination.instance = view.gateway_instance_id;
     destination.conn_id = view.gateway_session_conn_id;
 
+    // The member's instruction for its resting orders when its connection ends, kept with the session by every instance,
+    // leading or not, as the binding is (docs/availability/cancel_on_disconnect_where_the_orders_are.md, section 3.4).
+    MemberSessions::CancelOnDisconnect stated{};
+    if (view.has_cancel_on_disconnect_enabled) {
+        stated.enabled = view.cancel_on_disconnect_enabled;
+    }
+    if (view.has_cancel_on_disconnect_grace_period_seconds) {
+        stated.grace_period_seconds = view.cancel_on_disconnect_grace_period_seconds;
+    }
+    sessions_.instruction_stated(identity, stated);
     const MemberSessions::Bound bound = sessions_.bind(identity, destination, view.still_connected);
     if (bound.still_connected) {
         reports_.send_held_for_session(identity);
@@ -2300,6 +2310,13 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
     ack.outbound_seq_num = resumed->outbound_seq_num;
     ack.inbound_seq_num = resumed->inbound_seq_num;
     ack.report_seq_nums = pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::SeqNumRange>{wire_ranges.data(), wire_ranges.size()};
+    // Handed back so that a gateway that was not told the member's instruction at this logon applies the member's own
+    // rather than the venue's default.
+    const MemberSessions::CancelOnDisconnect held = sessions_.instruction(identity);
+    ack.has_cancel_on_disconnect_enabled = held.enabled.has_value();
+    ack.cancel_on_disconnect_enabled = held.enabled.value_or(false);
+    ack.has_cancel_on_disconnect_grace_period_seconds = held.grace_period_seconds.has_value();
+    ack.cancel_on_disconnect_grace_period_seconds = held.grace_period_seconds.value_or(0);
     send_pdu(conn_id, pubsub_itc_fw_app::SessionBoundAck::message_pdu_id, 0, ack);
 }
 

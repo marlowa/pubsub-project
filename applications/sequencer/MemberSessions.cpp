@@ -65,6 +65,24 @@ MemberSessions::Bound MemberSessions::bind(const fix_common::SessionIdentity& id
     return bound;
 }
 
+void MemberSessions::instruction_stated(const fix_common::SessionIdentity& identity, const CancelOnDisconnect& stated) {
+    if (!stated.enabled.has_value() && !stated.grace_period_seconds.has_value()) {
+        return;
+    }
+    CancelOnDisconnect& held = instructions_[identity];
+    if (stated.enabled.has_value()) {
+        held.enabled = stated.enabled;
+    }
+    if (stated.grace_period_seconds.has_value()) {
+        held.grace_period_seconds = stated.grace_period_seconds;
+    }
+}
+
+MemberSessions::CancelOnDisconnect MemberSessions::instruction(const fix_common::SessionIdentity& identity) const {
+    const auto it = instructions_.find(identity);
+    return it == instructions_.end() ? CancelOnDisconnect{} : it->second;
+}
+
 std::optional<MemberSessions::Resume> MemberSessions::resume(const fix_common::SessionIdentity& identity, bool reset_seq_nums, bool previous_session_died,
                                                              bool leading, int64_t wal_last_seq_no) {
     // Unless the member asked to start again, in which case there is nothing to hand back and keeping it would be worse

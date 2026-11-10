@@ -221,10 +221,11 @@ are small and can be done when their files are next touched.
 
 ## 7. Tests and tooling
 
-Fifteen entries.
+Sixteen entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
+| [BUG-0223](bug_list.md#bug_0223): the fix8 test client sometimes logs on and exits without sending its orders | **Defect** in the test tooling, reopened 10 November 2026 | Happened in scenario 22 on 2 November and scenario 12 on 10 November; the harness now notices the exit at once | Keep the client's exit status and standard error when it happens, to find the cause |
 | [BUG-0181](bug_list.md#bug_0181): with orders in flight, Phase 5 confirms that a thousand further orders were accepted, not the recovery orders themselves | **Test or tool**, and the most serious here: a scenario can pass when the orders sent after a failure are lost | Unchanged: Phase 5 waits with `await_new_orders_since` for any 1,000 further orders | **Fixed on 8 November 2026** and closed: Phase 5 names the recovery orders by their ClOrdIDs, and waits while reports keep arriving; made to look for orders never sent, it failed |
 | [BUG-0185](bug_list.md#bug_0185) and [BUG-0145](bug_list.md#bug_0145): scenarios 59 and 76 stop the leader the moment `inject_order` has sent | **Test or tool**; the two entries describe one fault | Unchanged: both scenarios send `SIGSTOP` straight after reading `inject_order`'s "sent" line. Scenario 62, which BUG-0145 also named, now waits until the leader's WAL holds the orders | **Fixed on 8 November 2026** and closed: scenarios 59 and 76 stop the leader only once its WAL holds the orders, through the function scenario 62 now uses too |
 | [BUG-0149](bug_list.md#bug_0149): scenario 62 can crash reading a WAL segment the sequencer deletes | **Test or tool** | Unchanged: `wal_record_ids`, `wal_records_after` and `wal_entries` list the directory and then open each file, with nothing to allow for a file deleted in between | Pass over a segment that has gone, or read only once the sequencer has finished changing the WAL |

@@ -101,6 +101,14 @@ class MemberSessions {
         int64_t gateway_ingress_ns{0};
     };
 
+    /// A member's instruction for its resting orders when its connection ends: whether they are to be cancelled, and how
+    /// many seconds to wait first. Each part is empty when the member has not said, which is not the same as saying no:
+    /// the venue's default then applies.
+    struct CancelOnDisconnect {
+        std::optional<bool> enabled;
+        std::optional<int32_t> grace_period_seconds;
+    };
+
     /// What bind() found.
     struct Bound {
         /// Whether the session was announced again by a gateway still holding it, rather than logging on.
@@ -138,6 +146,20 @@ class MemberSessions {
      *                            this instance came up, rather than the member logging on.
      */
     Bound bind(const fix_common::SessionIdentity& identity, const fix_common::SessionDestination& destination, bool still_connected);
+
+    /**
+     * @brief Records what a binding of the session says of the member's instruction for its resting orders when its
+     *        connection ends.
+     *
+     * A part the binding states replaces what is held; a part it does not state leaves what an earlier binding said. A
+     * gateway that has just taken the session on may not have been told the instruction, and a member that said
+     * something at one logon has not withdrawn it by saying nothing at the next. Kept apart from the session's sequence
+     * numbers, which a logon that resets them discards: the instruction is not part of the numbering.
+     */
+    void instruction_stated(const fix_common::SessionIdentity& identity, const CancelOnDisconnect& stated);
+
+    /// The member's instruction for its resting orders when its connection ends, as held; both parts empty if never stated.
+    [[nodiscard]] CancelOnDisconnect instruction(const fix_common::SessionIdentity& identity) const;
 
     /**
      * @brief For a logon, after bind(): the numbers the session resumes from.
@@ -205,6 +227,8 @@ class MemberSessions {
 
     std::unordered_map<fix_common::SessionIdentity, fix_common::SessionDestination, fix_common::SessionIdentityHash> destinations_;
     std::unordered_map<fix_common::SessionIdentity, SequenceState, fix_common::SessionIdentityHash> sequence_states_;
+    // Each member's instruction for its resting orders when its connection ends, by session (instruction_stated()).
+    std::unordered_map<fix_common::SessionIdentity, CancelOnDisconnect, fix_common::SessionIdentityHash> instructions_;
     std::unordered_map<int64_t, OriginSession> origins_;
     // Every session that has had a report dropped since it was last connected, so that the first is said as a Warning.
     std::unordered_set<fix_common::SessionIdentity, fix_common::SessionIdentityHash> sessions_with_reports_dropped_;
