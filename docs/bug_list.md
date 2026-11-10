@@ -788,6 +788,15 @@ table's state bytes; the entries are faulted in as orders first use each page, a
 as in the engine's book, and whether to touch them at start-up is still to be decided. The reports waiting for their
 record to be committed (section 3) are not yet changed, and the allocation-counting test of step 2 waits for
 [BUG-0087](#bug_0087)'s tool.
+
+**Part built 2026-11-10: the reports waiting for their record to be committed** (section 3 of the design). They wait in a
+ring of 32,768 places allocated once, each in the slab chunk it arrived in rather than a copy, with its ClOrdID in a
+fixed array, and each chunk is released once its report is sent. Each engine's connection for reports is limited to
+1,024 messages waiting, and the leader pauses reading those connections once the ring has no more than 1,024 places left
+for each. Three unit tests in `ReportForwardingTest`, each made to fail on purpose: a chunk never released, reports
+released by their own record rather than from the front, and a full ring that drops. The pause is not shown by any test
+or scenario. Left before this entry closes: the latency run compared with the last, and the allocation-counting test,
+which waits for [BUG-0087](#bug_0087)'s tool.
 ### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
 
 | | |

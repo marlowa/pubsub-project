@@ -1,6 +1,6 @@
 # The leading sequencer's order path without the heap {#sequencer_order_path_without_the_heap}
 
-**Status: section 4, the session map, is built; section 3, the waiting reports, is being built.** This is the design for
+**Status: built, sections 3 and 4.** The latency run and the allocation-counting test of section 5 are not yet done. This is the design for
 [BUG-0131](../bug_list.md#bug_0131). Items 1 to 4 below were
 agreed with Andrew on 11 October 2026, and both decisions in section 6 on 9 November 2026: the venue's figure for open orders is each environment's
 `order_book_region_capacity`.
@@ -55,6 +55,19 @@ thread still arrive. So each engine's connection for reports is limited to 1,024
 and the leader pauses once the ring has no more than 1,024 places left for each connection for reports. Every report
 already read then has a place, and the ring cannot overflow. Agreed with Andrew on 10 November 2026, rather than copying
 an overflow to the heap.
+
+**Where it is built.** `ReportForwarding` keeps the ring (`waiting_`, 32,768 places), and each `Pending` holds its report
+either in the slab chunk it arrived in (`keep_in_chunk`) or, for a report that arrived in no chunk this instance may keep,
+in a copy (`own_copy_of`): a report kept while not leading and forwarded on taking the lead, or one read back from the room
+for reports held for unannounced sessions. Those are not on the order path. The ClOrdID is a fixed array. A chunk is
+released through `ReportForwardingLinksInterface::release_report_chunk`, which the sequencer answers with
+`ApplicationThread::release_pdu_payload(slab, payload)`. `SequencerThread::update_report_reading` pauses and resumes
+reading, and is called after a report waits, after a commit releases reports, and on every change of role, since only a
+leader pauses. A report arriving with the ring full, which the pause prevents, is kept beyond it rather than lost, and
+said at Error.
+
+**What is not shown by a test.** The pause itself: a leader commits without its follower after 100 milliseconds, so
+filling 32,768 places would take more than 300,000 reports a second, and no scenario comes near that.
 
 ## 4. The session map
 

@@ -421,9 +421,12 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         report_connections_.push_back(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: connection {} from a matching engine for reports established",
                    id.get_value());
-        if (config_.test_events.read_reports_slowly_us > 0) {
-            // A test setting: the reports this instance cannot keep up with stay in the engine's socket.
-            limit_messages_waiting(id, 64);
+        // At most this many of its reports wait in this thread's queue, so that a pause in reading them, for want of room
+        // for waiting reports, leaves a place for every report already read (update_report_reading). A test setting
+        // limits it further, so that the reports this instance cannot keep up with stay in the engine's socket.
+        limit_messages_waiting(id, config_.test_events.read_reports_slowly_us > 0 ? 64 : report_messages_waiting_limit);
+        if (report_reading_paused_) {
+            pause_reading(id);
         }
         announce_role_to_engine(id);
         // An engine opens its connection for reports only once it is listening for orders, so this is the moment a
@@ -847,8 +850,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds{config_.test_events.read_reports_slowly_us};
             while (std::chrono::steady_clock::now() < until) {}
         }
-        forward_report_from_engine(message.payload(), static_cast<size_t>(message.payload_size()), message.seq_no(), ReportSource::matching_engine);
-        release_pdu_payload(message);
+        // Kept in its slab chunk if it must wait for a record to be committed, and then released once it is sent.
+        if (!forward_report_from_engine(message.payload(), static_cast<size_t>(message.payload_size()), message.seq_no(), ReportSource::matching_engine,
+                                        ReportChunk{message.slab_id(), message.payload()})) {
+            release_pdu_payload(message);
+        }
     } else {
         // Unknown source -- log and discard.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: PDU on unexpected connection {} ({}) -- dropping",
@@ -857,7 +863,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     }
 }
 
-void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t size, int64_t er_seq_no, ReportSource source) {
+bool SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t size, int64_t er_seq_no, ReportSource source, std::optional<ReportChunk> chunk) {
 
     // Which gateway this ER belongs to is not known until the envelope has been
     // decoded and the routing map consulted, so the "is that gateway connected?"
@@ -874,16 +880,16 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     pubsub_itc_fw_app::WalRecordView inbound{};
     if (!pubsub_itc_fw_app::decode(inbound, bytes, size, bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ER envelope -- dropping");
-        return;
+        return false;
     }
     if (inbound.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: ER envelope carries unexpected pdu_id {} -- dropping", inbound.pdu_id);
-        return;
+        return false;
     }
     pubsub_itc_fw_app::ExecutionReportView view{};
     if (!pubsub_itc_fw_app::decode(view, inbound.payload.data, inbound.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ExecutionReport -- dropping");
-        return;
+        return false;
     }
 
     // The report that acknowledges a new order is the only one the order-path checkpoints
@@ -1067,14 +1073,19 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     const bool gate_on_own_record = (er_seq_no == 0) || possible_repeat;
     const int64_t gate_seq_no = gate_on_own_record ? er_wal_seq : er_seq_no;
 
-    // The report as it would wait, for the follower or for its session to be announced.
-    auto as_pending = [&]() {
+    // The report as it would wait, for the follower or for its session to be announced. Kept in the chunk it arrived in
+    // when @p keep_chunk and the caller named the chunk; a copy otherwise.
+    auto as_pending = [&](bool keep_chunk) {
         ReportForwarding::Pending pending{};
         pending.pdu_id = inbound.pdu_id;
         pending.seq_no = er_seq_no;
-        pending.payload.assign(inbound.payload.data, inbound.payload.data + inbound.payload.size);
+        if (keep_chunk && chunk.has_value()) {
+            pending.keep_in_chunk(chunk->slab, chunk->base, inbound.payload.data, inbound.payload.size);
+        } else {
+            pending.own_copy_of(inbound.payload.data, inbound.payload.size);
+        }
         if (view.has_cl_ord_id) {
-            pending.cl_ord_id.assign(view.cl_ord_id);
+            pending.set_cl_ord_id(view.cl_ord_id);
         }
         pending.identity = routing_identity;
         pending.has_gateway_ingress_ns = has_routing_ingress_ns;
@@ -1089,7 +1100,7 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     // Sent now, unless its session is not known: then it is held until the session is announced, or dropped.
     auto send_now = [&]() {
         if (!has_routing_conn && !routing_identity.empty()) {
-            if (reports_.hold_for_unannounced_session(as_pending())) {
+            if (reports_.hold_for_unannounced_session(as_pending(false))) {
                 if (erase_routing_entry) {
                     sessions_.order_ended(er_seq_no);
                 }
@@ -1112,12 +1123,35 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
         // WalAck not yet received; buffer the inner (unwrapped) ER until it arrives.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck seq={} from follower", er_seq_no,
                    gate_seq_no);
-        reports_.wait_for_commit(gate_seq_no, as_pending());
+        reports_.wait_for_commit(gate_seq_no, as_pending(true));
+        reports_.report_seen(position);
+        update_report_reading();
+        return chunk.has_value();
     }
 
     // Handled, whether forwarded, waiting, or dropped: reports_forwarded_through() accounts for the
     // ones still waiting.
     reports_.report_seen(position);
+    return false;
+}
+
+void SequencerThread::update_report_reading() {
+    const size_t reserve = static_cast<size_t>(report_messages_waiting_limit) * report_connections_.size();
+    const bool pause = role_ == pubsub_itc_fw_app::Role::leader && reports_.waiting_places_left() <= reserve;
+    if (pause == report_reading_paused_) {
+        return;
+    }
+    report_reading_paused_ = pause;
+    for (const pubsub_itc_fw::ConnectionID& connection : report_connections_) {
+        if (pause) {
+            pause_reading(connection);
+        } else {
+            resume_reading(connection);
+        }
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "SequencerThread: {} reading the matching engines' reports -- {} report(s) wait for their record to be committed, with {} place(s) left",
+               pause ? "pausing" : "resuming", reports_.waiting(), reports_.waiting_places_left());
 }
 
 void SequencerThread::keep_report_from_engine(const pubsub_itc_fw::EventMessage& message) {
@@ -1137,7 +1171,8 @@ void SequencerThread::keep_report_from_engine(const pubsub_itc_fw::EventMessage&
 }
 
 void SequencerThread::KeptReportLinks::forward_kept_report(int64_t er_seq_no, const uint8_t* bytes, size_t size) {
-    owner_.forward_report_from_engine(bytes, size, er_seq_no, ReportSource::kept_while_not_leading);
+    // Kept in the kept-report store, not in a slab chunk, so a report that must wait is copied.
+    static_cast<void>(owner_.forward_report_from_engine(bytes, size, er_seq_no, ReportSource::kept_while_not_leading));
 }
 
 void SequencerThread::KeptReportLinks::kept_reports_lost(int64_t total) {
@@ -1337,6 +1372,8 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
     if (stops_leading) {
         reports_.stopped_leading();
     }
+    // Reading the engines' reports is paused only while leading: a follower keeps every report it is sent.
+    update_report_reading();
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
         // Every record this instance wrote while it followed was noted as it was written, so the record
@@ -1463,6 +1500,7 @@ void SequencerThread::SequencerReplicatedWalEvents::committed_through(int64_t se
     // engine, in order, and the reports to their gateways.
     owner_.orders_.release_to_leading_engine(seq_no);
     owner_.reports_.deliver_committed_through(seq_no);
+    owner_.update_report_reading();
     // Last, after the order path's own work: the matching engines that follow the WAL are sent the records released, and
     // the publishers the records just committed.
     owner_.serving_.send_released_to_follower_engines(owner_.orders_.released_through());
@@ -2628,6 +2666,10 @@ void SequencerThread::ReportLinks::reports_sent_to_gateway(int16_t protocol, int
 
 void SequencerThread::ReportLinks::held_reports_dropped(int64_t total) {
     owner_.held_reports_dropped_gauge_.set(static_cast<double>(total));
+}
+
+void SequencerThread::ReportLinks::release_report_chunk(pubsub_itc_fw::SlabHandle slab, const uint8_t* chunk) {
+    owner_.release_pdu_payload(slab, chunk);
 }
 
 std::vector<std::pair<int16_t, int16_t>> SequencerThread::configured_gateways(const SequencerConfiguration& config) {

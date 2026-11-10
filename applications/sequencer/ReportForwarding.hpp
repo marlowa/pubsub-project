@@ -3,9 +3,12 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
+#include <array> // IWYU pragma: keep
 #include <cstddef>
-#include <cstdint> // IWYU pragma: keep
-#include <map>
+#include <cstdint>
+#include <cstring>
+#include <deque>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -16,10 +19,12 @@
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/SlabHandle.hpp>
 
 #include <leader_follower.hpp>
 
 #include "EngineReportPosition.hpp"
+#include "FixOrderLimits.hpp"
 #include "ReportsHeldForUnknownSessions.hpp"
 #include "SessionIdentity.hpp"
 
@@ -66,6 +71,9 @@ class ReportForwardingLinksInterface {
     virtual void reports_sent_to_gateway(int16_t protocol, int16_t instance, int64_t sent, int64_t dropped) = 0;
     /// The gauge of reports held for unannounced sessions that were dropped to make room, now @p total.
     virtual void held_reports_dropped(int64_t total) = 0;
+    /// A report that waited in the slab chunk it arrived in has been sent or discarded: the chunk, from @p slab at
+    /// @p chunk, is released.
+    virtual void release_report_chunk(pubsub_itc_fw::SlabHandle slab, const uint8_t* chunk) = 0;
 };
 
 /**
@@ -108,9 +116,50 @@ class ReportForwarding {
         int16_t pdu_id{};
         /// The number of the command the report answers, sent in the transport header; zero for none.
         int64_t seq_no{};
-        std::vector<uint8_t> payload; ///< the encoded report
-        /// The ClOrdID of the command the report answers, copied onto the envelope for the gateway.
-        std::string cl_ord_id;
+        /// The encoded report, in the slab chunk it arrived in while chunk_base is set: payload_data and payload_size
+        /// point into it. Otherwise in owned_payload, a copy, for a report that arrived in no chunk this instance may
+        /// keep: one kept while not leading, or one read back from the room for held reports. Read through bytes().
+        const uint8_t* payload_data{nullptr};
+        size_t payload_size{0};
+        /// The slab chunk the report arrived in, held while it waits, and released once it is sent or discarded
+        /// (ReportForwardingLinksInterface::release_report_chunk). Null for a report that owns a copy.
+        pubsub_itc_fw::SlabHandle chunk_slab{pubsub_itc_fw::invalid_slab_handle};
+        const uint8_t* chunk_base{nullptr};
+        std::vector<uint8_t> owned_payload;
+        /// The ClOrdID of the command the report answers, copied onto the envelope for the gateway, in a fixed array so
+        /// that keeping it allocates nothing. Read through cl_ord_id_view().
+        std::array<char, fix_order_limits::max_cl_ord_id_length> cl_ord_id{};
+        uint8_t cl_ord_id_length{0};
+
+        /// The report's bytes, wherever they are held.
+        [[nodiscard]] const uint8_t* bytes() const {
+            return chunk_base != nullptr ? payload_data : owned_payload.data();
+        }
+        [[nodiscard]] size_t size() const {
+            return chunk_base != nullptr ? payload_size : owned_payload.size();
+        }
+        /// Keeps a copy of @p size bytes at @p data, for a report that is not in a chunk this instance may keep.
+        void own_copy_of(const uint8_t* data, size_t size) {
+            owned_payload.assign(data, data + size);
+            chunk_base = nullptr;
+            chunk_slab = pubsub_itc_fw::invalid_slab_handle;
+        }
+        /// Keeps the report where it is, in the chunk from @p slab at @p base; @p data and @p size are the report within it.
+        void keep_in_chunk(pubsub_itc_fw::SlabHandle slab, const uint8_t* base, const uint8_t* data, size_t size) {
+            chunk_slab = slab;
+            chunk_base = base;
+            payload_data = data;
+            payload_size = size;
+        }
+        /// Keeps @p id as the ClOrdID. One longer than any the venue accepts is cut to that length; the gateways and the
+        /// matching engine refuse such a ClOrdID before any report of it is made.
+        void set_cl_ord_id(std::string_view id) {
+            cl_ord_id_length = static_cast<uint8_t>(std::min(id.size(), cl_ord_id.size()));
+            std::memcpy(cl_ord_id.data(), id.data(), cl_ord_id_length);
+        }
+        [[nodiscard]] std::string_view cl_ord_id_view() const {
+            return std::string_view(cl_ord_id.data(), cl_ord_id_length);
+        }
         /// The report's own record number in the WAL, carried on the envelope so that a gateway knows how far a member
         /// has been served.
         int64_t log_seq_no{0};
@@ -176,8 +225,16 @@ class ReportForwarding {
     /// is not one a test expects to have none. @return Whether it was held.
     bool hold_for_unannounced_session(const Pending& pending);
 
-    /// @p pending waits for record @p gate to be committed.
-    void wait_for_commit(int64_t gate, Pending pending);
+    /// How many reports may wait for their record to be committed, in storage allocated once.
+    static constexpr size_t waiting_capacity = 32768;
+
+    /// @p pending waits for record @p gate to be committed, at the back of the reports waiting.
+    void wait_for_commit(int64_t gate, Pending&& pending);
+
+    /// How many more reports may wait before the storage for them is full.
+    [[nodiscard]] size_t waiting_places_left() const {
+        return waiting_capacity - waiting_count_;
+    }
 
     /// Sends every waiting report whose record is committed through @p committed_through.
     void deliver_committed_through(int64_t committed_through);
@@ -204,7 +261,7 @@ class ReportForwarding {
     void stopped_leading();
 
     [[nodiscard]] size_t waiting() const {
-        return pending_.size();
+        return waiting_count_ + waiting_overflow_.size();
     }
     [[nodiscard]] size_t held_for_sessions() const {
         return held_reports_.count();
@@ -237,9 +294,25 @@ class ReportForwarding {
     std::unordered_map<GatewayKey, GatewayAnnouncement> gateway_announcements_;
     std::unordered_set<GatewayKey> unknown_gateways_warned_;
 
-    // Reports waiting for the record they depend on to be committed, ordered by that record, so that a commit releases
-    // every report it covers from the front.
-    std::multimap<int64_t, Pending> pending_;
+    // A report waiting for record gate to be committed.
+    struct WaitingReport {
+        int64_t gate{0};
+        Pending report;
+    };
+    // Releases the chunk @p report waited in, if it waited in one.
+    void release_chunk(Pending& report);
+
+    // Reports waiting for the record they depend on to be committed, in the order they arrived, in a ring allocated once:
+    // waiting_count_ of them from waiting_head_. A commit releases them from the front while the front's record is
+    // committed. Reports arrive in the order the engine applies commands, so the records they wait for rise; one that
+    // arrived out of order would wait behind the one before it, which delays it and never sends it early
+    // (docs/venue/sequencer_order_path_without_the_heap.md, section 3).
+    std::vector<WaitingReport> waiting_ = std::vector<WaitingReport>(waiting_capacity);
+    size_t waiting_head_{0};
+    size_t waiting_count_{0};
+    // Reports that arrived with the ring full, which the sequencer prevents by pausing its reading of the engines' reports
+    // first; kept here, in order behind the ring, rather than lost, and said at Error.
+    std::deque<WaitingReport> waiting_overflow_;
     std::optional<EngineReportPosition> latest_report_seen_;
 
     ReportsHeldForUnknownSessions held_reports_{held_report_capacity_bytes, held_report_capacity_reports};

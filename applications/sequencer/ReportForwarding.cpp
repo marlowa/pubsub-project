@@ -152,15 +152,15 @@ bool ReportForwarding::hold_for_unannounced_session(const Pending& pending) {
     header.has_position = pending.position.has_value() ? 1 : 0;
     header.position_epoch = pending.position.has_value() ? pending.position->epoch : 0;
     header.position_number = pending.position.has_value() ? pending.position->number : 0;
-    header.payload_size = static_cast<uint32_t>(pending.payload.size());
-    header.cl_ord_id_size = static_cast<uint32_t>(pending.cl_ord_id.size());
+    header.payload_size = static_cast<uint32_t>(pending.size());
+    header.cl_ord_id_size = static_cast<uint32_t>(pending.cl_ord_id_length);
     header.pdu_id = pending.pdu_id;
     header.is_new_order_ack = pending.is_new_order_ack ? 1 : 0;
     header.poss_resend = pending.poss_resend ? 1 : 0;
-    held_report_encoding_.resize(sizeof(header) + pending.payload.size() + pending.cl_ord_id.size());
+    held_report_encoding_.resize(sizeof(header) + pending.size() + pending.cl_ord_id_length);
     std::memcpy(held_report_encoding_.data(), &header, sizeof(header));
-    std::memcpy(held_report_encoding_.data() + sizeof(header), pending.payload.data(), pending.payload.size());
-    std::memcpy(held_report_encoding_.data() + sizeof(header) + pending.payload.size(), pending.cl_ord_id.data(), pending.cl_ord_id.size());
+    std::memcpy(held_report_encoding_.data() + sizeof(header), pending.bytes(), pending.size());
+    std::memcpy(held_report_encoding_.data() + sizeof(header) + pending.size(), pending.cl_ord_id.data(), pending.cl_ord_id_length);
     held_reports_.hold(pending.identity, held_report_encoding_.data(), held_report_encoding_.size());
     if (pending.position.has_value() && (!held_reports_oldest_position_.has_value() || held_reports_oldest_position_->is_after(*pending.position))) {
         held_reports_oldest_position_ = pending.position;
@@ -188,16 +188,45 @@ bool ReportForwarding::hold_for_unannounced_session(const Pending& pending) {
     return true;
 }
 
-void ReportForwarding::wait_for_commit(int64_t gate, Pending pending) {
-    pending_.emplace(gate, std::move(pending));
+void ReportForwarding::wait_for_commit(int64_t gate, Pending&& pending) {
+    if (waiting_count_ < waiting_capacity && waiting_overflow_.empty()) {
+        WaitingReport& place = waiting_[(waiting_head_ + waiting_count_) % waiting_capacity];
+        place.gate = gate;
+        place.report = std::move(pending);
+        ++waiting_count_;
+        return;
+    }
+    if (waiting_overflow_.empty()) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                   "ReportForwarding: the {} places for reports waiting for their record to be committed are full -- ER seq_no={} kept beyond them, "
+                   "allocated from the heap; the sequencer pauses reading the engines' reports before this can happen, so this is a defect",
+                   waiting_capacity, pending.seq_no);
+    }
+    waiting_overflow_.push_back(WaitingReport{gate, std::move(pending)});
+}
+
+void ReportForwarding::release_chunk(Pending& report) {
+    if (report.chunk_base != nullptr) {
+        links_.release_report_chunk(report.chunk_slab, report.chunk_base);
+        report.chunk_base = nullptr;
+        report.chunk_slab = pubsub_itc_fw::invalid_slab_handle;
+    }
 }
 
 void ReportForwarding::deliver_committed_through(int64_t committed_through) {
-    const auto covered_end = pending_.upper_bound(committed_through);
-    for (auto it = pending_.begin(); it != covered_end; ++it) {
-        deliver(it->second);
+    while (waiting_count_ > 0 && waiting_[waiting_head_].gate <= committed_through) {
+        WaitingReport& front = waiting_[waiting_head_];
+        deliver(front.report);
+        release_chunk(front.report);
+        front.report = Pending{};
+        waiting_head_ = (waiting_head_ + 1) % waiting_capacity;
+        --waiting_count_;
     }
-    pending_.erase(pending_.begin(), covered_end);
+    while (waiting_count_ == 0 && !waiting_overflow_.empty() && waiting_overflow_.front().gate <= committed_through) {
+        deliver(waiting_overflow_.front().report);
+        release_chunk(waiting_overflow_.front().report);
+        waiting_overflow_.pop_front();
+    }
 }
 
 void ReportForwarding::deliver(const Pending& pending) {
@@ -214,8 +243,8 @@ void ReportForwarding::deliver(const Pending& pending) {
     pubsub_itc_fw_app::WalRecord envelope{};
     envelope.seq_no = pending.log_seq_no;
     envelope.pdu_id = pending.pdu_id;
-    envelope.payload.data = pending.payload.data();
-    envelope.payload.size = pending.payload.size();
+    envelope.payload.data = pending.bytes();
+    envelope.payload.size = pending.size();
     envelope.has_gateway_session_conn_id = destination != nullptr;
     envelope.gateway_session_conn_id = destination != nullptr ? destination->conn_id : 0;
     envelope.has_origin_gateway_id = destination != nullptr;
@@ -226,8 +255,8 @@ void ReportForwarding::deliver(const Pending& pending) {
     envelope.gateway_ingress_ns = pending.gateway_ingress_ns;
     envelope.has_sender_comp_id = !pending.identity.empty();
     envelope.sender_comp_id = pending.identity.comp_id_view();
-    envelope.has_cl_ord_id = !pending.cl_ord_id.empty();
-    envelope.cl_ord_id = pending.cl_ord_id;
+    envelope.has_cl_ord_id = pending.cl_ord_id_length > 0;
+    envelope.cl_ord_id = pending.cl_ord_id_view();
     envelope.poss_resend = pending.poss_resend;
     if (destination != nullptr) {
         send_to_gateway(pending.identity.protocol, destination->instance, pending.seq_no, envelope, pending.is_new_order_ack, pending.position);
@@ -251,10 +280,16 @@ std::optional<EngineReportPosition> ReportForwarding::forwarded_through() const 
         return std::nullopt;
     }
     std::optional<EngineReportPosition> oldest_waiting;
-    for (const auto& [gate, pending] : pending_) {
+    const auto consider = [&oldest_waiting](const Pending& pending) {
         if (pending.position.has_value() && (!oldest_waiting.has_value() || oldest_waiting->is_after(*pending.position))) {
             oldest_waiting = pending.position;
         }
+    };
+    for (size_t index = 0; index < waiting_count_; ++index) {
+        consider(waiting_[(waiting_head_ + index) % waiting_capacity].report);
+    }
+    for (const WaitingReport& waiting : waiting_overflow_) {
+        consider(waiting.report);
     }
     if (held_reports_oldest_position_.has_value() && (!oldest_waiting.has_value() || oldest_waiting->is_after(*held_reports_oldest_position_))) {
         oldest_waiting = held_reports_oldest_position_;
@@ -289,8 +324,8 @@ ReportForwarding::Pending ReportForwarding::decode_held_report(const uint8_t* by
         pending.position = EngineReportPosition{header.position_epoch, header.position_number};
     }
     const uint8_t* payload = bytes + sizeof(header);
-    pending.payload.assign(payload, payload + header.payload_size);
-    pending.cl_ord_id.assign(reinterpret_cast<const char*>(payload + header.payload_size), header.cl_ord_id_size);
+    pending.own_copy_of(payload, header.payload_size);
+    pending.set_cl_ord_id(std::string_view(reinterpret_cast<const char*>(payload + header.payload_size), header.cl_ord_id_size));
     pending.erase_routing_entry = false;
     return pending;
 }

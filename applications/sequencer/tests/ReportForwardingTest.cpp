@@ -80,6 +80,10 @@ struct RecordingLinks : public ReportForwardingLinksInterface {
         sent_to_gateway.emplace_back(sent_count, dropped);
     }
     void held_reports_dropped(int64_t) override {}
+    void release_report_chunk(pubsub_itc_fw::SlabHandle slab, const uint8_t* chunk) override {
+        released_chunks.emplace_back(slab, chunk);
+    }
+    std::vector<std::pair<pubsub_itc_fw::SlabHandle, const uint8_t*>> released_chunks;
 
     bool is_leading{true};
     std::map<std::string, fix_common::SessionDestination> destinations;
@@ -106,7 +110,7 @@ class ReportForwardingTest : public ::testing::Test {
         ReportForwarding::Pending report{};
         report.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
         report.seq_no = seq_no;
-        report.payload.assign(payload.begin(), payload.end());
+        report.own_copy_of(reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
         report.identity = fix_common::SessionIdentity::make(comp_id, fix);
         report.position = position;
         return report;
@@ -291,6 +295,76 @@ TEST_F(ReportForwardingTest, ALostLinkMakesItsGatewayUnannouncedAndALostConnecti
     const auto lost = forwarding_->connection_lost(pubsub_itc_fw::ConnectionID{32});
     ASSERT_TRUE(lost.has_value());
     EXPECT_EQ(*lost, ReportForwarding::gateway_key(fix, 2));
+}
+
+// ---- The ring of reports waiting for their record to be committed ---------------------------------------------------
+
+namespace {
+// A report kept in a slab chunk, as one from an engine waits: the chunk is the bytes of @p chunk, and the report is the
+// whole of it.
+ReportForwarding::Pending in_chunk(const std::string& comp_id, int64_t seq_no, const std::vector<uint8_t>& chunk, int slot) {
+    ReportForwarding::Pending report{};
+    report.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
+    report.seq_no = seq_no;
+    report.keep_in_chunk(pubsub_itc_fw::make_slab_handle(slot, 1), chunk.data(), chunk.data(), chunk.size());
+    report.identity = fix_common::SessionIdentity::make(comp_id, gateway_ids::fix_order_gateway);
+    report.set_cl_ord_id("ORD-" + std::to_string(seq_no));
+    return report;
+}
+} // namespaces
+
+// A report kept in the chunk it arrived in is sent from the chunk, with its ClOrdID, once its record is committed, and the
+// chunk is released then, once; never before.
+TEST_F(ReportForwardingTest, AReportKeptInItsChunkIsSentFromItAndTheChunkReleasedOnce) {
+    member_connected();
+    const std::vector<uint8_t> chunk{'r', '1', '0'};
+    forwarding_->wait_for_commit(10, in_chunk("MEMBER", 10, chunk, 3));
+    forwarding_->deliver_committed_through(9);
+    EXPECT_TRUE(links_.sent.empty());
+    EXPECT_TRUE(links_.released_chunks.empty()) << "a chunk is held while its report waits";
+    forwarding_->deliver_committed_through(10);
+    ASSERT_EQ(links_.sent.size(), 1U);
+    EXPECT_EQ(links_.sent[0].payload, "r10");
+    ASSERT_EQ(links_.released_chunks.size(), 1U);
+    EXPECT_EQ(links_.released_chunks[0].first, pubsub_itc_fw::make_slab_handle(3, 1));
+    EXPECT_EQ(links_.released_chunks[0].second, chunk.data());
+    forwarding_->deliver_committed_through(20);
+    EXPECT_EQ(links_.released_chunks.size(), 1U) << "released once";
+}
+
+// Reports are released from the front, in the order they arrived. One that arrived out of order, waiting for an earlier
+// record than the one before it, waits behind it: delayed, and never sent before its own record is committed.
+TEST_F(ReportForwardingTest, WaitingReportsAreReleasedInOrderAndOneOutOfOrderWaitsBehindTheOneBeforeIt) {
+    member_connected();
+    forwarding_->wait_for_commit(10, pending("MEMBER", 10, "r10"));
+    forwarding_->wait_for_commit(14, pending("MEMBER", 14, "r14"));
+    forwarding_->wait_for_commit(12, pending("MEMBER", 12, "r12"));
+    forwarding_->deliver_committed_through(12);
+    ASSERT_EQ(links_.sent.size(), 1U) << "r12's record is committed, but it waits behind r14";
+    EXPECT_EQ(links_.sent[0].payload, "r10");
+    forwarding_->deliver_committed_through(14);
+    ASSERT_EQ(links_.sent.size(), 3U);
+    EXPECT_EQ(links_.sent[1].payload, "r14");
+    EXPECT_EQ(links_.sent[2].payload, "r12");
+}
+
+// The places left fall as reports wait and rise as they are sent; a ring that fills keeps every report beyond it, in
+// order, and sends them all.
+TEST_F(ReportForwardingTest, AFullRingLosesNothingAndKeepsTheOrder) {
+    member_connected();
+    EXPECT_EQ(forwarding_->waiting_places_left(), ReportForwarding::waiting_capacity);
+    const int64_t total = static_cast<int64_t>(ReportForwarding::waiting_capacity) + 3;
+    for (int64_t seq = 1; seq <= total; ++seq) {
+        forwarding_->wait_for_commit(seq, pending("MEMBER", seq, "r" + std::to_string(seq)));
+    }
+    EXPECT_EQ(forwarding_->waiting_places_left(), 0U);
+    EXPECT_EQ(forwarding_->waiting(), static_cast<size_t>(total));
+    forwarding_->deliver_committed_through(total);
+    ASSERT_EQ(links_.sent.size(), static_cast<size_t>(total));
+    EXPECT_EQ(links_.sent.back().payload, "r" + std::to_string(total));
+    EXPECT_EQ(links_.sent[static_cast<size_t>(total) - 4].payload, "r" + std::to_string(total - 3)) << "in the order they arrived";
+    EXPECT_EQ(forwarding_->waiting(), 0U);
+    EXPECT_EQ(forwarding_->waiting_places_left(), ReportForwarding::waiting_capacity);
 }
 
 } // namespaces

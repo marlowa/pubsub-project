@@ -149,6 +149,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         void reports_held_for_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no) override;
         void reports_sent_to_gateway(int16_t protocol, int16_t instance, int64_t sent, int64_t dropped) override;
         void held_reports_dropped(int64_t total) override;
+        void release_report_chunk(pubsub_itc_fw::SlabHandle slab, const uint8_t* chunk) override;
 
       private:
         SequencerThread& owner_;
@@ -243,6 +244,17 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     std::vector<pubsub_itc_fw::ConnectionID> report_connections_;
     // Sends this instance's role and epoch on @p connection, a connection from a matching engine for reports.
     void announce_role_to_engine(const pubsub_itc_fw::ConnectionID& connection);
+
+    // How many of a connection's reports may wait in this thread's queue, read but not yet taken. The leader pauses its
+    // reading of the engines' reports while the room for reports waiting for a commit has no more than this many places
+    // left for each connection for reports, so that every report already read has a place
+    // (docs/venue/sequencer_order_path_without_the_heap.md, section 3).
+    static constexpr int64_t report_messages_waiting_limit = 1024;
+    // Whether reading the engines' connections for reports is paused for want of room for waiting reports.
+    bool report_reading_paused_{false};
+    // Pauses or resumes reading the engines' connections for reports, as the room for waiting reports and the role need.
+    // Called whenever either changes.
+    void update_report_reading();
 
     // How the lease rules reach the other two voters in deciding which sequencer leads: the peer
     // sequencer, and the arbiter pool on both arbiter connections.
@@ -623,7 +635,15 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // and forwards it to its member's gateway once the record it depends on is acknowledged.
     // @p bytes is the report's WalRecord envelope as the engine sent it, and @p er_seq_no the
     // sequence number sent with it. The caller keeps @p bytes valid until this returns.
-    void forward_report_from_engine(const uint8_t* bytes, size_t size, int64_t er_seq_no, ReportSource source);
+    //
+    // A report that must wait for a record to be committed is kept in the slab chunk it arrived in, rather than copied,
+    // when @p chunk names that chunk: the chunk is then released once the report is sent or discarded, and this returns
+    // true, so that the caller does not release it. Otherwise this returns false, and the caller releases it.
+    struct ReportChunk {
+        pubsub_itc_fw::SlabHandle slab;
+        const uint8_t* base{nullptr};
+    };
+    bool forward_report_from_engine(const uint8_t* bytes, size_t size, int64_t er_seq_no, ReportSource source, std::optional<ReportChunk> chunk = std::nullopt);
 
     // A matching engine publisher asking to follow the WAL (WalFollowRequest): declined unless this instance
     // leads, otherwise caught up from the position it gives, up to the last record committed, and then sent
