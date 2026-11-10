@@ -41,7 +41,7 @@ All 81 open entries have been judged. The figures:
    2026. Done.
 3. The breaches that need a short design first: BUG-0142 (statements written in the background; fixed and closed on 9
    November 2026),
-   BUG-0130 (segments kept ready; fixed and closed on 9 November 2026), BUG-0207 (with its scenario), BUG-0211 (fixed and closed on 9 November 2026), BUG-0090 with BUG-0091,
+   BUG-0130 (segments kept ready; fixed and closed on 9 November 2026), BUG-0207 (with its scenario), BUG-0211 (fixed and closed on 9 November 2026), BUG-0090 with BUG-0091 (fixed and closed on 10 November 2026),
    BUG-0131, and BUG-0072. The designs for BUG-0207, BUG-0211, BUG-0090 with BUG-0091, and BUG-0131 were agreed with
    Andrew on 9 November 2026, as was the design for BUG-0237; BUG-0131's decision sets the venue's figure for open orders
    as each environment's `order_book_region_capacity`, which is the figure BUG-0072 needs.
@@ -171,9 +171,9 @@ Fifteen entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0090](bug_list.md#bug_0090): a restarted gateway silently stops honouring cancel-on-disconnect | **Breach** of V6 in spirit: a member's instruction the venue accepted is not carried out, and nothing says so | Unchanged. `FixSession::open_orders` is filled only as a live execution report arrives (`open_orders::track_open_order`), and the cleanup of a session returns at once, logging nothing, when the set is empty (`FixOrderGatewayThread.cpp`, `if (session.open_orders.empty())`) | The gateway learns a session's open orders when it takes the session on, or the cancel on disconnect is done where the orders are known; and the empty case is logged. Designed with BUG-0091 |
+| [BUG-0090](bug_list.md#bug_0090): a restarted gateway silently stops honouring cancel-on-disconnect | **Fixed on 10 November 2026** and closed | The leading sequencer holds the grace period in its WAL and writes `CancelSessionOrders`, which the engines apply; the gateways send no cancels. Scenarios 106, 107, 108 and 109 | None |
 | [BUG-0095](bug_list.md#bug_0095): checking a FIX price or quantity overflows a signed integer | **Defect**, undefined behaviour in the C++ | Unchanged: `FixField::as_decimal` still builds `digits = digits * 10 + ...` in an `int64_t` with no check. The binary gateway's checks, added since (`BinaryCommandChecks`), call the same rule, so the binary gateway now has the same fault | **Fixed on 8 November 2026** and closed: `FixField::is_decimal` checks the text's form character by character and builds no number, for both gateways. Under the undefined behaviour sanitizer the old check overflowed on a 40-digit value and the new one does not |
-| [BUG-0091](bug_list.md#bug_0091): a member's standing instructions die with the gateway that received them | **New requirement** (R-0103), its mechanism decided | Unchanged: `SessionBound` and `SessionBoundAck` carry no cancel-on-disconnect fields | Add them, as [session_binding.md](availability/session_binding.md) decides, with BUG-0090 |
+| [BUG-0091](bug_list.md#bug_0091): a member's standing instructions die with the gateway that received them | **Fixed on 10 November 2026** and closed | The instruction travels on `SessionBound` and `SessionBoundAck`, is kept by every sequencer, and is applied by the leader when the gateway cannot act. R-0103 verified by scenario 107 | None |
 | [BUG-0072](bug_list.md#bug_0072): the gateway's open-order pool is sized by nothing in particular | **Breach** of F5 by configuration: routine growth of the pool is an allocation on the order path | Unchanged: `environments/prod.toml` gives the binary gateway 4,096 slots in one pool | Size the pool from the number of open orders the venue plans for, as the matching engine's region is |
 | [BUG-0203](bug_list.md#bug_0203): the FIX gateway sometimes refuses a logon as an impostor when two are under way together | **Investigation** | Not reproduced since; cause unknown | Reproduce with many simultaneous logons, as at the start of the day, and find the shared state |
 | [BUG-0056](bug_list.md#bug_0056): the FIX gateway stopped completing logons while still running | **Investigation** | Not reproduced; the evidence is gone | Keep until a reproduction or a stress test of abandoned connections shows it or rules it out |
@@ -187,8 +187,7 @@ Fifteen entries.
 | [BUG-0092](bug_list.md#bug_0092): a refused cancel is answered with an execution report | **Fixed** | The FIX gateway answers its own refusal of a cancel with an `OrderCancelReject` (35=9), and `FixErEncoder` encodes the matching engine's refusal of a cancel as one too (`FixErEncoder.hpp`, "Encodes a matching engine report that refuses a request to cancel as a FIX OrderCancelReject"), under R-0151 and BUG-0099 | Close it, if Andrew agrees |
 | [BUG-0096](bug_list.md#bug_0096): the binary gateway passes on prices and quantities without checking them | **Fixed** | `BinaryCommandChecks` checks every quantity and price as a decimal number by the FIX codec's rule (BUG-0100) | Close it, if Andrew agrees; the overflow it inherits is BUG-0095 |
 
-**Recommended order in this area.** BUG-0090 and BUG-0091 together first: a member's instruction silently
-not carried out is the most serious thing here. BUG-0095 next, being small and undefined behaviour in
+**Recommended order in this area.** BUG-0090 and BUG-0091 were first, and are closed. BUG-0095 next, being small and undefined behaviour in
 both gateways. BUG-0072 is a configuration change. The investigations, BUG-0203 and BUG-0056, need a
 stress test of many logons and abandoned connections, which could serve both. The new requirements are
 placed with the rest; BUG-0065's remainder goes with the trading phases. BUG-0092 and BUG-0096 can close.

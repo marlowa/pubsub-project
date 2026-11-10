@@ -1,7 +1,8 @@
 # Cancel on disconnect, carried out where the orders are {#cancel_on_disconnect_where_the_orders_are}
 
-**Status: agreed, not built.** This is the design for [BUG-0090](../bug_list.md#bug_0090) and
-[BUG-0091](../bug_list.md#bug_0091). All three decisions in section 7 were agreed with Andrew on 9 November 2026.
+**Status: built.** This is the design for [BUG-0090](../bug_list.md#bug_0090) and
+[BUG-0091](../bug_list.md#bug_0091). All three decisions in section 7 were agreed with Andrew on 9 November 2026, and the
+design is built as described here; section 8 says where.
 
 ## 1. The problem
 
@@ -34,8 +35,8 @@ once; and it never cancels a GoodTillCancel or GoodTillDate order, which the mem
 
 ### 3.1 The sequencer is told, or notices, that a session ended
 
-- **A gateway that is running** sends the sequencer `SessionEnded`: the session, and whether the member logged out
-  cleanly. It no longer cancels anything itself.
+- **A gateway that is running** tells the sequencer the session has ended with the `SessionUnbound` it already sends,
+  which now says whether the member logged out cleanly (`logged_out`). It no longer cancels anything itself.
 - **A gateway that dies** sends nothing, but the leading sequencer sees its connection lost, and treats every session bound
   through that gateway as ended without a clean Logout. That is R-0113's case, and it is the reason the sequencer, not the
   gateway, has to do this.
@@ -43,12 +44,12 @@ once; and it never cancels a GoodTillCancel or GoodTillDate order, which the mem
 ### 3.2 The sequencer waits the grace period, durably
 
 The sequencer holds each session's instructions (3.4). When a session ends, it writes a record into the WAL saying so,
-with the time and the grace period that applies: none after a clean Logout or with a grace period of zero, otherwise the
+`SessionEnded`, with the time and the grace period that applies: none after a clean Logout or with a grace period of zero, otherwise the
 member's or the venue's. Written into the WAL, the pending cancel survives a change of leader: a sequencer that takes
 the lead finds it in its own WAL and keeps waiting from the time recorded.
 
 If the member binds again before the grace period runs out, through any gateway, the pending cancel is withdrawn, and
-that is recorded too. Otherwise, when it runs out, the leader writes a command, `CancelSessionOrders`, naming the session.
+that is recorded too (`SessionEndWithdrawn`). Otherwise, when it runs out, the leader writes a command, `CancelSessionOrders`, naming the session.
 
 ### 3.3 The matching engine cancels the session's orders
 
@@ -60,14 +61,21 @@ catch-up replays it, and nothing depends on a timer in the engine.
 ### 3.4 Where the instructions come from
 
 As decided: the authentication service gives them to the gateway at logon, the gateway sends them on `SessionBound`, the
-sequencer keeps them with the session's numbers, and `SessionBoundAck` returns them to a gateway taking the session on. The
-sequencer keeps them in the WAL with the session's state, so a new leader has them; whether that needs its own record or
-fits an existing one is to be settled when this is built.
+sequencer keeps them with the session, and `SessionBoundAck` returns them to a gateway taking the session on. Every
+sequencer, leading or not, is sent every `SessionBound`, so a new leader has them without a record in the WAL, as it has
+where each session is bound. A binding that states nothing leaves what an earlier binding stated, and a logon that
+restarts the session's numbering does not discard them.
+
+**The venue's default** is configured for each gateway instance, in its `[cancel_on_disconnect]` section, not once for the
+venue. So the gateway binding a session states its own settings on `SessionBound` too, and the sequencer applies, for each
+part the member has not stated, the default of the gateway that last bound the session.
 
 ### 3.5 What the gateway keeps
 
-The gateway's view of open orders is no longer used for cancel on disconnect. Whether anything else uses it is to be
-checked when this is built; if nothing does, it goes, with the per-order cancels the gateway sends today at disconnect.
+The gateway sends no cancels. It keeps its view of a session's open orders, because it names an order's OrderID in an
+OrderCancelReject, and uses it to say, at Info and as a test event, how many orders a session left and what the venue will
+do with them. It keeps a session that ended for its grace period, so that it can say whether the member came back in
+time, and stop keeping the session's unanswered commands once it has not.
 
 ## 4. What this costs
 
@@ -113,3 +121,20 @@ reconnects through the other gateway within the grace period and keeps its order
 
 Agreed: **yes**. The engine knows the session's orders; the gateway, after a restart or death, does not. One command
 also replaces the burst of per-order cancels a large session produces today.
+
+## 8. Where it is built
+
+- **Messages** (`leader_follower.dsl`): the instruction on `SessionBound` and `SessionBoundAck`, and the binding gateway's
+  defaults on `SessionBound`; `logged_out` on `SessionUnbound`; the records `SessionEnded` and `SessionEndWithdrawn`; the
+  command `CancelSessionOrders`.
+- **Sequencer**: `MemberSessions` keeps each session's instruction and the binding gateway's default
+  (`applied_instruction`); `SessionCancelsPending`, kept from the WAL by `VenueStateFromTheWal`, holds the cancels waiting;
+  `SequencerThread::session_ended`, `session_bound_again` and `carry_out_due_session_cancels`, the last checked once a second,
+  write the records and the command while leading. A catch-up sends an engine the command, as it sends every command
+  (`EngineRecordFromWal`), and not the two records.
+- **Matching engine**: `OrderBook::remove_session_orders` and `MatchingEngineStateMachine::apply_cancel_session_orders`;
+  `wal_replay_check` applies the command as the engine does.
+- **Tests**: unit tests in `MemberSessionsTest`, `SessionCancelsPendingTest`, `VenueStateFromTheWalTest` and
+  `MatchingEngineStateMachineTest`; scenarios 106 (gateway restarted), 107 (gateway killed), 108 (a member that asked to
+  keep its orders) and 109 (a member that drops for good), with scenario 19 for the grace period and scenario 50 for the
+  orders after an engine restart.

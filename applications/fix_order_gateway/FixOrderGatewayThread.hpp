@@ -30,7 +30,6 @@
 #include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
 #endif
 
-#include "CancelClOrdId.hpp"
 #include "FixCapture.hpp"
 #include "FixMessage.hpp"
 #include "FixOrderGatewayConfiguration.hpp"
@@ -178,22 +177,13 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     /// stands, that held something the venue cannot replay. See FixSession::report_seq_nums.
     void gap_fill_unreplayable_run(FixSession& session);
 
-    // On client disconnect: moves the session's open_orders into the pending
-    // cancel queue in O(1) and arms the drain timer.  The actual OCRs are
-    // sent in batches by drain_pending_cancels() so the reactor thread is
-    // never monopolised by a single disconnect with many open orders.
-    // Handles a session's resting orders when its connection goes away.
-    //
-    // Persistent orders (GoodTillCancel, GoodTillDate) are never cancelled here: they were
-    // placed to outlive the session, so they are released from the gateway's bookkeeping
-    // and left resting on the book. Everything else is either queued for immediate
-    // cancellation -- a clean Logout, or a zero grace period -- or parked in
-    // grace_sessions_ until its deadline.
-    void queue_session_for_cleanup(FixSession& session);
-
-    // Timer callback: sends up to cancel_drain_batch_size OCRs from the
-    // pending queue, then reschedules itself if more remain.
-    void drain_pending_cancels();
+    // A session's connection has gone. Its record of the session's open orders is released, and what the venue will do
+    // with them is said, at Info and as a test event. The gateway cancels nothing itself: the leading sequencer carries
+    // out the member's cancel-on-disconnect instruction where the orders are, which it can do after this gateway has
+    // restarted or died too (docs/availability/cancel_on_disconnect_where_the_orders_are.md). The session is kept in
+    // grace_sessions_ for its grace period, so that the gateway can say whether the member came back in time, and stop
+    // keeping the session's unanswered commands once it has not.
+    void note_session_ended(FixSession& session);
 
     /**
      * @brief Logs a running total of accounted-for execution reports.
@@ -710,40 +700,21 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // Returns nullptr if no matching session is found.
     FixSession* find_session_by_comp_id(const std::string& comp_id);
 
-    // Holds the open-orders state of a disconnected session, pending deferred
-    // cancellation.
-    //
-    // A flat vector rather than the session's OpenOrderMap. Once a session is dead
-    // its orders are only ever consumed in sequence -- nothing looks one up by
-    // ClOrdID again -- so the hash map earns nothing here and costs a great deal:
-    // draining it meant calling begin() per order, and robin_map::begin() scans its
-    // bucket array from the start, rescanning every bucket already emptied. That made
-    // draining N orders O(N^2) in bucket probes and put this path at 11% of the
-    // gateway profile. next_order_index walks the vector instead, so each order is
-    // O(1) and the batching across timer ticks still resumes where it left off.
+    // A session whose connection has gone with orders to be cancelled, while its grace period runs.
     struct DeadSession {
-        std::vector<OpenOrderEntry*> open_orders;
-        size_t next_order_index{0};
-        int32_t session_conn_id{0};
+        size_t order_count{0};
         std::string client_comp_id;
-        int cancel_id_counter{1};
-        // When this session's orders become due for cancellation. Only meaningful while
-        // the session sits in grace_sessions_; the drain queue ignores it.
+        // When the grace period runs out.
         std::chrono::steady_clock::time_point cancel_due{};
     };
-
-    // Sessions waiting for their open orders to be cancelled.  Entries are appended
-    // at disconnect time and consumed by the drain timer.
-    std::deque<DeadSession> pending_cancel_sessions_;
 
     // Sessions whose connection dropped and whose grace period has not yet expired.
     // Ordered by cancel_due, which is automatic: every entry takes the same grace period
     // and they are appended in the order their connections died, so the front is always
     // the earliest due.
     //
-    // A session leaves here one of two ways: the grace timer expires and it moves to
-    // pending_cancel_sessions_, or the same comp id logs on again and it is discarded
-    // without a single cancel being sent -- which is the entire point of the feature.
+    // A session leaves here one of two ways: the grace timer expires, and its unanswered commands are no longer kept, or
+    // the same comp id logs on again in time.
     std::deque<DeadSession> grace_sessions_;
 
     // One-off timer set for grace_sessions_.front().cancel_due. Rearmed on each
@@ -768,16 +739,14 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void report_session_sequence_numbers();
     bool grace_timer_active_{false};
 
-    // Moves every grace_sessions_ entry whose deadline has passed into the cancel queue
-    // and rearms for the next, if any.
+    // Ends every grace_sessions_ entry whose deadline has passed, and rearms for the next, if any.
     void expire_grace_sessions();
 
     // Arms (or rearms) the grace timer for the front entry's deadline.
     void arm_grace_timer();
 
-    // Discards any grace-period entry belonging to this comp id, cancelling nothing.
-    // Called when a comp id logs on: if it got back inside its window, its orders are
-    // left resting exactly as they were.
+    // Discards any grace-period entry belonging to this comp id. Called when a comp id logs on: if it got back inside its
+    // window, the venue leaves its orders resting.
     //
     // Returns the number of orders reclaimed, for logging.
     size_t reclaim_grace_session(std::string_view comp_id);
@@ -835,16 +804,6 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      */
     int64_t orders_refused_{0};
     int64_t cancels_refused_{0};
-
-    // Cancels sent since this drain began, so the completion line can report the whole
-    // drain rather than whatever the final tick happened to do.
-    int64_t cancels_sent_this_drain_{0};
-
-    // True while the cancel-drain one-shot timer is armed.  Prevents double-arming.
-    bool cancel_drain_timer_active_{false};
-
-    // Timer id of the cancel-drain one-shot, so on_timer_event can recognise it.
-    pubsub_itc_fw::TimerID cancel_drain_timer_id_{};
 };
 
 } // namespaces

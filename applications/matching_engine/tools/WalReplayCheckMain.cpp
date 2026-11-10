@@ -26,7 +26,7 @@
  * that command's reports, and keys derived from the secret in --secret-file and the trading date the command carries.
  * That is what the engine does, so given the engines' secret it names every report as the engine did, whichever
  * engine led and however often it restarted (docs/availability/deterministic_matching_engine.md, sections 3 and 7.2).
- * A CancelBook, a TechnicalEvent or a VoidCommands command is applied as the engine applies it. Every VoidCommands record
+ * A CancelBook, a CancelSessionOrders, a TechnicalEvent or a VoidCommands command is applied as the engine applies it. Every VoidCommands record
  * is read first, in a pass of its own, because an engine is told of each void before it reaches the commands the void
  * names (docs/availability/voided_commands.md, section 3.3). A report the engine produced by a
  * decision of its own, not by a command in the WAL, has no command to replay: the cancel of every order when the
@@ -380,6 +380,16 @@ int main(int argc, char** argv) {
                         }
                         ++commands;
                         static_cast<void>(machine.apply_void_commands(command, record_id, CommandSource::live));
+                    } else if (envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelSessionOrders::message_pdu_id)) {
+                        pubsub_itc_fw_app::CancelSessionOrdersView command{};
+                        if (!pubsub_itc_fw_app::decode(command, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+                            ++undecodable;
+                            return;
+                        }
+                        ++commands;
+                        static_cast<void>(machine.apply_cancel_session_orders(fix_common::SessionIdentity::make(command.comp_id, command.gateway_protocol_id),
+                                                                              record_id, envelope.wall_time_ns,
+                                                                              envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
                     } else if (inner == pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) {
                         pubsub_itc_fw_app::NewOrderSingleView order{};
                         if (!pubsub_itc_fw_app::decode(order, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {

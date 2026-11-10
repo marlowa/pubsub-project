@@ -381,6 +381,11 @@ message SessionBound (id=120, version=1)
     # docs/availability/cancel_on_disconnect_where_the_orders_are.md.
     optional bool cancel_on_disconnect_enabled
     optional i32  cancel_on_disconnect_grace_period_seconds
+    # What the gateway binding the session applies to a member that has not said: its own [cancel_on_disconnect]
+    # settings. The venue's default is configured for each gateway instance, so the sequencer, carrying the instruction
+    # out where the gateway cannot, applies the default of the gateway that last bound the session.
+    bool          default_cancel_on_disconnect_enabled
+    i32           default_cancel_on_disconnect_grace_period_seconds
 end
 
 # ------------------------------------------------------------
@@ -491,6 +496,10 @@ message SessionUnbound (id=121, version=1)
     # that the reports produced after it, while the member was away, can be delivered when it binds
     # again (R-0005, docs/bug_list.md BUG-0088).
     optional i64 last_report_delivered
+    # The member logged out cleanly, rather than its connection dropping. A member that logs out has said it is going, so
+    # its resting orders are cancelled at once if it asked for cancel on disconnect, with no grace period; one whose
+    # connection dropped is given the grace period to come back.
+    bool   logged_out
 end
 
 # ------------------------------------------------------------
@@ -767,6 +776,54 @@ enum CancelBookReason : i8 {
 message CancelBook (id=139, version=1)
     CancelBookReason reason
     i64 orders_placed_through
+end
+
+# ------------------------------------------------------------
+#  165 -- CancelSessionOrders
+#  A command in the WAL, carried as the payload of a WalRecord
+#  envelope like a new order or a cancel: cancel every order the
+#  session has resting, except a GoodTillCancel or GoodTillDate
+#  order, which the member placed to outlive its connection,
+#  reporting each to the member. Written by the leading sequencer
+#  when the grace period a member asked for after its connection
+#  ended runs out without it binding again. See
+#  docs/availability/cancel_on_disconnect_where_the_orders_are.md.
+# ------------------------------------------------------------
+message CancelSessionOrders (id=165, version=1)
+    string comp_id                # the session identity, with the protocol below
+    i16    gateway_protocol_id
+end
+
+# ------------------------------------------------------------
+#  166 -- SessionEnded
+#  A record in the WAL, carried as the payload of a WalRecord
+#  envelope, and not a command: no engine applies it. Written by
+#  the leading sequencer when a member's session ends and the
+#  member asked for its resting orders to be cancelled then: its
+#  gateway reported the session gone, or the gateway itself was
+#  lost. The orders are due to be cancelled grace_period_seconds
+#  after the envelope's time, unless the session binds again
+#  first (SessionEndWithdrawn). Kept in the WAL so that a
+#  sequencer that takes the lead finds the cancel still pending,
+#  and goes on waiting from the time recorded.
+# ------------------------------------------------------------
+message SessionEnded (id=166, version=1)
+    string comp_id                # the session identity, with the protocol below
+    i16    gateway_protocol_id
+    i32    grace_period_seconds   # zero after a clean Logout, or when the member asked for no wait
+    bool   logged_out             # the member logged out cleanly; false when the connection dropped or the gateway was lost
+end
+
+# ------------------------------------------------------------
+#  167 -- SessionEndWithdrawn
+#  A record in the WAL, and not a command. Written by the leading
+#  sequencer when a session whose end was recorded (SessionEnded)
+#  binds again before its grace period runs out: its orders are no
+#  longer to be cancelled.
+# ------------------------------------------------------------
+message SessionEndWithdrawn (id=167, version=1)
+    string comp_id                # the session identity, with the protocol below
+    i16    gateway_protocol_id
 end
 
 # The venue's trading phase. See docs/venue/trading_phases.md. Until

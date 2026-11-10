@@ -5,6 +5,7 @@ add_executable(sequencer
         HaltAndVoidRequests.cpp
         KeptReports.cpp
         MemberSessions.cpp
+        SessionCancelsPending.cpp
         OrderRelease.cpp
         ReportForwarding.cpp
         SequencerThread.cpp
@@ -113,6 +114,7 @@ add_executable(sequencer_tests
         tests/TradingHaltStateTest.cpp
         tests/VenueStateFromTheWalTest.cpp
         tests/MemberSessionsTest.cpp
+        tests/SessionCancelsPendingTest.cpp
         tests/ReportForwardingTest.cpp
         tests/KeptReportsTest.cpp
         tests/OrderReleaseTest.cpp
@@ -126,6 +128,7 @@ add_executable(sequencer_tests
         KeptReports.cpp
         OrderRelease.cpp
         MemberSessions.cpp
+        SessionCancelsPending.cpp
         ReportForwarding.cpp
         SequencerConfigurationLoader.cpp
         ServingWalFollowers.cpp

@@ -12,7 +12,8 @@ connection it happens to be using, so a member that reconnects, to the same inst
 backup, finds its orders still its own, can cancel them, and receives their reports there. A FIX
 member continues its message numbering across the reconnect and can ask for the execution reports
 it missed. When a member's connection drops, its orders are held for a grace period before they
-are cancelled, so that a reconnect cancels nothing.
+are cancelled, so that a reconnect cancels nothing. The venue, not the gateway, cancels them, so this
+holds when the gateway has restarted or died too.
 
 ---
 
@@ -52,8 +53,9 @@ not only when it shuts down.
 
 | What fails | What the member sees | What its orders do | Checked by |
 |---|---|---|---|
-| **Its own connection drops**, the gateway survives | Nothing until it reconnects | Held, not cancelled, for a grace period (30 seconds by default, set per member). If it reconnects inside the period, **nothing is cancelled** | Scenario 19 |
-| **The gateway process is killed** | The connection closes, with no message (fact 2) | **Stay live on the book.** The process that would have cancelled them is the one that died | Scenarios 18 and 23 |
+| **Its own connection drops**, the gateway survives | Nothing until it reconnects | Held, not cancelled, for a grace period (30 seconds by default, set per member). If it reconnects inside the period, **nothing is cancelled**; if not, the venue cancels them when the period ends | Scenarios 19 and 109 |
+| **The gateway process is killed** | The connection closes, with no message (fact 2) | Held for the grace period, as for a dropped connection: the leading sequencer sees the gateway go, and cancels them when the period ends unless the member logs on again, through either instance | Scenarios 107, 18 and 23 |
+| **The gateway is restarted**, and the member logs on to it again | A normal Logon | Still live; when the member later drops, they are cancelled after the grace period | Scenario 106 |
 | It **reconnects to its backup instance** | A normal Logon, numbered where the session had reached, not restarted at 1 | Still live, and still its own | Scenario 23 |
 | It **cancels an order it left resting**, from the new connection | A cancel report, on the new connection | Cancelled | Scenario 21, and `OrderKeyTest` for the key |
 | It **asks for what it missed** | Its execution reports, sent again with `PossDupFlag=Y`, and a gap fill for the administrative messages | Unchanged | Scenario 22 |
@@ -109,9 +111,6 @@ Each of these is a real limit, and each is recorded:
   held in the sequencers' memory.
 - **The binary gateway cannot send reports again.** Its protocol has no session layer to build a
   resend on ([BUG-0046](../bug_list.md#bug_0046)).
-- **A restarted gateway stops honouring cancel-on-disconnect** for the sessions it held before it
-  died ([BUG-0090](../bug_list.md#bug_0090)), and more generally a member's standing instructions
-  die with the gateway that received them ([BUG-0091](../bug_list.md#bug_0091)).
 - **No defined way for a member to discover that its primary is down**
   ([BUG-0045](../bug_list.md#bug_0045)).
 - **A comp id may hold a session only once venue-wide, and that is not enforced.** The sequencer
@@ -316,25 +315,39 @@ expects, and FIX requires a member to treat that as fatal unless the flag is set
 
 ### Cancel-on-disconnect, per comp id, with a grace period
 
-When a member's connection drops, its gateway can cancel its open orders, so that nothing stays live
+When a member's connection drops, the venue can cancel its open orders, so that nothing stays live
 on the book behind a session nobody is managing. The grace period is what makes this compatible with
 gateway failover: if cancellation waits long enough for a member to reach its backup, a gateway
 failure becomes a reconnect and a book still standing, rather than every member on the failed
 instance having its book flattened.
 
+**Carried out where the orders are**
+([cancel_on_disconnect_where_the_orders_are.md](cancel_on_disconnect_where_the_orders_are.md)). The
+gateway cancels nothing itself. When a session ends, the gateway tells the sequencers
+(`SessionUnbound`, with whether the member logged out cleanly); when a gateway is lost, the leading
+sequencer treats every session it held as ended without a clean Logout. The leading sequencer writes
+the end into its WAL with the grace period that applies (`SessionEnded`), writes a withdrawal if the
+session binds again in time, through either instance (`SessionEndWithdrawn`), and when the period
+runs out writes a command, `CancelSessionOrders`, which each matching engine applies to the session's
+resting orders. Being in the WAL, a pending cancel survives a change of sequencer leader, and the
+cancel is applied alike by both engines and by a catch-up.
+
 - **On by default, with a 30-second grace period,** set in each gateway's
-  `[cancel_on_disconnect]` section (`enabled`, `grace_period`).
+  `[cancel_on_disconnect]` section (`enabled`, `grace_period`). The gateway binding a session states
+  its own settings to the sequencer (`SessionBound`), which applies them to a member that has not
+  said.
 - **Settable per comp id.** `cancel_on_disconnect_enabled` and
   `cancel_on_disconnect_grace_period_seconds` travel the same path as the provisioning above and
-  arrive with the session. An empty grace period means the member expressed no preference and the
-  gateway's default applies; zero means cancel at once. The two are kept distinct at every step: an
-  empty database column, an omitted TOML key, an optional message field, and `std::optional` in the
-  session.
+  arrive with the session, and the gateway passes them on to the sequencer, which keeps them with
+  the session and hands them back to a gateway that takes the session on (`SessionBoundAck`). An
+  empty grace period means the member expressed no preference and the default applies; zero means
+  cancel at once. The two are kept distinct at every step: an empty database column, an omitted TOML
+  key, an optional message field, and `std::optional` in the session.
 - **A dropped session's orders are held, not cancelled.** If the same comp id logs on again inside
   the grace period, nothing is cancelled at all.
 - **GoodTillCancel and GoodTillDate orders are never cancelled on disconnect,** because they are
-  meant to outlive the session. The matching engine echoes `TimeInForce` on every execution report so
-  the gateway can tell them apart.
+  meant to outlive the session. The matching engine leaves them on the book when it applies
+  `CancelSessionOrders`.
 - **A clean FIX Logout cancels at once,** because the member has said what it wants. The binary
   protocol has no logout message, so every disconnect there takes the full grace period.
 - **`enabled = false` leaves every order resting** and gives the member full responsibility for them.
@@ -352,7 +365,11 @@ connection.
 |---|---|
 | 16, `primary_me_death` | The leading matching engine is killed. The engine that takes over resumes as leader holding the resting orders and cancels none of them, and the gateway drops no execution report for want of a session |
 | 18, `fix_gateway_a_death` | FIX instance `a` is killed. The matching engine is then stopped for twelve seconds, longer than the venue recovers by itself (five seconds in this scenario), so the sequencer writes the commands that halt trading and cancel the book, and the restarted engine cancels the orders `a`'s members placed. Nothing is elected, instance `b` keeps running, and, with instance `a` never restarted, the leading sequencer holds every cancel report for it, drops none, and sends none to `b` ([BUG-0202](../bug_list.md#bug_0202), fixed). A member that reconnected would be sent them ([BUG-0088](../bug_list.md#bug_0088), fixed); this scenario does not reconnect one |
-| 19, `cancel_on_disconnect_grace` | With the gateway running, a dropped member's orders are held for the provisioned grace period, the number itself and not the gateway's default, and a reconnect inside it cancels nothing. It fails if the grace period is zero |
+| 19, `cancel_on_disconnect_grace` | With the gateway running, a dropped member's orders are held for the provisioned grace period, the number itself and not the gateway's default, and a reconnect inside it cancels nothing: the matching engine reports no cancel of the member's orders. It fails if the grace period is zero |
+| 106, `cancel_on_disconnect_after_gateway_restart` | The member's gateway is restarted; the member logs on again within its grace period of 8 seconds, keeps its 1,000 orders, and drops. Every order is cancelled once the period has run out, and none before |
+| 107, `cancel_on_disconnect_after_gateway_death` | The member's gateway is killed and the member does not come back. Every order is cancelled once the grace period has run out, and none before |
+| 108, `kept_orders_after_gateway_restart` | As 106, for a member that asked to keep its orders: none is cancelled |
+| 109, `cancel_on_disconnect_after_grace_period` | The member drops for good, its gateway up throughout. Every order is cancelled once the grace period has run out, and none before |
 | 20, `session_provisioning` | The gateway admits a comp id provisioned for its instance, naming both numbers, and refuses it once it is provisioned elsewhere, through the database and a real credentials export |
 | 21, `reconnect_inherits_reports` | 1,000 orders rest, the member reconnects on a new connection, and the gateway announces the new session to the sequencer. The leading matching engine is then killed, and the checks are those of scenario 16. No execution report is produced after the reconnect, so this scenario does not show a report reaching the new connection |
 | 22, `resend_recovery` | With a client that does not reset its numbering, the numbering resumes, the member asks for what it missed, real reports come back carrying `PossDupFlag=Y` as received by the client, and a heartbeat placed inside the gap is gap-filled rather than given a report |

@@ -44,7 +44,6 @@
 #include "BinaryOrderGatewayConfiguration.hpp"
 #include "BinaryRejections.hpp"
 #include "BinarySession.hpp"
-#include "CancelClOrdId.hpp"
 #include "GatewayIds.hpp"
 #include "GatewayProgressMetrics.hpp"
 #include "GatewayRefusal.hpp"
@@ -317,16 +316,18 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void track_open_order(BinarySession& session, const pubsub_itc_fw_app::ExecutionReportView& report);
 
     /**
-     * @brief Moves a departing session's resting orders onto the cancel-drain queue.
+     * @brief A session's connection has gone: its record of the session's open orders is released, and what the venue will
+     *        do with them is said at Info.
      *
-     * A client that disappears leaves orders on the book that nobody is managing, so the
-     * gateway cancels them on its behalf. The orders are moved out of the session (which
-     * is about to be destroyed) and drained in batches by a timer rather than in one
-     * burst, so that a client with thousands of resting orders cannot stall the reactor.
+     * The gateway cancels nothing itself: the leading sequencer carries out the member's cancel-on-disconnect instruction
+     * where the orders are, which it can do after this gateway has restarted or died too
+     * (docs/availability/cancel_on_disconnect_where_the_orders_are.md). The session is kept in grace_sessions_ for its
+     * grace period, so that the gateway can say whether the member came back in time, and stop keeping the session's
+     * unanswered commands once it has not.
      *
      * @param[in,out] session The disconnecting session.
      */
-    void queue_session_for_cleanup(BinarySession& session);
+    void note_session_ended(BinarySession& session);
 
     /**
      * @brief Logs a running total of accounted-for execution reports.
@@ -343,9 +344,6 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      * reason; keep them symmetrical.
      */
     void report_order_progress();
-
-    /** @brief Timer callback: sends the next batch of OrderCancelRequests. */
-    void drain_pending_cancels();
 
     const BinaryOrderGatewayConfiguration& config_;
 
@@ -377,25 +375,18 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // heap allocation. Created in on_app_ready_event, once the thread is running.
     std::unique_ptr<pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>> open_order_pool_;
 
-    // A disconnected session's orders, held until their cancels have been sent. The
-    // session itself is gone by then, so the comp id and connection id it needs are
-    // copied here; next_order_index walks the vector as the drain proceeds.
+    // A session whose connection has gone with orders to be cancelled, while its grace period runs.
     struct DeadSession {
-        std::vector<open_orders::OpenOrderEntry*> open_orders;
-        size_t next_order_index{0};
-        int32_t session_conn_id{0};
+        size_t order_count{0};
         std::string comp_id;
-        int cancel_id_counter{1};
-        // Only meaningful while the entry sits in grace_sessions_.
+        // When the grace period runs out.
         std::chrono::steady_clock::time_point cancel_due{};
     };
 
-    std::deque<DeadSession> pending_cancel_sessions_;
-
     // Sessions whose connection dropped and whose grace period has not yet expired. Same
     // contract as the FIX order gateway's: an entry leaves either because its deadline
-    // passed, or because the same comp id logged on again -- in which case nothing is
-    // cancelled at all. Ordered by deadline, which is automatic since every entry takes
+    // passed, when the session's unanswered commands are no longer kept, or because the
+    // same comp id logged on again in time. Ordered by deadline, which is automatic since every entry takes
     // the same grace period and they are appended as connections die.
     std::deque<DeadSession> grace_sessions_;
 
@@ -463,20 +454,6 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
     // Where the reason for refusing a command is written, so a refusal does not allocate.
     char command_refusal_text_[command_refusal_text_capacity]{};
-
-    // Cancels sent since this drain began, so the completion line can report the whole
-    // drain rather than whatever the final tick happened to do.
-    int64_t cancels_sent_this_drain_{0};
-
-    // True while the cancel-drain one-shot timer is armed, so it is not double-armed.
-    bool cancel_drain_timer_active_{false};
-
-    // Timer id of the cancel-drain one-shot, so on_timer_event can recognise it.
-    pubsub_itc_fw::TimerID cancel_drain_timer_id_{};
-
-    // Reusable buffer for encoding a generated OrderCancelRequest before it is wrapped
-    // in an envelope. Grown to fit and reused, as the envelope buffer is.
-    std::vector<uint8_t> cancel_encode_buffer_;
 };
 
 } // namespaces

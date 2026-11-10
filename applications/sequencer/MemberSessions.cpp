@@ -83,6 +83,23 @@ MemberSessions::CancelOnDisconnect MemberSessions::instruction(const fix_common:
     return it == instructions_.end() ? CancelOnDisconnect{} : it->second;
 }
 
+void MemberSessions::gateway_default_stated(const fix_common::SessionIdentity& identity, const CancelOnDisconnectApplied& gateway_default) {
+    gateway_defaults_[identity] = gateway_default;
+}
+
+MemberSessions::CancelOnDisconnectApplied MemberSessions::applied_instruction(const fix_common::SessionIdentity& identity) const {
+    const auto default_it = gateway_defaults_.find(identity);
+    CancelOnDisconnectApplied applied = default_it == gateway_defaults_.end() ? CancelOnDisconnectApplied{} : default_it->second;
+    const CancelOnDisconnect stated = instruction(identity);
+    if (stated.enabled.has_value()) {
+        applied.cancel = *stated.enabled;
+    }
+    if (stated.grace_period_seconds.has_value()) {
+        applied.grace_period_seconds = *stated.grace_period_seconds;
+    }
+    return applied;
+}
+
 std::optional<MemberSessions::Resume> MemberSessions::resume(const fix_common::SessionIdentity& identity, bool reset_seq_nums, bool previous_session_died,
                                                              bool leading, int64_t wal_last_seq_no) {
     // Unless the member asked to start again, in which case there is nothing to hand back and keeping it would be worse
@@ -146,10 +163,10 @@ std::optional<MemberSessions::Resume> MemberSessions::resume(const fix_common::S
     return resumed;
 }
 
-void MemberSessions::unbind(const fix_common::SessionIdentity& identity, int16_t instance, int32_t connection, const Reported& reported) {
+bool MemberSessions::unbind(const fix_common::SessionIdentity& identity, int16_t instance, int32_t connection, const Reported& reported) {
     const auto existing = destinations_.find(identity);
     if (existing == destinations_.end()) {
-        return;
+        return false;
     }
     // Only the connection that is actually bound may unbind the session. A member that reconnects quickly enough for its
     // new SessionBound to arrive before the old connection's SessionUnbound -- two gateways racing, which is precisely
@@ -159,7 +176,7 @@ void MemberSessions::unbind(const fix_common::SessionIdentity& identity, int16_t
                    "MemberSessions: stale SessionUnbound for comp_id='{}' protocol={} naming instance={} connection={} -- it is bound to instance={} "
                    "connection={}, keeping the newer binding",
                    identity.comp_id_view(), identity.protocol, instance, connection, existing->second.instance, existing->second.conn_id);
-        return;
+        return false;
     }
     destinations_.erase(existing);
     // Keep the sequence numbers the departing gateway reports. The destination is gone, but the session is not: this is
@@ -182,6 +199,7 @@ void MemberSessions::unbind(const fix_common::SessionIdentity& identity, int16_t
                "its reports have nowhere to go until it binds again",
                identity.comp_id_view(), identity.protocol, instance, connection, state.outbound_seq_num, state.report_seq_nums.size());
     links_.session_unbound(identity, instance, connection);
+    return true;
 }
 
 void MemberSessions::sequence_update(const fix_common::SessionIdentity& identity, const Reported& reported) {

@@ -51,6 +51,7 @@ template <typename Envelope> VenueStateFromTheWal::Record record_of(const Envelo
     record.answers_seq_no = envelope.answers_seq_no;
     record.has_trading_date = envelope.has_trading_date;
     record.trading_date = envelope.trading_date;
+    record.wall_time_ns = envelope.wall_time_ns;
     return record;
 }
 
@@ -478,6 +479,16 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
     if (lost_gateway.has_value()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway id {} connection {} lost: {}", *lost_gateway, id.get_value(),
                    reason);
+        // Every session the gateway held has ended without a clean Logout: the gateway can carry out nothing for them now
+        // (docs/availability/cancel_on_disconnect_where_the_orders_are.md, section 3.1). Collected first, since ending one
+        // writes into the WAL.
+        const auto protocol = static_cast<int16_t>(*lost_gateway >> 16);
+        const auto instance = static_cast<int16_t>(static_cast<uint16_t>(*lost_gateway & 0xFFFF));
+        std::vector<fix_common::SessionIdentity> ended;
+        sessions_.for_each_bound_to(protocol, instance, [&ended](const fix_common::SessionIdentity& identity) { ended.push_back(identity); });
+        for (const fix_common::SessionIdentity& identity : ended) {
+            session_ended(identity, LoggedOutFlag{LoggedOutFlag::ConnectionLost});
+        }
     } else if (engine_routing_.is_engine_connection(id)) {
         serving_.engine_connection_lost(id);
         presence_.catch_up_ended(id);
@@ -1182,6 +1193,7 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
 
     if (id == engine_absence_timer_id_) {
         check_engine_absence();
+        carry_out_due_session_cancels();
         return;
     }
 
@@ -1868,6 +1880,75 @@ template <typename Command> bool SequencerThread::write_own_encoded_command(cons
     return true;
 }
 
+template <typename Record> bool SequencerThread::write_own_encoded_record(const Record& record, const char* name) {
+    size_t bytes_written = 0;
+    size_t bytes_needed = 0;
+    static_cast<void>(pubsub_itc_fw_app::encode(record, nullptr, 0, bytes_written, bytes_needed));
+    std::vector<uint8_t> bytes(bytes_needed);
+    if (!pubsub_itc_fw_app::encode(record, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a {} needs {} bytes and could not be encoded", name, bytes_needed);
+        return false;
+    }
+    const int64_t seq = replicated_wal_->next_seq_no();
+    const int64_t wall_time_ns = config_.wall_clock->now_ns();
+    pubsub_itc_fw_app::WalRecord envelope{};
+    envelope.seq_no = seq;
+    envelope.pdu_id = static_cast<int16_t>(Record::message_pdu_id);
+    envelope.payload = pubsub_itc_fw_app::BytesView{bytes.data(), bytes_written};
+    envelope.wall_time_ns = wall_time_ns;
+    envelope.has_leader_epoch = true;
+    envelope.leader_epoch = current_epoch();
+    envelope.has_trading_date = true;
+    envelope.trading_date = trading_date_for(wall_time_ns);
+    append_envelope_to_wal(envelope);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: wrote {} at seq={}", name, seq);
+    return true;
+}
+
+void SequencerThread::session_ended(const fix_common::SessionIdentity& identity, LoggedOutFlag logged_out) {
+    if (role_ != pubsub_itc_fw_app::Role::leader || venue_state_.session_cancels().pending(identity)) {
+        return;
+    }
+    const MemberSessions::CancelOnDisconnectApplied applied = sessions_.applied_instruction(identity);
+    if (!applied.cancel) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: session comp_id='{}' protocol={} ended -- its member did not ask for its orders to be cancelled, so they rest",
+                   identity.comp_id_view(), identity.protocol);
+        return;
+    }
+    const int32_t grace = logged_out.is_set() ? 0 : applied.grace_period_seconds;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: session comp_id='{}' protocol={} ended{} -- its resting orders are to be cancelled in {} s unless it binds again first",
+               identity.comp_id_view(), identity.protocol, logged_out.is_set() ? " with a clean Logout" : "", grace);
+    static_cast<void>(
+        write_own_encoded_record(pubsub_itc_fw_app::SessionEnded{identity.comp_id_view(), identity.protocol, grace, logged_out.is_set()}, "SessionEnded"));
+}
+
+void SequencerThread::session_bound_again(const fix_common::SessionIdentity& identity) {
+    if (role_ != pubsub_itc_fw_app::Role::leader || !venue_state_.session_cancels().pending(identity)) {
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: session comp_id='{}' protocol={} bound again within its grace period -- its resting orders are not cancelled",
+               identity.comp_id_view(), identity.protocol);
+    static_cast<void>(write_own_encoded_record(pubsub_itc_fw_app::SessionEndWithdrawn{identity.comp_id_view(), identity.protocol}, "SessionEndWithdrawn"));
+}
+
+void SequencerThread::carry_out_due_session_cancels() {
+    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value() || venue_state_.session_cancels().size() == 0) {
+        return;
+    }
+    // Collected first: writing each cancel notes its record, which removes the session from what is pending.
+    std::vector<fix_common::SessionIdentity> due;
+    venue_state_.session_cancels().for_each_due(config_.wall_clock->now_ns(), [&due](const fix_common::SessionIdentity& identity) { due.push_back(identity); });
+    for (const fix_common::SessionIdentity& identity : due) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: session comp_id='{}' protocol={} did not bind again within its grace period -- cancelling its resting orders",
+                   identity.comp_id_view(), identity.protocol);
+        static_cast<void>(write_own_encoded_command(pubsub_itc_fw_app::CancelSessionOrders{identity.comp_id_view(), identity.protocol}, "CancelSessionOrders"));
+    }
+}
+
 void SequencerThread::write_recovery_halt(int64_t now_ns) {
     halts_.recovery_halt(now_ns);
     presence_.refresh_order_acceptance(std::chrono::steady_clock::now());
@@ -2279,7 +2360,10 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
         stated.grace_period_seconds = view.cancel_on_disconnect_grace_period_seconds;
     }
     sessions_.instruction_stated(identity, stated);
+    sessions_.gateway_default_stated(
+        identity, MemberSessions::CancelOnDisconnectApplied{view.default_cancel_on_disconnect_enabled, view.default_cancel_on_disconnect_grace_period_seconds});
     const MemberSessions::Bound bound = sessions_.bind(identity, destination, view.still_connected);
+    session_bound_again(identity);
     if (bound.still_connected) {
         reports_.send_held_for_session(identity);
         return;
@@ -2378,7 +2462,9 @@ void SequencerThread::handle_session_unbound(const pubsub_itc_fw::EventMessage& 
     reported.report_seq_nums = to_seq_num_ranges(view.report_seq_nums);
     reported.has_last_report_delivered = view.has_last_report_delivered;
     reported.last_report_delivered = view.last_report_delivered;
-    sessions_.unbind(identity, view.gateway_instance_id, view.gateway_session_conn_id, reported);
+    if (sessions_.unbind(identity, view.gateway_instance_id, view.gateway_session_conn_id, reported)) {
+        session_ended(identity, LoggedOutFlag{view.logged_out ? LoggedOutFlag::LoggedOut : LoggedOutFlag::ConnectionLost});
+    }
 }
 
 void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::EventMessage& message) {

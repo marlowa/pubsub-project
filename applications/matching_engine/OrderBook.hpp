@@ -335,6 +335,42 @@ class OrderBook {
         return placed.size();
     }
 
+    /**
+     * @brief Takes off the book every order of @p session except a GoodTillCancel or GoodTillDate order, calling fn(entry)
+     * for each just before it is removed, in the order the orders were placed.
+     *
+     * For cancel on disconnect: a member's GoodTillCancel and GoodTillDate orders were placed to outlive its connection,
+     * so they stay. As for remove_placed_through, every engine that applied the same commands visits the same orders in
+     * the same order. It walks the whole map, since the map is keyed by order and not by session, and the list it sorts
+     * takes 16 bytes for each order removed for the length of the call. fn must not change the book.
+     *
+     * @param[in] session The session whose orders are removed.
+     * @param[in] fn      Called with each order's record, which is valid only for the call.
+     * @return How many orders were removed.
+     */
+    template <typename Fn> size_t remove_session_orders(const fix_common::SessionIdentity& session, Fn&& fn) {
+        std::vector<std::pair<int64_t, SlotIndex>> placed;
+        for (const auto& kv : index_) {
+            if (!(kv.first.session == session)) {
+                continue;
+            }
+            const OrderEntry* entry = entry_at(kv.second);
+            if (entry->has_time_in_force && (entry->time_in_force == pubsub_itc_fw_app::TimeInForce::GoodTillCancel ||
+                                             entry->time_in_force == pubsub_itc_fw_app::TimeInForce::GoodTillDate)) {
+                continue;
+            }
+            placed.emplace_back(entry->placed_at_seq_no, kv.second);
+        }
+        std::sort(placed.begin(), placed.end());
+        for (const auto& order : placed) {
+            const OrderEntry* entry = entry_at(order.second);
+            fn(*entry);
+            index_.erase(OrderKey::make(entry->session, entry->get_cl_ord_id()));
+            store_.release(order.second);
+        }
+        return placed.size();
+    }
+
   private:
     // A record is read back at a different address than it was written at, so it must be
     // copyable as bytes and hold nothing that reaches outside itself.

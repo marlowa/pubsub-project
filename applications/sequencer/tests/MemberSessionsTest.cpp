@@ -133,6 +133,39 @@ TEST_F(MemberSessionsTest, AnInstructionSurvivesALogonThatResetsTheNumbering) {
     EXPECT_EQ(sessions_->instruction(member_).grace_period_seconds, std::optional<int32_t>(30));
 }
 
+// What the instruction comes to: each part the member stated, and otherwise the default of the gateway that last bound
+// the session.
+TEST_F(MemberSessionsTest, TheAppliedInstructionTakesEachUnstatedPartFromTheGatewaysDefault) {
+    sessions_->gateway_default_stated(member_, MemberSessions::CancelOnDisconnectApplied{true, 30});
+    EXPECT_TRUE(sessions_->applied_instruction(member_).cancel);
+    EXPECT_EQ(sessions_->applied_instruction(member_).grace_period_seconds, 30);
+
+    sessions_->instruction_stated(member_, stated(std::nullopt, 8));
+    EXPECT_TRUE(sessions_->applied_instruction(member_).cancel);
+    EXPECT_EQ(sessions_->applied_instruction(member_).grace_period_seconds, 8);
+
+    sessions_->instruction_stated(member_, stated(false, std::nullopt));
+    EXPECT_FALSE(sessions_->applied_instruction(member_).cancel);
+}
+
+// A session whose member has not said, and no gateway's default is known for, is not cancelled.
+TEST_F(MemberSessionsTest, NothingKnownMeansNoCancel) {
+    EXPECT_FALSE(sessions_->applied_instruction(member_).cancel);
+}
+
+// The sessions bound to one gateway instance are those whose protocol and instance match, and no others.
+TEST_F(MemberSessionsTest, TheSessionsBoundToAGatewayInstanceAreFound) {
+    const fix_common::SessionIdentity on_other_instance = fix_common::SessionIdentity::make("ELSEWHERE", gateway_ids::fix_order_gateway);
+    const fix_common::SessionIdentity binary = fix_common::SessionIdentity::make("MEMBER", gateway_ids::binary_order_gateway);
+    static_cast<void>(sessions_->bind(member_, at(1, 7), false));
+    static_cast<void>(sessions_->bind(on_other_instance, at(2, 7), false));
+    static_cast<void>(sessions_->bind(binary, at(1, 7), false));
+    std::vector<fix_common::SessionIdentity> found;
+    sessions_->for_each_bound_to(gateway_ids::fix_order_gateway, 1, [&found](const fix_common::SessionIdentity& identity) { found.push_back(identity); });
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found[0], member_);
+}
+
 // Each session's instruction is its own: the same comp id over the other protocol is another session.
 TEST_F(MemberSessionsTest, AnInstructionBelongsToOneSession) {
     const fix_common::SessionIdentity binary = fix_common::SessionIdentity::make("MEMBER", gateway_ids::binary_order_gateway);

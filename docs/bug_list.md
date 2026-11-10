@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 240 |
-| Open | 58 (37 defects, 21 tasks) |
-| Closed | 182 |
+| Open | 56 (36 defects, 20 tasks) |
+| Closed | 184 |
 | Next id | BUG-0241 |
 
 ## Open bugs by severity
 
-10 high, 34 medium, 14 low.
+9 high, 33 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -17,7 +17,6 @@
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
 | [BUG-0065](#bug_0065) | high | task | The venue tells a member of a trading halt only in the reply to an order, and cannot halt one instrument |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
-| [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
 | [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
@@ -36,7 +35,6 @@
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
 | [BUG-0087](#bug_0087) | medium | task | Whether the hot path allocates cannot be established on demand |
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
-| [BUG-0091](#bug_0091) | medium | task | A member's standing instructions die with the gateway that received them |
 | [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
 | [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
 | [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
@@ -2352,145 +2350,6 @@ book, and the gateway holds the session. That decision is the same one R-0103 le
 
 Related: R-0002 in `docs/book` and the gap beneath it, [BUG-0088](#bug_0088).
 
-### BUG-0090: A restarted gateway silently stops honouring cancel-on-disconnect {#bug_0090}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | before 2026-09 -- carried in a working note from the analysis that produced the high availability chapter |
-| Recorded | 2026-09-10 |
-| How | Working through that note and checking its claims against the code, which confirmed the path is unchanged |
-| Impact | A member that asked for its orders to be cancelled if its connection drops stops being protected the moment the gateway restarts. Its orders stay resting, the instruction is not carried out, and neither the member nor the venue records that anything was skipped |
-
-**What happens.** `FixSession::open_orders` is populated in one place only:
-`FixOrderGatewayThread.cpp:751`, as an execution report arrives on the live path. A restarted
-gateway therefore holds an empty map for every order placed before the restart.
-
-`queue_session_for_cleanup` opens with:
-
-```
-if (session.open_orders.empty()) {
-    return;
-}
-```
-
-So when that member later disconnects, the gateway looks at an empty set, cancels nothing, and
-returns without logging anything at all. The orders are still resting -- the book is keyed on
-session identity, so the member can still cancel them by hand -- but the standing instruction it
-gave is not carried out.
-
-**Why it is high.** A member sets `cancel_on_disconnect_enabled` to bound its exposure when its
-own systems fail. The venue accepts the instruction, stops honouring it after an event the member
-cannot observe, and reports nothing. The member believes it is protected and is not. This is the
-mirror of the rule the specification states the other way round: a member whose orders must be
-retained must have them retained, and a member whose orders must be cancelled must have them
-cancelled.
-
-**The silence is the worst part.** The empty-map path returns before any logging, so a deployment
-in which this has happened looks the same as one in which it has not. The disabled case, by
-contrast, logs that it is leaving the orders resting.
-
-**What closing this needs, and it is not a better view.** `docs/book` already states the
-position: the gateway holds no order state, and where it must act on a member's behalf it
-*"reports the disconnection and the terms it was given to the component that owns the orders"*
-rather than keeping a view of those orders to act on itself. The code does the opposite.
-`queue_session_for_cleanup` walks the gateway's own map, filters out the orders whose time in
-force says they outlive the session, and queues one cancel per order.
-
-**A gateway-held view cannot satisfy R-0113 whatever it contains.** That requirement says the
-instruction must still be carried out when the connection ended *because the component holding
-the session failed* -- and a dead gateway enumerates nothing. Restoring the view on binding
-would fix the restart case and leave the gateway-death case exactly as broken.
-
-**The matching engine is the only component that can answer.** It keys the book on
-`SessionIdentity` plus `ClOrdID` and records the session in each region slot, so what a session
-has resting survives in its checkpoint. The sequencer cannot: `SessionSequenceState` holds
-sequence numbers and report ranges and no orders, and deriving them would mean a second copy of
-the book maintained by the component whose job is ordering.
-
-So the fix is to send the disconnection and the terms once, and let the component that owns the
-orders act on them, which also removes the per-order cancel traffic a large session produces at
-disconnect. Where a gateway cannot honour the instruction it should say so rather than return
-silently.
-
-**What is still open is narrower**, and it is R-0103's question rather than this one: where the
-terms a session was admitted under are held once the gateway that received them is gone. The
-book names the sequencer as the obvious candidate and declines to decide, because choosing is a
-design decision.
-
-Related: R-0103 and R-0113 in `docs/book` and the gap beneath the gateway's durable-state
-subsection, which now cites this entry.
-
-**Designed 2026-11-09:** [cancel_on_disconnect_where_the_orders_are.md](availability/cancel_on_disconnect_where_the_orders_are.md). All three decisions agreed with Andrew on 9 November 2026: the leading sequencer holds the grace period and writes `CancelSessionOrders`; a gateway's death ends every session it held without a clean Logout; one command for each session.
-
-
-**Found 2026-11-10, writing the scenarios this entry's design asks for: the same loss without any restart.** A member
-that drops and reconnects within its grace period keeps its orders, but the gateway does not attach them to the new
-session: `reclaim_grace_session`, in both gateways, releases its record of them. When that session later drops, the
-gateway believes it has no open orders and cancels nothing, and logs no disconnection with orders. Seen with a scenario
-written for this entry's design, run with the gateway's restart left out on purpose: 1,000 orders rested, the member reconnected within 8 seconds and
-then dropped, and none was cancelled. The comment in `reclaim_grace_session` gives the reason as the matching engine
-keying an order by the connection it arrived on, so that the new session could not cancel it; the engine keys an order by
-the session's identity, its comp id and protocol (`OrderKey`), so that reason no longer holds. The remedy is the one this
-entry's design gives, the venue carrying the instruction out where the orders are.
-### BUG-0091: A member's standing instructions die with the gateway that received them {#bug_0091}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task |
-| Found | before 2026-09 -- recorded in `docs/book` as a gap with no entry behind it |
-| Recorded | 2026-09-10 |
-| How | Settling where those instructions should live, which the book had left open |
-| Impact | A member states at logon whether its resting orders should be cancelled if its connection ends, and how long the venue should wait. A gateway restart discards that, and the member is silently governed by the venue's default instead -- which may be the opposite of what it asked for |
-
-**What the specification requires.** R-0103 in `docs/book`: *the instructions a member gave at
-logon outlive the component that received them.* The gap beneath it says they are held only by
-the gateway that was given them, and that a gateway which dies takes them with it.
-
-**Where they come from and where they stop.** The authentication service sends them to the
-gateway on `AuthenticationResult`, and `FixOrderGatewayThread` stores them on the session
-(`FixOrderGatewayThread.cpp:1121`). Nothing carries them further. `SessionBound` (120) tells the
-sequencer the identity, the instance and the connection; `SessionBoundAck` (122) hands back the
-sequence numbers and the report ranges. Neither mentions the instructions.
-
-**The mechanism is decided**, in `docs/availability/session_binding.md`: they travel with the
-sequence numbers, for the same reason the numbers do. A gateway taking a session on cannot know
-them, and the sequencer is the only component still running that could have been told. So
-`SessionBound` gains them on the way out and `SessionBoundAck` returns them on the way back.
-
-**One detail that must not be lost in the encoding.** At the gateway they are optional: *"the
-member's stored preference wins because it is the more specific statement of intent; the
-configuration file is the venue's answer for everyone who has not given one."* So "the member
-said nothing" and "the member said no" are different states, and both PDUs have to keep them
-apart. A plain boolean defaulting to false would silently convert the first into the second for
-every session the venue has ever admitted.
-
-**What this does not close.** Only the restart case. Binding is what fetches the instructions, so
-a gateway that restarts gets them when the member binds again. A gateway that dies holding live
-sessions is asked nothing, and a member that never reconnects binds nowhere -- so the instruction
-that was to fire at that moment must still be carried out by whatever owns the orders, which is
-R-0113 and [BUG-0090](#bug_0090). The two are close together and are not the same work.
-
-**Why medium.** The failure runs both ways and only one of them is silent. A member that asked
-for cancel-on-disconnect and gets the default of not having it is unprotected and not told, which
-is [BUG-0090](#bug_0090)'s failure reached by another route. A member that asked to keep its
-orders and gets the default of cancellation sees the cancellations, so it can at least tell
-something happened.
-
-Related: R-0103 and R-0113 in `docs/book`, [BUG-0090](#bug_0090),
-[session_binding.md](availability/session_binding.md).
-
-**Designed 2026-11-09:** [cancel_on_disconnect_where_the_orders_are.md](availability/cancel_on_disconnect_where_the_orders_are.md). All three decisions agreed with Andrew on 9 November 2026: the leading sequencer holds the grace period and writes `CancelSessionOrders`; a gateway's death ends every session it held without a clean Logout; one command for each session.
-
-
-**Step 2 of the design built 2026-11-10.** `SessionBound` and `SessionBoundAck` carry the member's instruction as two
-optional fields, so that "said nothing" and "said no" stay apart. Every sequencer keeps it with the session
-(`MemberSessions::instruction_stated`), in a store of its own so that a logon that restarts the numbering does not discard
-it; a binding that states nothing leaves what an earlier one stated. Both gateways state what they were told, and the FIX
-gateway takes from `SessionBoundAck` any part it was not told at this logon; the binary gateway does not read
-`SessionBoundAck`. Five unit tests in `MemberSessionsTest`, two of them made to fail on purpose. Nothing is yet done with
-the instruction at the sequencer: that is step 3, with [BUG-0090](#bug_0090).
 ### BUG-0173: No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests {#bug_0173}
 
 | | |
@@ -2734,6 +2593,147 @@ logs on many sessions together, repeated, which fails now some of the time.
 
 ## Closed
 
+### BUG-0091: A member's standing instructions die with the gateway that received them {#bug_0091}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | before 2026-09 -- recorded in `docs/book` as a gap with no entry behind it |
+| Recorded | 2026-09-10 |
+| Fixed | 2026-11-10 -- the member's instruction travels with its session: on `SessionBound` and `SessionBoundAck` as optional fields, kept by every sequencer with the session (step 2, 4069e197), and applied by the leading sequencer when the gateway that received it can no longer act, after a restart or a death ([BUG-0090](#bug_0090)). The venue's default is configured for each gateway, so the gateway binding a session also states its own default, which the sequencer applies to any part the member has not stated. R-0103 is verified by scenario 107, in which the gateway is killed and the member's own grace period of 8 seconds is applied |
+| How | Settling where those instructions should live, which the book had left open |
+| Impact | A member states at logon whether its resting orders should be cancelled if its connection ends, and how long the venue should wait. A gateway restart discards that, and the member is silently governed by the venue's default instead -- which may be the opposite of what it asked for |
+
+**What the specification requires.** R-0103 in `docs/book`: *the instructions a member gave at
+logon outlive the component that received them.* The gap beneath it says they are held only by
+the gateway that was given them, and that a gateway which dies takes them with it.
+
+**Where they come from and where they stop.** The authentication service sends them to the
+gateway on `AuthenticationResult`, and `FixOrderGatewayThread` stores them on the session
+(`FixOrderGatewayThread.cpp:1121`). Nothing carries them further. `SessionBound` (120) tells the
+sequencer the identity, the instance and the connection; `SessionBoundAck` (122) hands back the
+sequence numbers and the report ranges. Neither mentions the instructions.
+
+**The mechanism is decided**, in `docs/availability/session_binding.md`: they travel with the
+sequence numbers, for the same reason the numbers do. A gateway taking a session on cannot know
+them, and the sequencer is the only component still running that could have been told. So
+`SessionBound` gains them on the way out and `SessionBoundAck` returns them on the way back.
+
+**One detail that must not be lost in the encoding.** At the gateway they are optional: *"the
+member's stored preference wins because it is the more specific statement of intent; the
+configuration file is the venue's answer for everyone who has not given one."* So "the member
+said nothing" and "the member said no" are different states, and both PDUs have to keep them
+apart. A plain boolean defaulting to false would silently convert the first into the second for
+every session the venue has ever admitted.
+
+**What this does not close.** Only the restart case. Binding is what fetches the instructions, so
+a gateway that restarts gets them when the member binds again. A gateway that dies holding live
+sessions is asked nothing, and a member that never reconnects binds nowhere -- so the instruction
+that was to fire at that moment must still be carried out by whatever owns the orders, which is
+R-0113 and [BUG-0090](#bug_0090). The two are close together and are not the same work.
+
+**Why medium.** The failure runs both ways and only one of them is silent. A member that asked
+for cancel-on-disconnect and gets the default of not having it is unprotected and not told, which
+is [BUG-0090](#bug_0090)'s failure reached by another route. A member that asked to keep its
+orders and gets the default of cancellation sees the cancellations, so it can at least tell
+something happened.
+
+Related: R-0103 and R-0113 in `docs/book`, [BUG-0090](#bug_0090),
+[session_binding.md](availability/session_binding.md).
+
+**Designed 2026-11-09:** [cancel_on_disconnect_where_the_orders_are.md](availability/cancel_on_disconnect_where_the_orders_are.md). All three decisions agreed with Andrew on 9 November 2026: the leading sequencer holds the grace period and writes `CancelSessionOrders`; a gateway's death ends every session it held without a clean Logout; one command for each session.
+
+
+**Step 2 of the design built 2026-11-10.** `SessionBound` and `SessionBoundAck` carry the member's instruction as two
+optional fields, so that "said nothing" and "said no" stay apart. Every sequencer keeps it with the session
+(`MemberSessions::instruction_stated`), in a store of its own so that a logon that restarts the numbering does not discard
+it; a binding that states nothing leaves what an earlier one stated. Both gateways state what they were told, and the FIX
+gateway takes from `SessionBoundAck` any part it was not told at this logon; the binary gateway does not read
+`SessionBoundAck`. Five unit tests in `MemberSessionsTest`, two of them made to fail on purpose. Nothing is yet done with
+the instruction at the sequencer: that is step 3, with [BUG-0090](#bug_0090).
+### BUG-0090: A restarted gateway silently stops honouring cancel-on-disconnect {#bug_0090}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | before 2026-09 -- carried in a working note from the analysis that produced the high availability chapter |
+| Recorded | 2026-09-10 |
+| Fixed | 2026-11-10 -- cancel on disconnect is carried out by the venue, where the orders are, and no longer by the gateway (cancel_on_disconnect_where_the_orders_are.md). The leading sequencer writes `SessionEnded` into its WAL when a session ends, from the gateway's `SessionUnbound` or because the gateway itself was lost, with the grace period that applies, none after a clean Logout; `SessionEndWithdrawn` when the session binds again in time; and the command `CancelSessionOrders` when the period runs out, which each matching engine applies to the session's resting orders except GoodTillCancel and GoodTillDate ones. Every sequencer keeps what is pending from its WAL, so it survives a change of leader. The gateways send no cancels. Unit tests in `MemberSessionsTest`, `SessionCancelsPendingTest`, `VenueStateFromTheWalTest` and `MatchingEngineStateMachineTest`, each made to fail on purpose. Scenarios 106 (the gateway restarted, the member back within its grace period and then dropping) and 107 (the gateway killed) cancelled 0 of 1,000 resting orders against the code as it was, and cancel all 1,000 after the grace period, and none before, now; 108 (a member that asked to keep its orders) and 109 (a member that drops for good) pass; 19 and 50 pass, reading what was cancelled from the engine. In the first run with the change, 106 and 107 failed only the check that replays the WAL through each engine, because a catch-up did not send the new command (`EngineRecordFromWal`); fixed. R-0113 is verified by scenario 107 |
+| How | Working through that note and checking its claims against the code, which confirmed the path is unchanged |
+| Impact | A member that asked for its orders to be cancelled if its connection drops stops being protected the moment the gateway restarts. Its orders stay resting, the instruction is not carried out, and neither the member nor the venue records that anything was skipped |
+
+**What happens.** `FixSession::open_orders` is populated in one place only:
+`FixOrderGatewayThread.cpp:751`, as an execution report arrives on the live path. A restarted
+gateway therefore holds an empty map for every order placed before the restart.
+
+`queue_session_for_cleanup` opens with:
+
+```
+if (session.open_orders.empty()) {
+    return;
+}
+```
+
+So when that member later disconnects, the gateway looks at an empty set, cancels nothing, and
+returns without logging anything at all. The orders are still resting -- the book is keyed on
+session identity, so the member can still cancel them by hand -- but the standing instruction it
+gave is not carried out.
+
+**Why it is high.** A member sets `cancel_on_disconnect_enabled` to bound its exposure when its
+own systems fail. The venue accepts the instruction, stops honouring it after an event the member
+cannot observe, and reports nothing. The member believes it is protected and is not. This is the
+mirror of the rule the specification states the other way round: a member whose orders must be
+retained must have them retained, and a member whose orders must be cancelled must have them
+cancelled.
+
+**The silence is the worst part.** The empty-map path returns before any logging, so a deployment
+in which this has happened looks the same as one in which it has not. The disabled case, by
+contrast, logs that it is leaving the orders resting.
+
+**What closing this needs, and it is not a better view.** `docs/book` already states the
+position: the gateway holds no order state, and where it must act on a member's behalf it
+*"reports the disconnection and the terms it was given to the component that owns the orders"*
+rather than keeping a view of those orders to act on itself. The code does the opposite.
+`queue_session_for_cleanup` walks the gateway's own map, filters out the orders whose time in
+force says they outlive the session, and queues one cancel per order.
+
+**A gateway-held view cannot satisfy R-0113 whatever it contains.** That requirement says the
+instruction must still be carried out when the connection ended *because the component holding
+the session failed* -- and a dead gateway enumerates nothing. Restoring the view on binding
+would fix the restart case and leave the gateway-death case exactly as broken.
+
+**The matching engine is the only component that can answer.** It keys the book on
+`SessionIdentity` plus `ClOrdID` and records the session in each region slot, so what a session
+has resting survives in its checkpoint. The sequencer cannot: `SessionSequenceState` holds
+sequence numbers and report ranges and no orders, and deriving them would mean a second copy of
+the book maintained by the component whose job is ordering.
+
+So the fix is to send the disconnection and the terms once, and let the component that owns the
+orders act on them, which also removes the per-order cancel traffic a large session produces at
+disconnect. Where a gateway cannot honour the instruction it should say so rather than return
+silently.
+
+**What is still open is narrower**, and it is R-0103's question rather than this one: where the
+terms a session was admitted under are held once the gateway that received them is gone. The
+book names the sequencer as the obvious candidate and declines to decide, because choosing is a
+design decision.
+
+Related: R-0103 and R-0113 in `docs/book` and the gap beneath the gateway's durable-state
+subsection, which now cites this entry.
+
+**Designed 2026-11-09:** [cancel_on_disconnect_where_the_orders_are.md](availability/cancel_on_disconnect_where_the_orders_are.md). All three decisions agreed with Andrew on 9 November 2026: the leading sequencer holds the grace period and writes `CancelSessionOrders`; a gateway's death ends every session it held without a clean Logout; one command for each session.
+
+
+**Found 2026-11-10, writing the scenarios this entry's design asks for: the same loss without any restart.** A member
+that drops and reconnects within its grace period keeps its orders, but the gateway does not attach them to the new
+session: `reclaim_grace_session`, in both gateways, releases its record of them. When that session later drops, the
+gateway believes it has no open orders and cancels nothing, and logs no disconnection with orders. Seen with a scenario
+written for this entry's design, run with the gateway's restart left out on purpose: 1,000 orders rested, the member reconnected within 8 seconds and
+then dropped, and none was cancelled. The comment in `reclaim_grace_session` gives the reason as the matching engine
+keying an order by the connection it arrived on, so that the new session could not cancel it; the engine keys an order by
+the session's identity, its comp id and protocol (`OrderKey`), so that reason no longer holds. The remedy is the one this
+entry's design gives, the venue carrying the instruction out where the orders are.
 ### BUG-0239: A member's orders are never cancelled when its cancel-on-disconnect grace period runs out, because the gateway's timer is armed again for no time at all and never fires {#bug_0239}
 
 | | |

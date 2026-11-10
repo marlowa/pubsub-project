@@ -42,12 +42,6 @@ gateway that dies while holding live sessions: a member who never reconnects
 will not trigger another bind. In that case, the component that owns the orders
 must carry out the member's instruction when the gateway dies (\reqref{R-0113}).
 
-\begin{gap}{BUG-0091}
-  The instructions are held only by the gateway that was given them. A gateway
-  that dies takes with it the instructions for every session it held, and there
-  is nowhere else to read them from.
-\end{gap}
-
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:disabled:gateway:durable}
 
@@ -164,7 +158,7 @@ reach the member leaves a gap in the member's numbering.
   acts on them later, possibly a different instance, and possibly when the member
   is no longer present to supply them again. Instructions held only by the
   component that received them are lost in exactly the failure they guard against.}
-  \uncovered{no scenario restarts a gateway holding a session's instructions}
+  \covers{ha_test:107}
 \end{requirement}
 
 \begin{requirement}{R-0113}{A member's instruction is carried out when the component holding it is the one that failed}
@@ -176,7 +170,7 @@ reach the member leaves a gap in the member's numbering.
   gateway ends every session it holds, and is therefore the one failure after which
   nothing acts on what those sessions asked for. The member cannot detect this,
   because from the member's side the connection ended in the ordinary way.}
-  \uncovered{no scenario ends a session by killing the component holding it}
+  \covers{ha_test:107}
 \end{requirement}
 
 \begin{requirement}{R-0002}{A member can establish that an order was not taken}

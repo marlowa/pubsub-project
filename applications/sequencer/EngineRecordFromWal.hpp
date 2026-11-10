@@ -26,8 +26,9 @@ enum class EngineRecordFromWal : int8_t {
  *        it is caught up, and when it is sent orders it lacks after a change of leader or that waited in
  *        the WAL.
  *
- * Each record in the sequencer's WAL is a WalRecord envelope. The engine is sent only orders and cancels;
- * every other record, an execution report for instance, is an output rather than an input, and is not
+ * Each record in the sequencer's WAL is a WalRecord envelope. The engine is sent only commands: members' orders and
+ * cancels, and the sequencer's own CancelBook, CancelSessionOrders, TechnicalEvent and VoidCommands. Every other
+ * record, an execution report or a SessionEnded for instance, is not an input to the engine, and is not
  * sent. The envelope sent carries the order, its sequencing time, its trading date, and who placed it: the session's
  * connection, its comp id, its gateway protocol and the gateway instance. The engine files an order under
  * the comp id and the protocol together, so both must travel.
@@ -58,6 +59,7 @@ enum class EngineRecordFromWal : int8_t {
     if (view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) &&
         view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest) &&
         view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id) &&
+        view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::CancelSessionOrders::message_pdu_id) &&
         view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id) &&
         view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id)) {
         return EngineRecordFromWal::NotForEngine;

@@ -239,26 +239,23 @@ The raw-FIX entry page stays FIX-only: there is no such thing as a hand-typed bi
 
 ## Cancel-on-disconnect
 
-A member that vanishes leaves orders resting on the book that nobody is managing, so the gateway
-cancels them on its behalf: the same obligation the FIX order gateway has, and the same mechanism,
-shared through `applications/fix_common/OpenOrderEntry.hpp`. The settings are the same too:
+A member that vanishes leaves orders resting on the book that nobody is managing, so the venue cancels
+them on its behalf, as for a FIX member: the gateway reports the session's end, and the leading
+sequencer writes the cancel when the grace period runs out, which the matching engine applies to the
+session's resting orders. The gateway cancels nothing itself. The settings are the FIX gateway's:
 `[cancel_on_disconnect] enabled` and `grace_period` (on, 30 seconds), which each comp id may
 override, and GoodTillCancel and GoodTillDate orders are never cancelled on disconnect. The binary
 protocol has no logout message, so every disconnect waits out the full grace period; a member that
 logs on again inside it has nothing cancelled. See
-[Gateway High Availability](../availability/gateway_ha.md).
+[Gateway High Availability](../availability/gateway_ha.md) and
+[cancel_on_disconnect_where_the_orders_are.md](../availability/cancel_on_disconnect_where_the_orders_are.md).
 
-Tracking is driven by the matching engine's acknowledgements, not by when an order was forwarded:
-an order is the session's to cancel only once the engine has said it is on the book. A
-non-terminal `ExecutionReport` records the order, a terminal one (Filled, Canceled, DoneForDay,
-Rejected, Expired) retires it, and a repeated non-terminal report for an order already tracked
-updates the entry rather than adding a second.
-
-When the grace period ends, the session's orders are cancelled in batches of 500 on a 1 ms timer,
-so a member holding thousands of resting orders cannot hold up the reactor. Each generated cancel
-gets a `BGW-CXL-<conn>-<n>` ClOrdID and an envelope carrying the departed session's comp id, so it
-is attributed to the member whose order it retires. The acknowledgements come back for a session
-that no longer exists and are logged and dropped, which is the expected end of the sequence.
+The gateway still keeps each session's open orders, from the matching engine's acknowledgements, to
+say at Info how many orders a session left and what the venue will do with them, and keeps the
+session for its grace period, so that it can say whether the member came back in time and stop keeping
+the session's unanswered commands once it has not. A non-terminal `ExecutionReport` records an order,
+a terminal one (Filled, Canceled, DoneForDay, Rejected, Expired) retires it, and a repeated
+non-terminal report for an order already tracked updates the entry rather than adding a second.
 
 Entries come from a pool (`[open_order_pool]`), so tracking an order allocates nothing. A report
 that cannot be decoded is still relayed: the member is its audience, and a gateway that cannot read

@@ -853,6 +853,69 @@ TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandCancelsTheOrdersPlacedA
     EXPECT_TRUE(book_.consistency_problem().empty());
 }
 
+// CancelSessionOrders cancels every order of the one session, in the order they were placed, except its GoodTillCancel
+// and GoodTillDate orders, which the member placed to outlive its connection; another session's orders stay. Each is
+// reported as CancelBook's are, and as an outcome of Cancelled named by the order's own ClOrdID.
+TEST_F(MatchingEngineStateMachineTest, ACancelSessionOrdersCommandCancelsTheSessionsOrdersExceptThoseMeantToOutliveIt) {
+    // The fixture's region holds four orders.
+    pubsub_itc_fw_app::NewOrderSingleView good_till_cancel = new_order("ORD-GTC");
+    good_till_cancel.has_time_in_force = true;
+    good_till_cancel.time_in_force = pubsub_itc_fw_app::TimeInForce::GoodTillCancel;
+    pubsub_itc_fw_app::NewOrderSingleView good_till_date = new_order("ORD-GTD");
+    good_till_date.has_time_in_force = true;
+    good_till_date.time_in_force = pubsub_itc_fw_app::TimeInForce::GoodTillDate;
+    machine_.apply_new_order(good_till_cancel, 2, taken_at, trading_day, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-A"), 3, taken_at, trading_day, member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-B"), 4, taken_at, trading_day, other_member, CommandSource::live);
+    machine_.apply_new_order(good_till_date, 5, taken_at, trading_day, member, CommandSource::live);
+    ASSERT_EQ(outputs_.accepted, 4);
+    outputs_.reports.clear();
+    outputs_.outcomes.clear();
+
+    const MatchingEngineStateMachine::SessionOrdersCancelled result =
+        machine_.apply_cancel_session_orders(member, 7, taken_at + 9, trading_day, CommandSource::live);
+
+    EXPECT_TRUE(result.applied);
+    EXPECT_EQ(result.orders_cancelled, 1);
+    ASSERT_EQ(outputs_.reports.size(), 1U);
+    const RecordedReport& report = outputs_.reports[0];
+    EXPECT_EQ(report.cl_ord_id, "ORD-A");
+    EXPECT_EQ(report.exec_id, exec_id_of(7, 0)) << "named by the command's sequence number and the report's place";
+    EXPECT_EQ(report.exec_type, pubsub_itc_fw_app::ExecType::Canceled);
+    EXPECT_EQ(report.comp_id, "MEMBER-A");
+    EXPECT_EQ(report.transact_time, taken_at + 9);
+    EXPECT_EQ(report.repeat, ReportIsRepeat::no);
+    ASSERT_EQ(outputs_.outcomes.size(), 1U);
+    EXPECT_EQ(outputs_.outcomes[0].outcome, pubsub_itc_fw_app::OrderOutcomeKind::Cancelled);
+    EXPECT_EQ(outputs_.outcomes[0].cl_ord_id, "ORD-A");
+    EXPECT_TRUE(book_.contains(OrderKey::make(other_member, "ORD-B"))) << "another session's order stays";
+    EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-GTC"))) << "a GoodTillCancel order outlives the connection";
+    EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-GTD"))) << "a GoodTillDate order outlives the connection";
+    EXPECT_FALSE(book_.contains(OrderKey::make(member, "ORD-A")));
+    EXPECT_EQ(book_.published(), 7);
+    EXPECT_TRUE(book_.consistency_problem().empty());
+}
+
+// The same command met again in a catch-up is not applied again, and one met only in a catch-up cancels the same orders,
+// with its reports marked as possible repeats.
+TEST_F(MatchingEngineStateMachineTest, ACancelSessionOrdersCommandIsAppliedOnceAndFromACatchUpAsARepeat) {
+    machine_.apply_new_order(new_order("ORD-A"), 2, taken_at, trading_day, member, CommandSource::live);
+    ASSERT_TRUE(machine_.apply_cancel_session_orders(member, 3, taken_at, trading_day, CommandSource::live).applied);
+    EXPECT_FALSE(machine_.apply_cancel_session_orders(member, 3, taken_at, trading_day, CommandSource::catch_up).applied);
+
+    OrderBook caught_up_book;
+    ASSERT_FALSE(caught_up_book.open(dir_ + "/caught_up_session.region", region_capacity, map_capacity));
+    RecordingOutputs caught_up_outputs;
+    MatchingEngineStateMachine caught_up{caught_up_book, second_identifiers_, caught_up_outputs, logger_};
+    caught_up.apply_new_order(new_order("ORD-A"), 2, taken_at, trading_day, member, CommandSource::catch_up);
+    caught_up_outputs.reports.clear();
+    const MatchingEngineStateMachine::SessionOrdersCancelled result =
+        caught_up.apply_cancel_session_orders(member, 3, taken_at, trading_day, CommandSource::catch_up);
+    EXPECT_EQ(result.orders_cancelled, 1);
+    ASSERT_EQ(caught_up_outputs.reports.size(), 1U);
+    EXPECT_EQ(caught_up_outputs.reports[0].repeat, ReportIsRepeat::yes);
+}
+
 // The same command delivered by a catch-up to an engine that applied it live is not applied again, and one that meets it
 // only in a catch-up, as a restarted engine does, cancels the same orders with the same reports, marked as possible
 // repeats (BUG-0199).

@@ -116,7 +116,6 @@ install(TARGETS identifier_to_position
 # own rather than only through the running engine.
 add_executable(matching_engine_tests
         tests/OrderKeyTest.cpp
-        tests/CancelClOrdIdTest.cpp
         tests/Ff1CipherTest.cpp
         tests/OrderBookTest.cpp
         tests/MatchingEngineStateMachineTest.cpp

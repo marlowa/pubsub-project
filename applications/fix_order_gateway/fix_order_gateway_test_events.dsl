@@ -38,27 +38,19 @@ end
 
 # ------------------------------------------------------------
 #  192 -- SessionDisconnectedWithOrders
-#  A member's connection went with orders open. The gateway cancels
-#  them at once, when the member logged out or its grace period is
-#  zero; or holds them for the grace period, after which it cancels
-#  them unless the member reconnects; or, when cancel-on-disconnect is
-#  off for the member, leaves them resting.
+#  A member's connection went with orders open, and what the venue does
+#  with them, as this gateway reckons it: the leading sequencer cancels
+#  them at once when the member logged out or its grace period is zero;
+#  or once the grace period ends, unless the member logs on again first;
+#  or, when cancel-on-disconnect is off for the member, leaves them
+#  resting. The gateway itself cancels nothing.
 # ------------------------------------------------------------
 message SessionDisconnectedWithOrders (id=192, version=1)
     string comp_id         # the member's comp id; empty if the session never had one
     i32    connection      # the framework's id for the connection that went
     i64    open_orders     # the orders it had open
     bool   cancel_enabled  # whether they are to be cancelled once the grace period ends
-    i64    grace_seconds   # the grace period they are held for; 0 when they are cancelled at once or left resting
-end
-
-# ------------------------------------------------------------
-#  193 -- CancelsSent
-#  The gateway finished sending the cancels for the orders of sessions
-#  whose grace period ended.
-# ------------------------------------------------------------
-message CancelsSent (id=193, version=1)
-    i64 count              # the cancels sent
+    i64    grace_seconds   # the grace period the venue waits; 0 when they are cancelled at once or left resting
 end
 
 # ------------------------------------------------------------

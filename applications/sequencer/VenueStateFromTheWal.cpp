@@ -35,7 +35,38 @@ VenueStateFromTheWal::Noted VenueStateFromTheWal::note_record(int64_t seq_no, co
         void_awaiting_commit_ = seq_no;
     }
     noted.halt_changed = note_trading_halt(seq_no, record);
+    note_session_cancel(seq_no, record);
     return noted;
+}
+
+void VenueStateFromTheWal::note_session_cancel(int64_t seq_no, const Record& record) {
+    pubsub_itc_fw::BumpAllocator allocator(decode_arena_.data(), decode_arena_.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::SessionEnded::message_pdu_id)) {
+        pubsub_itc_fw_app::SessionEndedView ended{};
+        if (!pubsub_itc_fw_app::decode(ended, record.payload, record.size, bytes_consumed, allocator, arena_bytes_needed)) {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                       "VenueStateFromTheWal: the SessionEnded at seq={} did not decode -- the cancel on disconnect it records is not kept", seq_no);
+            return;
+        }
+        session_cancels_.ended(fix_common::SessionIdentity::make(ended.comp_id, ended.gateway_protocol_id), seq_no, record.wall_time_ns,
+                               ended.grace_period_seconds);
+    } else if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::SessionEndWithdrawn::message_pdu_id)) {
+        pubsub_itc_fw_app::SessionEndWithdrawnView withdrawn{};
+        if (!pubsub_itc_fw_app::decode(withdrawn, record.payload, record.size, bytes_consumed, allocator, arena_bytes_needed)) {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error, "VenueStateFromTheWal: the SessionEndWithdrawn at seq={} did not decode", seq_no);
+            return;
+        }
+        session_cancels_.withdrawn(fix_common::SessionIdentity::make(withdrawn.comp_id, withdrawn.gateway_protocol_id));
+    } else if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelSessionOrders::message_pdu_id)) {
+        pubsub_itc_fw_app::CancelSessionOrdersView cancel{};
+        if (!pubsub_itc_fw_app::decode(cancel, record.payload, record.size, bytes_consumed, allocator, arena_bytes_needed)) {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error, "VenueStateFromTheWal: the CancelSessionOrders at seq={} did not decode", seq_no);
+            return;
+        }
+        session_cancels_.carried_out(fix_common::SessionIdentity::make(cancel.comp_id, cancel.gateway_protocol_id));
+    }
 }
 
 void VenueStateFromTheWal::record_did_not_decode(int64_t seq_no, How how) {
@@ -104,6 +135,7 @@ bool VenueStateFromTheWal::discard_after(int64_t seq_no) {
     // A void whose record is discarded is no longer in the WAL. Its record was never committed, so no engine was told of
     // it.
     voids_.discard_after(seq_no);
+    session_cancels_.discard_after(seq_no);
     // As for a void: a TechnicalEvent whose record is discarded is no longer in the WAL, and whether trading is halted is
     // what the latest one left says.
     if (!trading_halt_.discard_after(seq_no)) {

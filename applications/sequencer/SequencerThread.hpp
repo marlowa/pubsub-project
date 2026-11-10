@@ -507,6 +507,25 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void write_recovery_halt(int64_t now_ns);
     // Encodes @p command and writes it with write_own_command. @return false, having logged why, if it cannot be encoded.
     template <typename Command> bool write_own_encoded_command(const Command& command, const char* name);
+
+    // ---- Cancel on disconnect, carried out where the orders are -------------------------------------------------------
+    // docs/availability/cancel_on_disconnect_where_the_orders_are.md. Only the leader writes; every instance keeps what is
+    // pending from the WAL (VenueStateFromTheWal::session_cancels).
+
+    /**
+     * @brief Writes a record of this sequencer's own into the WAL that is not a command: no engine applies it, so it is not
+     *        sent to the matching engine as an order is, and only the engines following the WAL, and a catch-up, are sent
+     *        it. Only while leading.
+     */
+    template <typename Record> bool write_own_encoded_record(const Record& record, const char* name);
+    // The member's session has ended: its gateway unbound it, or the gateway was lost. If the member's instruction is to
+    // cancel its resting orders, the end is written into the WAL with the grace period that applies, none after a clean
+    // Logout. Only while leading, and not for a session already waiting.
+    void session_ended(const fix_common::SessionIdentity& identity, LoggedOutFlag logged_out);
+    // The member's session has bound again; if its orders were waiting to be cancelled, they are not to be now.
+    void session_bound_again(const fix_common::SessionIdentity& identity);
+    // Writes CancelSessionOrders for every session whose grace period has run out. Called on engine_absence_timer_id_.
+    void carry_out_due_session_cancels();
     // A matching engine about to lead that cannot account for the orders the venue holds, asking for trading to be halted:
     // decoded, and handed to HaltAndVoidRequests.
     void handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);

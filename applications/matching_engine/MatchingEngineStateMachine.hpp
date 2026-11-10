@@ -203,6 +203,33 @@ class MatchingEngineStateMachine {
     BookCancelledByCommand apply_cancel_book(int64_t orders_placed_through, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
                                              CommandSource source);
 
+    /// What a CancelSessionOrders command did.
+    struct SessionOrdersCancelled {
+        bool applied{false};         ///< whether it was applied: false for one passed over or refused
+        int64_t orders_cancelled{0}; ///< how many of the session's orders were cancelled, each with a report
+    };
+
+    /**
+     * @brief Applies a CancelSessionOrders command from the WAL: cancels every order @p session has resting, except a
+     * GoodTillCancel or GoodTillDate order, in the order they were placed, reporting each to the member and, for a listed
+     * comp id, as an OrderOutcome of Cancelled named by the order's own ClOrdID.
+     *
+     * Written by the leading sequencer when a member's grace period after its connection ended runs out
+     * (docs/availability/cancel_on_disconnect_where_the_orders_are.md). As for CancelBook: a command, so every engine that
+     * applies the WAL cancels the same orders with the same reports; each ExecID is made from the command's sequence
+     * number and the report's place; the book is published to the command's sequence number; and a command at or below
+     * the highest acted on is not applied.
+     *
+     * @param[in] session         The session whose orders are cancelled.
+     * @param[in] sequence_number The command's sequence number.
+     * @param[in] transact_time   The time the sequencer recorded for it, written on every report.
+     * @param[in] trading_date    The trading date it carries.
+     * @param[in] source          Whether it is applied live or during a catch-up.
+     * @return What it did.
+     */
+    SessionOrdersCancelled apply_cancel_session_orders(const fix_common::SessionIdentity& session, int64_t sequence_number, int64_t transact_time,
+                                                       int32_t trading_date, CommandSource source);
+
     /// What a TechnicalEvent command did.
     struct TechnicalEventApplied {
         bool applied{false};      ///< false when the command was not applied: one a catch-up delivers again, out of sequence, or for an older day
@@ -298,6 +325,10 @@ class MatchingEngineStateMachine {
     }
 
   private:
+    // Reports an order cancelled by a command of the sequencer's own (CancelBook, CancelSessionOrders): its ExecID from the
+    // command's sequence number and the report's place, from 0, and sent with sequence number 0, so that the sequencer
+    // routes it by the session on its envelope.
+    void send_cancel_by_command(const OrderEntry& entry, int64_t sequence_number, int64_t place, int64_t transact_time, ReportIsRepeat repeat);
     // Answers a new order or a cancel that a void names, with a rejection saying why, in place of applying it.
     void refuse_voided_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
                              const fix_common::SessionIdentity& session, const fix_common::VoidedRange& voided, ReportIsRepeat repeat);

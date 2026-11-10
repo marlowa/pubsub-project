@@ -109,6 +109,13 @@ class MemberSessions {
         std::optional<int32_t> grace_period_seconds;
     };
 
+    /// What a member's instruction comes to when its session ends: whether its resting orders are cancelled, and after
+    /// how many seconds.
+    struct CancelOnDisconnectApplied {
+        bool cancel{false};
+        int32_t grace_period_seconds{0};
+    };
+
     /// What bind() found.
     struct Bound {
         /// Whether the session was announced again by a gateway still holding it, rather than logging on.
@@ -162,6 +169,28 @@ class MemberSessions {
     [[nodiscard]] CancelOnDisconnect instruction(const fix_common::SessionIdentity& identity) const;
 
     /**
+     * @brief Records what the gateway binding the session applies to a member that has not said: its own
+     *        [cancel_on_disconnect] settings, which are the venue's default for the sessions it holds.
+     */
+    void gateway_default_stated(const fix_common::SessionIdentity& identity, const CancelOnDisconnectApplied& gateway_default);
+
+    /**
+     * @brief What the member's instruction comes to when its session ends: each part the member stated, and otherwise the
+     *        default of the gateway that last bound the session. A session no gateway has bound since this process
+     *        started, and whose member has not said, is not cancelled: nothing says it should be.
+     */
+    [[nodiscard]] CancelOnDisconnectApplied applied_instruction(const fix_common::SessionIdentity& identity) const;
+
+    /// Calls @p each with the identity of every session bound to instance @p instance of protocol @p protocol.
+    template <typename Each> void for_each_bound_to(int16_t protocol, int16_t instance, Each&& each) const {
+        for (const auto& [identity, destination] : destinations_) {
+            if (identity.protocol == protocol && destination.instance == instance) {
+                each(identity);
+            }
+        }
+    }
+
+    /**
      * @brief For a logon, after bind(): the numbers the session resumes from.
      * @param[in] reset_seq_nums        Whether the member asked to restart its numbering, so that what is remembered is
      *                                  discarded.
@@ -183,8 +212,9 @@ class MemberSessions {
     };
 
     /// The session is unbound from @p instance and @p connection (SessionUnbound), unless it is bound elsewhere now;
-    /// the numbers the gateway reports are kept.
-    void unbind(const fix_common::SessionIdentity& identity, int16_t instance, int32_t connection, const Reported& reported);
+    /// the numbers the gateway reports are kept. @return true when the session was unbound; false when the unbind was
+    /// stale or the session was not bound.
+    bool unbind(const fix_common::SessionIdentity& identity, int16_t instance, int32_t connection, const Reported& reported);
 
     /// The gateway reports where the session has got to (SessionSequenceUpdate). Never lowered.
     void sequence_update(const fix_common::SessionIdentity& identity, const Reported& reported);
@@ -229,6 +259,8 @@ class MemberSessions {
     std::unordered_map<fix_common::SessionIdentity, SequenceState, fix_common::SessionIdentityHash> sequence_states_;
     // Each member's instruction for its resting orders when its connection ends, by session (instruction_stated()).
     std::unordered_map<fix_common::SessionIdentity, CancelOnDisconnect, fix_common::SessionIdentityHash> instructions_;
+    // The default of the gateway that last bound each session (gateway_default_stated()).
+    std::unordered_map<fix_common::SessionIdentity, CancelOnDisconnectApplied, fix_common::SessionIdentityHash> gateway_defaults_;
     std::unordered_map<int64_t, OriginSession> origins_;
     // Every session that has had a report dropped since it was last connected, so that the first is said as a Warning.
     std::unordered_set<fix_common::SessionIdentity, fix_common::SessionIdentityHash> sessions_with_reports_dropped_;

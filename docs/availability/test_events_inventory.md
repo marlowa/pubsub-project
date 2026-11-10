@@ -203,12 +203,12 @@ the sequencer's.
 | 23 scenarios | `run_scenario` | gw_log | "has no gateway_session_conn_id -- dropping" | the sequencer or gateway dropped execution reports for a dead or missing session | **Event**: ReportDropped(session) from the sequencer or the gateway |
 | 18 | `run_scenario` | seq_primary_log | drop_marker | the sequencer or gateway dropped execution reports for a dead or missing session | **Event**: ReportDropped(session) from the sequencer or the gateway |
 | 18 | `run_scenario` | seq_primary_log | drop_marker | the sequencer or gateway dropped execution reports for a dead or missing session | **Event**: ReportDropped(session) from the sequencer or the gateway |
-| 50 | `run_scenario` | gw_log | "disconnected with" \| "open order" | the gateway held, cancelled, or gave back a dropped session's open orders | **Event**: SessionHeld, CancelsSent(count) and SessionReclaimed from the gateway; the cancels are also seen by the member |
-| 19 | `run_scenario` | gw_log | "disconnected with" \| "before cancelling" | the gateway held, cancelled, or gave back a dropped session's open orders | **Event**: SessionHeld, CancelsSent(count) and SessionReclaimed from the gateway; the cancels are also seen by the member |
+| 50 | `run_scenario` | gw_log | "disconnected with" \| "open order" | the gateway held, cancelled, or gave back a dropped session's open orders | **Event**: SessionDisconnectedWithOrders and SessionReclaimed from the gateway; what was cancelled, from the matching engine's OrderOutcome for the member's comp id |
+| 19 | `run_scenario` | gw_log | "disconnected with" \| "before cancelling" | the gateway held, cancelled, or gave back a dropped session's open orders | **Event**: SessionDisconnectedWithOrders and SessionReclaimed from the gateway; what was cancelled, from the matching engine's OrderOutcome for the member's comp id |
 | 19 | `run_scenario` | gw_log | gw_pos | the grace period the gateway says it is holding a dropped session's orders for | **Event**: SessionHeld(comp_id, grace_seconds) from the gateway |
-| 19 | `run_scenario` | gw_log | "cancel drain complete" | the gateway held, cancelled, or gave back a dropped session's open orders | **Event**: SessionHeld, CancelsSent(count) and SessionReclaimed from the gateway; the cancels are also seen by the member |
-| 19 | `run_scenario` | gw_log | "reconnected within the grace period" \| "none cancelled" | the gateway held, cancelled, or gave back a dropped session's open orders | **Event**: SessionHeld, CancelsSent(count) and SessionReclaimed from the gateway; the cancels are also seen by the member |
-| 19 | `run_scenario` | gw_log | "cancel drain complete" | the gateway held, cancelled, or gave back a dropped session's open orders | **Event**: SessionHeld, CancelsSent(count) and SessionReclaimed from the gateway; the cancels are also seen by the member |
+| 19 | `run_scenario` | gw_log | "cancel drain complete" | the gateway held, cancelled, or gave back a dropped session's open orders | **Event**: SessionDisconnectedWithOrders and SessionReclaimed from the gateway; what was cancelled, from the matching engine's OrderOutcome for the member's comp id |
+| 19 | `run_scenario` | gw_log | "reconnected within the grace period" \| "none cancelled" | the gateway held, cancelled, or gave back a dropped session's open orders | **Event**: SessionDisconnectedWithOrders and SessionReclaimed from the gateway; what was cancelled, from the matching engine's OrderOutcome for the member's comp id |
+| 19 | `run_scenario` | gw_log | "cancel drain complete" | the gateway held, cancelled, or gave back a dropped session's open orders | **Event**: SessionDisconnectedWithOrders and SessionReclaimed from the gateway; what was cancelled, from the matching engine's OrderOutcome for the member's comp id |
 | 70 | `run_scenario` | primary_log | "comp_id='" + FIX8_COMP_ID + "'" \| "unbound from instance" | a member's session is unbound (or, where the check is a count, that it was not) | **Event**: SessionUnbound(comp_id) from the gateway and the sequencer |
 | 70 | `run_scenario` | primary_log | "bound again -- sent it 1 report(s) produced while it had no connection" | the sequencer sent the one report produced while the session had no connection | **Member**: the report the member receives on reconnecting, exactly one |
 | 22 | `run_scenario` | gw_log | f"announced session comp_id='{FIX8_COMP_ID}' unbound from instance" | a member's session is unbound (or, where the check is a count, that it was not) | **Event**: SessionUnbound(comp_id) from the gateway and the sequencer |
@@ -400,7 +400,6 @@ were missed by it:
 | `ReportDroppedNoSession` | F | the FIX gateway |
 | `ReportDroppedGatewayNotConnected` | F | the sequencer |
 | `SessionDisconnectedWithOrders` | F | the FIX gateway |
-| `CancelsSent` | F | the FIX gateway |
 | `SessionReclaimed` | F | the FIX gateway |
 | `SessionUnboundRecorded` | F | the sequencer |
 | `UndeliveredReportsSent` | F | the sequencer |

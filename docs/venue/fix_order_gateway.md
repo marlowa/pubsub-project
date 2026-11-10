@@ -10,7 +10,8 @@ sends those it accepts to the sequencers. It turns the execution reports the lea
 sends back into FIX ExecutionReports and OrderCancelRejects for the member's session.
 
 What the gateway holds is the state of the sessions connected to it: each session's message
-numbering, its open orders (for cancel-on-disconnect), and its throttles. It holds nothing the
+numbering, its open orders (for the OrderID of an OrderCancelReject, and to say what a session left when it ends), and its
+throttles. It holds nothing the
 venue needs after the gateway dies. Where each session can be reached, how far each session's
 message numbering has got in each direction, and which session placed each order, are held by the
 sequencer. A member that reconnects to the other instance of the gateway therefore finds its

@@ -616,7 +616,8 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
                               (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) ||
                               (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id)) ||
                               (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) ||
-                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id));
+                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id)) ||
+                              (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelSessionOrders::message_pdu_id));
 
     // ---- Order PDU gating by HA state -------------------------------------
     if (is_order_pdu && role_.role() == MeRole::Follower && !following_the_wal()) {
@@ -661,6 +662,10 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "MatchingEngineThread: ExecutionReport envelope on connection {} -- not applied (the engine produces reports and applies none)",
                    message.connection_id().get_value());
+    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::SessionEnded::message_pdu_id) ||
+               inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::SessionEndWithdrawn::message_pdu_id)) {
+        // A record the leading sequencer keeps for cancel on disconnect, which no engine applies. An engine following the
+        // WAL is sent it with every other record, and passes over it; a catch-up, which sends only commands, does not.
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported envelope inner pdu_id {} -- dropping", inner_pdu_id);
     }
@@ -729,6 +734,17 @@ void MatchingEngineThread::apply_command(const pubsub_itc_fw::EventMessage& mess
         } else {
             const CommandSource source = command_source_for(message.seq_no());
             apply_technical_event_command(view, message.seq_no(), envelope.has_trading_date ? envelope.trading_date : 0, source);
+        }
+
+    } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelSessionOrders::message_pdu_id)) {
+        pubsub_itc_fw_app::CancelSessionOrdersView view{};
+        if (!pubsub_itc_fw_app::decode(view, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode CancelSessionOrders -- dropping");
+        } else {
+            const CommandSource source = command_source_for(message.seq_no());
+            static_cast<void>(state_machine_.apply_cancel_session_orders(fix_common::SessionIdentity::make(view.comp_id, view.gateway_protocol_id),
+                                                                         message.seq_no(), envelope.wall_time_ns,
+                                                                         envelope.has_trading_date ? envelope.trading_date : 0, source));
         }
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id)) {

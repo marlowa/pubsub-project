@@ -22,12 +22,12 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 - **A trading day under load.** `perf_run.py --profile profiles/trading_day.toml` runs a shaped day
   of several million orders with cancels.
-- **Failover and restart of each pair.** `ha_test.py` has 106 scenarios: killing each component,
+- **Failover and restart of each pair.** `ha_test.py` has 109 scenarios: killing each component,
   restarting each in each role, stopping a whole machine, a member's open orders surviving a restart
   of the matching engine and a change of engine leader, a command that crashes both engines being
   voided, orders held while no engine leads, and reports held for a gateway surviving the death of
   the sequencer holding them, and a follower sequencer that has lost the first file of its WAL being
-  sent every record again. All 106 pass, and the 39 that also run with the secondary matching engine leading first pass that
+  sent every record again. All 109 pass, and the 39 that also run with the secondary matching engine leading first pass that
   way too. After each scenario both matching engines are run on its WAL and must give the reports the
   WAL holds, with a sequencer that reads their reports more slowly than they send them, so that each
   run depends on the engine pacing its reports ([BUG-0234](bug_list.md#bug_0234)).
@@ -37,11 +37,11 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 58 open entries, 10 of them high severity. Each one is judged,
+The [bug list](bug_list.md) holds 56 open entries, 9 of them high severity. Each one is judged,
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
-- **The specification is mostly untested.** 42 of 158 requirements are verified by a scenario, and
+- **The specification is mostly untested.** 44 of 158 requirements are verified by a scenario, and
   one more by a TLA+ model (`scripts/check_book_requirements.py` counts them; [BUG-0068](bug_list.md#bug_0068)). A scenario
   passing has repeatedly been found to say less than it appeared to, so treat untested requirements
   as unverified.
@@ -54,11 +54,7 @@ they are being fixed. The ones most likely to matter first, by design area:
   [ha_library_boundary.md](availability/ha_library_boundary.md). Open defects include a matching engine
   that is connected but has stopped working looking healthy ([BUG-0194](bug_list.md#bug_0194)), a
   growing the order book needing more memory than the machine has ([BUG-0028](bug_list.md#bug_0028)),
-  a restarted matching engine waiting 2 seconds for the sequencer to connect to it again
-  ([BUG-0237](bug_list.md#bug_0237)), and a venue running without a standby saying so too quietly
-  ([BUG-0134](bug_list.md#bug_0134)).
-- **Members can lose information.** A restarted gateway stops honouring cancel-on-disconnect
-  ([BUG-0090](bug_list.md#bug_0090)).
+  and a venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).
 - **The trading day has no start or end procedure.** Nothing archives the day's files, a file left
   from an earlier day is taken as a restart ([BUG-0137](bug_list.md#bug_0137)), orders open at the
   close are never cancelled ([BUG-0132](bug_list.md#bug_0132)), and a trading halt is told to a

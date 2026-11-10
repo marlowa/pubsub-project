@@ -14,6 +14,8 @@
 #include <fix_orders.hpp>
 #include <leader_follower.hpp>
 
+#include "GatewayIds.hpp"
+#include "SessionIdentity.hpp"
 #include "TradingDate.hpp"
 #include "VenueStateFromTheWal.hpp"
 
@@ -174,6 +176,43 @@ TEST_F(VenueStateFromTheWalTest, DiscardingRecordsDiscardsTheVoidsAndHaltsAfterT
     EXPECT_TRUE(state_->discard_after(1));
     EXPECT_FALSE(state_->trading_halt().halted());
     EXPECT_TRUE(state_->voids().empty());
+}
+
+// The cancels on disconnect waiting to be carried out are kept from the WAL by every instance, however it holds the
+// records: a SessionEnded starts a wait from the record's own time, a SessionEndWithdrawn ends it, and so does a
+// CancelSessionOrders; discarded records take the waits they started with them.
+TEST_F(VenueStateFromTheWalTest, CancelsOnDisconnectAreKeptFromTheWal) {
+    constexpr int64_t second = 1'000'000'000;
+    const fix_common::SessionIdentity member = fix_common::SessionIdentity::make("MEMBER", gateway_ids::fix_order_gateway);
+    const fix_common::SessionIdentity other = fix_common::SessionIdentity::make("OTHER", gateway_ids::fix_order_gateway);
+    const std::vector<uint8_t> member_ended = encoded(pubsub_itc_fw_app::SessionEnded{"MEMBER", gateway_ids::fix_order_gateway, 8, false});
+    const std::vector<uint8_t> other_ended = encoded(pubsub_itc_fw_app::SessionEnded{"OTHER", gateway_ids::fix_order_gateway, 8, false});
+    const std::vector<uint8_t> member_withdrawn = encoded(pubsub_itc_fw_app::SessionEndWithdrawn{"MEMBER", gateway_ids::fix_order_gateway});
+    const std::vector<uint8_t> other_cancelled = encoded(pubsub_itc_fw_app::CancelSessionOrders{"OTHER", gateway_ids::fix_order_gateway});
+
+    Record ended = record_of(static_cast<int16_t>(pubsub_itc_fw_app::SessionEnded::message_pdu_id), member_ended);
+    ended.wall_time_ns = 100 * second;
+    static_cast<void>(state_->note_record(10, ended, How::written_as_follower));
+    Record ended_other = record_of(static_cast<int16_t>(pubsub_itc_fw_app::SessionEnded::message_pdu_id), other_ended);
+    ended_other.wall_time_ns = 101 * second;
+    static_cast<void>(state_->note_record(11, ended_other, How::read_at_open));
+    EXPECT_TRUE(state_->session_cancels().pending(member));
+    EXPECT_TRUE(state_->session_cancels().pending(other));
+
+    int due = 0;
+    state_->session_cancels().for_each_due(108 * second, [&due](const fix_common::SessionIdentity&) { ++due; });
+    EXPECT_EQ(due, 1) << "the member's wait runs from its record's time, 100 s, and is due at 108 s; the other's is due at 109 s";
+
+    static_cast<void>(state_->note_record(12, record_of(static_cast<int16_t>(pubsub_itc_fw_app::SessionEndWithdrawn::message_pdu_id), member_withdrawn),
+                                          How::written_by_this_leader));
+    EXPECT_FALSE(state_->session_cancels().pending(member));
+    static_cast<void>(state_->note_record(13, record_of(static_cast<int16_t>(pubsub_itc_fw_app::CancelSessionOrders::message_pdu_id), other_cancelled),
+                                          How::written_by_this_leader));
+    EXPECT_FALSE(state_->session_cancels().pending(other));
+
+    static_cast<void>(state_->note_record(14, ended, How::written_as_follower));
+    static_cast<void>(state_->discard_after(13));
+    EXPECT_FALSE(state_->session_cancels().pending(member));
 }
 
 } // namespaces

@@ -4145,6 +4145,57 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
+    # 106 -- cancel on disconnect is carried out after the member's gateway restarts (BUG-0090).
+    #
+    # The member asks for its orders to be cancelled eight seconds after its connection ends. Its gateway is restarted;
+    # the member logs on again within the grace period, keeps its orders, and then drops. A restarted gateway holds no
+    # view of the orders placed before it restarted, so it cannot carry the instruction out by itself: the venue must
+    # cancel every resting order of the member after the grace period, and none before.
+    Scenario(
+        number=106,
+        short_name="cancel_on_disconnect_after_gateway_restart",
+        description="Cancel on disconnect is carried out after the member's gateway has restarted",
+        expected_outcome=(
+            "the member keeps its orders while it logs on again within the grace period after its gateway restarts, and "
+            "after it then drops every resting order is cancelled once the grace period has run out, and none before"
+        ),
+        cancel_on_disconnect_after_gateway="restarted",
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 107 -- cancel on disconnect is carried out after the member's gateway dies (R-0113).
+    #
+    # The member asks for its orders to be cancelled eight seconds after its connection ends. Its gateway is killed and
+    # the member does not come back. A dead gateway carries nothing out: the venue must cancel every resting order of the
+    # member after the grace period, and none before.
+    Scenario(
+        number=107,
+        short_name="cancel_on_disconnect_after_gateway_death",
+        description="Cancel on disconnect is carried out after the member's gateway has died",
+        expected_outcome="every resting order of the member is cancelled once the grace period after its gateway died has run out, and none before",
+        cancel_on_disconnect_after_gateway="killed",
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 108 -- a member that asked to keep its orders keeps them after its gateway restarts (BUG-0091).
+    #
+    # As scenario 106, for a member provisioned with cancel on disconnect not wanted. A gateway that takes the session on
+    # must have the member's instruction rather than the venue's default: none of the member's orders may be cancelled.
+    Scenario(
+        number=108,
+        short_name="kept_orders_after_gateway_restart",
+        description="A member that asked to keep its orders keeps them after its gateway restarts",
+        expected_outcome="none of the member's resting orders is cancelled after its gateway restarts and it then drops",
+        cancel_on_disconnect_after_gateway="kept",
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 109 -- cancel on disconnect is carried out when the grace period runs out, with the member's gateway up throughout.
     #
     # BUG-0239. The member asks for its orders to be cancelled eight seconds after its connection ends, drops, and does
@@ -8268,7 +8319,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                            or scenario.assert_orders_during_change_answered or scenario.assert_engine_holds_reports_without_connection
                            or scenario.assert_open_orders_survive or scenario.assert_inflight_recovery
                            or scenario.assert_unbound_reports_delivered or scenario.assert_restarted_engine_follows_the_wal
-                           or bool(scenario.cancel_on_disconnect_after_gateway))
+                           or bool(scenario.cancel_on_disconnect_after_gateway) or scenario.assert_cancel_grace)
         _REPORT_ORDERS_NOW = _REPORT_ORDERS_OF + ((FIX8_COMP_ID,) if member_outcomes else ())
         # The scenarios that check a refused command never reached the matching engine read the engine's outcomes for the
         # comp ids that send it.
@@ -9275,7 +9326,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             gateway_from = _TEST_EVENTS.mark()
             cancels_from = _TEST_EVENTS.mark()
 
-            log("=== Dropping the client session, so the gateway cancels what it believes is open ===")
+            log("=== Dropping the client session, so the venue cancels the member's open orders ===")
             stop_f8test(f8proc)
             f8proc = None
 
@@ -9287,7 +9338,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("open orders: the gateway never reported the dropped session's open orders, so "
                     "nothing was cancelled and the question was not asked")
 
-            # How many orders the gateway believed open and so cancelled: one answer from the engine is wanted for each.
+            # How many orders the gateway believed open, which the venue then cancels: one answer from the engine is wanted
+            # for each.
             disconnected = component_event("fix_order_gateway_a", "fix_order_gateway_test_events", "SessionDisconnectedWithOrders", gateway_from, 0.0)
             expected = disconnected.open_orders if disconnected is not None else 0
             if expected <= 0:
@@ -9317,10 +9369,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "neither the member nor the gateway was told -- see R-0018, and docs/bug_list.md "
                     "BUG-0064")
             if cancelled != expected:
-                die(f"open orders: the gateway cancelled {expected} order(s), and within {_OPEN_ORDER_CANCEL_TIMEOUT:.0f}s "
-                    f"the engine cancelled {cancelled} and refused none -- the other cancels never reached it, so the "
-                    "question was not asked of every order")
-            log(f"  the engine cancelled all {cancelled} order(s) the gateway believed open and refused none -- OK")
+                die(f"open orders: the gateway believed {expected} order(s) open, and within {_OPEN_ORDER_CANCEL_TIMEOUT:.0f}s "
+                    f"the engine cancelled {cancelled} -- the orders it holds after its restart are not the ones the member "
+                    "was told are open (R-0018)")
+            log(f"  the engine cancelled all {cancelled} order(s) the gateway believed open -- OK")
 
         # ── Cancel on disconnect after the member's gateway has gone ─────────
         # BUG-0090, BUG-0091 and R-0113. The gateway that received the member's instructions is restarted or killed, so it
@@ -9442,14 +9494,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "not overwrite it, and that AuthenticationResult carried the field.")
             log(f"  cancel grace: held for the provisioned {held}s, not the gateway default -- OK")
 
-            # 2. Nothing may actually be cancelled while the window is open. The marker is
-            #    the drain's own completion line, which only appears once cancels are sent.
-            #    A sleep is the honest test here: the assertion is that something does NOT
-            #    happen, and there is no event to wait for.
+            # 2. Nothing may actually be cancelled while the window is open. The engine's outcomes for the member's
+            #    orders are the record of what was cancelled, whoever asked. A sleep is the honest test here: the
+            #    assertion is that something does NOT happen, and there is no event to wait for.
             time.sleep(_CANCEL_GRACE_QUIET_PERIOD)
-            drained = count_seen(expect_message("fix_order_gateway_a", "cancels sent", "CancelsSent", "fix_order_gateway_test_events"), gateway_from)
+            drained = outcome_count(me_log.stem, gateway_from, "Cancelled")
             if drained > 0:
-                die(f"cancel grace: the gateway completed {drained} cancel drain(s) "
+                die(f"cancel grace: {drained} of the member's order(s) were cancelled "
                     f"within {_CANCEL_GRACE_QUIET_PERIOD:.0f}s of the disconnect. The grace period "
                     "is not being honoured -- a member whose connection blipped would come back flat.")
             log(f"  cancel grace: nothing cancelled {_CANCEL_GRACE_QUIET_PERIOD:.0f}s after the drop -- OK")
@@ -9468,9 +9519,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "authenticated with the same one.")
             log(f"  cancel grace: orders reclaimed on reconnect, none cancelled ({elapsed:.1f}s)")
 
-            drained = count_seen(expect_message("fix_order_gateway_a", "cancels sent", "CancelsSent", "fix_order_gateway_test_events"), gateway_from)
+            if not _TEST_EVENTS.settle(me_log.stem):
+                die(f"cancel grace: {me_log.stem} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]})")
+            drained = outcome_count(me_log.stem, gateway_from, "Cancelled")
             if drained > 0:
-                die(f"cancel grace: {drained} cancel drain(s) ran despite the reconnect -- "
+                die(f"cancel grace: {drained} of the member's order(s) were cancelled despite the reconnect -- "
                     "the member's book was flattened anyway.")
             log("  cancel grace: no cancel was sent at any point in this scenario -- OK")
 

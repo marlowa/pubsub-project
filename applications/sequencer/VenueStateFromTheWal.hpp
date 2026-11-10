@@ -10,6 +10,7 @@
 
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
+#include "SessionCancelsPending.hpp"
 #include "TradingHaltState.hpp"
 #include "VoidedCommandList.hpp"
 
@@ -53,6 +54,7 @@ class VenueStateFromTheWal {
         int64_t answers_seq_no{0};
         bool has_trading_date{false}; ///< for a command: the trading date its leader wrote on it
         int32_t trading_date{0};
+        int64_t wall_time_ns{0}; ///< when the record was written, wall-clock nanoseconds since the Unix epoch
     };
 
     /// What noting a record changed.
@@ -78,6 +80,12 @@ class VenueStateFromTheWal {
     [[nodiscard]] const fix_common::VoidedCommandList& voids() const {
         return voids_;
     }
+    /// The cancels on disconnect the WAL says are waiting to be carried out (SessionEnded, SessionEndWithdrawn and
+    /// CancelSessionOrders records).
+    [[nodiscard]] const SessionCancelsPending& session_cancels() const {
+        return session_cancels_;
+    }
+
     /// The highest command any report in the WAL answers.
     [[nodiscard]] int64_t highest_command_answered() const {
         return highest_command_answered_;
@@ -103,6 +111,7 @@ class VenueStateFromTheWal {
     void note_trading_date(int64_t seq_no, const Record& record);
     bool note_void(int64_t seq_no, const Record& record);
     bool note_trading_halt(int64_t seq_no, const Record& record);
+    void note_session_cancel(int64_t seq_no, const Record& record);
 
     pubsub_itc_fw::QuillLogger& logger_;
     TradingHaltState trading_halt_;
@@ -112,6 +121,7 @@ class VenueStateFromTheWal {
     // The trading date, as the number yyyymmdd; zero until known.
     int32_t trading_date_{0};
     int64_t highest_command_answered_{0};
+    SessionCancelsPending session_cancels_;
     // Scratch space for decoding a void or a TechnicalEvent. A command of the sequencer's own is small, and decoding one
     // needs no more space than this.
     std::vector<uint8_t> decode_arena_ = std::vector<uint8_t>(1024);

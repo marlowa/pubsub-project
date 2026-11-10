@@ -355,12 +355,6 @@ struct FixSession {
     int exec_id_counter{1};
 
     /**
-     * @brief Counter used to generate unique ClOrdID values for gateway-initiated
-     *        OrderCancelRequests sent on client disconnect.
-     */
-    int cancel_id_counter{1};
-
-    /**
      * @brief Orders forwarded to the sequencer that have not yet received a
      *        terminal ExecutionReport (Filled, Canceled, Rejected, Expired,
      *        DoneForDay).  Keyed by ClOrdID.  On client disconnect, one

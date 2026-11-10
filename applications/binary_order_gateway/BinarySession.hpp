@@ -96,15 +96,10 @@ struct BinarySession {
      *
      * Populated from the matching engine's acknowledgements rather than at order-forward
      * time, so it holds only orders genuinely on the book -- an order that was rejected,
-     * or is still in flight, was never the session's to cancel. Entries are cancelled
-     * when the client disconnects, so a dropped connection does not leave live orders
-     * behind with nobody to manage them.
-     *
-     * The counter that makes each generated cancel's ClOrdID unique lives with the
-     * session so it keeps counting while the session's orders are drained.
+     * or is still in flight, was never the session's to cancel. Released when the client
+     * disconnects; the venue, not the gateway, cancels them if the member asked for that.
      */
     open_orders::OpenOrderMap open_orders;
-    int cancel_id_counter{1};
 };
 
 } // namespaces
