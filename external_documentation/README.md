@@ -9,9 +9,9 @@ Nothing here describes this venue. Each document is the work of its publisher, w
 downloaded from the address given below, where the publisher makes it available to the public. A newer issue may have
 replaced it there since.
 
-**The documents themselves are not in the repository.** The repository is public, and redistributing another
-organisation's documents from it is not ours to do, so `.gitignore` keeps every file in this directory but this README
-out of git. A working copy that lacks them can download each from the address in the table.
+**The documents themselves are not in the repository.** Each is its publisher's copyright, and the repository is
+public, so `.gitignore` keeps every file in this directory except this README out of git. A working copy that lacks them
+can download each from the address in the table.
 
 ## The documents
 
