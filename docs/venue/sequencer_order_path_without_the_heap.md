@@ -113,4 +113,4 @@ Agreed with Andrew on 9 November 2026: **the figure is each environment's own `o
 session map, the gateways' pools and the engine's region agree in every environment. The session map costs 89 bytes for
 each slot, an 88-byte entry and a byte of state, and keeps at least half its slots free, so it has at least twice as many
 slots as orders, rounded up to a power of two. At 2,000,000 orders that is 4,194,304 slots, about 370 MB; at 100,000,000
-it is 268,435,456 slots, about 24 GB, against the engine region's 24.8 GB. It is reserved once at start-up.
+it is 268,435,456 slots, about 24 GB, against the engine region's 26.4 GB. It is reserved once at start-up.

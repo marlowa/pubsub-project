@@ -278,14 +278,13 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
         int32_t max_order_qty_length = 0;
         toml.get_required_except("fix_limits.max_symbol_length", max_symbol_length);
         toml.get_required_except("fix_limits.max_order_qty_length", max_order_qty_length);
-        if (max_symbol_length < 1 || static_cast<size_t>(max_symbol_length) > fix_order_limits::max_supported_symbol_length) {
+        if (max_symbol_length < 1 || static_cast<size_t>(max_symbol_length) > fix_order_limits::max_symbol_length) {
             throw pubsub_itc_fw::ConfigurationException("FixOrderGatewayConfigurationLoader: fix_limits.max_symbol_length must be in [1, " +
-                                                        std::to_string(fix_order_limits::max_supported_symbol_length) + "], got " +
-                                                        std::to_string(max_symbol_length));
+                                                        std::to_string(fix_order_limits::max_symbol_length) + "], got " + std::to_string(max_symbol_length));
         }
-        if (max_order_qty_length < 1 || static_cast<size_t>(max_order_qty_length) > fix_order_limits::max_supported_order_qty_length) {
+        if (max_order_qty_length < 1 || static_cast<size_t>(max_order_qty_length) > fix_order_limits::max_order_qty_length) {
             throw pubsub_itc_fw::ConfigurationException("FixOrderGatewayConfigurationLoader: fix_limits.max_order_qty_length must be in [1, " +
-                                                        std::to_string(fix_order_limits::max_supported_order_qty_length) + "], got " +
+                                                        std::to_string(fix_order_limits::max_order_qty_length) + "], got " +
                                                         std::to_string(max_order_qty_length));
         }
         config.max_symbol_length = max_symbol_length;

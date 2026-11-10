@@ -30,7 +30,7 @@
 enum OrderOutcomeKind : i8 {
     Accepted = 1               # a new order was accepted and rests on the book
     RefusedDuplicate = 2       # a new order was refused: its session already has a live order with that ClOrdID
-    RefusedTooLong = 3         # a new order was refused: its ClOrdID is longer than the book holds
+    RefusedTooLong = 3         # a new order was refused: its ClOrdID, Symbol, OrderQty or Price is longer than the book holds
     CancelRefusedTooLong = 4   # a cancel was refused: its ClOrdID or OrigClOrdID is longer than the book holds
     Cancelled = 5              # a cancel was done: the order it names is off the book
     CancelRefusedUnknown = 6   # a cancel was refused: the session holds no live order with that OrigClOrdID

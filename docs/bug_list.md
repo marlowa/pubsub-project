@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 241 |
-| Open | 55 (35 defects, 20 tasks) |
-| Closed | 186 |
-| Next id | BUG-0242 |
+| Bugs recorded | 242 |
+| Open | 55 (34 defects, 21 tasks) |
+| Closed | 187 |
+| Next id | BUG-0243 |
 
 ## Open bugs by severity
 
@@ -53,7 +53,7 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0235](#bug_0235) | medium | defect | Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later |
 | [BUG-0236](#bug_0236) | medium | defect | The COMPID editor writes its administrators' file readable by every account on the host |
-| [BUG-0241](#bug_0241) | medium | defect | The matching engine keeps only the first 16 characters of a symbol, and the gateways accept up to 32 |
+| [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -164,34 +164,44 @@ went looking.
 
 ## Open
 
-### BUG-0241: The matching engine keeps only the first 16 characters of a symbol, and the gateways accept up to 32 {#bug_0241}
+### BUG-0242: The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol {#bug_0242}
 
 | | |
 |---|---|
 | Severity | medium |
+| Kind | task |
 | Found | 2026-11-10 |
 | Recorded | 2026-11-10 |
-| How | Moving the gateways' limits on Symbol and OrderQty into `FixOrderLimits.hpp` while building [BUG-0072](#bug_0072), and comparing them with the matching engine's |
-| Impact | An order whose symbol is longer than 16 characters is accepted, and the matching engine stores the symbol cut short, with nothing logged and nothing refused. The engine's book is not keyed on the symbol, so orders are not confused; but every report the engine builds from its stored copy of the order, the cancel of an order and the cancels on disconnect and at a halt, gives the member a symbol other than the one it sent |
+| How | Working out the longest symbol the venue must hold, for [BUG-0241](#bug_0241) |
+| Impact | Any text up to 35 characters is accepted as a Symbol. The venue cannot refuse an order for an instrument it does not trade, cannot tell two names for the same instrument apart from two instruments, and has nothing to say what an instrument is when options on futures are added |
 
-**What happens.** Both gateways accept a symbol up to their configured `max_symbol_length`, which is 32 in every
-environment and may be configured up to `fix_order_limits::max_supported_symbol_length`, 64. The matching engine's
-`OrderEntry` holds `matching_engine::max_symbol_length` characters, 16 (`applications/matching_engine/OrderEntry.hpp`), and
-`OrderEntry::set_symbol` copies `std::min(sv.size(), max_symbol_length)` of them. No component refuses a symbol of 17
-to 32 characters. The engine's own comment, "Symbol max ~12; 16 is ample", states an assumption that the gateways do not
-enforce. The engine reads the stored symbol back in two places, both building an execution report for a cancel
-(`MatchingEngineStateMachine.cpp`, `er.symbol = entry.get_symbol()`); the book does not use it as a key.
+**What the venue does.** A member names the instrument of an order in Symbol (55), which FIX defines as free text with
+no maximum length. The gateways and the matching engine accept any Symbol no longer than
+`fix_order_limits::max_symbol_length`, 35 characters, and the engine stores it to echo it back on reports. The
+dictionary defines SecurityID (48) and SecurityIDSource (22), and nothing reads them. The venue holds no list of the
+instruments it trades.
 
-The same shape applies to OrderQty and price: the engine holds 24 characters of each, and the gateways' configured
-limit on OrderQty is 24 in every environment, but may be configured up to 32.
+**What other exchanges do.** Each assigns its own identifier to every instrument it trades and requires it on an order:
 
-R-0152 requires each gateway to refuse "an identifier, symbol or quantity longer than the venue holds". For `ClOrdID`
-the limit is one shared constant, `fix_order_limits::max_cl_ord_id_length`; for the symbol and the quantity there are two
-numbers that disagree, so the gateways pass on symbols the venue does not hold in full.
+- The London Stock Exchange: "Instruments will be identified using the SecurityID (48) field", with SecurityIDSource
+  8, exchange symbol (MIT202, section 2.3).
+- Euronext: SecurityID is mandatory, a number from 0 to 2^32-2 it calls the SymbolIndex, which stands for an ISIN, a
+  market (MIC) and a currency together, since one ISIN can trade in more than one market or currency (Optiq OEG client
+  specifications, glossary and section 5).
 
-**The fix.** One limit for each field, shared by the gateways and the matching engine, as `ClOrdID` has, with the
-gateways' configured limits bounded by it; and the matching engine refusing a field longer than it holds rather than
-cutting it short, as it refuses an over-long `ClOrdID` (scenario 58).
+An identifier the venue assigns has a fixed width, so the matching engine could store a few bytes for it rather than
+35 characters of Symbol.
+
+**What has to be decided.** This needs its own design, discussed with Andrew before any is written:
+
+1. Where the list of instruments comes from, and how it reaches the venue. It is not to be assumed that it is held in a
+   relational database from which it can be exported.
+2. What identifies an instrument on an order: a SecurityID the venue assigns, with SecurityIDSource 8; whether Symbol
+   is still accepted beside it; and what an order naming an instrument the venue does not trade is answered with.
+3. How the list changes during a trading day, if it may, and how every component holding it learns of a change.
+4. What the list must say about an instrument for options on futures, whose underlying is itself an instrument.
+
+Related: [BUG-0241](#bug_0241), the length of Symbol; docs/venue/gateway_refusals.md, for the exchange documents cited.
 
 ### BUG-0223: The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario {#bug_0223}
 
@@ -2535,6 +2545,36 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0241: The matching engine keeps only the first 16 characters of a symbol, and the gateways accept up to 32 {#bug_0241}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-10 |
+| Recorded | 2026-11-10 |
+| Fixed | 2026-11-10 -- one limit for each field, shared by the gateways and the matching engine, in `applications/fix_common/FixOrderLimits.hpp`: Symbol 35, the longest Financial Instrument Short Name (ISO 18774), agreed with Andrew (A35); OrderQty 24; Price 24. The engine's `OrderEntry` is sized from them, and the gateways' configured limits may not exceed them. Every environment's configured Symbol limit is 35. The matching engine refuses a new order whose ClOrdID, Symbol, OrderQty or Price is longer than it holds, with a rejected report naming the field and the limit, rather than storing it cut short. A record grows from 232 to 248 bytes and a slot from 248 to 264, so the production region from 24.8 GB to 26.4 GB. Unit tests in `MatchingEngineStateMachineTest`, the symbol test made to fail on purpose. Scenario 58 sends an order with a Symbol of 36 characters past the gateways, and the engine refuses it live and again while catching up; it fails when sent one of 35. The full high-availability suite, with the WALs cleared first, passes 109 of 109 |
+| How | Moving the gateways' limits on Symbol and OrderQty into `FixOrderLimits.hpp` while building [BUG-0072](#bug_0072), and comparing them with the matching engine's |
+| Impact | An order whose symbol is longer than 16 characters is accepted, and the matching engine stores the symbol cut short, with nothing logged and nothing refused. The engine's book is not keyed on the symbol, so orders are not confused; but every report the engine builds from its stored copy of the order, the cancel of an order and the cancels on disconnect and at a halt, gives the member a symbol other than the one it sent |
+
+**What happens.** Both gateways accept a symbol up to their configured `max_symbol_length`, which is 32 in every
+environment and may be configured up to `fix_order_limits::max_supported_symbol_length`, 64. The matching engine's
+`OrderEntry` holds `matching_engine::max_symbol_length` characters, 16 (`applications/matching_engine/OrderEntry.hpp`), and
+`OrderEntry::set_symbol` copies `std::min(sv.size(), max_symbol_length)` of them. No component refuses a symbol of 17
+to 32 characters. The engine's own comment, "Symbol max ~12; 16 is ample", states an assumption that the gateways do not
+enforce. The engine reads the stored symbol back in two places, both building an execution report for a cancel
+(`MatchingEngineStateMachine.cpp`, `er.symbol = entry.get_symbol()`); the book does not use it as a key.
+
+The same shape applies to OrderQty and price: the engine holds 24 characters of each, and the gateways' configured
+limit on OrderQty is 24 in every environment, but may be configured up to 32.
+
+R-0152 requires each gateway to refuse "an identifier, symbol or quantity longer than the venue holds". For `ClOrdID`
+the limit is one shared constant, `fix_order_limits::max_cl_ord_id_length`; for the symbol and the quantity there are two
+numbers that disagree, so the gateways pass on symbols the venue does not hold in full.
+
+**The fix.** One limit for each field, shared by the gateways and the matching engine, as `ClOrdID` has, with the
+gateways' configured limits bounded by it; and the matching engine refusing a field longer than it holds rather than
+cutting it short, as it refuses an over-long `ClOrdID` (scenario 58).
 
 ### BUG-0072: The gateway's open-order pool is sized by nothing in particular {#bug_0072}
 

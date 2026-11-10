@@ -189,7 +189,9 @@ environment:
 | Authentication service | 11070 / 11071 | 11070 / 11071 | Outbound, for the SCRAM exchange |
 
 `[order_limits] max_symbol_length` and `max_order_qty_length` are the longest Symbol and OrderQty
-accepted, 32 and 24 bytes in every environment, the same as the FIX gateway's `[fix_limits]`.
+accepted, 35 and 24 bytes in every environment, the same as the FIX gateway's `[fix_limits]`, and may
+not be set above `fix_order_limits::max_symbol_length` and `max_order_qty_length`, the most the
+matching engine holds.
 `[timeouts] scram_auth_timeout` (10 seconds) is how long the authentication service has to finish
 the exchange before the logon is refused with `AuthenticationTimeout`. `[unanswered_commands]`
 sizes the store described under check 6: 262,144 commands in 64 MiB.

@@ -118,7 +118,11 @@ Rejected and OrderID "NONE" for an order it does not hold.
 `ClOrdID` may be up to 64 bytes. That limit is compiled in (`fix_order_limits::max_cl_ord_id_length`
 in `applications/fix_common/FixOrderLimits.hpp`), because the same number sizes the matching
 engine's key for an order. The limits on `Symbol` and `OrderQty`
-come from the configuration (`[fix_limits]`), and every environment sets them to 32 and 24 bytes.
+come from the configuration (`[fix_limits]`), and every environment sets them to 35 and 24 bytes, the
+most the matching engine holds (`fix_order_limits::max_symbol_length` and `max_order_qty_length`); the
+configuration may not set more. 35 is the longest Financial Instrument Short Name (ISO 18774). The
+matching engine refuses a new order whose Symbol, OrderQty or Price is longer than it holds, rather
+than storing it cut short.
 
 A member that sends a command under a `ClOrdID` it has already used today is refused. If the first
 command is still waiting for its answer, the gateway refuses the second itself and does not pass it
@@ -234,7 +238,7 @@ file.
 | `[fix_session] sender_comp_id`, `default_target_comp_id` | The gateway's SenderCompID, and the TargetCompID `FixSerialiser` writes when a message is serialised without naming a member's comp id |
 | `[fix_tls] enabled`, `cert`, `key` | The TLS listener and its certificate |
 | `[cancel_on_disconnect] enabled`, `grace_period` | The defaults, which each comp id may override; see [Gateway High Availability](../availability/gateway_ha.md) |
-| `[fix_limits] max_symbol_length`, `max_order_qty_length` | The longest `Symbol` and `OrderQty` the gateway accepts, 32 and 24 bytes in every environment |
+| `[fix_limits] max_symbol_length`, `max_order_qty_length` | The longest `Symbol` and `OrderQty` the gateway accepts, 35 and 24 bytes in every environment, and at most `fix_order_limits::max_symbol_length` and `max_order_qty_length` |
 | `[timeouts] logon_timeout`, `scram_auth_timeout` | How long a logon, and its authentication, may take |
 | `[fix_capture] enabled`, `file`, `ring_bytes` | FIX capture, off by default |
 | `[unanswered_commands] commands`, `bytes` | The store of orders and cancels sent to the sequencers and not yet answered, kept so they can be sent again to a new sequencer leader: 262,144 commands in 64 MiB. When it is full, new commands are refused. Used only with high availability on; see [Commands during a change of leader](../availability/commands_during_a_change_of_leader.md) |

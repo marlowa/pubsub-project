@@ -232,14 +232,13 @@ BinaryOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& 
 
     toml.get_required_except("order_limits.max_symbol_length", config.max_symbol_length);
     toml.get_required_except("order_limits.max_order_qty_length", config.max_order_qty_length);
-    if (config.max_symbol_length < 1 || static_cast<size_t>(config.max_symbol_length) > fix_order_limits::max_supported_symbol_length) {
+    if (config.max_symbol_length < 1 || static_cast<size_t>(config.max_symbol_length) > fix_order_limits::max_symbol_length) {
         throw pubsub_itc_fw::ConfigurationException("BinaryOrderGatewayConfigurationLoader: order_limits.max_symbol_length must be in [1, " +
-                                                    std::to_string(fix_order_limits::max_supported_symbol_length) + "], got " +
-                                                    std::to_string(config.max_symbol_length));
+                                                    std::to_string(fix_order_limits::max_symbol_length) + "], got " + std::to_string(config.max_symbol_length));
     }
-    if (config.max_order_qty_length < 1 || static_cast<size_t>(config.max_order_qty_length) > fix_order_limits::max_supported_order_qty_length) {
+    if (config.max_order_qty_length < 1 || static_cast<size_t>(config.max_order_qty_length) > fix_order_limits::max_order_qty_length) {
         throw pubsub_itc_fw::ConfigurationException("BinaryOrderGatewayConfigurationLoader: order_limits.max_order_qty_length must be in [1, " +
-                                                    std::to_string(fix_order_limits::max_supported_order_qty_length) + "], got " +
+                                                    std::to_string(fix_order_limits::max_order_qty_length) + "], got " +
                                                     std::to_string(config.max_order_qty_length));
     }
 

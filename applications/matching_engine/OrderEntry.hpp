@@ -17,12 +17,13 @@
 
 namespace matching_engine {
 
-// ClOrdID length is the single shared limit (fix_order_limits): the gateway validates
-// every inbound ClOrdID against it, so this fixed-size book key is never truncated.
-// Symbol max ~12; 16 is ample. Quantities and prices are decimal strings; 24 covers any realistic value.
+// Every field's length is a limit shared with the gateways (fix_order_limits). The gateways refuse a
+// command with a longer field, and the matching engine refuses a new order with one
+// (MatchingEngineStateMachine::refuse_over_long_order), so no field stored here is ever cut short.
 constexpr size_t max_cl_ord_id_length = fix_order_limits::max_cl_ord_id_length;
-constexpr size_t max_symbol_length = 16;
-constexpr size_t max_qty_length = 24;
+constexpr size_t max_symbol_length = fix_order_limits::max_symbol_length;
+constexpr size_t max_qty_length = fix_order_limits::max_order_qty_length;
+constexpr size_t max_price_length = fix_order_limits::max_price_length;
 
 // Live order stored in the order book from NOS acceptance until cancel.
 // All string fields stored as fixed-size char arrays -- no heap allocation.
@@ -81,8 +82,10 @@ struct OrderEntry {
     uint8_t price_len{};
     std::array<char, max_symbol_length> symbol{};
     std::array<char, max_qty_length> order_qty{};
-    std::array<char, max_qty_length> price{};
+    std::array<char, max_price_length> price{};
 
+    // Each setter copies at most the field's length. The engine refuses an order with a longer field before it stores the
+    // order, so the limit is never reached here; it stops a defect elsewhere from writing past the array.
     void set_cl_ord_id(std::string_view sv) {
         cl_ord_id_len = static_cast<uint8_t>(std::min(sv.size(), max_cl_ord_id_length));
         std::memcpy(cl_ord_id.data(), sv.data(), cl_ord_id_len);
@@ -96,7 +99,7 @@ struct OrderEntry {
         std::memcpy(order_qty.data(), sv.data(), order_qty_len);
     }
     void set_price(std::string_view sv) {
-        price_len = static_cast<uint8_t>(std::min(sv.size(), max_qty_length));
+        price_len = static_cast<uint8_t>(std::min(sv.size(), max_price_length));
         std::memcpy(price.data(), sv.data(), price_len);
     }
 

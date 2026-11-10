@@ -112,12 +112,13 @@ is an `IncrementalRehashMap` whose entries reach each other by address.
 
 Slot *i* is at `header_size + i * slot_size`. Index arithmetic and nothing else.
 
-**Size, as built.** A record is **232 bytes** and a slot is 248 with the store's
-own header, so a region for a million simultaneously open orders is **248 MB**
+**Size, as built.** A record is **248 bytes** and a slot is 264 with the store's
+own header, so a region for a million simultaneously open orders is **264 MB**
 mapped, which is not resident unless touched. Most of it is the two identifiers:
 64 characters for the comp id and 64 for the order identifier, both generous
 rather than measured, and both able to be tightened if the sizing turns out to
-matter.
+matter. The symbol takes 35, the longest Financial Instrument Short Name
+(`fix_order_limits::max_symbol_length`).
 
 ### What is deliberately not in it
 
@@ -489,7 +490,7 @@ not been measured.
   which nobody has measured. It is configured rather than derived, and the
   environment templates carry the figure: two million in the development
   environment, one million in preprod and test-1, and one hundred million in prod. The
-  measurement above gives the price of guessing high: 232 bytes and, when the page
+  measurement above gives the price of guessing high: 248 bytes and, when the page
   cache has gone cold, about 8 microseconds of restart for every 17 records never
   used.
 - **Whether the kernel's background flushing** produces write bursts a

@@ -546,7 +546,7 @@ order_book_region_path     = "/opt/pubsub/var/matching_engine_open_orders.region
 # The most orders that may be open at once; the region cannot grow past it, and an order
 # arriving when it is full is refused. 100 million: the engine never fills an order, so an
 # order stays open until it is cancelled, and a day of 100 million orders with none
-# cancelled must still be accepted. At 248 bytes a record, the region is 24.8 GB.
+# cancelled must still be accepted. At 264 bytes a slot, the region is 26.4 GB.
 order_book_region_capacity = 100000000
 # The secret the engine's OrderID and ExecID keys are derived from. deploy.py writes one where none
 # exists. Both engines of a pair must hold the same one, so for a pair on two machines copy the file
@@ -556,7 +556,7 @@ identifier_secret_file = "etc/matching_engine/identifier_secret.key"
 # the same as the region, so the map never grows during the day. 100 million orders take a
 # map of 2^28 slots of 141 bytes, 37.8 GB. A map with many cancelled orders in it is copied
 # to a fresh one of the same size to clear them, and holds both while it does, 75.7 GB; with
-# the region that is 100.5 GB at most, which the 200 GB machine has room for.
+# the region that is 102.1 GB at most, which the 200 GB machine has room for.
 order_book_initial_capacity = 100000000
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9205
@@ -588,7 +588,7 @@ sequencer_primary_host                = "sequencer-primary.exchange.internal"   
 sequencer_primary_port                = 11001
 sequencer_secondary_host              = "sequencer-secondary.exchange.internal"  # REPLACE
 sequencer_secondary_port              = 11002
-fix_limits_max_symbol_length = 32
+fix_limits_max_symbol_length = 35
 fix_limits_max_order_qty_length = 24
 
 [binary_order_gateway_a]
@@ -613,7 +613,7 @@ sequencer_primary_port   = 11001
 sequencer_secondary_host = "gateway.exchange.internal"                 # REPLACE
 sequencer_secondary_port = 11002
 # The longest Symbol and OrderQty a member's command may carry; the same as the FIX gateway's.
-order_limits_max_symbol_length = 32
+order_limits_max_symbol_length = 35
 order_limits_max_order_qty_length = 24
 
 [sequencer_primary]

@@ -242,7 +242,8 @@ Reported to Andrew, and not changed by the audit.
   environment), but `applications/matching_engine/OrderEntry.hpp` sets `max_symbol_length = 16`.
   `OrderEntry::set_symbol` keeps only the first 16 bytes, without saying so, so an order with a
   symbol of 17 to 32 bytes is accepted and rests on the book under a shortened symbol, and the
-  report of its cancel carries the shortened symbol.
+  report of its cancel carries the shortened symbol. Recorded as BUG-0241 and fixed: one shared
+  limit of 35 (`fix_order_limits::max_symbol_length`), and the engine refuses a longer symbol.
 - `FixOrderGatewayThread.cpp`: a failed member authentication is logged at Warning. Under the rules
   a member's mistake that the venue handles correctly is Info.
 - `FixOrderGatewayThread.cpp`: the comment above the call to `announce_session_bound` describes an

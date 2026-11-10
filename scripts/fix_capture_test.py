@@ -386,7 +386,7 @@ def _write_gateway_toml(path: Path, fix_port: int, er_port: int,
         f'key     = ""\n'
         f'\n'
         f'[fix_limits]\n'
-        f'max_symbol_length    = 32\n'
+        f'max_symbol_length    = 35\n'
         f'max_order_qty_length = 24\n'
     )
 

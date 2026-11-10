@@ -227,8 +227,8 @@ void MatchingEngineStateMachine::apply_new_order_unguarded(const pubsub_itc_fw_a
         publish_after_refusal(sequence_number, source);
         return;
     }
-    if (!OrderKey::fits(view.cl_ord_id)) {
-        refuse_over_long_order(view, sequence_number, transact_time, session, repeat);
+    if (const OverLongField over_long = over_long_field(view); over_long.name != nullptr) {
+        refuse_over_long_order(view, over_long, sequence_number, transact_time, session, repeat);
         publish_after_refusal(sequence_number, source);
         return;
     }
@@ -595,22 +595,38 @@ void MatchingEngineStateMachine::apply_cancel_unguarded(const pubsub_itc_fw_app:
     outputs_.order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::Cancelled, repeat, sequence_number, view.orig_cl_ord_id);
 }
 
-void MatchingEngineStateMachine::refuse_over_long_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
-                                                        const fix_common::SessionIdentity& session, ReportIsRepeat repeat) {
-    // Refused rather than cut short: the book's key holds max_cl_ord_id_length characters, and
-    // two identifiers that differ only beyond that would otherwise become one order. Info: the
-    // gateways refuse these first, so one reaching here is unusual, but it is the member's.
+MatchingEngineStateMachine::OverLongField MatchingEngineStateMachine::over_long_field(const pubsub_itc_fw_app::NewOrderSingleView& view) {
+    if (!OrderKey::fits(view.cl_ord_id)) {
+        return {"ClOrdID", view.cl_ord_id.size(), fix_order_limits::max_cl_ord_id_length};
+    }
+    if (view.symbol.size() > max_symbol_length) {
+        return {"Symbol", view.symbol.size(), max_symbol_length};
+    }
+    if (view.order_qty.size() > max_qty_length) {
+        return {"OrderQty", view.order_qty.size(), max_qty_length};
+    }
+    if (view.has_price && view.price.size() > max_price_length) {
+        return {"Price", view.price.size(), max_price_length};
+    }
+    return {};
+}
+
+void MatchingEngineStateMachine::refuse_over_long_order(const pubsub_itc_fw_app::NewOrderSingleView& view, const OverLongField& over_long,
+                                                        int64_t sequence_number, int64_t transact_time, const fix_common::SessionIdentity& session,
+                                                        ReportIsRepeat repeat) {
+    // Refused rather than cut short: each field of the book's entry holds a fixed number of characters. A ClOrdID cut
+    // short could make two orders one; any other field cut short would be reported back to the member as something it
+    // did not send. Info: the gateways refuse these first, so one reaching here is unusual, but it is the member's.
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineStateMachine: refusing NOS seq={} -- ClOrdID is {} characters, longer than the {} the book holds (session comp_id='{}'){}",
-               sequence_number, view.cl_ord_id.size(), fix_order_limits::max_cl_ord_id_length, session.comp_id_view(),
+               "MatchingEngineStateMachine: refusing NOS seq={} -- {} is {} characters, longer than the {} the book holds (session comp_id='{}'){}",
+               sequence_number, over_long.name, over_long.length, over_long.limit, session.comp_id_view(),
                repeat == ReportIsRepeat::yes ? " -- during catch-up, reported as a possible repeat" : "");
     outputs_.order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::RefusedTooLong, repeat, sequence_number, {});
 
     ReportIdentifiers::Buffer exec_id_buf{};
     const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, 0);
     std::array<char, 64> text_buf{};
-    const auto text_written =
-        fmt::format_to_n(text_buf.data(), text_buf.size(), "ClOrdID exceeds maximum length of {}", fix_order_limits::max_cl_ord_id_length);
+    const auto text_written = fmt::format_to_n(text_buf.data(), text_buf.size(), "{} exceeds maximum length of {}", over_long.name, over_long.limit);
 
     pubsub_itc_fw_app::ExecutionReport er{};
     er.order_id = "NONE";

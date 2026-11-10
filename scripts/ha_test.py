@@ -384,6 +384,9 @@ _BINARY_READY_TIMEOUT = 30.0
 # The longest ClOrdID the venue accepts: fix_order_limits::max_cl_ord_id_length, the size of the
 # matching engine's book key. Repeated here because the scenario must send one a character longer.
 _MAX_CL_ORD_ID_LENGTH = 64
+# The longest Symbol the venue holds, fix_order_limits::max_symbol_length: the longest Financial Instrument Short Name
+# (ISO 18774).
+_MAX_SYMBOL_LENGTH = 35
 
 # What each component that must refuse with high availability off is started as: its binary, and its installed
 # configuration file under etc/.
@@ -3824,11 +3827,11 @@ _SCENARIOS: list[Scenario] = [
     Scenario(
         number=58,
         short_name="engine_identifier_refusal",
-        description="The matching engine refuses an over-long ClOrdID instead of cutting it short, live and while catching up",
+        description="The matching engine refuses an over-long ClOrdID or Symbol instead of cutting it short, live and while catching up",
         expected_outcome=(
-            "two orders whose ClOrdIDs differ only beyond the 64th character, and a cancel naming one of them, are all "
-            "refused by the matching engine; after a restart the engine refuses them again while catching up, and the "
-            "catch-up still accounts for every record"
+            "two orders whose ClOrdIDs differ only beyond the 64th character, a cancel naming one of them, and an order whose "
+            "Symbol is longer than 35 characters, are all refused by the matching engine; after a restart the engine refuses "
+            "them again while catching up, and the catch-up still accounts for every record"
         ),
         orders_during_override=0,
         orders_after_override=0,
@@ -10844,15 +10847,25 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             engine = me_log.stem
             cancel_id = f"inj-cancel-{shared_prefix[:12]}"
+            # An order whose Symbol is one character longer than the venue holds (BUG-0241). Stored, it would be cut short,
+            # and reported back to the member as a symbol it did not send.
+            long_symbol_id = f"inj-symbol-{shared_prefix[:12]}"
+            long_symbol = "S" * (_MAX_SYMBOL_LENGTH + 1)
             live_from = _TEST_EVENTS.mark()
             inject("--cl-ord-id", first_id)
             inject("--cl-ord-id", second_id)
+            inject("--cl-ord-id", long_symbol_id, "--symbol", long_symbol)
             inject("--cl-ord-id", cancel_id, "--cancel", first_id)
 
             # The cancel was sent last, so once it is refused the orders before it have been dealt with.
             await_order_outcome(engine, cancel_id, "CancelRefusedTooLong", _RAW_REPLY_TIMEOUT, live_from)
             orders_refused = sum(settled_order_outcomes(engine, live_from, cl_ord_id, "RefusedTooLong", during_catch_up=False)
                                  for cl_ord_id in (first_id, second_id))
+            symbol_refused = order_outcomes(engine, live_from, long_symbol_id, "RefusedTooLong", during_catch_up=False)
+            if symbol_refused != 1 or order_outcomes(engine, live_from, long_symbol_id, "Accepted"):
+                die(f"engine refusal: the order with a Symbol of {_MAX_SYMBOL_LENGTH + 1} characters was refused {symbol_refused} "
+                    f"time(s), and must be refused once and never accepted: the engine holds {_MAX_SYMBOL_LENGTH}, and would "
+                    "otherwise store it cut short (BUG-0241).")
             cancels_refused = order_outcomes(engine, live_from, cancel_id, "CancelRefusedTooLong", during_catch_up=False)
             if orders_refused != 2 or cancels_refused != 1:
                 die(f"engine refusal: the matching engine refused {orders_refused} of the 2 over-long orders and "
@@ -10862,7 +10875,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                    for outcome in ("Accepted", "RefusedDuplicate")):
                 die("engine refusal: the matching engine accepted an over-long order, or treated the second as a "
                     "duplicate of the first, which means it cut the identifiers short (BUG-0101).")
-            log("  engine refusal: both over-long orders and the over-long cancel were refused by the matching engine -- OK")
+            log("  engine refusal: both over-long orders, the over-long cancel and the order with an over-long Symbol were refused "
+                "by the matching engine -- OK")
 
             # The same records again, while the restarted engine catches up. The refusals were not
             # published, so the engine is sent them again from the write-ahead log.
@@ -10879,10 +10893,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "counted (R-0101).")
             restarted_from = _TEST_EVENTS.since_introduction(engine)
             replayed_orders = sum(settled_order_outcomes(engine, restarted_from, cl_ord_id, "RefusedTooLong", during_catch_up=True)
-                                  for cl_ord_id in (first_id, second_id))
+                                  for cl_ord_id in (first_id, second_id, long_symbol_id))
             replayed_cancels = order_outcomes(engine, restarted_from, cancel_id, "CancelRefusedTooLong", during_catch_up=True)
-            if replayed_orders != 2 or replayed_cancels != 1:
-                die(f"engine refusal: while catching up, the engine refused {replayed_orders} of the 2 over-long orders "
+            if replayed_orders != 3 or replayed_cancels != 1:
+                die(f"engine refusal: while catching up, the engine refused {replayed_orders} of the 3 over-long orders "
                     f"and {replayed_cancels} of the 1 over-long cancel it replayed.")
             log("  engine refusal: after a restart the engine refused the same records again while catching up, and "
                 "the catch-up still accounted for every record -- OK")

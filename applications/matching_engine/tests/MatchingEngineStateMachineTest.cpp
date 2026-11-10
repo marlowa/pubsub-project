@@ -302,6 +302,47 @@ TEST_F(MatchingEngineStateMachineTest, RefusesAClOrdIdLongerThanTheBookHolds) {
     EXPECT_EQ(outputs_.outcomes.back().outcome, pubsub_itc_fw_app::OrderOutcomeKind::RefusedTooLong);
 }
 
+TEST_F(MatchingEngineStateMachineTest, KeepsASymbolOfTheLongestLengthWhole) {
+    // 35 characters, the longest Financial Instrument Short Name (ISO 18774).
+    const std::string longest(fix_order_limits::max_symbol_length, 'S');
+    pubsub_itc_fw_app::NewOrderSingleView order = new_order("ORD-1");
+    order.symbol = longest;
+    machine_.apply_new_order(order, 1, taken_at, trading_day, member, CommandSource::live);
+
+    const OrderEntry* entry = book_.find(OrderKey::make(member, "ORD-1"));
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->get_symbol(), longest) << "the symbol is stored whole, not cut short";
+}
+
+TEST_F(MatchingEngineStateMachineTest, RefusesASymbolLongerThanTheBookHolds) {
+    const std::string too_long(fix_order_limits::max_symbol_length + 1, 'S');
+    pubsub_itc_fw_app::NewOrderSingleView order = new_order("ORD-1");
+    order.symbol = too_long;
+    machine_.apply_new_order(order, 1, taken_at, trading_day, member, CommandSource::live);
+
+    ASSERT_EQ(outputs_.reports.size(), 1U);
+    EXPECT_EQ(outputs_.reports[0].exec_type, pubsub_itc_fw_app::ExecType::Rejected);
+    EXPECT_EQ(outputs_.reports[0].text, "Symbol exceeds maximum length of " + std::to_string(fix_order_limits::max_symbol_length));
+    EXPECT_EQ(outputs_.reports[0].symbol, too_long) << "the refusal echoes what the member sent";
+    EXPECT_EQ(book_.size(), 0U);
+    EXPECT_EQ(outputs_.outcomes.back().outcome, pubsub_itc_fw_app::OrderOutcomeKind::RefusedTooLong);
+}
+
+TEST_F(MatchingEngineStateMachineTest, RefusesAQuantityOrPriceLongerThanTheBookHolds) {
+    const std::string too_long(fix_order_limits::max_order_qty_length + 1, '1');
+    machine_.apply_new_order(new_order("ORD-1", too_long), 1, taken_at, trading_day, member, CommandSource::live);
+    ASSERT_EQ(outputs_.reports.size(), 1U);
+    EXPECT_EQ(outputs_.reports[0].text, "OrderQty exceeds maximum length of " + std::to_string(fix_order_limits::max_order_qty_length));
+
+    pubsub_itc_fw_app::NewOrderSingleView order = new_order("ORD-2");
+    const std::string long_price(fix_order_limits::max_price_length + 1, '9');
+    order.price = long_price;
+    machine_.apply_new_order(order, 2, taken_at, trading_day, member, CommandSource::live);
+    ASSERT_EQ(outputs_.reports.size(), 2U);
+    EXPECT_EQ(outputs_.reports[1].text, "Price exceeds maximum length of " + std::to_string(fix_order_limits::max_price_length));
+    EXPECT_EQ(book_.size(), 0U);
+}
+
 TEST_F(MatchingEngineStateMachineTest, RefusesEveryNewOrderWhileHalted) {
     pubsub_itc_fw_app::TechnicalEventView halt{};
     halt.phase = pubsub_itc_fw_app::TradingPhase::Open;

@@ -365,20 +365,32 @@ class MatchingEngineStateMachine {
      */
     void after_failure(int64_t sequence_number, CommandSource source, const char* what, const std::function<void(ReportIdentifiers::Buffer&)>& send_rejection);
 
+    /// A field of a new order longer than the book's entry holds: its FIX name, its length, and the limit. No name when
+    /// every field fits.
+    struct OverLongField {
+        const char* name{nullptr};
+        size_t length{0};
+        size_t limit{0};
+    };
+
+    /// The first field of @p view longer than the book's entry holds: ClOrdID, Symbol, OrderQty or Price, in that order.
+    [[nodiscard]] static OverLongField over_long_field(const pubsub_itc_fw_app::NewOrderSingleView& view);
+
     /**
-     * @brief Refuses a new order whose ClOrdID is longer than the book's key holds.
+     * @brief Refuses a new order with a field longer than the book's entry holds, rather than storing it cut short.
      *
-     * Sends a rejected report naming the limit. During a catch-up the report is marked as a
+     * Sends a rejected report naming the field and the limit. During a catch-up the report is marked as a
      * possible repeat, as every report a catch-up sends is (R-0122).
      *
      * @param[in] view            The order.
+     * @param[in] over_long       The field that is too long, from over_long_field.
      * @param[in] sequence_number Its sequence number.
      * @param[in] transact_time   The time the venue took it.
      * @param[in] session         The session that placed it.
      * @param[in] repeat          Whether the report may repeat one an earlier engine sent.
      */
-    void refuse_over_long_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
-                                const fix_common::SessionIdentity& session, ReportIsRepeat repeat);
+    void refuse_over_long_order(const pubsub_itc_fw_app::NewOrderSingleView& view, const OverLongField& over_long, int64_t sequence_number,
+                                int64_t transact_time, const fix_common::SessionIdentity& session, ReportIsRepeat repeat);
 
     /**
      * @brief Refuses a request to cancel whose ClOrdID or OrigClOrdID is longer than the book's key holds.

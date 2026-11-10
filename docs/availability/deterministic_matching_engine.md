@@ -292,7 +292,7 @@ cancels its book or halts on its own initiative any more. The decisions that are
   number, from a random order, took 0.58 s for 10 million, 3.1 s for 50 million and 6.6 s for 100 million, holding
   16 bytes for each open order, 1.5 GB at 100 million, while it lasts. Visiting every order of a book recovered from
   its region, in the order placed, took 0.18 s for 2 million orders and 1.0 s for 10 million. A region of 100 million
-  records is 24.8 GB, more than this machine can hold in memory beside everything else, so the whole visit was not
+  records is 26.4 GB, more than this machine can hold in memory beside everything else, so the whole visit was not
   measured at that size; by the 10 million figure it is about 10 seconds. A cancel of every order still takes its
   time from the engine's clock: what triggers it is a decision one engine takes alone, which step 4 makes a command
   in the WAL, with a time of its own.

@@ -821,7 +821,7 @@ fix_tls_cert                          = "fix_gateway.crt"
 fix_tls_key                           = "fix_gateway.key"
 fix_capture_file                      = "fix_capture.bin"
 fix_capture_ring_bytes                = 67108864
-fix_limits_max_symbol_length          = 32
+fix_limits_max_symbol_length          = 35
 fix_limits_max_order_qty_length       = 24
 command_queue_pool_initial_slabs            = 1
 command_queue_pool_objects_per_slab         = 1000000
@@ -854,7 +854,7 @@ fix_tls_cert                          = "fix_gateway.crt"
 fix_tls_key                           = "fix_gateway.key"
 fix_capture_file                      = "fix_capture.bin"
 fix_capture_ring_bytes                = 67108864
-fix_limits_max_symbol_length          = 32
+fix_limits_max_symbol_length          = 35
 fix_limits_max_order_qty_length       = 24
 command_queue_pool_initial_slabs            = 1
 command_queue_pool_objects_per_slab         = 1000000
@@ -887,7 +887,7 @@ command_queue_pool_objects_per_slab         = 4096
 event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 80000
 # The longest Symbol and OrderQty a member's command may carry; the same as the FIX gateway's.
-order_limits_max_symbol_length = 32
+order_limits_max_symbol_length = 35
 order_limits_max_order_qty_length = 24
 
 [binary_order_gateway_b]
@@ -916,7 +916,7 @@ command_queue_pool_objects_per_slab         = 4096
 event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 80000
 # The longest Symbol and OrderQty a member's command may carry; the same as the FIX gateway's.
-order_limits_max_symbol_length = 32
+order_limits_max_symbol_length = 35
 order_limits_max_order_qty_length = 24
 
 [sequencer_primary]
