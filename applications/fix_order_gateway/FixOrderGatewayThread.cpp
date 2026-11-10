@@ -2688,7 +2688,9 @@ void FixOrderGatewayThread::arm_grace_timer() {
     // past asks for the shortest timer the reactor will honour rather than a negative one.
     const auto now = std::chrono::steady_clock::now();
     const auto due = grace_sessions_.front().cancel_due;
-    const auto delay = due > now ? std::chrono::duration_cast<std::chrono::milliseconds>(due - now) : std::chrono::milliseconds{1};
+    // Rounded up, not down: a timer that fires before the earliest deadline finds nothing due, and is armed again for what
+    // remains (docs/bug_list.md, BUG-0239).
+    const auto delay = due > now ? std::chrono::ceil<std::chrono::milliseconds>(due - now) : std::chrono::milliseconds{1};
     grace_timer_id_ = start_one_off_timer(delay);
     grace_timer_active_ = true;
 }

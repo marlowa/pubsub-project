@@ -195,7 +195,7 @@ placed with the rest; BUG-0065's remainder goes with the trading phases. BUG-009
 
 ## 6. The framework: reactor, timers, allocators and threads
 
-Eleven entries. None was touched by phases 3 to 11, which moved the venue's machinery into the library
+Twelve entries. None was touched by phases 3 to 11, which moved the venue's machinery into the library
 but did not change these parts of it.
 
 | Entry | Judgement | Evidence | What is left |
@@ -208,6 +208,7 @@ but did not change these parts of it.
 | [BUG-0104](bug_list.md#bug_0104): a connection whose reads were paused can stay stalled after they resume | **Investigation** | Unchanged; the kernel rule is not established | As the entry describes; related to BUG-0184 and best done with it |
 | [BUG-0087](bug_list.md#bug_0087): whether the hot path allocates cannot be established on demand | **New requirement**, a tool | Not built: no counting interposer in `scripts/` | The tool; then BUG-0131, BUG-0127 and BUG-0072 can each be shown fixed by a count rather than by reading |
 | [BUG-0166](bug_list.md#bug_0166): the reactor writes a Warning for every send to a connection that has gone | **Defect** | Unchanged: `Reactor::process_control_commands` logs "unknown connection id ... for SendPdu" for each send | One Warning per connection, with a count |
+| [BUG-0240](bug_list.md#bug_0240): a recurring timer asked for with no interval never fires | **Defect**, found 10 November 2026 fixing BUG-0239 | Unchanged: `TimerHandler` gives such a timer a timerfd time of zero, which disarms it | Refuse it where it is asked for, after checking every caller whose interval comes from configuration |
 | [BUG-0161](bug_list.md#bug_0161): the framework names the venue's ideas in how it classifies a send | **Defect**, of naming | Unchanged: `MemberIsWaitingFlag.hpp` is still in the framework | The neutral names the entry suggests |
 | [BUG-0177](bug_list.md#bug_0177): the C++ generated from the DSL does not compile for a list of enums | **Defect**, in the DSL compiler | Unchanged in `python/dsl/generator_cpp.py` | As the entry describes |
 | [BUG-0179](bug_list.md#bug_0179): the Java generated from the DSL decodes an unlisted enum value as null | **Defect**, in the DSL compiler | Unchanged: `generator_java.py` still decodes through `fromValue`, which returns `null` for a value it does not know | As the entry describes |

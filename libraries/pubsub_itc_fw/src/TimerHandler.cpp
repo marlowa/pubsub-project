@@ -69,6 +69,11 @@ TimerHandler::TimerHandler(const Timer& timer, Reactor& reactor) : timer_(timer)
     itimerspec spec{};
     spec.it_value.tv_sec = ns.count() / 1'000'000'000;
     spec.it_value.tv_nsec = ns.count() % 1'000'000'000;
+    // A timerfd given a time of zero is disarmed, and never fires. A one-off timer asked for with no interval, or with
+    // one shorter than a nanosecond, is a timer that is already due, so it fires at once instead.
+    if (spec.it_value.tv_sec == 0 && spec.it_value.tv_nsec == 0 && timer.get_type() != TimerType(TimerType::Recurring)) {
+        spec.it_value.tv_nsec = 1;
+    }
 
     if (timer.get_type() == TimerType(TimerType::Recurring)) {
         spec.it_interval = spec.it_value;

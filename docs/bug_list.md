@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 238 |
-| Open | 56 (35 defects, 21 tasks) |
-| Closed | 182 |
-| Next id | BUG-0239 |
+| Bugs recorded | 240 |
+| Open | 57 (36 defects, 21 tasks) |
+| Closed | 183 |
+| Next id | BUG-0241 |
 
 ## Open bugs by severity
 
-10 high, 34 medium, 12 low.
+10 high, 34 medium, 13 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -69,6 +69,7 @@
 | [BUG-0215](#bug_0215) | low | defect | `perf_run.py` fails every run of the trading-day profile, because the profile leaves more orders resting than the matching engine's region holds |
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0227](#bug_0227) | low | defect | An operator whose request to lift the halt cannot be written is told that reports are outstanding |
+| [BUG-0240](#bug_0240) | low | defect | A recurring timer asked for with no interval never fires, and nothing says so |
 
 ---
 
@@ -164,6 +165,23 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0240: A recurring timer asked for with no interval never fires, and nothing says so {#bug_0240}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-10 |
+| Recorded | 2026-11-10 |
+| How | Fixing [BUG-0239](#bug_0239), the same cause for a one-off timer |
+| Impact | A component that starts a recurring timer from a configured interval of zero gets a timer that never fires, with no Warning or Error. Not known to happen in the venue; not checked |
+
+**What happens.** `TimerHandler` sets the timerfd's first expiry and its interval from the timer's interval. An interval of
+zero gives a time of zero, which disarms the timerfd. [BUG-0239](#bug_0239) made a one-off timer of no interval fire at once;
+for a recurring timer that would mean firing continuously, so it was left as it is.
+
+**What is wanted.** A recurring timer of no interval refused where it is asked for, with `PreconditionAssertion` on the calling
+thread as for other misuse of the framework, after checking every caller whose interval comes from configuration.
 
 ### BUG-0236: The COMPID editor writes its administrators' file readable by every account on the host {#bug_0236}
 
@@ -2371,6 +2389,16 @@ subsection, which now cites this entry.
 
 **Designed 2026-11-09:** [cancel_on_disconnect_where_the_orders_are.md](availability/cancel_on_disconnect_where_the_orders_are.md). All three decisions agreed with Andrew on 9 November 2026: the leading sequencer holds the grace period and writes `CancelSessionOrders`; a gateway's death ends every session it held without a clean Logout; one command for each session.
 
+
+**Found 2026-11-10, writing the scenarios this entry's design asks for: the same loss without any restart.** A member
+that drops and reconnects within its grace period keeps its orders, but the gateway does not attach them to the new
+session: `reclaim_grace_session`, in both gateways, releases its record of them. When that session later drops, the
+gateway believes it has no open orders and cancels nothing, and logs no disconnection with orders. Seen with a scenario
+written for this entry's design, run with the gateway's restart left out on purpose: 1,000 orders rested, the member reconnected within 8 seconds and
+then dropped, and none was cancelled. The comment in `reclaim_grace_session` gives the reason as the matching engine
+keying an order by the connection it arrived on, so that the new session could not cancel it; the engine keys an order by
+the session's identity, its comp id and protocol (`OrderKey`), so that reason no longer holds. The remedy is the one this
+entry's design gives, the venue carrying the instruction out where the orders are.
 ### BUG-0091: A member's standing instructions die with the gateway that received them {#bug_0091}
 
 | | |
@@ -2663,6 +2691,33 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0239: A member's orders are never cancelled when its cancel-on-disconnect grace period runs out, because the gateway's timer is armed again for no time at all and never fires {#bug_0239}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-11-10 |
+| Recorded | 2026-11-10 |
+| Fixed | 2026-11-10 -- a one-off timer of no interval now fires at once: `TimerHandler` gives the timerfd a time of one nanosecond rather than zero, which would disarm it. Both gateways round the grace timer's delay up rather than down, so it no longer fires before the deadline. `TimerTest.AOneOffTimerOfNoIntervalFiresAtOnce` fails with the framework's change taken out, and passes with it. Scenario 109, the member dropping for good with its gateway up and a grace period of 8 seconds, cancelled 0 of 1,000 resting orders against the code as it was, and cancels all 1,000 after the grace period, and none before, with the fix. A recurring timer of no interval still never fires; that is [BUG-0240](#bug_0240) |
+| How | Writing the scenarios for [BUG-0090](#bug_0090), and checking that they could pass: with the member's gateway left up throughout, its orders were still not cancelled |
+| Impact | A member that asked for its resting orders to be cancelled some seconds after its connection ends keeps them on the book for the rest of the day, and nothing says so. Only a grace period of zero, which cancels at once, works |
+
+**What happens.** When a session with orders drops, both gateways hold its orders for the grace period and arm a
+one-off timer for the moment it runs out (`arm_grace_timer`). The delay is rounded down to whole milliseconds, so the timer
+fires up to a millisecond before the session's deadline. `expire_grace_sessions` then finds nothing due yet and arms the
+timer again for what remains, which, rounded down again, is zero. The framework sets a one-off timer of zero interval as a
+timerfd with a time of zero, which is a disarmed timerfd, and it never fires. Seen with the gateway logging at Debug: the
+grace timer fired 8 seconds after the drop, the gateway at once armed another, and that one never fired; no "grace period
+expired" line was ever logged. Scenario 19 holds its orders for 90 seconds and never waits for the end, and scenario 50 uses
+a grace period of zero, so no scenario reached this.
+
+**What is wanted.** A one-off timer of no interval fires at once, since it is already due; and the gateways round the delay
+up rather than down. Scenario 109: the member drops and does not come back, with its gateway up throughout, and its orders
+must be cancelled once the grace period has run out, and none before. Run against the code as it is, 0 of 1,000 resting
+orders were cancelled 28 seconds after the member dropped with a grace period of 8.
+
+**Principles.** V6 in spirit: an instruction the venue accepted from a member is not carried out, and nothing says so.
 
 ### BUG-0237: After losing a matching engine, the sequencer waits 2 seconds before connecting to it again, which is most of a supervised restart {#bug_0237}
 

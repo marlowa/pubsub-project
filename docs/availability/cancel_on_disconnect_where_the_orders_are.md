@@ -12,6 +12,8 @@ wait first (the grace period). Today the gateway carries this out from its own v
 - **a restarted gateway** holds an empty view for every order placed before the restart, so when the member later
   disconnects it cancels nothing, and logs nothing ([BUG-0090](../bug_list.md#bug_0090));
 - **a gateway that dies** carries out nothing at all for the sessions it held, which is R-0113's case;
+- **a member that reconnects within its grace period** keeps its orders, but the gateway releases its record of them
+  rather than attaching them to the new session, so when that session drops it cancels none of them;
 - **the instructions themselves** are held only by the gateway that received them, so a restarted gateway applies the
   venue's default instead of what the member asked for ([BUG-0091](../bug_list.md#bug_0091), R-0103).
 

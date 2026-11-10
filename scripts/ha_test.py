@@ -257,6 +257,9 @@ _CANCEL_GRACE_HOLD_TIMEOUT  = 10.0
 # The grace period scenario 19 provisions for FIX8_COMP_ID before running, deliberately
 # different from the gateway's own configured default so the two cannot be confused.
 _PROVISIONED_GRACE_PERIOD_SECONDS = 90
+# The grace period of the scenarios in which cancel on disconnect is carried out after the member's gateway has gone:
+# longer than the gateway takes to restart and the member to log on again, and short enough to wait for.
+_GATEWAY_GONE_GRACE_PERIOD_SECONDS = 8
 # How long to wait for the gateway's cancels to be answered one way or the other.
 _OPEN_ORDER_CANCEL_TIMEOUT = 45.0
 _CANCEL_GRACE_QUIET_PERIOD  = 5.0
@@ -1066,6 +1069,11 @@ class Scenario(NamedTuple):
     # run_scenario's "cancel grace" block. Kills nothing -- the gateway must survive, or
     # there is no process left to do the cancelling and the test proves nothing.
     assert_cancel_grace: bool = False
+    # Cancel on disconnect carried out after the gateway that received the member's instructions has gone (BUG-0090,
+    # BUG-0091, R-0113): "restarted", the gateway is restarted and the member reconnects and then drops; "killed", the
+    # gateway is killed and the member does not come back; "kept", as "restarted" for a member that asked to keep its
+    # orders; "dropped", the gateway stays up and the member drops and does not come back. Empty for every other scenario.
+    cancel_on_disconnect_after_gateway: str = ""
     # When True, assert that the orders a member had open before the matching engine was
     # restarted are still open afterwards -- by dropping the session and counting how many of
     # the cancels the gateway then sends are refused as orders the venue does not recognise.
@@ -4137,6 +4145,23 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
+    # 109 -- cancel on disconnect is carried out when the grace period runs out, with the member's gateway up throughout.
+    #
+    # BUG-0239. The member asks for its orders to be cancelled eight seconds after its connection ends, drops, and does
+    # not come back. Every resting order must be cancelled once the grace period has run out, and none before. The timer
+    # that ends the grace period can fire a fraction of a millisecond early, and was then armed again for no time at all,
+    # which never fired, so nothing was ever cancelled.
+    Scenario(
+        number=109,
+        short_name="cancel_on_disconnect_after_grace_period",
+        description="Cancel on disconnect is carried out when the grace period runs out, the member's gateway up throughout",
+        expected_outcome="every resting order of the member is cancelled once the grace period after it dropped has run out, and none before",
+        cancel_on_disconnect_after_gateway="dropped",
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 62 -- an old leader that rejoins discards the records its new leader does not have.
     #
     # The primary sequencer is started with libblock_sends_to_ports.so preloaded. Once the flag file
@@ -5414,8 +5439,8 @@ def preflight(prefix: Path) -> None:
     preflight_ports(prefix)
 
 
-def provision_cancel_on_disconnect(comp_id: str, grace_period_seconds: int) -> None:
-    """Set a comp id's cancel-on-disconnect grace period in the database.
+def provision_cancel_on_disconnect(comp_id: str, grace_period_seconds: int, enabled: bool = True) -> None:
+    """Set a comp id's cancel-on-disconnect grace period in the database, and whether it is wanted at all.
 
     Uses psql for the same reason export_credentials.py does: the harness has no database
     driver dependency and is not the place to introduce one.  The credentials the auth
@@ -5424,7 +5449,7 @@ def provision_cancel_on_disconnect(comp_id: str, grace_period_seconds: int) -> N
     """
     statement = (
         f"UPDATE pubsub_comp_id "
-        f"SET cancel_on_disconnect_enabled = true, "
+        f"SET cancel_on_disconnect_enabled = {'true' if enabled else 'false'}, "
         f"    cancel_on_disconnect_grace_period_seconds = {grace_period_seconds} "
         f"WHERE comp_id = '{comp_id}'"
     )
@@ -5438,7 +5463,7 @@ def provision_cancel_on_disconnect(comp_id: str, grace_period_seconds: int) -> N
     if result.returncode != 0:
         die(f"could not provision cancel-on-disconnect for '{comp_id}' "
             f"(is the database running and migrated?):\n{result.stderr.strip()}")
-    log(f"  {comp_id}: cancel-on-disconnect grace period set to {grace_period_seconds}s")
+    log(f"  {comp_id}: cancel-on-disconnect {'wanted' if enabled else 'not wanted'}, grace period set to {grace_period_seconds}s")
 
 
 def provision_throttle_limits(comp_id: str, place: int, amend: int, cancel: int) -> None:
@@ -8136,6 +8161,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.assert_cancel_grace:
             log("=== Provisioning cancel-on-disconnect for the test comp id ===")
             provision_cancel_on_disconnect(FIX8_COMP_ID, _PROVISIONED_GRACE_PERIOD_SECONDS)
+        elif scenario.cancel_on_disconnect_after_gateway:
+            log("=== Provisioning cancel-on-disconnect with a short grace period ===")
+            provision_cancel_on_disconnect(FIX8_COMP_ID, _GATEWAY_GONE_GRACE_PERIOD_SECONDS,
+                                           enabled=scenario.cancel_on_disconnect_after_gateway != "kept")
         elif scenario.assert_open_orders_survive:
             # Zero, not the default: the question is what the engine does with the cancels,
             # and a grace period only delays asking it. A value left behind in the database
@@ -8238,7 +8267,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
         member_outcomes = (scenario.assert_kept_reports_forwarded or scenario.assert_logged_commands_reach_engine
                            or scenario.assert_orders_during_change_answered or scenario.assert_engine_holds_reports_without_connection
                            or scenario.assert_open_orders_survive or scenario.assert_inflight_recovery
-                           or scenario.assert_unbound_reports_delivered or scenario.assert_restarted_engine_follows_the_wal)
+                           or scenario.assert_unbound_reports_delivered or scenario.assert_restarted_engine_follows_the_wal
+                           or bool(scenario.cancel_on_disconnect_after_gateway))
         _REPORT_ORDERS_NOW = _REPORT_ORDERS_OF + ((FIX8_COMP_ID,) if member_outcomes else ())
         # The scenarios that check a refused command never reached the matching engine read the engine's outcomes for the
         # comp ids that send it.
@@ -9291,6 +9321,78 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     f"the engine cancelled {cancelled} and refused none -- the other cancels never reached it, so the "
                     "question was not asked of every order")
             log(f"  the engine cancelled all {cancelled} order(s) the gateway believed open and refused none -- OK")
+
+        # ── Cancel on disconnect after the member's gateway has gone ─────────
+        # BUG-0090, BUG-0091 and R-0113. The gateway that received the member's instructions is restarted or killed, so it
+        # can no longer carry them out from its own view of the member's orders. The member's baseline orders rest on the
+        # book. The engine's outcomes for the member's comp id are the record of what was cancelled, since the member has
+        # gone and the gateway may have too. Each order cancelled must be cancelled after the grace period, not before.
+        if scenario.cancel_on_disconnect_after_gateway:
+            mode = scenario.cancel_on_disconnect_after_gateway
+            engine = me_log.stem
+            grace = _GATEWAY_GONE_GRACE_PERIOD_SECONDS
+            expected = 0 if mode == "kept" else before_total
+            cancels_from = _TEST_EVENTS.mark()
+            if mode == "dropped":
+                log("=== The member drops and does not come back; its gateway stays up ===")
+                stop_f8test(f8proc)
+                f8proc = None
+            elif mode == "killed":
+                log("=== Killing the member's gateway; the member does not come back ===")
+                gateway = proc_by_name.get("fix_order_gateway_a")
+                if gateway is None or gateway.poll() is not None:
+                    die("cancel on disconnect: fix_order_gateway_a was not running, so there was nothing to kill")
+                gateway.kill()
+                gateway.wait()
+                if Path(f"/proc/{gateway.pid}").exists():
+                    die(f"fix_order_gateway_a (PID {gateway.pid}) is still running after SIGKILL")
+                log(f"  fix_order_gateway_a (PID {gateway.pid}) confirmed dead")
+                stop_f8test(f8proc)
+                f8proc = None
+            else:
+                log(f"=== Restarting the member's gateway, then the member logs on again and drops ({mode}) ===")
+                do_restart_step(RestartStep(proc_name="fix_order_gateway_a", ready_log_name="fix_order_gateway_a.log",
+                                            ready=expect_started("fix_order_gateway_a"), ready_timeout=30.0, resets_me_counter=False,
+                                            settle_secs=_RAW_CLIENT_SETTLE),
+                                proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
+                stop_f8test(f8proc)
+                f8proc = send_burst(0, gw_log)
+                time.sleep(3.0)
+                if outcome_count(engine, cancels_from, "Cancelled") != 0:
+                    die("cancel on disconnect: the member's orders were cancelled while it was logged on again within the grace "
+                        "period after its gateway restarted")
+                cancels_from = _TEST_EVENTS.mark()
+                log("  the member logged on again within the grace period and kept its orders; now it drops")
+                stop_f8test(f8proc)
+                f8proc = None
+            dropped_at = time.monotonic()
+
+            # Nothing may be cancelled before the grace period runs out.
+            time.sleep(max(0.0, grace - 2.0))
+            early = outcome_count(engine, cancels_from, "Cancelled")
+            if early:
+                die(f"cancel on disconnect: {early} order(s) were cancelled within {grace - 2}s of the member going, inside its "
+                    f"grace period of {grace}s")
+            deadline = dropped_at + grace + 20.0
+            cancelled = 0
+            while time.monotonic() < deadline:
+                cancelled = outcome_count(engine, cancels_from, "Cancelled")
+                if expected and cancelled >= expected:
+                    break
+                _TEST_EVENTS.pump(0.5)
+            if not _TEST_EVENTS.settle(engine):
+                die(f"cancel on disconnect: {engine} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]})")
+            cancelled = outcome_count(engine, cancels_from, "Cancelled")
+            if cancelled != expected:
+                if mode == "kept":
+                    die(f"cancel on disconnect: the member asked to keep its orders, and {cancelled} were cancelled after its "
+                        "gateway restarted and it dropped (BUG-0091)")
+                gone = "it dropped, with its gateway up" if mode == "dropped" else f"its gateway was {mode}"
+                die(f"cancel on disconnect: the member asked for its orders to be cancelled {grace}s after it goes; {gone}, "
+                    f"and {grace + 20}s after it went the engine had cancelled {cancelled} of its {expected} resting "
+                    f"order(s) ({ {'restarted': 'BUG-0090', 'killed': 'R-0113', 'dropped': 'BUG-0239'}[mode] })")
+            log(f"  cancel on disconnect, {mode}: {cancelled} of the member's orders cancelled after the grace period, "
+                f"as asked -- OK")
 
         # ── Cancel-on-disconnect grace period (step 3b) ───────────────────────
         # The gateway is alive throughout; only the client session goes away. Everything

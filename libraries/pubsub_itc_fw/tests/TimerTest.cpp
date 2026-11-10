@@ -144,6 +144,40 @@ class OneOffTimerThread : public ApplicationThread {
     void on_itc_message(const EventMessage&) override {}
 };
 
+// Starts a one-off timer of no interval in on_app_ready_event: a timer that is already due, as a caller arming a timer
+// for a deadline that has just arrived asks for.
+class ZeroIntervalTimerThread : public ApplicationThread {
+  public:
+    ZeroIntervalTimerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "ZeroIntervalTimerThread", ThreadID{1}, make_queue_config(), make_allocator_config("ZeroPool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    std::atomic<int> fire_count{0};
+
+  protected:
+    void on_app_ready_event() override {
+        static_cast<void>(start_one_off_timer(std::chrono::microseconds{0}));
+    }
+
+    void on_timer_event(TimerID) override {
+        fire_count.fetch_add(1, std::memory_order_release);
+    }
+
+    void on_itc_message(const EventMessage&) override {}
+};
+
+// A one-off timer of no interval fires, once and at once. A timerfd given a time of zero is disarmed, so such a timer
+// used never to fire, and a caller that rounded a remaining time down to zero waited for ever (BUG-0239).
+TEST_F(TimerTest, AOneOffTimerOfNoIntervalFiresAtOnce) {
+    auto t = ApplicationThread::create<ZeroIntervalTimerThread>(logger_->logger, *reactor_);
+    reactor_->register_thread(t);
+    start_reactor();
+
+    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= 1; }, 1000)) << "A one-off timer of no interval never fired";
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(t->fire_count.load(std::memory_order_acquire), 1);
+}
+
 TEST_F(TimerTest, OneOffTimerFiresExactlyOnce) {
     auto t = ApplicationThread::create<OneOffTimerThread>(logger_->logger, *reactor_);
     reactor_->register_thread(t);
