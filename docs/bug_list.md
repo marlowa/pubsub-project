@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 238 |
-| Open | 58 (37 defects, 21 tasks) |
-| Closed | 180 |
+| Open | 57 (36 defects, 21 tasks) |
+| Closed | 181 |
 | Next id | BUG-0239 |
 
 ## Open bugs by severity
 
-10 high, 36 medium, 12 low.
+10 high, 35 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -53,7 +53,6 @@
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
 | [BUG-0203](#bug_0203) | medium | defect | The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together |
 | [BUG-0209](#bug_0209) | medium | task | No scenario reaches the halt when a matching engine cannot account for the orders the venue holds |
-| [BUG-0211](#bug_0211) | medium | defect | Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of |
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0235](#bug_0235) | medium | defect | Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later |
@@ -408,32 +407,6 @@ messages in that time and dropped none.
 
 **What is wanted.** A Rejected order is not put on the list of resting orders, and an OrderCancelReject is counted
 as the answer to a cancel, so that INCOMPLETE means a message that got no answer at all.
-
-### BUG-0211: Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of {#bug_0211}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-26 |
-| Recorded | 2026-10-26 |
-| How | Reading the code while making a region that cannot be used rebuild from the WAL, for step 4 of phase 7. Not yet reproduced |
-| Impact | Members hold orders the engine does not, and are sent refusals for orders they were told are open; or the reverse |
-
-**What happens.** A region whose header gives a different number of records from the one the engine is configured
-with is refused as unusable, and the engine rebuilds its book from the WAL, from the first record, with the
-configured capacity ([BUG-0208](#bug_0208)). An order arriving when the region is full is refused, so a replay with a
-smaller capacity, or one too small for the most orders open at any moment of the day, refuses orders the engine
-accepted at the time. The engine then holds a book its members were not told of, and the replay sends them, marked as
-possible repeats, refusals of orders they were told are open. [open_order_checkpoint.md](durability/open_order_checkpoint.md)
-says to change the capacity only between trading days; nothing enforces it.
-
-**What is wanted.** A region refused only because its capacity differs is told apart from a damaged one, from its
-header, which is intact; the engine then refuses to rebuild with a capacity smaller than the region's, and says so,
-rather than holding a different book.
-
-**Principles.** V8: every report the matching engine produces reaches the member, and says what the venue did.
-
-**Designed 2026-11-09:** [region_capacity_changed_during_a_day.md](availability/region_capacity_changed_during_a_day.md). Option A agreed with Andrew on 9 November 2026: the engine refuses to start whenever its region's capacity differs from its configuration.
 
 ### BUG-0209: No scenario reaches the halt when a matching engine cannot account for the orders the venue holds {#bug_0209}
 
@@ -814,7 +787,7 @@ The waiting reports' storage and its limits are to be written up and agreed befo
 
 **Principles.** F5 and F6 in `docs/design_principles.md`.
 
-**Designed 2026-11-09:** [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md). Both decisions agreed with Andrew on 9 November 2026: reading the engines' report connections pauses while the ring of waiting reports is full, and the venue is built for 2,000,000 open orders.
+**Designed 2026-11-09:** [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md). Both decisions agreed with Andrew on 9 November 2026: reading the engines' report connections pauses while the ring of waiting reports is full, and the session map is sized from each environment's figure for open orders, `order_book_region_capacity`.
 
 ### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
 
@@ -1454,7 +1427,7 @@ Related: [BUG-0048](#bug_0048), for the memory figures this came out of, and
 [BUG-0028](#bug_0028), which is the same class of problem in the order book -- growth sized by
 doubling rather than by a stated expectation.
 
-**2026-11-09:** the figure this entry needs, how many orders may be open at once in the venue, is decided as 2,000,000, with Andrew, in decision 2 of [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md), the figure the matching engine's region is already configured for. The gateways' pools and the sequencer's map are to be sized from it.
+**2026-11-09:** the figure this entry needs, how many orders may be open at once in the venue, is decided, with Andrew, in decision 2 of [sequencer_order_path_without_the_heap.md](venue/sequencer_order_path_without_the_heap.md): each environment's `order_book_region_capacity`, the figure its matching engine's region is sized by (2,000,000 in development, 100,000,000 in production). The gateways' pools and the sequencer's map are to be sized from it.
 
 ### BUG-0073: The placeholder environments carry settings nobody chose {#bug_0073}
 
@@ -2705,6 +2678,33 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0211: Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of {#bug_0211}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-26 |
+| Recorded | 2026-10-26 |
+| Fixed | 2026-11-09 -- a matching engine whose region was created with a different capacity from `[order_book] region_capacity`, smaller or larger, refuses to start, with an Error naming the region's file, the capacity it was created with and the capacity configured, and saying to set the capacity back for the rest of the trading day. `MappedSlotStore::open` now reads an existing file's header before it changes anything, and throws `StoreCapacityDiffersException` when the store is intact and only its slot count differs; a damaged region is still moved aside and the book rebuilt from the WAL. Reading the header first also fixes a defect found while building this: the store set the file's length to the configured capacity before checking the header, so a region opened with a smaller capacity was cut short, losing the records past the new end, before it was refused, and the copy kept aside as unusable was damaged too. Three unit tests in `MappedSlotStoreTest`, each made to fail on purpose: setting the length first failed the test that the refused file is unchanged; refusing a different slot count as damage failed two; checking the slot count before the other fields failed the test that a store which is not intact is not reported as only its capacity differing. Scenario 104 kills the following engine, starts it by hand with its capacity halved and then doubled, and requires a refusal each time with the region unchanged to the byte, the other engine keeping the lead, and the engine started as configured following; with the engine's refusal removed on purpose it failed. All 104 `ha_test.py` scenarios pass, with the WALs cleared first |
+| How | Reading the code while making a region that cannot be used rebuild from the WAL, for step 4 of phase 7. Not yet reproduced |
+| Impact | Members hold orders the engine does not, and are sent refusals for orders they were told are open; or the reverse |
+
+**What happens.** A region whose header gives a different number of records from the one the engine is configured
+with is refused as unusable, and the engine rebuilds its book from the WAL, from the first record, with the
+configured capacity ([BUG-0208](#bug_0208)). An order arriving when the region is full is refused, so a replay with a
+smaller capacity, or one too small for the most orders open at any moment of the day, refuses orders the engine
+accepted at the time. The engine then holds a book its members were not told of, and the replay sends them, marked as
+possible repeats, refusals of orders they were told are open. [open_order_checkpoint.md](durability/open_order_checkpoint.md)
+says to change the capacity only between trading days; nothing enforces it.
+
+**What is wanted.** A region refused only because its capacity differs is told apart from a damaged one, from its
+header, which is intact; the engine then refuses to rebuild with a capacity smaller than the region's, and says so,
+rather than holding a different book.
+
+**Principles.** V8: every report the matching engine produces reaches the member, and says what the venue did.
+
+**Designed and built 2026-11-09:** [region_capacity_changed_during_a_day.md](availability/region_capacity_changed_during_a_day.md). Option A agreed with Andrew on 9 November 2026: the engine refuses to start whenever its region's capacity differs from its configuration.
 
 ### BUG-0062: Two instances led with HA off, and nothing notices when they are reunited {#bug_0062}
 

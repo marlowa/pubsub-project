@@ -80,7 +80,14 @@ class MappedSlotStore {
      * Throws when the file exists but was written with a different record size, slot count,
      * record format or version -- a store that cannot be read as the caller expects is refused
      * rather than reinterpreted, because reinterpreting it silently produces records that are
-     * wrong in ways nothing downstream can detect.
+     * wrong in ways nothing downstream can detect. A file that is refused is left exactly as it
+     * was found: it is checked before it is given its length or mapped.
+     *
+     * When the file is a valid store with the record size, record format and version asked for,
+     * and only its slot count differs, the exception is a StoreCapacityDiffersException: the store
+     * is intact, and the caller may want to say so rather than treat it as damaged. Every other
+     * refusal, and a file that cannot be opened, given its length or mapped, throws
+     * PubSubItcException.
      *
      * @param[in] path           The file.
      * @param[in] payload_size   The size of each record, in bytes.
@@ -180,6 +187,9 @@ class MappedSlotStore {
   private:
     struct Header;
     struct SlotHeader;
+
+    /// Reads an existing file's header and throws, as open() describes, unless it is a store written as asked.
+    static void check_existing_header(int fd, const std::string& path, uint32_t payload_size, SlotIndex slot_count, uint32_t payload_format);
 
     [[nodiscard]] Header* header();
     [[nodiscard]] const Header* header() const;

@@ -1,7 +1,8 @@
 # A matching engine whose region's capacity differs from its configuration {#region_capacity_changed_during_a_day}
 
-**Status: agreed, not built.** This is the design for [BUG-0211](../bug_list.md#bug_0211). Option A was agreed with
-Andrew on 9 November 2026 (section 5).
+**Status: built.** This is the design for [BUG-0211](../bug_list.md#bug_0211). Option A was agreed with Andrew on 9
+November 2026 (section 5), and is built: `MappedSlotStore::open` throws `StoreCapacityDiffersException` for an intact
+region of another capacity, the engine refuses to start on it, and scenario 104 checks the refusal both ways.
 
 ## 1. The problem
 
@@ -32,7 +33,10 @@ the configuration can be told apart from a damaged region: its header, and its r
 When the engine opens its region and finds a valid header whose record count differs from `region_capacity`, it does not
 rebuild. It refuses to start, with an Error that names the region's file, the capacity it was created with, the capacity
 configured, and what to do: set `region_capacity` back to the region's capacity for the rest of the trading day, and
-change it between days. A damaged region, whose header is not valid, is rebuilt from the WAL as now.
+change it between days. A damaged region, whose header is not valid, is moved aside and the book rebuilt from the WAL.
+
+The region is left exactly as it was. Its header is read before the file is given its length or mapped, so opening
+a region with a smaller capacity than it holds cannot cut off the records past the new end before it is refused.
 
 With high availability on, the other engine goes on serving, so this is a loss of resilience and not of service; with it
 off, the venue cannot trade until the configuration is put back, which is the right outcome for a configuration that

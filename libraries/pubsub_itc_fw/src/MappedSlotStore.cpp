@@ -3,7 +3,9 @@
 
 #include <pubsub_itc_fw/MappedSlotStore.hpp>
 
+#include <array>
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <string>
 
@@ -14,6 +16,7 @@
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/StoreCapacityDiffersException.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 
 namespace pubsub_itc_fw {
@@ -71,6 +74,57 @@ const MappedSlotStore::SlotHeader* MappedSlotStore::slot(SlotIndex index) const 
     return reinterpret_cast<const SlotHeader*>(static_cast<const uint8_t*>(base_) + sizeof(Header) + index * slot_stride_);
 }
 
+void MappedSlotStore::check_existing_header(int fd, const std::string& path, uint32_t payload_size, SlotIndex slot_count, uint32_t payload_format) {
+    // Something is already in this file, so it is not a new store however unreadable it turns out to be, and it must not
+    // be written over. A store whose header was damaged is the same file, from here, as one that was never a store, and
+    // taking either over would discard every record it held while reporting a new store.
+    //
+    // The fields are read from the file at their places in Header, rather than through a mapping, so that nothing about
+    // the file changes before it is accepted. A file too short to hold them is not a store.
+    std::array<uint8_t, sizeof(Header)> bytes{};
+    const ssize_t got = ::pread(fd, bytes.data(), bytes.size(), 0);
+    if (got < 0) {
+        throw PubSubItcException("MappedSlotStore: reading the header of " + path + ": " + StringUtils::get_errno_string());
+    }
+    if (static_cast<size_t>(got) < bytes.size()) {
+        throw PubSubItcException("MappedSlotStore: " + path + " is not a store this understands: it holds " + std::to_string(got) +
+                                 " byte(s), fewer than a store's header");
+    }
+    const auto field = [&bytes](size_t offset) {
+        uint32_t value = 0;
+        std::memcpy(&value, bytes.data() + offset, sizeof(value));
+        return value;
+    };
+    const uint32_t found_magic = field(offsetof(Header, magic));
+    const uint32_t found_version = field(offsetof(Header, version));
+    const uint32_t found_payload_size = field(offsetof(Header, payload_size));
+    const uint32_t found_slot_count = field(offsetof(Header, slot_count));
+    const uint32_t found_payload_format = field(offsetof(Header, payload_format));
+
+    if (found_magic != store_magic) {
+        throw PubSubItcException("MappedSlotStore: " + path + " is not a store this understands: it begins " + std::to_string(found_magic) +
+                                 " where a store begins " + std::to_string(store_magic));
+    }
+
+    // Refuse rather than reinterpret. A store read with the wrong record size produces records that are wrong in ways
+    // nothing downstream can detect.
+    if (found_version != store_version || found_payload_size != payload_size || found_payload_format != payload_format) {
+        const std::string held = std::to_string(found_version) + "/" + std::to_string(found_payload_size) + "/" + std::to_string(found_slot_count) + "/" +
+                                 std::to_string(found_payload_format);
+        const std::string want =
+            std::to_string(store_version) + "/" + std::to_string(payload_size) + "/" + std::to_string(slot_count) + "/" + std::to_string(payload_format);
+        throw PubSubItcException("MappedSlotStore: " + path + " holds version/record size/slot count/record format " + held + ", and this asks for " + want);
+    }
+
+    // Everything else agrees, so the store is intact and only its size differs. That is refused too, with its own
+    // exception, so that a caller can tell an intact store opened with the wrong capacity from a damaged one.
+    if (found_slot_count != slot_count) {
+        throw StoreCapacityDiffersException("MappedSlotStore: " + path + " was created holding " + std::to_string(found_slot_count) +
+                                                " record(s), and this asks for " + std::to_string(slot_count),
+                                            found_slot_count, slot_count);
+    }
+}
+
 bool MappedSlotStore::open(const std::string& path, uint32_t payload_size, SlotIndex slot_count, uint32_t payload_format) {
     if (payload_size == 0 || slot_count == 0 || slot_count == no_slot) {
         throw PreconditionAssertion("MappedSlotStore: a store needs a non-zero record size and a slot count below no_slot", __FILE__, __LINE__);
@@ -93,6 +147,18 @@ bool MappedSlotStore::open(const std::string& path, uint32_t payload_size, SlotI
         throw PubSubItcException("MappedSlotStore: open(" + path + "): " + StringUtils::get_errno_string());
     }
 
+    // An existing file is checked before anything changes it. Setting its length comes after, because a store refused
+    // here must be left exactly as it was: shortening a store opened with fewer records than it holds would cut off the
+    // records past the new end, and the store would then be damaged as well as refused.
+    if (existed) {
+        try {
+            check_existing_header(fd, path, payload_size, slot_count, payload_format);
+        } catch (...) {
+            ::close(fd);
+            throw;
+        }
+    }
+
     if (::ftruncate(fd, static_cast<off_t>(mapped_size_)) != 0) {
         const std::string reason = StringUtils::get_errno_string();
         ::close(fd);
@@ -107,38 +173,11 @@ bool MappedSlotStore::open(const std::string& path, uint32_t payload_size, SlotI
         throw PubSubItcException("MappedSlotStore: mmap(" + path + "): " + StringUtils::get_errno_string());
     }
 
-    Header* hdr = header();
-
     if (existed) {
-        // Something is already in this file, so it is not a new store however unreadable it
-        // turns out to be, and it must not be written over.
-        //
-        // It used to be taken over when the magic did not match, on the reasoning that a file
-        // which was never a store has nothing worth keeping. That is true of a file nobody
-        // wrote, and false of a store whose header was damaged -- which is the same file from
-        // here. Taking it over discarded every record it held and reported a new store, so the
-        // one case that most needs to be noticed was the one that looked most ordinary.
-        if (hdr->magic != store_magic) {
-            // Read before close(), which unmaps the region hdr points into.
-            const uint32_t found = hdr->magic;
-            close();
-            throw PubSubItcException("MappedSlotStore: " + path + " is not a store this understands: it begins " + std::to_string(found) +
-                                     " where a store begins " + std::to_string(store_magic));
-        }
-
-        // Refuse rather than reinterpret. A store read with the wrong record size produces
-        // records that are wrong in ways nothing downstream can detect.
-        if (hdr->version != store_version || hdr->payload_size != payload_size || hdr->slot_count != slot_count || hdr->payload_format != payload_format) {
-            const std::string held = std::to_string(hdr->version) + "/" + std::to_string(hdr->payload_size) + "/" + std::to_string(hdr->slot_count) + "/" +
-                                     std::to_string(hdr->payload_format);
-            const std::string want =
-                std::to_string(store_version) + "/" + std::to_string(payload_size) + "/" + std::to_string(slot_count) + "/" + std::to_string(payload_format);
-            close();
-            throw PubSubItcException("MappedSlotStore: " + path + " holds version/record size/slot count/record format " + held + ", and this asks for " +
-                                     want);
-        }
         return true;
     }
+
+    Header* hdr = header();
 
     // Nothing was there, so this is a new store and it starts empty.
     hdr->magic = store_magic;

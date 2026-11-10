@@ -31,6 +31,7 @@
 #include <pubsub_itc_fw/MappedSlotStore.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/StoreCapacityDiffersException.hpp>
 
 namespace pubsub_itc_fw::tests {
 
@@ -481,6 +482,95 @@ TEST_F(MappedSlotStoreTest, AStoreWrittenWithADifferentSlotCountIsRefused) {
     }
     MappedSlotStore store;
     EXPECT_THROW(store.open(path_, record_size, slot_count * 2), PubSubItcException);
+}
+
+// An intact store opened with a different slot count, fewer or more, is refused with the exception that says only the
+// capacity differs, carrying both counts, so that its owner can refuse to start rather than treat it as damaged.
+TEST_F(MappedSlotStoreTest, AnIntactStoreOpenedWithADifferentSlotCountSaysOnlyTheCapacityDiffers) {
+    {
+        MappedSlotStore store;
+        ASSERT_FALSE(store.open(path_, record_size, slot_count));
+        store_one(store, 1, 10);
+    }
+    for (const SlotIndex asked : {slot_count / 2, slot_count * 2}) {
+        MappedSlotStore store;
+        try {
+            static_cast<void>(store.open(path_, record_size, asked));
+            FAIL() << "expected a store opened with " << asked << " slots to be refused";
+        } catch (const StoreCapacityDiffersException& e) {
+            EXPECT_EQ(e.capacity_held(), slot_count);
+            EXPECT_EQ(e.capacity_wanted(), asked);
+            const std::string what = e.what();
+            EXPECT_NE(what.find(path_), std::string::npos) << what;
+        }
+        EXPECT_FALSE(store.is_open());
+    }
+}
+
+// The refusal leaves the file as it was found. Opening with fewer slots must not shorten the file, which would cut off
+// the records past the new end, and opening with more must not lengthen it. The store then opens again with its own
+// capacity and still holds its record.
+TEST_F(MappedSlotStoreTest, AStoreRefusedForItsSlotCountIsLeftAsItWas) {
+    // Records large enough that each slot count asked for below gives a file of a different length; with the small
+    // records the other tests use, eight slots and one fit in the same page, and shortening would go unseen.
+    constexpr uint32_t large_record = 1024;
+    SlotIndex held_index = 0;
+    {
+        MappedSlotStore store;
+        ASSERT_FALSE(store.open(path_, large_record, slot_count));
+        // The last slot, so that a store shortened to fewer slots would lose it.
+        for (SlotIndex i = 0; i < slot_count; ++i) {
+            held_index = store_one(store, static_cast<uint8_t>(i + 1), 10 + i);
+        }
+    }
+    const auto size_before = std::filesystem::file_size(path_);
+    std::vector<char> bytes_before(size_before);
+    {
+        std::ifstream in(path_, std::ios::binary);
+        in.read(bytes_before.data(), static_cast<std::streamsize>(bytes_before.size()));
+    }
+
+    for (const SlotIndex asked : {SlotIndex{1}, slot_count * 4}) {
+        MappedSlotStore store;
+        EXPECT_THROW(static_cast<void>(store.open(path_, large_record, asked)), StoreCapacityDiffersException);
+        ASSERT_EQ(std::filesystem::file_size(path_), size_before) << "after asking for " << asked << " slots";
+        std::vector<char> bytes_after(size_before);
+        std::ifstream in(path_, std::ios::binary);
+        in.read(bytes_after.data(), static_cast<std::streamsize>(bytes_after.size()));
+        EXPECT_EQ(bytes_after, bytes_before) << "after asking for " << asked << " slots";
+    }
+
+    MappedSlotStore store;
+    ASSERT_TRUE(store.open(path_, large_record, slot_count));
+    store.rebuild_free_list();
+    EXPECT_TRUE(store.is_live(held_index));
+    expect_payload(store, held_index, static_cast<uint8_t>(slot_count));
+}
+
+// A store that is not intact is not reported as one whose capacity differs, even when its slot count differs too: a
+// damaged header, a different record size, record format or version are each refused as before, and their owner treats
+// them as damaged.
+TEST_F(MappedSlotStoreTest, AStoreThatIsNotIntactIsNotReportedAsOnlyItsCapacityDiffering) {
+    const auto expect_not_capacity_differs = [this](uint32_t size, SlotIndex count, uint32_t format, const char* what) {
+        MappedSlotStore store;
+        try {
+            static_cast<void>(store.open(path_, size, count, format));
+            ADD_FAILURE() << what << ": expected a refusal";
+        } catch (const StoreCapacityDiffersException&) {
+            ADD_FAILURE() << what << ": reported as only the capacity differing";
+        } catch (const PubSubItcException&) {}
+    };
+    {
+        MappedSlotStore store;
+        ASSERT_FALSE(store.open(path_, record_size, slot_count, 1));
+    }
+    expect_not_capacity_differs(record_size + 8, slot_count * 2, 1, "a different record size");
+    expect_not_capacity_differs(record_size, slot_count * 2, 2, "a different record format");
+
+    write_at<uint32_t>(offset_version, 99u);
+    expect_not_capacity_differs(record_size, slot_count * 2, 1, "a different version");
+    write_at<uint32_t>(offset_magic, 0u);
+    expect_not_capacity_differs(record_size, slot_count * 2, 1, "a damaged header");
 }
 
 // The same size of record can mean something different to the owner, which says so by raising the

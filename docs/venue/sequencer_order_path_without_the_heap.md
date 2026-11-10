@@ -1,7 +1,8 @@
 # The leading sequencer's order path without the heap {#sequencer_order_path_without_the_heap}
 
 **Status: agreed, not built.** This is the design for [BUG-0131](../bug_list.md#bug_0131). Items 1 to 4 below were
-agreed with Andrew on 11 October 2026, and both decisions in section 6 on 9 November 2026.
+agreed with Andrew on 11 October 2026, and both decisions in section 6 on 9 November 2026: the venue's figure for open orders is each environment's
+`order_book_region_capacity`.
 
 ## 1. The problem
 
@@ -70,11 +71,16 @@ with more open orders than expected moves entries a few at a time rather than st
 Agreed: **yes**. It allocates nothing, loses nothing, and uses a mechanism the framework already has; the alternative,
 spilling to the heap, would bring back what this removes, in exactly the moment of most load.
 
-### Decision 2. How many open orders is the venue built for? (Give a figure.)
+### Decision 2. How many open orders is the venue built for? (Choose one.)
 
 The session map is sized for it, and [BUG-0072](../bug_list.md#bug_0072) needs the same figure for the gateways' pools of
-open orders, which today disagree with each other by a factor of 256; the matching engine's region is configured for
-2,000,000. Agreed: **2,000,000 for the venue**, the engine's region, so that the three agree. The session map then
-costs about 370 MB: each entry is 88 bytes and its state one more, and the map keeps at least half its slots free, so
-2,000,000 orders take 4,194,304 slots. That is comparable with the engine's region, 0.46 GiB, and is reserved once at
-start-up; a smaller figure for the venue makes it proportionally smaller.
+open orders, which today disagree with each other by a factor of 256. The matching engine's region is sized per
+environment by `order_book_region_capacity`: 2,000,000 in development, 1,000,000 in the preprod and test-1 environments,
+and 100,000,000 in production, where the engine never fills an order, so a day of 100 million orders with none cancelled
+must still be accepted.
+
+Agreed with Andrew on 9 November 2026: **the figure is each environment's own `order_book_region_capacity`**, so that the
+session map, the gateways' pools and the engine's region agree in every environment. The session map costs 89 bytes for
+each slot, an 88-byte entry and a byte of state, and keeps at least half its slots free, so it has at least twice as many
+slots as orders, rounded up to a power of two. At 2,000,000 orders that is 4,194,304 slots, about 370 MB; at 100,000,000
+it is 268,435,456 slots, about 24 GB, against the engine region's 24.8 GB. It is reserved once at start-up.

@@ -18,12 +18,15 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LeaderEpoch.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PeerStatementsFlag.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
+#include <pubsub_itc_fw/StoreCapacityDiffersException.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace matching_engine {
@@ -111,6 +114,23 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     try {
         region_existed = order_book_.open(config_.order_book_region_path, static_cast<OrderBook::SlotIndex>(config_.order_book_region_capacity),
                                           static_cast<size_t>(config_.order_book_initial_capacity));
+    } catch (const pubsub_itc_fw::StoreCapacityDiffersException& error) {
+        // The region is intact, but was created holding a different number of orders from the number configured. It is
+        // not rebuilt from the WAL with the configured capacity, because that can give a different book from the one
+        // members were told of: with fewer records, an order accepted at the time is refused by the rebuild once the
+        // smaller region fills; with more, an order refused at the time because the region was full is accepted. The
+        // capacity may change only between trading days, so this refuses to start and says how to put it back. The
+        // region is left exactly as it was. See docs/availability/region_capacity_changed_during_a_day.md.
+        // TEST CONTRACT -- ha_test.py matches "refusing to start" and "region_capacity" in this Error.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: refusing to start -- the order book region at {} was created holding {} order(s), and [order_book] "
+                   "region_capacity is {}. A rebuild with a different capacity can give a different book from the one members were told of, so the "
+                   "capacity may change only between trading days. Set region_capacity back to {} for the rest of this trading day, and change it "
+                   "after the day has ended. The region is left as it was.",
+                   config_.order_book_region_path, error.capacity_held(), config_.order_book_region_capacity, error.capacity_held());
+        throw pubsub_itc_fw::ConfigurationException("the order book region at " + config_.order_book_region_path + " was created holding " +
+                                                    std::to_string(error.capacity_held()) + " order(s), and [order_book] region_capacity is " +
+                                                    std::to_string(config_.order_book_region_capacity));
     } catch (const pubsub_itc_fw::PubSubItcException& error) {
         // Damaged, or written by a different build. R-0102 says such a record is not to be
         // used, and it is not: it is moved aside intact so that somebody can look at it, and a

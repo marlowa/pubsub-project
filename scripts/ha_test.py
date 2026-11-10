@@ -887,6 +887,9 @@ class RestartStep(NamedTuple):
                        sequencer's order connection until it knows whether it leads or follows.
                        A restarted engine beside a leading peer then always agrees that its peer
                        leads before any sequencer has connected to it (BUG-0225, BUG-0233).
+    refuse_changed_capacity_first: for a matching engine, before restarting it as configured, start it by hand twice
+                       with [order_book] region_capacity changed, once halved and once doubled, and require that each
+                       time it refuses to start, says why, and leaves its region exactly as it was (BUG-0211).
     down_secs:         how long to leave the process dead before restarting it.  Zero
                        for every scenario whose subject is a fast restart.  A scenario
                        testing what a LONG absence does needs the venue to be absent for
@@ -903,6 +906,7 @@ class RestartStep(NamedTuple):
     damage_region: str = ""
     forget_lease_promises: bool = False
     hold_sequencer_connections: bool = False
+    refuse_changed_capacity_first: bool = False
 
 
 class SupervisedKillStep(NamedTuple):
@@ -1367,9 +1371,9 @@ class Scenario(NamedTuple):
     # finding the stream go backwards, while the second sequencer connected to it after the catch-up began. See
     # run_scenario's "a second sequencer during a catch-up" block, and BUG-0200.
     assert_catch_up_survives_second_connection: bool = False
-    # When True, no instance is expected to take the lead during the scenario: it tests the halt
-    # when the leader and the arbiters are lost together (R-0147). The checks that follow a
-    # promotion, such as which book the promoted instance resumed with, are skipped.
+    # When True, no instance is expected to take the lead during the scenario: for example the halt when the leader and
+    # the arbiters are lost together (R-0147), or a scenario that kills and restarts only the engine that follows. The
+    # checks that follow a promotion, such as which book the promoted instance resumed with, are skipped.
     expects_no_new_leader: bool = False
 
     # When True, run this scenario against a venue deployed with high availability OFF: every
@@ -3957,6 +3961,57 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
+    # 104 -- a matching engine whose region's capacity differs from its configuration refuses to start.
+    #
+    # The following engine is killed, with the scenario's baseline orders resting in its region. It is then started by
+    # hand twice, with [order_book] region_capacity halved and then doubled. Each time it must refuse to start, say that
+    # the region was created with a different capacity, and leave the region exactly as it was: rebuilding the book with
+    # a different capacity can give a different book from the one members were told of, in either direction (BUG-0211).
+    # The engine that leads must keep the lead throughout. Started again as configured, the engine must open its region
+    # as it was and follow.
+    Scenario(
+        number=104,
+        short_name="me_refuses_changed_region_capacity",
+        description="A matching engine whose region was created with a different capacity from its configuration refuses to start",
+        expected_outcome=(
+            "the following engine, started with its region's capacity halved and then doubled, refuses to start each time, "
+            "names the region and region_capacity, and leaves the region exactly as it was; started as configured it "
+            "follows, and the engine that leads keeps the lead"
+        ),
+        me_ha=True,
+        expects_no_new_leader=True,
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name=ENGINE_FOLLOWING_AT_START,
+                takeover=None,
+                settle_secs=SETTLE_AFTER_KILL,
+            ),
+            RestartStep(
+                proc_name=ENGINE_FOLLOWING_AT_START,
+                ready_log_name=f"{ENGINE_FOLLOWING_AT_START}.log",
+                ready=expect_engine_reachable(ENGINE_FOLLOWING_AT_START),
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+                refuse_changed_capacity_first=True,
+            ),
+            VerifyStep(
+                expect=expect_follows(ENGINE_FOLLOWING_AT_START),
+                timeout=30.0,
+                description="the engine started as configured follows",
+                absent=expect_leads(ENGINE_FOLLOWING_AT_START),
+            ),
+            VerifyStep(
+                expect=expect_leads(ENGINE_LEADING_AT_START),
+                timeout=5.0,
+                description="the engine that led keeps the lead",
+            ),
+        ],
+    ),
+
     # 62 -- an old leader that rejoins discards the records its new leader does not have.
     #
     # The primary sequencer is started with libblock_sends_to_ports.so preloaded. Once the flag file
@@ -6074,6 +6129,76 @@ def config_with_smaller_region(config: Path) -> Path:
     return copy
 
 
+def config_with_region_capacity(config: Path, capacity: int) -> Path:
+    """A copy of a matching engine's configuration whose open-order region holds capacity orders, written beside it.
+
+    For starting the engine by hand to see it refuse a region created with another capacity; the original is not
+    touched."""
+    text = config.read_text()
+    line = next((candidate for candidate in text.splitlines() if candidate.startswith("region_capacity =")), None)
+    if line is None:
+        die(f"config_with_region_capacity: {config} has no region_capacity to change")
+    text = text.replace(line + "\n", f"region_capacity = {capacity}\n", 1)
+    copy = config.with_name(f"{config.stem}_region_capacity_{capacity}.toml")
+    copy.write_text(text)
+    return copy
+
+
+def file_digest(path: Path) -> str:
+    """The SHA-256 of a file's whole content, read a megabyte at a time."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def probe_changed_region_capacity(name: str, bin_name: str, config: Path, bin_dir: Path, log_dir: Path) -> None:
+    """Start a matching engine by hand with its region's capacity halved, then doubled, and require that each time it
+    refuses to start, names the region and region_capacity in its reason, and leaves the region exactly as it was.
+
+    A rebuild with a different capacity can give a different book from the one members were told of, in either
+    direction, so the engine must refuse whichever way the capacity changed (BUG-0211). The region must hold what it
+    held before, to the byte: a store opened with fewer records must not be shortened first."""
+    text = config.read_text()
+    capacity_match = re.search(r"^region_capacity\s*=\s*(\d+)", text, re.MULTILINE)
+    path_match = re.search(r'^region_path\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    if capacity_match is None or path_match is None:
+        die(f"changed region capacity: {config} has no region_capacity or region_path")
+    capacity = int(capacity_match.group(1))
+    region = Path(path_match.group(1))
+    if not region.is_file():
+        die(f"changed region capacity: {region} does not exist, so there is nothing for {name} to refuse and the scenario "
+            "would pass without testing anything")
+    size_before = region.stat().st_size
+    digest_before = file_digest(region)
+    log(f"  {name}'s region {region.name} holds {capacity:,} order(s), {size_before:,} bytes")
+
+    for changed in (capacity // 2, capacity * 2):
+        probe_config = config_with_region_capacity(config, changed)
+        probe_log = log_dir / f"{name}_region_capacity_{changed}_probe.log"
+        probe_log.unlink(missing_ok=True)
+        log(f"  Starting {name} by hand with region_capacity = {changed:,} ...")
+        try:
+            completed = subprocess.run([str(bin_dir / bin_name), str(probe_log), str(probe_config)],
+                                       capture_output=True, text=True, timeout=30, env=dict(os.environ), check=False)
+        except subprocess.TimeoutExpired:
+            die(f"changed region capacity: {name} started with region_capacity = {changed:,} against a region holding "
+                f"{capacity:,} and was still running after 30 seconds, so it did not refuse (it has been stopped)")
+        if completed.returncode == 0:
+            die(f"changed region capacity: {name} started with region_capacity = {changed:,} against a region holding "
+                f"{capacity:,} and exited 0 without refusing")
+        said = (probe_log.read_text(errors="replace") if probe_log.is_file() else "") + completed.stdout + completed.stderr
+        if "refusing to start" not in said or "region_capacity" not in said or str(region) not in said:
+            die(f"changed region capacity: {name} exited {completed.returncode} without saying it refused because of the "
+                f"region's capacity. What it said: {said.strip()[-400:]!r}")
+        if region.stat().st_size != size_before or file_digest(region) != digest_before:
+            die(f"changed region capacity: {name} refused region_capacity = {changed:,}, but its region {region} is no "
+                f"longer as it was ({region.stat().st_size:,} bytes, was {size_before:,})")
+        log(f"  {name} refused region_capacity = {changed:,} (exit {completed.returncode}), named the reason, and left "
+            "its region exactly as it was -- OK")
+
+
 def config_with_other_identifier_secret(config: Path) -> Path:
     """A copy of a matching engine's configuration whose identifier secret is a new one, written beside it.
 
@@ -7556,6 +7681,12 @@ def do_restart_step(
                 "scenario would pass without testing anything")
         record.unlink()
         log(f"  Deleted {record.name}, so {step.proc_name} restarts knowing nothing of what it promised")
+
+    if step.refuse_changed_capacity_first:
+        probe_entry = next((e for e in launch_table if e[0] == step.proc_name), None)
+        if probe_entry is None:
+            die(f"No launch table entry for '{step.proc_name}'")
+        probe_changed_region_capacity(step.proc_name, probe_entry[1], probe_entry[2], bin_dir, log_dir)
 
     if step.down_secs > 0:
         log(f"  Leaving {step.proc_name} down for {step.down_secs:.0f}s, so that the absence is real")

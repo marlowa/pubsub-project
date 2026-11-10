@@ -341,19 +341,24 @@ whatever made it unreadable can still be looked at.
 
 ## Changing how many orders it holds
 
-**Clear the region when you change `order_book_region_capacity`, or the venue will halt
-rather than resize.** The record count is in the region's header, and a header that does not
-describe what the engine is configured to read is refused --- which is right, and is what
-stops a region being reinterpreted at the wrong stride. But a deliberate resize looks
-identical to a damaged region from inside `open()`, so the engine moves the old one aside and
-rebuilds its book from the WAL under R-0123, now with the new capacity.
+**Change `order_book_region_capacity` only between trading days: an engine whose region was created with a different
+capacity refuses to start.** The record count is in the region's header. When the engine opens a region whose header
+is valid, with the record size, record format and version it expects, but whose record count differs from the
+configured capacity, it does not rebuild. It refuses to start, with an Error naming the region's file, the capacity it
+was created with and the capacity configured, and saying to set the capacity back for the rest of the trading day. The
+region is left exactly as it was: it is checked before anything is written to it.
 
-That rebuild is the venue's book only if the new capacity refuses no order the old one
-accepted. A smaller region, or one too small for the most orders open at any moment of the
-day, refuses in the replay an order the engine accepted at the time, so the engine holds a
-book its members were not told of, and sends those members a refusal for an order they were
-told is open. So a resize is a change to make between trading days, when the WAL is new and
-nothing is resting: stop the engine, delete the region, change the figure, start it.
+A rebuild from the WAL with a different capacity can give a different book from the one members were told of, in
+either direction. With a smaller region, an order accepted at the time is refused by the rebuild once the smaller region
+fills, so the member holds an order the engine does not, and is sent a refusal for an order it was told is open. With a
+larger one, an order refused at the time because the region was full is accepted by the rebuild, so the engine holds an
+order the member was told was refused. A region whose header is damaged is different: it is moved aside and the book
+rebuilt from the WAL, as the section above describes.
+
+With high availability on, the other engine goes on serving while this one refuses, so this is a loss of resilience and
+not of service. With it off, the venue cannot trade until the capacity is put back. To change the capacity, between
+trading days, when the WAL is new and nothing is resting: stop the engine, delete the region, change the figure, start
+it. See [region_capacity_changed_during_a_day.md](../availability/region_capacity_changed_during_a_day.md).
 
 **How big it needs to be** depends on what removes orders from the book, which is worth
 saying plainly because a load profile can make it look far worse than it is. This venue's

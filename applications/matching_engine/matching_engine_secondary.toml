@@ -132,6 +132,9 @@ region_path = "${matching_engine_secondary_order_book_region_path}"
 # grow: an order arriving when every record is taken is refused, because the venue must not
 # accept an order it could not account for after a restart. Size it to the peak orders open
 # at once, not to the day's volume -- a cancelled or filled order releases its record.
+# Change it only between trading days, with the region deleted: an engine whose region was created
+# with a different capacity refuses to start, because rebuilding with a different capacity can give a
+# different book from the one members were told of.
 region_capacity = ${matching_engine_secondary_order_book_region_capacity}
 
 
