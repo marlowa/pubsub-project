@@ -569,9 +569,11 @@ def stop_perf_procs(perf_procs: list[tuple[str, subprocess.Popen]]) -> None:
     log("Waiting for perf to finish writing data ...")
     # perf record exits automatically once the monitored process dies;
     # we just need to wait for it to flush and close the data file.
+    # perf record does a long pass over its data file after the process it follows has gone, and a trading-day run leaves
+    # about 3 GB. Killed before that finishes, it leaves a file whose header says it holds no data.
     for name, proc in perf_procs:
         try:
-            proc.wait(timeout=10)
+            proc.wait(timeout=300)
         except subprocess.TimeoutExpired:
             log(f"  WARNING: perf for {name} did not exit — killing")
             proc.kill()
