@@ -37,6 +37,7 @@ namespace pubsub_itc_fw {
  *   AddTimer       -- owner_thread_id_, timer_id_, interval_, timer_type_
  *   CancelTimer    -- owner_thread_id_, timer_id_
  *   Connect        -- requesting_thread_id_, service_id_
+ *   ConnectNow     -- service_id_
  *   Disconnect     -- connection_id_
  *   SendPdu        -- connection_id_, allocator_, slab_id_, pdu_chunk_ptr_, pdu_byte_count_
  *   SendRaw        -- connection_id_, allocator_, slab_id_, raw_chunk_ptr_, raw_byte_count_
@@ -62,6 +63,7 @@ class ReactorControlCommand {
         AddTimer,
         CancelTimer,
         Connect,                     ///< Request the reactor to establish an outbound TCP connection.
+        ConnectNow,                  ///< Make a service's waiting attempt to connect again at once (service_id_).
         Disconnect,                  ///< Request the reactor to close an established connection.
         SendPdu,                     ///< Request the reactor to send a framed PDU on a PDU connection.
         SendRaw,                     ///< Request the reactor to send raw bytes on a raw-bytes connection.
@@ -118,6 +120,9 @@ class ReactorControlCommand {
         }
         if (tag_ == Connect) {
             return "Connect";
+        }
+        if (tag_ == ConnectNow) {
+            return "ConnectNow";
         }
         if (tag_ == Disconnect) {
             return "Disconnect";

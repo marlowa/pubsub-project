@@ -4012,6 +4012,131 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
+    # 105 -- a sequencer that was down past the recovery limit while its peer led does not, after a restart of the
+    # sequencers and the arbiters, cancel the book for an absence that did not happen.
+    #
+    # BUG-0207. The following sequencer is killed. Nothing is sent for twelve seconds, against a limit of four, while the
+    # leading sequencer routes to an engine that leads throughout, so no record is written in that time. The leading
+    # sequencer and both arbiters are then killed, and restarted with the sequencer killed first started first, and
+    # given time to lead on its own before the other starts. That sequencer last knew of an engine it routed to before it
+    # was killed, so if it led it would measure an absence longer than the limit, and cancel the book and halt. It does
+    # not lead: when it was killed its leader stated that it may not lead, and the arbiters keep that statement through
+    # their restart. Whichever leads, no engine may cancel its book or halt, and orders sent afterwards must be accepted.
+    Scenario(
+        number=105,
+        short_name="stale_sequencer_does_not_halt_after_restart",
+        description=(
+            "A sequencer down past the recovery limit while its peer led does not, after the sequencers and arbiters restart, cancel the "
+            "book for an absence that did not happen"
+        ),
+        expected_outcome=(
+            "after twelve quiet seconds against a limit of four with sequencer_secondary down, and both sequencers and both arbiters "
+            "then restarted with sequencer_secondary first, exactly one sequencer leads, no engine cancels its book or halts, and "
+            "orders sent afterwards are accepted"
+        ),
+        me_ha=True,
+        expects_no_new_leader=True,
+        automatic_recovery_limit_seconds=4,
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="sequencer_secondary",
+                takeover=None,
+                settle_secs=SETTLE_AFTER_KILL,
+            ),
+            AssertAbsentStep(
+                absent=expect_message(ENGINE_LEADING_AT_START, "its book cancelled", "BookCancelled", "matching_engine_test_events"),
+                after_secs=12.0,
+                description="nothing was sent for twelve seconds while the engine that leads traded, and it cancelled nothing",
+            ),
+            # The venue's memory of who led goes down with it: the leading sequencer and both arbiters. The engines go on
+            # running, which changes nothing here: what is measured is how long the sequencers believe no engine traded.
+            KillStep(
+                proc_name="sequencer_primary",
+                takeover=None,
+                settle_secs=0.0,
+            ),
+            KillStep(
+                proc_name="arbiter_primary",
+                takeover=None,
+                settle_secs=0.0,
+            ),
+            KillStep(
+                proc_name="arbiter_secondary",
+                takeover=None,
+                settle_secs=2.0,
+            ),
+            RestartStep(
+                proc_name="arbiter_primary",
+                ready_log_name="arbiter_primary.log",
+                ready=expect_started("arbiter_primary"),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=0.0,
+            ),
+            RestartStep(
+                proc_name="arbiter_secondary",
+                ready_log_name="arbiter_secondary.log",
+                ready=expect_started("arbiter_secondary"),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=0.0,
+            ),
+            RestartStep(
+                proc_name="sequencer_secondary",
+                ready_log_name="sequencer_secondary.log",
+                ready=expect_started("sequencer_secondary"),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                # Long enough for it to lead on its own, if it can, before its peer starts: an arbiter that has just
+                # started grants nothing for a lease period.
+                settle_secs=10.0,
+            ),
+            AssertAbsentStep(
+                absent=expect_leads("sequencer_secondary"),
+                after_secs=0.5,
+                description="sequencer_secondary, which missed the quiet spell, did not lead on its own",
+            ),
+            RestartStep(
+                proc_name="sequencer_primary",
+                ready_log_name="sequencer_primary.log",
+                ready=expect_started("sequencer_primary"),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                # As scenario 36: the gateways reconnect to the restarted sequencers before orders can flow.
+                settle_secs=10.0,
+            ),
+            OneLeaderStep(
+                components=("sequencer_primary", "sequencer_secondary"),
+                timeout=30.0,
+                settle_secs=3.0,
+                description="exactly one sequencer leads after both restart",
+            ),
+            AssertAbsentStep(
+                absent=expect_message(ENGINE_LEADING_AT_START, "its book cancelled", "BookCancelled", "matching_engine_test_events"),
+                after_secs=1.0,
+                description="the engine that leads cancelled nothing",
+            ),
+            AssertAbsentStep(
+                absent=expect_message(ENGINE_LEADING_AT_START, "trading halted", "Halted", "matching_engine_test_events"),
+                after_secs=1.0,
+                description="the engine that leads did not halt",
+            ),
+            AssertAbsentStep(
+                absent=expect_message(ENGINE_FOLLOWING_AT_START, "its book cancelled", "BookCancelled", "matching_engine_test_events"),
+                after_secs=1.0,
+                description="the engine that follows cancelled nothing",
+            ),
+            AssertAbsentStep(
+                absent=expect_message(ENGINE_FOLLOWING_AT_START, "trading halted", "Halted", "matching_engine_test_events"),
+                after_secs=1.0,
+                description="the engine that follows did not halt",
+            ),
+        ],
+    ),
+
     # 62 -- an old leader that rejoins discards the records its new leader does not have.
     #
     # The primary sequencer is started with libblock_sends_to_ports.so preloaded. Once the flag file
@@ -9011,7 +9136,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # follower's during that stream. A follower that connects first only declines.
             if _TEST_EVENTS.find(leads(library_events, "sequencer_secondary"), since=0) is not None:
                 die("second connection: sequencer_secondary led, so sequencer_primary was not the sequencer serving the catch-up")
-            first = _TEST_EVENTS.find(connection_made(library_events, "sequencer_primary", engine_service(engine)), since=since)
+            # From before anything was killed rather than from the restarted engine's introduction: the leading sequencer
+            # connects for orders the moment the engine opens its connection for reports (BUG-0237), which can be before the
+            # engine's own connection to this test's listener. A connection made after this mark is to the restarted engine.
+            first = _TEST_EVENTS.find(connection_made(library_events, "sequencer_primary", engine_service(engine)), since=sequencer_events_pre_kill)
             later = _TEST_EVENTS.find(connection_made(library_events, "sequencer_secondary", engine_service(engine)),
                                       since=_TEST_EVENTS.since_introduction("sequencer_secondary"))
             if first is None or later is None:

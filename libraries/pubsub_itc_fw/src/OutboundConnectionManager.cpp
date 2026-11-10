@@ -647,6 +647,22 @@ void OutboundConnectionManager::retry_failed_connections(const std::function<Con
     }
 }
 
+bool OutboundConnectionManager::connect_now(ServiceID service_id, const std::function<ConnectionID()>& next_id_fn) {
+    if (!service_id.is_valid()) {
+        return false;
+    }
+    const std::string& service_name = service_registry_.service_name(service_id);
+    auto it = pending_retries_.find(service_name);
+    if (it == pending_retries_.end()) {
+        return false;
+    }
+    const ReactorControlCommand cmd = it->second.command;
+    pending_retries_.erase(it);
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "OutboundConnectionManager: service '{}' -- trying to connect again now, at the application's request", service_name);
+    process_connect_command(cmd, next_id_fn());
+    return true;
+}
+
 void OutboundConnectionManager::check_for_timed_out_connections() {
     const auto now = MillisecondClock::now();
 

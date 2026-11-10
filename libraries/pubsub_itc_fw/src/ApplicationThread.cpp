@@ -276,6 +276,19 @@ void ApplicationThread::connect_to_service(const std::string& service_name) cons
     reactor_.enqueue_control_command(command);
 }
 
+void ApplicationThread::connect_now(const std::string& service_name) const {
+    assert_called_from_owner();
+
+    const ServiceID service_id = reactor_.resolve_service(service_name);
+    if (!service_id.is_valid()) {
+        throw PreconditionAssertion("ApplicationThread::connect_now: unknown service '" + service_name + "'", __FILE__, __LINE__);
+    }
+
+    ReactorControlCommand command(ReactorControlCommand::CommandTag::ConnectNow);
+    command.service_id_ = service_id;
+    reactor_.enqueue_control_command(command);
+}
+
 void ApplicationThread::commit_raw_bytes(const ConnectionID& conn_id, int64_t bytes_consumed) {
     if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
         throw PreconditionAssertion(fmt::format("ApplicationThread::commit_raw_bytes: ConnectionID {} "

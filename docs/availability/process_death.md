@@ -26,9 +26,9 @@ and resolving it needs a third party and a timer.
 lease period keeps the lead: it reads back the promises its peer and the arbiter made to it, and asks
 again at once ([Majority leases](majority_leases.md), rule 6). Without a supervisor, the follower
 takes over once its promise and the arbiter's have run out, about one lease period plus one renewal
-interval. A supervised matching engine takes about 2 to 2.5 seconds from dying to leading again
+interval. A supervised matching engine takes about 0.6 seconds from dying to leading again
 (measured below), so the lead does not move, and the target is met. Most of that time is the
-sequencer's wait before it connects to the engine again ([BUG-0237](../bug_list.md#bug_0237)).
+engine's own start-up, reading its open-order region back included.
 
 ## What exists
 
@@ -155,8 +155,8 @@ it was permanently broken. That is accepted: the peer serves, the venue keeps tr
 can put it back, and the alternative is a member exposed to an open-ended series of interruptions
 nobody is counting.
 
-**Measured, so the figure being traded is known.** An engine goes from dying to leading in about 2
-to 2.5 seconds, divided into its steps under "The target, measured" below. That is the length of the
+**Measured, so the figure being traded is known.** An engine goes from dying to leading in about 0.6
+seconds, as measured under "The target, measured" below. That is the length of the
 interruption a member is being asked to accept once. The rule does not depend on it, but how
 tolerable one interruption is does.
 
@@ -167,9 +167,24 @@ process is restarted by its supervisor and is leading again within its lease per
 its peer never takes over and no change of leader happens. The interruption is a measured figure,
 not a goal.
 
-Measured on 2026-11-08, twice: 20,000 orders over four binary sessions with three in ten cancelled,
-leaving 14,004 open orders, then the leading matching engine killed with SIGKILL under `launch.py`.
-The times are from the restarted engine's and the sequencers' Quill logs.
+Measured on 2026-11-10, three times, on a venue started by `devenv.py --supervised` with no orders
+resting, by killing the leading matching engine with SIGKILL under `launch.py`. The times are from the
+restarted engine's and the sequencers' Quill logs, from the moment of the kill.
+
+| Step | First run | Second run | Third run |
+|---|---|---|---|
+| The engine's listeners bound, and its connections for reports opened to both sequencers | 0.449 s | 0.509 s | 0.487 s |
+| Both sequencers connected to it for orders | the same millisecond | the same millisecond | the same millisecond |
+| **From death to leading** | **0.555 s** | **0.615 s** | **0.593 s** |
+
+The sequencers connect at once because an engine opens its connection for reports only once it is
+listening for orders, and a sequencer that sees such a connection arrive makes at once the attempt to
+connect for orders that it was waiting to make (`ApplicationThread::connect_now`;
+[reconnecting_to_a_restarted_engine.md](reconnecting_to_a_restarted_engine.md)). A sequencer built
+without that call tries again only every 2 seconds, the framework's `connect_retry_interval_`, and the
+same measurement then gives 2.16 seconds from death to leading.
+
+The steps before the engine is listening were measured on 2026-11-08 with 14,004 orders resting:
 
 | Step | First run | Second run |
 |---|---|---|
@@ -178,16 +193,11 @@ The times are from the restarted engine's and the sequencers' Quill logs.
 | Reading the region back: a 496 MB file with room for 2,000,000 orders, holding 14,004 | 0.85 s | 0.23 s |
 | Starting threads, pinning cores, and a trial of 20 writes to the epoch file | 0.10 s | 0.12 s |
 | Recording the new epoch, and the peer granting the lease | 0.11 s | 0.11 s |
-| Waiting for the sequencer to connect to the engine again | 1.21 s | 1.54 s |
 | Catch-up, 4 records, and taking the lead | 0.004 s | 0.004 s |
-| **From death to leading** | **2.50 s** | **2.11 s** |
 
-The lease was granted 1.3 and 0.6 seconds after the death, well inside the lease period. The
-largest step is the sequencer's: after losing the engine it tries to connect again only every 2
-seconds, so the engine, ready within about a second, waits for it. That is
-[BUG-0237](../bug_list.md#bug_0237); fixing it would bring the interruption under a second if the
-other steps stay as measured. Reading the region back took 230 ms in one run and 847 ms in the
-other, from a file of the same size; whether the pages were already in memory has not been checked.
+Reading the region back took 230 ms in one run and 847 ms in the other, from a file of the same size;
+whether the pages were already in memory has not been checked. With those steps and an immediate
+connection, a restart with orders resting takes between about 0.5 and 1.4 seconds.
 
 ## What is still open
 

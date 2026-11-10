@@ -1,7 +1,8 @@
 # Reconnecting promptly to a restarted matching engine {#reconnecting_to_a_restarted_engine}
 
-**Status: agreed, not built.** This is the design for [BUG-0237](../bug_list.md#bug_0237). Option B was agreed with
-Andrew on 9 November 2026 (section 5).
+**Status: built.** This is the design for [BUG-0237](../bug_list.md#bug_0237). Option B was agreed with Andrew on 9
+November 2026 (section 5) and is built. Measured three times, an engine killed under its supervisor leads again 0.555 to
+0.615 seconds after it dies, and 2.16 seconds with the sequencer's call removed ([process_death.md](process_death.md)).
 
 ## 1. The problem
 

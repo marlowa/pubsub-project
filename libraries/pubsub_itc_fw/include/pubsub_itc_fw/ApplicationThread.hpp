@@ -399,6 +399,23 @@ class ApplicationThread {
     void connect_to_service(const std::string& service_name) const;
 
     /**
+     * @brief Asks the reactor to make at once the attempt to connect again to a service that it is waiting to make.
+     *
+     * When an outbound connection is lost or cannot be made, the reactor tries again after
+     * ReactorConfiguration::connect_retry_interval_. An application that learns sooner that the service is back, for
+     * example because the peer has just opened a connection of its own to this process, calls this so that the
+     * attempt is made on the reactor's next pass rather than when the interval runs out. A service with no attempt
+     * waiting, because it is connected, is being connected, or was never asked for, is left alone.
+     *
+     * The same rules apply as for connect_to_service(): it is called from the owning thread, and an unregistered name
+     * throws PreconditionAssertion on the calling thread. The outcome of the attempt is delivered as for any other
+     * attempt, via on_connection_established() or not at all, and the reactor goes on trying at its usual interval.
+     *
+     * @param[in] service_name Logical name of a registered service.
+     */
+    void connect_now(const std::string& service_name) const;
+
+    /**
      * @brief Notifies the reactor that the application has finished processing
      *        a contiguous region of bytes from a RawBytesProtocolHandler connection.
      *

@@ -422,6 +422,15 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
             limit_messages_waiting(id, 64);
         }
         announce_role_to_engine(id);
+        // An engine opens its connection for reports only once it is listening for orders, so this is the moment a
+        // connection to it for orders would succeed. A restarted engine would otherwise wait for this sequencer's next
+        // attempt, up to the reactor's retry interval of 2 seconds later, which is most of the time its restart costs
+        // members. Which engine this is is not known until it announces its role, so the attempt to connect to each is
+        // made now: an engine already connected has no attempt waiting and is left alone (BUG-0237).
+        connect_now("matching_engine");
+        if (config_.ha_enabled) {
+            connect_now("matching_engine_secondary");
+        }
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound connection {} established ({})", id.get_value(), svc);
     }

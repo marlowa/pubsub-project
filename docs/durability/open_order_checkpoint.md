@@ -28,8 +28,8 @@ nothing, and nothing else reclaims it. So the records are there, but **replaying
 slow.** At forty million orders in a
 trading day and one microsecond an order, a full replay is forty seconds. The
 failure being recovered from is a process restart on a healthy machine, which the
-supervisor completes in about two and a half seconds. A forty-second recovery
-behind a two-second restart is not a recovery.
+supervisor completes in well under a second. A forty-second recovery
+behind a sub-second restart is not a recovery.
 
 So the quantity that matters is **the number of orders currently open**, not the
 number the day has seen, and the engine needs something of its own.

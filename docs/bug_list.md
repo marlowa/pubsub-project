@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 238 |
-| Open | 57 (36 defects, 21 tasks) |
-| Closed | 181 |
+| Open | 56 (35 defects, 21 tasks) |
+| Closed | 182 |
 | Next id | BUG-0239 |
 
 ## Open bugs by severity
 
-10 high, 35 medium, 12 low.
+10 high, 34 medium, 12 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -57,7 +57,6 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0235](#bug_0235) | medium | defect | Scenario 80 depends on the second sequencer connecting within the half second to one and a quarter seconds the restarted engine's catch-up lasts, and fails when it connects later |
 | [BUG-0236](#bug_0236) | medium | defect | The COMPID editor writes its administrators' file readable by every account on the host |
-| [BUG-0237](#bug_0237) | medium | defect | After losing a matching engine, the sequencer waits 2 seconds before connecting to it again, which is most of a supervised restart |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -165,35 +164,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0237: After losing a matching engine, the sequencer waits 2 seconds before connecting to it again, which is most of a supervised restart {#bug_0237}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-08 |
-| Recorded | 2026-11-08 |
-| How | Dividing a supervised matching engine's restart into its steps from the Quill logs, for [BUG-0029](#bug_0029) |
-| Impact | A matching engine that dies and is restarted on a healthy machine is ready and holds its lease about 0.6 to 1.3 seconds after dying, but takes no orders until the sequencer connects to it again, 2.1 to 2.5 seconds after the death. Every member's orders wait meanwhile |
-
-**What happens.** The sequencer opens the order connection to each matching engine. When an engine
-dies, the sequencer's `OutboundConnectionManager` logs "service 'matching_engine' failed to connect;
-retrying every 2000ms" and next tries 2 seconds later: the framework's default
-`connect_retry_interval_` in `ReactorConfiguration.hpp`, which no component's configuration changes.
-In the two runs measured on 2026-11-08 the restarted engine was waiting for the connection for 1.21
-and 1.54 seconds, the largest single part of the interruption (the table is under
-[BUG-0029](#bug_0029)).
-
-**The remedy in mind.** Try again soon after the loss, rather than only after a full retry
-interval, for example a first retry within a few tens of milliseconds and then the 2-second interval
-for a peer that stays away. Where the change belongs, in the framework for every outbound connection
-or for the matching engine connection only, is to be settled when it is designed. If the other steps
-stay as measured, the interruption would come down to under a second.
-
-**How to check it.** The measurement under [BUG-0029](#bug_0029), repeated: kill a supervised leading
-engine and read the time from its death to "adopting LEADER role" in its Quill log.
-
-**Designed 2026-11-09:** [reconnecting_to_a_restarted_engine.md](availability/reconnecting_to_a_restarted_engine.md). Option B agreed with Andrew on 9 November 2026: when a matching engine's connection for reports arrives, the sequencer connects to that engine at once.
 
 ### BUG-0236: The COMPID editor writes its administrators' file readable by every account on the host {#bug_0236}
 
@@ -465,6 +435,21 @@ written into the WAL's own records of leadership.
 
 **Designed 2026-11-09:** [engine_absence_after_a_restart.md](availability/engine_absence_after_a_restart.md). Option A agreed with Andrew on 9 November 2026: an `EngineRouted` record in the WAL in quiet spells, with the scenario that shows the fault written first.
 
+
+**Checked 2026-11-10, writing the scenario this entry asks for first: it no longer arises as described; recommended for
+closing, which is Andrew's to decide.** Scenario 105 kills the following sequencer, sends nothing for twelve seconds against
+a limit of four while the leading sequencer routes to an engine that leads throughout, then kills the leading sequencer and
+both arbiters and restarts them with the sequencer killed first started first. That sequencer measures from a stamp 15 to 16
+seconds old, but it is not granted a lease: when it was killed its leader stated that it may not lead, and the arbiters keep
+that statement on disk through their restart ("the recorded statement from instance 1 ... says instance 2 may not lead; no
+lease is granted to it until its leader says otherwise"). The other sequencer leads when it starts, with a stamp of its own a
+second old, and nothing is cancelled or halted. With the arbiters made to forget their recorded statements on purpose, the
+stale sequencer led on its own, and the scenario's check that it does not failed. In that trial it was routed to an engine
+within moments of leading, because the engines were still running, so no halt followed; the halt this entry describes also
+needs the engines down across the restart. A sequencer that misses a period while its peer leads is therefore either barred
+by its leader's statement, or has rejoined as a follower, which writes the stamp too: the stamp is written whenever this sequencer holds an order
+connection to an engine (`EnginePresence::check_absence`), and a follower holds one to the engine that leads, as the leader does. Option A of
+[engine_absence_after_a_restart.md](availability/engine_absence_after_a_restart.md) is not built.
 ### BUG-0166: The reactor writes a Warning for every send to a connection that has gone, not one for each connection {#bug_0166}
 
 | | |
@@ -2678,6 +2663,36 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0237: After losing a matching engine, the sequencer waits 2 seconds before connecting to it again, which is most of a supervised restart {#bug_0237}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-08 |
+| Recorded | 2026-11-08 |
+| Fixed | 2026-11-10 -- when a matching engine's connection for reports arrives, the sequencer makes at once the attempt to connect to each engine for orders that it was waiting to make, through a new framework call, `ApplicationThread::connect_now(service)`, which brings a waiting attempt forward to the reactor's next pass and leaves a service with no attempt waiting alone. An engine opens its connection for reports only once it is listening for orders, because a connection asked for during a thread's initial event is made only after the reactor's listeners are bound. Three integration tests in `OutboundConnectionRetryIntegrationTest`, each made to fail on purpose: a `connect_now` that does nothing failed the first; one that connects with no attempt waiting failed the second, with a second connection; processing commands before the listeners are bound failed the third. Measured three times by killing a supervised leading engine with no orders resting: 0.555, 0.615 and 0.593 seconds from death to leading, both sequencers connecting for orders in the same millisecond as the engine's connection for reports; with the call removed on purpose, 2.16 seconds. In a full run of the 105 `ha_test.py` scenarios, with the WALs cleared first, 104 passed. Scenario 80 failed because its check looked for the leading sequencer's connection to the restarted engine only after the engine introduced itself to the test's listener, and the sequencer now connects in the same millisecond, sometimes first; the check now looks from before anything is killed, and scenario 80 then passed three times |
+| How | Dividing a supervised matching engine's restart into its steps from the Quill logs, for [BUG-0029](#bug_0029) |
+| Impact | A matching engine that dies and is restarted on a healthy machine is ready and holds its lease about 0.6 to 1.3 seconds after dying, but takes no orders until the sequencer connects to it again, 2.1 to 2.5 seconds after the death. Every member's orders wait meanwhile |
+
+**What happens.** The sequencer opens the order connection to each matching engine. When an engine
+dies, the sequencer's `OutboundConnectionManager` logs "service 'matching_engine' failed to connect;
+retrying every 2000ms" and next tries 2 seconds later: the framework's default
+`connect_retry_interval_` in `ReactorConfiguration.hpp`, which no component's configuration changes.
+In the two runs measured on 2026-11-08 the restarted engine was waiting for the connection for 1.21
+and 1.54 seconds, the largest single part of the interruption (the table is under
+[BUG-0029](#bug_0029)).
+
+**The remedy in mind.** Try again soon after the loss, rather than only after a full retry
+interval, for example a first retry within a few tens of milliseconds and then the 2-second interval
+for a peer that stays away. Where the change belongs, in the framework for every outbound connection
+or for the matching engine connection only, is to be settled when it is designed. If the other steps
+stay as measured, the interruption would come down to under a second.
+
+**How to check it.** The measurement under [BUG-0029](#bug_0029), repeated: kill a supervised leading
+engine and read the time from its death to "adopting LEADER role" in its Quill log.
+
+**Designed 2026-11-09, built 2026-11-10:** [reconnecting_to_a_restarted_engine.md](availability/reconnecting_to_a_restarted_engine.md). Option B agreed with Andrew on 9 November 2026: when a matching engine's connection for reports arrives, the sequencer connects to that engine at once.
 
 ### BUG-0211: Changing the size of the matching engine's region during a trading day can rebuild a book that differs from the one the members were told of {#bug_0211}
 

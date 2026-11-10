@@ -230,6 +230,18 @@ class OutboundConnectionManager {
     void retry_failed_connections(const std::function<ConnectionID()>& next_id_fn);
 
     /**
+     * @brief Makes at once the attempt to connect again to a service that is waiting for its retry interval to run out.
+     *
+     * For ApplicationThread::connect_now(). The attempt is made exactly as a due retry is, and if it fails another is
+     * scheduled at the usual interval.
+     *
+     * @param[in] service_id The service.
+     * @param[in] next_id_fn Callable returning the next ConnectionID to allocate.
+     * @return true when an attempt was waiting and has been made; false when none was waiting for this service.
+     */
+    [[nodiscard]] bool connect_now(ServiceID service_id, const std::function<ConnectionID()>& next_id_fn);
+
+    /**
      * @brief Checks all connecting outbound connections against connect_timeout
      *        and tears down any that have exceeded it, delivering ConnectionFailed.
      */

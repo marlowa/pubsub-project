@@ -95,7 +95,14 @@ periodically. Each tick calls `on_housekeeping_tick()`, which:
 - Calls `OutboundConnectionManager::retry_failed_connections()` — every outbound connection that
   failed or was lost is tried again, with a fresh `ConnectionID`, once `connect_retry_interval_`
   (two seconds by default) has passed, for as long as it takes. An application never has to retry a
-  connection itself.
+  connection itself. An application that learns sooner that a service is back, for example because
+  the peer has just opened a connection of its own to this process, calls
+  `ApplicationThread::connect_now(service)`: the attempt waiting for that service is then made at
+  once, as a `ConnectNow` command on the reactor's next pass, instead of when the interval runs out.
+  A service with no attempt waiting is left alone. The sequencer does this when a matching engine
+  opens its connection for reports, which the engine does only once it is listening for orders,
+  because a connection asked for during a thread's initial event is made only after the reactor's
+  own listeners are bound.
 
 Nothing is done on the tick once the reactor has been asked to shut down.
 

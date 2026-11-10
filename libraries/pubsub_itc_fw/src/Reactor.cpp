@@ -1329,6 +1329,11 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                 break;
             }
 
+            case ReactorControlCommand::ConnectNow: {
+                static_cast<void>(outbound_manager_.connect_now(command.service_id_, [this]() { return allocate_connection_id(); }));
+                break;
+            }
+
             case ReactorControlCommand::Disconnect: {
                 const ConnectionID cid = command.connection_id_;
                 const std::string reason = "disconnect requested by application thread";
