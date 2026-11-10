@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 240 |
-| Open | 56 (36 defects, 20 tasks) |
-| Closed | 184 |
+| Open | 55 (35 defects, 20 tasks) |
+| Closed | 185 |
 | Next id | BUG-0241 |
 
 ## Open bugs by severity
 
-9 high, 33 medium, 14 low.
+8 high, 33 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -21,7 +21,6 @@
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
 | [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
-| [BUG-0207](#bug_0207) | high | defect | A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0041](#bug_0041) | medium | defect | Five ways the venue will not start on a RHEL8 target host |
 | [BUG-0045](#bug_0045) | medium | task | A member has no defined way to discover its primary gateway is down |
@@ -457,49 +456,6 @@ halted. That build is not the venue's, and the check is not repeated.
 region takes the lead: trading halts by the command, nothing is cancelled, and an order sent afterwards is refused.
 It becomes possible once the WAL is reclaimed ([BUG-0048](#bug_0048)).
 
-### BUG-0207: A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen {#bug_0207}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-26 |
-| Recorded | 2026-10-26 |
-| How | Reading the code while building the stamp of decision 9 of [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), for [BUG-0146](#bug_0146). Not yet reproduced |
-| Impact | Every open order is cancelled and trading halts, until a person lifts the halt, although an engine was trading throughout |
-
-**What happens.** When the whole venue was down, the leading sequencer measures how long no engine could trade from the
-stamp beside its own WAL, which it writes while it knows of an engine it routes orders to (`EngineRoutedStamp`). A
-sequencer that was itself down, for longer than the limit on automatic recovery, while its peer led and an engine
-traded, holds a stamp from before it went down. If the whole venue then goes down and comes back, and this sequencer
-leads, it measures the absence from its own old stamp, and at once voids the orders it holds, cancels the book and
-halts ([voided_commands.md](availability/voided_commands.md), section 5.3). It can lead only if its WAL is as long as
-its peer's, so only if no record was written while it was down: a venue with orders resting and no command for longer
-than the limit, which is a quiet market, not an unusual one. The limit is `[recovery] automatic_recovery_limit_seconds`,
-10 seconds, so a sequencer down for longer than that, a short time, is enough.
-
-**What is wanted.** The leading sequencer measures from the later of its own stamp and its peer's. The peer's could be
-carried in the exchange of status the two sequencers make when they connect (`StatusQuery`, `StatusResponse`), or
-written into the WAL's own records of leadership.
-
-**Principles.** V11: a loss of resilience is not a loss of service.
-
-**Designed 2026-11-09:** [engine_absence_after_a_restart.md](availability/engine_absence_after_a_restart.md). Option A agreed with Andrew on 9 November 2026: an `EngineRouted` record in the WAL in quiet spells, with the scenario that shows the fault written first.
-
-
-**Checked 2026-11-10, writing the scenario this entry asks for first: it no longer arises as described; recommended for
-closing, which is Andrew's to decide.** Scenario 105 kills the following sequencer, sends nothing for twelve seconds against
-a limit of four while the leading sequencer routes to an engine that leads throughout, then kills the leading sequencer and
-both arbiters and restarts them with the sequencer killed first started first. That sequencer measures from a stamp 15 to 16
-seconds old, but it is not granted a lease: when it was killed its leader stated that it may not lead, and the arbiters keep
-that statement on disk through their restart ("the recorded statement from instance 1 ... says instance 2 may not lead; no
-lease is granted to it until its leader says otherwise"). The other sequencer leads when it starts, with a stamp of its own a
-second old, and nothing is cancelled or halted. With the arbiters made to forget their recorded statements on purpose, the
-stale sequencer led on its own, and the scenario's check that it does not failed. In that trial it was routed to an engine
-within moments of leading, because the engines were still running, so no halt followed; the halt this entry describes also
-needs the engines down across the restart. A sequencer that misses a period while its peer leads is therefore either barred
-by its leader's statement, or has rejoined as a follower, which writes the stamp too: the stamp is written whenever this sequencer holds an order
-connection to an engine (`EnginePresence::check_absence`), and a follower holds one to the engine that leads, as the leader does. Option A of
-[engine_absence_after_a_restart.md](availability/engine_absence_after_a_restart.md) is not built.
 ### BUG-0166: The reactor writes a Warning for every send to a connection that has gone, not one for each connection {#bug_0166}
 
 | | |
@@ -2601,6 +2557,50 @@ logs on many sessions together, repeated, which fails now some of the time.
 
 ## Closed
 
+### BUG-0207: A sequencer that was down for longer than the recovery limit while its peer ran can, after the whole venue restarts, cancel the book and halt for an absence that did not happen {#bug_0207}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-26 |
+| Recorded | 2026-10-26 |
+| Fixed | 2026-11-10 -- closed by decision, with Andrew's agreement, because it no longer arises as described: a sequencer that misses a period while its peer leads is barred from leading by its leader's recorded statement that it may not lead, which the arbiters keep through a restart, or has rejoined as a follower, which writes the stamp too. Scenario 105 is kept to protect the case; with the arbiters made to forget their statements on purpose, it failed. Option A of the design, the `EngineRouted` record, is not built |
+| How | Reading the code while building the stamp of decision 9 of [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), for [BUG-0146](#bug_0146). Not yet reproduced |
+| Impact | Every open order is cancelled and trading halts, until a person lifts the halt, although an engine was trading throughout |
+
+**What happens.** When the whole venue was down, the leading sequencer measures how long no engine could trade from the
+stamp beside its own WAL, which it writes while it knows of an engine it routes orders to (`EngineRoutedStamp`). A
+sequencer that was itself down, for longer than the limit on automatic recovery, while its peer led and an engine
+traded, holds a stamp from before it went down. If the whole venue then goes down and comes back, and this sequencer
+leads, it measures the absence from its own old stamp, and at once voids the orders it holds, cancels the book and
+halts ([voided_commands.md](availability/voided_commands.md), section 5.3). It can lead only if its WAL is as long as
+its peer's, so only if no record was written while it was down: a venue with orders resting and no command for longer
+than the limit, which is a quiet market, not an unusual one. The limit is `[recovery] automatic_recovery_limit_seconds`,
+10 seconds, so a sequencer down for longer than that, a short time, is enough.
+
+**What is wanted.** The leading sequencer measures from the later of its own stamp and its peer's. The peer's could be
+carried in the exchange of status the two sequencers make when they connect (`StatusQuery`, `StatusResponse`), or
+written into the WAL's own records of leadership.
+
+**Principles.** V11: a loss of resilience is not a loss of service.
+
+**Designed 2026-11-09:** [engine_absence_after_a_restart.md](availability/engine_absence_after_a_restart.md). Option A agreed with Andrew on 9 November 2026: an `EngineRouted` record in the WAL in quiet spells, with the scenario that shows the fault written first.
+
+
+**Checked 2026-11-10, writing the scenario this entry asks for first: it no longer arises as described; recommended for
+closing; Andrew agreed on 10 November 2026.** Scenario 105 kills the following sequencer, sends nothing for twelve seconds against
+a limit of four while the leading sequencer routes to an engine that leads throughout, then kills the leading sequencer and
+both arbiters and restarts them with the sequencer killed first started first. That sequencer measures from a stamp 15 to 16
+seconds old, but it is not granted a lease: when it was killed its leader stated that it may not lead, and the arbiters keep
+that statement on disk through their restart ("the recorded statement from instance 1 ... says instance 2 may not lead; no
+lease is granted to it until its leader says otherwise"). The other sequencer leads when it starts, with a stamp of its own a
+second old, and nothing is cancelled or halted. With the arbiters made to forget their recorded statements on purpose, the
+stale sequencer led on its own, and the scenario's check that it does not failed. In that trial it was routed to an engine
+within moments of leading, because the engines were still running, so no halt followed; the halt this entry describes also
+needs the engines down across the restart. A sequencer that misses a period while its peer leads is therefore either barred
+by its leader's statement, or has rejoined as a follower, which writes the stamp too: the stamp is written whenever this sequencer holds an order
+connection to an engine (`EnginePresence::check_absence`), and a follower holds one to the engine that leads, as the leader does. Option A of
+[engine_absence_after_a_restart.md](availability/engine_absence_after_a_restart.md) is not built.
 ### BUG-0091: A member's standing instructions die with the gateway that received them {#bug_0091}
 
 | | |

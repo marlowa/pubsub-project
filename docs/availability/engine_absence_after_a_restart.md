@@ -1,7 +1,10 @@
 # Measuring the engine's absence after the whole venue restarts {#engine_absence_after_a_restart}
 
-**Status: agreed, not built.** This is the design for [BUG-0207](../bug_list.md#bug_0207). Option A was agreed with
-Andrew on 9 November 2026 (section 6).
+**Status: not built, and not needed.** This is the design for [BUG-0207](../bug_list.md#bug_0207). Option A was agreed
+with Andrew on 9 November 2026 (section 6), but the scenario section 4 asks for first, scenario 105, passed against the code
+as it is: a sequencer that missed a period while its peer led is barred from leading by its leader's recorded statement
+that it may not lead, which the arbiters keep through their restart. BUG-0207 was closed by decision on 10 November 2026,
+and scenario 105 is kept to protect the case.
 
 ## 1. The problem
 

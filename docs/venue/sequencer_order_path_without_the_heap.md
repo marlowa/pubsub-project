@@ -1,6 +1,6 @@
 # The leading sequencer's order path without the heap {#sequencer_order_path_without_the_heap}
 
-**Status: section 4, the session map, is built; section 3, the waiting reports, is not.** This is the design for
+**Status: section 4, the session map, is built; section 3, the waiting reports, is being built.** This is the design for
 [BUG-0131](../bug_list.md#bug_0131). Items 1 to 4 below were
 agreed with Andrew on 11 October 2026, and both decisions in section 6 on 9 November 2026: the venue's figure for open orders is each environment's
 `order_book_region_capacity`.
@@ -45,9 +45,16 @@ highest rate measured on this venue, about 34,500 orders a second with two repor
 ring holds 32,768, the size the room for reports held for unannounced sessions already uses. Slab chunks are therefore
 held for at most about a tenth of a second.
 
-**When the ring is full** (decision 1): the leader stops reading the engines' connections for reports, with
+**When the ring is nearly full** (decision 1): the leader stops reading the engines' connections for reports, with
 `pause_reading`, until a commit frees room, and reads them again then. Nothing is copied, allocated or lost, and the
 engine's own pacing (BUG-0234) keeps it from piling up reports meanwhile.
+
+Pausing stops only the reads that come after it: reports the reactor has already read and queued for the sequencer's
+thread still arrive. So each engine's connection for reports is limited to 1,024 messages waiting in that queue
+(`limit_messages_waiting`, the framework's limit of [bounding_messages_waiting.md](../framework/bounding_messages_waiting.md)),
+and the leader pauses once the ring has no more than 1,024 places left for each connection for reports. Every report
+already read then has a place, and the ring cannot overflow. Agreed with Andrew on 10 November 2026, rather than copying
+an overflow to the heap.
 
 ## 4. The session map
 
@@ -62,7 +69,7 @@ sequencer's start-up a few milliseconds. The entries, 352 MB at two million orde
 give real memory to as orders first use each page: about one page fault for every 46 new orders, on the thread that
 sequences them. The matching engine's book uses the same map in the same way. Touching every page at start-up would
 remove those faults at the cost of holding the whole table in memory from the start, about 24 GB in production; that is
-a decision not yet taken.
+decided against, with Andrew, on 10 November 2026: the faults are left until they are measured to cost something.
 
 ## 5. Steps, and how each is known to be right
 
