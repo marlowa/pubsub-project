@@ -209,7 +209,7 @@ void RunConsumer(int cpu, bool simulate_slow_consumer, int busy_work_iters, std:
         if (obj != nullptr) {
             if (simulate_slow_consumer) {
                 for (int k = 0; k < busy_work_iters; ++k) {
-                    asm volatile("" ::: "memory");
+                    std::atomic_signal_fence(std::memory_order_seq_cst);
                 }
             }
 

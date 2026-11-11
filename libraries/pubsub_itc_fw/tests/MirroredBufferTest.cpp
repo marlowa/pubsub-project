@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -203,7 +204,6 @@ TEST_F(MirroredBufferTest, SupportsLargeAddressSpaceReservations) {
 
 TEST_F(MirroredBufferTest, ConcurrentProducerConsumerStress) {
     MirroredBuffer buffer(test_capacity);
-    std::atomic<bool> running{true};
     const int64_t total_bytes = 1'000'000;
     std::atomic<int64_t> consumed_count{0};
 
@@ -304,7 +304,7 @@ TEST_F(MirroredBufferTest, TheVandalRaceTest) {
         for (int64_t i = 0; i < iterations; ++i) {
             while (buffer.space_remaining() < 1) {
                 // Use a volatile assembly clobber to force re-reading memory
-                asm volatile("" ::: "memory");
+                std::atomic_signal_fence(std::memory_order_seq_cst);
             }
             buffer.advance_head(1);
             if (stop.load())
@@ -318,7 +318,7 @@ TEST_F(MirroredBufferTest, TheVandalRaceTest) {
         try {
             while (!stop.load()) {
                 // FORCE THE COMPILER TO RE-READ head_ FROM CACHE
-                asm volatile("" ::: "memory");
+                std::atomic_signal_fence(std::memory_order_seq_cst);
 
                 if (buffer.bytes_available() > 0) {
                     buffer.advance_tail(1);

@@ -377,11 +377,6 @@ template <typename T> class FixedSizeMemoryPool {
 
 #else // the non-valgrind code
 
-// This diagnostic suppression is required because unsigned __int128 is a GNU extension,
-// and we rely on it for the 128-bit tagged pointer used in the Treiber stack.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpedantic"
-
 #include <sys/mman.h>
 
 /*
@@ -812,7 +807,10 @@ template <typename T> class FixedSizeMemoryPool {
         // This avoids both the libatomic PLT call (__atomic_load_16) and
         // the cost of CMPXCHG16B for a read-only load. The alignas(16) on
         // head_raw_ guarantees the required alignment.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic" // unsigned __int128 is a GNU extension; see the class comment
         unsigned __int128 val;
+#pragma GCC diagnostic pop
         __asm__ volatile("movdqa %1, %%xmm0\n\t"
                          "movdqa %%xmm0, %0\n\t"
                          : "=m"(val)
@@ -864,8 +862,11 @@ template <typename T> class FixedSizeMemoryPool {
      *          the inline assembler reload with appropriate equivalents.
      */
     bool compare_exchange_weak(HeadPtr& expected, HeadPtr desired) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic" // unsigned __int128 is a GNU extension; see the class comment
         unsigned __int128 expected_raw;
         unsigned __int128 desired_raw;
+#pragma GCC diagnostic pop
         static_assert(sizeof(expected_raw) == sizeof(expected), "HeadPtr must be 128 bits");
         std::memcpy(&expected_raw, &expected, sizeof(expected));
         std::memcpy(&desired_raw, &desired, sizeof(desired));
@@ -909,7 +910,12 @@ template <typename T> class FixedSizeMemoryPool {
     void* pool_memory_{MAP_FAILED};
     SlotType* slots_{nullptr};
 
+    // The 128-bit tagged pointer of the Treiber stack: a pointer and a counter, swapped together by one
+    // CMPXCHG16B, so that a slot freed and reused between a read and a swap is not mistaken for the one read.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic" // unsigned __int128 is a GNU extension; see the class comment
     alignas(16) mutable unsigned __int128 head_raw_{0U};
+#pragma GCC diagnostic pop
 
     FixedSizeMemoryPool<T>* next_pool_{nullptr};
     std::atomic<uint64_t> allocation_count_{0};
@@ -1146,5 +1152,3 @@ template <typename T> inline FixedSizeMemoryPool<T>* FixedSizeMemoryPool<T>::get
 }
 
 } // namespaces
-
-#pragma GCC diagnostic pop

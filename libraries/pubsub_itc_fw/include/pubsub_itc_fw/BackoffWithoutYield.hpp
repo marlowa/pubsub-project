@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <atomic>
 #include <cstdint> // IWYU pragma: keep
 #include <thread>
 
@@ -66,7 +67,7 @@ namespace pubsub_itc_fw {
  * `reset()` when progress is made.
  *
  * On non-x86 platforms `_mm_pause` is not available. A compiler barrier
- * (`__asm__ volatile("" ::: "memory")`) is used instead, which prevents
+ * (`std::atomic_signal_fence(std::memory_order_seq_cst)`) is used instead, which prevents
  * the loop from being optimised away while adding no hardware delay. On
  * such platforms `BackoffWithoutYield` degenerates to a simple retry loop.
  *
@@ -129,7 +130,7 @@ class BackoffWithoutYield {
 #else
             // No hardware pause available. A compiler barrier prevents the
             // loop from being optimised away.
-            __asm__ volatile("" ::: "memory");
+            std::atomic_signal_fence(std::memory_order_seq_cst);
 #endif
         }
 
