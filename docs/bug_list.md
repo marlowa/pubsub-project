@@ -511,6 +511,26 @@ every trading-day figure from those runs was measured on the order path through 
 does not keep looking for work. The before-and-after comparison in phase 8 step 5 is not affected,
 because the same engine led on both sides of it.
 
+**Where it stands, 11 November 2026.** Built as Andrew chose, option B: the configured time to look for work before
+sleeping applies only while an engine leads. The reactor's time can be changed while it runs
+(`Reactor::set_spin_before_block`), and the matching engine sets it at every change of role
+(`MatchingEngineThread::keep_looking_for_work_while_leading`): the configured time when it leads, none when it follows or
+catches up, so a standby holds no core. Both engines in `dev.toml` are now configured with 50 ms. In a running venue only
+the leading engine logs that it is looking for work. All 109 scenarios pass.
+
+Measured with the method above, five runs of 6,000 orders at 100 a second, the first discarded, the secondary made to
+lead by stopping the primary engine once the venue had started and restarting it as the follower:
+
+| Matching engine leading | Median round trip in each run, microseconds |
+|---|---|
+| the primary | 106.3, 106.5, 106.5, 106.6 |
+| the secondary | 110.3, 108.4, 108.4, 106.6 |
+| the primary | 106.2, 106.0, 104.9, 104.9 |
+| the secondary | 110.8, 106.9, 102.8, 102.3 |
+
+The difference of about 23 microseconds is gone. `prod.toml`, `preprod.toml` and `test-1.toml` still configure no time
+for either engine, which belongs with [BUG-0073](#bug_0073).
+
 ### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
 
 | | |

@@ -39,6 +39,7 @@
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/PduProtocolHandler.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -123,6 +124,7 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration, const Servic
     , inbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, *this, logger_)
     , outbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, service_registry_, *this, logger_)
     , metrics_endpoint_(reactor_configuration.metrics_configuration) {
+    spin_before_block_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(config_.spin_before_block).count(), std::memory_order_relaxed);
     wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (wake_fd_ == -1) {
         throw PubSubItcException("eventfd for wake_fd failed in Reactor constructor");
@@ -1189,6 +1191,18 @@ int Reactor::poll_for_work(std::array<epoll_event, 64>& events, int64_t spin_ns,
     return 0;
 }
 
+void Reactor::set_spin_before_block(std::chrono::microseconds spin) {
+    if (spin.count() < 0) {
+        throw PreconditionAssertion("Reactor::set_spin_before_block: the time must not be negative", __FILE__, __LINE__);
+    }
+    const int64_t spin_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(spin).count();
+    if (spin_before_block_ns_.exchange(spin_ns, std::memory_order_relaxed) == spin_ns) {
+        return;
+    }
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor: now looking for work for up to {}us before sleeping{}", spin.count(),
+               spin_ns > 0 ? " -- this uses a core" : ", so the core is free while there is nothing to do");
+}
+
 void Reactor::event_loop() {
     std::array<epoll_event, 64> events{};
 
@@ -1199,14 +1213,15 @@ void Reactor::event_loop() {
     // core runs at a fraction of its speed for the first tens of microseconds after something
     // lands on it, and on this venue that was most of what a member waited for at low order
     // rates. See "Waiting for work" in docs/framework/threading.md.
-    const int64_t spin_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(config_.spin_before_block).count();
     const int32_t quiet_spins = config_.quiet_spins_between_polls > 0 ? config_.quiet_spins_between_polls : 1;
-    if (spin_ns > 0) {
+    if (spin_before_block_ns_.load(std::memory_order_relaxed) > 0) {
         PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor: looking for work for up to {}us before sleeping, {} quiet spin(s) between looks -- this uses a core",
                    config_.spin_before_block.count(), quiet_spins);
     }
 
     while (lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running) {
+        // Read at every look, because set_spin_before_block can change it while the loop runs.
+        const int64_t spin_ns = spin_before_block_ns_.load(std::memory_order_relaxed);
         int nfds = 0;
         if (spin_ns > 0) {
             nfds = poll_for_work(events, spin_ns, quiet_spins);

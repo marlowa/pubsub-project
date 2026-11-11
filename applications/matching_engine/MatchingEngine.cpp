@@ -39,7 +39,9 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
     reactor_configuration_.cpu_layout_component = config_.cpu_layout_component;
     reactor_configuration_.metrics_configuration = config_.metrics_configuration;
     reactor_configuration_.connect_retry_warning_interval_ = config_.connect_retry_warning_interval;
-    reactor_configuration_.spin_before_block = config_.reactor_spin_before_block;
+    // The reactor starts without looking for work before sleeping: the engine thread turns the configured time on when the
+    // instance leads, and off again when it does not (MatchingEngineThread::keep_looking_for_work_while_leading).
+    reactor_configuration_.spin_before_block = std::chrono::microseconds{0};
     // Left at the framework's default unless the deployed file named a number of its own.
     if (config_.reactor_quiet_spins_between_polls >= 0) {
         reactor_configuration_.quiet_spins_between_polls = config_.reactor_quiet_spins_between_polls;

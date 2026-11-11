@@ -105,6 +105,25 @@ class Reactor : public ThreadLookupInterface {
     int run();
 
     /**
+     * @brief Changes how long the reactor looks for work before sleeping, while it runs.
+     *
+     * For a component whose need changes with its role: a matching engine that leads is on the order path and keeps
+     * looking, and one that stands by sleeps so as not to hold a core. Takes effect at the reactor's next look for
+     * work; a reactor already asleep keeps sleeping until something wakes it. Safe to call from any thread.
+     *
+     * @param[in] spin How long to look before sleeping; zero means sleep at once. See ReactorConfiguration::spin_before_block.
+     */
+    void set_spin_before_block(std::chrono::microseconds spin);
+
+    /**
+     * @brief How long the reactor now looks for work before sleeping.
+     * @return The time last given to set_spin_before_block, or the configured time if it has not been called.
+     */
+    [[nodiscard]] std::chrono::microseconds spin_before_block() const {
+        return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::nanoseconds{spin_before_block_ns_.load(std::memory_order_relaxed)});
+    }
+
+    /**
      * @brief Initiates a graceful shutdown of the reactor and all threads.
      *
      * @param[in] reason The reason for the shutdown.
@@ -810,6 +829,10 @@ class Reactor : public ThreadLookupInterface {
     // Configuration and dependencies -- must precede slab allocators and managers
     // in declaration order so the constructor initialiser list is valid.
     ReactorConfiguration config_;
+
+    // How long the event loop looks for work before sleeping, in nanoseconds. Starts as config_.spin_before_block and
+    // may be changed by set_spin_before_block from another thread, so the loop reads it at every look.
+    std::atomic<int64_t> spin_before_block_ns_{0};
     const ServiceRegistry& service_registry_;
     QuillLogger& logger_;
 

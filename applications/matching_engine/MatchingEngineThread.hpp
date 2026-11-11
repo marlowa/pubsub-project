@@ -351,6 +351,9 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     EngineTestEventLinks test_event_links_{*this};
     std::optional<pubsub_itc_fw::TestEventChannel> test_events_;
 
+    // Applies the configured reactor spin while this instance leads, and none otherwise. Called at every change of role.
+    void keep_looking_for_work_while_leading();
+
     // Reports a change of role to the test, if one started this instance.
     void report_role_change(MeRole from, MeRole to);
 

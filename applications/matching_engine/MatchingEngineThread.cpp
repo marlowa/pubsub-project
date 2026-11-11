@@ -1098,6 +1098,7 @@ void MatchingEngineThread::adopt_leader_role() {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: adopting LEADER role (epoch={})", epoch_);
     report_role_change(role_.role(), MeRole::Leader);
     role_.became_leader();
+    keep_looking_for_work_while_leading();
     announce_role();
 
     // This instance is going to serve, so anything it caught up on and held back is owed to the
@@ -1185,6 +1186,15 @@ pubsub_itc_fw::LeadershipRole leadership_role(MeRole role) {
 }
 
 } // un-named namespace
+
+void MatchingEngineThread::keep_looking_for_work_while_leading() {
+    // The configured time to look for work before sleeping applies only while this instance leads. A leader is on the
+    // order path, and a reactor that sleeps between orders costs each order the time an idle core takes to wake (about
+    // 20 microseconds a round trip, BUG-0151). An instance that follows or is catching up is not on the order path, and
+    // looking would hold a core for nothing.
+    const bool leads = role_.role() == MeRole::Leader;
+    get_reactor().set_spin_before_block(leads ? config_.reactor_spin_before_block : std::chrono::microseconds{0});
+}
 
 void MatchingEngineThread::report_role_change(MeRole from, MeRole to) {
     if (test_events_.has_value()) {
@@ -1335,6 +1345,7 @@ void MatchingEngineThread::handle_lease_refusal(const pubsub_itc_fw::EventMessag
 void MatchingEngineThread::enter_follower_state() {
     const MeRole previous = role_.role();
     role_.became_follower();
+    keep_looking_for_work_while_leading();
     // Logged here rather than at each caller, so no path into this state is silent. Support
     // reading a log after an incident wants every role CHANGE in it -- but a secondary that
     // starts as a follower and is then confirmed as one has not changed anything, and
@@ -1445,6 +1456,7 @@ void MatchingEngineThread::follow_the_wal_again(const char* why) {
                "MatchingEngineThread: following the WAL -- {}, so asking to be caught up again from the last command applied, {}, and to go on following", why,
                state_machine_.highest_applied());
     role_.start_catching_up_to_follow_again();
+    keep_looking_for_work_while_leading();
     catch_up_.stop_following();
     begin_reconciliation();
 }

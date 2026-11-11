@@ -317,6 +317,17 @@ class PlacedThread : public ApplicationThread {
 
 } // namespaces
 
+TEST_F(ReactorTest, TheTimeSpentLookingForWorkCanBeChangedWhileTheReactorRuns) {
+    EXPECT_EQ(reactor_->spin_before_block(), std::chrono::microseconds{0}) << "the configured time, which is none";
+    reactor_->set_spin_before_block(std::chrono::microseconds{50000});
+    EXPECT_EQ(reactor_->spin_before_block(), std::chrono::microseconds{50000});
+    EXPECT_TRUE(logger_with_sink_.contains_message("now looking for work for up to 50000us"));
+    reactor_->set_spin_before_block(std::chrono::microseconds{0});
+    EXPECT_EQ(reactor_->spin_before_block(), std::chrono::microseconds{0});
+    EXPECT_THROW(reactor_->set_spin_before_block(std::chrono::microseconds{-1}),
+                 PreconditionAssertion); // NOLINT(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
+}
+
 TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown) {
     ReactorConfiguration cfg;
     cfg.init_phase_timeout_ = std::chrono::milliseconds(50);
