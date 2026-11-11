@@ -2,16 +2,19 @@
 
 > **Two rules.**
 >
-> 1. **The filesystem holding the write-ahead logs and the venue's small state files must be
->    mounted `lazytime`.** That is every write-ahead log (the sequencers' and the matching engine
->    publishers'), the matching engines' epoch files, and every lease promise record. Without it
+> 1. **The filesystem holding the write-ahead logs, the venue's small state files and the matching
+>    engines' open-order regions must be mounted `lazytime`.** That is every write-ahead log (the
+>    sequencers' and the matching engine publishers'), the matching engines' epoch files, every lease
+>    promise record, and each matching engine's open-order region. Without it
 >    the sequencer stalls for hundreds of milliseconds at a time, on the thread that sequences every
 >    order the venue takes. With it, those stalls do not happen at all.
-> 2. **The matching engines' open-order regions must not be on that filesystem.** A region is a
->    large file, and while one is being created or filled, every small file synced on the same
->    filesystem waits for it: measured, for more than two seconds, long enough for leases to run
->    out and the venue to lose its leaders. See
->    [Keep the large file away from the small synced files](#fs_keep_regions_apart).
+> 2. **Every file the venue writes through a memory mapping on the order path needs `lazytime`.** The
+>    write-ahead log segments and the open-order regions are both written that way, by the thread
+>    that handles each order. Without `lazytime`, a write to a page that the kernel has just written
+>    back to disk makes the kernel update the file's modification time through the journal, and the
+>    thread waits for any journal commit under way. A region being created delays the small files
+>    synced beside it, so the disk must be fast enough that this does not cost a lease. See
+>    [A region being created delays the small synced files](#fs_region_creation).
 >
 > This is a mount option. It is not in this repository, it is not in any configuration file the
 > venue reads, and nothing about the code suggests it matters.
@@ -170,12 +173,11 @@ override it for a one-off run:
 export PUBSUB_WAL_ROOT=/somewhere/else      # before scripts/devsetup.sh
 ```
 
-`deploy.py` then places every write-ahead log and the small synced files under it, and keeps the
-open-order regions in the install directory, on a different filesystem
-([Keep the large file away from the small synced files](#fs_keep_regions_apart)). It says so:
+`deploy.py` then places every write-ahead log, the small synced files and the open-order regions under
+it ([A region being created delays the small synced files](#fs_region_creation)). It says so:
 
 ```
-PUBSUB_WAL_ROOT is set: write-ahead logs and the venue's small state files go under /nvme/mystuff2; open-order regions do not
+PUBSUB_WAL_ROOT is set: write-ahead logs, the venue's small state files and the open-order regions go under /nvme/mystuff2
 ```
 
 The variable is named for the write-ahead logs, but also covers the small state files. If one of
@@ -237,7 +239,7 @@ mechanism is about mapped writeback rather than about the log. The matching engi
 region is the other one, written continuously while the venue trades. See
 [BUG-0071](../bug_list.md#bug_0071), which records a related defect in how that region is warmed.
 
-## Keep the large file away from the small synced files {#fs_keep_regions_apart}
+## A region being created delays the small synced files {#fs_region_creation}
 
 The venue writes two kinds of file that interfere with each other when they share a filesystem.
 
@@ -299,20 +301,29 @@ makes a matching engine create its region again, six runs each, a lease of 3000 
 Two of the runs on `/nvme` were ones in which the BX500 took more than 20 seconds to create the region;
 the records on `/nvme` were unaffected. Details are in [BUG-0228](../bug_list.md#bug_0228).
 
-**The rule.** The open-order regions go on a different disk from the write-ahead logs and the small
-synced files, not only a different filesystem. `deploy.py` does this: with `PUBSUB_WAL_ROOT` set, the write-ahead logs, epoch
-files and promise records go under it, and the regions stay in the install directory. On the
-development machine that is:
+**Where the files are.** All on one `lazytime` filesystem, on the faster disk. With `PUBSUB_WAL_ROOT`
+set, `deploy.py` puts the write-ahead logs, the epoch files, the promise records and the open-order regions
+under it. On the development machine that is:
 
 | File | Where | Filesystem |
 |---|---|---|
-| Write-ahead logs, epoch files, promise records | `/nvme/mystuff2/var` | `/nvme`, mounted `lazytime`, on a Crucial P310 NVMe SSD |
-| Open-order regions | `installed/var` | `/mnt/sda1`, on a Crucial BX500 SATA SSD |
+| Write-ahead logs, epoch files, promise records, open-order regions | `/nvme/mystuff2/var` | `/nvme`, mounted `lazytime`, on a Crucial P310 NVMe SSD |
 
-**What this does not settle.** The region's own filesystem is not mounted `lazytime` on the development
-machine, so the matching engine is still exposed to the timestamp traffic described in
-[Applies to more than the log](#fs_beyond_the_log). The best arrangement is a third filesystem,
-mounted `lazytime`, for the regions alone. A production machine should have one.
+The regions are there because each is written through a memory mapping on every order and every cancel,
+by the matching engine's thread, and needs `lazytime` as the write-ahead log does
+([Applies to more than the log](#fs_beyond_the_log)). On `/mnt/sda1`, mounted without `lazytime`, three
+trading-day runs on 10 and 11 November 2026 had stalls of up to 971 ms in which both matching engines'
+threads waited at once ([BUG-0243](../bug_list.md#bug_0243)).
+
+**What was checked with the regions beside the small synced files, on 11 November 2026.** Scenario 80,
+which makes a matching engine create its region again while leadership is being settled, passed three
+times of three, and all 109 high availability scenarios passed, with every engine creating a fresh
+region at each start.
+
+**What a production machine needs.** The NVMe disk creates a region quickly enough that the small files
+synced beside it are not held long. A slower disk would hold them as the measurements above show. A
+production machine should give the regions a `lazytime` filesystem of their own on a different disk,
+or put everything on a disk at least as fast as this one.
 
 ## Related
 

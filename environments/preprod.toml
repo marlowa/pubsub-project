@@ -527,6 +527,15 @@ reactor_spin_before_block = "0s"
 epoch_state_file    = "/opt/pubsub/var/matching_engine_epoch.state"
 # The open orders, so an order placed before a restart is still open after one.
 # Alongside the epoch file and outside the versioned tree for the same reason.
+#
+# The region is a memory-mapped file, written on every order and every cancel by
+# the thread that applies them. It must be on a filesystem mounted with the
+# lazytime option, as the write-ahead logs are. Without lazytime, a write
+# through the mapping to a page the kernel has just written back to disk makes
+# the kernel update the file's modification time through the filesystem's
+# journal, and the engine's thread waits for any journal commit under way: an
+# order can wait for hundreds of milliseconds, and every order behind it waits
+# too. See docs/operations/filesystem_requirements.md.
 order_book_region_path     = "/opt/pubsub/var/matching_engine_open_orders.region"
 # The most orders that may be open at once; the region cannot grow past it.
 order_book_region_capacity = 1000000

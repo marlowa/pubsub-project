@@ -1006,9 +1006,8 @@ def main() -> None:
     # The sequencer binary requires an absolute path; the environment files store them as
     # relative paths so they stay portable across machines and containers.
     #
-    # PUBSUB_WAL_ROOT overrides that root for one machine only, for the write-ahead logs and for the
-    # small state files the venue syncs (below), but not for the open-order regions, which must be on
-    # another filesystem. The name says WAL because the write-ahead log came first. Those files are
+    # PUBSUB_WAL_ROOT overrides that root for one machine only, for the write-ahead logs, the small
+    # state files the venue syncs, and the open-order regions (below). The name says WAL because the write-ahead log came first. Those files are
     # measurably better on a device of their own mounted lazytime -- see
     # docs/operations/filesystem_requirements.md -- but which device that is cannot go in an
     # environment file, because dev.toml serves both the Linux Mint host
@@ -1021,7 +1020,7 @@ def main() -> None:
         if not wal_root_path.is_dir():
             print(f"error: PUBSUB_WAL_ROOT is set to {wal_root}, which is not a directory", file=sys.stderr)
             sys.exit(1)
-        print(f"PUBSUB_WAL_ROOT is set: write-ahead logs and the venue's small state files go under {wal_root_path}; open-order regions do not")
+        print(f"PUBSUB_WAL_ROOT is set: write-ahead logs, the venue's small state files and the open-order regions go under {wal_root_path}")
 
     # Every write-ahead log: the sequencers' and the matching engine publishers'. A relative path
     # left unresolved would be taken relative to the directory the component runs in, which is its
@@ -1048,15 +1047,21 @@ def main() -> None:
     # promise records -- go with the write-ahead logs. Each is written and synced before the vote or
     # change of leadership it records takes effect, on the thread that handles leases.
     #
-    # The matching engines' open-order regions do NOT go with them, and must not. A region is a large
-    # file (about 500 MB as configured) that the engine creates from scratch when it finds none, and
-    # writes continuously while trading. On ext4, a sync of any file waits for the journal to commit,
-    # and the commit waits for the data of newly written blocks on the same filesystem to reach the
-    # disk. So a small file synced on the same filesystem as a region being created waits for the
-    # region's data: measured on 2026-10-03, the sequencer's first promise record took 2.3 seconds,
-    # starting 0.2 seconds after a region was created beside it, and its lease ran out (BUG-0107).
-    # The region therefore stays in the install directory, on a different filesystem from the one
-    # PUBSUB_WAL_ROOT names; see docs/operations/filesystem_requirements.md.
+    # The matching engines' open-order regions go there too, because each is a memory-mapped file
+    # that the engine writes on every order and every cancel, on the thread that applies them. On a
+    # filesystem mounted without lazytime, a write through the mapping to a page that the kernel has
+    # just written back to disk traps into the kernel, which updates the file's modification time
+    # through the filesystem's journal; if a journal commit is under way, the engine's thread waits
+    # for it. That is the stall the write-ahead log suffered before it moved to a lazytime filesystem
+    # (BUG-0070), and the open-order regions are the same kind of file. lazytime keeps the time in
+    # memory and leaves it out of the journal, so the write goes on without waiting.
+    #
+    # The cost of sharing the filesystem: a region is a large file (about 500 MB as configured) that
+    # the engine creates in full when it finds none, and on ext4 a sync of any small file waits for the
+    # data of newly written blocks on the same filesystem to reach the disk. A promise record synced
+    # while a region is being created beside it waits for the region; measured on 2026-10-03, 2.3
+    # seconds (BUG-0107). A slow promise record now delays only the grant it records, not the thread
+    # that handles leases. See docs/operations/filesystem_requirements.md.
     #
     # All are files rather than directories, so it is the parent that gets created. The epoch file
     # is written when leadership first moves, and its absence reads as generation zero, which is
@@ -1071,7 +1076,7 @@ def main() -> None:
             configured = Path(namespace[key])
             state_path = configured
             if not configured.is_absolute():
-                goes_with_logs = bool(wal_root) and key not in region_keys
+                goes_with_logs = bool(wal_root)
                 state_path = (Path(wal_root) / configured) if goes_with_logs else (install_dir / configured)
                 other_place = (install_dir / configured) if goes_with_logs else ((Path(wal_root) / configured) if wal_root else None)
                 state_path.parent.mkdir(parents=True, exist_ok=True)

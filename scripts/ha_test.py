@@ -7536,9 +7536,9 @@ def clear_write_ahead_logs(prefix: Path) -> None:
 def venue_state_dir(prefix: Path) -> Path:
     """The directory holding the matching engines' open-order regions.
 
-    Read from the deployed matching engine configuration rather than assumed. deploy.py keeps the
-    regions off the filesystem that holds the write-ahead logs and the small state files, because a
-    region being created there delays every sync of those files (BUG-0107).
+    Read from the deployed matching engine configuration rather than assumed: deploy.py puts the regions
+    under PUBSUB_WAL_ROOT when it is set, beside the write-ahead logs, and in the install directory when
+    it is not.
     """
     config = prefix / "etc" / "matching_engine" / "matching_engine_primary.toml"
     if config.is_file():
