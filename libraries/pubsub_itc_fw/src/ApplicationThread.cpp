@@ -102,12 +102,12 @@ ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reac
         // Bounds are set here rather than in each component's TOML because this measures the
         // framework's own hand-off, which costs the same order of magnitude whatever the
         // application above it does. They span from a hundred nanoseconds -- below any
-        // plausible queue push -- to a hundred milliseconds, so a thread that is merely busy
-        // and a thread that has stopped being scheduled both land somewhere readable rather
+        // plausible queue push -- to five seconds, so a thread that is merely busy and a
+        // thread that has stalled for most of a second both land somewhere readable rather
         // than both landing in the overflow bucket.
         const std::vector<double> itc_queue_latency_buckets = {
-            100.0,    250.0,    500.0,    1000.0,    2500.0,    5000.0,    10000.0,    25000.0,    50000.0,
-            100000.0, 250000.0, 500000.0, 1000000.0, 2500000.0, 5000000.0, 10000000.0, 50000000.0, 100000000.0,
+            100.0,     250.0,     500.0,     1000.0,     2500.0,     5000.0,      10000.0,     25000.0,     50000.0,      100000.0,     250000.0,     500000.0,
+            1000000.0, 2500000.0, 5000000.0, 10000000.0, 50000000.0, 100000000.0, 250000000.0, 500000000.0, 1000000000.0, 2500000000.0, 5000000000.0,
         };
         itc_queue_latency_histogram_ =
             reactor_.metrics().register_histogram(thread_config.metrics_scope.c_str(), "itc_queue_latency_nanoseconds",

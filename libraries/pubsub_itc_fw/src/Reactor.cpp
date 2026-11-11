@@ -1251,8 +1251,8 @@ void Reactor::register_command_latency_metrics() {
     // halves of one hand-off, and they can only be added together or compared with each other
     // if a given duration falls in the same bucket in both.
     const std::vector<double> waited_buckets = {
-        100.0,    250.0,    500.0,    1000.0,    2500.0,    5000.0,    10000.0,    25000.0,    50000.0,
-        100000.0, 250000.0, 500000.0, 1000000.0, 2500000.0, 5000000.0, 10000000.0, 50000000.0, 100000000.0,
+        100.0,     250.0,     500.0,     1000.0,     2500.0,     5000.0,      10000.0,     25000.0,     50000.0,      100000.0,     250000.0,     500000.0,
+        1000000.0, 2500000.0, 5000000.0, 10000000.0, 50000000.0, 100000000.0, 250000000.0, 500000000.0, 1000000000.0, 2500000000.0, 5000000000.0,
     };
     const char* const command_help =
         "Nanoseconds a command spent between an application thread enqueueing it and the reactor picking it up; scope says whether a member was waiting";
