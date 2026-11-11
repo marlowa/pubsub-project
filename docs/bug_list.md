@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 245 |
-| Open | 46 (25 defects, 21 tasks) |
-| Closed | 199 |
+| Open | 45 (24 defects, 21 tasks) |
+| Closed | 200 |
 | Next id | BUG-0246 |
 
 ## Open bugs by severity
 
-7 high, 31 medium, 8 low.
+7 high, 30 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -41,7 +41,6 @@
 | [BUG-0134](#bug_0134) | medium | defect | A venue running without a standby says so once, and not at all when no follower is connected |
 | [BUG-0135](#bug_0135) | medium | defect | While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record |
 | [BUG-0136](#bug_0136) | medium | task | Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known |
-| [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
 | [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
 | [BUG-0173](#bug_0173) | medium | task | No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests |
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
@@ -455,81 +454,6 @@ the script that generates it (`scripts/make_grafana_dashboard.py`), `docs/operat
 already stored under the old label do not join up with the new one.
 
 **When.** After phase 5 of the recovery plan is finished, because steps 3 and 4 add more code that uses these names, and the renaming is then done once. Andrew agreed on 15 October 2026.
-
-### BUG-0151: The order's round trip is about 20 microseconds slower when the secondary matching engine leads {#bug_0151}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-13 |
-| Recorded | 2026-10-13 |
-| How | Measuring the order's round trip before and after step 3 of phase 3 of the recovery plan, by the method in `docs/operations/latency_findings.md` |
-| Impact | After the primary matching engine fails and the secondary takes over, every order takes about a sixth longer, for as long as the secondary leads. Which matching engine leads is also not controlled when the venue starts, so a latency measurement can compare two different order paths without anyone noticing |
-
-**What was found.** Five runs of 6,000 orders at 100 a second, from a FIX load client pinned to
-processors 0 and 1, the first run discarded, against a venue started on fresh state:
-
-| Matching engine leading | Median round trip in each run, microseconds |
-|---|---|
-| the primary (`matching_engine`, metrics port 9205) | 109.2, 109.5, 112.7, 113.0 |
-| the secondary (`matching_engine_secondary`, metrics port 9206) | 135.0, 132.6, 134.2, 133.1 |
-
-Both rows are the same build, commit `623115c`. A build from before that commit, with the primary
-leading, gave 112.4 to 118.3. The secondary led in one of the nine starts made for these measurements,
-and the primary in the other eight.
-
-**The likely cause, not yet confirmed.** `environments/dev.toml` gives the primary matching engine
-`reactor_spin_before_block = "50ms"`, with the comment "on the order round trip", and the secondary
-`reactor_spin_before_block = "0s"`, with the comment "a standby, so it should not hold a core
-waiting". At 100 orders a second an order arrives every 10 milliseconds, so the primary's reactor is
-still spinning when the next one arrives, and the secondary's has gone to sleep. `latency_findings.md`
-measures a sleeping thread as costing about 20 microseconds a hop to start again, which is about the
-difference. The setting follows the instance's name, primary or secondary, when what matters is its
-role, leader or follower, and either instance can lead. The two sequencers are both configured at 50
-milliseconds, so they do not have this difference.
-
-**What is wanted.** Confirm the cause first, by starting the venue with the secondary leading and its
-setting changed to 50 milliseconds, and seeing whether the round trip falls back to about 112
-microseconds. If it does, either give both matching engines the same setting, or make the reactor
-spin only while its instance leads, which would keep a follower from holding a core it does not need.
-Separately, a latency measurement should say which matching engine led, and refuse to compare runs in
-which different ones did.
-
-**Why the secondary can lead after a fresh start.** Until [BUG-0154](#bug_0154) was fixed,
-`scripts/devenv.py --fresh-wal` left in place the records of lease promises from the run before. An
-instance holding a record that it led asks to lead at once, without waiting a lease period, so the
-instance that led last could lead again. Whether that is what made the secondary lead in the one start
-of nine has not been checked.
-
-**Which engine led in the trading-day runs, 29 and 31 October 2026.** In each of the three runs of
-`profiles/trading_day.toml` made on those days, `perf_run.py` clearing every lease promise record
-first, the secondary matching engine led: only its report-out histogram
-(`order_path_elapsed_nanoseconds`, scope `er_out`) counted anything, and the primary's counted
-nothing. The secondary's reactor lap was between 27 and 38 microseconds at the median in each, against
-1.8 for the sequencers, which is what a reactor that sleeps between orders would show. So
-every trading-day figure from those runs was measured on the order path through the engine that
-does not keep looking for work. The before-and-after comparison in phase 8 step 5 is not affected,
-because the same engine led on both sides of it.
-
-**Where it stands, 11 November 2026.** Built as Andrew chose, option B: the configured time to look for work before
-sleeping applies only while an engine leads. The reactor's time can be changed while it runs
-(`Reactor::set_spin_before_block`), and the matching engine sets it at every change of role
-(`MatchingEngineThread::keep_looking_for_work_while_leading`): the configured time when it leads, none when it follows or
-catches up, so a standby holds no core. Both engines in `dev.toml` are now configured with 50 ms. In a running venue only
-the leading engine logs that it is looking for work. All 109 scenarios pass.
-
-Measured with the method above, five runs of 6,000 orders at 100 a second, the first discarded, the secondary made to
-lead by stopping the primary engine once the venue had started and restarting it as the follower:
-
-| Matching engine leading | Median round trip in each run, microseconds |
-|---|---|
-| the primary | 106.3, 106.5, 106.5, 106.6 |
-| the secondary | 110.3, 108.4, 108.4, 106.6 |
-| the primary | 106.2, 106.0, 104.9, 104.9 |
-| the secondary | 110.8, 106.9, 102.8, 102.3 |
-
-The difference of about 23 microseconds is gone. `prod.toml`, `preprod.toml` and `test-1.toml` still configure no time
-for either engine, which belongs with [BUG-0073](#bug_0073).
 
 ### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
 
@@ -2384,6 +2308,82 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0151: The order's round trip is about 20 microseconds slower when the secondary matching engine leads {#bug_0151}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-13 |
+| Recorded | 2026-10-13 |
+| Fixed | 2026-11-11 -- a matching engine looks for work before sleeping only while it leads (`Reactor::set_spin_before_block`, `MatchingEngineThread::keep_looking_for_work_while_leading`), and both engines in `dev.toml` are configured with 50 ms; with the secondary leading, the median round trip is now 102 to 111 microseconds against the primary's 105 to 107. Closed by Andrew's decision |
+| How | Measuring the order's round trip before and after step 3 of phase 3 of the recovery plan, by the method in `docs/operations/latency_findings.md` |
+| Impact | After the primary matching engine fails and the secondary takes over, every order takes about a sixth longer, for as long as the secondary leads. Which matching engine leads is also not controlled when the venue starts, so a latency measurement can compare two different order paths without anyone noticing |
+
+**What was found.** Five runs of 6,000 orders at 100 a second, from a FIX load client pinned to
+processors 0 and 1, the first run discarded, against a venue started on fresh state:
+
+| Matching engine leading | Median round trip in each run, microseconds |
+|---|---|
+| the primary (`matching_engine`, metrics port 9205) | 109.2, 109.5, 112.7, 113.0 |
+| the secondary (`matching_engine_secondary`, metrics port 9206) | 135.0, 132.6, 134.2, 133.1 |
+
+Both rows are the same build, commit `623115c`. A build from before that commit, with the primary
+leading, gave 112.4 to 118.3. The secondary led in one of the nine starts made for these measurements,
+and the primary in the other eight.
+
+**The likely cause, not yet confirmed.** `environments/dev.toml` gives the primary matching engine
+`reactor_spin_before_block = "50ms"`, with the comment "on the order round trip", and the secondary
+`reactor_spin_before_block = "0s"`, with the comment "a standby, so it should not hold a core
+waiting". At 100 orders a second an order arrives every 10 milliseconds, so the primary's reactor is
+still spinning when the next one arrives, and the secondary's has gone to sleep. `latency_findings.md`
+measures a sleeping thread as costing about 20 microseconds a hop to start again, which is about the
+difference. The setting follows the instance's name, primary or secondary, when what matters is its
+role, leader or follower, and either instance can lead. The two sequencers are both configured at 50
+milliseconds, so they do not have this difference.
+
+**What is wanted.** Confirm the cause first, by starting the venue with the secondary leading and its
+setting changed to 50 milliseconds, and seeing whether the round trip falls back to about 112
+microseconds. If it does, either give both matching engines the same setting, or make the reactor
+spin only while its instance leads, which would keep a follower from holding a core it does not need.
+Separately, a latency measurement should say which matching engine led, and refuse to compare runs in
+which different ones did.
+
+**Why the secondary can lead after a fresh start.** Until [BUG-0154](#bug_0154) was fixed,
+`scripts/devenv.py --fresh-wal` left in place the records of lease promises from the run before. An
+instance holding a record that it led asks to lead at once, without waiting a lease period, so the
+instance that led last could lead again. Whether that is what made the secondary lead in the one start
+of nine has not been checked.
+
+**Which engine led in the trading-day runs, 29 and 31 October 2026.** In each of the three runs of
+`profiles/trading_day.toml` made on those days, `perf_run.py` clearing every lease promise record
+first, the secondary matching engine led: only its report-out histogram
+(`order_path_elapsed_nanoseconds`, scope `er_out`) counted anything, and the primary's counted
+nothing. The secondary's reactor lap was between 27 and 38 microseconds at the median in each, against
+1.8 for the sequencers, which is what a reactor that sleeps between orders would show. So
+every trading-day figure from those runs was measured on the order path through the engine that
+does not keep looking for work. The before-and-after comparison in phase 8 step 5 is not affected,
+because the same engine led on both sides of it.
+
+**Where it stands, 11 November 2026.** Built as Andrew chose, option B: the configured time to look for work before
+sleeping applies only while an engine leads. The reactor's time can be changed while it runs
+(`Reactor::set_spin_before_block`), and the matching engine sets it at every change of role
+(`MatchingEngineThread::keep_looking_for_work_while_leading`): the configured time when it leads, none when it follows or
+catches up, so a standby holds no core. Both engines in `dev.toml` are now configured with 50 ms. In a running venue only
+the leading engine logs that it is looking for work. All 109 scenarios pass.
+
+Measured with the method above, five runs of 6,000 orders at 100 a second, the first discarded, the secondary made to
+lead by stopping the primary engine once the venue had started and restarting it as the follower:
+
+| Matching engine leading | Median round trip in each run, microseconds |
+|---|---|
+| the primary | 106.3, 106.5, 106.5, 106.6 |
+| the secondary | 110.3, 108.4, 108.4, 106.6 |
+| the primary | 106.2, 106.0, 104.9, 104.9 |
+| the secondary | 110.8, 106.9, 102.8, 102.3 |
+
+The difference of about 23 microseconds is gone. `prod.toml`, `preprod.toml` and `test-1.toml` still configure no time
+for either engine, which belongs with [BUG-0073](#bug_0073).
 
 ### BUG-0243: In a trading-day run, a few orders took up to 1.5 seconds and the cause is not known {#bug_0243}
 
