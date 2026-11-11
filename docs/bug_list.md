@@ -8925,7 +8925,7 @@ beside their promise records. A third change keeps the regions on a different fi
 write-ahead logs and the small synced files. Five scenario runs since, the first straight after a
 build, recorded no promise write of 50 ms or more and no lease running out, while the engine created a
 fresh region at every start. The rule is written up in
-[filesystem_requirements.md](operations/filesystem_requirements.md#fs_keep_regions_apart).
+[filesystem_requirements.md](operations/filesystem_requirements.md#fs_region_creation).
 
 **How it would show if it came back.** Any promise record write of 50 ms or more is logged with how
 long it took.
