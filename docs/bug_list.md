@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 245 |
-| Open | 45 (24 defects, 21 tasks) |
-| Closed | 200 |
+| Open | 44 (23 defects, 21 tasks) |
+| Closed | 201 |
 | Next id | BUG-0246 |
 
 ## Open bugs by severity
 
-7 high, 30 medium, 8 low.
+7 high, 29 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -29,7 +29,6 @@
 | [BUG-0059](#bug_0059) | medium | task | No defence against a member reconnecting in a loop with the wrong protocol |
 | [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
-| [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
 | [BUG-0087](#bug_0087) | medium | task | Whether the hot path allocates cannot be established on demand |
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
 | [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
@@ -1233,52 +1232,6 @@ the arbiters and witness are quieter and can wait until something needs explaini
 
 ---
 
-### BUG-0073: The placeholder environments carry settings nobody chose {#bug_0073}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-08-31 |
-| Recorded | 2026-08-31 |
-| How | Checking why `binary_order_gateway_b`'s pool size was undefined in `prod.toml`, and finding the enablement flags |
-| Impact | None today: these environments are not deployed to. The cost arrives when one becomes real and its unconsidered values are inherited as though they had been decided |
-
-**What they contain.** `prod.toml`, `preprod.toml` and `test-1.toml` are identical in this
-respect, and differ from dev:
-
-| Component | dev | prod, preprod, test-1 |
-|---|---|---|
-| `fix_order_gateway_a` | enabled | enabled |
-| `fix_order_gateway_b` | enabled | **disabled** |
-| `binary_order_gateway_a` | enabled | **disabled** |
-| `binary_order_gateway_b` | enabled | **disabled** |
-
-**These environments exist as a reminder that other environments will**, rather than as
-descriptions of anything running. Nothing is deployed to them, so nothing is broken today. That
-is the reason this is recorded rather than fixed in haste: the values in them are not wrong so
-much as unconsidered, and the difference matters only later.
-
-**Why it is worth an entry at all.** Three things follow from placeholder values sitting in a
-file that looks authoritative:
-
-1. **A disabled standby reads as a decision.** `fix_order_gateway_b` is off in all three. When
-   one of these becomes real, whoever brings it up inherits a venue with no gateway to fail over
-   to -- and the design work in [BUG-0045](#bug_0045) and [BUG-0046](#bug_0046) assumes a second
-   gateway exists. Andrew's judgement on the equivalent binary flag was that it is simply a
-   mistake.
-2. **The binary gateway is the one every load run has used.** The trading-day runs behind
-   [BUG-0070](#bug_0070)'s latency figures and [BUG-0048](#bug_0048)'s volume figures all ran
-   `--gateway binary`. Those findings are downstream of whichever gateway feeds the sequencer so
-   they stand, but the binary gateway's own configuration has been exercised nowhere except dev.
-3. **That is how [BUG-0072](#bug_0072) happened.** Its 4,096 open-order slots is the compiled-in
-   default, in a file nobody runs, which is precisely where a figure nobody chose survives
-   unnoticed.
-
-**What closing this needs**, and it is small: for each flag, a decision and a comment in the file
-saying which it is -- deliberate staging, or a value awaiting a real deployment. A placeholder
-that says it is a placeholder cannot be mistaken for a considered setting, and that is the whole
-of the fix.
-
 ### BUG-0060: Microbursts are not measured, and the venue has no story for them {#bug_0060}
 
 | | |
@@ -2308,6 +2261,53 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0073: The placeholder environments carry settings nobody chose {#bug_0073}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-31 |
+| Recorded | 2026-08-31 |
+| Fixed | 2026-11-11 -- `prod.toml`, `preprod.toml` and `test-1.toml` each open with a notice that the file is a placeholder, not a tested configuration, and their `[env]` sections say `placeholder = true`; `deploy.py` refuses such a file unless given `--placeholder-environment` (`scripts/tests/test_deploy_placeholder.py`, which fails with the refusal removed). Comparing the files found 404 settings that differ from `dev.toml`, most of them missing from the placeholders, so the files are marked as a whole rather than flag by flag; bringing one up to date waits until a real deployment needs it. Metrics are on in every environment, and can still be turned off. Option A, chosen by Andrew |
+| How | Checking why `binary_order_gateway_b`'s pool size was undefined in `prod.toml`, and finding the enablement flags |
+| Impact | None today: these environments are not deployed to. The cost arrives when one becomes real and its unconsidered values are inherited as though they had been decided |
+
+**What they contain.** `prod.toml`, `preprod.toml` and `test-1.toml` are identical in this
+respect, and differ from dev:
+
+| Component | dev | prod, preprod, test-1 |
+|---|---|---|
+| `fix_order_gateway_a` | enabled | enabled |
+| `fix_order_gateway_b` | enabled | **disabled** |
+| `binary_order_gateway_a` | enabled | **disabled** |
+| `binary_order_gateway_b` | enabled | **disabled** |
+
+**These environments exist as a reminder that other environments will**, rather than as
+descriptions of anything running. Nothing is deployed to them, so nothing is broken today. That
+is the reason this is recorded rather than fixed in haste: the values in them are not wrong so
+much as unconsidered, and the difference matters only later.
+
+**Why it is worth an entry at all.** Three things follow from placeholder values sitting in a
+file that looks authoritative:
+
+1. **A disabled standby reads as a decision.** `fix_order_gateway_b` is off in all three. When
+   one of these becomes real, whoever brings it up inherits a venue with no gateway to fail over
+   to -- and the design work in [BUG-0045](#bug_0045) and [BUG-0046](#bug_0046) assumes a second
+   gateway exists. Andrew's judgement on the equivalent binary flag was that it is simply a
+   mistake.
+2. **The binary gateway is the one every load run has used.** The trading-day runs behind
+   [BUG-0070](#bug_0070)'s latency figures and [BUG-0048](#bug_0048)'s volume figures all ran
+   `--gateway binary`. Those findings are downstream of whichever gateway feeds the sequencer so
+   they stand, but the binary gateway's own configuration has been exercised nowhere except dev.
+3. **That is how [BUG-0072](#bug_0072) happened.** Its 4,096 open-order slots is the compiled-in
+   default, in a file nobody runs, which is precisely where a figure nobody chose survives
+   unnoticed.
+
+**What closing this needs**, and it is small: for each flag, a decision and a comment in the file
+saying which it is -- deliberate staging, or a value awaiting a real deployment. A placeholder
+that says it is a placeholder cannot be mistaken for a considered setting, and that is the whole
+of the fix.
 
 ### BUG-0151: The order's round trip is about 20 microseconds slower when the secondary matching engine leads {#bug_0151}
 

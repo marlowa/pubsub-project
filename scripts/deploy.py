@@ -889,6 +889,11 @@ def parse_args() -> argparse.Namespace:
         help=f"environment TOML (default: {_DEFAULT_ENV_FILE})",
     )
     parser.add_argument(
+        "--placeholder-environment", action="store_true",
+        help="deploy an environment file whose [env] section says placeholder = true. Such a file is not a "
+             "tested configuration (docs/bug_list.md, BUG-0073), so this has to be asked for",
+    )
+    parser.add_argument(
         "--install-dir", type=Path, default=None, metavar="PATH",
         help="install directory for binaries and config "
              "(default: paths.install_dir from the env TOML)",
@@ -937,6 +942,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def refuse_a_placeholder_environment(env: dict, env_path: Path, allowed: bool) -> None:
+    """Stop unless the environment is a real one, or the caller has asked for a placeholder by name.
+
+    A placeholder environment file exists as a reminder that other environments will exist. It is not kept up to date
+    with dev.toml and most of its values were never chosen, so deploying it by accident would build a venue unlike the
+    one that is tested.
+
+    @param[in] env      The environment, as loaded.
+    @param[in] env_path The file it was loaded from, for the message.
+    @param[in] allowed  Whether --placeholder-environment was given.
+    """
+    if env.get("env", {}).get("placeholder") is True and not allowed:
+        sys.exit(f"error: {env_path} is a placeholder, not a tested configuration: see the notice at the top of the file. "
+                 "Bring it up to date with dev.toml before deploying it, or pass --placeholder-environment to deploy it as it is.")
+
+
 def main() -> None:
     args = parse_args()
 
@@ -948,6 +969,7 @@ def main() -> None:
     if not env_path.is_file():
         sys.exit(f"error: env file not found: {env_path}")
     env = load_env(env_path)
+    refuse_a_placeholder_environment(env, env_path, args.placeholder_environment)
     if args.db_port is not None:
         override_db_port(env, args.db_port)
     check_admin_service_db_url(env)

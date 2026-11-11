@@ -196,6 +196,10 @@ python3 scripts/deploy.py --env environments/prod.toml \
                   --skip-certs
 ```
 
+`prod.toml`, `preprod.toml` and `test-1.toml` are placeholders, not tested configurations: each says so at its top and
+in its `[env]` section (`placeholder = true`), and `deploy.py` refuses them unless given `--placeholder-environment`.
+Only `dev.toml` is kept up to date and tested.
+
 Steps performed in order:
 
 1. **Unpack** the artefact into the install directory, stripping its top-level directory.

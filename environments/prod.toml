@@ -1,9 +1,21 @@
+# ============================================================================================================
+# THIS IS A PLACEHOLDER, NOT A TESTED CONFIGURATION.
+#
+# This file exists as a reminder that environments other than dev will exist. Nothing is deployed with it,
+# nothing tests it, and it is not kept up to date with dev.toml: many settings dev.toml has are missing here,
+# so the compiled-in defaults would apply, and most of the values that are here were never chosen for a real
+# deployment (BUG-0073). Before using it, bring it up to date with dev.toml and decide every value.
+#
+# deploy.py refuses this file unless it is given --placeholder-environment, because of the "placeholder = true"
+# line in the [env] section below.
+# ============================================================================================================
+#
 # environments/prod.toml
 #
 # Production deployment.  Each component runs on its own dedicated host.
 # Fill in the actual hostnames/IPs for your environment before running
-# deploy.py.  Lines marked REPLACE must be changed; all others are
-# reasonable production defaults.
+# deploy.py.  Lines marked REPLACE must be changed, and so must much else: see the
+# notice at the top of this file.
 #
 # Consumed by:
 #   deploy.py --env environments/prod.toml --artefact pubsub-<ver>.tar.gz \
@@ -30,6 +42,8 @@
 
 [env]
 name        = "prod"
+# See the notice at the top of this file.
+placeholder = true
 description = "Production deployment. One component per dedicated host."
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -332,7 +346,9 @@ automatic_recovery_limit_seconds = 10
 orders_held_at_most_seconds = 5
 # Metrics for the whole venue. One edit turns the scrape endpoints on or off
 # everywhere; each component still has its own listener host and port below.
-metrics_enabled     = false
+# On in every environment. Setting it to false turns every endpoint off, and the
+# venue works the same without them: nothing in it depends on metrics.
+metrics_enabled     = true
 metrics_application = "pubsub"
 # Bucket bounds in nanoseconds for the order round-trip histogram, which every order
 # gateway registers. Declared once here and expanded into each gateway's file because
