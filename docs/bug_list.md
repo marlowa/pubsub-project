@@ -264,6 +264,33 @@ Twice in about 250 scenario runs, each in a different scenario, so a full run of
 without any fault in the venue. The cause is still not known; the next step is to capture the client's own exit status
 and standard error when it happens, which the harness does not keep.
 
+**Replacing fix8 with a FIX client of the project's own, and how much work it is.** Considered on 11 November
+2026 and deferred by Andrew. Such a client would give the harness control of the client's behaviour, its exit status
+and its error output, and remove this failure along with fix8. The size of the work:
+
+- **What it replaces.** `f8test`, a program from the third-party fix8 engine, which the harness drives by typing
+  commands into its interactive console and reading its printed output (`send_orders`, `client_reports`,
+  `await_new_orders` in `scripts/ha_test.py`). `ha_test.py` refers to the fix8 client 133 times through its process
+  handles, `perf_run.py` 26 times and `callgrind_run.py` 11 times. The harness also writes fix8 configuration
+  variants (`write_fix8_variant`, `write_no_reset_fix8_config`, `write_recovery_fix8_config`), provisions fix8's
+  credentials, and clears fix8's stored session state between scenarios.
+- **What the client must do, because the scenarios depend on it.** Log on with credentials; send and answer
+  heartbeats and test requests; keep its message numbers on disk so that they survive a restart, in configurations
+  that keep or reset them; answer a resend request and ask for one, with gap fills; send orders and cancels in counted
+  bursts; and report every execution report and refusal in a form the harness reads directly, with an exit status
+  that says whether it failed. Each of these has to be right, or the scenarios test the client instead of the venue.
+- **What exists to build on.** The `fix_codec` library reads, writes and validates FIX messages.
+  `BinaryLoadClientMain.cpp` (858 lines) has the generation, pacing and counting of orders and the time each took to
+  be answered, which a FIX client needs too and could share. `scripts/fix_load_client.py` (538 lines) is a FIX client
+  for load, with no resend handling and no stored numbering.
+- **The steps.** An inventory of every fix8 behaviour the three scripts use; a design, agreed before code; the client,
+  with a FIX session layer the binary client does not need, so estimated at two to three times the binary client's
+  size, with unit tests; then the harness's client helpers rewritten, and the scenarios moved over in groups, each
+  group followed by a full run of the suite (about an hour), keeping fix8 until the last group has moved.
+- **The cost besides the work.** fix8 is an independent implementation of FIX, so today it checks the gateway against
+  another reading of the standard. A client of the project's own shares the project's reading. A small set of
+  scenarios should stay on fix8, or another independent engine, as a check of conformance.
+
 ### BUG-0229: The functional specification has not been checked against the code, and specifies recovery far more than normal operation {#bug_0229}
 
 | | |
