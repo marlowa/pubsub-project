@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 244 |
+| Bugs recorded | 245 |
 | Open | 46 (25 defects, 21 tasks) |
-| Closed | 198 |
-| Next id | BUG-0245 |
+| Closed | 199 |
+| Next id | BUG-0246 |
 
 ## Open bugs by severity
 
-7 high, 32 medium, 7 low.
+7 high, 31 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -51,7 +51,6 @@
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
-| [BUG-0243](#bug_0243) | medium | defect | In a trading-day run, a few orders took up to 1.5 seconds and the cause is not known |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -59,6 +58,7 @@
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
 | [BUG-0244](#bug_0244) | low | defect | An idle connection to the authentication service is closed every ten minutes and reported as a Warning |
+| [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
 
 ---
 
@@ -155,82 +155,25 @@ went looking.
 
 ## Open
 
-### BUG-0243: In a trading-day run, a few orders took up to 1.5 seconds and the cause is not known {#bug_0243}
+### BUG-0245: In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it {#bug_0245}
 
 | | |
 |---|---|
-| Severity | medium |
-| Found | 2026-11-10 |
-| Recorded | 2026-11-10 |
-| How | The trading-day run made to finish checking [BUG-0130](#bug_0130): `perf_run.py --gateway binary --clients 4 --client-cpus 0,1 --profile profiles/trading_day_latency.toml`, with the machine in its measuring state. Quill logs, resource usage and the manifest are in `tmp/nov10/run-logs`; the profiling data is in `installed/perf/20261110_151139` |
-| Impact | At 1,925 orders a second, every order that arrives during a stall waits for it. In the worst thirty seconds of this run the 99.9th percentile was 1.5 seconds. The 90-minute phase's 99.9th percentile was 27 ms, while its 99th was 237 microseconds |
+| Severity | low |
+| Found | 2026-11-11 |
+| Recorded | 2026-11-11 |
+| How | The fourth trading-day run for [BUG-0243](#bug_0243), the first with the open-order regions on `/nvme` |
+| Impact | Not known: one run only. If it is real, orders at the start of the day are slower at the 99th percentile |
 
-**What was measured.** Every order was acknowledged: 13,016,000 sent, and 13,016,000 counted by `orders_processed_total` on the primary matching engine, which led throughout. The round trip, from Prometheus, in microseconds:
+**What was measured.** The 99th percentile of the round trip was 326 microseconds in the pre-open phase and 384 in the
+open auction, against 238 to 250 in the same phases of three earlier runs. The later phases matched the earlier
+runs, 238 to 240. Logs are in `tmp/nov10/run4-logs`.
 
-| Phase | Orders | Median | 99th percentile | 99.9th percentile |
-|---|---|---|---|---|
-| pre-open | 35,876 | 178 | 246 | 480 |
-| open auction | 840,731 | 184 | 248 | 474 |
-| morning steady | 207,704 | 175 | 234 | 294 |
-| sustained elevated | 10,389,533 | 171 | 237 | 27,330 |
-| midday lull | 20,032 | 177 | 237 | 368 |
-| afternoon burst | 598,830 | 175 | 238 | 413 |
-| close | 925,271 | 181 | 239 | 469 |
-
-Within the 90-minute phase, 22 of 180 windows of thirty seconds had a 99.9th percentile above 1 ms. Most were between 2 and 25 ms. Two episodes were far larger: 413 and 886 ms in the windows sampled at 15:44:35 and 15:45:05, and 1,511, 458 and 232 ms in those sampled at 16:51:05 to 16:52:05. The other phases, including the two at the highest rates, show none.
-
-**Not established.** Which stage of the order path the time went to, and whether something else on the machine caused it. No component wrote a Warning or an Error that explains it. Both sequencers made only their first WAL segment on the writing thread, so waiting for a new segment is ruled out.
-
-**What is wanted.** The order path's stage histograms read for those two episodes, to find which thread held the orders, then the cause found. The run must be repeated on an otherwise idle machine before the stalls are attributed to the venue.
-
-**Repeated on an idle machine, 10 November 2026, 21:38 to 23:35.** The same command, with nothing else in use. Every
-order was processed again (13,016,000 of 13,016,000). Medians 178 to 185 microseconds and 99th percentiles 238 to
-241 in every phase. The 90-minute phase's 99.9th percentile was 940 microseconds, and 14 of its 180 windows were above
-1 ms. Two episodes were large: 224 ms in the window sampled at 22:23:55, and 439, 940, 432, 389 and 971 ms from 23:09:55
-to 23:11:55. So the stalls are not caused by other use of the machine. Logs and resource usage are kept in
-`tmp/nov10/run2-logs`, and the profiling data in `installed/perf/20261110_213828`.
-
-**What the two runs show.**
-
-- In the windows of the 23:10 episode, the time an order waited in the queue of commands for the matching engine's
-  thread (`itc_queue_latency_nanoseconds`) reached the top of its histogram, 100 ms, in both engines at once, the
-  follower as well as the leader. The reactors' own command latency stayed below 5 ms. The orders were waiting for
-  the engines' application threads.
-- The matching engines grow their order book's storage in steps, logging "order book storage growing -- allocating".
-  Both engines grew it to 564 MB at 22:23:25.247, the moment of the 224 ms stall. Both runs' largest stalls followed
-  the growth to 1,128 MB: it happened at 16:39:44 and 23:06:34, and the stalls began at 16:51 and 23:09. The first run's
-  stall at 15:44 followed a growth to 282 MB at 15:43:15.
-- Swap did not change during the 23:10 episode (608 to 613 MB free), and at least 4.3 GB of memory was available.
-- The open-order regions are on `/mnt/sda1`, which is mounted without `lazytime`; the WALs are on `/nvme`, which has
-  it. `lazytime` is what removed the stalls of [BUG-0070](#bug_0070).
-
-**Not established.** Which of these is the cause. The growth explains the stall at 22:23 directly, but not why the
-largest stalls come minutes after a growth. Next: the engine's own time for each command around those moments, and a
-run with the regions on a file system mounted with `lazytime`, or with the book's storage sized for the run at
-start-up, each changed alone.
-
-**Third run, 11 November 2026, 08:36 to 10:35, with histograms measuring up to 5 seconds.** Same command, idle
-machine, every order processed. The 90-minute phase's 99.9th percentile was 486 microseconds, and 14 of its 180
-windows were above 1 ms. The largest episode was 184, 930 and 476 ms in the windows sampled at 09:59:04 to 10:01:04;
-another reached 156 ms at 09:06:34. In the 10:00:34 window the wait in the matching engines' queues was 926 ms in the
-primary and 857 ms in the secondary: the whole stall of the round trip is time the orders spent waiting for the two
-engines' application threads, both at once. The reactors' command waits stayed below 5 ms.
-
-This run does not support the order book's growth as the cause of the largest stalls. The growth to 1,128 MB came at
-10:04:43, after the largest stall, not before it, and no growth happened near 09:06 (the nearest was at 09:08:13).
-Logs and resource usage are in `tmp/nov10/run3-logs`, and the profiling data in `installed/perf/20261111_083637`.
-What stops both engines' threads together remains to be found; the regions' mount without `lazytime` is still untested.
-
-**Fourth run, 11 November 2026, 11:57 to 13:54, with the open-order regions on `/nvme`, mounted `lazytime`.** Nothing
-else changed: the same command, the same build, an idle machine. Every order was processed. In the 90-minute phase,
-4 of 180 windows were above 1 ms, against 14 to 22 in each of the three runs with the regions on `/mnt/sda1`, and the
-largest was 13.7 ms, against 930 to 1,511 ms. The 99.9th percentile was 417 microseconds. The stalls in which both
-engines' threads waited together for most of a second did not occur. This supports the regions' mount as their
-cause. The 99th percentile in the first two phases was higher than in the earlier runs, 326 and 384 microseconds
-against 238 to 250, and is not explained. Logs and resource usage are in `tmp/nov10/run4-logs`, and the profiling
-data in `installed/perf/20261111_115722`.
+**What is wanted.** A second run, to see whether it repeats. If it does, find what is slower in the first minutes
+of a run: one candidate is the matching engines writing to a region newly created on `/nvme`.
 
 **Principles.** None directly.
+
 
 ### BUG-0244: An idle connection to the authentication service is closed every ten minutes and reported as a Warning {#bug_0244}
 
@@ -2394,6 +2337,84 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0243: In a trading-day run, a few orders took up to 1.5 seconds and the cause is not known {#bug_0243}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-10 |
+| Recorded | 2026-11-10 |
+| Fixed | 2026-11-11 -- the matching engines' open-order regions moved to the `lazytime` filesystem beside the write-ahead logs (`deploy.py`, with `PUBSUB_WAL_ROOT` set). In a trading-day run with nothing else changed, the largest stall was 13.7 ms, against 930 to 1,511 ms in three runs before, and 4 windows of 180 were above 1 ms, against 14 to 22. Closed by Andrew's decision on that evidence |
+| How | The trading-day run made to finish checking [BUG-0130](#bug_0130): `perf_run.py --gateway binary --clients 4 --client-cpus 0,1 --profile profiles/trading_day_latency.toml`, with the machine in its measuring state. Quill logs, resource usage and the manifest are in `tmp/nov10/run-logs`; the profiling data is in `installed/perf/20261110_151139` |
+| Impact | At 1,925 orders a second, every order that arrives during a stall waits for it. In the worst thirty seconds of this run the 99.9th percentile was 1.5 seconds. The 90-minute phase's 99.9th percentile was 27 ms, while its 99th was 237 microseconds |
+
+**What was measured.** Every order was acknowledged: 13,016,000 sent, and 13,016,000 counted by `orders_processed_total` on the primary matching engine, which led throughout. The round trip, from Prometheus, in microseconds:
+
+| Phase | Orders | Median | 99th percentile | 99.9th percentile |
+|---|---|---|---|---|
+| pre-open | 35,876 | 178 | 246 | 480 |
+| open auction | 840,731 | 184 | 248 | 474 |
+| morning steady | 207,704 | 175 | 234 | 294 |
+| sustained elevated | 10,389,533 | 171 | 237 | 27,330 |
+| midday lull | 20,032 | 177 | 237 | 368 |
+| afternoon burst | 598,830 | 175 | 238 | 413 |
+| close | 925,271 | 181 | 239 | 469 |
+
+Within the 90-minute phase, 22 of 180 windows of thirty seconds had a 99.9th percentile above 1 ms. Most were between 2 and 25 ms. Two episodes were far larger: 413 and 886 ms in the windows sampled at 15:44:35 and 15:45:05, and 1,511, 458 and 232 ms in those sampled at 16:51:05 to 16:52:05. The other phases, including the two at the highest rates, show none.
+
+**Not established.** Which stage of the order path the time went to, and whether something else on the machine caused it. No component wrote a Warning or an Error that explains it. Both sequencers made only their first WAL segment on the writing thread, so waiting for a new segment is ruled out.
+
+**What is wanted.** The order path's stage histograms read for those two episodes, to find which thread held the orders, then the cause found. The run must be repeated on an otherwise idle machine before the stalls are attributed to the venue.
+
+**Repeated on an idle machine, 10 November 2026, 21:38 to 23:35.** The same command, with nothing else in use. Every
+order was processed again (13,016,000 of 13,016,000). Medians 178 to 185 microseconds and 99th percentiles 238 to
+241 in every phase. The 90-minute phase's 99.9th percentile was 940 microseconds, and 14 of its 180 windows were above
+1 ms. Two episodes were large: 224 ms in the window sampled at 22:23:55, and 439, 940, 432, 389 and 971 ms from 23:09:55
+to 23:11:55. So the stalls are not caused by other use of the machine. Logs and resource usage are kept in
+`tmp/nov10/run2-logs`, and the profiling data in `installed/perf/20261110_213828`.
+
+**What the two runs show.**
+
+- In the windows of the 23:10 episode, the time an order waited in the queue of commands for the matching engine's
+  thread (`itc_queue_latency_nanoseconds`) reached the top of its histogram, 100 ms, in both engines at once, the
+  follower as well as the leader. The reactors' own command latency stayed below 5 ms. The orders were waiting for
+  the engines' application threads.
+- The matching engines grow their order book's storage in steps, logging "order book storage growing -- allocating".
+  Both engines grew it to 564 MB at 22:23:25.247, the moment of the 224 ms stall. Both runs' largest stalls followed
+  the growth to 1,128 MB: it happened at 16:39:44 and 23:06:34, and the stalls began at 16:51 and 23:09. The first run's
+  stall at 15:44 followed a growth to 282 MB at 15:43:15.
+- Swap did not change during the 23:10 episode (608 to 613 MB free), and at least 4.3 GB of memory was available.
+- The open-order regions are on `/mnt/sda1`, which is mounted without `lazytime`; the WALs are on `/nvme`, which has
+  it. `lazytime` is what removed the stalls of [BUG-0070](#bug_0070).
+
+**Not established.** Which of these is the cause. The growth explains the stall at 22:23 directly, but not why the
+largest stalls come minutes after a growth. Next: the engine's own time for each command around those moments, and a
+run with the regions on a file system mounted with `lazytime`, or with the book's storage sized for the run at
+start-up, each changed alone.
+
+**Third run, 11 November 2026, 08:36 to 10:35, with histograms measuring up to 5 seconds.** Same command, idle
+machine, every order processed. The 90-minute phase's 99.9th percentile was 486 microseconds, and 14 of its 180
+windows were above 1 ms. The largest episode was 184, 930 and 476 ms in the windows sampled at 09:59:04 to 10:01:04;
+another reached 156 ms at 09:06:34. In the 10:00:34 window the wait in the matching engines' queues was 926 ms in the
+primary and 857 ms in the secondary: the whole stall of the round trip is time the orders spent waiting for the two
+engines' application threads, both at once. The reactors' command waits stayed below 5 ms.
+
+This run does not support the order book's growth as the cause of the largest stalls. The growth to 1,128 MB came at
+10:04:43, after the largest stall, not before it, and no growth happened near 09:06 (the nearest was at 09:08:13).
+Logs and resource usage are in `tmp/nov10/run3-logs`, and the profiling data in `installed/perf/20261111_083637`.
+What stops both engines' threads together remains to be found; the regions' mount without `lazytime` is still untested.
+
+**Fourth run, 11 November 2026, 11:57 to 13:54, with the open-order regions on `/nvme`, mounted `lazytime`.** Nothing
+else changed: the same command, the same build, an idle machine. Every order was processed. In the 90-minute phase,
+4 of 180 windows were above 1 ms, against 14 to 22 in each of the three runs with the regions on `/mnt/sda1`, and the
+largest was 13.7 ms, against 930 to 1,511 ms. The 99.9th percentile was 417 microseconds. The stalls in which both
+engines' threads waited together for most of a second did not occur. This supports the regions' mount as their
+cause. The 99th percentile in the first two phases was higher than in the earlier runs, 326 and 384 microseconds
+against 238 to 250; that is recorded as [BUG-0245](#bug_0245). Logs and resource usage are in `tmp/nov10/run4-logs`, and the profiling
+data in `installed/perf/20261111_115722`.
+
+**Principles.** None directly.
 
 ### BUG-0177: The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value {#bug_0177}
 
