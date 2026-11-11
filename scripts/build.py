@@ -676,7 +676,30 @@ def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverag
     run_command(cmake_args, cwd=build_dir, description="Configuring CMake")
 
 
-def build_project(build_dir, jobs=None, verbose=False):
+def keep_going_arguments(build_dir):
+    """
+    The arguments that make the build tool carry on past a failed file and build everything else it can.
+
+    cmake --build passes anything after "--" to the build tool, and make and Ninja spell this differently:
+    make takes -k, and Ninja takes -k with the number of failures to allow, where 0 means no limit. The
+    generator is read from the build directory's CMake cache, because that is the tool that will run.
+
+    @param[in] build_dir Configured build tree.
+    @return The arguments to append to the cmake --build command, starting with "--".
+    """
+    generator = ""
+    cache = Path(build_dir) / "CMakeCache.txt"
+    if cache.is_file():
+        for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("CMAKE_GENERATOR:INTERNAL="):
+                generator = line.split("=", 1)[1]
+                break
+    if "Ninja" in generator:
+        return ["--", "-k", "0"]
+    return ["--", "-k"]
+
+
+def build_project(build_dir, jobs=None, verbose=False, keep_going=False):
     """Build the project using cmake --build (works with make and ninja)"""
     if jobs is None:
         try:
@@ -688,6 +711,9 @@ def build_project(build_dir, jobs=None, verbose=False):
     cmd = ["cmake", "--build", str(build_dir), "--parallel", str(jobs)]
     if verbose:
         cmd.append("--verbose")
+    if keep_going:
+        # Every file that can be compiled is compiled, so one build reports every error rather than the first.
+        cmd.extend(keep_going_arguments(build_dir))
 
     run_command(
         cmd,
@@ -1162,6 +1188,11 @@ Examples:
         help='Show compiler and linker command lines during build'
     )
 
+    parser.add_argument('--keep-going', '-k', action='store_true',
+        help='Do not stop at the first file that fails to compile: build everything that can be built, so that '
+             'one build reports every error. The build still fails at the end if anything failed'
+    )
+
     parser.add_argument('--build-dir', type=Path, default=None,
         help='Build directory path. Defaults to ./build for a plain build and to '
              './build-<flavour> for an instrumented one (build-coverage, build-asan, '
@@ -1292,7 +1323,7 @@ Examples:
                         enable_doxygen=not args.no_doxygen, enable_tla_pages=not args.skip_tla,
                         debug=args.debug)
 
-        build_project(build_dir, jobs=args.jobs, verbose=args.verbose)
+        build_project(build_dir, jobs=args.jobs, verbose=args.verbose, keep_going=args.keep_going)
 
         if not skip_cpp_tests:
             run_tests(build_dir, use_tsan=args.tsan, tsan_suppressions=args.tsan_suppressions)
