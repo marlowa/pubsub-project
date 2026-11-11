@@ -221,6 +221,15 @@ This run does not support the order book's growth as the cause of the largest st
 Logs and resource usage are in `tmp/nov10/run3-logs`, and the profiling data in `installed/perf/20261111_083637`.
 What stops both engines' threads together remains to be found; the regions' mount without `lazytime` is still untested.
 
+**Fourth run, 11 November 2026, 11:57 to 13:54, with the open-order regions on `/nvme`, mounted `lazytime`.** Nothing
+else changed: the same command, the same build, an idle machine. Every order was processed. In the 90-minute phase,
+4 of 180 windows were above 1 ms, against 14 to 22 in each of the three runs with the regions on `/mnt/sda1`, and the
+largest was 13.7 ms, against 930 to 1,511 ms. The 99.9th percentile was 417 microseconds. The stalls in which both
+engines' threads waited together for most of a second did not occur. This supports the regions' mount as their
+cause. The 99th percentile in the first two phases was higher than in the earlier runs, 326 and 384 microseconds
+against 238 to 250, and is not explained. Logs and resource usage are in `tmp/nov10/run4-logs`, and the profiling
+data in `installed/perf/20261111_115722`.
+
 **Principles.** None directly.
 
 ### BUG-0244: An idle connection to the authentication service is closed every ten minutes and reported as a Warning {#bug_0244}
