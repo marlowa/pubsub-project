@@ -209,6 +209,18 @@ largest stalls come minutes after a growth. Next: the engine's own time for each
 run with the regions on a file system mounted with `lazytime`, or with the book's storage sized for the run at
 start-up, each changed alone.
 
+**Third run, 11 November 2026, 08:36 to 10:35, with histograms measuring up to 5 seconds.** Same command, idle
+machine, every order processed. The 90-minute phase's 99.9th percentile was 486 microseconds, and 14 of its 180
+windows were above 1 ms. The largest episode was 184, 930 and 476 ms in the windows sampled at 09:59:04 to 10:01:04;
+another reached 156 ms at 09:06:34. In the 10:00:34 window the wait in the matching engines' queues was 926 ms in the
+primary and 857 ms in the secondary: the whole stall of the round trip is time the orders spent waiting for the two
+engines' application threads, both at once. The reactors' command waits stayed below 5 ms.
+
+This run does not support the order book's growth as the cause of the largest stalls. The growth to 1,128 MB came at
+10:04:43, after the largest stall, not before it, and no growth happened near 09:06 (the nearest was at 09:08:13).
+Logs and resource usage are in `tmp/nov10/run3-logs`, and the profiling data in `installed/perf/20261111_083637`.
+What stops both engines' threads together remains to be found; the regions' mount without `lazytime` is still untested.
+
 **Principles.** None directly.
 
 ### BUG-0244: An idle connection to the authentication service is closed every ten minutes and reported as a Warning {#bug_0244}
