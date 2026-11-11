@@ -640,7 +640,7 @@ def run_doxygen(source_dir, build_dir=None):
 
 def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverage=False,
                     enable_asan=False, enable_tsan=False, install_dir=None,
-                    enable_doxygen=True, enable_tla_pages=True, debug=False):
+                    enable_doxygen=True, enable_tla_pages=True, debug=False, compiler=None):
     cmake_args = [
         "cmake",
         str(source_dir)
@@ -653,6 +653,10 @@ def configure_cmake(build_dir, source_dir, enable_valgrind=False, enable_coverag
     cmake_args.append(f"-DENABLE_TLA_PAGES={'ON' if enable_tla_pages else 'OFF'}")
     if install_dir is not None:
         cmake_args.append(f"-DCMAKE_INSTALL_PREFIX={install_dir}")
+    if compiler is not None:
+        cmake_args.append(f"-DCMAKE_C_COMPILER={compiler}")
+        cmake_args.append(f"-DCMAKE_CXX_COMPILER={cxx_compiler_for(compiler)}")
+        print(f"NOTE: Building with {compiler} and {cxx_compiler_for(compiler)}")
     if enable_valgrind:
         cmake_args.append("-DENABLE_VALGRIND=ON")
         print("NOTE: Building with Valgrind compatibility")
@@ -697,6 +701,20 @@ def keep_going_arguments(build_dir):
     if "Ninja" in generator:
         return ["--", "-k", "0"]
     return ["--", "-k"]
+
+
+def cxx_compiler_for(compiler):
+    """
+    The C++ compiler that goes with a C compiler named on the command line.
+
+    @param[in] compiler A C compiler such as clang-14 or gcc-13, with the version suffix the distribution gives it.
+    @return The matching C++ compiler, such as clang++-14 or g++-13.
+    """
+    for c_name, cxx_name in (("clang", "clang++"), ("gcc", "g++")):
+        if compiler.startswith(c_name):
+            return cxx_name + compiler[len(c_name):]
+    print(f"ERROR: --compiler {compiler}: expected a name starting clang or gcc, such as clang-14", file=sys.stderr)
+    sys.exit(1)
 
 
 def build_project(build_dir, jobs=None, verbose=False, keep_going=False):
@@ -772,6 +790,10 @@ def flavour_suffix(args):
         flavours.append("tsan")
     if args.valgrind:
         flavours.append("valgrind")
+    if args.compiler:
+        # CMake keeps the compiler in the build directory's cache and will not change it there, and objects from two
+        # compilers must not be mixed, so another compiler means another build directory and another staging directory.
+        flavours.append(args.compiler)
     tag = platform_tag()
     if tag:
         flavours.append(tag)
@@ -823,7 +845,7 @@ def build_directory_name(args):
 
 def install_directory_notice(staging_dir):
     """Explain a non-default staging directory, and how to use it deliberately."""
-    print(f"NOTE: instrumented build -- staging to {staging_dir.name}/ instead of installed/")
+    print(f"NOTE: this build is staged to {staging_dir.name}/ instead of installed/")
     print("  installed/ is left untouched so devenv.py, perf_run.py, ha_test.py and the")
     print("  standalone test scripts keep loading uninstrumented libraries.  This matters")
     print("  because LD_LIBRARY_PATH points at installed/lib and takes precedence over the")
@@ -1193,6 +1215,12 @@ Examples:
              'one build reports every error. The build still fails at the end if anything failed'
     )
 
+    parser.add_argument('--compiler', metavar='NAME', default=None,
+        help='Build with this C compiler and its matching C++ compiler instead of the default, for example clang-14 '
+             '(which uses clang++-14). The build goes to build-NAME and is staged to installed-NAME, so it never mixes '
+             'with the default build. On Linux Mint 22, clang-14 needs the package libstdc++-14-dev'
+    )
+
     parser.add_argument('--build-dir', type=Path, default=None,
         help='Build directory path. Defaults to ./build for a plain build and to '
              './build-<flavour> for an instrumented one (build-coverage, build-asan, '
@@ -1321,7 +1349,7 @@ Examples:
                         enable_coverage=args.coverage, enable_asan=args.asan,
                         enable_tsan=args.tsan, install_dir=staging_dir,
                         enable_doxygen=not args.no_doxygen, enable_tla_pages=not args.skip_tla,
-                        debug=args.debug)
+                        debug=args.debug, compiler=args.compiler)
 
         build_project(build_dir, jobs=args.jobs, verbose=args.verbose, keep_going=args.keep_going)
 

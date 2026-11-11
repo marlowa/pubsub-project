@@ -152,11 +152,11 @@ TEST(OrderPathMetricsTest, AppliesTheSameValidationAsEveryOtherHistogram) {
     // rather than this loader having quietly grown a copy of its own.
     pubsub_itc_fw::TomlConfiguration descending;
     load_with_buckets(descending, "[100000, 10000]");
-    EXPECT_THROW(order_path_metrics::load_order_path_elapsed_buckets(descending), pubsub_itc_fw::ConfigurationException);
+    EXPECT_THROW(static_cast<void>(order_path_metrics::load_order_path_elapsed_buckets(descending)), pubsub_itc_fw::ConfigurationException);
 
     pubsub_itc_fw::TomlConfiguration empty;
     load_with_buckets(empty, "[]");
-    EXPECT_THROW(order_path_metrics::load_order_path_elapsed_buckets(empty), pubsub_itc_fw::ConfigurationException);
+    EXPECT_THROW(static_cast<void>(order_path_metrics::load_order_path_elapsed_buckets(empty)), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(OrderPathMetricsTest, DoesNotFallBackToTheRoundTripBounds) {
@@ -167,7 +167,7 @@ TEST(OrderPathMetricsTest, DoesNotFallBackToTheRoundTripBounds) {
     auto [ok, error] = configuration.load_string("[metrics]\norder_round_trip_buckets = [10000, 25000]\n");
     ASSERT_TRUE(ok) << error;
 
-    EXPECT_THROW(order_path_metrics::load_order_path_elapsed_buckets(configuration), pubsub_itc_fw::ConfigurationException);
+    EXPECT_THROW(static_cast<void>(order_path_metrics::load_order_path_elapsed_buckets(configuration)), pubsub_itc_fw::ConfigurationException);
 }
 
 } // namespaces

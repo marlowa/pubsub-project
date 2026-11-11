@@ -485,7 +485,7 @@ TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
     std::atomic<int> produced{0};
     std::atomic<int> consumed{0};
 
-    std::thread producer([&] {
+    std::thread producer([&, producer_cpu = producer_cpu] {
         pin_current_thread_to_cpu(producer_cpu);
 
         while (!start_flag.load(std::memory_order_acquire)) {
@@ -498,7 +498,7 @@ TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
         }
     });
 
-    std::thread consumer([&] {
+    std::thread consumer([&, consumer_cpu = consumer_cpu] {
         pin_current_thread_to_cpu(consumer_cpu);
 
         start_flag.store(true, std::memory_order_release);
@@ -544,13 +544,12 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
     constexpr int total = producers * per_producer;
 
     std::atomic<bool> start_flag{false};
-    std::atomic<int> consumed{0};
 
     std::vector<std::thread> threads;
     threads.reserve(producers);
 
     for (int p = 0; p < producers; ++p) {
-        threads.emplace_back([&, p] {
+        threads.emplace_back([&] {
             BackoffWithYield start_backoff;
             while (!start_flag.load(std::memory_order_acquire)) {
                 start_backoff.pause();
@@ -602,7 +601,7 @@ TEST(LockFreeMessageQueueTest, FalseSharingDetection) {
     std::atomic<int> consumed{0};
 
     // Producer pinned to CPU 0
-    std::thread producer([&] {
+    std::thread producer([&, producer_cpu = producer_cpu] {
         pin_current_thread_to_cpu(producer_cpu);
 
         while (!start_flag.load(std::memory_order_acquire)) {
@@ -615,7 +614,7 @@ TEST(LockFreeMessageQueueTest, FalseSharingDetection) {
     });
 
     // Consumer pinned to CPU 1
-    std::thread consumer([&] {
+    std::thread consumer([&, consumer_cpu = consumer_cpu] {
         pin_current_thread_to_cpu(consumer_cpu);
 
         start_flag.store(true, std::memory_order_release);
@@ -884,7 +883,7 @@ TEST(LockFreeMessageQueueTest, ThroughputBenchmark) {
 
     // Launch producers
     for (int p = 0; p < producers; ++p) {
-        threads.emplace_back([&, p] {
+        threads.emplace_back([&] {
             while (!start_flag.load(std::memory_order_acquire)) {
                 std::this_thread::yield();
             }

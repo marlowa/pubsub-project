@@ -60,9 +60,9 @@ struct FixSession {
     FixSession(const FixSession&) = delete;
     FixSession& operator=(const FixSession&) = delete;
 
-    // Moveable for unordered_map insertion.
+    // Move-constructible for unordered_map insertion. Not move-assignable: FixParser holds a reference to its logger.
     FixSession(FixSession&&) = default;
-    FixSession& operator=(FixSession&&) = default;
+    FixSession& operator=(FixSession&&) = delete;
 
     // Identity
 

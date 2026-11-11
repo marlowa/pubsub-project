@@ -86,9 +86,10 @@ class ThreadWithJoinTimeout {
      * @brief Starts a new worker thread.
      *
      * The callable is heap-allocated and freed inside the thread entry point.
-     * This avoids capturing by reference and ensures safe lifetime semantics.
+     * This avoids capturing by reference and ensures safe lifetime semantics. The callable takes no
+     * arguments: anything it needs is captured.
      */
-    template <typename Callable, typename... Args> void start(Callable&& func, Args&&... args) {
+    template <typename Callable> void start(Callable&& func) {
         if (has_thread_) {
             throw PubSubItcException("Thread already running. Call join or join_with_timeout first.");
         }

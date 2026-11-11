@@ -509,7 +509,7 @@ class OutboundConnectionManagerTest : public ::testing::Test {
         if (listen_fd == -1)
             return 0;
 
-        accept_thread_ = std::thread([this, listen_fd]() {
+        accept_thread_ = std::thread([this, listen_fd = listen_fd]() {
             sockaddr_in peer{};
             socklen_t len = sizeof(peer);
             peer_fd_ = ::accept(listen_fd, reinterpret_cast<sockaddr*>(&peer), &len);

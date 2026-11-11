@@ -1486,8 +1486,6 @@ TEST_F(FrameworkPduBurstIntegrationTest, PollingReactorServesSeveralClientsEvenl
         },
         static_cast<int>(client_fairness_deadline.count()));
 
-    const auto finished_at = std::chrono::steady_clock::now();
-
     for (auto& client : clients) {
         client.join();
     }
@@ -1506,7 +1504,6 @@ TEST_F(FrameworkPduBurstIntegrationTest, PollingReactorServesSeveralClientsEvenl
     ASSERT_EQ(static_cast<int>(served.size()), fairness_client_count)
         << "only " << served.size() << " of " << fairness_client_count << " connections delivered any bytes at all";
 
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(finished_at - started_at);
     EXPECT_TRUE(all_finished) << "not every client got its " << bytes_each_client_sends << " bytes through within " << client_fairness_deadline.count()
                               << "ms, although all of them had exactly the same amount to send and were sending it at the same time. "
                               << "A client that cannot finish is one whose connection the reactor is not coming back to:" << per_client;

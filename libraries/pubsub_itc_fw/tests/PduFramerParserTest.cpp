@@ -294,18 +294,18 @@ TEST_F(PduFramerParserTest, SendWhilePendingThrows) {
     [[maybe_unused]] auto first_send = framer.send(100, 1, 0, payload, sizeof(payload));
     ASSERT_TRUE(framer.has_pending_data());
 
-    EXPECT_THROW(framer.send(100, 1, 0, payload, sizeof(payload)), PreconditionAssertion);
+    EXPECT_THROW(static_cast<void>(framer.send(100, 1, 0, payload, sizeof(payload))), PreconditionAssertion);
 }
 
 TEST_F(PduFramerParserTest, SendNullptrPayloadThrows) {
     PduFramer framer(stream_);
-    EXPECT_THROW(framer.send(100, 1, 0, nullptr, 4), PreconditionAssertion);
+    EXPECT_THROW(static_cast<void>(framer.send(100, 1, 0, nullptr, 4)), PreconditionAssertion);
 }
 
 TEST_F(PduFramerParserTest, SendZeroSizeThrows) {
     PduFramer framer(stream_);
     const uint8_t payload[] = {0x01};
-    EXPECT_THROW(framer.send(100, 1, 0, payload, 0), PreconditionAssertion);
+    EXPECT_THROW(static_cast<void>(framer.send(100, 1, 0, payload, 0)), PreconditionAssertion);
 }
 
 TEST_F(PduFramerParserTest, NoPendingDataInitially) {
@@ -411,19 +411,19 @@ TEST_F(PduFramerParserTest, SendPrebuiltWhilePendingThrows) {
     [[maybe_unused]] auto first = framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size()));
     ASSERT_TRUE(framer.has_pending_data());
 
-    EXPECT_THROW(framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size())), PreconditionAssertion);
+    EXPECT_THROW(static_cast<void>(framer.send_prebuilt(frame.data(), static_cast<uint32_t>(frame.size()))), PreconditionAssertion);
 }
 
 TEST_F(PduFramerParserTest, SendPrebuiltNullptrThrows) {
     PduFramer framer(stream_);
-    EXPECT_THROW(framer.send_prebuilt(nullptr, 32), PreconditionAssertion);
+    EXPECT_THROW(static_cast<void>(framer.send_prebuilt(nullptr, 32)), PreconditionAssertion);
 }
 
 TEST_F(PduFramerParserTest, SendPrebuiltTooSmallThrows) {
     PduFramer framer(stream_);
     const uint8_t buf[4] = {};
     // total_bytes must be > sizeof(PduHeader) -- passing exactly sizeof(PduHeader) is invalid.
-    EXPECT_THROW(framer.send_prebuilt(buf, static_cast<uint32_t>(sizeof(PduHeader))), PreconditionAssertion);
+    EXPECT_THROW(static_cast<void>(framer.send_prebuilt(buf, static_cast<uint32_t>(sizeof(PduHeader)))), PreconditionAssertion);
 }
 
 TEST_F(PduFramerParserTest, SendPrebuiltErrorReturnsFalse) {

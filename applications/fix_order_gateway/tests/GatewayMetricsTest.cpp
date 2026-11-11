@@ -38,7 +38,7 @@ TEST(GatewayMetricsTest, ReadsAscendingIntegerBounds) {
 TEST(GatewayMetricsTest, RejectsEmptyBounds) {
     pubsub_itc_fw::TomlConfiguration configuration;
     load_with_buckets(configuration, "[]");
-    EXPECT_THROW(gateway_metrics::load_order_round_trip_buckets(configuration), pubsub_itc_fw::ConfigurationException);
+    EXPECT_THROW(static_cast<void>(gateway_metrics::load_order_round_trip_buckets(configuration)), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(GatewayMetricsTest, RejectsDescendingBounds) {
@@ -46,7 +46,7 @@ TEST(GatewayMetricsTest, RejectsDescendingBounds) {
     // to fail at load time rather than produce a histogram nobody can read.
     pubsub_itc_fw::TomlConfiguration configuration;
     load_with_buckets(configuration, "[50000, 25000, 10000]");
-    EXPECT_THROW(gateway_metrics::load_order_round_trip_buckets(configuration), pubsub_itc_fw::ConfigurationException);
+    EXPECT_THROW(static_cast<void>(gateway_metrics::load_order_round_trip_buckets(configuration)), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(GatewayMetricsTest, RejectsARepeatedBound) {
@@ -54,7 +54,7 @@ TEST(GatewayMetricsTest, RejectsARepeatedBound) {
     // bucket that can never be observed into.
     pubsub_itc_fw::TomlConfiguration configuration;
     load_with_buckets(configuration, "[10000, 25000, 25000]");
-    EXPECT_THROW(gateway_metrics::load_order_round_trip_buckets(configuration), pubsub_itc_fw::ConfigurationException);
+    EXPECT_THROW(static_cast<void>(gateway_metrics::load_order_round_trip_buckets(configuration)), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(GatewayMetricsTest, RejectsAnInfiniteTopBound) {
@@ -62,13 +62,13 @@ TEST(GatewayMetricsTest, RejectsAnInfiniteTopBound) {
     // prometheus-cpp adds that bucket itself, so declaring one produces a duplicate.
     pubsub_itc_fw::TomlConfiguration configuration;
     load_with_buckets(configuration, "[10000, 25000, inf]");
-    EXPECT_THROW(gateway_metrics::load_order_round_trip_buckets(configuration), pubsub_itc_fw::ConfigurationException);
+    EXPECT_THROW(static_cast<void>(gateway_metrics::load_order_round_trip_buckets(configuration)), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(GatewayMetricsTest, RejectsANotANumberBound) {
     pubsub_itc_fw::TomlConfiguration configuration;
     load_with_buckets(configuration, "[10000, nan, 50000]");
-    EXPECT_THROW(gateway_metrics::load_order_round_trip_buckets(configuration), pubsub_itc_fw::ConfigurationException);
+    EXPECT_THROW(static_cast<void>(gateway_metrics::load_order_round_trip_buckets(configuration)), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(GatewayMetricsTest, RejectsAMissingKey) {
@@ -76,7 +76,7 @@ TEST(GatewayMetricsTest, RejectsAMissingKey) {
     auto [ok, error] = configuration.load_string("[metrics]\nenabled = true\n");
     ASSERT_TRUE(ok) << error;
 
-    EXPECT_THROW(gateway_metrics::load_order_round_trip_buckets(configuration), pubsub_itc_fw::ConfigurationException);
+    EXPECT_THROW(static_cast<void>(gateway_metrics::load_order_round_trip_buckets(configuration)), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(GatewayMetricsTest, TheErrorNamesTheOffendingElement) {
@@ -114,7 +114,7 @@ TEST(GatewayMetricsTest, TheDecodeAndForwardLoaderDoesNotFallBackToTheRoundTripK
     // the gateway's own work against bounds chosen for the whole venue round trip.
     pubsub_itc_fw::TomlConfiguration configuration;
     load_with_buckets(configuration, "[10000, 25000, 50000]");
-    EXPECT_THROW(gateway_metrics::load_order_ingress_to_forward_buckets(configuration), pubsub_itc_fw::ConfigurationException);
+    EXPECT_THROW(static_cast<void>(gateway_metrics::load_order_ingress_to_forward_buckets(configuration)), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(GatewayMetricsTest, TheDecodeAndForwardLoaderAppliesTheSameRules) {

@@ -22,6 +22,8 @@ build itself.
 ./scripts/build.sh --asan
 ./scripts/build.sh --tsan
 ./scripts/build.sh --valgrind
+./scripts/build.sh --compiler clang-14   # build with clang-14 into build-clang-14/
+./scripts/build.sh --keep-going          # compile everything that compiles, and report every error
 ```
 
 ---
@@ -36,8 +38,29 @@ build itself.
 | `--tsan` | `-fsanitize=thread`, lock-free optimisations disabled |
 | `--valgrind` | `USING_VALGRIND` defined, lock-free optimisations disabled |
 | `--debug` | `CMAKE_BUILD_TYPE=Debug`, with the thread-ownership checks compiled in |
+| `--compiler NAME` | Builds with the named C compiler and its C++ partner, for example `clang-14` and `clang++-14` |
 
 `--asan` and `--tsan` are mutually exclusive; `build.py` rejects the combination.
+
+**`--keep-going`** is not a flavour: it makes the build carry on past a file that does not compile, so that one
+build reports every error. The build still fails at the end if anything did not compile.
+
+**`--compiler NAME` builds into `build-NAME/` and stages into `installed-NAME/`.** CMake records the compiler in a
+build directory's cache and will not change it there, so each compiler needs a build directory of its own, and the
+default build in `build/` and `installed/` is never touched. Three things to know about building with clang-14 on
+Linux Mint 22:
+
+- clang uses gcc's C++ library, and picks the newest gcc it finds, which is gcc 14 even though the default compiler
+  is gcc 13. It then needs the package `libstdc++-14-dev`, or it cannot link even an empty program
+  (`cannot find -lstdc++`).
+- The language mode is the same as gcc's: `-std=c++17` with GNU extensions off, `-pedantic` and `-Werror`. clang
+  refuses some code that gcc accepts in that mode, such as a lambda capturing a structured binding, which C++17 does
+  not allow and gcc accepts without a warning. A clang build is the check for those.
+- The two FIX codec performance tests that compare parsing and validation with framing are calibrated for gcc's
+  code. Built with clang-14 the ratios were 11.2 and 18.9 against limits of 9 and 18, so pass
+  `--no-performance-tests` with `--compiler clang-14`.
+
+Clang builds are for Linux Mint only; the Rocky 8 build uses gcc.
 
 **`--debug` is not treated as a flavour of its own** (below): a Debug build uses `build/` and stages
 into `installed/`, as a plain build does, and so replaces the release libraries and programs there.

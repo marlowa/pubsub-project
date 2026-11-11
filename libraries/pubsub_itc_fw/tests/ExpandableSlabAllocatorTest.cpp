@@ -72,12 +72,12 @@ TEST_F(ExpandableSlabAllocatorTest, AllocateReturnsNonNullPointer) {
 
 TEST_F(ExpandableSlabAllocatorTest, ExpandableSlabAllocateZeroSizeThrows) {
     ExpandableSlabAllocator alloc{large_slab};
-    EXPECT_THROW(alloc.allocate(0), PreconditionAssertion);
+    EXPECT_THROW(static_cast<void>(alloc.allocate(0)), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, AllocateExceedingSlabSizeThrows) {
     ExpandableSlabAllocator alloc{small_slab};
-    EXPECT_THROW(alloc.allocate(small_slab + 1), PreconditionAssertion);
+    EXPECT_THROW(static_cast<void>(alloc.allocate(small_slab + 1)), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, AllocateExactSlabSizeSucceeds) {
@@ -204,7 +204,7 @@ TEST_F(ExpandableSlabAllocatorTest, CurrentSlabIsResetWhenAllChunksFreed) {
     auto [slab_id_new, ptr_new] = alloc.allocate(chunk_size);
     EXPECT_NE(ptr_new, nullptr);
     EXPECT_EQ(slab_handle_slot(slab_id_new), 0); // reused, not a new slab
-    EXPECT_EQ(alloc.slab_count(), 1); // no extra slab created
+    EXPECT_EQ(alloc.slab_count(), 1);            // no extra slab created
 
     alloc.deallocate(slab_id_new, ptr_new);
 }
@@ -401,7 +401,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocationsFromManySlabs) {
     threads.reserve(slab_count);
 
     for (auto [slab_id, ptr] : allocations) {
-        threads.emplace_back([&alloc, slab_id, ptr]() { alloc.deallocate(slab_id, ptr); });
+        threads.emplace_back([&alloc, slab_id = slab_id, ptr = ptr]() { alloc.deallocate(slab_id, ptr); });
     }
 
     for (auto& th : threads) {
@@ -838,7 +838,7 @@ TEST_F(ExpandableSlabAllocatorTest, DestroyedSlabIdThrowsOnDeallocateCrossThread
 
     // Free slab 0 chunk from a background thread to exercise the cross-thread
     // deallocate path. Slab 0 is enqueued.
-    std::thread t([&]() { allocator.deallocate(id0, ptr0); });
+    std::thread t([&allocator, id0 = id0, ptr0 = ptr0]() { allocator.deallocate(id0, ptr0); });
     t.join();
 
     // Drain 1: pops slab 0, defers it. Chains slab 2.
@@ -966,7 +966,7 @@ TEST_F(ExpandableSlabAllocatorTest, NoStarvationUnderSustainedLoad) {
         workers.reserve(allocations.size());
 
         for (auto& [id, ptr] : allocations) {
-            workers.emplace_back([&allocator, id, ptr]() { allocator.deallocate(id, ptr); });
+            workers.emplace_back([&allocator, id = id, ptr = ptr]() { allocator.deallocate(id, ptr); });
         }
 
         for (auto& t : workers) {
@@ -1061,12 +1061,12 @@ TEST_F(ExpandableSlabAllocatorTest, OldEmptySlabIsDestroyed) {
 
 TEST_F(ExpandableSlabAllocatorTest, SizeExceedsSlabSizeThrows) {
     ExpandableSlabAllocator allocator(large_slab);
-    EXPECT_THROW(allocator.allocate(large_slab + 1), PreconditionAssertion);
+    EXPECT_THROW(static_cast<void>(allocator.allocate(large_slab + 1)), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, AllocateZeroSizeThrows) {
     ExpandableSlabAllocator allocator(large_slab);
-    EXPECT_THROW(allocator.allocate(0), PreconditionAssertion);
+    EXPECT_THROW(static_cast<void>(allocator.allocate(0)), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, DeallocateInvalidSlabIdThrows) {

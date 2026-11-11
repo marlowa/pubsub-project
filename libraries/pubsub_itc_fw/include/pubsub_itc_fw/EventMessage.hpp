@@ -91,11 +91,6 @@ class EventMessage {
     std::shared_ptr<MirroredBuffer> raw_buffer_owner_;
 
     /**
-     * @brief Private constructor to enforce use of static factory methods.
-     */
-    EventMessage() = default;
-
-    /**
      * @brief Private constructor for events with a payload.
      * @param[in] type         The type of the event.
      * @param[in] payload_data The raw pointer to the payload data.

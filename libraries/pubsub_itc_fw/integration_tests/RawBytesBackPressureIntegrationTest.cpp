@@ -482,7 +482,6 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrai
         << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
 
     const std::vector<uint8_t> chunk(chunk_size, 0xBB);
-    int64_t bytes_sent_total = 0;
     bool saw_eagain = false;
 
     // Push until EAGAIN. With application-level backpressure engaged on the
@@ -502,7 +501,6 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrai
     while (std::chrono::steady_clock::now() < eagain_deadline) {
         const ssize_t n = try_send_chunk(sock_fd, chunk.data(), chunk.size());
         if (n > 0) {
-            bytes_sent_total += n;
             continue;
         }
         if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -543,7 +541,6 @@ TEST_F(RawBytesBackpressureIntegrationTest, BackpressureReleasesAfterCommitsDrai
     while (std::chrono::steady_clock::now() < post_resume_deadline) {
         const ssize_t n = try_send_chunk(sock_fd, chunk.data(), chunk.size());
         if (n > 0) {
-            bytes_sent_total += n;
             sent_after_resume = true;
             break;
         }

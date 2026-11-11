@@ -129,7 +129,7 @@ TEST_F(TcpConnectorTest, ConnectToListeningSocketSucceeds) {
         EXPECT_NE(connector.get_fd(), -1);
 
         // Accept on the listener side to allow the handshake to complete.
-        std::thread accept_thread([listen_fd]() {
+        std::thread accept_thread([listen_fd = listen_fd]() {
             sockaddr_in peer{};
             socklen_t len = sizeof(peer);
             const int client_fd = ::accept(listen_fd, reinterpret_cast<sockaddr*>(&peer), &len);

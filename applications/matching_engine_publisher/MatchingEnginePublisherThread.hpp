@@ -115,7 +115,6 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     // HA state machine (same structure as the sequencer).
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
     int32_t epoch_{0};
-    int64_t peer_instance_id_{0};
 
     // Timer ids (default-constructed = not scheduled); on_timer_event compares
     // a fired timer's id against these to identify it.
