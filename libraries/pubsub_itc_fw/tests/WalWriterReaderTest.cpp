@@ -673,11 +673,15 @@ TEST_F(WalTest, WhenTheWriterAndTheHelperMakeTheSameSegmentRecordsAndDescriptors
 
 // A segment the helper makes ready after the writer has already made it itself fills a slot the helper needs again. The
 // writer frees it at its next roll, so the helper carries on keeping segments ready. Made to happen here by delaying the
-// helper: it starts on segment 1 while the writer rolls to segment 3 at once.
+// helper: once it has chosen segment 1, and while it waits, the writer rolls to segment 3.
 TEST_F(WalTest, ASegmentTheHelperMadeReadyAfterTheWriterPassedItIsFreedAndTheHelperCarriesOn) {
     WalWriter w;
     w.set_segments_kept_ready(2);
     w.delay_helper_for_tests(std::chrono::milliseconds{300});
+    // What the writer says about segments it made itself, including why the helper failed if it did, for the messages
+    // below.
+    std::string warnings;
+    w.set_warning_sink([&warnings](const std::string& warning) { warnings += warning + "\n"; });
     w.open(dir_, small_segment_size, {0, 0});
     const std::vector<uint8_t> payload(16, 0x42u);
     const auto roll_to = [&](uint64_t segment) {
@@ -685,15 +689,20 @@ TEST_F(WalTest, ASegmentTheHelperMadeReadyAfterTheWriterPassedItIsFreedAndTheHel
             w.append(1, payload.data(), payload.size());
         }
     };
+    // The helper must have chosen segment 1 before the writer moves on; otherwise, if the writer reached segment 3 before
+    // the helper thread first ran, the helper would start at segment 4 and the case this test is for would not arise.
+    ASSERT_TRUE(w.wait_until_helper_chooses(1, std::chrono::seconds{30})) << "the helper never chose segment 1";
     roll_to(3);
     ASSERT_EQ(w.segments_filled_inline(), 4U) << "segments 0 to 3 should all have been made by the writer";
     // The helper publishes segment 1, which the writer has passed, then makes segment 4 ready, and then finds segment 1's
-    // slot, which segment 5 needs, still full.
-    std::this_thread::sleep_for(std::chrono::milliseconds{1000});
+    // slot, which segment 5 needs, still full. The limit is long because making a segment allocates its blocks on disk,
+    // which takes as long as the disk takes; the test waits for the helper rather than for a time.
+    ASSERT_TRUE(w.wait_until_prepared_through(4, std::chrono::seconds{30})) << "the helper never made segment 4 ready; the writer said:\n" << warnings;
+    EXPECT_FALSE(w.wait_until_prepared_through(5, std::chrono::milliseconds{500})) << "the helper made segment 5 ready while the slot it needs was still full";
     roll_to(4);
     EXPECT_EQ(w.segments_filled_inline(), 4U) << "segment 4 was not ready";
     // The roll to 4 freed segment 1's slot, so the helper can make segment 5 ready.
-    std::this_thread::sleep_for(std::chrono::milliseconds{1000});
+    ASSERT_TRUE(w.wait_until_prepared_through(5, std::chrono::seconds{30})) << "segment 5 was never made ready: the slot the helper needed was never freed";
     roll_to(5);
     EXPECT_EQ(w.segments_filled_inline(), 4U) << "segment 5 was not ready: the slot the helper needed was never freed";
 }

@@ -385,6 +385,7 @@ void WalWriter::helper_loop() {
             continue;
         }
         OpenedSegment made;
+        helper_chose_.store(next, std::memory_order_release);
         if (helper_delay_for_tests_.count() > 0) {
             std::this_thread::sleep_for(helper_delay_for_tests_);
         }
@@ -436,9 +437,24 @@ void WalWriter::release_all_slots() {
 }
 
 bool WalWriter::wait_until_prepared(std::chrono::milliseconds timeout) {
+    return wait_until_prepared_through(writing_.load(std::memory_order_acquire) + segments_kept_ready_, timeout);
+}
+
+bool WalWriter::wait_until_helper_chooses(uint64_t segment, std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (helper_chose_.load(std::memory_order_acquire) != segment) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    return true;
+}
+
+bool WalWriter::wait_until_prepared_through(uint64_t segment, std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (prepared_through_.load(std::memory_order_acquire) >= writing_.load(std::memory_order_acquire) + segments_kept_ready_) {
+        if (prepared_through_.load(std::memory_order_acquire) >= segment) {
             return true;
         }
         if (helper_failed_.load(std::memory_order_acquire)) {
@@ -446,7 +462,7 @@ bool WalWriter::wait_until_prepared(std::chrono::milliseconds timeout) {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
-    return prepared_through_.load(std::memory_order_acquire) >= writing_.load(std::memory_order_acquire) + segments_kept_ready_;
+    return prepared_through_.load(std::memory_order_acquire) >= segment;
 }
 
 void WalWriter::close_segment() {

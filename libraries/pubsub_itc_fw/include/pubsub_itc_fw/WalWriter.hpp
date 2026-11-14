@@ -155,6 +155,34 @@ class WalWriter {
     [[nodiscard]] bool wait_until_prepared(std::chrono::milliseconds timeout);
 
     /**
+     * @brief Waits until the helper has dealt with every segment up to and including @p segment, by
+     *        making it ready or by finding the writer already past it, or the timeout expires. For
+     *        tests.
+     *
+     * For a test that needs one particular segment ready while the helper cannot yet make all of
+     * them, because a slot it needs is still full.
+     *
+     * @param[in] segment The segment number to wait for.
+     * @param[in] timeout The longest to wait.
+     * @return true if the helper has dealt with @p segment.
+     */
+    [[nodiscard]] bool wait_until_prepared_through(uint64_t segment, std::chrono::milliseconds timeout);
+
+    /**
+     * @brief Waits until the helper has chosen @p segment as the next one to make, or the timeout
+     *        expires. For tests.
+     *
+     * The helper chooses the segment before its delay_helper_for_tests() wait, so a test that has
+     * seen it choose can move the writer on and know the helper will still make the segment it
+     * chose, which the writer has by then passed.
+     *
+     * @param[in] segment The segment number to wait for.
+     * @param[in] timeout The longest to wait.
+     * @return true if the helper has chosen @p segment.
+     */
+    [[nodiscard]] bool wait_until_helper_chooses(uint64_t segment, std::chrono::milliseconds timeout);
+
+    /**
      * @brief Turns off preparation, so every segment is made by the writer. For tests.
      *
      * Must be called before open().
@@ -276,6 +304,8 @@ class WalWriter {
 
     bool preparation_enabled_{true};
     std::chrono::milliseconds helper_delay_for_tests_{0};
+    /// The segment the helper last chose to make, for wait_until_helper_chooses(). Written by the helper only.
+    std::atomic<uint64_t> helper_chose_{0};
     size_t segments_kept_ready_{default_segments_kept_ready};
     uint64_t segments_filled_inline_{0};
     std::function<void(const std::string&)> warn_;

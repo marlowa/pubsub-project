@@ -213,7 +213,7 @@ but did not change these parts of it.
 | [BUG-0179](bug_list.md#bug_0179): the Java generated from the DSL decodes an unlisted enum value as null | **Defect**, in the DSL compiler | Unchanged: `generator_java.py` still decodes through `fromValue`, which returns `null` for a value it does not know | As the entry describes |
 | [BUG-0246](bug_list.md#bug_0246): a message with no fields closes the connection it arrives on | **Fixed on 14 November 2026** and closed | The DSL validator refuses a message with no fields; `TopicNotLeader` carries a one-value enum and a test shows it reaching a subscriber | None |
 | [BUG-0247](bug_list.md#bug_0247): the authentication service compared a position in one map with the end of another | **Fixed on 14 November 2026** and closed | Undefined behaviour by the standard; harmless with the GNU standard library | None |
-| [BUG-0248](bug_list.md#bug_0248): a WAL unit test gives the helper thread a fixed second | **Defect**, in a test | Failed once while the disk was busy with other work | Wait for the helper to report the segment ready |
+| [BUG-0248](bug_list.md#bug_0248): a WAL unit test gives the helper thread a fixed second | **Fixed on 14 November 2026** and closed | The test waits for the helper to choose and make each segment; passes under heavy disk writing | None |
 
 **Recommended order in this area.** BUG-0129 first, for its data race. Then BUG-0127 and BUG-0128,
 the two locks on paths an order can take; each needs a design agreed before code, and BUG-0128 the larger

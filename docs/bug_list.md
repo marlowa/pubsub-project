@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 248 |
-| Open | 44 (23 defects, 21 tasks) |
-| Closed | 204 |
+| Open | 43 (22 defects, 21 tasks) |
+| Closed | 205 |
 | Next id | BUG-0249 |
 
 ## Open bugs by severity
 
-7 high, 29 medium, 8 low.
+7 high, 29 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -56,7 +56,6 @@
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
 | [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
-| [BUG-0248](#bug_0248) | low | defect | A WAL unit test gives the helper thread a fixed second to make a segment ready, and fails when the disk is busy |
 
 ---
 
@@ -152,28 +151,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0248: A WAL unit test gives the helper thread a fixed second to make a segment ready, and fails when the disk is busy {#bug_0248}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-11-14 |
-| Recorded | 2026-11-14 |
-| How | `scripts/devsetup.sh` stopped at the unit tests while another program on the machine was reading and writing a lot to disk. The next run, with nothing else changed, passed |
-| Impact | A developer loop is lost, and the failure points at the write-ahead log when nothing in it is wrong |
-
-**What happens.** `WalTest.ASegmentTheHelperMadeReadyAfterTheWriterPassedItIsFreedAndTheHelperCarriesOn`
-(`libraries/pubsub_itc_fw/tests/WalWriterReaderTest.cpp`) delays the WAL's helper thread by 300 ms, then
-sleeps for one second and expects the helper to have made segment 4 ready, so that the writer does not
-have to make it itself. Making a segment allocates all its blocks on disk. The scratch directory is in
-the build tree on `/mnt/sda1`, and with that disk busy the helper took longer than the second: the
-writer made segment 4 itself, and `segments_filled_inline()` was 5 where 4 was expected.
-
-**What is wanted.** The test waits for the helper to say the segment is ready, with a generous limit,
-rather than sleeping for a fixed time and then looking.
-
-**Principles.** None; a test that depends on how busy the disk is reports the machine, not the code.
 
 ### BUG-0245: In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it {#bug_0245}
 
@@ -2313,6 +2290,33 @@ the leader sends it to each `TopicSubscribeRequest` and then closes the connecti
 reader refused it, and the branch for it in `TopicSubscriberThread` was never reached.
 
 **Principles.** None directly.
+
+### BUG-0248: A WAL unit test gives the helper thread a fixed second to make a segment ready, and fails when the disk is busy {#bug_0248}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-14 |
+| Recorded | 2026-11-14 |
+| Fixed | 2026-11-14 -- the test waits for the helper, through two new test-only methods of `WalWriter`: `wait_until_helper_chooses(1)` before the writer moves on, and `wait_until_prepared_through(4)` and `(5)`, each with a 30-second limit, in place of the two one-second sleeps. It also checks that segment 5 is not made ready while the slot it needs is full. It passed 30 times running alone and 15 times while `dd` wrote 3 GB files to the same disk, and fails with the writer no longer freeing a slot it has passed |
+| How | `scripts/devsetup.sh` stopped at the unit tests while another program on the machine was reading and writing a lot to disk. The next run, with nothing else changed, passed |
+| Impact | A developer loop is lost, and the failure points at the write-ahead log when nothing in it is wrong |
+
+**What happened.** `WalTest.ASegmentTheHelperMadeReadyAfterTheWriterPassedItIsFreedAndTheHelperCarriesOn`
+(`libraries/pubsub_itc_fw/tests/WalWriterReaderTest.cpp`) delays the WAL's helper thread by 300 ms, then
+sleeps for one second and expects the helper to have made segment 4 ready, so that the writer does not
+have to make it itself. Making a segment allocates all its blocks on disk. The scratch directory is in
+the build tree on `/mnt/sda1`, and with that disk busy the helper took longer than the second: the
+writer made segment 4 itself, and `segments_filled_inline()` was 5 where 4 was expected.
+
+**A second cause, found while fixing it.** The helper chooses the segment it will make next before its
+300 ms delay. If the writer had already reached segment 3 when the helper thread first ran, the helper
+started at segment 4, the slot that a passed segment 1 would have filled stayed empty, and the case the
+test is named for did not arise. The writer's count came out the same either way, so the test still
+passed; checking that segment 5 waits for its slot failed 3 times in 10 until the test waited for the
+helper to choose segment 1 first.
+
+**Principles.** None; a test that depends on how busy the disk is reports the machine, not the code.
 
 ### BUG-0247: The authentication service looked a comp id up in one map and compared the result with the end of another {#bug_0247}
 
