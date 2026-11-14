@@ -81,9 +81,9 @@ def test_python_frames_a_pdu_as_the_framework_does(cpp_bytes, case):  # pylint: 
     assert (header.pdu_id, header.version, header.seq_no, header.byte_count, body) == (pdu_id, version, seq_no, len(payload), payload)
 
 
-# Java decodes an enum value its enum does not list as null, and cannot encode the message again (BUG-0179), so the
-# case holding such values is left out of the Java checks.
-_JAVA_CASES = [c for c in cross_language.CASES if "unlisted" not in c[0]]
+# Every case is checked in Java, including the one holding enum values the enums do not list: Java keeps such a
+# value, as the C++ and Python code do, and writes it back unchanged.
+_JAVA_CASES = cross_language.CASES
 
 
 @pytest.fixture(scope="module")
@@ -97,7 +97,7 @@ def java_results(every_type, cpp_bytes):  # pylint: disable=redefined-outer-name
 @needs_java
 @pytest.mark.parametrize("case_name,message_name,values", _JAVA_CASES, ids=[c[0] for c in _JAVA_CASES])
 def test_java_writes_the_same_bytes_as_cpp(java_results, cpp_bytes, case_name, message_name, values):  # pylint: disable=redefined-outer-name,unused-argument
-    encoded, _ = java_results
+    encoded, _, _ = java_results
     assert encoded[case_name] == cpp_bytes[case_name]
 
 
@@ -105,8 +105,21 @@ def test_java_writes_the_same_bytes_as_cpp(java_results, cpp_bytes, case_name, m
 @needs_java
 @pytest.mark.parametrize("case_name,message_name,values", _JAVA_CASES, ids=[c[0] for c in _JAVA_CASES])
 def test_java_decodes_and_encodes_the_cpp_bytes_unchanged(java_results, cpp_bytes, case_name, message_name, values):  # pylint: disable=redefined-outer-name,unused-argument
-    _, again = java_results
+    _, again, _ = java_results
     assert again[case_name] == cpp_bytes[case_name].hex()
+
+
+@needs_cpp
+@needs_java
+@pytest.mark.parametrize("case_name,message_name,values", _JAVA_CASES, ids=[c[0] for c in _JAVA_CASES])
+def test_java_first_invalid_field_names_the_field_the_python_code_names(java_results, every_type, cpp_bytes, case_name, message_name, values):  # pylint: disable=redefined-outer-name,unused-argument,too-many-arguments
+    _, _, invalid = java_results
+    _, module, _ = every_type
+    decoded, _ = getattr(module, message_name).decode(cpp_bytes[case_name])
+    python_names = decoded.first_invalid_field()
+    assert invalid[case_name] == (python_names if python_names is not None else "-")
+    if "unlisted" in case_name:
+        assert invalid[case_name] == "small", "the first enum field holds a value its enum does not list"
 
 
 # ----------------------------------------------------------------------------------------------------------------

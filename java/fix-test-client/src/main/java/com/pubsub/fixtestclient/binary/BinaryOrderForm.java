@@ -55,7 +55,7 @@ public final class BinaryOrderForm {
         String timeInForce = trimmed(ctx.formParam("timeInForce"));
         if (!timeInForce.isEmpty()) {
             FixOrders.TimeInForce parsed = FixOrders.TimeInForce.fromValue(timeInForce.charAt(0));
-            if (parsed != null) {
+            if (parsed.isListed()) {
                 order.has_time_in_force = true;
                 order.time_in_force = parsed;
             }
@@ -118,7 +118,7 @@ public final class BinaryOrderForm {
             String source = at(sources, index);
             if (!source.isEmpty()) {
                 FixOrders.PartyIDSource parsed = FixOrders.PartyIDSource.fromValue(source.charAt(0));
-                if (parsed != null) {
+                if (parsed.isListed()) {
                     party.has_party_id_source = true;
                     party.party_id_source = parsed;
                 }
@@ -126,7 +126,7 @@ public final class BinaryOrderForm {
             String role = at(roles, index);
             if (!role.isEmpty()) {
                 FixOrders.PartyRole parsed = FixOrders.PartyRole.fromValue(Integer.parseInt(role));
-                if (parsed != null) {
+                if (parsed.isListed()) {
                     party.has_party_role = true;
                     party.party_role = parsed;
                 }
@@ -140,12 +140,12 @@ public final class BinaryOrderForm {
 
     private static FixOrders.Side parseSide(String value) {
         FixOrders.Side parsed = value == null || value.isBlank() ? null : FixOrders.Side.fromValue(value.trim().charAt(0));
-        return parsed != null ? parsed : FixOrders.Side.Buy;
+        return parsed != null && parsed.isListed() ? parsed : FixOrders.Side.Buy;
     }
 
     private static FixOrders.OrdType parseOrdType(String value) {
         FixOrders.OrdType parsed = value == null || value.isBlank() ? null : FixOrders.OrdType.fromValue(value.trim().charAt(0));
-        return parsed != null ? parsed : FixOrders.OrdType.Limit;
+        return parsed != null && parsed.isListed() ? parsed : FixOrders.OrdType.Limit;
     }
 
     private static long nowNanoseconds() {

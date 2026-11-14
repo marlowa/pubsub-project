@@ -28,7 +28,11 @@ class JavaGenerator:
 
     The generated file contains a single public final outer class acting as a
     namespace container for:
-      - One public enum per DSL enum declaration
+      - One public static final class per DSL enum declaration, with a constant for each entry.
+        It is a class rather than a Java enum so that it can also hold a value the definition
+        does not list, as the C++ and Python code do: a message from a peer with a newer
+        definition decodes and encodes again unchanged, and firstInvalidField() says that
+        the value is not one this definition allows.
       - One public static final inner class per DSL message, with:
           - Public fields with zero/empty defaults
           - static encodedSize(MsgType) -> int
@@ -157,21 +161,35 @@ class JavaGenerator:
 
     def _emit_enum(self, enum: EnumDecl, w) -> None:
         value_type = "long" if enum.underlying_type == "i64" else "int"
-        w(f"    public enum {enum.name} {{")
+        name = enum.name
         # A 64-bit value needs Java's L suffix; without it, a value outside the 32-bit range does not compile.
         suffix = "L" if value_type == "long" else ""
-        for index, entry in enumerate(enum.entries):
-            sep = "," if index + 1 < len(enum.entries) else ";"
-            w(f"        {entry.name}({entry.value}{suffix}){sep}")
+        w(f"    public static final class {name} {{")
+        for entry in enum.entries:
+            w(f'        public static final {name} {entry.name} = new {name}({entry.value}{suffix}, "{entry.name}");')
+        listed = ", ".join(entry.name for entry in enum.entries)
+        w(f"        private static final {name}[] LISTED = {{{listed}}};")
         w(f"        public final {value_type} value;")
-        w(f"        {enum.name}({value_type} v) {{ this.value = v; }}")
-        w(f"        public static {enum.name} fromValue({value_type} v) {{")
-        w(f"            for ({enum.name} e : values()) {{ if (e.value == v) return e; }}")
-        w("            return null;")
+        w("        // The entry's name, or null for a value the definition does not list.")
+        w("        private final String entryName;")
+        w(f"        private {name}({value_type} v, String n) {{ this.value = v; this.entryName = n; }}")
+        w("        // The listed constant for v, so that == against a constant works; otherwise a new object holding v.")
+        w("        // Never null: a value the definition does not list is kept, and isListed() says so.")
+        w(f"        public static {name} fromValue({value_type} v) {{")
+        w(f"            for ({name} e : LISTED) {{ if (e.value == v) return e; }}")
+        w(f"            return new {name}(v, null);")
         w("        }")
+        w("        public boolean isListed() { return entryName != null; }")
+        w(f"        public static {name}[] values() {{ return LISTED.clone(); }}")
         w("        public static int wireSize() {")
         w(f"            return {self._primitive_wire_size(enum.underlying_type)};")
         w("        }")
+        w("        @Override")
+        w(f"        public boolean equals(Object other) {{ return other instanceof {name} && (({name}) other).value == value; }}")
+        w("        @Override")
+        w("        public int hashCode() { return Long.hashCode(value); }")
+        w("        @Override")
+        w(f'        public String toString() {{ return entryName != null ? entryName : "{name}(" + value + ")"; }}')
         w("    }")
 
     # ------------------------------------------------------------------
@@ -202,7 +220,52 @@ class JavaGenerator:
         self._emit_decode_fields(msg, w)
         w("")
         self._emit_message_to_string(msg, w)
+        w("")
+        self._emit_first_invalid_field(msg, w)
         w("    }")
+
+    # ------------------------------------------------------------------
+    # firstInvalidField, as the C++ and Python generators write it
+    # ------------------------------------------------------------------
+
+    def _emit_first_invalid_field(self, msg: MessageDecl, w) -> None:
+        """Emit firstInvalidField(): the name of the first field whose value the definition does not allow, or null.
+
+        The same rules as the C++ first_invalid_field and the Python first_invalid_field(): a required string must
+        not be empty, an enum must hold a value its definition lists, and a nested message, or a list of messages or
+        enums, is checked element by element, naming the field inside the nested message. An optional field is
+        checked only when it is present.
+        """
+        w("        // The name of the first field whose value the definition does not allow, or null if every one is allowed.")
+        w("        public String firstInvalidField() {")
+        for field in msg.fields:
+            self._emit_validity_check(field, w)
+        w("            return null;")
+        w("        }")
+
+    def _emit_validity_check(self, field: Field, w) -> None:
+        name = field.name
+        type_node = field.type
+        guard = f"has_{name} && " if field.optional else ""
+        if isinstance(type_node, StringType):
+            if not field.optional:
+                w(f"            if ({name} == null || {name}.isEmpty()) return \"{name}\";")
+        elif isinstance(type_node, ReferenceType):
+            if type_node.name in self._enum_names:
+                w(f"            if ({guard}({name} == null || !{name}.isListed())) return \"{name}\";")
+            else:
+                w(f"            if ({guard}{name} != null && {name}.firstInvalidField() != null) return {name}.firstInvalidField();")
+        elif isinstance(type_node, ListType):
+            element = type_node.element_type
+            if isinstance(element, ReferenceType):
+                w(f"            if ({guard}{name} != null) {{")
+                w(f"                for ({element.name} element : {name}) {{")
+                if element.name in self._enum_names:
+                    w(f"                    if (element == null || !element.isListed()) return \"{name}\";")
+                else:
+                    w("                    if (element != null && element.firstInvalidField() != null) return element.firstInvalidField();")
+                w("                }")
+                w("            }")
 
     # ------------------------------------------------------------------
     # toString (structured debug dump)

@@ -76,6 +76,17 @@ Each entry has an explicit integer value. Generated code includes `to_string()` 
 allocation. Generated as `enum class` to prevent name collisions across enums in the same
 namespace.
 
+A field decodes whatever value is on the wire, including one its enum does not list, as happens
+when the sender has a newer DSL file with an extra entry. The value is kept and is written back
+unchanged if the message is encoded again; `first_invalid_field` is what says it is not one the
+definition allows. The three generated languages agree on this. In C++ the `enum class` holds
+any value of its underlying type. In Python an unlisted value is kept as a plain `int`. In Java
+each enum is generated as a final class, not a Java `enum`, because a Java `enum` can hold only
+its listed constants: there is a constant for each entry, `fromValue` returns that constant for
+a listed value, so `==` against a constant works, and a new object holding the value otherwise,
+never `null`. `isListed()` says which, and each message's `firstInvalidField()` follows the same
+rules as the C++ and Python versions.
+
 ### Messages
 
 Each message has a mandatory numeric `id` in its metadata, which maps to `pdu_id` in the

@@ -425,7 +425,8 @@ class _JavaWriter:
 
 def java_program(ast, cases) -> str:
     """The Java program: "encode" prints "case hex" for each case; "reencode" reads "case message hex" lines,
-    decodes each and encodes it again, and prints "case hex", or "case EXCEPTION ..." if that fails."""
+    decodes each and encodes it again, and prints "case hex invalid", where invalid is what the decoded message's
+    firstInvalidField() returns, or "-" for null; or "case EXCEPTION ..." if that fails."""
     messages, enums = _declarations(ast)
     writer = _JavaWriter(messages, enums)
     prints = []
@@ -437,7 +438,7 @@ def java_program(ast, cases) -> str:
     for message_name in messages:
         dispatch.append(f'            case "{message_name}": {{ {JAVA_CLASS}.{message_name} m = {JAVA_CLASS}.{message_name}.decode(in);'
                         f" ByteBuffer b = ByteBuffer.allocate({JAVA_CLASS}.{message_name}.encodedSize(m));"
-                        f" {JAVA_CLASS}.{message_name}.encode(m, b); return b; }}")
+                        f" {JAVA_CLASS}.{message_name}.encode(m, b); print(caseName, b, m.firstInvalidField()); return; }}")
     return "\n".join([
         "import java.io.BufferedReader;",
         "import java.io.InputStreamReader;",
@@ -449,7 +450,12 @@ def java_program(ast, cases) -> str:
         "        for (int i = 0; i < b.position(); i++) sb.append(String.format(\"%02x\", b.get(i)));",
         "        System.out.println(sb);",
         "    }",
-        "    static ByteBuffer reencode(String messageName, ByteBuffer in) {",
+        "    static void print(String caseName, ByteBuffer b, String invalid) {",
+        "        StringBuilder sb = new StringBuilder(caseName).append(' ');",
+        "        for (int i = 0; i < b.position(); i++) sb.append(String.format(\"%02x\", b.get(i)));",
+        "        System.out.println(sb.append(' ').append(invalid == null ? \"-\" : invalid));",
+        "    }",
+        "    static void reencode(String caseName, String messageName, ByteBuffer in) {",
         "        switch (messageName) {",
         *dispatch,
         "            default: throw new IllegalArgumentException(messageName);",
@@ -468,7 +474,7 @@ def java_program(ast, cases) -> str:
         "            byte[] bytes = new byte[parts[2].length() / 2];",
         "            for (int i = 0; i < bytes.length; i++) bytes[i] = (byte) Integer.parseInt(parts[2].substring(2 * i, 2 * i + 2), 16);",
         "            try {",
-        "                print(parts[0], reencode(parts[1], ByteBuffer.wrap(bytes)));",
+        "                reencode(parts[0], parts[1], ByteBuffer.wrap(bytes));",
         "            } catch (Exception e) {",
         '                System.out.println(parts[0] + " EXCEPTION " + e.getClass().getSimpleName());',
         "            }",
@@ -484,9 +490,10 @@ def java_available() -> bool:
     return shutil.which("javac") is not None and shutil.which("java") is not None
 
 
-def run_java(ast, cases, reencode_input: Dict[str, Tuple[str, bytes]]) -> Tuple[Dict[str, bytes], Dict[str, str]]:
-    """Build the Java program; return each case's bytes as Java encodes its values, and for each entry of
-    reencode_input (case -> (message, bytes)), the bytes Java writes after decoding them, as hex, or the exception."""
+def run_java(ast, cases, reencode_input: Dict[str, Tuple[str, bytes]]) -> Tuple[Dict[str, bytes], Dict[str, str], Dict[str, str]]:
+    """Build the Java program; return each case's bytes as Java encodes its values; for each entry of
+    reencode_input (case -> (message, bytes)), the bytes Java writes after decoding them, as hex, or the exception;
+    and for each such entry, what firstInvalidField() of the decoded message returned, or "-" for null."""
     directory = _scratch_dir("javaref_")
     try:
         (directory / f"{JAVA_CLASS}.java").write_text(JavaGenerator(class_name=JAVA_CLASS).emit(ast))
@@ -501,10 +508,14 @@ def run_java(ast, cases, reencode_input: Dict[str, Tuple[str, bytes]]) -> Tuple[
         reencoded = subprocess.run(["java", "-cp", str(directory), "CrossLanguage", "reencode"], input=stdin,
                                    check=True, capture_output=True, text=True)
         again: Dict[str, str] = {}
+        invalid: Dict[str, str] = {}
         for line in reencoded.stdout.splitlines():
             case_name, _, rest = line.partition(" ")
-            again[case_name] = rest
-        return _parse_hex_lines(encoded.stdout), again
+            if rest.startswith("EXCEPTION"):
+                again[case_name] = rest
+                continue
+            again[case_name], _, invalid[case_name] = rest.partition(" ")
+        return _parse_hex_lines(encoded.stdout), again, invalid
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 

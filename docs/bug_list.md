@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 248 |
-| Open | 43 (22 defects, 21 tasks) |
-| Closed | 205 |
+| Open | 42 (21 defects, 21 tasks) |
+| Closed | 206 |
 | Next id | BUG-0249 |
 
 ## Open bugs by severity
 
-7 high, 29 medium, 7 low.
+7 high, 29 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -52,7 +52,6 @@
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
-| [BUG-0179](#bug_0179) | low | defect | The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again |
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
 | [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
@@ -2124,26 +2123,6 @@ permits.
 
 **Principles.** F4.
 
-### BUG-0179: The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again {#bug_0179}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-10-18 |
-| Recorded | 2026-10-18 |
-| How | The byte-for-byte check of the Java generator against the C++ one, in step 2 of phase 6 ([test_events.md](availability/test_events.md)) |
-| Impact | A Java client sent a message with an enum value its copy of the DSL does not list, for instance because the other side has a newer DSL with an extra entry, holds `null` in that field; code that reads the field, or encodes the message again, fails with a NullPointerException. The C++ decoder keeps the value, and leaves it to `first_invalid_field` to say whether it is allowed |
-
-**What was seen.** The C++ code encoded a message whose five enum fields held values their enums do not define. The
-Java code decoded it with every one of those fields `null` (`fromValue` returns `null` for a value it does not know),
-and encoding it again threw a NullPointerException. The Python generator keeps such a value as a plain integer, as
-the C++ code keeps it.
-
-**What is wanted.** The Java code keeps a value it does not know, as the C++ and Python code do, and offers a check
-that says whether each value is one the definition allows.
-
-**Principles.** None; the DSL compiler.
-
 ### BUG-0184: A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five {#bug_0184}
 
 | | |
@@ -2290,6 +2269,24 @@ the leader sends it to each `TopicSubscribeRequest` and then closes the connecti
 reader refused it, and the branch for it in `TopicSubscriberThread` was never reached.
 
 **Principles.** None directly.
+
+### BUG-0179: The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again {#bug_0179}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| Fixed | 2026-11-14 -- each DSL enum is generated in Java as a final class with a constant for each entry, not as a Java `enum`. `fromValue` returns the listed constant, so `==` against a constant still works, or a new object holding a value the enum does not list, never `null`; `isListed()` says which. Each message gains `firstInvalidField()`, with the rules of the C++ and Python versions. The cross-language test now runs its `enums_unlisted` case in Java too: the bytes Java writes, decodes and writes again match the C++ bytes, and Java's `firstInvalidField()` names the same field as Python's in every case. With `fromValue` returning `null` again, every Java case fails. The test client's binary order form checks `isListed()` where it checked for `null` |
+| How | The byte-for-byte check of the Java generator against the C++ one, in step 2 of phase 6 ([test_events.md](availability/test_events.md)) |
+| Impact | A Java client sent a message with an enum value its copy of the DSL does not list, for instance because the other side has a newer DSL with an extra entry, held `null` in that field; code that read the field, or encoded the message again, failed with a NullPointerException. The C++ decoder keeps the value, and leaves it to `first_invalid_field` to say whether it is allowed |
+
+**What was seen.** The C++ code encoded a message whose five enum fields held values their enums do not define. The
+Java code decoded it with every one of those fields `null` (`fromValue` returns `null` for a value it does not know),
+and encoding it again threw a NullPointerException. The Python generator keeps such a value as a plain integer, as
+the C++ code keeps it.
+
+**Principles.** None; the DSL compiler.
 
 ### BUG-0248: A WAL unit test gives the helper thread a fixed second to make a segment ready, and fails when the disk is busy {#bug_0248}
 
