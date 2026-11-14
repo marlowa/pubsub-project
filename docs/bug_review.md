@@ -175,7 +175,7 @@ Sixteen entries.
 | [BUG-0091](bug_list.md#bug_0091): a member's standing instructions die with the gateway that received them | **Fixed on 10 November 2026** and closed | The instruction travels on `SessionBound` and `SessionBoundAck`, is kept by every sequencer, and is applied by the leader when the gateway cannot act. R-0103 verified by scenario 107 | None |
 | [BUG-0072](bug_list.md#bug_0072): the gateway's open-order pool is sized by nothing in particular | **Fixed on 10 November 2026** and closed | The gateways keep no list of open orders, so there is no pool to size; a cancel a gateway refuses is answered with a session-level Reject (FIX) or `RequestRefused` (binary), and R-0151 is amended ([gateway_refusals.md](venue/gateway_refusals.md)). Scenarios 42, 56, 57 and 96 | None |
 | [BUG-0203](bug_list.md#bug_0203): the FIX gateway sometimes refuses a logon as an impostor when two are under way together | **Investigation** | Not reproduced since; cause unknown | Reproduce with many simultaneous logons, as at the start of the day, and find the shared state |
-| [BUG-0056](bug_list.md#bug_0056): the FIX gateway stopped completing logons while still running | **Investigation** | Not reproduced; the evidence is gone | Keep until a reproduction or a stress test of abandoned connections shows it or rules it out |
+| [BUG-0056](bug_list.md#bug_0056): the FIX gateway stopped completing logons while still running | **Not reproducible**, and closed on 14 November 2026 | A four-hour soak of 699 untidy sessions with a logon probe after each of 159 rounds (`scripts/fix_session_soak.py`): every probe answered, and the gateway's descriptors, memory and threads did not grow | None |
 | [BUG-0089](bug_list.md#bug_0089): a member cannot ask the venue what it is holding | **New requirement** (R-0002) | Unchanged: no order status messages in the dictionary or the code | Order status and mass status requests, answered from the book |
 | [BUG-0046](bug_list.md#bug_0046): the binary gateway has no in-flight report recovery | **New requirement** | Unchanged | A recovery for the binary protocol, designed with the sequencer's replay contract |
 | [BUG-0045](bug_list.md#bug_0045): a member has no defined way to discover its primary gateway is down | **New requirement**, an open design question | Unchanged | A statement of what a member should do, in the member documentation |
@@ -188,8 +188,8 @@ Sixteen entries.
 | [BUG-0244](bug_list.md#bug_0244): an idle connection to the authentication service is closed every ten minutes | **Fixed on 14 November 2026** and closed | Each gateway sends an answered heartbeat on each connection; one that stops answering is closed and made again, and logons go to the other instance. `ha_test.py` scenario 110 fails with either half of the fix taken out | None |
 
 **Recommended order in this area.** BUG-0090 and BUG-0091 were first, and are closed. BUG-0095 next, being small and undefined behaviour in
-both gateways. BUG-0072 is a configuration change. The investigations, BUG-0203 and BUG-0056, need a
-stress test of many logons and abandoned connections, which could serve both. The new requirements are
+both gateways. BUG-0072 is a configuration change. BUG-0056 is closed as not reproducible after a four-hour soak of abandoned
+and badly ended sessions. BUG-0203 needs a stress test of many simultaneous logons. The new requirements are
 placed with the rest; BUG-0065's remainder goes with the trading phases. BUG-0092 and BUG-0096 can close.
 
 ## 6. The framework: reactor, timers, allocators and threads

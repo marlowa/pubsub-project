@@ -3,18 +3,17 @@
 | | |
 |---|---|
 | Bugs recorded | 248 |
-| Open | 41 (21 defects, 20 tasks) |
-| Closed | 207 |
+| Open | 40 (20 defects, 20 tasks) |
+| Closed | 208 |
 | Next id | BUG-0249 |
 
 ## Open bugs by severity
 
-7 high, 28 medium, 6 low.
+6 high, 28 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
 | [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
-| [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
 | [BUG-0065](#bug_0065) | high | task | The venue tells a member of a trading halt only in the reply to an order, and cannot halt one instrument |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
@@ -1205,88 +1204,6 @@ Two things worth settling when it is picked up: how a burst is defined for this 
 a window, and which window), and whether the venue should do anything about one or merely report
 it. Reporting first is the safer order.
 
-### BUG-0056: The FIX gateway stopped completing logons while still running {#bug_0056}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-28 |
-| Recorded | 2026-08-28 |
-| How | Ad-hoc sessions driven by `scripts/fix_raw_client.py` while building BUG-0038's step 3 |
-| Impact | The gateway accepted TCP connections and answered none of them. It looked healthy: the process was up, the reactor was running, and nothing was logged as wrong |
-
-**Not reproduced, and the evidence is gone** -- the logs were overwritten by a later run before
-they were preserved. What follows is what was observed at the time, recorded because a defect that
-is known and invisible is worse than one nobody has found, and because the venue looked *fine*
-throughout.
-
-**What was seen.** After a series of ad-hoc client sessions -- several of which the venue itself
-ended (a too-low sequence number, an unanswered `ResendRequest`), and several of which exited on a
-Python exception without closing the socket -- a new client could open a TCP connection and then
-got nothing. No Logon reply, and **no `FIX client connection N established` line in the gateway
-log at all**, so the connection never reached the application thread.
-
-**The process was alive and did not crash.** `devenv.py status` showed `fix_order_gateway_a`
-running. There is no core dump: the newest on the machine is from 2026-08-21. The reactor thread
-was still logging `Reactor created timer` every two seconds throughout.
-
-**The application thread had gone quiet.** The last line from the `FixOrderGatewayThread` thread
-was a connection-lost and session-unbind at 08:05:23; after that only reactor-thread lines
-appeared. So the reactor kept running while the thread that accepts sessions produced nothing.
-
-**The reactor watchdog did not report a stuck thread**, which is worth its own attention: that
-watchdog is what made the order-book rehash stall diagnosable, and a thread that stops without it
-noticing is the case [BUG-0002](#bug_0002) is about -- `process_message` exit paths that may skip
-updating `time_event_finished_` have never been audited.
-
-**A restart cleared it, and it recurred once more** after further ad-hoc sessions, so it is
-unlikely to be a one-off.
-
-**Hypotheses, in the order worth testing:**
-
-- **The application thread exited or blocked.** `ThreadWithJoinTimeout` exists precisely because a
-  raw `std::thread` terminates on an early return; a handler that threw would take the thread down.
-  Nothing was logged, which fits an exit more than a block.
-- **A session or connection leak.** Several sessions ended in the cancel-on-disconnect grace path
-  -- the log recorded *"disconnected with 1 open order(s) -- holding 90s for reconnect"* -- and
-  sockets were left unclosed by scripts that died. An exhausted connection or session table would
-  refuse new work without any single thing looking wrong.
-- **Something specific to the new inbound paths**, since these were the first sessions ever ended
-  by the venue's own sequence checking. `end_session_on_sequence_error` sets
-  `session_established = false` and then disconnects, which is a path nothing else takes.
-
-#### Two hypotheses tried and disproven, 2026-08-28
-
-Attempted with logs preserved. **Not reproduced**, and two of the three hypotheses above are now
-ruled out.
-
-- **Repeated sessions the venue ends.** 75 sessions across 25 rounds -- a too-low `MsgSeqNum`, an
-  abrupt socket close with an order still open, and a gap opened then abandoned -- with a fresh
-  logon attempted after every round. The application thread stayed up and every logon succeeded.
-  So neither the sequence-error path nor the cancel-on-disconnect grace queue leaks on its own.
-- **A member that stops reading.** 6,000 orders sent by a member that never read a byte, its socket
-  held open throughout. All six threads stayed idle in `ep_poll`, and the gateway kept serving. So
-  the venue does not block writing to a member that has stopped reading, which was the most
-  plausible mechanism and is now excluded.
-
-**A false positive on the way, worth recording because it nearly became a finding.** The first
-slow-reader run reported the gateway wedged after 250 messages. It was not: the probe used comp id
-`CLIENT-RECOVERY`, which is not in `credentials.toml` -- only `APM001`, `CLIENT` and `test2a001`
-are -- so the venue accepted the connection, saw an unknown member and disconnected it, exactly as
-it should. The probe was rewritten to use `CLIENT` and the wedge disappeared. **A test that cannot
-log on looks identical to a venue that will not answer.**
-
-**What remains untried** is the third hypothesis: that the application thread exited or blocked for
-a reason specific to the state that day. The original observation stands -- the thread had gone
-quiet while the reactor continued -- but nothing yet reproduces it, and the logs from that instance
-were lost before they were kept.
-
-**To reproduce:** the recipes above did not do it. What differed on the day was a long-running
-venue with many ad-hoc sessions over an extended period, rather than a burst of them. Next attempt
-should run for longer and vary the pacing, and **preserve `installed/log/` before anything else
-runs** -- the step that was missed the first time and honoured the second.
-
-
 ### BUG-0006: ResendRequest under load {#bug_0006}
 
 | | |
@@ -2185,6 +2102,135 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0056: The FIX gateway stopped completing logons while still running {#bug_0056}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| Dismissed | 2026-11-14 -- not reproducible: a four-hour soak of untidy sessions against one gateway, with a new member logging on after every one of 159 rounds, found every logon answered and nothing in the gateway growing. Closed by Andrew's decision that a further failure to reproduce closes it |
+| How | Ad-hoc sessions driven by `scripts/fix_raw_client.py` while building BUG-0038's step 3 |
+| Impact | The gateway accepted TCP connections and answered none of them. It looked healthy: the process was up, the reactor was running, and nothing was logged as wrong |
+
+**Not reproduced, and the evidence is gone** -- the logs were overwritten by a later run before
+they were preserved. What follows is what was observed at the time, recorded because a defect that
+is known and invisible is worse than one nobody has found, and because the venue looked *fine*
+throughout.
+
+**What was seen.** After a series of ad-hoc client sessions -- several of which the venue itself
+ended (a too-low sequence number, an unanswered `ResendRequest`), and several of which exited on a
+Python exception without closing the socket -- a new client could open a TCP connection and then
+got nothing. No Logon reply, and **no `FIX client connection N established` line in the gateway
+log at all**, so the connection never reached the application thread.
+
+**The process was alive and did not crash.** `devenv.py status` showed `fix_order_gateway_a`
+running. There is no core dump: the newest on the machine is from 2026-08-21. The reactor thread
+was still logging `Reactor created timer` every two seconds throughout.
+
+**The application thread had gone quiet.** The last line from the `FixOrderGatewayThread` thread
+was a connection-lost and session-unbind at 08:05:23; after that only reactor-thread lines
+appeared. So the reactor kept running while the thread that accepts sessions produced nothing.
+
+**The reactor watchdog did not report a stuck thread**, which is worth its own attention: that
+watchdog is what made the order-book rehash stall diagnosable, and a thread that stops without it
+noticing is the case [BUG-0002](#bug_0002) is about -- `process_message` exit paths that may skip
+updating `time_event_finished_` have never been audited.
+
+**A restart cleared it, and it recurred once more** after further ad-hoc sessions, so it is
+unlikely to be a one-off.
+
+**Hypotheses, in the order worth testing:**
+
+- **The application thread exited or blocked.** `ThreadWithJoinTimeout` exists precisely because a
+  raw `std::thread` terminates on an early return; a handler that threw would take the thread down.
+  Nothing was logged, which fits an exit more than a block.
+- **A session or connection leak.** Several sessions ended in the cancel-on-disconnect grace path
+  -- the log recorded *"disconnected with 1 open order(s) -- holding 90s for reconnect"* -- and
+  sockets were left unclosed by scripts that died. An exhausted connection or session table would
+  refuse new work without any single thing looking wrong.
+- **Something specific to the new inbound paths**, since these were the first sessions ever ended
+  by the venue's own sequence checking. `end_session_on_sequence_error` sets
+  `session_established = false` and then disconnects, which is a path nothing else takes.
+
+#### Two hypotheses tried and disproven, 2026-08-28
+
+Attempted with logs preserved. **Not reproduced**, and two of the three hypotheses above are now
+ruled out.
+
+- **Repeated sessions the venue ends.** 75 sessions across 25 rounds -- a too-low `MsgSeqNum`, an
+  abrupt socket close with an order still open, and a gap opened then abandoned -- with a fresh
+  logon attempted after every round. The application thread stayed up and every logon succeeded.
+  So neither the sequence-error path nor the cancel-on-disconnect grace queue leaks on its own.
+- **A member that stops reading.** 6,000 orders sent by a member that never read a byte, its socket
+  held open throughout. All six threads stayed idle in `ep_poll`, and the gateway kept serving. So
+  the venue does not block writing to a member that has stopped reading, which was the most
+  plausible mechanism and is now excluded.
+
+**A false positive on the way, worth recording because it nearly became a finding.** The first
+slow-reader run reported the gateway wedged after 250 messages. It was not: the probe used comp id
+`CLIENT-RECOVERY`, which is not in `credentials.toml` -- only `APM001`, `CLIENT` and `test2a001`
+are -- so the venue accepted the connection, saw an unknown member and disconnected it, exactly as
+it should. The probe was rewritten to use `CLIENT` and the wedge disappeared. **A test that cannot
+log on looks identical to a venue that will not answer.**
+
+**What remains untried** is the third hypothesis: that the application thread exited or blocked for
+a reason specific to the state that day. The original observation stands -- the thread had gone
+quiet while the reactor continued -- but nothing yet reproduces it, and the logs from that instance
+were lost before they were kept.
+
+**To reproduce:** the recipes above did not do it. What differed on the day was a long-running
+venue with many ad-hoc sessions over an extended period, rather than a burst of them. Next attempt
+should run for longer and vary the pacing, and **preserve `installed/log/` before anything else
+runs** -- the step that was missed the first time and honoured the second.
+
+#### The four-hour soak, 2026-11-14
+
+**Not reproduced.** `scripts/fix_session_soak.py` runs, for as long as it is asked, rounds of one to
+eight sessions by the member `CLIENT`, each chosen at random from eight kinds: a clean logon, order and
+logout; an order followed by closing the socket with no logout, which starts the cancel-on-disconnect
+grace period; a connection reset with RST; a message numbered below what the venue expects, which the
+venue answers by ending the session; a message numbered above it, with the venue's `ResendRequest` left
+unanswered; a connection that sends nothing until the venue gives up on the logon; bytes that are not
+FIX; and a logon whose socket is left open and unread until a later round closes it. The pause between
+rounds varies from one second to five minutes, because what differed on the day was a venue that had
+been up a long time rather than a busy one. After every round the member `SOAK-PROBE`, used for nothing
+else, opens a new connection and must be answered with a Logon within ten seconds, and the gateway's
+open descriptors, resident memory and threads are recorded.
+
+Run on a freshly started venue from 14:30 to 18:30 with seed 56: 159 rounds and 699 sessions (91 clean,
+105 closed without a logout, 81 reset, 95 numbered too low, 89 left with a gap, 87 silent, 84 of bytes
+that are not FIX, 80 left open). **Every probe was answered at the first attempt**, each in under ten
+milliseconds. The gateway held 25 descriptors whenever no socket was left open, and two more for each
+one that was; 31 at the most, with three open. Its resident memory was 453,524 kB at the start and
+453,964 kB at the end, with no rise in the last two hours. It had the same six threads throughout. The
+97 Errors in its Quill log are each the session ended for a number below what was expected, as intended.
+
+#### A descriptor leak that is not this fault
+
+Until 2026-09-18 every single-shot timer leaked its `timerfd`, and the FIX gateway re-armed one every two
+seconds for its sequence report, so a gateway ran out of descriptors after about 34 minutes. That is
+fixed (commit `5837e75`), and `TimerTest.cpp` counts the descriptors a timer leaves behind. It is not
+what was seen here, for two reasons:
+
+- **The gateway that ran out did not stay up.** The gateway of 28 August 2026 (`fe2170e3`), and an
+  older one from before the timer fix, were each built and run with a limit of 64 descriptors. Both
+  climbed from 19 to 64 in about 90 seconds, then logged "reactor event loop terminated due to exception:
+  timerfd_create failed" and shut down, and a client was then refused the TCP connection. In this
+  entry the gateway kept accepting connections and answering none.
+- **The reactor was still creating timers.** "Reactor created timer" every two seconds means
+  `timerfd_create` succeeded, so descriptors were available; and that timer is re-armed by the
+  application thread in its own timer handler, so that thread was running too. New connections
+  never reached it, which puts the fault between the listening socket and the thread, but the code of
+  that date does not show how: its listening socket is level-triggered, and a failed `accept` is logged
+  as an Error and the socket kept.
+
+**Why it is closed.** The fault was seen twice in one day of ad-hoc work on 28 August 2026, with code
+much changed since, and the logs were lost. Two attempts that day, the descriptor-exhaustion trials
+above and four hours of the same kinds of session with idle stretches have not brought it back. The
+soak script stays in `scripts/` so that the same run can be repeated with the same seed if a gateway is
+seen to stop answering logons again; preserve `installed/log/` before anything else runs.
 
 ### BUG-0244: An idle connection to the authentication service is closed every ten minutes and reported as a Warning {#bug_0244}
 
