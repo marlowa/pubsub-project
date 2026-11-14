@@ -97,32 +97,46 @@ trading day `D` and the name of the file of the day's times for each phase. It d
    by its process identifier, not by the exit status of a stop command, and stops if any is found.
 2. **Check that no file from another day is present.** For every file in section 2.1:
    - if none is present, the day starts fresh;
-   - if the run manifest is present and names `D`, this is a restart during day `D`, not a start of day. The
-     procedure goes to step 5 and starts the components on their files, as a restart after a failure does now;
+   - if the run manifest is present, names `D` and says the day's inputs are complete, this is a restart during
+     day `D`, not a start of day. The procedure goes to step 6 and starts the components on their files, as a
+     restart after a failure does now. It does not export the inputs again: `credentials.toml` is then the
+     authentication services' copy for the day, holding every change sent to them since the start. A schedule
+     file given to a restart must give the same times as the manifest; the times are changed during the day by
+     a `TradingScheduleRequest`, not by restarting;
+   - if the run manifest is present, names `D` and says the day's inputs are not complete, an earlier start of
+     day `D` stopped before it had them. No component has started, so the procedure carries on from step 3 and
+     repeats everything from there;
    - if the run manifest names another day, or any file in section 2.1 is present with no run manifest, the
      procedure refuses. It names every file it found and the day each belongs to, and says that the end-of-day
      procedure for that day has to be run first. It never deletes or moves anything itself.
 3. **Write the run manifest**, `var/run_manifest.toml`: the trading day `D`; the schedule, as the moments in UTC
-   that the venue's local times for `D` come to; the release installed (from `release.json`); and the time the
-   manifest was written. Every later step, and the start-of-day request, takes `D` and the schedule from here.
-4. **Export the day's inputs from the database.** Today that is the members' credentials, as `devenv.py start`
-   already does (`export_credentials`). The reference data joins this step when it exists
-   ([trading_day_and_reference_data.md](trading_day_and_reference_data.md)). If the export fails, the procedure
-   stops; the venue does not start on yesterday's copy.
-5. **Start the components** in the order the environment file gives, each with `--trading-day D` on its
+   that the venue's local times for `D` come to; the release installed (from `release.json`); the time the
+   manifest was written; and `inputs_complete = false`. Every later step, and the start-of-day request, takes `D`
+   and the schedule from here. The manifest is written first so that every file written after it is known to
+   belong to day `D`.
+4. **Export the day's inputs from the database, and check them.** Today the inputs are the members' credentials,
+   as `devenv.py start` already exports them (`export_credentials`). The reference data joins this step when it
+   exists ([trading_day_and_reference_data.md](trading_day_and_reference_data.md)). Each input is written under a
+   temporary name and renamed into place only once it is complete. The procedure then reads each one back, checks
+   that it parses and that it holds as many entries as the database query returned, and only then rewrites the
+   manifest with `inputs_complete = true`. If the export or the check fails, the procedure stops with the manifest
+   still saying the inputs are not complete, so the next attempt repeats this step. The venue never starts on
+   yesterday's copy or on a partial one.
+5. **Check that the manifest says the inputs are complete.** Starting the components is allowed only from here.
+6. **Start the components** in the order the environment file gives, each with `--trading-day D` on its
    command line. A component that finds one of its files in section 2.1 written on a day other than `D`
    refuses to start, naming the file and the day ([BUG-0137](../bug_list.md#bug_0137), item 4). This check is the
    one that holds even when the procedure is not used.
-6. **Ask for the start of day.** The procedure sends the start-of-day request, with `D` and the schedule, to both
+7. **Ask for the start of day.** The procedure sends the start-of-day request, with `D` and the schedule, to both
    sequencers over their listener for operators, as [trading_day_plan.md](trading_day_plan.md) section 3.2 sets
    out. The sequencer that does not lead answers so. The procedure repeats the request until the leader answers
    that it has written the start of day, or that the venue is already in it or past it. Repeating is harmless, so
    a restart during the day runs this step too and is answered that the venue is already past it.
-7. **Report and stop.** The procedure reports the trading day, the phase the venue is in, and the time of each
+8. **Report and stop.** The procedure reports the trading day, the phase the venue is in, and the time of each
    scheduled phase change, and exits. Nothing outside the venue has to run for the day to proceed: the leading
    sequencer moves the venue from one phase to the next by the schedule in its WAL.
 
-Logging on is allowed in every phase, so members may connect as soon as the gateways are up at step 5.
+Logging on is allowed in every phase, so members may connect as soon as the gateways are up at step 6.
 
 ## 4. The end-of-day procedure
 
