@@ -594,9 +594,9 @@ the `scope` label.
 |---|---|---|---|
 | `itc_queue_latency_nanoseconds` | histogram | `ApplicationThread`, the thread's `metrics_scope` | Nanoseconds a message spent between being enqueued and being dispatched |
 | `itc_queue_latency_unstamped_total` | counter | `ApplicationThread`, the thread's `metrics_scope` | Messages dispatched with no enqueue stamp, so excluded from the latency histogram |
-| `reactor_command_latency_nanoseconds` | histogram | The reactor; scope `order_path` or `other` | Nanoseconds a command spent between an application thread enqueueing it and the reactor picking it up. `order_path` holds commands a member was waiting on |
+| `reactor_command_latency_nanoseconds` | histogram | The reactor; scope `waited` or `routine` (see `SendLatencyClass`) | Nanoseconds a command spent between an application thread enqueueing it and the reactor picking it up. `order_path` holds commands a member was waiting on |
 | `reactor_command_latency_unstamped_total` | counter | The reactor; scope `reactor` | Commands picked up with no enqueue stamp |
-| `reactor_send_path_nanoseconds` | histogram | The reactor; scope `order_path` or `other` | Nanoseconds the reactor took to turn a send request into bytes on a socket |
+| `reactor_send_path_nanoseconds` | histogram | The reactor; scope `waited` or `routine` (see `SendLatencyClass`) | Nanoseconds the reactor took to turn a send request into bytes on a socket |
 | `reactor_receive_path_nanoseconds` | histogram | The reactor; scope `reactor` | Nanoseconds the reactor took to turn readable bytes into a message on an application thread's queue |
 | `reactor_lap_nanoseconds` | histogram | The reactor; scope `reactor` | Nanoseconds between one look for work and the next, during which nothing is noticed |
 | `wal_append_nanoseconds` | histogram | The sequencer; scope `sequencer_thread` | Nanoseconds spent committing one record to the write-ahead log, on the leader and the follower alike: the sequencer's thread is the only one that writes it |

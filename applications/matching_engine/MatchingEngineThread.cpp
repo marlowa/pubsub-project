@@ -897,7 +897,7 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
 void MatchingEngineThread::ReportSendingLinks::send_report(const pubsub_itc_fw::ConnectionID& connection, int64_t seq_no,
                                                            const pubsub_itc_fw_app::WalRecord& envelope) {
     owner_.send_pdu(connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope,
-                    pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
+                    pubsub_itc_fw::SendLatencyClass{pubsub_itc_fw::SendLatencyClass::Waited});
     owner_.report_pacing_.report_sent(connection, seq_no);
 }
 

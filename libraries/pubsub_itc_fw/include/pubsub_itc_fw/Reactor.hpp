@@ -39,6 +39,7 @@
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ReactorLifecycleState.hpp>
+#include <pubsub_itc_fw/SendLatencyClass.hpp>
 #include <pubsub_itc_fw/SendsToGoneConnections.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -507,8 +508,8 @@ class Reactor : public ThreadLookupInterface {
 
     /** @brief Records how long the reactor spent turning a send request into bytes on a socket.
      *  @param[in] started_ns When the reactor picked the command off the queue.
-     *  @param[in] on_order_path Whether a member is waiting for this send. */
-    void observe_send_path(int64_t started_ns, bool on_order_path);
+     *  @param[in] latency_class Whether something waits for this send to arrive. */
+    void observe_send_path(int64_t started_ns, SendLatencyClass::SendLatencyClassTag latency_class);
 
     /**
      * @brief Carries out commands an application thread has asked for.
@@ -733,11 +734,14 @@ class Reactor : public ThreadLookupInterface {
      * of which thread sent it. In the components on the order path one thread sends nearly all
      * of the commands, so the distribution is that thread's; in a process where that is not
      * true, this pools them.
+     *
+     * For commands something waits for (SendLatencyClass::Waited); scope label `waited`.
      */
-    HistogramHandle reactor_command_latency_histogram_;
+    HistogramHandle reactor_waited_command_latency_histogram_;
 
-    /** @brief As reactor_command_latency_histogram_, for commands nobody is waiting for. */
-    HistogramHandle reactor_other_command_latency_histogram_;
+    /** @brief As reactor_waited_command_latency_histogram_, for routine commands nothing waits
+     *  for; scope label `routine`. */
+    HistogramHandle reactor_routine_command_latency_histogram_;
 
     /**
      * @brief How long between one look for work and the next.
@@ -769,13 +773,15 @@ class Reactor : public ThreadLookupInterface {
      * A send the socket would not accept is not recorded. The bytes have not gone anywhere: the
      * command is stashed until the connection reports itself writable, and timing it as though
      * it had been written would report a fast send that never happened.
+     *
+     * For sends something waits for (SendLatencyClass::Waited); scope label `waited`.
      */
-    HistogramHandle reactor_send_path_histogram_;
+    HistogramHandle reactor_waited_send_path_histogram_;
 
-    /** @brief As reactor_send_path_histogram_, for sends nobody is waiting for: replication,
-     *  subscriber streams, heartbeats and the rest. Kept apart so that neither series is the
-     *  average of a mixture. */
-    HistogramHandle reactor_other_send_path_histogram_;
+    /** @brief As reactor_waited_send_path_histogram_, for routine sends nothing waits for:
+     *  replication, subscriber streams, heartbeats and the rest; scope label `routine`. Kept
+     *  apart so that neither series is the average of a mixture. */
+    HistogramHandle reactor_routine_send_path_histogram_;
 
     /**
      * @brief How long the reactor takes to turn readable bytes into a queued message.

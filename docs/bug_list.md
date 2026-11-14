@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 248 |
-| Open | 42 (21 defects, 21 tasks) |
-| Closed | 206 |
+| Open | 41 (21 defects, 20 tasks) |
+| Closed | 207 |
 | Next id | BUG-0249 |
 
 ## Open bugs by severity
 
-7 high, 29 medium, 6 low.
+7 high, 28 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -40,7 +40,6 @@
 | [BUG-0134](#bug_0134) | medium | defect | A venue running without a standby says so once, and not at all when no follower is connected |
 | [BUG-0135](#bug_0135) | medium | defect | While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record |
 | [BUG-0136](#bug_0136) | medium | task | Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known |
-| [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
 | [BUG-0173](#bug_0173) | medium | task | No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests |
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
@@ -398,42 +397,6 @@ halted. That build is not the venue's, and the check is not repeated.
 **What is wanted.** A scenario in which the WAL begins after the first command of the day and an engine with a damaged
 region takes the lead: trading halts by the command, nothing is cancelled, and an order sent afterwards is refused.
 It becomes possible once the WAL is reclaimed ([BUG-0048](#bug_0048)).
-
-### BUG-0161: The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send {#bug_0161}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task |
-| Found | 2026-10-14 |
-| Recorded | 2026-10-14 |
-| How | Andrew, reading `ApplicationThread` on GitHub, and a review of it |
-| Impact | The framework cannot be reused without the venue's vocabulary, and the same idea goes by three names in it. Nothing behaves wrongly |
-
-**What is there.** A send is tagged with whether a member is waiting for it, so that the reactor can
-file the send's timing in one of two histograms (`reactor_command_latency_nanoseconds` and
-`reactor_send_path_nanoseconds`). The mechanism belongs in the framework; the words do not. The
-framework names them in five of its files: `MemberIsWaitingFlag.hpp` (the class, its values, and its
-description in terms of sequencers and replication), the `send_pdu` description in
-`ApplicationThread.hpp` ("towards the matching engine"), `ApplicationThread.cpp`,
-`ReactorControlCommand::on_order_path_`, and the metric scope `"order_path"` and its two help strings in
-`Reactor.cpp` ("whether a member was waiting"). Member is waiting, on the order path and `order_path` are
-three names for one idea.
-
-**What is wanted.** A neutral framework type, `SendLatencyClass` with two values, waited and background,
-with a neutral field in the command and the scope labels `waited` and `background` (the names are a
-suggestion, to be confirmed when the work is done). The applications keep the meaning: each call site
-that today says a member is waiting says the send is waited for, through a small helper of the
-application's if that reads better. Two classes are enough: the measurement that introduced the split
-found the remaining error comes from the sequencer's two different sends on the path, which further
-classes would not explain.
-
-**What has to change with it.** The scope label is read by `grafana/dashboards/pubsub-venue-latency.json`,
-the script that generates it (`scripts/make_grafana_dashboard.py`), `docs/operations/metrics.md` and
-`docs/operations/latency_findings.md`; they change in the same commit, or the panels go blank. Series
-already stored under the old label do not join up with the new one.
-
-**When.** After phase 5 of the recovery plan is finished, because steps 3 and 4 add more code that uses these names, and the renaming is then done once. Andrew agreed on 15 October 2026.
 
 ### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
 
@@ -2269,6 +2232,29 @@ the leader sends it to each `TopicSubscribeRequest` and then closes the connecti
 reader refused it, and the branch for it in `TopicSubscriberThread` was never reached.
 
 **Principles.** None directly.
+
+### BUG-0161: The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send {#bug_0161}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| Fixed | 2026-11-14 -- `MemberIsWaitingFlag` is replaced by `SendLatencyClass`, with values `Waited` and `Routine`, described without the venue's terms; the command's field is `latency_class_`; the reactor's histograms carry the scope labels `waited` and `routine`, and their help text says whether something waited for the send. The applications' twelve call sites pass `SendLatencyClass::Waited`. Names chosen by Andrew (option A): `routine` rather than the suggested `background`, which already names the shared processor tier. Neither the Grafana dashboard nor its generating script reads these two metrics, so no panel changes; series stored under `order_path` and `other` do not join up with the new labels |
+| How | Andrew, reading `ApplicationThread` on GitHub, and a review of it |
+| Impact | The framework cannot be reused without the venue's vocabulary, and the same idea goes by three names in it. Nothing behaves wrongly |
+
+**What was there.** A send is tagged with whether a member is waiting for it, so that the reactor can
+file the send's timing in one of two histograms (`reactor_command_latency_nanoseconds` and
+`reactor_send_path_nanoseconds`). The mechanism belongs in the framework; the words do not. The
+framework named them in five of its files: `MemberIsWaitingFlag.hpp` (the class, its values, and its
+description in terms of sequencers and replication), the `send_pdu` description in
+`ApplicationThread.hpp` ("towards the matching engine"), `ApplicationThread.cpp`,
+`ReactorControlCommand::on_order_path_`, and the metric scope `"order_path"` and its two help strings in
+`Reactor.cpp` ("whether a member was waiting"). Member is waiting, on the order path and `order_path` were
+three names for one idea.
+
 
 ### BUG-0179: The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again {#bug_0179}
 

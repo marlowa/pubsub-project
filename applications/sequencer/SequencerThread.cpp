@@ -1672,11 +1672,11 @@ void SequencerThread::send_held_order_to_matching_engine(const HeldOrder& held) 
         pubsub_itc_fw_app::WalRecord envelope = held.envelope;
         envelope.payload = pubsub_itc_fw_app::BytesView{held.own_payload.data(), held.own_payload_size};
         send_pdu(engine_routing_.active(), pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope.seq_no, envelope,
-                 pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
+                 pubsub_itc_fw::SendLatencyClass{pubsub_itc_fw::SendLatencyClass::Waited});
         return;
     }
     send_pdu(engine_routing_.active(), pubsub_itc_fw_app::WalRecord::message_pdu_id, held.envelope.seq_no, held.envelope,
-             pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
+             pubsub_itc_fw::SendLatencyClass{pubsub_itc_fw::SendLatencyClass::Waited});
     if (held.envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
         order_path_metrics::observe_checkpoint(order_out_elapsed_histogram_, held.envelope.has_gateway_ingress_ns, held.envelope.gateway_ingress_ns,
                                                config_.wall_clock->now_ns());
@@ -2610,7 +2610,7 @@ void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::Ev
 
 void SequencerThread::ReportLinks::send_report(const pubsub_itc_fw::ConnectionID& connection, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope) {
     owner_.send_pdu(connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope,
-                    pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
+                    pubsub_itc_fw::SendLatencyClass{pubsub_itc_fw::SendLatencyClass::Waited});
 }
 
 void SequencerThread::ReportLinks::send_encoded_report(const pubsub_itc_fw::ConnectionID& connection, int64_t er_seq_no, const uint8_t* bytes, size_t size) {

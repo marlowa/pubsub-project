@@ -805,9 +805,9 @@ TimerID ApplicationThread::schedule_timer(std::chrono::microseconds interval, Ti
 }
 
 void ApplicationThread::enqueue_send_pdu_command(const ConnectionID& conn_id, SlabHandle slab_id, void* chunk, uint32_t payload_bytes,
-                                                 MemberIsWaitingFlag member_is_waiting) {
+                                                 SendLatencyClass latency_class) {
     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::SendPdu);
-    cmd.on_order_path_ = member_is_waiting.is_set();
+    cmd.latency_class_ = latency_class.value();
     cmd.connection_id_ = conn_id;
     cmd.allocator_ = &outbound_allocator_;
     cmd.slab_id_ = slab_id;

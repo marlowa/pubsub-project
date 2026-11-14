@@ -2744,7 +2744,7 @@ void FixOrderGatewayThread::ResendLinks::send_again(const pubsub_itc_fw::Connect
     }
     const pubsub_itc_fw_app::WalRecord again = fix_common::envelope_to_send_again(kept_envelope);
     owner_.send_pdu(connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, 0, again,
-                    pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
+                    pubsub_itc_fw::SendLatencyClass{pubsub_itc_fw::SendLatencyClass::Waited});
 }
 
 void FixOrderGatewayThread::ResendLinks::request_writable_notification(const pubsub_itc_fw::ConnectionID& connection) {

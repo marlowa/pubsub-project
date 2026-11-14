@@ -13,6 +13,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/MessagesWaitingLimit.hpp>
+#include <pubsub_itc_fw/SendLatencyClass.hpp>
 #include <pubsub_itc_fw/ServiceID.hpp>
 #include <pubsub_itc_fw/SlabHandle.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -183,21 +184,14 @@ class ReactorControlCommand {
     int64_t enqueued_ns_{0};
 
     /**
-     * @brief Whether a member is waiting for this send.
+     * @brief Whether something waits for this send to arrive; see SendLatencyClass.
      *
-     * A component sends far more than the messages on an order's journey. The sequencer alone
-     * sends replication records, the external subscriber stream, write-ahead log
-     * acknowledgements, heartbeats and arbitration reports, and nobody is waiting on the other
-     * end of a client connection for any of them. Timing all of those together produces a figure
-     * that describes none of them: measured that way the sequencer's sends appeared to account
-     * for more time than the journey they were part of, which cannot be true and is how the
-     * mixture gave itself away.
-     *
-     * Set by the sending thread at the few places a message on an order's journey leaves a
-     * component, and used only to decide which of two histograms records the wait. It never
-     * changes what is sent or where it goes.
+     * Set by the sending thread, and used only to decide which of two histograms records how
+     * long the command waited for the reactor and how long the reactor took over it. It never
+     * changes what is sent or where it goes. Held as the tag rather than the class so that the
+     * command stays default-constructible field by field.
      */
-    bool on_order_path_{false};
+    SendLatencyClass::SendLatencyClassTag latency_class_{SendLatencyClass::Routine};
 
     // AddTimer / CancelTimer payload fields
 
