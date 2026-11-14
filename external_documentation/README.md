@@ -15,7 +15,7 @@ can download each from the address in the table.
 
 ## The documents
 
-All downloaded on 10 November 2026.
+Downloaded on 10 November 2026, except those in the second table below, downloaded on 14 November 2026.
 
 | File | Publisher, and what it is | Where it came from |
 |---|---|---|
@@ -35,6 +35,26 @@ All downloaded on 10 November 2026.
 
 The London Stock Exchange's MIT202 at docs.londonstockexchange.com, Issues 17.0 and 13.1, and Turquoise's TQ201, refused
 the download ("Access Denied"); the copy above is the one London Stock Exchange Group publishes on lseg.com.
+
+### How sequenced systems handle time and the trading day
+
+Downloaded on 14 November 2026. The four Aeron files are published under the Apache License 2.0 and could be kept in
+the repository, but are kept out of it like the rest, so that this directory has one rule. The Aeron source files are
+taken from the `master` branch on that date, so a later copy may differ.
+
+| File | Publisher, and what it is | Where it came from |
+|---|---|---|
+| `aeron_cluster_tutorial_wiki.html` | Real Logic: the Aeron Cluster tutorial, on the Aeron project's wiki | [github.com](https://github.com/real-logic/aeron/wiki/Cluster-Tutorial) |
+| `aeron_cluster_Cluster.java` | Real Logic: Aeron Cluster's `Cluster` interface, with its documentation of `scheduleTimer`, `cancelTimer` and `time` | [github.com](https://raw.githubusercontent.com/aeron-io/aeron/master/aeron-cluster/src/main/java/io/aeron/cluster/service/Cluster.java) |
+| `aeron_cluster_ClusteredService.java` | Real Logic: Aeron Cluster's `ClusteredService` interface, with `onTimerEvent` | [github.com](https://raw.githubusercontent.com/aeron-io/aeron/master/aeron-cluster/src/main/java/io/aeron/cluster/service/ClusteredService.java) |
+| `aeron_cluster_LogPublisher.java` | Real Logic: Aeron Cluster's `LogPublisher`, which writes timer events and administrative actions into the cluster's log | [github.com](https://raw.githubusercontent.com/aeron-io/aeron/master/aeron-cluster/src/main/java/io/aeron/cluster/LogPublisher.java) |
+| `janestreet_how_to_build_an_exchange.html` | Jane Street: "How to Build an Exchange", a talk by Brian Nigito, with its transcript | [janestreet.com](https://www.janestreet.com/tech-talks/building-an-exchange/) |
+| `infoq_leveraging_determinism_2022.html` | InfoQ: "Leveraging Determinism", a report of Frank Yu's talk on the Coinbase Derivatives Exchange | [infoq.com](https://www.infoq.com/news/2022/10/leveraging-determinism/) |
+| `adaptive_aeron_sequencer_reference_overview.html` | Adaptive: "Aeron Sequencer: A reference overview", the landing page only; the guide itself is given out in return for contact details | [hub.weareadaptive.com](https://hub.weareadaptive.com/aeron-sequencer-a-reference-overview) |
+| `adaptive_enabling_24_hour_trading.html` | Adaptive: "Enabling 24 hour trading", the landing page only, for the same reason | [hub.weareadaptive.com](https://hub.weareadaptive.com/enabling-24-hour-trading) |
+
+The Javadoc of `Cluster` for Aeron 1.41.4 at javadoc.io, which says the same as `aeron_cluster_Cluster.java`, refused
+the download (HTTP 404).
 
 ## What they are used for
 
@@ -64,3 +84,28 @@ the download ("Access Denied"); the copy above is the one London Stock Exchange 
   a Business Message Reject (cash message reference).
 - Nasdaq's OUCH identifies every order by the member's own token, with no exchange order identifier in the messages
   that cancel it (OUCH 4.2).
+
+**How the trading day moves from one phase to the next**, for the design in
+[trading_day_plan.md](../docs/venue/trading_day_plan.md):
+
+- The London Stock Exchange's phases follow a published schedule, the trading cycles in its Business Parameters
+  document, and can be overridden by "market control actions invoked by London Stock Exchange that override the normal
+  schedule"; halt, suspend and resume are separate, unscheduled sessions. Each instrument has its own cycle, and its
+  status is broadcast on the market data feed (MIT201, sections 4.4 and 10.5). Orders the exchange removes in the post
+  close session generate "a corresponding cancellation message back to the specific participant" (MIT201, section
+  6.8.2).
+- Deutsche Börse's T7 sends `TradingSessionStatus` (35=h) on the order entry session "for all session related events",
+  with `TradSesStatus` only Unknown, Open or Closed and the trading date as `UTradeDate` (cash message reference,
+  section 8.17). Ending the restatement of orders at start of day starts trading for a product, and implies the
+  cancellation of every day order with no notice for each (FIX LF manual, sections 3.8.11 and 3.8.16).
+- Euronext sends the messages for expired day orders "at the beginning of the last Closed (Closing) phase at the end of
+  the trading session" (Optiq client specifications, "Cancellation of Orders at the Close of Business").
+- Aeron Cluster gives each message to the service with a timestamp to use "within your application state, so it will be
+  consistent under replay" (tutorial). A service schedules a timer only while handling a message, a timer or a session
+  opening or closing (`Cluster.java`), and the timer's expiry is written into the cluster's log as a `TimerEvent`
+  carrying the leadership term (`LogPublisher.java`), which every member applies at the same position (`onTimerEvent`
+  in `ClusteredService.java`). Administrative actions are written into the log in the same way, as
+  `ClusterActionRequest` records.
+- Jane Street's talk states the same rule for a sequenced exchange: a timer on one machine is not a valid cause of a
+  change of state ("You can't just act on the timer on that box"), and every change "has to essentially come from that
+  global totally ordered stream of messages", which every consumer, market data included, receives.

@@ -16,6 +16,9 @@ the order flow. The clickable [architecture map](../orientation/architecture.md)
 - [admin_service.md](admin_service.md) — The Java administration service
 - [fix_test_client.md](fix_test_client.md) — The web client used to drive the venue by hand or by script, through either gateway
 - [trading_phases.md](trading_phases.md) — What the venue is doing, how it says so, and why a halt cannot leave the process that declares it
+- [trading_day_and_reference_data.md](trading_day_and_reference_data.md) — Exploratory design for starting a trading day: the trading date, moving from one phase to the next, replay, and the requirement any reference data must meet
+- [trading_day_plan.md](trading_day_plan.md) — Design plan for the whole trading day: every phase, how the venue moves between them, what members and components are told, and the order of work
+- [long_orders.md](long_orders.md) — Orders that outlive the trading day: out of scope under principle V2, and how they would be built if brought into scope
 - [gateway_refusals.md](gateway_refusals.md) — how a gateway answers a request to cancel that it refuses itself: a session-level Reject in FIX and `RequestRefused` in the binary protocol, as Euronext does, and why the gateways keep no list of open orders
 - [sequencer_order_path_without_the_heap.md](sequencer_order_path_without_the_heap.md) — the design for BUG-0131: the leading sequencer's map of which session placed each order, and its reports waiting for a commit, without heap allocation or copying (designed, not built)
 

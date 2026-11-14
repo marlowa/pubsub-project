@@ -318,7 +318,7 @@ end
 # ------------------------------------------------------------
 message EnginePosition (id=119, version=1)
     i64 request_id         # the request_id of the query this answers
-    i64 highest_applied    # the highest sequence number of an order or cancel the engine has acted on
+    i64 highest_applied    # the highest sequence number of a command the engine has acted on: an order, a cancel or a TechnicalEvent
 end
 
 # ------------------------------------------------------------

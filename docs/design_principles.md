@@ -391,6 +391,8 @@ trading day, known as long orders, are deliberately not implemented: they are bu
 that would bring out no new requirement of the library. If they ever are implemented, they are
 restored at the start of each day, from a database export as the reference data is, and re-entered as
 commands the sequencer logs, so that each day's log still holds everything that day's venue holds.
+How they would be kept between days, and the decisions they would need, are set out in
+[long_orders.md](venue/long_orders.md).
 
 **Where it is meant to hold.** In the sequencer's log ([wal.md](durability/wal.md)) and in the matching
 engine's catch-up from it. A restarted matching engine does not replay the whole day, which takes
