@@ -686,8 +686,8 @@ def _lease_records(env: dict, install_dir: Path) -> list[Path]:
     Each arbiter keeps the promise of its vote in its promise file, and beside it, with
     ".component_statements" added, the statements component leaders have made about whether their
     peers may lead. Each matching engine keeps its promise beside its epoch file, with ".lease_promise"
-    added. The sequencers and the publishers keep theirs in their write-ahead log directories, which
-    are cleared with the logs.
+    added. The sequencers keep theirs in their write-ahead log directories, which
+    are cleared with the logs. The publishers keep none.
     """
     records: list[Path] = []
     for promise_file in _deployed_values(env, install_dir, "promise_file"):

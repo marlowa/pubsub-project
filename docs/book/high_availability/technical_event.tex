@@ -92,8 +92,8 @@ refused.
   The venue shall enter the phases in the order start of day, pre-open, open, closed, end of
   day, and shall enter each at most once in a trading day. The leading sequencer shall write the
   \texttt{TechnicalEvent} for a phase only while the venue is in the phase before it, and only
-  when that phase's conditions hold. Entering pre-open requires the matching engine to have
-  applied every record that must be in place before members enter orders. Entering end of day
+  when that phase's conditions hold. Entering pre-open requires the leading matching engine to
+  have applied every command for the engine that the sequencer wrote during start of day. Entering end of day
   requires every report produced by the close to be in the WAL.
   \rationale{A phase that could be entered twice, or skipped, would leave the components to work
   out which of two contradictory states is current. Writing a change only from the phase before
@@ -106,15 +106,19 @@ refused.
   The day's schedule shall be given to the venue with the request that starts the day, as the
   earliest time at which each phase may be entered. The leading sequencer shall write the
   schedule into the WAL. When the time for the next phase has come and that phase's conditions
-  hold, the leading sequencer shall write the \texttt{TechnicalEvent} that enters it. No other
-  component shall change the phase because of its own clock.
+  hold, the leading sequencer shall write the \texttt{TechnicalEvent} that enters it: never before that
+  time by its own clock, and, while it leads, no later than one second after both the time has come and
+  the conditions hold. No other component shall change the phase because of its own clock.
   \rationale{A clock on one machine is not a valid cause of a change of state in a replicated
   venue, because the other machines and a later replay do not share it. Recording the schedule in
   the WAL means every sequencer holds the same times, a newly promoted leader knows when the next
   change is due, and the WAL shows why each change was made. The leading sequencer already
   carries out a member's cancel-on-disconnect grace period in the same way: the deadline is in the
   WAL, and the leader writes the cancel when the deadline passes. Aeron Cluster writes the expiry
-  of a timer into its replicated log for the same reason.}
+  of a timer into its replicated log for the same reason. The times depend on the sequencers'
+  machines keeping their clocks synchronised to an external source, to well within one second.
+  While no sequencer leads, nothing can be written, so a change due then is written by the next
+  leader as soon as it leads, and the record shows how late it was.}
   \uncovered{no schedule exists yet}
 \end{requirement}
 
@@ -171,7 +175,10 @@ refused.
   The \texttt{TechnicalEvent} that enters the closed phase shall be the command that cancels every
   order still open. Each matching engine, applying it at its position in the WAL, shall cancel
   every order on its book and produce an execution report for each, to the member that placed
-  it.
+  it. Each such report shall carry the close's sequence number as the command it answers, so that
+  a reader of the WAL, and a replay, can tell the close's cancels from a member's. A member's
+  command sequenced before the close shall be applied before it, and one reaching the sequencer
+  after it shall be refused.
   \rationale{An order that outlives the day would be open overnight with nobody watching it, in a
   venue that starts the next day with an empty book. Because the cancellation is one command at
   one position, both matching engines cancel the same orders, and a replay cancels them again in

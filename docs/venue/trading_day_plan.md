@@ -72,6 +72,17 @@ refused. There is nothing to cancel, because the day starts with an empty book.
 
 ### 2.3 `pre_open` and `open`
 
+**When the venue is ready for `pre_open`.** During `sod` no member's command is accepted, so every record in the
+WAL before `pre_open` is one the leading sequencer wrote itself as part of the start of the day. The venue is
+ready for `pre_open` when the leading matching engine reports, through `EnginePosition` (119), a highest applied
+sequence number at or above the last of those records that is a command for the engine. Today that record is the
+start-of-day `TechnicalEvent`; the `TradingSchedule` record is for the sequencers and is not sent to the engine.
+When reference data or long orders exist, their records are written during `sod`, are commands for the engine,
+and so are covered by the same rule with no change to it. The sequencer asks for the engine's position with
+`EnginePositionQuery` (118) when the time for `pre_open` has come, and asks again at each check until the
+condition holds. The follower engine is not waited for: it applies the same records before it can be promoted
+([trading_day_and_reference_data.md](trading_day_and_reference_data.md), "The condition for entering pre-open").
+
 In a real venue, orders entered in `pre_open` rest without matching and the move to `open` runs an auction
 that matches them. This venue does no matching, so its engine treats the two phases alike: it accepts orders
 onto the book and cancels them. The phases are still kept apart, so that the members, the gateways and the
@@ -89,14 +100,40 @@ halts after a long absence (R-0117), and the sequencer already records reports t
 produced, with nothing in `answers_seq_no`.
 
 From then on the sequencer refuses orders and cancels from members. The engine's reports for the close
-are to carry the close's sequence number as `answers_seq_no`, so that a reader of the WAL can tell which
-cancels the close produced.
+are to carry the close's sequence number as `answers_seq_no`, so that a reader of the WAL, and a replay, can
+tell which cancels the close produced.
+
+**Commands and reports already in flight when the close is written.** The close is one command at one
+position in the WAL, and each engine applies commands strictly in sequence, so every case is decided by
+position:
+
+- **A member's command sequenced before the close** is applied before it. An order entered just before the
+  close rests on the book and is then cancelled by the close; a cancel sequenced before the close takes effect
+  before it. The member receives the report for its own command first, then the close's cancel if the order
+  was still open.
+- **A report the engine has not yet returned** for a command sequenced before the close is still outstanding
+  when the close is written. It arrives later and is recorded in the WAL as now, answering that command, not
+  the close.
+- **A member's command reaching the sequencer after the close is written** is refused by the sequencer, by
+  phase, whatever the gateway believed when it passed it on (R-0170). A cancel for an order the close has
+  cancelled is refused in the same way, and the member already has the close's report for that order.
+- **The matching engine being absent at the close** delays nothing in the WAL: the close is written at its
+  time, and the engine applies it, with every command before it, when it catches up.
+- **`eod` waits for all of it.** End of day is entered only once no report is outstanding for any command
+  sequenced up to and including the close (section 2.5 gives the check).
 
 ### 2.5 `eod`: end of day
 
 The venue enters `eod` when its time has come or an operator asks, and only once the WAL holds a report for every order the close cancelled.
-The sequencer already has this check: it is the one that stops a halt being lifted while reports are
-outstanding (`OperatorHaltOutcome::ReportsOutstanding`). The check is what makes the recorder's rule hold:
+The sequencer has a similar check already, but it does not cover the close as it stands. To lift a halt, the
+sequencer requires the WAL to hold a report answering the last order or cancel written before the halt
+(`OperatorHaltOutcome::ReportsOutstanding`). That works because every member's command produces at least one
+report and the engine sends every report of a command before it applies the next. The close can produce no report
+at all, when no order is open, or many. So the check for `eod` is different: the leading engine's position
+(`EnginePosition`) must show the close applied, and every report the engine sent before that answer must be in
+the WAL. This holds only if the engine sends its position on the same connection as its reports, after them, and
+the sequencer writes each report as it arrives; that is to be confirmed in the code when step 6 is built. The
+check is what makes the recorder's rule hold:
 **no order record follows the `eod` event**, because nothing that can produce one is accepted after the close
 and everything the close produced is in the WAL before `eod` is written.
 
@@ -250,9 +287,19 @@ check at once.
   follower's WAL and is discarded when the old leader rejoins. The new leader finds the venue still in the
   predecessor phase and writes the change itself. Either way exactly one change survives.
 
-The times are compared with the leader's wall clock, as the grace period's are; the two sequencers' clocks are
-expected to agree to well within the second the check allows. Whichever leader writes a change, the record
-carries the time it was written, so a difference between the clocks is visible in the WAL.
+**Timing, stated exactly.** The times are compared with the clock of whichever sequencer leads, as the grace
+period's are.
+
+- A scheduled phase change is never written before its time by the clock of the leader that writes it.
+- While a leader exists and the phase's conditions hold, it is written no later than one check interval (one
+  second) after its time.
+- While no sequencer leads, nothing is written. A leader that takes over after the time has passed writes the
+  change at its first check, so the change is then late by the time the venue took to choose a new leader.
+- The venue assumes the sequencers' machines keep their clocks synchronised to an external source, to well
+  within the one-second check interval. Nothing in the venue checks this. A leader whose clock is fast writes a
+  change early by the amount it is fast; one whose clock is slow writes it late.
+- Each record carries the time it was written (`wall_time_ns`), and the `TradingSchedule` record carries the
+  times asked for, so how late each change was, and which leader wrote it, can be read from the WAL.
 
 ### 3.6 What operators still do
 
@@ -346,7 +393,7 @@ documents and decisions; code starts at step 4.
 2. **Write the requirements** in the book's high availability chapter, in the section "The venue says what
    it is doing", and fill in the table in [trading_phases.md](trading_phases.md). Done: R-0164 to R-0175.
 3. **Write the end-of-day and start-of-day procedures, and the list of every file the venue writes during a
-   day** ([BUG-0137](../bug_list.md#bug_0137)), as documents.
+   day** ([BUG-0137](../bug_list.md#bug_0137)), as documents. Done: [start_and_end_of_day.md](start_and_end_of_day.md).
 4. **The trading date from the start-of-day event.** The run is given its date; the first record of the WAL is
    the start-of-day `TechnicalEvent`; every record takes its date from it; the sequencer refuses a start of day
    for any other date. The phase request and its answer are built here, for `StartOfDay` and `PreOpen` only.
