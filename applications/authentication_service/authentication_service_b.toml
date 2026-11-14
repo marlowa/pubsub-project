@@ -3,6 +3,10 @@ credentials_file = "credentials.toml"
 [network]
 listen_host = "${auth_service_b_network_listen_host}"
 listen_port = ${auth_service_b_network_listen_port}
+# How long a gateway's connection may send nothing before this service closes it. Each order
+# gateway sends a heartbeat at its timeouts.authentication_heartbeat_interval, 30s, so this must
+# be well above that or working connections are closed.
+connection_inactivity_limit = "600s"
 
 [admin]
 listen_port                    = ${auth_service_b_admin_listen_port}

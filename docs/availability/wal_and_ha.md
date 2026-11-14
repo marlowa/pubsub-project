@@ -405,6 +405,13 @@ authenticates the next logon with the other. A session already logged on is unaf
 does not authenticate again. `ha_test.py` scenario 17 kills instance `a` and logs a member on through
 `b`.
 
+An instance that stops answering without its connection closing, because its process hangs or its
+machine disappears, is found by the heartbeat the gateway sends on each connection: if nothing
+arrives for three heartbeat intervals, the gateway closes the connection and logs on through the
+other instance until the first answers again. `ha_test.py` scenario 110 stops instance `a` with
+SIGSTOP and logs a member on through `b`. See
+[Authentication Service → Keeping the connection open](../venue/authentication_service.md#authentication_heartbeat).
+
 ---
 
 ## Arbiters

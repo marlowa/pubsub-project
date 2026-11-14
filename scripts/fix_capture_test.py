@@ -350,6 +350,7 @@ def _write_gateway_toml(path: Path, fix_port: int, er_port: int,
         f'[timeouts]\n'
         f'logon_timeout      = "30s"\n'
         f'scram_auth_timeout = "10s"\n'
+        f'authentication_heartbeat_interval = "30s"\n'
         f'\n'
         f'[logging]\n'
         f'applog_level     = "debug"\n'

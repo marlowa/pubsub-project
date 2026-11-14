@@ -29,6 +29,7 @@
 #include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
 #endif
 
+#include "AuthenticationServiceLink.hpp"
 #include "FixCapture.hpp"
 #include "FixMessage.hpp"
 #include "FixOrderGatewayConfiguration.hpp"
@@ -126,6 +127,16 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void handle_resend_request(FixSession& session, const ParsedFixMessage& msg);
     void handle_new_order_single(FixSession& session, const ParsedFixMessage& msg, const fix_codec::FixMessageReader& reader);
     void handle_order_cancel_request(FixSession& session, const ParsedFixMessage& msg);
+
+    /// The connection to send a logon's authentication on: the primary if it is answering, else the secondary if it
+    /// is, else none (an invalid id).
+    [[nodiscard]] pubsub_itc_fw::ConnectionID authentication_connection_for_logon() const;
+    /// Sends heartbeats on the authentication connections, and closes and remakes any that has stopped answering.
+    void on_authentication_heartbeat_timer();
+    /// Sends the next numbered AuthenticationHeartbeat on @p connection_id.
+    void send_authentication_heartbeat(const pubsub_itc_fw::ConnectionID& connection_id);
+    /// Something arrived from an authentication service on @p link; says so when the connection has just become usable.
+    void note_heard_from_authentication_service(fix_common::AuthenticationServiceLink& link, const char* which);
 
     void disconnect_session(const FixSession& session, const std::string& reason);
     void send_fix_to_session(FixSession& session, const FixMessage& msg);
@@ -520,12 +531,13 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // Stateless serialiser shared across all sessions.
     FixSerialiser serialiser_;
 
-    // ConnectionID of the outbound connection to the primary authentication service.
-    pubsub_itc_fw::ConnectionID auth_service_primary_conn_id_;
-
-    // ConnectionID of the outbound connection to the secondary authentication service.
-    // Only connected when ha_enabled is true.
-    pubsub_itc_fw::ConnectionID auth_service_secondary_conn_id_;
+    // The connections to the two authentication service instances, and whether each is answering. The secondary is
+    // connected only with ha_enabled. See docs/venue/authentication_service.md, "Keeping the connection open".
+    fix_common::AuthenticationServiceLink auth_service_primary_{config_.authentication_heartbeat_interval};
+    fix_common::AuthenticationServiceLink auth_service_secondary_{config_.authentication_heartbeat_interval};
+    pubsub_itc_fw::TimerID authentication_heartbeat_timer_id_{};
+    // How many AuthenticationHeartbeats this gateway has sent; the number of the last one.
+    int64_t authentication_heartbeats_sent_{0};
 
     // ConnectionID of the primary sequencer outbound connection.
     pubsub_itc_fw::ConnectionID sequencer_primary_conn_id_;

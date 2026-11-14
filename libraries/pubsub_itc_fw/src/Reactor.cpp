@@ -1364,6 +1364,18 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                 break;
             }
 
+            case ReactorControlCommand::CloseAndReconnect: {
+                const ConnectionID cid = command.connection_id_;
+                const std::string reason = "closed by the application thread, which asked for the service to be connected again";
+                if (!outbound_manager_.process_close_and_reconnect_command(cid, reason)) {
+                    // Already gone, closed by the peer or by an error, and in either case a new attempt is already
+                    // scheduled. Nothing is wrong: the application asked for what has already happened.
+                    PUBSUB_LOG(logger_, FwLogLevel::Debug, "Reactor::process_control_commands: connection id {} for CloseAndReconnect is already closed",
+                               cid.get_value());
+                }
+                break;
+            }
+
             case ReactorControlCommand::RequestWritableNotification: {
                 const ConnectionID cid = command.connection_id_;
                 if (!outbound_manager_.process_writable_notification_command(command)) {

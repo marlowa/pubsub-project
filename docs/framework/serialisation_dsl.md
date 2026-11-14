@@ -84,6 +84,12 @@ declaration order, which determines wire order. A message with `id=0` is an inne
 only ever carried inside another message, and is never sent as a PDU of its own (for example
 `TopicRecord` inside `TopicPage`).
 
+Every message must have at least one field, and the validator refuses one that has none. A
+message with no fields would encode as zero bytes, and the framework's `PduParser` refuses a PDU
+whose payload is empty and closes the connection it arrived on. A message that needs to say
+nothing more than that it was sent carries an enum with a single value: `TopicNotLeader`, for
+example, carries `TopicPublisherRole publisher_role`, whose only value is `Follower`.
+
 ### Other Declarations
 
 - **`include "file.dsl"`** brings in the declarations of another DSL file. The loader replaces
@@ -232,7 +238,7 @@ Lives under `python/`:
 | `dsl/parser.py` | Recursive-descent parser producing an AST |
 | `dsl/ast.py` | AST node dataclasses |
 | `dsl/loader.py` | Reads a DSL file and resolves its `include` directives |
-| `dsl/validator.py` | Semantic validation: unknown types, duplicate IDs, cycles, the pdu-id enum rules |
+| `dsl/validator.py` | Semantic validation: unknown types, duplicate IDs, messages with no fields, cycles, the pdu-id enum rules |
 | `dsl/errors.py` | The error type every stage raises |
 | `dsl/generator_cpp.py` | C++17 code emitter |
 | `dsl/generator_java.py` | Java code emitter |
@@ -292,7 +298,7 @@ with pybind11, so they need pybind11 available to CMake.
 | `libraries/pubsub_itc_fw/include/pubsub_itc_fw/lease_messages.dsl` | `pubsub_itc_fw` | The library's lease messages between the instances of a pair and their voters: `LeaseRequest` (130), `LeaseGrant` (131), `LeaseRefusal` (132), and the arbiter's `ArbiterStateRecord` (400) |
 | `libraries/pubsub_itc_fw/include/pubsub_itc_fw/replication_messages.dsl` | `pubsub_itc_fw` | The library's replicated WAL messages between the two instances of a pair: `WalAck` (104), `LogPositionRequest` (107), `LogPositionReply` (108) and `ReplicatedRecord` (133) |
 | `fix_orders.dsl`, generated in `build/generated_dsl/` | `pubsub_itc_fw_app` | `NewOrderSingle` (1000), `OrderCancelRequest` (1001), `ExecutionReport` (1002), `OrderCancelReject` (1003), with ids from the `PduId` enum |
-| `applications/authentication.dsl` | `pubsub_itc_fw_app` | SCRAM PDUs 500–503 (`AuthenticationRequest`, `AuthenticationChallenge`, `AuthenticationProof`, `AuthenticationResult`); plus `SetCredentialRequest/Result` (510/511), `RemoveCredentialRequest/Result` (512/513), `RestoreCredentialRequest/Result` (514/515) |
+| `applications/authentication.dsl` | `pubsub_itc_fw_app` | SCRAM PDUs 500–503 (`AuthenticationRequest`, `AuthenticationChallenge`, `AuthenticationProof`, `AuthenticationResult`); `AuthenticationHeartbeat` and `AuthenticationHeartbeatAnswer` (504/505); plus `SetCredentialRequest/Result` (510/511), `RemoveCredentialRequest/Result` (512/513), `RestoreCredentialRequest/Result` (514/515) |
 | `applications/binary_session.dsl` | `pubsub_itc_fw_app` | The binary gateway's session messages: `Logon` (700), `LogonAck` (701) |
 | `applications/matching_engine/matching_engine_replication.dsl` | `pubsub_itc_fw_app` | `EngineSettings` (601), between the two matching engines of a pair |
 | `applications/topics.dsl` | `pubsub_itc_fw_app` | Topic pub/sub protocol: `TopicSubscribeRequest` (107), `TopicSubscribeAck` (108), `TopicPage` (109), `TopicAck` (110), `TopicNotLeader` (111), `TopicLagged` (112), inner type `TopicRecord` |

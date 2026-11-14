@@ -417,6 +417,24 @@ class ApplicationThread {
     void connect_now(const std::string& service_name) const;
 
     /**
+     * @brief Asks the reactor to close an outbound connection and then to connect to its service again.
+     *
+     * For a connection that is open but no longer of use, such as one whose peer has stopped answering while its
+     * socket stays open. Closing it with a plain disconnect would leave the service unconnected for good, because
+     * the reactor connects again by itself only after a loss it did not cause.
+     *
+     * The thread is told the connection was lost, through on_connection_lost(), and the new attempt is made after
+     * ReactorConfiguration::connect_retry_interval_, as for a connection the peer closed. If the connection has
+     * already been closed by the time the reactor acts, nothing more is done, because a new attempt is then already
+     * scheduled. So a thread calling this need not know whether the peer closed the connection at the same moment.
+     *
+     * Called from the owning thread.
+     *
+     * @param[in] connection_id An outbound connection this thread made with connect_to_service().
+     */
+    void close_and_reconnect(const ConnectionID& connection_id) const;
+
+    /**
      * @brief Notifies the reactor that the application has finished processing
      *        a contiguous region of bytes from a RawBytesProtocolHandler connection.
      *

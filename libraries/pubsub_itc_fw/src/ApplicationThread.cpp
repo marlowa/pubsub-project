@@ -294,6 +294,14 @@ void ApplicationThread::connect_now(const std::string& service_name) const {
     reactor_.enqueue_control_command(command);
 }
 
+void ApplicationThread::close_and_reconnect(const ConnectionID& connection_id) const {
+    assert_called_from_owner();
+
+    ReactorControlCommand command(ReactorControlCommand::CommandTag::CloseAndReconnect);
+    command.connection_id_ = connection_id;
+    reactor_.enqueue_control_command(command);
+}
+
 void ApplicationThread::commit_raw_bytes(const ConnectionID& conn_id, int64_t bytes_consumed) {
     if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
         throw PreconditionAssertion(fmt::format("ApplicationThread::commit_raw_bytes: ConnectionID {} "

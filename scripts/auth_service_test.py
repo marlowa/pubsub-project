@@ -37,6 +37,20 @@ Scenarios
        password needed), then authenticate again (Granted).
        Verifies the full revoke-and-restore credential lifecycle.
 
+  7  heartbeat_keeps_connection_open
+       The service runs with a connection inactivity limit of 2 seconds. A
+       connection that sends AuthenticationHeartbeat (PDU 504) every half second
+       has each one answered with AuthenticationHeartbeatAnswer (PDU 505),
+       echoing its number, and is
+       still open after 4 seconds. Once the heartbeats stop, the service closes
+       it within the limit and one inactivity check.
+
+  8  unknown_comp_id
+       An AuthenticationRequest for a comp_id that was never in credentials.toml
+       is answered at once with AuthenticationResult UnknownUser, and no
+       challenge. The connection stays usable: a known comp_id then
+       authenticates on it (Granted).
+
 Options:
     install_prefix      Path to cmake install prefix (default: installed)
     --tls               Start the service with the TLS admin listener.  Required
@@ -82,6 +96,8 @@ PDU_ID_AUTHENTICATION_REQUEST   = 500
 PDU_ID_AUTHENTICATION_CHALLENGE = 501
 PDU_ID_AUTHENTICATION_PROOF     = 502
 PDU_ID_AUTHENTICATION_RESULT    = 503
+PDU_ID_AUTHENTICATION_HEARTBEAT = 504
+PDU_ID_AUTHENTICATION_HEARTBEAT_ANSWER = 505
 
 PDU_ID_SET_CREDENTIAL_REQUEST     = 510
 PDU_ID_SET_CREDENTIAL_RESULT      = 511
@@ -495,7 +511,8 @@ def _generate_test_tls_cert(directory: Path) -> tuple[Path, Path]:
 def _write_test_toml(path: Path, listen_port: int,
                      admin_port: int = 0,
                      cert_path: Path = None, key_path: Path = None,
-                     tls_mode: bool = False) -> None:
+                     tls_mode: bool = False,
+                     connection_inactivity_limit: str = "600s") -> None:
     credentials_path = path.parent / "credentials.toml"
     credentials_path.write_text(
         "".join(_credential_block(c) + "\n" for c in _TEST_COMP_IDS)
@@ -521,6 +538,7 @@ def _write_test_toml(path: Path, listen_port: int,
         f'[network]\n'
         f'listen_host = "127.0.0.1"\n'
         f'listen_port = {listen_port}\n'
+        f'connection_inactivity_limit = "{connection_inactivity_limit}"\n'
         f'\n'
         + admin_section +
         f'[logging]\n'
@@ -984,6 +1002,76 @@ def _run_scenario_6(service_log: Path, port: int, args, admin_port: int = 0) -> 
     return True
 
 
+# The service's inactivity limit for scenario 7, which must be short enough to wait out. Every other scenario uses the
+# deployed value.
+_HEARTBEAT_SCENARIO_INACTIVITY_LIMIT_SECONDS = 2
+
+
+def _run_scenario_7(service_log: Path, port: int, args, admin_port: int = 0) -> bool:
+    """Heartbeats are answered and keep a connection open; without them the service closes it."""
+    limit = _HEARTBEAT_SCENARIO_INACTIVITY_LIMIT_SECONDS
+    pdu_conn = _connect_tcp("127.0.0.1", port)
+
+    log(f"=== Sending a heartbeat every 0.5s for {2 * limit}s, twice the inactivity limit ===")
+    answered = 0
+    started = time.monotonic()
+    while time.monotonic() - started < 2 * limit:
+        heartbeat_number = answered + 1
+        _send_pdu(pdu_conn, PDU_ID_AUTHENTICATION_HEARTBEAT, _encode_i64(heartbeat_number))
+        try:
+            pdu_id, payload = _recv_pdu(pdu_conn, args.reply_timeout)
+        except EOFError:
+            die(f"the service closed a connection that was sending heartbeats, after {time.monotonic() - started:.1f}s")
+        except socket.timeout:
+            die(f"heartbeat {heartbeat_number} was not answered within {args.reply_timeout:.0f}s")
+        if pdu_id != PDU_ID_AUTHENTICATION_HEARTBEAT_ANSWER:
+            die(f"expected AuthenticationHeartbeatAnswer (PDU {PDU_ID_AUTHENTICATION_HEARTBEAT_ANSWER}), got PDU {pdu_id}")
+        echoed, _ = _decode_i64(payload, 0)
+        if echoed != heartbeat_number:
+            die(f"AuthenticationHeartbeatAnswer echoed heartbeat {echoed}, expected {heartbeat_number}")
+        answered += 1
+        time.sleep(0.5)
+    log(f"  {answered} heartbeats sent, every one answered, and the connection is still open after {2 * limit}s -- OK")
+
+    log("=== Sending nothing: the service must close the connection ===")
+    silent_from = time.monotonic()
+    pdu_conn.settimeout(limit + 3.0)
+    try:
+        data = pdu_conn.recv(1)
+    except socket.timeout:
+        die(f"the service did not close a silent connection within {limit + 3.0:.0f}s of its last heartbeat")
+    closed_after = time.monotonic() - silent_from
+    if data:
+        die(f"expected the connection to be closed, but {len(data)} byte(s) arrived")
+    if closed_after < limit - 0.5:
+        die(f"the service closed the connection after {closed_after:.1f}s of silence, sooner than its {limit}s limit")
+    log(f"  closed by the service after {closed_after:.1f}s of silence -- OK")
+    pdu_conn.close()
+    return True
+
+
+def _run_scenario_8(service_log: Path, port: int, args, admin_port: int = 0) -> bool:
+    """An unknown comp_id is answered UnknownUser at once, and the connection stays usable."""
+    request_id = 80
+    pdu_conn = _connect_tcp("127.0.0.1", port)
+
+    log("=== AuthenticationRequest for a comp_id that is not in credentials.toml ===")
+    result = _do_authentication_request_only(pdu_conn, request_id, "NO_SUCH_COMP_ID", os.urandom(16), args.reply_timeout)
+    if result is None:
+        die("the service challenged an unknown comp_id instead of answering UnknownUser")
+    if result.outcome != AUTHENTICATION_OUTCOME_UNKNOWN_USER:
+        die(f"expected outcome UnknownUser ({AUTHENTICATION_OUTCOME_UNKNOWN_USER}), got {result.outcome}")
+    log("  AuthenticationResult UnknownUser, no challenge -- OK")
+
+    log("=== A known comp_id on the same connection ===")
+    _, granted = _do_scram_exchange(pdu_conn, request_id + 1, "CLIENT_ONE", os.urandom(16), args.reply_timeout)
+    pdu_conn.close()
+    if granted.outcome != AUTHENTICATION_OUTCOME_GRANTED:
+        die(f"expected Granted for CLIENT_ONE after the unknown comp_id, got outcome={granted.outcome}")
+    log("  CLIENT_ONE: Granted -- OK")
+    return True
+
+
 # ── scenario registry ──────────────────────────────────────────────────────────
 
 _SCENARIOS = [
@@ -1011,6 +1099,14 @@ _SCENARIOS = [
      "Revoke credential via PDU 512, restore via PDU 514, re-authenticate",
      "Remove Success; auth fails (UnknownUser); Restore Success; auth Granted again",
      _run_scenario_6),
+    (7, "heartbeat_keeps_connection_open",
+     "Heartbeats are answered and keep a connection open past the inactivity limit",
+     "every heartbeat answered; open after twice the limit; closed by the service once silent",
+     _run_scenario_7),
+    (8, "unknown_comp_id",
+     "A comp_id never provisioned is refused at once; the connection stays usable",
+     "UnknownUser with no challenge; then CLIENT_ONE Granted on the same connection",
+     _run_scenario_8),
 ]
 
 _SCENARIO_MAP = {
@@ -1037,8 +1133,9 @@ def run_scenario(
     # Always generate a cert and admin port — [admin] is required by the loader.
     admin_port = _find_free_port()
     cert_path, key_path = _generate_test_tls_cert(temp_dir)
+    inactivity_limit = f"{_HEARTBEAT_SCENARIO_INACTIVITY_LIMIT_SECONDS}s" if number == 7 else "600s"
     _write_test_toml(config_path, listen_port, admin_port, cert_path, key_path,
-                     tls_mode=tls_mode)
+                     tls_mode=tls_mode, connection_inactivity_limit=inactivity_limit)
     ready_marker = _SERVICE_READY_MARKER_TLS if tls_mode else _SERVICE_READY_MARKER_PDU
 
     log("=" * 60)

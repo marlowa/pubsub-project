@@ -184,6 +184,49 @@ message AuthenticationResult (id=503, version=1)
 end
 
 # ---------------------------------------------------------------------------
+# AuthenticationHeartbeat (id=504)
+#
+# Sent by the gateway on each of its connections to an authentication
+# service at a fixed interval, the gateway's
+# timeouts.authentication_heartbeat_interval. It does two things.
+#
+# It keeps the connection open. The service closes any connection on which
+# it has received nothing for its network.connection_inactivity_limit, and
+# between logons a gateway has nothing else to send.
+#
+# It lets the gateway find out that the service has stopped answering while
+# the connection stays open, as happens when the service's process hangs or
+# its machine disappears without closing the socket. The service answers
+# every heartbeat with AuthenticationHeartbeatAnswer. A gateway that has
+# received nothing on a connection for three heartbeat intervals closes it,
+# sends its logons to the other instance, and connects again.
+#
+# A newly made connection is not used for logons until something has
+# arrived on it, because the operating system completes a connection to a
+# process that is stopped but still holds its listening socket.
+#
+# The message carries a number, and the answer echoes it, so that a Debug
+# log on either side can pair each heartbeat with its answer. A message
+# with no fields could not be sent at all: the framework refuses a PDU
+# whose payload is empty and closes the connection it arrived on.
+# ---------------------------------------------------------------------------
+
+message AuthenticationHeartbeat (id=504, version=1)
+    i64 heartbeat_number   # counts up from 1 in each gateway, across all its connections
+end
+
+# ---------------------------------------------------------------------------
+# AuthenticationHeartbeatAnswer (id=505)
+#
+# Sent by the authentication service on the same connection in reply to
+# each AuthenticationHeartbeat.
+# ---------------------------------------------------------------------------
+
+message AuthenticationHeartbeatAnswer (id=505, version=1)
+    i64 heartbeat_number   # echoed from the AuthenticationHeartbeat answered
+end
+
+# ---------------------------------------------------------------------------
 # SetCredentialOutcome
 # ---------------------------------------------------------------------------
 

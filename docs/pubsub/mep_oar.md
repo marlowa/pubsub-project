@@ -206,8 +206,15 @@ end
 # a TopicSubscribeRequest. Signals to TopicSubscriberChannel that this
 # endpoint is not the current leader and it should try the other endpoint.
 # The connection is closed by MEP after sending this PDU.
+# The field is always Follower: a message must have a field, because the
+# framework refuses a PDU with an empty payload.
 # ---------------------------------------------------------------------------
+enum TopicPublisherRole : i8 {
+    Follower = 1
+}
+
 message TopicNotLeader (id=111)
+    TopicPublisherRole publisher_role
 end
 ```
 

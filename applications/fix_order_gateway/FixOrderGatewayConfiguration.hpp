@@ -148,6 +148,17 @@ struct FixOrderGatewayConfiguration {
     /** @brief Maximum time allowed for a SCRAM-SHA-256 exchange to complete after Logon is received. */
     std::chrono::seconds scram_auth_timeout{10};
 
+    /**
+     * @brief How often an AuthenticationHeartbeat is sent on each connection to an authentication service.
+     *
+     * The heartbeat keeps the connection open, because the service closes a connection that sends it nothing for its
+     * network.connection_inactivity_limit, and it lets the gateway find out that a service has stopped answering while
+     * its connection stays open. A connection on which nothing has arrived for three of these intervals is closed and
+     * made again, and logons go to the other instance meanwhile. Must be greater than zero, and well below the service's
+     * inactivity limit.
+     */
+    std::chrono::milliseconds authentication_heartbeat_interval{std::chrono::seconds{30}};
+
     // Cancel-on-disconnect
 
     /**

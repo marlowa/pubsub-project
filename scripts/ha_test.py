@@ -573,6 +573,16 @@ def expect_connection_made(component: str, service: str) -> Expect:
                   (Condition(component, lambda m: message_of(m.ConnectionChanged, resolved(component), made=True, service=service)),))
 
 
+def expect_connection_lost(component: str, service: str, reason_contains: str | None = None) -> Expect:
+    """component lost its connection to service (ConnectionChanged, made false), and, when reason_contains is given, the
+    reason the framework gave contains it."""
+    def matches(m):
+        same_message = message_of(m.ConnectionChanged, resolved(component), made=False, service=service)
+        return lambda event: same_message(event) and (reason_contains is None or reason_contains in event.message.reason)
+    because = f" ({reason_contains})" if reason_contains is not None else ""
+    return Expect(f"{component}: connection to {service} lost{because}", (Condition(component, matches),))
+
+
 def expect_peer_connection(engine: str) -> Expect:
     """The other engine of the pair connected to engine's [peer] listener, which engine accepts as an inbound
     connection named after the port. The port is read from engine's deployed configuration when the check runs, because
@@ -954,6 +964,27 @@ class AssertAbsentStep(NamedTuple):
     absent: Expect | None = None
 
 
+class FreezeStep(NamedTuple):
+    """
+    Stop a process with SIGSTOP and leave it stopped, then wait for what must follow.
+
+    A stopped process keeps its sockets open and its listening socket still accepts connections, because the kernel
+    completes them, but it answers nothing. That is how a hung process, or a machine that has gone without closing its
+    sockets, looks to the processes connected to it, and it is the case that a closed connection does not cover.
+
+    Unlike IsolateStep, the process is not let run again: the rest of the scenario, the recovery phase included, runs
+    with it stopped. shutdown_all lets it run again before stopping it.
+
+    then:       the test events that must follow from the other processes while this one is stopped.
+    timeout:    how long to wait for them.
+    settle_secs: how long to wait after they are seen before the next step.
+    """
+    proc_name: str
+    then: Expect
+    timeout: float
+    settle_secs: float
+
+
 class InterimOrdersStep(NamedTuple):
     """
     Send a batch of orders mid-Phase-4 and wait until the client has received a New
@@ -1053,6 +1084,10 @@ class Scenario(NamedTuple):
     # re-authenticate, so this is required to exercise auth failover: the fresh
     # logon must be authenticated by whichever auth instance is still alive.
     fresh_logon_in_recovery: bool = False
+    # When True, the FIX gateway sends a heartbeat to each authentication service every _QUICK_AUTHENTICATION_HEARTBEAT,
+    # and both services close a connection silent for _SHORT_AUTHENTICATION_INACTIVITY_LIMIT, so that what the heartbeat
+    # does can be seen within seconds rather than minutes.
+    quick_authentication_heartbeats: bool = False
     # When True, launch fix_order_gateway_b alongside _a. Every other scenario runs
     # instance a alone, because a second gateway adds a process and its timing to
     # scenarios that never touch it. Only the gateway-death scenario needs b, and it
@@ -4220,6 +4255,52 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 110 -- the gateway's connections to the authentication services are kept open, and one that stops answering is left.
+    #
+    # BUG-0244. The FIX gateway sends a heartbeat to each authentication service every second, and each service closes a
+    # connection that sends it nothing for four seconds. First, neither connection may be lost over twelve seconds:
+    # without the heartbeat each would be closed at four. Then authentication service A is stopped with SIGSTOP and left
+    # stopped, so that its connection stays open and nothing answers on it. The gateway must close that connection itself
+    # once nothing has arrived for three heartbeats, and then connect to A again, which the stopped process's kernel
+    # accepts. A fresh logon in the recovery phase, made only once both have happened, must be authenticated by service
+    # B: a connection that has never answered is not given logons.
+    Scenario(
+        number=110,
+        short_name="auth_a_stops_answering",
+        description="Heartbeats keep the authentication connections open, and one that stops answering is closed and left",
+        expected_outcome=(
+            "no authentication connection lost while both services answer; with service A stopped the gateway closes its "
+            "connection to A, and a fresh logon is authenticated by B"
+        ),
+        quick_authentication_heartbeats=True,
+        orders_during_override=0,
+        fresh_logon_in_recovery=True,
+        steps=[
+            AssertAbsentStep(
+                after_secs=12.0,
+                description="the connection to authentication service A stays open past the service's four-second limit",
+                absent=expect_connection_lost("fix_order_gateway_a", "authentication_service_primary"),
+            ),
+            AssertAbsentStep(
+                after_secs=0.0,
+                description="the connection to authentication service B stays open past the service's four-second limit",
+                absent=expect_connection_lost("fix_order_gateway_a", "authentication_service_secondary"),
+            ),
+            # Both must follow: the gateway closes its connection to A, and then connects to A again, which the stopped
+            # process's kernel accepts. The fresh logon in the recovery phase therefore comes when the gateway holds a
+            # new connection to A that has never answered, and it must still go to B.
+            FreezeStep(
+                proc_name="authentication_service_a",
+                then=Expect("fix_order_gateway_a: connection to authentication_service_primary closed by the gateway, then made again",
+                            expect_connection_lost("fix_order_gateway_a", "authentication_service_primary",
+                                                   reason_contains="closed by the application thread").conditions
+                            + expect_connection_made("fix_order_gateway_a", "authentication_service_primary").conditions),
+                timeout=10.0,
+                settle_secs=1.0,
+            ),
+        ],
+    ),
+
     # 62 -- an old leader that rejoins discards the records its new leader does not have.
     #
     # The primary sequencer is started with libblock_sends_to_ports.so preloaded. Once the flag file
@@ -6285,6 +6366,13 @@ _SMALL_SEND_QUEUE  = 1024
 _SMALL_SEND_BUFFER = 16384
 
 
+# For scenario 110: a gateway's heartbeat to the authentication services, and how long those services let a connection
+# be silent. The limit is four heartbeats, so a working connection is never closed, and short enough that a connection
+# without heartbeats would be closed several times within the scenario's wait.
+_QUICK_AUTHENTICATION_HEARTBEAT = "1s"
+_SHORT_AUTHENTICATION_INACTIVITY_LIMIT = "4s"
+
+
 def config_with_small_send_queue(config: Path) -> Path:
     """A copy of a gateway's configuration that allows only _SMALL_SEND_QUEUE sends to wait on a connection.
 
@@ -7697,6 +7785,9 @@ def shutdown_all(app_procs: list[tuple[str, subprocess.Popen]]) -> None:
     log("Shutting down all processes ...")
     for name, proc in app_procs:
         if proc.poll() is None:
+            # A process stopped with SIGSTOP acts on nothing, SIGTERM included, until it is let run again. Sending SIGCONT
+            # to one that is running does nothing.
+            proc.send_signal(signal.SIGCONT)
             proc.send_signal(signal.SIGTERM)
     for name, proc in app_procs:
         try:
@@ -7829,6 +7920,40 @@ def do_machine_kill_step(
     log(f"  the surviving machine took over ({elapsed:.1f}s)")
     time.sleep(step.settle_secs)
     return _DEFAULT_KILL_OUTCOME, label, elapsed
+
+
+def stopped_state_within(pid: int, timeout: float) -> str:
+    """The state letter of process pid from /proc, "T" once it is stopped. A signal is delivered asynchronously, so this
+    reads the state until it is "T" or timeout seconds have passed, and returns the last state read."""
+    deadline = time.monotonic() + timeout
+    while True:
+        with open(f"/proc/{pid}/stat", encoding="ascii") as stat:
+            state = stat.read().rsplit(")", 1)[1].split()[0]
+        if state == "T" or time.monotonic() >= deadline:
+            return state
+        time.sleep(0.01)
+
+
+def do_freeze_step(step: FreezeStep, proc_by_name: dict[str, subprocess.Popen]) -> tuple[str | None, str, float]:
+    """Stop the named process and leave it stopped, then wait for what must follow."""
+    proc = proc_by_name.get(step.proc_name)
+    if proc is None or proc.poll() is not None:
+        die(f"freeze: '{step.proc_name}' is not running")
+
+    from_here = _TEST_EVENTS.mark()
+    log(f"  SIGSTOP -> {step.proc_name} (PID {proc.pid}): alive, holding its sockets, answering nothing, and left so")
+    os.kill(proc.pid, signal.SIGSTOP)
+    state = stopped_state_within(proc.pid, 1.0)
+    if state != "T":
+        die(f"freeze: {step.proc_name} is in state {state!r} a second after SIGSTOP, not stopped")
+
+    log(f"  Waiting for: {step.then.what} (timeout {step.timeout:.0f}s) ...")
+    found, elapsed = await_expectation(step.then, step.timeout, from_here)
+    if not found:
+        die(f"freeze: not seen within {step.timeout:.0f}s of stopping {step.proc_name}: {step.then.what}")
+    log(f"  seen ({elapsed:.1f}s after stopping {step.proc_name})")
+    time.sleep(step.settle_secs)
+    return _DEFAULT_KILL_OUTCOME, f"{step.proc_name} stopped and left stopped", elapsed
 
 
 def do_isolate_step(
@@ -8068,6 +8193,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
             return f"RESTART:{s.proc_name}"
         if isinstance(s, IsolateStep):
             return f"ISOLATE:{s.proc_name}"
+        if isinstance(s, FreezeStep):
+            return f"FREEZE:{s.proc_name}"
         if isinstance(s, MachineKillStep):
             return f"MACHINE:the one {s.machine_of} runs on" if s.machine_of is not None else "MACHINE:" + "+".join(s.proc_names)
         if isinstance(s, InterimOrdersStep):
@@ -8409,6 +8536,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if scenario.assert_orders_that_waited_in_the_log_reach_engine and name in ("sequencer_primary", "sequencer_secondary"):
                 config = config_with_few_held_orders(config)
                 log(f"  {name} holds at most {_FEW_HELD_ORDERS} orders while it waits for its follower or a voter")
+            if scenario.quick_authentication_heartbeats and name == "fix_order_gateway_a":
+                config = config_with_values(config, {("timeouts", "authentication_heartbeat_interval"): f'"{_QUICK_AUTHENTICATION_HEARTBEAT}"'},
+                                            config.with_name(config.stem + "_quick_heartbeats.toml"))
+                log(f"  {name} sends a heartbeat to each authentication service every {_QUICK_AUTHENTICATION_HEARTBEAT}")
+            if scenario.quick_authentication_heartbeats and name in ("authentication_service_a", "authentication_service_b"):
+                config = config_with_values(config, {("network", "connection_inactivity_limit"): f'"{_SHORT_AUTHENTICATION_INACTIVITY_LIMIT}"'},
+                                            config.with_name(config.stem + "_short_inactivity_limit.toml"))
+                log(f"  {name} closes a connection that sends it nothing for {_SHORT_AUTHENTICATION_INACTIVITY_LIMIT}")
             if scenario.assert_commands_resent_after_reconnection and name == "fix_order_gateway_a":
                 config = config_with_small_send_queue(config)
                 log(f"  {name} allows only {_SMALL_SEND_QUEUE} sends to wait on a connection, with a {_SMALL_SEND_BUFFER}-byte socket send buffer")
@@ -8705,6 +8840,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 phase4_results.append(("kill", outcome, label, elapsed))
             elif isinstance(step, IsolateStep):
                 outcome, label, elapsed = do_isolate_step(step, proc_by_name)
+                kill_results.append((outcome, label, elapsed))
+                phase4_results.append(("kill", outcome, label, elapsed))
+            elif isinstance(step, FreezeStep):
+                outcome, label, elapsed = do_freeze_step(step, proc_by_name)
                 kill_results.append((outcome, label, elapsed))
                 phase4_results.append(("kill", outcome, label, elapsed))
             elif isinstance(step, MachineKillStep):

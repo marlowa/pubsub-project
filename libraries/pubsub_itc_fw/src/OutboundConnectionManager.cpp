@@ -577,6 +577,19 @@ bool OutboundConnectionManager::process_disconnect_command(ConnectionID id) {
     return true;
 }
 
+bool OutboundConnectionManager::process_close_and_reconnect_command(ConnectionID id, const std::string& reason) {
+    auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
+    // Copied before the teardown, which destroys the connection that holds them.
+    const std::string service_name = it->second->service_name();
+    const ThreadID requesting_thread_id = it->second->requesting_thread_id();
+    teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
+    schedule_retry(service_name, requesting_thread_id);
+    return true;
+}
+
 void OutboundConnectionManager::schedule_retry(const std::string& service_name, ThreadID requesting_thread_id) {
     ReactorControlCommand retry_cmd{ReactorControlCommand::CommandTag::Connect};
     retry_cmd.requesting_thread_id_ = requesting_thread_id;

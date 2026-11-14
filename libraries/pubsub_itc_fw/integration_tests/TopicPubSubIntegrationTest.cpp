@@ -172,6 +172,13 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
               },
               std::move(wal_dir), max_lag_records, max_records_per_page) {}
 
+    // Makes this publisher a follower, which answers every subscription with TopicNotLeader. Called before its reactor
+    // runs, so no other thread is using the publisher yet.
+    void start_as_follower() {
+        const bool is_leader = false;
+        publisher_.set_leader(is_leader);
+    }
+
     // TopicPublisherHost
     void topic_send_subscribe_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) override {
         send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id, 0, ack);
@@ -318,6 +325,8 @@ class ChannelSubscriberThread : public ApplicationThread, public TopicSubscriber
     std::atomic<bool> all_records_received{false};
     std::atomic<int> records_received{0};
     std::atomic<int> pages_received{0}; // number of TopicPage PDUs seen (batching observable)
+    std::atomic<int> not_leader_received{0};
+    std::atomic<bool> not_leader_named_a_follower{false};
     std::vector<ReceivedRecord> received_records;
 
     // disconnect_when_done: tear the data connection down as soon as the expected count
@@ -387,6 +396,12 @@ class ChannelSubscriberThread : public ApplicationThread, public TopicSubscriber
         } else if (message.pdu_id() == pubsub_itc_fw_app::TopicPage::message_pdu_id) {
             pages_received.fetch_add(1, std::memory_order_acq_rel);
             channel_.on_page(payload, size, arena);
+        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicNotLeader::message_pdu_id) {
+            pubsub_itc_fw_app::TopicNotLeaderView view{};
+            if (pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
+                not_leader_named_a_follower.store(view.publisher_role == pubsub_itc_fw_app::TopicPublisherRole::Follower, std::memory_order_release);
+            }
+            not_leader_received.fetch_add(1, std::memory_order_acq_rel);
         }
     }
 
@@ -692,6 +707,43 @@ TEST_F(TopicPubSubTest, SingleSubscriberReceivesReplayedRecordsInOrder) {
     subscriber_reactor->shutdown("test complete");
     publisher_reactor->shutdown("test complete");
 
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// A publisher that is not the leader answers a subscription with TopicNotLeader, naming itself a follower, and the
+// subscriber receives it rather than having its connection closed by its own reader.
+TEST_F(TopicPubSubTest, AFollowerPublisherAnswersASubscriptionWithTopicNotLeader) {
+    write_topic_wal_records(3);
+
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
+    publisher_thread->start_as_follower();
+    publisher_reactor->register_thread(publisher_thread);
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", publisher_reactor->get_inbound_listener_port(0)},
+                            NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto subscriber_thread = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *subscriber_reactor, 3);
+    subscriber_reactor->register_thread(subscriber_thread);
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->not_leader_received.load(std::memory_order_acquire) > 0; }))
+        << "the subscriber never received TopicNotLeader";
+    EXPECT_TRUE(subscriber_thread->not_leader_named_a_follower.load(std::memory_order_acquire));
+    EXPECT_EQ(subscriber_thread->records_received.load(std::memory_order_acquire), 0) << "a follower sent records";
+
+    subscriber_reactor->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
     if (subscriber_reactor_thread.joinable()) {
         subscriber_reactor_thread.join();
     }

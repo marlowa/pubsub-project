@@ -35,6 +35,7 @@ def test_parser_bare_integer_still_works():
     """Existing behaviour: bare integer in metadata is unchanged."""
     ast = parse("""
         message Foo (id=42)
+            i32 value
         end
     """)
     assert ast.declarations[0].metadata["id"] == 42
@@ -47,6 +48,7 @@ def test_parser_enum_ref_in_id():
             Foo = 10
         }
         message Foo (id=MsgId.Foo)
+            i32 value
         end
     """)
     msg = ast.declarations[1]
@@ -64,6 +66,7 @@ def test_parser_enum_ref_in_version():
             V1 = 1
         }
         message Bar (id=1, version=Ver.V1)
+            i32 value
         end
     """)
     ref = ast.declarations[1].metadata["version"]
@@ -79,6 +82,7 @@ def test_parser_enum_ref_records_line_number():
             Foo = 10
         }
         message Foo (id=MsgId.Foo)
+            i32 value
         end
     """)
     ref = ast.declarations[1].metadata["id"]
@@ -90,6 +94,7 @@ def test_parser_rejects_bare_ident_without_dot():
     with pytest.raises(ParseError, match="Expected '\\.'"):
         parse("""
             message Foo (id=SomeName)
+                i32 value
             end
         """)
 
@@ -99,6 +104,7 @@ def test_parser_rejects_missing_entry_after_dot():
     with pytest.raises(ParseError):
         parse("""
             message Foo (id=MsgId.)
+                i32 value
             end
         """)
 
@@ -114,6 +120,7 @@ def test_validator_resolves_enum_ref_to_integer():
             Foo = 10
         }
         message Foo (id=MsgId.Foo)
+            i32 value
         end
     """)
     msg = ast.declarations[1]
@@ -128,8 +135,10 @@ def test_validator_resolves_multiple_enum_refs():
             Bar = 11
         }
         message Foo (id=MsgId.Foo)
+            i32 value
         end
         message Bar (id=MsgId.Bar)
+            i32 value
         end
     """)
     assert ast.declarations[1].metadata["id"] == 10
@@ -144,8 +153,10 @@ def test_validator_detects_duplicate_ids_after_resolution():
             Foo = 10
         }
         message Foo (id=MsgId.Foo)
+            i32 value
         end
         message Bar (id=10)
+            i32 value
         end
     """, "duplicate message id")
 
@@ -154,6 +165,7 @@ def test_validator_rejects_unknown_enum_name():
     """An EnumRef referring to a non-existent enum raises ValidationError."""
     _raises_with("""
         message Foo (id=NoSuchEnum.Entry)
+            i32 value
         end
     """, "NoSuchEnum")
 
@@ -165,6 +177,7 @@ def test_validator_rejects_unknown_entry_name():
             Foo = 10
         }
         message Bar (id=MsgId.NoSuchEntry)
+            i32 value
         end
     """, "MsgId", "NoSuchEntry")
 
@@ -173,6 +186,7 @@ def test_validator_error_includes_message_name_and_key():
     """The error message identifies the message and metadata key involved."""
     _raises_with("""
         message Foo (id=NoSuchEnum.Entry)
+            i32 value
         end
     """, "Foo", "id", "NoSuchEnum")
 
@@ -184,8 +198,10 @@ def test_mixed_integer_and_enum_ref_in_same_file():
             Bar = 20
         }
         message Foo (id=10)
+            i32 value
         end
         message Bar (id=MsgId.Bar)
+            i32 value
         end
     """)
     assert ast.declarations[1].metadata["id"] == 10

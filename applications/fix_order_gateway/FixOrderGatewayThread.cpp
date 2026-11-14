@@ -205,8 +205,6 @@ FixOrderGatewayThread::FixOrderGatewayThread(pubsub_itc_fw::ApplicationThread::C
     , config_(config)
     , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
     , serialiser_(config.sender_comp_id, config.default_target_comp_id, *config.wall_clock)
-    , auth_service_primary_conn_id_{}
-    , auth_service_secondary_conn_id_{}
     , sequencer_primary_conn_id_{}
     , sequencer_secondary_conn_id_{}
     , capture_(config.fix_capture_enabled ? std::make_unique<FixCapture>(config.fix_capture_file, logger, static_cast<size_t>(config.fix_capture_ring_bytes))
@@ -258,6 +256,7 @@ void FixOrderGatewayThread::on_app_ready_event() {
 
     order_progress_timer_id_ = start_recurring_timer(order_progress_timer_interval);
 
+    authentication_heartbeat_timer_id_ = start_recurring_timer(config_.authentication_heartbeat_interval);
     connect_to_service("authentication_service_primary");
     if (config_.ha_enabled) {
         connect_to_service("authentication_service_secondary");
@@ -276,14 +275,15 @@ void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionI
                    id.get_value());
         return;
     }
-    if (id.service_name() == "authentication_service_primary") {
-        auth_service_primary_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: primary authentication service connection {} established",
-                   id.get_value());
-    } else if (id.service_name() == "authentication_service_secondary") {
-        auth_service_secondary_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: secondary authentication service connection {} established",
-                   id.get_value());
+    if (id.service_name() == "authentication_service_primary" || id.service_name() == "authentication_service_secondary") {
+        const bool primary = id.service_name() == "authentication_service_primary";
+        fix_common::AuthenticationServiceLink& link = primary ? auth_service_primary_ : auth_service_secondary_;
+        link.on_established(id, std::chrono::steady_clock::now());
+        // Sent at once, so that the connection is proved usable within one round trip rather than at the next heartbeat.
+        send_authentication_heartbeat(id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: {} authentication service connection {} established -- logons are sent to it once it answers",
+                   primary ? "primary" : "secondary", id.get_value());
     } else if (id.service_name() == "sequencer_primary") {
         sequencer_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: primary sequencer connection {} ({}) established", id.get_value(),
@@ -333,13 +333,18 @@ void FixOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID
         sessions_.erase(it);
     }
 
-    if (id == auth_service_primary_conn_id_) {
-        auth_service_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: primary authentication service connection {} lost: {}",
-                   id.get_value(), reason);
-    } else if (id == auth_service_secondary_conn_id_) {
-        auth_service_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: secondary authentication service connection {} lost: {}",
+    const fix_common::AuthenticationServiceLink::LossCause primary_loss = auth_service_primary_.on_lost(id);
+    const fix_common::AuthenticationServiceLink::LossCause secondary_loss = auth_service_secondary_.on_lost(id);
+    const bool primary_lost = primary_loss != fix_common::AuthenticationServiceLink::LossCause::NotThisConnection;
+    const fix_common::AuthenticationServiceLink::LossCause auth_loss = primary_lost ? primary_loss : secondary_loss;
+    const char* which = primary_lost ? "primary" : "secondary";
+    if (auth_loss == fix_common::AuthenticationServiceLink::LossCause::ClosedForSilence) {
+        // Already reported at Warning when the gateway decided to close it.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: {} authentication service connection {} closed because it stopped answering -- connecting again", which,
+                   id.get_value());
+    } else if (auth_loss == fix_common::AuthenticationServiceLink::LossCause::ClosedByPeer) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: {} authentication service connection {} lost: {}", which,
                    id.get_value(), reason);
     } else if (id == sequencer_primary_conn_id_) {
         sequencer_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
@@ -670,10 +675,18 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
     }
     const auto pdu_id = message.pdu_id();
 
-    const bool from_auth_service =
-        (message.connection_id() == auth_service_primary_conn_id_) || (config_.ha_enabled && message.connection_id() == auth_service_secondary_conn_id_);
+    const bool from_primary_auth_service = auth_service_primary_.owns(message.connection_id());
+    const bool from_auth_service = from_primary_auth_service || (config_.ha_enabled && auth_service_secondary_.owns(message.connection_id()));
     if (from_auth_service) {
-        if (pdu_id == pubsub_itc_fw_app::AuthenticationChallenge::message_pdu_id) {
+        // Anything arriving shows the service is answering, so an exchange in progress keeps the connection alive too.
+        if (from_primary_auth_service) {
+            note_heard_from_authentication_service(auth_service_primary_, "primary");
+        } else {
+            note_heard_from_authentication_service(auth_service_secondary_, "secondary");
+        }
+        if (pdu_id == pubsub_itc_fw_app::AuthenticationHeartbeatAnswer::message_pdu_id) {
+            release_pdu_payload(message);
+        } else if (pdu_id == pubsub_itc_fw_app::AuthenticationChallenge::message_pdu_id) {
             handle_authentication_challenge(message);
         } else if (pdu_id == pubsub_itc_fw_app::AuthenticationResult::message_pdu_id) {
             handle_authentication_result(message);
@@ -975,6 +988,11 @@ void FixOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
     }
     if (timer_id == grace_timer_id_) {
         expire_grace_sessions();
+        return;
+    }
+
+    if (timer_id == authentication_heartbeat_timer_id_) {
+        on_authentication_heartbeat_timer();
         return;
     }
 
@@ -1360,17 +1378,16 @@ void FixOrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMes
         std::from_chars(heartbeat_interval_text.data(), heartbeat_interval_text.data() + heartbeat_interval_text.size(), session.heartbeat_interval);
     }
 
-    // Select the auth service connection: primary if available, secondary as fallback.
-    pubsub_itc_fw::ConnectionID auth_conn_id;
-    if (auth_service_primary_conn_id_.is_valid()) {
-        auth_conn_id = auth_service_primary_conn_id_;
-    } else if (config_.ha_enabled && auth_service_secondary_conn_id_.is_valid()) {
-        auth_conn_id = auth_service_secondary_conn_id_;
+    // The primary authentication service if it is answering, the secondary if it is not.
+    const pubsub_itc_fw::ConnectionID auth_conn_id = authentication_connection_for_logon();
+    if (auth_conn_id.is_valid() && auth_conn_id == auth_service_secondary_.connection_id()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixOrderGatewayThread: connection {} primary auth service not connected -- using secondary", session.conn_id.get_value());
-    } else {
+                   "FixOrderGatewayThread: connection {} the primary authentication service is not connected and answering -- using the secondary",
+                   session.conn_id.get_value());
+    }
+    if (!auth_conn_id.is_valid()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixOrderGatewayThread: connection {} Logon rejected -- no authentication service connected", session.conn_id.get_value());
+                   "FixOrderGatewayThread: connection {} Logon rejected -- no authentication service is connected and answering", session.conn_id.get_value());
         FixMessage logout;
         logout.set(Tag::MsgType, MsgType::Logout);
         logout.set(Tag::Text, std::string("Authentication service unavailable"));
@@ -2339,6 +2356,50 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
                    "already waiting for its answer",
                    session.conn_id.get_value(), session.client_comp_id, cl_ord_id, orig_cl_ord_id);
         refuse_cancel(session, msg, fix_common::RefusalReason::Other, fix_common::identifier_already_used_text);
+    }
+}
+
+pubsub_itc_fw::ConnectionID FixOrderGatewayThread::authentication_connection_for_logon() const {
+    if (auth_service_primary_.is_usable()) {
+        return auth_service_primary_.connection_id();
+    }
+    if (config_.ha_enabled && auth_service_secondary_.is_usable()) {
+        return auth_service_secondary_.connection_id();
+    }
+    return pubsub_itc_fw::ConnectionID{};
+}
+
+void FixOrderGatewayThread::note_heard_from_authentication_service(fix_common::AuthenticationServiceLink& link, const char* which) {
+    if (link.on_heard(std::chrono::steady_clock::now())) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: {} authentication service connection {} is answering -- logons may be sent to it", which,
+                   link.connection_id().get_value());
+    }
+}
+
+void FixOrderGatewayThread::send_authentication_heartbeat(const pubsub_itc_fw::ConnectionID& connection_id) {
+    pubsub_itc_fw_app::AuthenticationHeartbeat heartbeat{};
+    heartbeat.heartbeat_number = ++authentication_heartbeats_sent_;
+    send_pdu(connection_id, pubsub_itc_fw_app::AuthenticationHeartbeat::message_pdu_id, 0, heartbeat);
+}
+
+void FixOrderGatewayThread::on_authentication_heartbeat_timer() {
+    const auto now = std::chrono::steady_clock::now();
+    for (auto* link : {&auth_service_primary_, &auth_service_secondary_}) {
+        const char* which = link == &auth_service_primary_ ? "primary" : "secondary";
+        const pubsub_itc_fw::ConnectionID connection_id = link->connection_id();
+        const auto heard_ago = std::chrono::duration_cast<std::chrono::milliseconds>(now - link->last_heard());
+        const fix_common::AuthenticationServiceLink::HeartbeatAction action = link->on_heartbeat_timer(now);
+        if (action == fix_common::AuthenticationServiceLink::HeartbeatAction::SendHeartbeat) {
+            send_authentication_heartbeat(connection_id);
+        } else if (action == fix_common::AuthenticationServiceLink::HeartbeatAction::CloseAsSilent) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "FixOrderGatewayThread: nothing received from the {} authentication service on connection {} for {}ms, longer than {}ms -- "
+                       "closing the connection and connecting again; logons go to the other instance meanwhile",
+                       which, connection_id.get_value(), heard_ago.count(),
+                       std::chrono::duration_cast<std::chrono::milliseconds>(link->silence_limit()).count());
+            close_and_reconnect(connection_id);
+        }
     }
 }
 

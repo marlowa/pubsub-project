@@ -166,7 +166,7 @@ the failure V8 exists to prevent. BUG-0131 next, through its agreed design. BUG-
 
 ## 5. The gateways and what a member sees
 
-Fifteen entries.
+Sixteen entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
@@ -185,6 +185,7 @@ Fifteen entries.
 | [BUG-0065](bug_list.md#bug_0065): the venue tells a member of a halt only in the reply to an order | **Partly done** | Halting and lifting are built; the entry itself lists what remains | `TradingSessionStatus` and its binary equivalent, halting one instrument, and the table of what each trading phase allows, designed with the trading phases |
 | [BUG-0092](bug_list.md#bug_0092): a refused cancel is answered with an execution report | **Fixed** | The FIX gateway answers its own refusal of a cancel with a session-level `Reject` (35=3) ([gateway_refusals.md](venue/gateway_refusals.md)), and `FixErEncoder` encodes the matching engine's refusal of a cancel as an `OrderCancelReject` (`FixErEncoder.hpp`, "Encodes a matching engine report that refuses a request to cancel as a FIX OrderCancelReject"), under R-0151 and BUG-0099 | Close it, if Andrew agrees |
 | [BUG-0096](bug_list.md#bug_0096): the binary gateway passes on prices and quantities without checking them | **Fixed** | `BinaryCommandChecks` checks every quantity and price as a decimal number by the FIX codec's rule (BUG-0100) | Close it, if Andrew agrees; the overflow it inherits is BUG-0095 |
+| [BUG-0244](bug_list.md#bug_0244): an idle connection to the authentication service is closed every ten minutes | **Fixed on 14 November 2026** and closed | Each gateway sends an answered heartbeat on each connection; one that stops answering is closed and made again, and logons go to the other instance. `ha_test.py` scenario 110 fails with either half of the fix taken out | None |
 
 **Recommended order in this area.** BUG-0090 and BUG-0091 were first, and are closed. BUG-0095 next, being small and undefined behaviour in
 both gateways. BUG-0072 is a configuration change. The investigations, BUG-0203 and BUG-0056, need a
@@ -193,7 +194,7 @@ placed with the rest; BUG-0065's remainder goes with the trading phases. BUG-009
 
 ## 6. The framework: reactor, timers, allocators and threads
 
-Twelve entries. None was touched by phases 3 to 11, which moved the venue's machinery into the library
+Fifteen entries. None was touched by phases 3 to 11, which moved the venue's machinery into the library
 but did not change these parts of it.
 
 | Entry | Judgement | Evidence | What is left |
@@ -210,6 +211,9 @@ but did not change these parts of it.
 | [BUG-0161](bug_list.md#bug_0161): the framework names the venue's ideas in how it classifies a send | **Defect**, of naming | Unchanged: `MemberIsWaitingFlag.hpp` is still in the framework | The neutral names the entry suggests |
 | [BUG-0177](bug_list.md#bug_0177): the C++ generated from the DSL does not compile for a list of enums | **Fixed on 10 November 2026** and closed | A list of enums is a list of the enum's integers in the C++ and pybind11 code; the smallest i64 compiles cleanly | None |
 | [BUG-0179](bug_list.md#bug_0179): the Java generated from the DSL decodes an unlisted enum value as null | **Defect**, in the DSL compiler | Unchanged: `generator_java.py` still decodes through `fromValue`, which returns `null` for a value it does not know | As the entry describes |
+| [BUG-0246](bug_list.md#bug_0246): a message with no fields closes the connection it arrives on | **Fixed on 14 November 2026** and closed | The DSL validator refuses a message with no fields; `TopicNotLeader` carries a one-value enum and a test shows it reaching a subscriber | None |
+| [BUG-0247](bug_list.md#bug_0247): the authentication service compared a position in one map with the end of another | **Fixed on 14 November 2026** and closed | Undefined behaviour by the standard; harmless with the GNU standard library | None |
+| [BUG-0248](bug_list.md#bug_0248): a WAL unit test gives the helper thread a fixed second | **Defect**, in a test | Failed once while the disk was busy with other work | Wait for the helper to report the segment ready |
 
 **Recommended order in this area.** BUG-0129 first, for its data race. Then BUG-0127 and BUG-0128,
 the two locks on paths an order can take; each needs a design agreed before code, and BUG-0128 the larger

@@ -193,7 +193,11 @@ accepted, 35 and 24 bytes in every environment, the same as the FIX gateway's `[
 not be set above `fix_order_limits::max_symbol_length` and `max_order_qty_length`, the most the
 matching engine holds.
 `[timeouts] scram_auth_timeout` (10 seconds) is how long the authentication service has to finish
-the exchange before the logon is refused with `AuthenticationTimeout`. `[unanswered_commands]`
+the exchange before the logon is refused with `AuthenticationTimeout`. `[timeouts]
+authentication_heartbeat_interval` (30 seconds) is how often a heartbeat is sent to each
+authentication service; a connection on which nothing arrives for three intervals is closed and
+made again, as described in
+[Authentication Service](authentication_service.md#authentication_heartbeat). `[unanswered_commands]`
 sizes the store described under check 6: 262,144 commands in 64 MiB.
 
 `[binary_session] sender_comp_id` is this gateway's own name (`BINARY-GATEWAY`), checked

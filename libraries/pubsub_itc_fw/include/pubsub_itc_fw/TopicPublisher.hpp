@@ -139,6 +139,7 @@ class TopicPublisher {
     void on_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequestView& view) {
         if (!is_leader_) {
             pubsub_itc_fw_app::TopicNotLeader not_leader{};
+            not_leader.publisher_role = pubsub_itc_fw_app::TopicPublisherRole::Follower;
             host_.topic_send_not_leader(connection_id, not_leader);
             host_.topic_disconnect(connection_id);
             return;

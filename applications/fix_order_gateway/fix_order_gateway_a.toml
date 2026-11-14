@@ -43,6 +43,12 @@ default_target_comp_id = "CLIENT"
 [timeouts]
 logon_timeout      = "30s"
 scram_auth_timeout = "10s"
+# How often a heartbeat is sent on each connection to an authentication service. It keeps
+# the connection open (the service closes one that is silent for its
+# connection_inactivity_limit, 600s), and a connection on which nothing arrives for three of
+# these intervals is taken to be dead: it is closed and made again, and logons go to the
+# other authentication service meanwhile.
+authentication_heartbeat_interval = "30s"
 
 # Cancel-on-disconnect: what happens to a session's resting orders when its connection
 # goes away.

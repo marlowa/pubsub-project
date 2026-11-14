@@ -104,6 +104,16 @@ periodically. Each tick calls `on_housekeeping_tick()`, which:
   because a connection asked for during a thread's initial event is made only after the reactor's
   own listeners are bound.
 
+  A connection the application closes itself is not tried again, with one exception. An application
+  that wants an open connection replaced, because the peer has stopped answering on it while the
+  socket stays open, calls `ApplicationThread::close_and_reconnect(connection_id)`. The reactor then
+  closes the connection, tells the thread it was lost, and schedules a new attempt exactly as for a
+  connection the peer closed. If the connection is already gone when the `CloseAndReconnect` command
+  is carried out, nothing more is done, because a new attempt is then already scheduled; so a thread
+  need not know whether the peer closed the connection at the same moment. The order gateways do
+  this for an authentication service that stops answering (see
+  [Authentication Service](../venue/authentication_service.md#authentication_heartbeat)).
+
 Nothing is done on the tick once the reactor has been asked to shut down.
 
 ---

@@ -201,6 +201,117 @@ void load_credentials(const std::string& credentials_file, std::unordered_map<st
 
 } // un-named namespace
 
+AuthenticationServiceConfiguration AuthenticationServiceConfigurationLoader::load(const pubsub_itc_fw::TomlConfiguration& toml, const std::string& file_path) {
+    AuthenticationServiceConfiguration config;
+
+    config.rolling_logfile_configuration = pubsub_itc_fw::LoggingConfigurationLoader::load(toml);
+
+    toml.get_required_except("network.listen_host", config.listen_host);
+
+    int32_t listen_port = 0;
+    toml.get_required_except("network.listen_port", listen_port);
+    if (listen_port < 1 || listen_port > 65535) {
+        throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: network.listen_port must be in [1, 65535], got " +
+                                                    std::to_string(listen_port));
+    }
+    config.listen_port = static_cast<uint16_t>(listen_port);
+
+    toml.get_required_except("network.connection_inactivity_limit", config.connection_inactivity_limit);
+    if (config.connection_inactivity_limit < std::chrono::seconds{1}) {
+        throw pubsub_itc_fw::ConfigurationException(
+            fmt::format("AuthenticationServiceConfigurationLoader: network.connection_inactivity_limit must be at least 1s, got {}s",
+                        config.connection_inactivity_limit.count()));
+    }
+
+    std::string applog_level_str;
+    std::string syslog_level_str;
+    toml.get_required_except("logging.applog_level", applog_level_str);
+    toml.get_required_except("logging.syslog_level", syslog_level_str);
+    if (!pubsub_itc_fw::FwLogLevel::from_string(applog_level_str, config.applog_level)) {
+        throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: logging.applog_level '" + applog_level_str +
+                                                    "' is not a recognised log level");
+    }
+    if (!pubsub_itc_fw::FwLogLevel::from_string(syslog_level_str, config.syslog_level)) {
+        throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: logging.syslog_level '" + syslog_level_str +
+                                                    "' is not a recognised log level");
+    }
+
+    toml.get_required_except("reactor.cpu_pinning_enabled", config.cpu_pinning_enabled);
+    toml.get_required_except("reactor.cpu_pinning_reserve_cpu0", config.cpu_pinning_reserve_cpu0);
+    // Mandatory only when pinning is on: without both paths the CpuRegistry
+    // cannot coordinate with the other processes on this machine.
+    if (config.cpu_pinning_enabled) {
+        toml.get_required_except("reactor.cpu_registry_shm_path", config.cpu_registry_shm_path);
+        toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
+        toml.get_required_except("reactor.cpu_layout_file", config.cpu_layout_file);
+        toml.get_required_except("reactor.cpu_layout_component", config.cpu_layout_component);
+
+        config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
+    }
+    toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
+
+    toml.get_required_except("event_queue_pool.objects_per_slab", config.event_queue_pool_objects_per_slab);
+    toml.get_required_except("event_queue_pool.initial_slabs", config.event_queue_pool_initial_slabs);
+    if (config.event_queue_pool_objects_per_slab < 1) {
+        throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: event_queue_pool.objects_per_slab must be >= 1, got " +
+                                                    std::to_string(config.event_queue_pool_objects_per_slab));
+    }
+    if (config.event_queue_pool_initial_slabs < 1) {
+        throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: event_queue_pool.initial_slabs must be >= 1, got " +
+                                                    std::to_string(config.event_queue_pool_initial_slabs));
+    }
+
+    toml.get_required_except("command_queue_pool.objects_per_slab", config.command_queue_pool_objects_per_slab);
+    toml.get_required_except("command_queue_pool.initial_slabs", config.command_queue_pool_initial_slabs);
+    if (config.command_queue_pool_objects_per_slab < 1) {
+        throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: command_queue_pool.objects_per_slab must be >= 1, got " +
+                                                    std::to_string(config.command_queue_pool_objects_per_slab));
+    }
+    if (config.command_queue_pool_initial_slabs < 1) {
+        throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: command_queue_pool.initial_slabs must be >= 1, got " +
+                                                    std::to_string(config.command_queue_pool_initial_slabs));
+    }
+
+    toml.get_required_except("credentials_file", config.credentials_file);
+
+    auto resolve_path_relative_to_config = [&](std::string& path) {
+        if (!path.empty()) {
+            const std::filesystem::path p{path};
+            if (p.is_relative()) {
+                path = (std::filesystem::path{file_path}.parent_path() / p).string();
+            }
+        }
+    };
+
+    resolve_path_relative_to_config(config.credentials_file);
+
+    int32_t admin_listen_port = 0;
+    toml.get_required_except("admin.listen_port", admin_listen_port);
+    if (admin_listen_port < 1 || admin_listen_port > 65535) {
+        throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: admin.listen_port must be in [1, 65535], got " +
+                                                    std::to_string(admin_listen_port));
+    }
+    config.admin_listen_port = static_cast<uint16_t>(admin_listen_port);
+
+    toml.get_required_except("admin.tls_certificate_path", config.admin_tls_certificate_path);
+    toml.get_required_except("admin.tls_private_key_path", config.admin_tls_private_key_path);
+    // These two are optional: an absent one keeps the default in AuthenticationServiceConfiguration.
+    if (toml.has_key("admin.tls_ca_path")) {
+        toml.get_required_except("admin.tls_ca_path", config.admin_tls_ca_path);
+    }
+    if (toml.has_key("admin.tls_require_client_certificate")) {
+        toml.get_required_except("admin.tls_require_client_certificate", config.admin_tls_require_client_certificate);
+    }
+
+    resolve_path_relative_to_config(config.admin_tls_certificate_path);
+    resolve_path_relative_to_config(config.admin_tls_private_key_path);
+    resolve_path_relative_to_config(config.admin_tls_ca_path);
+
+    load_credentials(config.credentials_file, config.credentials, config.session_policies);
+
+    return config;
+}
+
 std::tuple<AuthenticationServiceConfiguration, std::unique_ptr<pubsub_itc_fw::QuillLogger>>
 AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::string& file_path, const std::string& log_file_path) {
     pubsub_itc_fw::TomlConfiguration toml;
@@ -210,118 +321,11 @@ AuthenticationServiceConfigurationLoader::load_and_init_logging(const std::strin
         throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: failed to load '" + file_path + "': " + err);
     }
 
-    AuthenticationServiceConfiguration config;
-
-    try {
-        config.rolling_logfile_configuration = pubsub_itc_fw::LoggingConfigurationLoader::load(toml);
-    } catch (const pubsub_itc_fw::ConfigurationException&) {
-        throw;
-    }
+    AuthenticationServiceConfiguration config = load(toml, file_path);
 
     auto logger =
         std::make_unique<pubsub_itc_fw::QuillLogger>(log_file_path, pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
                                                      pubsub_itc_fw::FwLogLevel::Info, pubsub_itc_fw::FwLogLevel::Info, config.rolling_logfile_configuration);
-
-    try {
-        toml.get_required_except("network.listen_host", config.listen_host);
-
-        int32_t listen_port = 0;
-        toml.get_required_except("network.listen_port", listen_port);
-        if (listen_port < 1 || listen_port > 65535) {
-            throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: network.listen_port must be in [1, 65535], got " +
-                                                        std::to_string(listen_port));
-        }
-        config.listen_port = static_cast<uint16_t>(listen_port);
-
-        std::string applog_level_str;
-        std::string syslog_level_str;
-        toml.get_required_except("logging.applog_level", applog_level_str);
-        toml.get_required_except("logging.syslog_level", syslog_level_str);
-        if (!pubsub_itc_fw::FwLogLevel::from_string(applog_level_str, config.applog_level)) {
-            throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: logging.applog_level '" + applog_level_str +
-                                                        "' is not a recognised log level");
-        }
-        if (!pubsub_itc_fw::FwLogLevel::from_string(syslog_level_str, config.syslog_level)) {
-            throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: logging.syslog_level '" + syslog_level_str +
-                                                        "' is not a recognised log level");
-        }
-
-        toml.get_required_except("reactor.cpu_pinning_enabled", config.cpu_pinning_enabled);
-        toml.get_required_except("reactor.cpu_pinning_reserve_cpu0", config.cpu_pinning_reserve_cpu0);
-        // Mandatory only when pinning is on: without both paths the CpuRegistry
-        // cannot coordinate with the other processes on this machine.
-        if (config.cpu_pinning_enabled) {
-            toml.get_required_except("reactor.cpu_registry_shm_path", config.cpu_registry_shm_path);
-            toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
-            toml.get_required_except("reactor.cpu_layout_file", config.cpu_layout_file);
-            toml.get_required_except("reactor.cpu_layout_component", config.cpu_layout_component);
-
-            config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
-        }
-        toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
-
-        toml.get_required_except("event_queue_pool.objects_per_slab", config.event_queue_pool_objects_per_slab);
-        toml.get_required_except("event_queue_pool.initial_slabs", config.event_queue_pool_initial_slabs);
-        if (config.event_queue_pool_objects_per_slab < 1) {
-            throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: event_queue_pool.objects_per_slab must be >= 1, got " +
-                                                        std::to_string(config.event_queue_pool_objects_per_slab));
-        }
-        if (config.event_queue_pool_initial_slabs < 1) {
-            throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: event_queue_pool.initial_slabs must be >= 1, got " +
-                                                        std::to_string(config.event_queue_pool_initial_slabs));
-        }
-
-        toml.get_required_except("command_queue_pool.objects_per_slab", config.command_queue_pool_objects_per_slab);
-        toml.get_required_except("command_queue_pool.initial_slabs", config.command_queue_pool_initial_slabs);
-        if (config.command_queue_pool_objects_per_slab < 1) {
-            throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: command_queue_pool.objects_per_slab must be >= 1, got " +
-                                                        std::to_string(config.command_queue_pool_objects_per_slab));
-        }
-        if (config.command_queue_pool_initial_slabs < 1) {
-            throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: command_queue_pool.initial_slabs must be >= 1, got " +
-                                                        std::to_string(config.command_queue_pool_initial_slabs));
-        }
-
-        toml.get_required_except("credentials_file", config.credentials_file);
-
-        auto resolve_path_relative_to_config = [&](std::string& path) {
-            if (!path.empty()) {
-                const std::filesystem::path p{path};
-                if (p.is_relative()) {
-                    path = (std::filesystem::path{file_path}.parent_path() / p).string();
-                }
-            }
-        };
-
-        resolve_path_relative_to_config(config.credentials_file);
-
-        int32_t admin_listen_port = 0;
-        toml.get_required_except("admin.listen_port", admin_listen_port);
-        if (admin_listen_port < 1 || admin_listen_port > 65535) {
-            throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: admin.listen_port must be in [1, 65535], got " +
-                                                        std::to_string(admin_listen_port));
-        }
-        config.admin_listen_port = static_cast<uint16_t>(admin_listen_port);
-
-        toml.get_required_except("admin.tls_certificate_path", config.admin_tls_certificate_path);
-        toml.get_required_except("admin.tls_private_key_path", config.admin_tls_private_key_path);
-        // ca_path and require_client_certificate are optional.
-        auto [ca_ok, ca_err] = toml.get_required("admin.tls_ca_path", config.admin_tls_ca_path);
-        (void)ca_ok;
-        (void)ca_err;
-        auto [req_ok, req_err] = toml.get_required("admin.tls_require_client_certificate", config.admin_tls_require_client_certificate);
-        (void)req_ok;
-        (void)req_err;
-
-        resolve_path_relative_to_config(config.admin_tls_certificate_path);
-        resolve_path_relative_to_config(config.admin_tls_private_key_path);
-        resolve_path_relative_to_config(config.admin_tls_ca_path);
-
-    } catch (const pubsub_itc_fw::ConfigurationException&) {
-        throw;
-    }
-
-    load_credentials(config.credentials_file, config.credentials, config.session_policies);
 
     return std::make_tuple(std::move(config), std::move(logger));
 }

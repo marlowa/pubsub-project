@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 245 |
+| Bugs recorded | 248 |
 | Open | 44 (23 defects, 21 tasks) |
-| Closed | 201 |
-| Next id | BUG-0246 |
+| Closed | 204 |
+| Next id | BUG-0249 |
 
 ## Open bugs by severity
 
@@ -55,8 +55,8 @@
 | [BUG-0179](#bug_0179) | low | defect | The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again |
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
-| [BUG-0244](#bug_0244) | low | defect | An idle connection to the authentication service is closed every ten minutes and reported as a Warning |
 | [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
+| [BUG-0248](#bug_0248) | low | defect | A WAL unit test gives the helper thread a fixed second to make a segment ready, and fails when the disk is busy |
 
 ---
 
@@ -153,6 +153,28 @@ went looking.
 
 ## Open
 
+### BUG-0248: A WAL unit test gives the helper thread a fixed second to make a segment ready, and fails when the disk is busy {#bug_0248}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-14 |
+| Recorded | 2026-11-14 |
+| How | `scripts/devsetup.sh` stopped at the unit tests while another program on the machine was reading and writing a lot to disk. The next run, with nothing else changed, passed |
+| Impact | A developer loop is lost, and the failure points at the write-ahead log when nothing in it is wrong |
+
+**What happens.** `WalTest.ASegmentTheHelperMadeReadyAfterTheWriterPassedItIsFreedAndTheHelperCarriesOn`
+(`libraries/pubsub_itc_fw/tests/WalWriterReaderTest.cpp`) delays the WAL's helper thread by 300 ms, then
+sleeps for one second and expects the helper to have made segment 4 ready, so that the writer does not
+have to make it itself. Making a segment allocates all its blocks on disk. The scratch directory is in
+the build tree on `/mnt/sda1`, and with that disk busy the helper took longer than the second: the
+writer made segment 4 itself, and `segments_filled_inline()` was 5 where 4 was expected.
+
+**What is wanted.** The test waits for the helper to say the segment is ready, with a generous limit,
+rather than sleeping for a fixed time and then looking.
+
+**Principles.** None; a test that depends on how busy the disk is reports the machine, not the code.
+
 ### BUG-0245: In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it {#bug_0245}
 
 | | |
@@ -171,23 +193,6 @@ runs, 238 to 240. Logs are in `tmp/nov10/run4-logs`.
 of a run: one candidate is the matching engines writing to a region newly created on `/nvme`.
 
 **Principles.** None directly.
-
-
-### BUG-0244: An idle connection to the authentication service is closed every ten minutes and reported as a Warning {#bug_0244}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-11-10 |
-| Recorded | 2026-11-10 |
-| How | Reading the binary gateway's Quill log after the trading-day run recorded in [BUG-0243](#bug_0243) |
-| Impact | Each gateway writes Warnings about every ten minutes on a healthy venue, and for the two seconds before it reconnects it has no connection to that authentication service |
-
-**What happens.** After logon, a gateway sends nothing to the authentication services. Each service closes the connection with "no data received for 600s", the gateway writes Warnings saying that it was lost, and it reconnects two seconds later.
-
-**What is wanted.** The connection is kept open by a heartbeat, or is exempt from the inactivity check; then a loss of it is worth a Warning. To be checked: what a member's logon in those two seconds receives.
-
-**Principles.** None directly; a Warning is for something that needs attention.
 
 
 ### BUG-0242: The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol {#bug_0242}
@@ -2261,6 +2266,68 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0244: An idle connection to the authentication service is closed every ten minutes and reported as a Warning {#bug_0244}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-10 |
+| Recorded | 2026-11-10 |
+| Fixed | 2026-11-14 -- each gateway sends an `AuthenticationHeartbeat` on each connection to an authentication service every `[timeouts] authentication_heartbeat_interval` (30 seconds), and the service answers each one. A connection on which nothing arrives for three intervals is closed with `ApplicationThread::close_and_reconnect` and made again, and a new connection is given no logons until something has arrived on it. The service's limit is now `[network] connection_inactivity_limit`, still 600 seconds. Heartbeats rather than exempting the connection from the limit, by Andrew's decision, because only an answered heartbeat lets the gateway find a service that has stopped answering with its connection still open. See [Authentication Service](venue/authentication_service.md#authentication_heartbeat). Checked by `ha_test.py` scenario 110, and by unit tests of `AuthenticationServiceLink`, `ScramExchanges` and `close_and_reconnect`, and `auth_service_test.py` scenario 7. All 110 scenarios pass |
+| How | Reading the binary gateway's Quill log after the trading-day run recorded in [BUG-0243](#bug_0243) |
+| Impact | Each gateway wrote Warnings about every ten minutes on a healthy venue, and for the two seconds before it reconnected it had no connection to that authentication service. A member logging on in those two seconds, with no other authentication service connected, was refused: the FIX gateway sent a Logout with the text "Authentication service unavailable", and the binary gateway refused with `AuthenticationUnavailable` |
+
+**What happened.** After logon, a gateway sent nothing to the authentication services, and each service
+closed the connection with "no data received for 600s". Separately, a service that stopped answering
+with its connection still open, because its process hung or its machine went without closing the socket,
+was never noticed: the gateway sent every logon to it, and each waited the whole `scram_auth_timeout`
+before being refused, while the other instance went unused.
+
+**How the fix was checked.** Scenario 110 gives the FIX gateway a 1-second heartbeat and both services a
+4-second limit. Neither connection is lost over twelve seconds. Then authentication service A is stopped
+with SIGSTOP and left stopped: the gateway closed its connection to A once nothing had arrived on it
+for longer than three heartbeats (its Warning gave 3,999 ms), connected to A again two seconds later, and a fresh logon was
+authenticated by B while the new connection to A had never answered. Two deliberate breaks of the
+gateway, each deployed and run, made the scenario fail: with the gateway as it was before the fix, both
+services closed their connections after about 4.3 seconds and the baseline logon, arriving in the gap
+before the reconnection, was refused with "no authentication service is connected and answering"; and
+with a new connection given logons before it had answered, the fresh logon went to the stopped service A
+and timed out.
+
+### BUG-0246: A message with no fields closes the connection it arrives on, so a subscriber never handles `TopicNotLeader` {#bug_0246}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-14 |
+| Recorded | 2026-11-14 |
+| Fixed | 2026-11-14 -- the DSL validator refuses a message with no fields (`python/tests/test_validator.py`), by Andrew's decision, rather than `PduParser` accepting an empty payload: a message that needs to say nothing more than that it was sent carries an enum with a single value. `TopicNotLeader` now carries `TopicPublisherRole publisher_role`, whose only value is `Follower`. `TopicPubSubTest.AFollowerPublisherAnswersASubscriptionWithTopicNotLeader` checks that a subscriber receives it, and fails with the message empty again |
+| How | Writing [BUG-0244](#bug_0244)'s heartbeat as a message with no fields: the authentication service closed the connection on the first one |
+| Impact | A subscriber told `TopicNotLeader` by a publisher that is not the leader saw a lost connection instead, and its handling of the message never ran. It still tried the other publisher, because it does that on any loss, so nothing was lost |
+
+**What happened.** The DSL compiler encoded a message with no fields as zero bytes, and `PduParser`
+refuses a PDU whose payload is zero bytes: "PduParser: zero-length payload is not permitted", and the
+connection is closed. `TopicNotLeader` in `applications/topics.dsl` had no fields. A publisher that is not
+the leader sends it to each `TopicSubscribeRequest` and then closes the connection, so the subscriber's
+reader refused it, and the branch for it in `TopicSubscriberThread` was never reached.
+
+**Principles.** None directly.
+
+### BUG-0247: The authentication service looked a comp id up in one map and compared the result with the end of another {#bug_0247}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-14 |
+| Recorded | 2026-11-14 |
+| Fixed | 2026-11-14 -- the SCRAM exchange moved out of `AuthenticationThread` into `ScramExchanges`, which has one map and compares with its own end. `authentication_service_tests` checks an unknown comp id among fifty known ones, and `auth_service_test.py` scenario 8 checks one on a running service |
+| How | Reading `AuthenticationThread::handle_authentication_request` while working on [BUG-0244](#bug_0244) |
+| Impact | None seen. The C++ standard makes comparing positions in two different containers undefined. With the GNU standard library the end of every `unordered_map` is the same null pointer, so the comparison gave the right answer, and `auth_service_test.py` scenario 8 passes on the build from before the fix. Another standard library, or a checked debug build, could have treated an unknown comp id as known |
+
+**What happened.** `credentials_.find(comp_id)` searched the thread's own copy of the credentials, which the
+administration channel changes while the service runs, and the result was compared with
+`config_.credentials.end()`, the end of the copy loaded at startup.
 
 ### BUG-0073: The placeholder environments carry settings nobody chose {#bug_0073}
 

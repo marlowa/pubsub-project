@@ -16,6 +16,7 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 
 #include <AuthenticationServiceConfiguration.hpp>
+#include <ScramExchanges.hpp>
 #include <scram_crypto/ScramCrypto.hpp>
 
 namespace authentication_service {
@@ -31,6 +32,8 @@ namespace authentication_service {
  *     501 AuthenticationChallenge -- sent to gateway
  *     502 AuthenticationProof     -- received from gateway
  *     503 AuthenticationResult    -- sent to gateway
+ *     504 AuthenticationHeartbeat -- received from gateway, at the gateway's heartbeat interval
+ *     505 AuthenticationHeartbeatAnswer -- sent to gateway in reply to each heartbeat
  *
  *   TLS admin listener (TlsRawBytes) -- credential management.
  *     510 SetCredentialRequest    -- received from admin tool (plaintext password, TLS-protected)
@@ -62,19 +65,8 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
     void on_itc_message(const pubsub_itc_fw::EventMessage& msg) override;
 
   private:
-    struct ExchangeState {
-        int64_t request_id{0};
-        pubsub_itc_fw::ConnectionID conn_id;
-        std::string comp_id;
-        std::vector<uint8_t> client_nonce;
-        std::vector<uint8_t> server_nonce;
-        std::vector<uint8_t> salt;
-        int32_t iterations{0};
-        std::vector<uint8_t> stored_key;
-        std::vector<uint8_t> server_key;
-    };
-
     // PDU listener handlers
+    void answer_heartbeat(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& msg);
     void handle_authentication_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& msg);
     void handle_authentication_proof(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& msg);
 
@@ -88,9 +80,8 @@ class AuthenticationThread : public pubsub_itc_fw::ApplicationThread {
     const AuthenticationServiceConfiguration& config_;
     // Mutable credential map -- updated by SetCredentialRequest at runtime.
     std::unordered_map<std::string, scram_crypto::ScramCredential> credentials_;
-    // Keyed by request_id so concurrent authentication sessions on the same
-    // gateway connection do not overwrite each other's SCRAM exchange state.
-    std::unordered_map<int64_t, ExchangeState> exchanges_;
+    // The SCRAM exchanges in progress. Reads credentials_, so it is declared after it.
+    ScramExchanges scram_exchanges_;
     // Tracks connections accepted on the TLS admin listener.
     std::unordered_set<pubsub_itc_fw::ConnectionID> admin_connections_;
 

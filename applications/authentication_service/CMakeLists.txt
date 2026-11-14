@@ -2,6 +2,7 @@ add_executable(authentication_service
         AuthenticationServiceConfigurationLoader.cpp
         AuthenticationThread.cpp
         AuthenticationService.cpp
+        ScramExchanges.cpp
 )
 
 # fix_common for ThrottleLimits.hpp alone: the range of a throttle limit is checked here, in the
@@ -25,10 +26,45 @@ target_sources(authentication_service PRIVATE
         AuthenticationServiceConfigurationLoader.hpp
         AuthenticationThread.hpp
         AuthenticationService.hpp
+        ScramExchanges.hpp
 )
 
 install(TARGETS authentication_service
         RUNTIME DESTINATION bin
+)
+
+# The service's decisions, tested without a reactor: the SCRAM exchange and the configuration it reads.
+add_executable(authentication_service_tests
+        tests/AuthenticationServiceConfigurationLoaderTest.cpp
+        tests/ScramExchangesTest.cpp
+        AuthenticationServiceConfigurationLoader.cpp
+        ScramExchanges.cpp
+)
+
+target_include_directories(authentication_service_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
+        ${FIX_DSL_INCLUDE_DIR}
+)
+
+target_link_libraries(authentication_service_tests PRIVATE
+        pubsub_itc_fw
+        pubsub_itc_fw_test_helpers
+        scram_crypto
+        GTest::gtest_main
+)
+
+add_dependencies(authentication_service_tests authentication_generated)
+
+include(GoogleTest)
+if(ENABLE_TSAN)
+    gtest_discover_tests(authentication_service_tests DISCOVERY_MODE PRE_TEST)
+else()
+    gtest_discover_tests(authentication_service_tests)
+endif()
+
+install(TARGETS authentication_service_tests
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
 
 install(FILES

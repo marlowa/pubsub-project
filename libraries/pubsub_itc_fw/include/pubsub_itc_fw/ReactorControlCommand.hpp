@@ -39,6 +39,7 @@ namespace pubsub_itc_fw {
  *   Connect        -- requesting_thread_id_, service_id_
  *   ConnectNow     -- service_id_
  *   Disconnect     -- connection_id_
+ *   CloseAndReconnect -- connection_id_
  *   SendPdu        -- connection_id_, allocator_, slab_id_, pdu_chunk_ptr_, pdu_byte_count_
  *   SendRaw        -- connection_id_, allocator_, slab_id_, raw_chunk_ptr_, raw_byte_count_
  *   CommitRawBytes -- connection_id_, bytes_consumed_
@@ -65,6 +66,7 @@ class ReactorControlCommand {
         Connect,                     ///< Request the reactor to establish an outbound TCP connection.
         ConnectNow,                  ///< Make a service's waiting attempt to connect again at once (service_id_).
         Disconnect,                  ///< Request the reactor to close an established connection.
+        CloseAndReconnect,           ///< Close an outbound connection and connect to its service again (connection_id_).
         SendPdu,                     ///< Request the reactor to send a framed PDU on a PDU connection.
         SendRaw,                     ///< Request the reactor to send raw bytes on a raw-bytes connection.
         CommitRawBytes,              ///< Notify the reactor that the application has consumed N bytes from
@@ -126,6 +128,9 @@ class ReactorControlCommand {
         }
         if (tag_ == Disconnect) {
             return "Disconnect";
+        }
+        if (tag_ == CloseAndReconnect) {
+            return "CloseAndReconnect";
         }
         if (tag_ == SendPdu) {
             return "SendPdu";
@@ -226,7 +231,7 @@ class ReactorControlCommand {
      */
     ServiceID service_id_{};
 
-    // Disconnect / SendPdu / SendRaw / CommitRawBytes payload fields
+    // Disconnect / CloseAndReconnect / SendPdu / SendRaw / CommitRawBytes payload fields
 
     /**
      * @brief Identifies the target connection.

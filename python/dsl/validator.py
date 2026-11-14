@@ -146,6 +146,16 @@ class Validator:  # pylint: disable=too-few-public-methods
                 )
             seen_ids.add(message_id)
 
+            # A message with no fields encodes as zero bytes, and the framework's PduParser refuses a PDU with an empty
+            # payload and closes the connection it arrived on. A message that needs to say nothing more than that it was
+            # sent can carry an enum with a single value.
+            if not msg.fields:
+                raise ValidationError(
+                    f"line {msg.line}: message '{msg.name}' has no fields; a message must have at least one, "
+                    f"because the framework refuses a PDU with an empty payload. If it needs to say nothing more "
+                    f"than that it was sent, give it an enum with a single value"
+                )
+
             for field in msg.fields:
                 self._validate_field(field, msg.name)
 

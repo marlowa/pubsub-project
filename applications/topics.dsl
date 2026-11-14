@@ -72,6 +72,15 @@ enum TopicChannelRole : i8 {
 }
 
 # ------------------------------------------------------------
+#  TopicPublisherRole -- what the publisher instance that sent
+#  TopicNotLeader is. It has one value, because a publisher
+#  sends TopicNotLeader only when it is not the leader.
+# ------------------------------------------------------------
+enum TopicPublisherRole : i8 {
+    Follower = 1
+}
+
+# ------------------------------------------------------------
 #  107 -- TopicSubscribeRequest
 #  Sent by a subscriber to the publisher immediately after the
 #  TCP connection is established.
@@ -162,8 +171,13 @@ end
 #  Signals to TopicSubscriberChannel to try the other
 #  endpoint. The connection is closed by the publisher
 #  after sending this PDU.
+#
+#  publisher_role: always Follower. The message says only that
+#  it was sent, but a message must have a field, because the
+#  framework refuses a PDU with an empty payload.
 # ------------------------------------------------------------
 message TopicNotLeader (id=111, version=1)
+    TopicPublisherRole publisher_role
 end
 
 # ------------------------------------------------------------

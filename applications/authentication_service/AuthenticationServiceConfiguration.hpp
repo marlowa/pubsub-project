@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <optional>
 #include <string>
@@ -33,6 +34,15 @@ struct AuthenticationServiceConfiguration {
 
     /** @brief TCP port on which the service listens for inbound PDU connections. */
     uint16_t listen_port{7070};
+
+    /**
+     * @brief How long a gateway's connection may send nothing before the service closes it.
+     *
+     * Each order gateway sends a heartbeat on its connection at its timeouts.authentication_heartbeat_interval, so a
+     * connection that is working is never idle for that long. One that is silent belongs to a gateway that has gone
+     * without closing its socket, and closing it frees what the connection holds.
+     */
+    std::chrono::seconds connection_inactivity_limit{600};
 
     // Network -- TLS admin listener (credential management)
 

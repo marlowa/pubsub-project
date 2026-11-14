@@ -221,3 +221,30 @@ def test_list_of_unknown_type():
     """
     with pytest.raises(ValidationError):
         validate(text)
+
+
+# -----------------------------
+# A message must have a field
+# -----------------------------
+
+def test_message_with_no_fields_is_refused():
+    text = """
+        message Nothing (id=1)
+        end
+    """
+    with pytest.raises(ValidationError, match="'Nothing' has no fields"):
+        validate(text)
+
+
+def test_message_whose_only_field_is_an_enum_of_one_value_is_accepted():
+    text = """
+        enum Signal : i8 {
+            sent = 1
+        }
+
+        message OnlyThatItWasSent (id=1)
+            Signal signal
+        end
+    """
+    ast = validate(text)
+    assert len(ast.declarations) == 2

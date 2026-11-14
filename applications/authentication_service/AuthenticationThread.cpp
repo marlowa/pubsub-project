@@ -39,6 +39,9 @@ constexpr size_t admin_pdu_header_size = 24;
 constexpr uint32_t admin_pdu_canary = 0xC0FFEE00;
 constexpr uint8_t admin_pdu_version = 1;
 
+// The random part of the server nonce, appended to the gateway's client nonce (RFC 5802, section 5.1).
+constexpr size_t server_nonce_random_bytes = 16;
+
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
     queue_configuration.low_watermark = 1;
@@ -64,7 +67,8 @@ AuthenticationThread::AuthenticationThread(pubsub_itc_fw::ApplicationThread::Con
     : ApplicationThread(token, logger, reactor, "AuthenticationThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
-    , credentials_(config.credentials) {}
+    , credentials_(config.credentials)
+    , scram_exchanges_(credentials_, config.session_policies) {}
 
 void AuthenticationThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: connection established conn_id={}", id.get_value());
@@ -75,9 +79,7 @@ void AuthenticationThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: admin connection lost conn_id={} reason={}", id.get_value(), reason);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: connection lost conn_id={} reason={}", id.get_value(), reason);
-        for (auto it = exchanges_.begin(); it != exchanges_.end();) {
-            it = (it->second.conn_id == id) ? exchanges_.erase(it) : std::next(it);
-        }
+        scram_exchanges_.forget_connection(id);
     }
 }
 
@@ -89,6 +91,8 @@ void AuthenticationThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         handle_authentication_request(conn_id, msg);
     } else if (pdu_id == pubsub_itc_fw_app::AuthenticationProof::message_pdu_id) {
         handle_authentication_proof(conn_id, msg);
+    } else if (pdu_id == pubsub_itc_fw_app::AuthenticationHeartbeat::message_pdu_id) {
+        answer_heartbeat(conn_id, msg);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: unexpected pdu_id={} conn_id={} -- dropping", pdu_id,
                    conn_id.get_value());
@@ -98,6 +102,27 @@ void AuthenticationThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
 }
 
 void AuthenticationThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& msg) {}
+
+void AuthenticationThread::answer_heartbeat(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& msg) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+
+    pubsub_itc_fw_app::AuthenticationHeartbeatView view{};
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    if (!pubsub_itc_fw_app::decode(view, msg.payload(), static_cast<size_t>(msg.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "AuthenticationThread: failed to decode AuthenticationHeartbeat conn_id={} -- dropping",
+                   conn_id.get_value());
+        return;
+    }
+    // At Debug: one arrives from each gateway every heartbeat interval.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "AuthenticationThread: heartbeat {} on conn_id={} -- answering", view.heartbeat_number,
+               conn_id.get_value());
+    pubsub_itc_fw_app::AuthenticationHeartbeatAnswer answer{};
+    answer.heartbeat_number = view.heartbeat_number;
+    send_pdu(conn_id, pubsub_itc_fw_app::AuthenticationHeartbeatAnswer::message_pdu_id, 0, answer);
+}
 
 void AuthenticationThread::handle_authentication_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& msg) {
     auto& arena_buffer = decode_arena_buffer();
@@ -118,46 +143,28 @@ void AuthenticationThread::handle_authentication_request(const pubsub_itc_fw::Co
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: AuthenticationRequest request_id={} comp_id={} conn_id={}",
                view.request_id, comp_id, conn_id.get_value());
 
-    // Build server_nonce = client_nonce || 16 cryptographically random bytes.
-    const std::vector<uint8_t> client_nonce(view.client_nonce.data, view.client_nonce.data + view.client_nonce.size);
-    std::vector<uint8_t> server_nonce = client_nonce;
-    uint8_t random_suffix[16];
-    if (RAND_bytes(random_suffix, static_cast<int>(sizeof(random_suffix))) != 1) {
+    std::vector<uint8_t> server_nonce_suffix(server_nonce_random_bytes);
+    if (RAND_bytes(server_nonce_suffix.data(), static_cast<int>(server_nonce_suffix.size())) != 1) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "AuthenticationThread: RAND_bytes failed conn_id={} -- dropping", conn_id.get_value());
         return;
     }
-    server_nonce.insert(server_nonce.end(), random_suffix, random_suffix + sizeof(random_suffix));
 
-    auto cred_it = credentials_.find(comp_id);
-    if (cred_it == config_.credentials.end()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationThread: unknown comp_id={} conn_id={} request_id={} -- UnknownUser",
-                   comp_id, conn_id.get_value(), view.request_id);
-        pubsub_itc_fw_app::AuthenticationResult result{};
-        result.request_id = view.request_id;
-        result.outcome = pubsub_itc_fw_app::AuthenticationOutcome::UnknownUser;
-        result.server_signature = pubsub_itc_fw_app::BytesView{nullptr, 0};
-        result.force_password_change = false;
-        send_pdu(conn_id, pubsub_itc_fw_app::AuthenticationResult::message_pdu_id, 0, result);
+    const std::vector<uint8_t> client_nonce(view.client_nonce.data, view.client_nonce.data + view.client_nonce.size);
+    const ScramExchanges::RequestAnswer answer = scram_exchanges_.on_request(conn_id, view.request_id, comp_id, client_nonce, server_nonce_suffix);
+
+    if (!answer.challenge) {
+        // At Info: a member naming a comp id the venue does not know is the member's doing, and is handled.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: unknown comp_id={} conn_id={} request_id={} -- UnknownUser", comp_id,
+                   conn_id.get_value(), view.request_id);
+        send_pdu(conn_id, pubsub_itc_fw_app::AuthenticationResult::message_pdu_id, 0, ScramExchanges::unknown_user_message(view.request_id));
         return;
     }
 
-    const scram_crypto::ScramCredential& cred = cred_it->second;
-    ExchangeState& state = exchanges_[view.request_id];
-    state.request_id = view.request_id;
-    state.conn_id = conn_id;
-    state.comp_id = comp_id;
-    state.client_nonce = client_nonce;
-    state.server_nonce = server_nonce;
-    state.salt = cred.salt;
-    state.iterations = cred.iterations;
-    state.stored_key = cred.stored_key;
-    state.server_key = cred.server_key;
-
     pubsub_itc_fw_app::AuthenticationChallenge challenge{};
     challenge.request_id = view.request_id;
-    challenge.server_nonce = pubsub_itc_fw_app::BytesView{server_nonce.data(), server_nonce.size()};
-    challenge.salt = pubsub_itc_fw_app::BytesView{state.salt.data(), state.salt.size()};
-    challenge.iterations = state.iterations;
+    challenge.server_nonce = pubsub_itc_fw_app::BytesView{answer.server_nonce.data(), answer.server_nonce.size()};
+    challenge.salt = pubsub_itc_fw_app::BytesView{answer.salt.data(), answer.salt.size()};
+    challenge.iterations = answer.iterations;
     send_pdu(conn_id, pubsub_itc_fw_app::AuthenticationChallenge::message_pdu_id, 0, challenge);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: AuthenticationChallenge sent request_id={} comp_id={}", view.request_id,
@@ -179,112 +186,25 @@ void AuthenticationThread::handle_authentication_proof(const pubsub_itc_fw::Conn
         return;
     }
 
-    auto it = exchanges_.find(view.request_id);
-    if (it == exchanges_.end()) {
+    const ScramExchanges::ProofAnswer answer = scram_exchanges_.on_proof(view.request_id, view.client_proof.data, view.client_proof.size);
+    if (!answer.exchange_found) {
+        // A gateway sent a proof this service never challenged for: the venue's own software is at fault.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "AuthenticationThread: AuthenticationProof with no pending exchange "
-                   "conn_id={} request_id={} -- dropping",
-                   conn_id.get_value(), view.request_id);
+                   "AuthenticationThread: AuthenticationProof with no pending exchange conn_id={} request_id={} -- dropping", conn_id.get_value(),
+                   view.request_id);
         return;
     }
 
-    const ExchangeState& state = it->second;
-
-    auto send_result = [&](pubsub_itc_fw_app::AuthenticationOutcome outcome, const std::vector<uint8_t>& server_signature) {
-        pubsub_itc_fw_app::AuthenticationResult result{};
-        result.request_id = view.request_id;
-        result.outcome = outcome;
-        result.server_signature = pubsub_itc_fw_app::BytesView{server_signature.empty() ? nullptr : server_signature.data(), server_signature.size()};
-        result.force_password_change = false;
-
-        // Cancel-on-disconnect travels with a successful authentication only. Sending it
-        // on a refusal would hand session policy to something that has just failed to
-        // prove who it is, and the gateway is about to drop the connection regardless.
-        //
-        // A comp id with no stored preference sends neither field, leaving the gateway on
-        // its own configured default -- see the note on the DSL message.
-        if (outcome == pubsub_itc_fw_app::AuthenticationOutcome::Granted) {
-            const auto policy_it = config_.session_policies.find(state.comp_id);
-            if (policy_it != config_.session_policies.end()) {
-                const auto& policy = policy_it->second;
-                if (policy.cancel_on_disconnect_enabled.has_value()) {
-                    result.has_cancel_on_disconnect_enabled = true;
-                    result.cancel_on_disconnect_enabled = *policy.cancel_on_disconnect_enabled;
-                }
-                if (policy.cancel_on_disconnect_grace_period_seconds.has_value()) {
-                    result.has_cancel_on_disconnect_grace_period_seconds = true;
-                    result.cancel_on_disconnect_grace_period_seconds = *policy.cancel_on_disconnect_grace_period_seconds;
-                }
-                // The gateway instances this session may use. Sent on the same terms: a
-                // member with no pinning gets neither field and the gateway lets it in
-                // wherever it landed. The gateway compares these against its own
-                // configured instance id and refuses a logon it is not provisioned for,
-                // so this service never needs to know which instance it is talking to.
-                if (policy.primary_gateway_instance.has_value()) {
-                    result.has_primary_gateway_instance = true;
-                    result.primary_gateway_instance = *policy.primary_gateway_instance;
-                }
-                if (policy.backup_gateway_instance.has_value()) {
-                    result.has_backup_gateway_instance = true;
-                    result.backup_gateway_instance = *policy.backup_gateway_instance;
-                }
-                // The throttle limits are always sent with a grant; a comp id with no entry
-                // here sends zeros, no limit, from the value-initialised result.
-                result.max_place_per_second = policy.max_place_per_second;
-                result.max_amend_per_second = policy.max_amend_per_second;
-                result.max_cancel_per_second = policy.max_cancel_per_second;
-            }
-        }
-
-        send_pdu(conn_id, pubsub_itc_fw_app::AuthenticationResult::message_pdu_id, 0, result);
-    };
-
-    // Verify ClientProof:
-    //   ClientSignature = HMAC-SHA-256(stored_key, AuthMessage)
-    //   ClientKey       = ClientProof XOR ClientSignature
-    //   Check: SHA-256(ClientKey) == stored_key
-    static constexpr size_t sha256_size = 32;
-    if (view.client_proof.size != sha256_size) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "AuthenticationThread: client_proof has wrong size {} (expected {}) "
-                   "request_id={} comp_id={} conn_id={} -- BadPassword",
-                   view.client_proof.size, sha256_size, view.request_id, state.comp_id, conn_id.get_value());
-        exchanges_.erase(it);
-        send_result(pubsub_itc_fw_app::AuthenticationOutcome::BadPassword, {});
-        return;
+    if (answer.outcome == pubsub_itc_fw_app::AuthenticationOutcome::Granted) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: AuthenticationResult Granted request_id={} comp_id={} conn_id={}",
+                   view.request_id, answer.comp_id, conn_id.get_value());
+    } else {
+        // At Info: a wrong password is the member's doing, and is handled.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "AuthenticationThread: ClientProof verification failed (proof of {} bytes) request_id={} comp_id={} conn_id={} -- BadPassword",
+                   view.client_proof.size, view.request_id, answer.comp_id, conn_id.get_value());
     }
-
-    const std::vector<uint8_t> auth_message =
-        scram_crypto::compute_auth_message(state.comp_id, state.client_nonce, state.server_nonce, state.salt.data(), state.salt.size(), state.iterations);
-
-    const std::vector<uint8_t> client_signature =
-        scram_crypto::hmac_sha256(state.stored_key.data(), state.stored_key.size(), auth_message.data(), auth_message.size());
-
-    std::vector<uint8_t> client_key(sha256_size);
-    for (size_t i = 0; i < sha256_size; ++i) {
-        client_key[i] = view.client_proof.data[i] ^ client_signature[i];
-    }
-
-    const std::vector<uint8_t> recovered_stored_key = scram_crypto::sha256(client_key.data(), client_key.size());
-    if (recovered_stored_key != state.stored_key) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "AuthenticationThread: ClientProof verification failed "
-                   "request_id={} comp_id={} conn_id={} -- BadPassword",
-                   view.request_id, state.comp_id, conn_id.get_value());
-        exchanges_.erase(it);
-        send_result(pubsub_itc_fw_app::AuthenticationOutcome::BadPassword, {});
-        return;
-    }
-
-    // Proof is valid. Compute ServerSignature and send Granted.
-    const std::vector<uint8_t> server_signature =
-        scram_crypto::hmac_sha256(state.server_key.data(), state.server_key.size(), auth_message.data(), auth_message.size());
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: AuthenticationResult Granted request_id={} comp_id={} conn_id={}",
-               view.request_id, state.comp_id, conn_id.get_value());
-
-    exchanges_.erase(it);
-    send_result(pubsub_itc_fw_app::AuthenticationOutcome::Granted, server_signature);
+    send_pdu(conn_id, pubsub_itc_fw_app::AuthenticationResult::message_pdu_id, 0, ScramExchanges::result_message(view.request_id, answer));
 }
 
 void AuthenticationThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& msg) {

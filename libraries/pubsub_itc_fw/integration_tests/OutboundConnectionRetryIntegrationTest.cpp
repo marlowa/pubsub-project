@@ -203,6 +203,49 @@ class ConnectingThread : public ApplicationThread {
     TimerID timer_{};
 };
 
+// Connects to "peer" when the application is ready, and, whenever a test sets ask_to_close_and_reconnect, asks for
+// connection_to_close to be closed and connected again, from its own thread on a one-millisecond timer. The test sets
+// connection_to_close first; by default it is the connection most recently made.
+class ReconnectingThread : public ApplicationThread {
+  public:
+    ReconnectingThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "ReconnectingThread", ThreadID{1}, make_queue_config(), make_allocator_config("ReconnectingPool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    std::atomic<int> established{0};
+    std::atomic<int> lost{0};
+    std::atomic<int> connection_to_close{0};
+    std::atomic<bool> ask_to_close_and_reconnect{false};
+    std::string last_loss_reason;
+
+  protected:
+    void on_app_ready_event() override {
+        timer_ = start_recurring_timer(std::chrono::milliseconds{1});
+        connect_to_service("peer");
+    }
+    void on_timer_event(TimerID id) override {
+        if (id == timer_ && ask_to_close_and_reconnect.exchange(false)) {
+            close_and_reconnect(ConnectionID{connection_to_close.load(), "peer"});
+        }
+    }
+    void on_connection_established(ConnectionID id) override {
+        connection_to_close.store(id.get_value());
+        established.fetch_add(1);
+    }
+    void on_connection_failed(const std::string&) override {}
+    void on_connection_lost(const ConnectionID&, const std::string& reason) override {
+        last_loss_reason = reason;
+        lost.fetch_add(1);
+    }
+    void on_framework_pdu_message(const EventMessage& message) override {
+        release_pdu_payload(message);
+    }
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
+
+  private:
+    TimerID timer_{};
+};
+
 // Owns the connections made to a listener, and counts them.
 class AcceptingThread : public ApplicationThread {
   public:
@@ -326,6 +369,77 @@ TEST(OutboundConnectionRetryIntegrationTest, AConnectionAskedForInTheInitialEven
     EXPECT_TRUE(wait_for([&]() { return connecting->established.load() == 1; }, std::chrono::seconds{2}))
         << "the connection asked for in the initial event was not made at once, so it was attempted before the listener was bound";
     EXPECT_TRUE(wait_for([&]() { return accepting->accepted.load() == 1; }, std::chrono::seconds{1}));
+}
+
+namespace {
+
+ReactorConfiguration a_tenth_of_a_second_between_attempts() {
+    ReactorConfiguration cfg = a_minute_between_attempts();
+    cfg.connect_retry_interval_ = std::chrono::milliseconds{100};
+    return cfg;
+}
+
+} // namespaces
+
+// A connection closed with close_and_reconnect is reported lost to the thread, with the reason saying the thread closed
+// it, and the service is then connected again: the listener sees a second connection.
+TEST(OutboundConnectionRetryIntegrationTest, CloseAndReconnectClosesTheConnectionAndConnectsAgain) {
+    static const ServiceRegistry empty_registry;
+    LoggerWithSink logger;
+    Reactor listening_reactor(a_tenth_of_a_second_between_attempts(), empty_registry, logger.logger);
+    auto accepting = ApplicationThread::create<AcceptingThread>(logger.logger, listening_reactor, ThreadID{2});
+    listening_reactor.register_thread(accepting);
+    listening_reactor.register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    RunningReactor running_listener(listening_reactor);
+    ASSERT_TRUE(wait_for([&]() { return listening_reactor.is_initialized(); }, std::chrono::seconds{5}));
+
+    ServiceRegistry registry;
+    registry.add("peer", NetworkEndpointConfiguration{"127.0.0.1", listening_reactor.get_inbound_listener_port(0)}, NetworkEndpointConfiguration{});
+    Reactor connecting_reactor(a_tenth_of_a_second_between_attempts(), registry, logger.logger);
+    auto connecting = ApplicationThread::create<ReconnectingThread>(logger.logger, connecting_reactor);
+    connecting_reactor.register_thread(connecting);
+    RunningReactor running_connector(connecting_reactor);
+    ASSERT_TRUE(wait_for([&]() { return connecting->established.load() == 1; }, std::chrono::seconds{5}));
+    ASSERT_TRUE(wait_for([&]() { return accepting->accepted.load() == 1; }, std::chrono::seconds{1}));
+
+    connecting->ask_to_close_and_reconnect.store(true);
+
+    ASSERT_TRUE(wait_for([&]() { return connecting->lost.load() == 1; }, std::chrono::seconds{2})) << "the thread was not told its connection was closed";
+    EXPECT_NE(connecting->last_loss_reason.find("closed by the application thread"), std::string::npos) << connecting->last_loss_reason;
+    ASSERT_TRUE(wait_for([&]() { return connecting->established.load() == 2; }, std::chrono::seconds{2})) << "the service was not connected again";
+    EXPECT_TRUE(wait_for([&]() { return accepting->accepted.load() == 2; }, std::chrono::seconds{1}));
+}
+
+// A connection that is already closed when the reactor acts is left as it is: the thread is not told of a second
+// loss, and no extra connection is made. This is the case of a peer that closed the connection at the moment the
+// thread asked for it to be closed, for which the reactor has already scheduled the new attempt itself.
+TEST(OutboundConnectionRetryIntegrationTest, CloseAndReconnectOfAConnectionAlreadyClosedDoesNothing) {
+    static const ServiceRegistry empty_registry;
+    LoggerWithSink logger;
+    Reactor listening_reactor(a_tenth_of_a_second_between_attempts(), empty_registry, logger.logger);
+    auto accepting = ApplicationThread::create<AcceptingThread>(logger.logger, listening_reactor, ThreadID{2});
+    listening_reactor.register_thread(accepting);
+    listening_reactor.register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    RunningReactor running_listener(listening_reactor);
+    ASSERT_TRUE(wait_for([&]() { return listening_reactor.is_initialized(); }, std::chrono::seconds{5}));
+
+    ServiceRegistry registry;
+    registry.add("peer", NetworkEndpointConfiguration{"127.0.0.1", listening_reactor.get_inbound_listener_port(0)}, NetworkEndpointConfiguration{});
+    Reactor connecting_reactor(a_tenth_of_a_second_between_attempts(), registry, logger.logger);
+    auto connecting = ApplicationThread::create<ReconnectingThread>(logger.logger, connecting_reactor);
+    connecting_reactor.register_thread(connecting);
+    RunningReactor running_connector(connecting_reactor);
+    ASSERT_TRUE(wait_for([&]() { return connecting->established.load() == 1; }, std::chrono::seconds{5}));
+
+    // An identifier no connection has: the open connection is not the one named.
+    connecting->connection_to_close.store(connecting->connection_to_close.load() + 1000);
+    connecting->ask_to_close_and_reconnect.store(true);
+
+    EXPECT_TRUE(wait_for([&]() { return !connecting->ask_to_close_and_reconnect.load(); }, std::chrono::seconds{1})) << "the thread never asked";
+    std::this_thread::sleep_for(std::chrono::milliseconds{400});
+    EXPECT_EQ(connecting->lost.load(), 0);
+    EXPECT_EQ(connecting->established.load(), 1);
+    EXPECT_EQ(accepting->accepted.load(), 1);
 }
 
 } // namespaces

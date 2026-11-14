@@ -208,6 +208,8 @@ Defined in `applications/authentication.dsl`, namespace `pubsub_itc_fw_app`.
 | 501 | `AuthenticationChallenge` | `request_id`, `server_nonce` (bytes), `salt` (bytes), `iterations` (i32) |
 | 502 | `AuthenticationProof` | `request_id`, `client_proof` (bytes, 32 bytes) |
 | 503 | `AuthenticationResult` | `request_id`, `outcome` (enum), `server_signature` (bytes, 32 bytes), `force_password_change` (bool) |
+| 504 | `AuthenticationHeartbeat` | `heartbeat_number` (i64); keeps the connection open, see [Authentication Service](../venue/authentication_service.md#authentication_heartbeat) |
+| 505 | `AuthenticationHeartbeatAnswer` | `heartbeat_number`, echoed |
 
 `request_id` carries the gateway's `ConnectionID` for the FIX session unchanged through
 all four messages so the gateway can correlate the result with the correct pending session.

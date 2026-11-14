@@ -220,6 +220,21 @@ class OutboundConnectionManager {
     [[nodiscard]] bool process_disconnect_command(ConnectionID id);
 
     /**
+     * @brief Closes an outbound connection at the application's request and schedules a new attempt to connect to its
+     *        service, as for a connection the peer closed.
+     *
+     * The application is told the connection was lost, with @p reason. The new attempt is made after
+     * ReactorConfiguration::connect_retry_interval_, by the same means as any other retry.
+     *
+     * @param[in] id     The ConnectionID to close.
+     * @param[in] reason Why the application closed it, given to the application with the loss.
+     * @return true if the connection was found, closed and a new attempt scheduled; false if it is not an outbound
+     *         connection this manager holds, which includes one already closed for another reason. A connection the
+     *         peer closed already has a new attempt scheduled, so false needs nothing more from the caller.
+     */
+    [[nodiscard]] bool process_close_and_reconnect_command(ConnectionID id, const std::string& reason);
+
+    /**
      * @brief Checks all pending connect retries and re-issues any that are due.
      *
      * Called by the Reactor alongside check_for_timed_out_connections() on each

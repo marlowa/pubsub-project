@@ -39,6 +39,7 @@
 
 #include <scram_crypto/ScramCrypto.hpp> // IWYU pragma: keep
 
+#include "AuthenticationServiceLink.hpp"
 #include "BinaryCommandChecks.hpp"
 #include "BinaryOrderGatewayConfiguration.hpp"
 #include "BinaryRejections.hpp"
@@ -93,6 +94,15 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      * nonce goes out with the comp id, and the session waits. The password is not sent --
      * only a proof derived from it, once the challenge comes back.
      */
+    /// The connection to send a logon's authentication on: the primary if it is answering, else the secondary if it
+    /// is, else none (an invalid id).
+    [[nodiscard]] pubsub_itc_fw::ConnectionID authentication_connection_for_logon() const;
+    /// Sends heartbeats on the authentication connections, and closes and remakes any that has stopped answering.
+    void on_authentication_heartbeat_timer();
+    /// Sends the next numbered AuthenticationHeartbeat on @p connection_id.
+    void send_authentication_heartbeat(const pubsub_itc_fw::ConnectionID& connection_id);
+    /// Something arrived from an authentication service on @p link; says so when the connection has just become usable.
+    void note_heard_from_authentication_service(fix_common::AuthenticationServiceLink& link, const char* which);
     void begin_scram_authentication(BinarySession& session);
 
     void handle_authentication_challenge(const pubsub_itc_fw::EventMessage& message);
@@ -342,8 +352,13 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ThreadConfinementCheck sessions_owner_{"BinaryOrderGatewayThread sessions"};
 #endif
 
-    pubsub_itc_fw::ConnectionID auth_service_primary_conn_id_{};
-    pubsub_itc_fw::ConnectionID auth_service_secondary_conn_id_{};
+    // The connections to the two authentication service instances, and whether each is answering. The secondary is
+    // connected only with ha_enabled. See docs/venue/authentication_service.md, "Keeping the connection open".
+    fix_common::AuthenticationServiceLink auth_service_primary_{config_.authentication_heartbeat_interval};
+    fix_common::AuthenticationServiceLink auth_service_secondary_{config_.authentication_heartbeat_interval};
+    pubsub_itc_fw::TimerID authentication_heartbeat_timer_id_{};
+    // How many AuthenticationHeartbeats this gateway has sent; the number of the last one.
+    int64_t authentication_heartbeats_sent_{0};
     pubsub_itc_fw::ConnectionID sequencer_primary_conn_id_{};
     pubsub_itc_fw::ConnectionID sequencer_secondary_conn_id_{};
 
