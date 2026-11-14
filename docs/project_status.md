@@ -14,7 +14,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
   a matching engine, an authentication service, arbiters and a witness. The sequencer, matching
   engine and arbiters each run as a pair of instances.
 - **A Java admin service and FIX test client**, in `java/`.
-- **A functional specification**, `docs/book`, stating 157 requirements.
+- **A functional specification**, `docs/book`, stating 170 requirements.
 - **One list of design principles**, [design_principles.md](design_principles.md), agreed, with
   where each holds and where it is broken today.
 
@@ -41,7 +41,7 @@ The [bug list](bug_list.md) holds 40 open entries, 6 of them high severity. Each
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
-- **The specification is mostly untested.** 44 of 158 requirements are verified by a scenario, and
+- **The specification is mostly untested.** 44 of 170 requirements are verified by a scenario, and
   one more by a TLA+ model (`scripts/check_book_requirements.py` counts them; [BUG-0068](bug_list.md#bug_0068)). A scenario
   passing has repeatedly been found to say less than it appeared to, so treat untested requirements
   as unverified.

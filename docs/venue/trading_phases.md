@@ -2,10 +2,11 @@
 
 **Status: the technical event and halting are built; the phases are design.** The `TechnicalEvent`
 command, the venue's halt and an operator's halt and lift are built
-([voided_commands.md](../availability/voided_commands.md), section 6). The phases other than open,
-the table of what each allows, and telling a member that is not trading that the venue is halted are
-not. The requirements they lead to are named, but not yet written, in the high availability chapter
-of the functional specification (`docs/book`, the section "The venue says what it is doing").
+([voided_commands.md](../availability/voided_commands.md), section 6). The phases other than open, and
+telling a member that is not trading that the venue is halted, are not. The table of what each phase
+allows is settled below. The requirements are written in the high availability chapter of the functional
+specification (`docs/book`, the section "The venue says what it is doing", R-0164 to R-0175), and the
+plan for building them is in [trading_day_plan.md](trading_day_plan.md).
 
 ## What this is for
 
@@ -161,10 +162,9 @@ and 13.6).
 **End of day is not complete until the recorder reports that every event of the day is confirmed**
 by the external messaging system. The start of `eod` is declared by the venue's schedule; the end of
 it waits for the recorder, because trading that is not fully recorded cannot be reconstructed
-afterwards. How the recorder's report combines with the phase's other work, such as receiving the
-next day's instrument prices, is still to be designed. For the recorder's report to mean the day is
-fully recorded, no order record may follow the `eod` event, so the open question below of whether a
-member may cancel an order during `eod` must be settled with that in mind.
+afterwards. How the recorder's report reaches the end-of-day procedure is designed with the recorder.
+For the recorder's report to mean the day is fully recorded, no order record may follow the `eod` event,
+which is why the table below refuses cancels after the close.
 
 ### The control-plane path already exists in the right shape
 
@@ -182,33 +182,40 @@ already knows how to refuse on a venue-wide signal and already tells the member 
 
 ---
 
-## What a phase means, which is the part with the work in it
+## What a phase means
 
-The enum is the cheap part. The substance is what each component may do in each phase, and that
-table does not exist yet:
+What each component may do in each phase:
 
 | | `sod` | `pre_open` | `open` | `closed` | `eod` |
 |---|---|---|---|---|---|
-| A member may log on | ? | ? | yes | ? | ? |
+| A member may log on | yes | yes | yes | yes | yes |
 | A member may enter an order | no | yes | yes | no | no |
-| A member may cancel an order | ? | ? | yes | ? | ? |
-| The matching engine matches | no | no | yes | no | no |
-| Instrument prices are accepted | ? | no | no | no | yes |
+| A member may cancel an order | no | yes | yes | no | no |
+| The matching engine acts on orders | no | yes, without matching | yes | no | no |
+| What the venue itself does on entry | Fixes the trading date | Nothing | Nothing (where an opening auction would go) | Cancels every open order, telling each member | Nothing further is sequenced |
 
-The question marks are real. Whether a member may cancel a resting order after the close is a
-policy decision with consequences for every open order the venue holds overnight, and it is not
-settled by naming the phases.
+- **Members may log on in every phase**, so that a member is told what the venue is doing and why its
+  orders would be refused.
+- **Cancels are refused in `closed` and `eod`.** The `TechnicalEvent` that enters `closed` is itself the
+  command that cancels every open order in each matching engine, with an execution report to each member,
+  so there is nothing left to cancel; and the recorder needs no order record after `eod`.
+- **The matching engine treats `pre_open` like `open`**, because it does no matching. The phases stay
+  separate so that an opening auction can be added at the move to `open` without changing anything else.
+- **Instrument prices and other reference data** are left until something in the venue uses them
+  ([trading_day_and_reference_data.md](trading_day_and_reference_data.md)).
 
-**Two further things this note deliberately does not settle:**
+**What a halt does to the phase.** A halt keeps its meaning in every phase, and carries the phase the
+venue is in. The phase moves on while trading is halted, except while it is halted because a matching
+engine cannot account for the orders the venue holds (R-0123): the close cannot then cancel every open
+order, because nobody knows which orders are open.
 
-- **What a halt does to resting orders.** The engine's halt after a long absence cancels everything
-  first (R-0117), and its halt when it cannot account for what the venue holds deliberately does
-  not, because cancelling what can be named would leave the rest unmentioned (R-0123). The phase
-  says the venue is halted; what each component then does with what it holds is separate.
-- **Whether a phase belongs to the venue or to an instrument.** Real venues halt one instrument far
-  more often than the whole market. This venue is single-instrument in effect, so venue-wide is
-  right and simple today — but the message shape decides whether per-instrument is an addition
-  later or a change. Cheap to leave room for now, expensive to retrofit.
+**What a halt does to resting orders** is separate from the phase. The engine's halt after a long absence
+cancels everything first (R-0117), and its halt when it cannot account for what the venue holds
+deliberately does not, because cancelling what can be named would leave the rest unmentioned (R-0123).
+
+**The phase belongs to the venue.** A phase or a halt for one instrument is a different message, as FIX
+separates `SecurityStatus` (35=f) from `TradingSessionStatus` (35=h), so a status for one instrument can be
+added later without changing the `TechnicalEvent`.
 
 ---
 
@@ -216,8 +223,7 @@ settled by naming the phases.
 
 1. This note. Done.
 2. Requirements in the specification's high availability chapter, including the refusal rule for a
-   stale trading day and the announcement R-0126 needs. The section exists and names the
-   requirements; they are not yet written.
+   stale trading day and the announcement R-0126 needs. Done: R-0164 to R-0175.
 3. The DSL message and the enum. Built: `TechnicalEvent`, `TradingPhase` and `TechnicalEventReason` in
    `leader_follower.dsl`. The matching engine applies a technical event as a command in the WAL, takes
    from it whether trading is halted, and refuses one whose trading day is older than the trading date
@@ -227,8 +233,8 @@ settled by naming the phases.
    [voided_commands.md](../availability/voided_commands.md), section 6). The gateways do not read the
    technical event itself: they act on the sequencer's `OrderAcceptance`, which says whether trading is
    halted.
-4. The per-phase table above, settled rather than guessed.
-5. Implementation, and scenarios.
+4. The per-phase table above. Done.
+5. Implementation, and scenarios, in the order [trading_day_plan.md](trading_day_plan.md) sets out.
 
 The reasoning and the requirements come before the code because writing the reasoning down is what
 shows whether a rule is sufficient as well as necessary.

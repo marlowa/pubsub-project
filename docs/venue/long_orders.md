@@ -1,7 +1,7 @@
 # Orders that outlive the trading day {#long_orders}
 
 **Status: deferred, and out of scope.** Principle V2 in
-[`design_principles.md`](../design_principles.md#v2-the-log-is-the-record) makes every order a day order
+[`design_principles.md`](../design_principles.md) makes every order a day order
 and leaves orders that outlive the trading day, called long orders here, deliberately unimplemented: they
 are business functionality that would bring out no new requirement of the library. This note records how
 they would be built if they were ever brought into scope, so that the start of the trading day
@@ -120,7 +120,7 @@ with different owners.
 
 ## Related design
 
-- [`design_principles.md`](../design_principles.md#v2-the-log-is-the-record) — V2, which leaves long orders
+- [`design_principles.md`](../design_principles.md) — principle V2, which leaves long orders
   out of scope, and V12, every trading day starts fresh.
 - [`trading_day_and_reference_data.md`](trading_day_and_reference_data.md) — the start of the trading day,
   which leaves room for this step.

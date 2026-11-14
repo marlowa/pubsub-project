@@ -166,3 +166,15 @@ R-0160     active    2026-11-02  Trading in the group halts if the leader is los
 R-0161     active    2026-11-02  An operator can let the follower lead when the old leader's machine is lost for good
 R-0162     active    2026-11-02  Members are told which of their orders were lost with the old leader's machine
 R-0163     active    2026-11-08  With high availability off, a secondary instance refuses to start
+R-0164     active    2026-11-14  The trading day is given to the run, and no component computes it
+R-0165     active    2026-11-14  A record for an older trading day is refused
+R-0166     active    2026-11-14  The phases follow one another in order, each entered once
+R-0167     active    2026-11-14  The venue follows a schedule recorded in its WAL
+R-0168     active    2026-11-14  An operator can move the venue on, and change the schedule
+R-0169     active    2026-11-14  The phase moves on while halted, except when the orders cannot be accounted for
+R-0170     active    2026-11-14  The sequencer refuses a command the phase does not allow
+R-0171     active    2026-11-14  A gateway refuses a command the phase does not allow, and says why
+R-0172     active    2026-11-14  The close cancels every open order, and each member is told
+R-0173     active    2026-11-14  No order record follows end of day
+R-0174     active    2026-11-14  Every logged-on member is told of each change
+R-0175     active    2026-11-14  Components that only need to know take the changes from a topic

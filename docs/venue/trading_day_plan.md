@@ -343,9 +343,8 @@ Each step leaves the venue working and is checked by scenarios before the next b
 documents and decisions; code starts at step 4.
 
 1. **Agree this plan.** Done: the decisions are in section 6.
-2. **Write the requirements** in the book's high availability chapter, where the section that names them
-   already exists ("The venue says what it is doing"), and fill in the table in
-   [trading_phases.md](trading_phases.md).
+2. **Write the requirements** in the book's high availability chapter, in the section "The venue says what
+   it is doing", and fill in the table in [trading_phases.md](trading_phases.md). Done: R-0164 to R-0175.
 3. **Write the end-of-day and start-of-day procedures, and the list of every file the venue writes during a
    day** ([BUG-0137](../bug_list.md#bug_0137)), as documents.
 4. **The trading date from the start-of-day event.** The run is given its date; the first record of the WAL is

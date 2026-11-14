@@ -1,51 +1,244 @@
 \section{The venue says what it is doing}
 \label{sec:ha:technical_event}
 
-\emph{Placeholder, created 2026-09-08. The requirements below are named, not written.}
+The venue runs one trading day at a time. During the day it passes through five phases, and it
+tells its components and its members which phase it is in and whether trading is halted. This
+section is in the high availability chapter because \reqref{R-0126} requires the venue to report
+when it cannot do a component's work, and the venue cannot report that until it can announce
+anything about itself at all.
 
-The venue says little about itself. It tells its gateways whether it is accepting orders, and if
-not why, which includes that trading is halted: a halt is a command in the WAL, which every
-matching engine applies, and the leading sequencer keeps whether trading is halted from those
-commands and tells the gateways, which refuse new orders while it is (eqref{R-0023}). What it
-does not do is announce anything to a member that is not trading, or say which phase of the day
-it is in.
+The design these requirements come from is in \texttt{docs/venue/trading\_phases.md}, which sets
+out the phases and the record that announces them, and \texttt{docs/venue/trading\_day\_plan.md},
+which sets out the whole day.
 
-That is why this section is in this chapter rather than beside the components that will carry the
-message. \Cref{sec:ha:enabled:process_death} requires that the venue not run with no instance of a
-component without saying so, and it cannot be built until the venue is able to announce anything
-about itself at all. The announcement is the missing mechanism, and the phases are what it
-announces.
+\subsection{The phases and the record that announces them}
+\label{sec:ha:technical_event:phases}
 
-The shape is settled and is not to be re-argued here; it is recorded in
-\texttt{docs/venue/trading\_phases.md}. This section turns it into requirements. In outline: the
-venue is always in exactly one of five phases, of which start of day and end of day are two,
-because work happens during both and a period with duration is a phase and not a moment; a halt is
-a flag alongside the phase rather than a phase of its own, so that lifting one does not depend on
-remembered state; and the message carries the resulting state rather than the transition, together
-with the trading day, so that a component which missed an event is not left holding a private
-state machine that is wrong in a way it cannot detect.
-
-\subsection{The requirements to be written}
-\label{sec:ha:technical_event:todo}
+The venue is always in exactly one of five phases, which follow one another in this order:
 
 \begin{description}
-  \item[The venue declares its phase, and no component derives it.] A component holds what it was
-    told and never computes the phase, or the trading day, from its own clock.
-  \item[An event carrying a trading day older than the one a component holds is refused.] The
-    trading day plays here the part the epoch plays in leadership, so that a halt declared
-    yesterday cannot stop trading today.
-  \item[A component that has just started can ask rather than wait.] The same property the
-    order-acceptance broadcast already provides by repeating itself while the venue is degraded.
-  \item[Both audiences are served, and the two paths are named.] A component that must act on a
-    phase takes it on the control plane; one that only needs to know takes it by publish and
-    subscribe. A phase that some components acting on it have and others do not is worse than no
-    phase at all.
+  \item[Start of day.] The venue is preparing for the day and is not trading.
+  \item[Pre-open.] Members may enter and cancel orders. A venue that matches orders would match
+    nothing yet, and would run an opening auction when it moves to the next phase.
+  \item[Open.] Members may enter and cancel orders, and the venue trades.
+  \item[Closed.] Trading has finished for the day. On entering this phase the venue cancels every
+    order still open.
+  \item[End of day.] Nothing further is sequenced, and the day's record is completed.
 \end{description}
 
-\textbf{Two things are deliberately not settled yet}, and no requirement here is to assume either.
-What each component may do in each phase is a table that does not exist --- whether a member may
-cancel a resting order after the close is a policy decision with consequences for every order the
-venue holds overnight, and naming the phases does not settle it. And whether a phase belongs to
-the venue or to an instrument is open: this venue is single-instrument in effect, so venue-wide is
-right today, but the shape of the message decides whether per-instrument is an addition later or a
-change.
+A halt is not a phase. Whether trading is halted is a flag held alongside the phase, so that
+lifting a halt returns the venue to the phase it is in, with nothing remembered about the phase it
+was in before.
+
+The leading sequencer writes a \texttt{TechnicalEvent} command into the WAL for each change of
+phase and for each halt and lift. The record states the phase the venue is now in, whether trading
+is halted, and the trading day. A component that applies one record therefore knows the venue's
+whole state, even if it missed every record before it.
+
+The table gives what each phase allows.
+
+\begin{center}
+\small
+\begin{tabular}{lccccc}
+  & Start of day & Pre-open & Open & Closed & End of day \\
+  \hline
+  A member may log on                & yes & yes & yes & yes & yes \\
+  A member may enter an order        & no  & yes & yes & no  & no  \\
+  A member may cancel an order       & no  & yes & yes & no  & no  \\
+  The matching engine acts on orders & no  & yes & yes & no  & no  \\
+\end{tabular}
+\end{center}
+
+This venue's matching engine does no matching, so it treats pre-open and open alike. Members may
+log on in every phase, so that a member is told what the venue is doing and why its orders would be
+refused.
+
+\subsection{The trading day}
+\label{sec:ha:technical_event:trading_day}
+
+\begin{requirement}{R-0164}{The trading day is given to the run, and no component computes it}
+  The procedure that starts the venue shall give it the trading day. The first record in the
+  day's WAL shall be the \texttt{TechnicalEvent} that enters start of day for that trading day,
+  and every later record shall carry the same trading day. No component shall compute the
+  trading day or the phase from its own clock: each shall hold the values the venue declared.
+  \rationale{The trading day is a business date and need not match the calendar date on any
+  machine. A session can open the evening before, and a machine in another time zone can turn
+  over to the next date while the venue is in the middle of its day. Two components computing
+  the trading day from their clocks near a boundary would disagree, each correct by its own
+  clock, and nothing would detect it. A replay of an earlier day is run on a later date, and must
+  produce the same records.}
+  \uncovered{no scenario starts the venue with a given trading day}
+\end{requirement}
+
+\begin{gap}{BUG-0137}
+  The leading sequencer takes the trading day from its clock: the date, in UTC, of the first
+  record in the day's WAL. There is no start-of-day \texttt{TechnicalEvent}, and no procedure gives
+  the venue its trading day.
+\end{gap}
+
+\begin{requirement}{R-0165}{A record for an older trading day is refused}
+  A component shall refuse a \texttt{TechnicalEvent} whose trading day is older than the trading
+  day it holds, and shall report that it refused it.
+  \rationale{The trading day plays the part here that the epoch plays in leadership. A halt
+  declared yesterday must not stop trading today, and a record from a WAL left over from an
+  earlier day must not change the state of the present one.}
+  \uncovered{the matching engine refuses such a record, and only a unit test checks it}
+\end{requirement}
+
+\subsection{How the venue moves from one phase to the next}
+\label{sec:ha:technical_event:moving}
+
+\begin{requirement}{R-0166}{The phases follow one another in order, each entered once}
+  The venue shall enter the phases in the order start of day, pre-open, open, closed, end of
+  day, and shall enter each at most once in a trading day. The leading sequencer shall write the
+  \texttt{TechnicalEvent} for a phase only while the venue is in the phase before it, and only
+  when that phase's conditions hold. Entering pre-open requires the matching engine to have
+  applied every record that must be in place before members enter orders. Entering end of day
+  requires every report produced by the close to be in the WAL.
+  \rationale{A phase that could be entered twice, or skipped, would leave the components to work
+  out which of two contradictory states is current. Writing a change only from the phase before
+  it is also what makes a repeated request, and a change of leader, harmless: the second attempt
+  finds the venue already moved on and writes nothing.}
+  \uncovered{no phase other than open is written yet}
+\end{requirement}
+
+\begin{requirement}{R-0167}{The venue follows a schedule recorded in its WAL}
+  The day's schedule shall be given to the venue with the request that starts the day, as the
+  earliest time at which each phase may be entered. The leading sequencer shall write the
+  schedule into the WAL. When the time for the next phase has come and that phase's conditions
+  hold, the leading sequencer shall write the \texttt{TechnicalEvent} that enters it. No other
+  component shall change the phase because of its own clock.
+  \rationale{A clock on one machine is not a valid cause of a change of state in a replicated
+  venue, because the other machines and a later replay do not share it. Recording the schedule in
+  the WAL means every sequencer holds the same times, a newly promoted leader knows when the next
+  change is due, and the WAL shows why each change was made. The leading sequencer already
+  carries out a member's cancel-on-disconnect grace period in the same way: the deadline is in the
+  WAL, and the leader writes the cancel when the deadline passes. Aeron Cluster writes the expiry
+  of a timer into its replicated log for the same reason.}
+  \uncovered{no schedule exists yet}
+\end{requirement}
+
+\begin{requirement}{R-0168}{An operator can move the venue on, and change the schedule}
+  An operator shall be able to ask for the next phase to be entered at once, and to replace the
+  times remaining in the day's schedule. The leading sequencer shall answer every such request
+  from its current state, saying whether it wrote the change, whether the venue is already in
+  or past the phase asked for, or why it refused. A sequencer that does not lead shall say so.
+  \rationale{Real venues publish a schedule and override it when they need to: the London Stock
+  Exchange describes market control actions that override the normal schedule. An early close is
+  the common case. Answering from the current state makes a repeated request harmless, so an
+  operator whose answer was lost asks again and learns where the venue now is.}
+  \uncovered{no request to change the phase exists yet}
+\end{requirement}
+
+\begin{requirement}{R-0169}{The phase moves on while halted, except when the orders cannot be accounted for}
+  The venue shall move from one phase to the next while trading is halted, except while it is
+  halted because a matching engine cannot account for the orders the venue holds
+  (\reqref{R-0123}). In that case the phase shall not move on until a person has resolved the
+  halt.
+  \rationale{A halt at 16:20 must not stop the close at 16:30 from cancelling the open orders,
+  or the day from ending. When an engine cannot account for the orders, nobody knows which orders
+  are open, so the close cannot cancel every open order and tell each member, and a person has to
+  resolve what the venue holds first.}
+  \uncovered{no phase other than open is written yet}
+\end{requirement}
+
+\subsection{What each phase allows}
+\label{sec:ha:technical_event:allows}
+
+\begin{requirement}{R-0170}{The sequencer refuses a command the phase does not allow}
+  The leading sequencer shall refuse every command from a member that the current phase does not
+  allow, as the table in \cref{sec:ha:technical_event:phases} gives, and shall say which phase
+  caused the refusal.
+  \rationale{A gateway acts on what the sequencer last told it, and that can be out of date by
+  the time a command arrives. The sequencer holds the phase from its WAL, so its refusal is the
+  one no out-of-date view can get past.}
+  \uncovered{the sequencer refuses no command because of the venue's state}
+\end{requirement}
+
+\begin{requirement}{R-0171}{A gateway refuses a command the phase does not allow, and says why}
+  The leading sequencer shall tell every gateway the trading day, the phase and whether trading is
+  halted, when the gateway connects and whenever any of them changes. A gateway shall refuse a
+  command the phase does not allow before passing it to the sequencer, and shall tell the member
+  the reason. Both gateways shall refuse the same commands for the same reasons
+  (\reqref{R-0152}).
+  \rationale{A command refused at the gateway costs the sequencer nothing. A member must be able
+  to tell a command refused because the market is closed from one refused because trading is
+  halted, because the first is expected every evening and the second needs attention.}
+  \uncovered{the gateways learn whether trading is halted, not the phase}
+\end{requirement}
+
+\begin{requirement}{R-0172}{The close cancels every open order, and each member is told}
+  The \texttt{TechnicalEvent} that enters the closed phase shall be the command that cancels every
+  order still open. Each matching engine, applying it at its position in the WAL, shall cancel
+  every order on its book and produce an execution report for each, to the member that placed
+  it.
+  \rationale{An order that outlives the day would be open overnight with nobody watching it, in a
+  venue that starts the next day with an empty book. Because the cancellation is one command at
+  one position, both matching engines cancel the same orders, and a replay cancels them again in
+  the same way. Every member's view of its orders comes to match the venue's, for the reason
+  \reqref{R-0024} gives.}
+  \uncovered{the close does not exist yet}
+\end{requirement}
+
+\begin{gap}{BUG-0132}
+  Orders still open at the end of the trading day are never cancelled, and their members are
+  never told.
+\end{gap}
+
+\begin{requirement}{R-0173}{No order record follows end of day}
+  No record of an order, a cancel or an execution report shall follow the \texttt{TechnicalEvent}
+  that enters end of day in the WAL.
+  \rationale{The order activity recorder completes the day when every event up to the end-of-day
+  event is confirmed by the external messaging system. That means the whole day is recorded only
+  if nothing that concerns an order comes after it. The requirements above ensure it: no command
+  from a member is accepted after the close, and end of day is not entered until every report the
+  close produced is in the WAL.}
+  \uncovered{the end-of-day phase does not exist yet}
+\end{requirement}
+
+\subsection{Who is told}
+\label{sec:ha:technical_event:told}
+
+There are two audiences. Components that act on the phase, the sequencer and the gateways, take it
+on the control connection between them. Components that only need to know it take it by publish and
+subscribe.
+
+\begin{requirement}{R-0174}{Every logged-on member is told of each change}
+  A gateway shall tell every logged-on member the phase and whether trading is halted each time
+  either changes, and shall tell each member the current state as it logs on. A member shall be
+  able to ask for the current state at any time, and the gateway shall answer from the state it
+  holds. The FIX gateway shall use \texttt{TradingSessionStatus} (35=h) and
+  \texttt{TradingSessionStatusRequest} (35=g); the binary gateway shall use equivalent messages.
+  \rationale{A member that is connected and not trading sends no order, so the refusal of an
+  order tells it nothing. A member that logs on during a halt, or before the open, would otherwise
+  learn the venue's state only by sending an order and having it refused. Every member is told
+  every change, with no list of which members asked, because every member wants to know when the
+  market closes.}
+  \uncovered{neither gateway sends or understands 35=h or a binary equivalent}
+\end{requirement}
+
+\begin{gap}{BUG-0065}
+  A member learns of a halt only from the reply to an order, and is never told the phase.
+\end{gap}
+
+\begin{requirement}{R-0175}{Components that only need to know take the changes from a topic}
+  The matching engine publisher shall publish every \texttt{TechnicalEvent} on a topic of its own,
+  carrying the sequence number the sequencer gave it. A component that has just started shall be
+  able to read the topic from the beginning of the day and so learn the venue's state without
+  waiting for the next change.
+  \rationale{The order activity recorder and a market data feed act on no member's command but
+  need each change in its place among the orders and execution reports. The sequence numbers give
+  that place across topics. A separate topic keeps each topic to one kind of record, and adds no
+  load to the sequencers, which a component following their WAL itself would.}
+  \uncovered{the matching engine publisher publishes no technical events}
+\end{requirement}
+
+\subsection{What is not specified here}
+\label{sec:ha:technical_event:not_here}
+
+A phase or a halt for one instrument is a different message from the venue's, as FIX separates
+\texttt{SecurityStatus} (35=f) from \texttt{TradingSessionStatus} (35=h). This section specifies
+the venue's phase only, and a status for one instrument can be added without changing it.
+
+How the order activity recorder's report that the day is completely recorded reaches the end-of-day
+procedure is specified with the recorder.
