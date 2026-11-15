@@ -162,10 +162,11 @@ class EnginePresence {
     /**
      * @brief What this process finds when it starts: the time kept beside the WAL of the last engine routed to.
      * @param[in] wal_directory   Where the file is kept.
+     * @param[in] trading_day     The trading day the file records, written when it holds none.
      * @param[in] first_record_ns The wall time of the first record in the WAL, or 0 if it is empty: before the first record
      *                            there was nothing to recover.
      */
-    void started(const std::string& wal_directory, int64_t first_record_ns, int64_t now_ns);
+    void started(const std::string& wal_directory, int32_t trading_day, int64_t first_record_ns, int64_t now_ns);
 
     /**
      * @brief The absence check, about once a second and when this instance takes the lead.

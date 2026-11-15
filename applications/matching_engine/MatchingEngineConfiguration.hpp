@@ -170,6 +170,11 @@ struct MatchingEngineConfiguration {
     /// File holding the leadership epoch across restarts. See pubsub_itc_fw::EpochStore.
     std::string epoch_state_file;
 
+    /// The trading day the component was started for, as the number yyyymmdd, given on its command line, not in this file.
+    /// Every file it writes during the day records it, and a file from another day is refused at start-up
+    /// (docs/venue/start_and_end_of_day.md, section 5).
+    int32_t trading_day{0};
+
     /** @brief Host address of the primary arbiter's component listener. */
     std::string arbiter_primary_host{"127.0.0.1"};
 

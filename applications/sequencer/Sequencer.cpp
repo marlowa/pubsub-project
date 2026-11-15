@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Sequencer.hpp"
+#include "EngineRoutedStamp.hpp"
 #include "FullyReportedThrough.hpp"
 #include "PublisherRecordFromWal.hpp"
 #include "SequencerConfigurationLoader.hpp"
 #include "SequencerThread.hpp"
-#include "TradingDate.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -20,6 +20,7 @@
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
+#include <pubsub_itc_fw/ComponentArguments.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
@@ -33,6 +34,7 @@
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
+#include <pubsub_itc_fw/TradingDayOfFile.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalFollowing.hpp>
 #include <pubsub_itc_fw/WalReadingThread.hpp>
@@ -255,19 +257,12 @@ int main(int argc, char* argv[]) {
     }
 
     // The trading day is given to the run, and never computed from the clock (R-0164; docs/venue/start_and_end_of_day.md).
-    const std::string usage = "Usage: sequencer <logfile> <config.toml> --trading-day YYYYMMDD\n";
-    if (argc != 5 || std::string_view(argv[3]) != "--trading-day") {
-        std::cerr << usage;
+    const std::optional<pubsub_itc_fw::ComponentArguments> arguments = pubsub_itc_fw::parse_component_arguments(argc, argv, "sequencer", std::cerr);
+    if (!arguments.has_value()) {
         return 1;
     }
-    const std::optional<int32_t> trading_day = fix_common::parse_trading_date(argv[4]);
-    if (!trading_day.has_value()) {
-        std::cerr << "Sequencer: --trading-day " << argv[4] << " is not a date written as YYYYMMDD\n" << usage;
-        return 1;
-    }
-
-    const std::string log_file = argv[1];
-    const std::string config_file = argv[2];
+    const std::string& log_file = arguments->log_file;
+    const std::string& config_file = arguments->config_file;
 
     const std::string writable_error = pubsub_itc_fw::QuillLogger::ensure_log_file_writable(log_file);
     if (!writable_error.empty()) {
@@ -289,8 +284,23 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    config.trading_day = *trading_day;
+    config.trading_day = arguments->trading_day;
     PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: started for trading day {}", config.trading_day);
+
+    // Every file the sequencer writes during a trading day records the day, and one left from another day is never taken for a
+    // restart of this one (docs/venue/start_and_end_of_day.md, section 5; BUG-0137).
+    // TEST CONTRACT -- ha_test.py matches "refusing to start" and "trading day" in this Error.
+    const std::string another_day = pubsub_itc_fw::files_of_another_day(
+        config.trading_day,
+        {{config.wal_directory + "/epoch.state", pubsub_itc_fw::recorded_trading_day(config.wal_directory + "/epoch.state")},
+         {config.wal_directory + "/lease_promise.state", pubsub_itc_fw::recorded_trading_day(config.wal_directory + "/lease_promise.state")},
+         {config.wal_directory + "/" + sequencer::EngineRoutedStamp::file_name, sequencer::EngineRoutedStamp::recorded_trading_day(config.wal_directory)}});
+    if (!another_day.empty()) {
+        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error,
+                   "Sequencer: refusing to start for trading day {} -- {}. The sequencer leaves them as they are: {}", config.trading_day, another_day,
+                   pubsub_itc_fw::another_days_files_remedy);
+        return 1;
+    }
 
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);

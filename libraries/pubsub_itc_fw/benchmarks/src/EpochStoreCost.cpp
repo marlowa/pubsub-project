@@ -150,7 +150,7 @@ class EpochRecorder {
     }
 
     EpochRecorder(Method method, const std::string& directory)
-        : method_(method), store_(directory + "/epoch.state"), in_place_path_(directory + "/epoch_in_place.state") {
+        : method_(method), store_(directory + "/epoch.state", 20261116), in_place_path_(directory + "/epoch_in_place.state") {
         if (method_ == Method::fdatasync_in_place) {
             fd_ = ::open(in_place_path_.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
         } else if (method_ == Method::o_dsync_in_place) {

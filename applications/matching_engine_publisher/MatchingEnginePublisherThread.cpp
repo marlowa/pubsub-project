@@ -6,6 +6,7 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
@@ -14,6 +15,8 @@
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TradingDayOfFile.hpp>
+#include <pubsub_itc_fw/WalEntryContents.hpp>
 
 #include <LeasePairNumbers.hpp>
 #include <lease_messages.hpp>
@@ -72,6 +75,37 @@ MatchingEnginePublisherThread::MatchingEnginePublisherThread(pubsub_itc_fw::Appl
           *this, std::string(pubsub_itc_fw_app::to_string(pubsub_itc_fw_app::Topic::technical_events)),
           [](int16_t pdu_id) { return pubsub_itc_fw_app::pdu_in_topic(pdu_id, pubsub_itc_fw_app::Topic::technical_events); }, config.wal_directory) {}
 
+void MatchingEnginePublisherThread::refuse_a_wal_of_another_day() const {
+    const std::optional<std::vector<uint8_t>> first = wal_.first_entry();
+    if (!first.has_value()) {
+        return;
+    }
+    // The publisher keeps each record's message without the sequencer's envelope, so the trading day is read from the first
+    // record itself: the sequencer's start of day, a TechnicalEvent that states the day.
+    int32_t recorded = 0;
+    const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(first->data(), first->size());
+    if (contents.has_value() && contents->pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) {
+        std::vector<uint8_t> arena(contents->size + 1024);
+        pubsub_itc_fw::BumpAllocator allocator(arena.data(), arena.size());
+        size_t arena_bytes_needed = 0;
+        size_t bytes_consumed = 0;
+        pubsub_itc_fw_app::TechnicalEventView event{};
+        if (pubsub_itc_fw_app::decode(event, contents->bytes, contents->size, bytes_consumed, allocator, arena_bytes_needed)) {
+            recorded = event.trading_day;
+        }
+    }
+    if (recorded == config_.trading_day) {
+        return;
+    }
+    // The publisher's WAL is a copy of the sequencer's, the record of one trading day. One from another day is never taken
+    // for a restart of this one (BUG-0137), and is left exactly as it was.
+    // TEST CONTRACT -- ha_test.py matches "refusing to start" and "trading day" in this Error.
+    const std::string problem = pubsub_itc_fw::another_days_file(config_.wal_directory, recorded, config_.trading_day);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MepThread: refusing to start for trading day {} -- {}. The WAL is left as it was: {}",
+               config_.trading_day, problem, pubsub_itc_fw::another_days_files_remedy);
+    throw pubsub_itc_fw::ConfigurationException(problem);
+}
+
 void MatchingEnginePublisherThread::on_initial_event() {
     // As the sequencer does, and for the same reason: the log's helper thread would otherwise
     // inherit this thread's processor, which is reserved for the order path. See BUG-0093.
@@ -88,6 +122,7 @@ void MatchingEnginePublisherThread::on_initial_event() {
     }
 
     const int64_t recovered_seq = wal_.open(config_.wal_directory, config_.wal_segment_size, nullptr);
+    refuse_a_wal_of_another_day();
     // A publisher wants every record of the day, so one whose WAL is empty asks from the first record.
     follower_client_.emplace(follower_name_, true, recovered_seq > 0 ? recovered_seq : 0, follow_links_);
     if (recovered_seq > 0) {

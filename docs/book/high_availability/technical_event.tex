@@ -72,10 +72,25 @@ refused.
 
 \begin{gap}{BUG-0137}
   No procedure starts or ends the trading day: the development tools and the test harness give
-  each sequencer the day and ask for the start of day themselves. No file but the WAL records the
-  trading day it belongs to, so nothing refuses a file left from an earlier day, and only the
-  sequencer is given the day.
+  each component the day and ask for the start of day themselves, and nothing archives the day's
+  files. Each file a component reads when it starts records its trading day, and the component
+  refuses one from another day, but the Quill logs are not named by day.
 \end{gap}
+
+\begin{requirement}{R-0177}{A component refuses to start on a file from another trading day}
+  Every file a component writes during a trading day, and reads when it starts, shall record the
+  trading day it belongs to. A component started for one trading day that finds such a file from
+  another day, or one that records no day, shall refuse to start, naming the file and the day it
+  belongs to, and shall leave the file as it was.
+  \rationale{A component tells a restart from a fresh start by whether its files are present. A
+  file left from an earlier day would otherwise be taken for a restart of the present one: an
+  open-order region from yesterday, for example, would make the matching engine act on
+  yesterday's orders, cancel them, tell members, and halt the new day before it opens. Every
+  trading day starts with none of the previous day's files, and the refusal holds even when the
+  procedure that archives them was not run. Leaving the file as it was keeps the evidence for
+  whoever has to find out why it was there.}
+  \covers{ha_test:114}
+\end{requirement}
 
 \begin{requirement}{R-0165}{A record for an older trading day is refused}
   A component shall refuse a \texttt{TechnicalEvent} whose trading day is older than the trading

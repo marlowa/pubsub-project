@@ -58,6 +58,11 @@ struct MatchingEnginePublisherConfiguration {
     /// Required in the configuration file; there is no default, because any default would be a
     /// guess at a machine-wide location.
     std::string wal_directory;
+
+    /// The trading day the component was started for, as the number yyyymmdd, given on its command line, not in this file.
+    /// Every file it writes during the day records it, and a file from another day is refused at start-up
+    /// (docs/venue/start_and_end_of_day.md, section 5).
+    int32_t trading_day{0};
     size_t wal_segment_size{4 * 1024 * 1024};
     /// How many segments the WAL's helper keeps ready ahead of the one being written, from the optional
     /// `[wal] segments_kept_ready`; four when it is absent (docs/durability/keeping_segments_ready.md).

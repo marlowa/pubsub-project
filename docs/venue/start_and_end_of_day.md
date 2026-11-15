@@ -1,6 +1,6 @@
 # Starting and ending the trading day {#start_and_end_of_day}
 
-**Status: agreed; no code yet.** This note is step 3 of
+**Status: agreed; each file records its trading day and is refused on another day (section 5); the procedures are not built.** This note is step 3 of
 [trading_day_plan.md](trading_day_plan.md). It lists every file the venue writes during a trading day, and sets out
 the procedure that starts a day and the procedure that ends one
 ([BUG-0137](../bug_list.md#bug_0137)). The choices made are collected in the last section.
@@ -174,15 +174,24 @@ This is the work for step 9 of [trading_day_plan.md](trading_day_plan.md), liste
 judged against it:
 
 - **Each file in section 2.1 records its trading day**, and each component refuses at start-up a file from a day
-  other than the one it was given. The WAL already carries a trading date in every record; the open-order region,
-  the epoch files, the lease promise records and the arbiters' statements gain one. The FIX capture file needs no
-  check, because the gateway empties it at each start.
+  other than the one it was given. The FIX capture file needs no check, because the gateway empties it at each
+  start. **Built:**
+  - the small text files (the epoch files, the lease promise records and the arbiters' statements) begin with the
+    field `trading_day=YYYYMMDD` (`TradingDayOfFile.hpp`), and the sequencer's record of the last engine routed to
+    holds the day after its time;
+  - the open-order region holds the day in its header, in the fourth of the values its owner keeps;
+  - the sequencer reads the day from the start of day at the head of its WAL, and the publisher from the first
+    record of its copy;
+  - a file that records no day is refused as one from an unknown day. Each refusal is logged at Error, beginning
+    "refusing to start for trading day D", naming each file and the day it belongs to, and the file is left
+    exactly as it was. Scenario 114 of `ha_test.py` checks every one of these.
 - **The trading day is passed to each component** as `--trading-day D` on its command line, and each component
-  logs it as it starts.
+  logs it as it starts. **Built**, for every component the development tools, the test harness and the performance
+  scripts start.
+- **`devenv.py start --fresh-wal` removes the matching engines' epoch files.** **Built.**
 - **The procedures themselves**, as one script, `scripts/trading_day.py`, with the commands `start` and `end`,
   using the same reading of the environment file as `devenv.py`. `devenv.py start --fresh-wal --fresh-book` remains
-  for development runs, and is changed to remove the matching engines' epoch files as well, so that a fresh run
-  leaves nothing of the run before.
+  for development runs.
 - **The Quill logs** carry the trading day in their file names, such as `sequencer_primary.20261116.log`, so that
   two days can never share a file. The captured standard output files are named in the same way.
 - **The `archive_dir` setting** in each environment file, `installed/archive` in the development environment.

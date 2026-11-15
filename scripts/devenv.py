@@ -9,7 +9,7 @@ Subcommands:
   restart [name]     Stop and re-start all components, or one named component.
 
 The trading day:
-  start gives each sequencer the trading day on its command line (--trading-day YYYYMMDD), records it in
+  start gives every component the trading day on its command line (--trading-day YYYYMMDD), records it in
   [run_dir]/trading_day so that a component started or restarted on its own gets the same day. Once every
   component is running, start asks the leading sequencer for the start of day, then pre-open, then open, by calling
   operator_requests.start_trading_day (scripts/operator_requests.py). That function sends the same requests as the
@@ -220,9 +220,9 @@ def build_command(
         binary_path = (install_dir / comp["binary"]).resolve()
         log_file    = log_dir / f"{name}.log"
         config_path = (install_dir / comp["config"]).resolve()
-        command = [str(binary_path), str(log_file), str(config_path)]
-        if binary_path.name == "sequencer":
-            command += ["--trading-day", str(recorded_trading_day(run_dir))]
+        # Every component is given the trading day, and holds every file it writes during the day to it
+        # (docs/venue/start_and_end_of_day.md, decision 1).
+        command = [str(binary_path), str(log_file), str(config_path), "--trading-day", str(recorded_trading_day(run_dir))]
     return command, workdir
 
 
@@ -230,7 +230,7 @@ _TRADING_DAY_FILE = "trading_day"
 
 
 def recorded_trading_day(run_dir: Path) -> int:
-    """The trading day the last full start recorded in run_dir, which every sequencer is started for."""
+    """The trading day the last full start recorded in run_dir, which every component is started for."""
     path = run_dir / _TRADING_DAY_FILE
     try:
         return int(path.read_text(encoding="utf-8").strip())
@@ -740,19 +740,20 @@ def _deployed_values(env: dict, install_dir: Path, key: str) -> list[Path]:
 
 
 def _lease_records(env: dict, install_dir: Path) -> list[Path]:
-    """The lease records that belong to the same trading day as the write-ahead logs.
+    """The lease records and epoch files that belong to the same trading day as the write-ahead logs.
 
     Each arbiter keeps the promise of its vote in its promise file, and beside it, with
     ".component_statements" added, the statements component leaders have made about whether their
-    peers may lead. Each matching engine keeps its promise beside its epoch file, with ".lease_promise"
-    added. The sequencers keep theirs in their write-ahead log directories, which
-    are cleared with the logs. The publishers keep none.
+    peers may lead. Each matching engine keeps its epoch in its epoch file, and its promise beside it,
+    with ".lease_promise" added. Each records the trading day it was written on, and a component
+    started for another day refuses it. The sequencers keep theirs in their write-ahead log
+    directories, which are cleared with the logs. The publishers keep none.
     """
     records: list[Path] = []
     for promise_file in _deployed_values(env, install_dir, "promise_file"):
         records += [promise_file, Path(f"{promise_file}.component_statements")]
     for epoch_file in _deployed_values(env, install_dir, "epoch_state_file"):
-        records.append(Path(f"{epoch_file}.lease_promise"))
+        records += [epoch_file, Path(f"{epoch_file}.lease_promise")]
     return records
 
 
@@ -790,7 +791,7 @@ def clear_durable_state(env: dict, install_dir: Path, *, fresh_book: bool, fresh
     # that an instance may not lead keeps it from leading. scripts/ha_test.py clears the same records
     # before each scenario, in clear_lease_promise_records.
     if fresh_wal:
-        print("=== clearing lease promise records and arbiters' statements ===")
+        print("=== clearing lease promise records, arbiters' statements and matching engines' epochs ===")
         for path in _lease_records(env, install_dir):
             if path.exists():
                 path.unlink()

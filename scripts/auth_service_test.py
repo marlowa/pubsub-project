@@ -573,7 +573,7 @@ def _launch_service(binary_path: Path, log_path: Path,
     stdout_path = log_path.parent / "authentication_service.stdout"
     with open(stdout_path, "w", encoding="utf-8") as stdout_file:
         process = subprocess.Popen(
-            [str(binary_path), str(log_path), str(config_path)],
+            [str(binary_path), str(log_path), str(config_path), "--trading-day", time.strftime("%Y%m%d")],
             stdout=stdout_file,
             stderr=subprocess.STDOUT,
         )

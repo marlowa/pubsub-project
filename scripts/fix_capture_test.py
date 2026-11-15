@@ -210,7 +210,7 @@ def _launch(name: str, binary: Path, log_path: Path, config_path: Path) -> subpr
     stdout_path = log_path.parent / f"{name}.stdout"
     with open(stdout_path, "w", encoding="utf-8") as stdout_fh:
         proc = subprocess.Popen(
-            [str(binary), str(log_path), str(config_path)],
+            [str(binary), str(log_path), str(config_path), "--trading-day", time.strftime("%Y%m%d")],
             cwd=str(log_path.parent),
             stdout=stdout_fh,
             stderr=subprocess.STDOUT,

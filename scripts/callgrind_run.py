@@ -287,7 +287,7 @@ def launch_app_under_callgrind(name: str, bin_name: str, config: Path,
         f"--callgrind-out-file={output_file_template}",
     ]
 
-    app_cmd = [str(bin_dir / bin_name), str(log_file), str(config)] + (["--trading-day", str(TRADING_DAY)] if bin_name == "sequencer" else [])
+    app_cmd = [str(bin_dir / bin_name), str(log_file), str(config)] + ["--trading-day", str(TRADING_DAY)]
     full_cmd = valgrind_cmd + app_cmd
 
     with open(stderr_file, "w", encoding="utf-8") as stderr_fh, open(
@@ -702,7 +702,7 @@ def main() -> None:
                 log(f"Starting {name} (unprofiled) ...")
                 with open(log_dir / f"{name}.stdout", "w", encoding="utf-8") as stdout_fh:
                     proc = subprocess.Popen(
-                        [str(bin_dir / bin_name), str(log_file), str(config)] + (["--trading-day", str(TRADING_DAY)] if bin_name == "sequencer" else []),
+                        [str(bin_dir / bin_name), str(log_file), str(config)] + ["--trading-day", str(TRADING_DAY)],
                         cwd=cwd, stdout=stdout_fh, stderr=subprocess.STDOUT
                     )
                 log(f"  {name} PID {proc.pid}")

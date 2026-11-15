@@ -242,6 +242,15 @@ class Wal {
     [[nodiscard]] std::optional<int64_t> first_wall_time_ns() const;
 
     /**
+     * @brief The contents of the first entry the log holds, as WalReader delivers them, or nothing if it holds none.
+     *
+     * Read from the start of the earliest segment, as first_wall_time_ns is; read_wal_entry_contents() reads what it
+     * holds. The entry's checksum is not checked. A component reads it on starting to learn which trading day the log
+     * belongs to.
+     */
+    [[nodiscard]] std::optional<std::vector<uint8_t>> first_entry() const;
+
+    /**
      * @brief The position just after the last record written: where the next record will begin.
      *
      * A reader on another thread that never reads at or past this position reads only records that are

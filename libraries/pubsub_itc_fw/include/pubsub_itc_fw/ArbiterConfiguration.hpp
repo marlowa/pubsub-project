@@ -116,6 +116,15 @@ struct ArbiterConfiguration {
      */
     std::string lease_promise_file;
 
+    /**
+     * @brief The trading day the arbiter was started for, as the number yyyymmdd, given on its command line.
+     *
+     * Written in the lease promise file and the record of leaders' statements, which belong to one trading day, so that
+     * a record left from another day is refused at start-up rather than taken for this one's (TradingDayOfFile.hpp).
+     * Zero writes no day.
+     */
+    int32_t trading_day{0};
+
     // Logging
 
     /** @brief Minimum severity written to the application log file. */

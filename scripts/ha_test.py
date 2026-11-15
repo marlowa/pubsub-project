@@ -1463,6 +1463,12 @@ class Scenario(NamedTuple):
     # killed before the close, which the new leader must write at its time (R-0167, R-0168). See run_scenario's "the
     # venue follows the day's schedule" block.
     assert_trading_day_by_schedule: bool = False
+    # When True, the primary sequencer, matching engine, arbiter and publisher are stopped once the venue is open, and each
+    # is started by hand for the next trading day on the files this day left. Each must refuse to start, naming a file and
+    # the day it belongs to; with its small files moved aside, the sequencer and the publisher must refuse the WAL and the
+    # matching engine the open-order region, each left as it was (BUG-0137). See run_scenario's "files of another day"
+    # block.
+    assert_files_of_another_day_refused: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -5338,6 +5344,32 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 114 -- a component refuses to start on a file from another trading day.
+    #
+    # docs/venue/start_and_end_of_day.md, section 5, and BUG-0137, item 4. Once the venue is open for the day the harness
+    # gives it, the primary sequencer, matching engine, arbiter and publisher are stopped, and each is started by hand for
+    # the next calendar day, on the files this day left. Each must exit, saying it refuses to start and naming a file that
+    # belongs to this day. The sequencer and the matching engine check their small files first; with those moved aside, the
+    # sequencer must refuse the WAL and the matching engine the open-order region, and the region must be unchanged. The
+    # publisher must refuse its copy of the WAL. The files are put back afterwards.
+    Scenario(
+        number=114,
+        short_name="files_of_another_day_refused",
+        description="A component started for another trading day refuses the files this day left, naming each and its day",
+        expected_outcome=(
+            "the sequencer, matching engine, arbiter and publisher, started for the next day on this day's files, each refuse "
+            "to start and name a file and the day it belongs to; the sequencer refuses the WAL and the matching engine the "
+            "region, which is left unchanged; the publisher refuses its WAL"
+        ),
+        me_ha=True,
+        skip_baseline_orders=True,
+        with_publishers=True,
+        assert_files_of_another_day_refused=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 92 -- orders are held while no engine leads, for as long as a change of engine leader takes, and refused after that.
     #
     # docs/availability/voided_commands.md, sections 5.1 and 5.2. Both engines are taken away. Several orders are placed
@@ -6600,7 +6632,7 @@ def probe_changed_region_capacity(name: str, bin_name: str, config: Path, bin_di
         probe_log.unlink(missing_ok=True)
         log(f"  Starting {name} by hand with region_capacity = {changed:,} ...")
         try:
-            completed = subprocess.run([str(bin_dir / bin_name), str(probe_log), str(probe_config)],
+            completed = subprocess.run([str(bin_dir / bin_name), str(probe_log), str(probe_config), "--trading-day", str(TRADING_DAY)],
                                        capture_output=True, text=True, timeout=30, env=dict(os.environ), check=False)
         except subprocess.TimeoutExpired:
             die(f"changed region capacity: {name} started with region_capacity = {changed:,} against a region holding "
@@ -6885,9 +6917,7 @@ def launch_app(name: str, bin_name: str, config: Path,
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
     # passed as absolute paths, so they are unaffected by the cwd.
-    command = [str(bin_dir / bin_name), str(log_dir / f"{name}.log"), str(config)]
-    if bin_name == "sequencer":
-        command += ["--trading-day", str(TRADING_DAY)]
+    command = [str(bin_dir / bin_name), str(log_dir / f"{name}.log"), str(config), "--trading-day", str(TRADING_DAY)]
     if run_dir is not None:
         run_dir.mkdir(parents=True, exist_ok=True)
         command = [sys.executable, str(Path(__file__).resolve().parent / "launch.py"),
@@ -9246,6 +9276,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 and not scenario.assert_held_answered and not scenario.assert_halt_voids_held_orders and not scenario.expects_no_new_leader
                 and not scenario.assert_operator_lift and not scenario.assert_operator_halt and not scenario.assert_trading_day_start
                 and not scenario.assert_operator_listener_refuses_strangers and not scenario.assert_trading_day_by_schedule
+                and not scenario.assert_files_of_another_day_refused
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
                 and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained):
@@ -10011,7 +10042,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             try:
                 # Started as it would be in earnest, with every argument it needs, so that what it refuses is the
                 # configuration and not its command line.
-                trading_day_arguments = ["--trading-day", str(TRADING_DAY)] if bin_name == "sequencer" else []
+                trading_day_arguments = ["--trading-day", str(TRADING_DAY)]
                 completed = subprocess.run([str(bin_dir / bin_name), str(refuser_log), str(config)] + trading_day_arguments,
                                            capture_output=True, text=True, timeout=30, env=environment,
                                            check=False)
@@ -10767,6 +10798,83 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 if reached:
                     die(f"the trading day: a command the phase refuses reached {sequencer_name}, so the gateway did not refuse it: {reached[0]}")
             log("  every order and cancel the phase refused was refused by the gateway, and none reached a sequencer -- OK")
+
+        # ── Files of another trading day are refused (BUG-0137) ──
+        if scenario.assert_files_of_another_day_refused:
+            import hashlib  # pylint: disable=import-outside-toplevel
+            from datetime import timedelta  # pylint: disable=import-outside-toplevel
+
+            next_day = int((datetime.strptime(str(TRADING_DAY), "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d"))
+            etc = prefix / "etc"
+
+            def day_file_setting(config: Path, section: str, key: str) -> Path:
+                value = Path(installed_toml_section_value(config, section, key))
+                return value if value.is_absolute() else config.parent / value
+
+            sequencer_config = etc / "sequencer" / "sequencer_primary.toml"
+            engine_config = etc / "matching_engine" / "matching_engine_primary.toml"
+            arbiter_config = etc / "arbiter" / "arbiter_primary.toml"
+            publisher_config = etc / "matching_engine_publisher" / "matching_engine_publisher_primary.toml"
+            sequencer_wal = day_file_setting(sequencer_config, "wal", "directory")
+            engine_epoch = day_file_setting(engine_config, "ha_instance", "epoch_state_file")
+            engine_region = day_file_setting(engine_config, "order_book", "region_path")
+            arbiter_promise = day_file_setting(arbiter_config, "lease", "promise_file")
+            publisher_wal = day_file_setting(publisher_config, "wal", "directory")
+
+            for name in ("sequencer_primary", "matching_engine_primary", "arbiter_primary", "matching_engine_publisher_primary"):
+                proc = proc_by_name.get(name)
+                if proc is None or proc.poll() is not None:
+                    die(f"files of another day: {name} is not running, so there is no instance to stop")
+                proc.kill()
+                proc.wait()
+                if proc.poll() is None or Path(f"/proc/{proc.pid}").exists():
+                    die(f"files of another day: {name} (PID {proc.pid}) is still running after SIGKILL")
+            log("  the primary sequencer, matching engine, arbiter and publisher are stopped")
+
+            def refused_for_next_day(name: str, binary: str, config: Path, wanted: str) -> None:
+                """Starts binary for the next day and requires it to refuse, naming wanted and this day."""
+                probe_log = log_dir / f"{name}_another_day_probe.log"
+                probe_log.unlink(missing_ok=True)
+                try:
+                    completed = subprocess.run([str(bin_dir / binary), str(probe_log), str(config), "--trading-day", str(next_day)],
+                                               capture_output=True, text=True, timeout=30, cwd=str(config.parent), check=False)
+                except subprocess.TimeoutExpired:
+                    die(f"files of another day: {name}, started for trading day {next_day} on the files of {TRADING_DAY}, was still running "
+                        "after 30 seconds, so it took them for its own (it has been stopped)")
+                said = (probe_log.read_text(errors="replace") if probe_log.is_file() else "") + completed.stdout + completed.stderr
+                if completed.returncode == 0 or "refusing to start" not in said or wanted not in said \
+                        or f"belongs to trading day {TRADING_DAY}, not {next_day}" not in said:
+                    die(f"files of another day: {name}, started for trading day {next_day}, exited {completed.returncode} without refusing "
+                        f"{wanted} as a file of trading day {TRADING_DAY}. What it said: {said.strip()[-600:]!r}")
+                log(f"  {name}, started for trading day {next_day}, refused {wanted}, of trading day {TRADING_DAY} -- OK")
+
+            refused_for_next_day("sequencer_primary", "sequencer", sequencer_config, str(sequencer_wal / "epoch.state"))
+            refused_for_next_day("matching_engine_primary", "matching_engine", engine_config, str(engine_epoch))
+            refused_for_next_day("arbiter_primary", "arbiter", arbiter_config, str(arbiter_promise))
+            refused_for_next_day("matching_engine_publisher_primary", "matching_engine_publisher", publisher_config, str(publisher_wal))
+
+            # With the small files moved aside, what is left is the WAL and the region, each checked as it is opened.
+            aside = Path(__file__).resolve().parent.parent / "tmp" / "ha_test_files_of_another_day"
+            shutil.rmtree(aside, ignore_errors=True)
+            aside.mkdir(parents=True)
+            small_files = [sequencer_wal / "epoch.state", sequencer_wal / "lease_promise.state", sequencer_wal / "engine_routed_at",
+                           engine_epoch, Path(f"{engine_epoch}.lease_promise")]
+            moved: list[tuple[Path, Path]] = []
+            for index, path in enumerate(small_files):
+                if path.exists():
+                    kept = aside / f"{index}_{path.name}"
+                    shutil.move(str(path), str(kept))
+                    moved.append((path, kept))
+            region_before = hashlib.sha256(engine_region.read_bytes()).hexdigest()
+            try:
+                refused_for_next_day("sequencer_primary", "sequencer", sequencer_config, str(sequencer_wal))
+                refused_for_next_day("matching_engine_primary", "matching_engine", engine_config, str(engine_region))
+            finally:
+                for path, kept in moved:
+                    shutil.move(str(kept), str(path))
+            if hashlib.sha256(engine_region.read_bytes()).hexdigest() != region_before:
+                die(f"files of another day: the matching engine changed {engine_region} although it refused to start on it")
+            log("  the open-order region is unchanged by the engine that refused it -- OK")
 
         # ── The venue follows the day's schedule (R-0167, R-0168) ──
         if scenario.assert_trading_day_by_schedule:

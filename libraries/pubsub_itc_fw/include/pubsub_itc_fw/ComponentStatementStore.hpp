@@ -9,6 +9,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -16,6 +17,8 @@
 #include <unistd.h>
 
 #include <fmt/format.h>
+
+#include <pubsub_itc_fw/TradingDayOfFile.hpp>
 
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 
@@ -32,7 +35,9 @@ namespace pubsub_itc_fw {
  * (docs/availability/tla/traces/behind-4-arbiter-forgets.txt). The active arbiter also copies each
  * statement to the passive one, which keeps it here too.
  *
- * The file holds one line per pair: the pair's number, the statement's leader, epoch and number, and
+ * The file begins with a line holding the trading day it was written on, as the field trading_day=YYYYMMDD (none when
+ * the store is given no day); a component started for another day refuses the file (TradingDayOfFile.hpp). The file
+ * then holds one line per pair: the pair's number, the statement's leader, epoch and number, and
  * 1 or 0 for whether the leader's peer may lead. It is written to a temporary file, flushed, and renamed
  * over the real one, with the directory flushed too, so a reader sees the old record or the new one
  * whatever moment the process dies at. A line that cannot be read is skipped.
@@ -42,7 +47,16 @@ class ComponentStatementStore {
     using Statements = std::map<int32_t, pubsub_itc_fw::LeaderStatement>;
 
     /// @param[in] path File to hold the record, or empty for none: nothing is then kept.
-    explicit ComponentStatementStore(std::string path) : path_(std::move(path)), temp_path_(path_ + ".tmp") {}
+    /// @param[in] trading_day The trading day written at the start of the record, as the number yyyymmdd; zero for none.
+    ComponentStatementStore(std::string path, int32_t trading_day) : path_(std::move(path)), temp_path_(path_ + ".tmp"), trading_day_(trading_day) {}
+
+    /// The trading day the file records: nothing when there is no file, zero when it records none.
+    [[nodiscard]] std::optional<int32_t> recorded_trading_day() const {
+        if (path_.empty()) {
+            return std::nullopt;
+        }
+        return pubsub_itc_fw::recorded_trading_day(path_);
+    }
 
     /// The file this store reads and writes, or empty.
     [[nodiscard]] const std::string& path() const {
@@ -93,6 +107,10 @@ class ComponentStatementStore {
             return false;
         }
         std::string contents;
+        if (trading_day_ != 0) {
+            // A line of its own, which read_line() does not read as a statement.
+            fmt::format_to(std::back_inserter(contents), "{}{}\n", trading_day_field, trading_day_);
+        }
         for (const auto& [pair_id, statement] : statements) {
             fmt::format_to(std::back_inserter(contents), "{} {} {} {} {}\n", pair_id, statement.leader_id, statement.epoch, statement.number,
                            statement.peer_may_lead ? 1 : 0);
@@ -173,6 +191,7 @@ class ComponentStatementStore {
 
     std::string path_;
     std::string temp_path_;
+    int32_t trading_day_;
 };
 
 } // namespaces

@@ -224,6 +224,24 @@ class OrderBook {
         }
     }
 
+    /**
+     * @brief Records in the region the trading day it belongs to, as the number yyyymmdd.
+     *
+     * Every file the venue writes during a trading day belongs to that day, and an engine started for another day refuses
+     * a region that records a different one, or none (docs/venue/start_and_end_of_day.md, section 5). A book with no
+     * region records nothing.
+     */
+    void set_trading_day(int32_t trading_day) {
+        if (store_.is_open()) {
+            store_.set_owner_value(trading_day_value, trading_day);
+        }
+    }
+
+    /** @brief The trading day the region records, or zero when it records none or there is no region. */
+    [[nodiscard]] int32_t trading_day() const {
+        return store_.is_open() ? static_cast<int32_t>(store_.owner_value(trading_day_value)) : 0;
+    }
+
     /** @brief As last recorded by set_voids_known_through(), in this process or found in the region when it was opened. */
     [[nodiscard]] int64_t voids_known_through() const {
         return voids_known_through_;
@@ -383,6 +401,7 @@ class OrderBook {
     static constexpr size_t halted_value = 0;
     static constexpr size_t voids_known_through_value = 1;
     static constexpr size_t applying_value = 2;
+    static constexpr size_t trading_day_value = 3;
 
     pubsub_itc_fw::MappedSlotStore store_;
     // Whether trading is halted; see set_halted().

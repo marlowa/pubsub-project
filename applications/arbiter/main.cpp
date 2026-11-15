@@ -6,6 +6,7 @@
 
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -13,21 +14,22 @@
 #include <pubsub_itc_fw/Arbiter.hpp>
 #include <pubsub_itc_fw/ArbiterConfiguration.hpp>
 #include <pubsub_itc_fw/ArbiterConfigurationLoader.hpp>
+#include <pubsub_itc_fw/ComponentArguments.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/TradingDayOfFile.hpp>
 
 int main(int argc, char* argv[]) {
-    if (argc != 3) {
-        std::cerr << "Usage: arbiter <logfile> <config.toml>\n";
+    const std::optional<pubsub_itc_fw::ComponentArguments> arguments = pubsub_itc_fw::parse_component_arguments(argc, argv, "arbiter", std::cerr);
+    if (!arguments.has_value()) {
         return 1;
     }
-
-    const std::string log_file = argv[1];
-    const std::string config_file = argv[2];
+    const std::string& log_file = arguments->log_file;
+    const std::string& config_file = arguments->config_file;
 
     const std::string writable_error = pubsub_itc_fw::QuillLogger::ensure_log_file_writable(log_file);
     if (!writable_error.empty()) {
@@ -49,6 +51,22 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    config.trading_day = arguments->trading_day;
+    PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "Arbiter: started for trading day {}", arguments->trading_day);
+
+    // Every file the arbiter writes during a trading day records the day, and one left from another day is never taken for a
+    // restart of this one (docs/venue/start_and_end_of_day.md, section 5; BUG-0137).
+    // TEST CONTRACT -- ha_test.py matches "refusing to start" and "trading day" in this Error.
+    const std::string another_day = pubsub_itc_fw::files_of_another_day(
+        config.trading_day,
+        {{config.lease_promise_file, config.lease_promise_file.empty() ? std::nullopt : pubsub_itc_fw::recorded_trading_day(config.lease_promise_file)},
+         {config.lease_promise_file + ".component_statements",
+          config.lease_promise_file.empty() ? std::nullopt : pubsub_itc_fw::recorded_trading_day(config.lease_promise_file + ".component_statements")}});
+    if (!another_day.empty()) {
+        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "Arbiter: refusing to start for trading day {} -- {}. The arbiter leaves them as they are: {}",
+                   config.trading_day, another_day, pubsub_itc_fw::another_days_files_remedy);
+        return 1;
+    }
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);
 

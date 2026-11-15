@@ -11,8 +11,13 @@ Two instances run from one binary, `bin/sequencer`: `sequencer_primary` (instanc
 file supplies.
 
 ```
-sequencer <logfile> <config.toml>
+sequencer <logfile> <config.toml> --trading-day YYYYMMDD
 ```
+
+Every component takes the same three arguments. The trading day is the one the run is for: the sequencer writes it in
+the start of day, and every file it writes during the day records it. Started for another day on files a day has left,
+it refuses to start, naming each file and the day it belongs to ([start_and_end_of_day.md](start_and_end_of_day.md),
+section 5).
 
 ## Startup
 

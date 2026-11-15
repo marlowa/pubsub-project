@@ -40,9 +40,9 @@ ReplicatedWal::ReplicatedWal(ReplicatedWalConfiguration configuration, QuillLogg
     , links_(links)
     , lease_links_(lease_links)
     , events_(events)
-    , epoch_recording_(configuration_.wal_directory + "/epoch.state", configuration_.owner_name, logger)
+    , epoch_recording_(configuration_.wal_directory + "/epoch.state", configuration_.trading_day, configuration_.owner_name, logger)
     , epoch_recorded_before_asking_(epoch_recording_, configuration_.lease.period, configuration_.owner_name, logger)
-    , promise_store_(configuration_.wal_directory + "/lease_promise.state", LeasePromiseStore::current_boot_id())
+    , promise_store_(configuration_.wal_directory + "/lease_promise.state", LeasePromiseStore::current_boot_id(), configuration_.trading_day)
     , promises_elsewhere_(std::move(promises_elsewhere)) {
     epoch_recording_.measure_into(configuration_.epoch_record_milliseconds, configuration_.lease_left_when_leading_milliseconds);
 }

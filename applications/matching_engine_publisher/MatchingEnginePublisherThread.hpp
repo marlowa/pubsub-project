@@ -84,6 +84,9 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
+    // Refuses to start, by throwing ConfigurationException, when the WAL's first record belongs to a trading day other than
+    // the one this instance was started for, or says none (docs/venue/start_and_end_of_day.md, section 5).
+    void refuse_a_wal_of_another_day() const;
     const MatchingEnginePublisherConfiguration& config_;
 
     // Precomputed strings.

@@ -45,7 +45,7 @@ class LeasePromiseStoreTest : public ::testing::Test {
 } // un-named namespace
 
 TEST_F(LeasePromiseStoreTest, AStoredPromiseIsReadBackDuringTheSameBoot) {
-    pubsub_itc_fw::LeasePromiseStore store(path_, "boot-a");
+    pubsub_itc_fw::LeasePromiseStore store(path_, "boot-a", 20261116);
     const Clock::time_point until = Clock::time_point{} + milliseconds{123456};
     ASSERT_TRUE(store.record(pubsub_itc_fw::LeasePromiseRecord{2, until, {}}));
     const auto record = store.load();
@@ -55,7 +55,7 @@ TEST_F(LeasePromiseStoreTest, AStoredPromiseIsReadBackDuringTheSameBoot) {
 }
 
 TEST_F(LeasePromiseStoreTest, NoPromiseIsRecordedAsZero) {
-    pubsub_itc_fw::LeasePromiseStore store(path_, "boot-a");
+    pubsub_itc_fw::LeasePromiseStore store(path_, "boot-a", 20261116);
     ASSERT_TRUE(store.record(pubsub_itc_fw::LeasePromiseRecord{0, Clock::time_point{} + milliseconds{5}, {}}));
     const auto record = store.load();
     ASSERT_TRUE(record.has_value());
@@ -63,21 +63,22 @@ TEST_F(LeasePromiseStoreTest, NoPromiseIsRecordedAsZero) {
 }
 
 TEST_F(LeasePromiseStoreTest, ARecordFromAnotherBootIsNotBelieved) {
-    ASSERT_TRUE(pubsub_itc_fw::LeasePromiseStore(path_, "boot-a").record(pubsub_itc_fw::LeasePromiseRecord{2, Clock::time_point{} + milliseconds{5}, {}}));
-    EXPECT_FALSE(pubsub_itc_fw::LeasePromiseStore(path_, "boot-b").load().has_value());
+    ASSERT_TRUE(
+        pubsub_itc_fw::LeasePromiseStore(path_, "boot-a", 20261116).record(pubsub_itc_fw::LeasePromiseRecord{2, Clock::time_point{} + milliseconds{5}, {}}));
+    EXPECT_FALSE(pubsub_itc_fw::LeasePromiseStore(path_, "boot-b", 20261116).load().has_value());
 }
 
 TEST_F(LeasePromiseStoreTest, AMissingRecordReadsAsNone) {
-    EXPECT_FALSE(pubsub_itc_fw::LeasePromiseStore(path_, "boot-a").load().has_value());
+    EXPECT_FALSE(pubsub_itc_fw::LeasePromiseStore(path_, "boot-a", 20261116).load().has_value());
 }
 
 TEST_F(LeasePromiseStoreTest, ADamagedRecordReadsAsNone) {
     std::ofstream(path_) << "boot-a two lots\n";
-    EXPECT_FALSE(pubsub_itc_fw::LeasePromiseStore(path_, "boot-a").load().has_value());
+    EXPECT_FALSE(pubsub_itc_fw::LeasePromiseStore(path_, "boot-a", 20261116).load().has_value());
 }
 
 TEST_F(LeasePromiseStoreTest, WithoutABootIdNothingIsRecordedOrBelieved) {
-    pubsub_itc_fw::LeasePromiseStore store(path_, "");
+    pubsub_itc_fw::LeasePromiseStore store(path_, "", 20261116);
     EXPECT_FALSE(store.record(pubsub_itc_fw::LeasePromiseRecord{2, Clock::time_point{} + milliseconds{5}, {}}));
     EXPECT_FALSE(store.load().has_value());
 }
@@ -87,7 +88,7 @@ TEST_F(LeasePromiseStoreTest, TheBootIdOfThisMachineCanBeRead) {
 }
 
 TEST_F(LeasePromiseStoreTest, AStatementIsKeptWithThePromise) {
-    pubsub_itc_fw::LeasePromiseStore store(path_, "boot-a");
+    pubsub_itc_fw::LeasePromiseStore store(path_, "boot-a", 20261116);
     const pubsub_itc_fw::LeaderStatement statement{1, 5, 2, false};
     ASSERT_TRUE(store.record(pubsub_itc_fw::LeasePromiseRecord{2, Clock::time_point{} + milliseconds{5}, statement}));
     const auto record = store.load();
@@ -101,9 +102,9 @@ TEST_F(LeasePromiseStoreTest, AStatementIsBelievedAfterAReboot) {
     // A statement does not depend on the clock, and an instance that has recorded that its peer may not
     // lead must go on refusing that peer after its machine reboots.
     const pubsub_itc_fw::LeaderStatement statement{2, 9, 1, false};
-    ASSERT_TRUE(
-        pubsub_itc_fw::LeasePromiseStore(path_, "boot-a").record(pubsub_itc_fw::LeasePromiseRecord{1, Clock::time_point{} + milliseconds{5}, statement}));
-    const pubsub_itc_fw::LeasePromiseStore after_reboot(path_, "boot-b");
+    ASSERT_TRUE(pubsub_itc_fw::LeasePromiseStore(path_, "boot-a", 20261116)
+                    .record(pubsub_itc_fw::LeasePromiseRecord{1, Clock::time_point{} + milliseconds{5}, statement}));
+    const pubsub_itc_fw::LeasePromiseStore after_reboot(path_, "boot-b", 20261116);
     EXPECT_FALSE(after_reboot.load().has_value());
     EXPECT_TRUE(after_reboot.load_statement().same_as(statement));
     EXPECT_EQ(after_reboot.load_statement().instance_that_may_not_lead(), 1);
@@ -111,7 +112,7 @@ TEST_F(LeasePromiseStoreTest, AStatementIsBelievedAfterAReboot) {
 
 TEST_F(LeasePromiseStoreTest, ARecordWithoutAStatementReadsAsHoldingNone) {
     std::ofstream(path_) << "boot-a 2 5\n";
-    const auto record = pubsub_itc_fw::LeasePromiseStore(path_, "boot-a").load();
+    const auto record = pubsub_itc_fw::LeasePromiseStore(path_, "boot-a", 20261116).load();
     ASSERT_TRUE(record.has_value());
     EXPECT_EQ(record->promised_to, 2);
     EXPECT_EQ(record->statement.leader_id, 0);
@@ -119,6 +120,6 @@ TEST_F(LeasePromiseStoreTest, ARecordWithoutAStatementReadsAsHoldingNone) {
 
 TEST_F(LeasePromiseStoreTest, ARecordWithADamagedStatementReadsAsNone) {
     std::ofstream(path_) << "boot-a 2 5 3 1 1 0\n";
-    EXPECT_FALSE(pubsub_itc_fw::LeasePromiseStore(path_, "boot-a").load().has_value());
-    EXPECT_EQ(pubsub_itc_fw::LeasePromiseStore(path_, "boot-a").load_statement().leader_id, 0);
+    EXPECT_FALSE(pubsub_itc_fw::LeasePromiseStore(path_, "boot-a", 20261116).load().has_value());
+    EXPECT_EQ(pubsub_itc_fw::LeasePromiseStore(path_, "boot-a", 20261116).load_statement().leader_id, 0);
 }

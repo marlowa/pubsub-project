@@ -59,11 +59,12 @@ class EpochRecording {
 
     /**
      * @param[in] path       The file to hold the epoch.
+     * @param[in] trading_day The trading day written with the epoch, as the number yyyymmdd; zero for none.
      * @param[in] owner_name How the owner is named in the Quill log.
      * @param[in] logger     Where the warnings and the result of the disk check are logged.
      */
-    EpochRecording(std::string path, std::string owner_name, QuillLogger& logger)
-        : store_(std::move(path)), owner_name_(std::move(owner_name)), logger_(logger) {}
+    EpochRecording(std::string path, int32_t trading_day, std::string owner_name, QuillLogger& logger)
+        : store_(std::move(path), trading_day), owner_name_(std::move(owner_name)), logger_(logger), trading_day_(trading_day) {}
 
     /// Where to record how long each record of the epoch takes, and the lease left on taking the lead, in milliseconds.
     /// Left as constructed, nothing is recorded.
@@ -168,7 +169,7 @@ class EpochRecording {
             return DiskCheck{};
         }
         const std::string trial_path = store_.path() + ".disk_check";
-        const EpochStore trial(trial_path);
+        const EpochStore trial(trial_path, trading_day_);
         std::vector<double> milliseconds;
         const Clock::time_point began = Clock::now();
         while (static_cast<int>(milliseconds.size()) < disk_check_records && Clock::now() - began < disk_check_time_limit) {
@@ -215,6 +216,8 @@ class EpochRecording {
     EpochStore store_;
     std::string owner_name_;
     QuillLogger& logger_;
+    // The trading day written with the epoch, and with each trial record check_disk() makes.
+    int32_t trading_day_;
     HistogramHandle record_milliseconds_{};
     HistogramHandle lease_left_milliseconds_{};
     Clock::duration last_record_took_{};

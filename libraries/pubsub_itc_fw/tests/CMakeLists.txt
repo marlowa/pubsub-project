@@ -61,6 +61,7 @@ add_executable(pubsub_itc_fw_tests
     WalWriterReaderTest.cpp
     WallClockTest.cpp
     EpochStoreTest.cpp
+    TradingDayOfFileTest.cpp
     LogEpochTableTest.cpp
     ArbiterPeerContactTest.cpp
     EpochRecordingTest.cpp

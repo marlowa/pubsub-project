@@ -9,7 +9,7 @@ still open ([matching_engine.md](matching_engine.md)), and both gateways refusin
 member what the venue is doing ([fix_order_gateway.md](fix_order_gateway.md),
 [binary_order_gateway.md](binary_order_gateway.md)). The table of what each phase
 allows is settled below. The requirements are written in the high availability chapter of the functional
-specification (`docs/book`, the section "The venue says what it is doing", R-0164 to R-0175), and the
+specification (`docs/book`, the section "The venue says what it is doing", R-0164 to R-0175, and R-0177), and the
 plan for building them is in [trading_day_plan.md](trading_day_plan.md).
 
 ## What this is for

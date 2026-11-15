@@ -179,3 +179,4 @@ R-0173     active    2026-11-14  No order record follows end of day
 R-0174     active    2026-11-14  Every logged-on member is told of each change
 R-0175     active    2026-11-14  Components that only need to know take the changes from a topic
 R-0176     active    2026-11-15  Only a client with the operator's certificate can make an operator's request
+R-0177     active    2026-11-15  A component refuses to start on a file from another trading day

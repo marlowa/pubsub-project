@@ -101,8 +101,8 @@ ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken 
     , config_(config)
     , peer_instance_id_{static_cast<int64_t>(config.peer_instance_id)}
     , component_voters_(config.lease.period)
-    , lease_promise_store_(config.lease_promise_file, pubsub_itc_fw::LeasePromiseStore::current_boot_id())
-    , component_statement_store_(config.lease_promise_file.empty() ? std::string{} : config.lease_promise_file + ".component_statements") {}
+    , lease_promise_store_(config.lease_promise_file, pubsub_itc_fw::LeasePromiseStore::current_boot_id(), config.trading_day)
+    , component_statement_store_(config.lease_promise_file.empty() ? std::string{} : config.lease_promise_file + ".component_statements", config.trading_day) {}
 
 void ArbiterThread::on_initial_event() {
     // Only when a test started this arbiter (docs/availability/test_events.md). Made before the lease agent, which is given it.

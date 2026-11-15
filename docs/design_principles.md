@@ -784,13 +784,17 @@ from an earlier day must be refused, not mistaken for a restart.
 **Where it should hold.** In a start-of-day and an end-of-day procedure, and in each component's
 start-up. The phases of the day are in [trading_phases.md](venue/trading_phases.md).
 
-**What checks it.** Nothing.
+**What checks it.** Scenario 114 of `ha_test.py`: the sequencer, matching engine, arbiter and publisher,
+started for the next day on the files of the day just run, each refuse to start and name a file and the
+day it belongs to.
 
-**Today: assumed, not carried out.** There is no start-of-day or end-of-day procedure in the
-repository, no list of the files the venue writes during a day, and nothing stops a component taking a
-file left from an earlier day as a restart. Left in place, yesterday's open-order region, for example,
-would make the matching engine judge itself absent for hours, cancel yesterday's orders and halt the
-new day before it opens. Recorded as [BUG-0137](bug_list.md#bug_0137).
+**Today: the refusal holds; the procedures do not exist.** Every component is given the trading day on
+its command line. Every file in section 2.1 of [start_and_end_of_day.md](venue/start_and_end_of_day.md)
+that a component reads when it starts records the day it belongs to, and the component refuses one from
+another day, or one that records none: the sequencer's WAL, epoch, lease promise and record of the last
+engine routed to; the publisher's WAL; the matching engine's open-order region, epoch and lease promise;
+and the arbiter's lease promise and record of statements. No procedure yet starts or ends a day, nothing
+archives the day's files, and the Quill logs are not named by day ([BUG-0137](bug_list.md#bug_0137)).
 
 ### V13. Nothing the venue needs in order to run depends on something optional
 

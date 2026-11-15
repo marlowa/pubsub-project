@@ -10,6 +10,8 @@
 
 #include <fmt/format.h>
 
+#include <pubsub_itc_fw/ComponentArguments.hpp>
+
 namespace fix_common {
 
 /**
@@ -24,29 +26,7 @@ namespace fix_common {
  * @return The date, or nothing if @p text is not eight digits naming a day of the Gregorian calendar.
  */
 inline std::optional<int32_t> parse_trading_date(std::string_view text) {
-    if (text.size() != 8) {
-        return std::nullopt;
-    }
-    int32_t value = 0;
-    for (const char digit : text) {
-        if (digit < '0' || digit > '9') {
-            return std::nullopt;
-        }
-        value = value * 10 + (digit - '0');
-    }
-    const int32_t year = value / 10000;
-    const int32_t month = (value / 100) % 100;
-    const int32_t day = value % 100;
-    if (year < 1 || month < 1 || month > 12 || day < 1) {
-        return std::nullopt;
-    }
-    const bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    constexpr int32_t days_in_month[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    const int32_t last_day = month == 2 && leap ? 29 : days_in_month[month - 1];
-    if (day > last_day) {
-        return std::nullopt;
-    }
-    return value;
+    return pubsub_itc_fw::parse_trading_day(text);
 }
 
 /**

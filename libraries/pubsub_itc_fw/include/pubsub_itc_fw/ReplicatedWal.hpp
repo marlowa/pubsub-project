@@ -164,6 +164,9 @@ struct ReplicatedWalConfiguration {
     std::string owner_name;
     /// Where the WAL's segments live. The epoch and the promise records are kept in the same directory.
     std::string wal_directory;
+    /// The trading day the instance was started for, as the number yyyymmdd, written in the epoch and promise records so
+    /// that a record left from another day is never taken for this one's (TradingDayOfFile.hpp); zero for none.
+    int32_t trading_day{0};
     /// The size of each segment, in bytes.
     size_t wal_segment_size{0};
     /// The processors the WAL's helper thread may run on; empty to leave it where it lands.

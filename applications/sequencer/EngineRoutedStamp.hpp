@@ -3,9 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace sequencer {
@@ -22,6 +24,10 @@ namespace sequencer {
  *
  * Kept in the WAL's directory, so that it is cleared and archived with the WAL at the end of the trading day. The WAL
  * reads only the files named as its segments are.
+ *
+ * The file holds the time in its first eight bytes and the trading day it was created on, as the number yyyymmdd, in the
+ * four after them, written and flushed when the file is created. A sequencer started for another day refuses the file
+ * (recorded_trading_day; docs/venue/start_and_end_of_day.md, section 5).
  */
 class EngineRoutedStamp {
   public:
@@ -40,11 +46,15 @@ class EngineRoutedStamp {
     /// The name of the file in the WAL's directory.
     static constexpr const char* file_name = "engine_routed_at";
 
+    /// Where the trading day is held in the file, after the time.
+    static constexpr off_t trading_day_offset = sizeof(int64_t);
+
     /**
-     * @brief Opens the file, creating it if it is absent, and reads the time it holds.
+     * @brief Opens the file, creating it if it is absent, and reads the time it holds. A file that holds no trading day is
+     *        given @p trading_day, flushed to the disk.
      * @return false if the file could not be opened; the stamp then holds 0 and writes do nothing.
      */
-    bool open(const std::string& wal_directory) {
+    bool open(const std::string& wal_directory, int32_t trading_day) {
         fd_ = ::open((wal_directory + "/" + file_name).c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
         if (fd_ < 0) {
             return false;
@@ -53,7 +63,34 @@ class EngineRoutedStamp {
         if (::pread(fd_, &held, sizeof(held), 0) == static_cast<ssize_t>(sizeof(held))) {
             stamped_at_ns_ = held;
         }
+        int32_t day = 0;
+        if (::pread(fd_, &day, sizeof(day), trading_day_offset) != static_cast<ssize_t>(sizeof(day)) || day == 0) {
+            if (::pwrite(fd_, &stamped_at_ns_, sizeof(stamped_at_ns_), 0) == static_cast<ssize_t>(sizeof(stamped_at_ns_)) &&
+                ::pwrite(fd_, &trading_day, sizeof(trading_day), trading_day_offset) == static_cast<ssize_t>(sizeof(trading_day))) {
+                static_cast<void>(::fsync(fd_));
+            }
+        }
         return true;
+    }
+
+    /**
+     * @brief The trading day the file in @p wal_directory records.
+     * @return Nothing when there is no file, or it is empty; zero when it records no trading day; otherwise the day.
+     */
+    [[nodiscard]] static std::optional<int32_t> recorded_trading_day(const std::string& wal_directory) {
+        const int fd = ::open((wal_directory + "/" + file_name).c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            return std::nullopt;
+        }
+        struct stat status {};
+        int32_t day = 0;
+        const bool has_size = ::fstat(fd, &status) == 0;
+        const bool read_day = ::pread(fd, &day, sizeof(day), trading_day_offset) == static_cast<ssize_t>(sizeof(day));
+        ::close(fd);
+        if (!has_size || status.st_size == 0) {
+            return std::nullopt;
+        }
+        return read_day ? day : 0;
     }
 
     /// The time the file held when it was opened, or 0 if it held none.

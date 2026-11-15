@@ -384,7 +384,7 @@ def launch_app(name: str, bin_name: str, config: Path,
     cwd = str(workdir) if workdir is not None else str(log_dir)
     with open(log_dir / f"{name}.stdout", "w", encoding="utf-8") as stdout_fh:
         proc = subprocess.Popen(
-            [str(bin_dir / bin_name), str(log_file), str(config)] + (["--trading-day", str(TRADING_DAY)] if bin_name == "sequencer" else []),
+            [str(bin_dir / bin_name), str(log_file), str(config)] + ["--trading-day", str(TRADING_DAY)],
             cwd=cwd,
             stdout=stdout_fh,
             stderr=subprocess.STDOUT,

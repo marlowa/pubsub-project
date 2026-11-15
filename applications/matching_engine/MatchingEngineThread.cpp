@@ -28,6 +28,7 @@
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/StoreCapacityDiffersException.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TradingDayOfFile.hpp>
 
 namespace matching_engine {
 
@@ -87,9 +88,9 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     , ha_enabled_(config.ha_enabled)
     , is_primary_(!config.ha_enabled || config.ha_role == "primary")
     , order_book_(&book_growth_reporter_)
-    , epoch_recording_(config.epoch_state_file, "MatchingEngineThread", logger)
+    , epoch_recording_(config.epoch_state_file, config.trading_day, "MatchingEngineThread", logger)
     , epoch_recorded_before_asking_(epoch_recording_, config.lease.period, "MatchingEngineThread", logger)
-    , lease_promise_store_(config.epoch_state_file + ".lease_promise", pubsub_itc_fw::LeasePromiseStore::current_boot_id()) {
+    , lease_promise_store_(config.epoch_state_file + ".lease_promise", pubsub_itc_fw::LeasePromiseStore::current_boot_id(), config.trading_day) {
     // Wired before the reserve below, so even the initial capacity is reported if it is
     // large. The book is the venue's biggest consumer of memory and was, until this,
     // completely uninstrumented: the pool and slab allocators cover objects with a message
@@ -150,6 +151,19 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: order book region {} at {} holding up to {} order(s)",
                region_existed ? "opened" : "created", config_.order_book_region_path, order_book_.region_capacity());
+
+    // The region belongs to one trading day. One left from another day must never be taken for a restart of this one: its
+    // orders are yesterday's, and acting on them would cancel them, tell members, and halt the new day (BUG-0137). The
+    // region is left exactly as it was.
+    // TEST CONTRACT -- ha_test.py matches "refusing to start" and "trading day" in this Error.
+    if (region_existed && order_book_.trading_day() != config_.trading_day) {
+        const std::string problem = pubsub_itc_fw::another_days_file(config_.order_book_region_path, order_book_.trading_day(), config_.trading_day);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: refusing to start for trading day {} -- {}. The region is left as it was: {}", config_.trading_day, problem,
+                   pubsub_itc_fw::another_days_files_remedy);
+        throw pubsub_itc_fw::ConfigurationException(problem);
+    }
+    order_book_.set_trading_day(config_.trading_day);
 
     recover_open_orders(region_existed);
 

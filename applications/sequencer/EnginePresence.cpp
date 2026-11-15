@@ -149,8 +149,8 @@ bool EnginePresence::refresh_order_acceptance(Clock::time_point now) {
 
 // ---- The limit on the recovery the venue does by itself -------------------------------------------------------------
 
-void EnginePresence::started(const std::string& wal_directory, int64_t first_record_ns, int64_t now_ns) {
-    if (!engine_routed_stamp_.open(wal_directory)) {
+void EnginePresence::started(const std::string& wal_directory, int32_t trading_day, int64_t first_record_ns, int64_t now_ns) {
+    if (!engine_routed_stamp_.open(wal_directory, trading_day)) {
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                    "EnginePresence: cannot open {}/{} -- after the whole venue was down, how long it was without a matching engine is measured from "
                    "the first record in the WAL, which may be longer than it was",

@@ -10,6 +10,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <fcntl.h>
@@ -20,6 +21,7 @@
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LeasePromiseRecord.hpp>
 #include <pubsub_itc_fw/LeasePromiseRecorderInterface.hpp>
+#include <pubsub_itc_fw/TradingDayOfFile.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -38,7 +40,8 @@ namespace pubsub_itc_fw {
  * wrote it: an instance that has recorded that its peer may not lead must go on refusing that peer
  * after the machine reboots.
  *
- * The file holds one line: the boot id, the instance promised to (zero for none), the expiry in
+ * The file holds one line: the trading day it was written on, as the field trading_day=YYYYMMDD (none
+ * when the store is given no day), the boot id, the instance promised to (zero for none), the expiry in
  * nanoseconds on the steady clock, and then the statement as its leader (zero for none), epoch, number,
  * and 1 or 0 for whether the leader's peer may lead. A line without the statement reads as holding
  * none. It is written the way EpochStore writes the epoch: to a temporary file, flushed, and renamed
@@ -57,8 +60,16 @@ class LeasePromiseStore : public LeasePromiseRecorderInterface {
     /**
      * @param[in] path File to hold the record. Its directory must already exist.
      * @param[in] boot_id The identity of this boot of the machine; current_boot_id() in production.
+     * @param[in] trading_day The trading day written with the record, as the number yyyymmdd; zero for none. A component
+     *            started for another day refuses the file (TradingDayOfFile.hpp).
      */
-    LeasePromiseStore(std::string path, std::string boot_id) : path_(std::move(path)), temp_path_(path_ + ".tmp"), boot_id_(std::move(boot_id)) {}
+    LeasePromiseStore(std::string path, std::string boot_id, int32_t trading_day)
+        : path_(std::move(path)), temp_path_(path_ + ".tmp"), boot_id_(std::move(boot_id)), trading_day_(trading_day) {}
+
+    /// The trading day the file records: nothing when there is no file, zero when it records none.
+    [[nodiscard]] std::optional<int32_t> recorded_trading_day() const {
+        return pubsub_itc_fw::recorded_trading_day(path_);
+    }
 
     /// The kernel's identity for this boot of the machine, or an empty string if it cannot be read.
     [[nodiscard]] static std::string current_boot_id() {
@@ -107,9 +118,9 @@ class LeasePromiseStore : public LeasePromiseRecorderInterface {
             return false;
         }
         const LeaderStatement& statement = record.statement;
-        const std::string line = fmt::format("{} {} {} {} {} {} {}\n", boot_id_, record.promised_to,
-                                             std::chrono::duration_cast<std::chrono::nanoseconds>(record.until.time_since_epoch()).count(), statement.leader_id,
-                                             statement.epoch, statement.number, statement.peer_may_lead ? 1 : 0);
+        const std::string line = fmt::format("{}{} {} {} {} {} {} {}\n", trading_day_ != 0 ? trading_day_field_text(trading_day_) : std::string(), boot_id_,
+                                             record.promised_to, std::chrono::duration_cast<std::chrono::nanoseconds>(record.until.time_since_epoch()).count(),
+                                             statement.leader_id, statement.epoch, statement.number, statement.peer_may_lead ? 1 : 0);
         const int fd = ::open(temp_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         if (fd < 0) {
             return false;
@@ -154,7 +165,9 @@ class LeasePromiseStore : public LeasePromiseRecorderInterface {
         if (bytes_read <= 0) {
             return std::nullopt;
         }
-        const std::string line(buffer, static_cast<size_t>(bytes_read));
+        std::string_view text(buffer, static_cast<size_t>(bytes_read));
+        static_cast<void>(take_trading_day(text));
+        const std::string line(text);
         const size_t first_space = line.find(' ');
         if (first_space == std::string::npos || first_space == 0) {
             return std::nullopt;
@@ -221,6 +234,7 @@ class LeasePromiseStore : public LeasePromiseRecorderInterface {
     std::string path_;
     std::string temp_path_;
     std::string boot_id_;
+    int32_t trading_day_;
 };
 
 } // namespaces

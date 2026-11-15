@@ -439,6 +439,24 @@ of the day. To be designed and agreed before code.
 
 **Principle.** V12 in `docs/design_principles.md`.
 
+**Where it stands, 15 November 2026.** Items 1 and 4 are done; items 2 and 3 are not.
+
+- **Item 1, the list of files,** is section 2 of `docs/venue/start_and_end_of_day.md`.
+- **Item 4, the refusal at start-up,** is built:
+  - Every component is given `--trading-day D` on its command line and logs it.
+  - Every file in that list which a component reads when it starts records the day it was written on, and the
+    component refuses to start on one from another day, or one that records none. It names each such file and the day
+    it belongs to, and leaves it as it was.
+  - The files covered are: the sequencer's WAL, epoch, lease promise and record of the last engine routed to; the
+    publisher's WAL; the matching engine's open-order region, epoch and lease promise; and the arbiter's lease promise
+    and record of statements.
+  - Scenario 114 of `ha_test.py` starts each of the four components for the next day on the files the day left, and
+    each refuses. With the small files moved aside, the sequencer must refuse the WAL and the matching engine the
+    region, which must be left unchanged.
+  - `devenv.py start --fresh-wal` now also removes the matching engines' epoch files, which a fresh run otherwise kept.
+- **Items 2 and 3, the end-of-day and start-of-day procedures,** are not built, and nor are the Quill logs named by day
+  or the archive directory.
+
 ### BUG-0136: Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known {#bug_0136}
 
 | | |

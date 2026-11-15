@@ -7,13 +7,17 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <fcntl.h>
 #include <unistd.h>
 
 #include <fmt/format.h>
+
+#include <pubsub_itc_fw/TradingDayOfFile.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -34,9 +38,12 @@ namespace pubsub_itc_fw {
  * survivor tells the returning node what generation it is in.
  *
  * So the epoch is written to a small file that outlives the process. The file
- * holds one decimal number and a newline, which makes it readable with cat and
- * repairable with an editor when something has gone wrong at three in the
- * morning.
+ * holds the trading day it was written on, as the field trading_day=YYYYMMDD,
+ * then the epoch as one decimal number, and a newline, which makes it readable
+ * with cat and repairable with an editor when something has gone wrong at three
+ * in the morning. The epoch belongs to one trading day: a component started for
+ * another day refuses the file (TradingDayOfFile.hpp). A store given no trading
+ * day, zero, writes the epoch alone.
  *
  * Writes are atomic: the value goes to a temporary file, which is flushed and
  * then renamed over the real one. A reader therefore sees either the previous
@@ -56,11 +63,18 @@ namespace pubsub_itc_fw {
 class EpochStore {
   public:
     /**
-     * @param[in] path  File to hold the epoch. Its directory must already
-     *                  exist; the sequencer uses its WAL directory, which
-     *                  deploy.py creates.
+     * @param[in] path         File to hold the epoch. Its directory must
+     *                          already exist; the sequencer uses its WAL
+     *                          directory, which deploy.py creates.
+     * @param[in] trading_day  The trading day written with the epoch, as the
+     *                          number yyyymmdd; zero for none.
      */
-    explicit EpochStore(std::string path) : path_{std::move(path)}, temp_path_{path_ + ".tmp"} {}
+    EpochStore(std::string path, int32_t trading_day) : path_{std::move(path)}, temp_path_{path_ + ".tmp"}, trading_day_{trading_day} {}
+
+    /// @return The trading day the file records: nothing when there is no file, zero when it records none.
+    [[nodiscard]] std::optional<int32_t> recorded_trading_day() const {
+        return pubsub_itc_fw::recorded_trading_day(path_);
+    }
 
     /**
      * @brief Read the stored epoch.
@@ -78,11 +92,14 @@ class EpochStore {
             return 0;
         }
         buf[bytes_read] = '\0';
+        std::string_view text(buf, static_cast<size_t>(bytes_read));
+        static_cast<void>(take_trading_day(text));
+        const char* number = text.data();
 
         errno = 0;
         char* end = nullptr;
-        const long value = std::strtol(buf, &end, 10);
-        if (end == buf || errno != 0 || value < 0 || value > static_cast<long>(std::numeric_limits<int32_t>::max())) {
+        const long value = std::strtol(number, &end, 10);
+        if (end == number || errno != 0 || value < 0 || value > static_cast<long>(std::numeric_limits<int32_t>::max())) {
             return 0;
         }
         return static_cast<int32_t>(value);
@@ -97,8 +114,9 @@ class EpochStore {
     bool store(int32_t epoch) const {
         // fmt::format_to_n rather than snprintf: bounded write into a buffer this
         // function owns, with no allocation on the path.
-        char buf[32];
-        const auto formatted = fmt::format_to_n(buf, sizeof(buf), "{}\n", epoch);
+        char buf[48];
+        const auto formatted = trading_day_ != 0 ? fmt::format_to_n(buf, sizeof(buf), "{}{} {}\n", trading_day_field, trading_day_, epoch)
+                                                 : fmt::format_to_n(buf, sizeof(buf), "{}\n", epoch);
         if (formatted.size == 0 || formatted.size > sizeof(buf)) {
             return false;
         }
@@ -168,6 +186,7 @@ class EpochStore {
 
     std::string path_;
     std::string temp_path_;
+    int32_t trading_day_;
 };
 
 } // namespaces

@@ -5,9 +5,11 @@
 #include "MatchingEnginePublisherConfigurationLoader.hpp"
 
 #include <iostream>
+#include <optional>
 #include <string>
 
 #include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
+#include <pubsub_itc_fw/ComponentArguments.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
@@ -110,13 +112,13 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (argc != 3) {
-        std::cerr << "Usage: matching_engine_publisher <logfile> <config.toml>\n";
+    const std::optional<pubsub_itc_fw::ComponentArguments> arguments =
+        pubsub_itc_fw::parse_component_arguments(argc, argv, "matching_engine_publisher", std::cerr);
+    if (!arguments.has_value()) {
         return 1;
     }
-
-    const std::string log_file = argv[1];
-    const std::string config_file = argv[2];
+    const std::string& log_file = arguments->log_file;
+    const std::string& config_file = arguments->config_file;
 
     const std::string writable_error = pubsub_itc_fw::QuillLogger::ensure_log_file_writable(log_file);
     if (!writable_error.empty()) {
@@ -138,6 +140,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    config.trading_day = arguments->trading_day;
+    PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "MatchingEnginePublisher: started for trading day {}", arguments->trading_day);
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);
 

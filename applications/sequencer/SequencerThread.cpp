@@ -26,6 +26,7 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FileSystemUtils.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
@@ -35,6 +36,7 @@
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/TradingDayOfFile.hpp>
 #include <pubsub_itc_fw/WalCursor.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 
@@ -126,7 +128,7 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , arbiter_secondary_conn_id_{}
     , wal_positions_(wal_positions) {
     if (config_.ha_enabled) {
-        lease_promise_store_.emplace(config_.wal_directory + "/lease_promise.state", pubsub_itc_fw::LeasePromiseStore::current_boot_id());
+        lease_promise_store_.emplace(config_.wal_directory + "/lease_promise.state", pubsub_itc_fw::LeasePromiseStore::current_boot_id(), config_.trading_day);
         background_promise_recorder_.emplace(*lease_promise_store_, promise_recorder_thread_name);
         register_extra_thread(background_promise_recorder_->writer_pthread_id(), promise_recorder_thread_name);
     }
@@ -187,6 +189,7 @@ void SequencerThread::on_initial_event() {
     pubsub_itc_fw::ReplicatedWalConfiguration wal_configuration;
     wal_configuration.owner_name = "SequencerThread";
     wal_configuration.wal_directory = config_.wal_directory;
+    wal_configuration.trading_day = config_.trading_day;
     wal_configuration.wal_segment_size = config_.wal_segment_size;
     wal_configuration.segments_kept_ready = config_.wal_segments_kept_ready;
     if (helper_layout_loaded) {
@@ -232,6 +235,25 @@ void SequencerThread::on_initial_event() {
         replicated_wal_->use_peer_catch_up(serving_);
     }
     const int64_t recovered_seq = replicated_wal_->open(std::chrono::steady_clock::now());
+    // The WAL is the record of one trading day, and its first record, the start of day, says which (R-0164). A WAL from
+    // another day, or one holding records but no start of day, is never taken for a restart of this one (BUG-0137); it is
+    // left exactly as it was.
+    // TEST CONTRACT -- ha_test.py matches "refusing to start" and "trading day" in this Error.
+    {
+        std::string problem;
+        if (venue_state_.trading_day_started() && venue_state_.trading_day() != config_.trading_day) {
+            problem = pubsub_itc_fw::another_days_file(config_.wal_directory, venue_state_.trading_day(), config_.trading_day);
+        } else if (!venue_state_.trading_day_started() && replicated_wal_->last_seq_no() > 0) {
+            problem = fmt::format("the WAL in {} holds records through seq={} but no start of day, so it belongs to no trading day this sequencer can name",
+                                  config_.wal_directory, replicated_wal_->last_seq_no());
+        }
+        if (!problem.empty()) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "SequencerThread: refusing to start for trading day {} -- {}. The WAL is left as it was: {}", config_.trading_day, problem,
+                       pubsub_itc_fw::another_days_files_remedy);
+            throw pubsub_itc_fw::ConfigurationException(problem);
+        }
+    }
     replicated_wal_->start_building_record_of_commands();
     if (recovered_seq > 0) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -244,7 +266,7 @@ void SequencerThread::on_initial_event() {
     // The last time this process knew of a matching engine it routed orders to, which measures how long the venue was
     // without one when the whole venue was down; no earlier than the first record, before which there was nothing to
     // recover (EngineAbsenceRule).
-    presence_.started(config_.wal_directory, replicated_wal_->wal().first_wall_time_ns().value_or(0), config_.wall_clock->now_ns());
+    presence_.started(config_.wal_directory, config_.trading_day, replicated_wal_->wal().first_wall_time_ns().value_or(0), config_.wall_clock->now_ns());
     engine_absence_timer_id_ = start_recurring_timer(engine_absence_check_interval);
 
     wal_snapshot_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.snapshot_interval_seconds));

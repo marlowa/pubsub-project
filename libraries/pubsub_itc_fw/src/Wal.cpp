@@ -357,6 +357,33 @@ std::optional<int64_t> Wal::first_wall_time_ns() const {
     return std::nullopt;
 }
 
+std::optional<std::vector<uint8_t>> Wal::first_entry() const {
+    for (const uint64_t segment : segment_numbers()) {
+        const int fd = ::open(segment_path_for_delete(segment).c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+        // The entry's header, as first_seq_no reads it: its magic and the size of what follows the header.
+        uint8_t header[24] = {};
+        uint32_t magic = 0;
+        uint32_t payload_size = 0;
+        const bool header_read = ::pread(fd, header, sizeof(header), 0) == static_cast<ssize_t>(sizeof(header));
+        std::memcpy(&magic, header, sizeof(magic));
+        std::memcpy(&payload_size, header + 4, sizeof(payload_size));
+        if (!header_read || magic != WalWriter::entry_magic || payload_size < wal_entry_header_size) {
+            ::close(fd);
+            continue;
+        }
+        std::vector<uint8_t> contents(payload_size);
+        const bool contents_read = ::pread(fd, contents.data(), contents.size(), sizeof(header)) == static_cast<ssize_t>(contents.size());
+        ::close(fd);
+        if (contents_read) {
+            return contents;
+        }
+    }
+    return std::nullopt;
+}
+
 std::vector<uint64_t> Wal::segment_numbers() const {
     std::vector<uint64_t> numbers;
     DIR* dir = ::opendir(directory_.c_str());
