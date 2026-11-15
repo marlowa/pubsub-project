@@ -52,6 +52,8 @@ template <typename Envelope> VenueStateFromTheWal::Record record_of(const Envelo
     record.has_trading_date = envelope.has_trading_date;
     record.trading_date = envelope.trading_date;
     record.wall_time_ns = envelope.wall_time_ns;
+    record.has_report_position = envelope.has_report_engine_epoch && envelope.has_report_number;
+    record.report_position = EngineReportPosition{envelope.report_engine_epoch, envelope.report_number};
     return record;
 }
 
@@ -1934,6 +1936,10 @@ int64_t SequencerThread::PhaseLinks::next_seq_no() const {
     return owner_.replicated_wal_->next_seq_no();
 }
 
+std::optional<EngineReportPosition> SequencerThread::PhaseLinks::latest_engine_report_in_wal() const {
+    return owner_.venue_state_.latest_engine_report();
+}
+
 bool SequencerThread::PhaseLinks::an_engine_takes_orders() const {
     return owner_.an_engine_takes_orders();
 }
@@ -2443,7 +2449,9 @@ void SequencerThread::handle_engine_position(const pubsub_itc_fw::ConnectionID& 
     if (view.request_id >= phase_request_ids_from) {
         // Asked for a phase request: only the engine orders are routed to answers for the venue.
         if (conn_id == engine_routing_.active()) {
-            phase_requests_.engine_position(view.highest_applied);
+            phase_requests_.engine_position(
+                view.highest_applied,
+                TradingPhaseRequests::EngineReports{EngineReportPosition{view.reports_sent_epoch, view.reports_sent_through}, view.reports_held});
         }
         return;
     }

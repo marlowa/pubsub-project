@@ -735,7 +735,7 @@ void MatchingEngineThread::apply_command(const pubsub_itc_fw::EventMessage& mess
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode TechnicalEvent -- dropping");
         } else {
             const CommandSource source = command_source_for(message.seq_no());
-            apply_technical_event_command(view, message.seq_no(), envelope.has_trading_date ? envelope.trading_date : 0, source);
+            apply_technical_event_command(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0, source);
         }
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelSessionOrders::message_pdu_id)) {
@@ -1715,10 +1715,18 @@ void MatchingEngineThread::handle_engine_position_query(const pubsub_itc_fw::Eve
     pubsub_itc_fw_app::EnginePosition answer{};
     answer.request_id = query.request_id;
     answer.highest_applied = state_machine_.highest_applied();
+    // Every report of the commands acted on has been sent by now, or is held: the reports of a command are handed to the
+    // sender as the command is applied. They go on the connections for reports, not this one, so the answer says how far
+    // they have been sent and how many are held, for the sequencer to tell whether its WAL holds them all.
+    answer.reports_sent_epoch = report_sending_.last_numbered_epoch();
+    answer.reports_sent_through = report_sending_.last_numbered();
+    answer.reports_held = static_cast<int64_t>(report_sending_.held());
     send_pdu(message.connection_id(), pubsub_itc_fw_app::EnginePosition::message_pdu_id, 0, answer);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: EnginePositionQuery {} on connection {} -- the highest order or cancel acted on is seq_no={}", query.request_id,
-               message.connection_id().get_value(), state_machine_.highest_applied());
+               "MatchingEngineThread: EnginePositionQuery {} on connection {} -- the highest command acted on is seq_no={}; reports sent through number {} "
+               "under epoch {}, {} held",
+               query.request_id, message.connection_id().get_value(), state_machine_.highest_applied(), answer.reports_sent_through, answer.reports_sent_epoch,
+               answer.reports_held);
 }
 
 bool MatchingEngineThread::from_an_earlier_answer(const pubsub_itc_fw::ConnectionID& connection) const {
@@ -1926,9 +1934,10 @@ void MatchingEngineThread::apply_cancel_book_command(const pubsub_itc_fw_app::Ca
                sequence_number, result.reports_sent);
 }
 
-void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app::TechnicalEventView& event, int64_t sequence_number, int32_t trading_date,
-                                                         CommandSource source) {
-    const MatchingEngineStateMachine::TechnicalEventApplied result = state_machine_.apply_technical_event(event, sequence_number, trading_date, source);
+void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app::TechnicalEventView& event, int64_t sequence_number, int64_t transact_time,
+                                                         int32_t trading_date, CommandSource source) {
+    const MatchingEngineStateMachine::TechnicalEventApplied result =
+        state_machine_.apply_technical_event(event, sequence_number, transact_time, trading_date, source);
     if (!result.applied || !result.halt_changed) {
         return;
     }

@@ -314,11 +314,17 @@ end
 #  The matching engine's answer to EnginePositionQuery. Sent only
 #  by an engine that is acting on orders: an engine that is still
 #  catching up as part of a promotion does not answer, and the
-#  sequencer asks again until it does.
+#  sequencer asks again until it does. It also says how far the engine
+#  has sent its reports, so that the sequencer can tell whether every
+#  report of the commands acted on is in its WAL: the reports go on
+#  other connections, and can arrive after this answer.
 # ------------------------------------------------------------
 message EnginePosition (id=119, version=1)
-    i64 request_id         # the request_id of the query this answers
-    i64 highest_applied    # the highest sequence number of a command the engine has acted on: an order, a cancel or a TechnicalEvent
+    i64 request_id           # the request_id of the query this answers
+    i64 highest_applied      # the highest sequence number of a command the engine has acted on: an order, a cancel or a TechnicalEvent
+    i32 reports_sent_epoch   # the epoch under which the engine numbered the last report it sent; 0 when it has sent none
+    i64 reports_sent_through # the number of the last report it sent under that epoch; 0 when it has sent none
+    i64 reports_held         # how many reports it holds, not yet sent to every sequencer, for want of a connection or until it knows it leads
 end
 
 # ------------------------------------------------------------

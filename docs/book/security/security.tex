@@ -3,8 +3,10 @@
 
 Security depends on which connection is being considered. A FIX member connects
 to a gateway, the gateway authenticates the COMPID with the authentication
-service, and an operator manages COMPIDs through a web application. These links
-do not all have the same protection. In particular, SCRAM keeps a COMPID
+service, and an operator manages COMPIDs through a web application. An operator
+also halts trading, lifts a halt, and moves the venue from one phase of the
+trading day to the next, by sending requests to the sequencers over a
+connection of its own. These links do not all have the same protection. In particular, SCRAM keeps a COMPID
 password out of the gateway-to-authentication-service exchange, but it does not
 encrypt a member's connection to the gateway. TLS is available for FIX sessions
 but is optional, and the COMPID editor has its own administrator login and
@@ -77,6 +79,99 @@ its TLS admin connection. Client-certificate verification can be enabled, but
 it is disabled by default. The gateway-facing authentication connection is a
 separate plain TCP listener and does not use TLS. SCRAM protects the COMPID
 password on that connection, but does not encrypt the rest of its traffic.
+
+\section{The operator's connection to the sequencers}
+\label{sec:security:operator_connection}
+
+An operator halts trading, lifts a halt, and asks for the venue to enter the
+next phase of the trading day. Each of these is a request sent to both
+sequencers, and the leading sequencer acts on it. Two tools send them:
+\texttt{scripts/operator\_halt.py} for a halt and its lift, and
+\texttt{scripts/trading\_phase.py} for a phase. What the two share, including
+the connection and its security, is in \texttt{scripts/operator\_requests.py}.
+The procedures that start the venue for development and for testing send the
+same requests through the same code.
+
+Each sequencer has a listener for operators, configured in its
+\texttt{[operator]} section, and separate from every other listener it has. The
+listener accepts only TLS. It requires the client to present a certificate, and
+accepts the connection only if that certificate was signed by the operator's
+certificate authority, whose certificate is named by
+\texttt{tls\_ca\_path}. The sequencer refuses to start if
+\texttt{tls\_ca\_path} is empty, because without an authority any client could
+halt the venue. A client that presents no certificate, or one signed by another
+authority, fails the TLS handshake, and the sequencer reads nothing from it. The
+listener uses TLS 1.2 only, with two cipher suites, ECDHE-RSA-AES256-GCM-SHA384
+and ECDHE-ECDSA-AES256-GCM-SHA384, as every TLS listener in the framework does.
+
+The tools check the sequencer in turn. They trust only the operator's
+certificate authority, not the certificate authorities installed on the machine,
+and they check that the sequencer's certificate names the host they connected
+to. A program listening in a sequencer's place therefore cannot answer a request
+unless it holds a certificate the operator's authority signed for that host.
+
+The deployment script, \texttt{deploy.py}, makes the certificates when the
+environment file has an \texttt{[operator\_certificates]} section:
+
+\begin{itemize}
+  \item a self-signed certificate authority, \texttt{operator\_ca.crt}, with its
+        private key \texttt{operator\_ca.key};
+  \item one operator's certificate, \texttt{operator.crt}, with its private key
+        \texttt{operator.key}, signed by the authority and usable only to
+        identify a client;
+  \item for each sequencer, a certificate for its listener, signed by the same
+        authority, usable only to identify a server, and naming
+        \texttt{localhost}, \texttt{127.0.0.1} and the host the listener binds
+        to, or the machine's fully qualified name when it binds to every
+        interface; and a copy of the authority's certificate, which the
+        sequencer uses to check the operator's certificate.
+\end{itemize}
+
+The authority, the operator's certificate and their keys are kept in the
+directory the section names, \texttt{etc/operator} under the install directory.
+Each private key can be read only by the account that ran the deployment. Every
+certificate is valid for ten years. Nothing that exists is replaced unless the
+deployment is run with \texttt{--force-certs}, which makes a new authority and
+replaces every certificate it signs; each sequencer reads its certificates when
+it starts.
+
+The protection has these limits, which a deployment has to take into account:
+
+\begin{itemize}
+  \item \textbf{One certificate identifies every operator.} The deployment makes
+        a single operator's certificate, so the sequencers cannot tell one
+        operator from another. Each request carries the operator's name, which
+        each sequencer writes in its Quill log at Warning with the request and
+        its answer. The name is what the operator typed, as
+        \texttt{--operator}; it is not checked against the certificate, and so
+        it records who said they acted, not who did.
+  \item \textbf{The certificate decides everything.} A client holding the
+        operator's certificate and key may make every request: halt, lift, and
+        move the phase. There is no finer permission.
+  \item \textbf{The authority's private key is in the install directory.} Any
+        account that can read \texttt{operator\_ca.key} can sign a certificate
+        the sequencers accept. It is protected only by the file's permissions.
+  \item \textbf{A certificate cannot be withdrawn on its own.} There is no
+        certificate revocation list. A lost operator key is dealt with by making
+        a new authority with \texttt{--force-certs}, which replaces every
+        certificate, and restarting the sequencers.
+  \item \textbf{The listener's reach is a deployment setting.} The production
+        environment binds the listener to every interface, so which machines
+        can reach it is decided by the network, not by the sequencer.
+\end{itemize}
+
+\begin{requirement}{R-0176}{Only a client with the operator's certificate can make an operator's request}
+  A sequencer shall act on a request to halt trading, to lift a halt, or to
+  move the venue to another phase of the trading day only when it arrives over
+  TLS from a client that presented a certificate signed by the operator's
+  certificate authority. A sequencer configured without that authority shall
+  refuse to start.
+  \rationale{Each of these requests stops or starts trading for every member.
+  A listener that accepted any client would let anyone who can reach it halt
+  the venue, or close it for the day. Refusing to start without the authority
+  means the protection cannot be left out by mistake.}
+  \covers{ha_test:112}
+\end{requirement}
 
 \section{COMPID password lifecycle}
 \label{sec:security:compid_password_lifecycle}

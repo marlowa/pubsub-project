@@ -125,6 +125,22 @@ While halted, the engine refuses every new order, in the reply to that order, an
 every cancel. Both engines apply the same commands from the WAL, so an engine that follows halts and
 lifts the halt at the same commands as the engine that leads.
 
+**The close cancels every order still open.** A `TechnicalEvent` in the closed phase cancels every order
+on the book, in the order they were placed, and reports each to the member that placed it, with the
+time the sequencer recorded for the close. Each report answers the close: it is sent with the close's
+sequence number, and its ExecID is made from that number and the report's place, as for `CancelBook`.
+The first such event is the close itself; a later one, such as a halt declared after the close, finds
+the book empty, because the sequencer accepts no member's command after the close. The close cancels
+whether or not trading is halted. An engine that follows applies the close from the WAL and compares
+its reports with the leader's, as for any command. The engine does not otherwise act on the phase: the
+sequencer refuses what a phase does not allow, and the engine treats pre-open like open, because it
+does no matching ([trading_day_plan.md](trading_day_plan.md)).
+
+**The engine says how far it has sent its reports.** Its answer to `EnginePositionQuery` gives the
+highest command it has acted on, and also the epoch and number of the last report it sent and how many
+it holds unsent. The sequencer uses them before writing the end of day, to know that every report the
+close produced is in its WAL, because the answer and the reports travel on different connections.
+
 ## High availability
 
 With high availability on, two instances run: `matching_engine` (the primary, instance 1) and

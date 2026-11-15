@@ -1,6 +1,6 @@
 # The trading day: design plan {#trading_day_plan}
 
-**Status: agreed; steps 1 to 5 are done.** This note covers the whole trading day: every phase,
+**Status: agreed; steps 1 to 6 are done.** This note covers the whole trading day: every phase,
 how the venue moves from one to the next, what each component does in each, and how each change reaches
 the components and members that need it. It builds on three other notes and does not repeat them:
 
@@ -33,9 +33,10 @@ section, each with the reason for it.
 - **The sequencer refuses members' commands by phase.** Outside `pre_open` and `open` it refuses each
   one with `CommandRefused`, reason `TradingDayNotStarted` (before the start of day), `MarketNotOpen`
   (`sod`), `MarketClosed` (`closed`) or `TradingDayEnded` (`eod`), and both gateways tell the member why.
-- **The close cancels nothing yet.** The matching engine applies the `TechnicalEvent` entering `closed`
-  like any other phase change, so orders open at the close stay on the book until the venue stops
-  ([BUG-0132](../bug_list.md#bug_0132)); step 6 makes the close cancel them.
+- **The close cancels every open order (step 6).** Each matching engine, applying the `TechnicalEvent` that
+  enters `closed`, cancels every order on its book and sends a report of each to its member, answering the
+  close. The sequencer writes `eod` only once the leading engine has acted on the close and every report it
+  sent is in the WAL ([BUG-0132](../bug_list.md#bug_0132)).
 - **Members are told nothing until they send an order.** Neither gateway sends or understands FIX
   `TradingSessionStatus` (35=h) or a binary equivalent ([BUG-0065](../bug_list.md#bug_0065)).
 - **No topic carries the phase.** The matching engine publisher follows the sequencer's WAL and publishes
@@ -141,8 +142,16 @@ sequencer requires the WAL to hold a report answering the last order or cancel w
 report and the engine sends every report of a command before it applies the next. The close can produce no report
 at all, when no order is open, or many. So the check for `eod` is different: the leading engine's position
 (`EnginePosition`) must show the close applied, and every report the engine sent before that answer must be in
-the WAL. This holds only if the engine sends its position on the same connection as its reports, after them, and
-the sequencer writes each report as it arrives; that is to be confirmed in the code when step 6 is built. The
+the WAL.
+
+The engine does not send its position on the same connection as its reports. It answers on the connection the
+question came by, which is the sequencer's connection for orders; its reports go on its own connections to each
+sequencer, and it may hold some back while it has no connection or does not yet know it leads. So the answer can
+arrive before the close's reports. The answer therefore also says how far the engine has sent its reports (the
+engine's epoch and its number for the last report sent) and how many it holds unsent. The sequencer writes `eod`
+only when the answer shows the close applied and no report held, and the latest report in its WAL is at or after
+the last one the engine says it sent. Each report record in the WAL carries the engine's epoch and number, so every
+sequencer knows the latest from its own WAL, including one that takes the lead after the close. The
 check is what makes the recorder's rule hold:
 **no order record follows the `eod` event**, because nothing that can produce one is accepted after the close
 and everything the close produced is in the WAL before `eod` is written.
@@ -413,7 +422,8 @@ documents and decisions; code starts at step 4.
    followed at once by open: each phase is asked for, and the procedure that starts the venue asks for the
    start of day, pre-open and open in turn. Done.
 6. **The close**: the matching engine cancels every open order on applying the close, and the sequencer allows
-   `eod` only once every report the close produced is in the WAL ([BUG-0132](../bug_list.md#bug_0132)).
+   `eod` only once every report the close produced is in the WAL ([BUG-0132](../bug_list.md#bug_0132)). Done:
+   `EnginePosition` carries how far the engine has sent its reports, as section 2.5 explains.
 7. **The gateways**: `OrderAcceptance` with the trading day and the phase, refusals by phase, and
    `TradingSessionStatus` and its binary equivalent to members ([BUG-0065](../bug_list.md#bug_0065)).
 8. **The `technical_events` topic** on the matching engine publisher, for the components that only need to know.

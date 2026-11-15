@@ -217,9 +217,15 @@ before pre-open is one the sequencer wrote itself, which the rule for entering p
 on. Nor, before the start of day, does the sequencer write anything of its own: no `SessionEnded`, no
 halt and no void, because the start of day must be the first record. Outside pre-open and open, a
 member's session ending writes no `SessionEnded`, and a cancel still pending for an earlier session is
-not carried out: before pre-open the member has no order, and from the close on, cancelling the orders
-still open belongs to the close. The matching engine does not yet cancel them when it applies the
-close, so they stay on the book until the venue stops ([BUG-0132](../bug_list.md#bug_0132)).
+not carried out: before pre-open the member has no order, and from the close on, the close has
+cancelled every order still open.
+
+**The close cancels every order still open.** Each matching engine, applying the `TechnicalEvent` that
+enters closed, cancels every order on its book and sends a report of each to the member that placed it
+([matching_engine.md](matching_engine.md)). Each report answers the close: the sequencer finds no
+member's session under the close's sequence number, so it routes the report by the session on its
+envelope, and writes it into the WAL with the close's sequence number as `answers_seq_no`. A reader of
+the WAL, and a replay, can so tell the close's cancels from a member's.
 
 An operator, or the procedure that starts the venue, moves the venue from one phase to the next with
 `scripts/trading_phase.py`, which sends a `TradingPhaseRequest` (168) to both sequencers over each one's
@@ -234,8 +240,15 @@ phases are entered one at a time, in the order start of day, pre-open, open, clo
   said, in answer to an `EnginePositionQuery`, that it has acted on the start of day. Until then the
   answer is `NotReady`, the engine is asked, and the request is sent again.
 - **Open** and **closed** are written from the phase before each, with no further condition.
-- **End of day** is written only from closed, and only once the leading matching engine has said that
-  it has acted on the close. Until then the answer is `NotReady`, as for pre-open.
+- **End of day** is written only from closed, and only once every report the close produced is in the
+  WAL, so that no order record follows the end of day. The engine's answer to `EnginePositionQuery`
+  must show the close applied; it must also show no report held unsent, and the latest report in the
+  WAL must be at or after the last one the engine says it sent. The answer travels on the sequencer's
+  connection for orders and the reports on the engine's connections for reports, so the answer can
+  arrive first. The engine numbers its reports under its epoch, every report record in the WAL carries
+  that number, and so every sequencer knows the latest from its own WAL. Until then the answer is
+  `NotReady`, the engine is asked again, and the request is sent again. Pre-open is checked the same way,
+  although nothing before pre-open produces a report.
 - A request for the phase the venue is in, or one it has passed, writes nothing and says so. A phase
   further ahead than the next is refused as `NotNext`.
 - A change of phase carries whether trading is halted, so a halt continues into the next phase. The

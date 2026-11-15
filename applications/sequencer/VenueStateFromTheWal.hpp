@@ -10,6 +10,7 @@
 
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
+#include "EngineReportPosition.hpp"
 #include "SessionCancelsPending.hpp"
 #include "TradingHaltState.hpp"
 #include "TradingPhaseState.hpp"
@@ -55,7 +56,9 @@ class VenueStateFromTheWal {
         int64_t answers_seq_no{0};
         bool has_trading_date{false}; ///< for a command: the trading date its leader wrote on it
         int32_t trading_date{0};
-        int64_t wall_time_ns{0}; ///< when the record was written, wall-clock nanoseconds since the Unix epoch
+        int64_t wall_time_ns{0};         ///< when the record was written, wall-clock nanoseconds since the Unix epoch
+        bool has_report_position{false}; ///< for a report: where it stands in the reports its matching engine sent
+        EngineReportPosition report_position{};
     };
 
     /// What noting a record changed.
@@ -105,6 +108,13 @@ class VenueStateFromTheWal {
         return highest_command_answered_;
     }
 
+    /// The latest of the matching engine's reports in the WAL, by the engine's epoch and its number for the report; none
+    /// when the WAL holds no numbered report. Every report the engine sent before it, under the same epoch, is in the WAL
+    /// too, because the engine sends its reports in the order it numbers them and the sequencer writes them as they come.
+    [[nodiscard]] const std::optional<EngineReportPosition>& latest_engine_report() const {
+        return latest_engine_report_;
+    }
+
     /// Whether the engines are owed the voids, once the record of the latest void written as leader is committed through
     /// @p committed_through; if they are, they are owed them no more.
     [[nodiscard]] bool take_voids_due(int64_t committed_through);
@@ -121,6 +131,9 @@ class VenueStateFromTheWal {
     // The position of a void written as leader and not yet sent to the engines; zero when there is none.
     int64_t void_awaiting_commit_{0};
     int64_t highest_command_answered_{0};
+    std::optional<EngineReportPosition> latest_engine_report_;
+    // The position in the WAL of the record holding latest_engine_report_.
+    int64_t latest_engine_report_seq_no_{0};
     SessionCancelsPending session_cancels_;
     // Scratch space for decoding a void or a TechnicalEvent. A command of the sequencer's own is small, and decoding one
     // needs no more space than this.

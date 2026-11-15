@@ -617,6 +617,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         [[nodiscard]] const TradingHaltState& trading_halt() const override;
         [[nodiscard]] int64_t last_seq_no() const override;
         [[nodiscard]] int64_t next_seq_no() const override;
+        [[nodiscard]] std::optional<EngineReportPosition> latest_engine_report_in_wal() const override;
         [[nodiscard]] bool an_engine_takes_orders() const override;
         void ask_engine_position() override;
         bool write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) override;

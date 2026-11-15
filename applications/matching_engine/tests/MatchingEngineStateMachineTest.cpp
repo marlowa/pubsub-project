@@ -354,7 +354,7 @@ TEST_F(MatchingEngineStateMachineTest, RefusesEveryNewOrderWhileHalted) {
     halt.halted = true;
     halt.trading_day = trading_day;
     halt.reason = pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook;
-    machine_.apply_technical_event(halt, 1, trading_day, CommandSource::live);
+    machine_.apply_technical_event(halt, 1, 0, trading_day, CommandSource::live);
     outputs_.reports.clear();
     machine_.apply_new_order(new_order("ORD-1"), 2, taken_at, trading_day, member, CommandSource::live);
 
@@ -594,7 +594,7 @@ TEST_F(MatchingEngineStateMachineTest, ACatchUpRefusesANewOrderWhileHaltedAsTheL
         const CommandSource source = machine == &machine_ ? CommandSource::live : CommandSource::catch_up;
         machine->apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, source);
         machine->apply_cancel_book(std::numeric_limits<int64_t>::max(), 2, taken_at, trading_day, source);
-        machine->apply_technical_event(halt_for_recovery(), 3, trading_day, source);
+        machine->apply_technical_event(halt_for_recovery(), 3, 0, trading_day, source);
         machine->apply_new_order(new_order("ORD-2"), 4, taken_at, trading_day, member, source);
     }
 
@@ -623,7 +623,7 @@ TEST_F(MatchingEngineStateMachineTest, ACancelBookCommandLeavesTradingAsItWas) {
 // is not sent the command again.
 TEST_F(MatchingEngineStateMachineTest, TheHaltIsFoundInTheRegionByTheNextProcessToOpenIt) {
     machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
-    machine_.apply_technical_event(halt_for_recovery(), 2, trading_day, CommandSource::live);
+    machine_.apply_technical_event(halt_for_recovery(), 2, 0, trading_day, CommandSource::live);
     ASSERT_TRUE(machine_.halted());
 
     OrderBook reopened;
@@ -661,7 +661,7 @@ pubsub_itc_fw_app::TechnicalEventView technical_event(bool halted, int32_t day) 
 TEST_F(MatchingEngineStateMachineTest, ATechnicalEventHaltsAndLiftsAndACancelIsCarriedOutWhileHalted) {
     machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
     const MatchingEngineStateMachine::TechnicalEventApplied halt =
-        machine_.apply_technical_event(technical_event(true, trading_day), 2, trading_day, CommandSource::live);
+        machine_.apply_technical_event(technical_event(true, trading_day), 2, 0, trading_day, CommandSource::live);
     EXPECT_TRUE(halt.applied);
     EXPECT_TRUE(halt.halt_changed);
     EXPECT_TRUE(machine_.halted());
@@ -675,7 +675,7 @@ TEST_F(MatchingEngineStateMachineTest, ATechnicalEventHaltsAndLiftsAndACancelIsC
     EXPECT_EQ(outputs_.reports[1].exec_type, pubsub_itc_fw_app::ExecType::Canceled) << "a cancel is carried out while halted";
 
     const MatchingEngineStateMachine::TechnicalEventApplied lift =
-        machine_.apply_technical_event(technical_event(false, trading_day), 5, trading_day, CommandSource::live);
+        machine_.apply_technical_event(technical_event(false, trading_day), 5, 0, trading_day, CommandSource::live);
     EXPECT_TRUE(lift.halt_changed);
     EXPECT_FALSE(machine_.halted());
     outputs_.reports.clear();
@@ -687,15 +687,104 @@ TEST_F(MatchingEngineStateMachineTest, ATechnicalEventHaltsAndLiftsAndACancelIsC
 // A halt declared for one trading day cannot stop trading on a later one.
 TEST_F(MatchingEngineStateMachineTest, ATechnicalEventForAnOlderTradingDayIsRefused) {
     const MatchingEngineStateMachine::TechnicalEventApplied result =
-        machine_.apply_technical_event(technical_event(true, trading_day - 1), 1, trading_day, CommandSource::live);
+        machine_.apply_technical_event(technical_event(true, trading_day - 1), 1, 0, trading_day, CommandSource::live);
     EXPECT_FALSE(result.applied);
     EXPECT_FALSE(machine_.halted());
     EXPECT_EQ(book_.published(), 1) << "published all the same, so a restart does not meet it as new";
 }
 
+pubsub_itc_fw_app::TechnicalEventView entering(pubsub_itc_fw_app::TradingPhase phase, bool halted = false) {
+    pubsub_itc_fw_app::TechnicalEventView view{};
+    view.phase = phase;
+    view.halted = halted;
+    view.trading_day = trading_day;
+    view.reason = halted ? pubsub_itc_fw_app::TechnicalEventReason::DeclaredByOperator : pubsub_itc_fw_app::TechnicalEventReason::RequestedByOperator;
+    return view;
+}
+
+// The close cancels every order on the book, in the order they were placed, each with a report to its member that
+// answers the close: sent with the close's sequence number, and named by it and the report's place.
+TEST_F(MatchingEngineStateMachineTest, TheCloseCancelsEveryOpenOrderWithAReportAnsweringIt) {
+    machine_.apply_new_order(new_order("ORD-B"), 2, taken_at, trading_day, other_member, CommandSource::live);
+    machine_.apply_new_order(new_order("ORD-A"), 3, taken_at, trading_day, member, CommandSource::live);
+    outputs_.reports.clear();
+
+    const MatchingEngineStateMachine::TechnicalEventApplied result =
+        machine_.apply_technical_event(entering(pubsub_itc_fw_app::TradingPhase::Closed), 4, taken_at + 9, trading_day, CommandSource::live);
+
+    EXPECT_TRUE(result.applied);
+    EXPECT_EQ(result.orders_cancelled, 2);
+    ASSERT_EQ(outputs_.reports.size(), 2U);
+    EXPECT_EQ(outputs_.reports[0].cl_ord_id, "ORD-B") << "in the order the orders were placed";
+    EXPECT_EQ(outputs_.reports[0].comp_id, "MEMBER-B");
+    EXPECT_EQ(outputs_.reports[0].exec_id, exec_id_of(4, 0));
+    EXPECT_EQ(outputs_.reports[1].cl_ord_id, "ORD-A");
+    EXPECT_EQ(outputs_.reports[1].exec_id, exec_id_of(4, 1));
+    for (const RecordedReport& report : outputs_.reports) {
+        EXPECT_EQ(report.exec_type, pubsub_itc_fw_app::ExecType::Canceled);
+        EXPECT_EQ(report.sequence_number, 4) << "each report answers the close";
+        EXPECT_EQ(report.transact_time, taken_at + 9) << "the time the close carries";
+        EXPECT_EQ(report.repeat, ReportIsRepeat::no);
+    }
+    EXPECT_EQ(book_.size(), 0U);
+    EXPECT_EQ(book_.published(), 4);
+    EXPECT_TRUE(book_.consistency_problem().empty());
+}
+
+// Only the closed phase cancels: the other phases leave the book as it is.
+TEST_F(MatchingEngineStateMachineTest, NoPhaseButTheClosedOneCancelsAnOrder) {
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+    outputs_.reports.clear();
+    int64_t seq_no = 2;
+    for (const pubsub_itc_fw_app::TradingPhase phase : {pubsub_itc_fw_app::TradingPhase::StartOfDay, pubsub_itc_fw_app::TradingPhase::PreOpen,
+                                                        pubsub_itc_fw_app::TradingPhase::Open, pubsub_itc_fw_app::TradingPhase::EndOfDay}) {
+        EXPECT_EQ(machine_.apply_technical_event(entering(phase), seq_no++, taken_at, trading_day, CommandSource::live).orders_cancelled, 0);
+    }
+    EXPECT_TRUE(outputs_.reports.empty());
+    EXPECT_EQ(book_.size(), 1U);
+}
+
+// The close cancels while trading is halted by an operator: a halt must not keep orders open overnight.
+TEST_F(MatchingEngineStateMachineTest, TheCloseCancelsWhileHalted) {
+    machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
+    machine_.apply_technical_event(entering(pubsub_itc_fw_app::TradingPhase::Open, true), 2, taken_at, trading_day, CommandSource::live);
+    outputs_.reports.clear();
+    const MatchingEngineStateMachine::TechnicalEventApplied result =
+        machine_.apply_technical_event(entering(pubsub_itc_fw_app::TradingPhase::Closed, true), 3, taken_at, trading_day, CommandSource::live);
+    EXPECT_EQ(result.orders_cancelled, 1);
+    EXPECT_TRUE(machine_.halted());
+    EXPECT_EQ(book_.size(), 0U);
+}
+
+// An engine that meets the close in a catch-up cancels the same orders with the same reports, marked as possible
+// repeats, and the close is applied once.
+TEST_F(MatchingEngineStateMachineTest, TheCloseCancelsAlikeLiveAndFromACatchUpAndOnce) {
+    OrderBook caught_up_book;
+    caught_up_book.open(dir_ + "/caught_up.region", region_capacity, map_capacity);
+    RecordingOutputs caught_up_outputs;
+    MatchingEngineStateMachine caught_up{caught_up_book, second_identifiers_, caught_up_outputs, logger_};
+
+    for (MatchingEngineStateMachine* machine : {&machine_, &caught_up}) {
+        const CommandSource source = machine == &machine_ ? CommandSource::live : CommandSource::catch_up;
+        machine->apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, source);
+        machine->apply_new_order(new_order("ORD-2"), 2, taken_at, trading_day, other_member, source);
+        EXPECT_EQ(machine->apply_technical_event(entering(pubsub_itc_fw_app::TradingPhase::Closed), 3, taken_at, trading_day, source).orders_cancelled, 2);
+    }
+    EXPECT_FALSE(machine_.apply_technical_event(entering(pubsub_itc_fw_app::TradingPhase::Closed), 3, taken_at, trading_day, CommandSource::catch_up).applied)
+        << "applied once, by its sequence number";
+
+    ASSERT_EQ(outputs_.reports.size(), caught_up_outputs.reports.size());
+    for (size_t index = 0; index < outputs_.reports.size(); ++index) {
+        EXPECT_EQ(outputs_.reports[index].exec_id, caught_up_outputs.reports[index].exec_id) << "report " << index;
+        EXPECT_EQ(outputs_.reports[index].sequence_number, caught_up_outputs.reports[index].sequence_number) << "report " << index;
+    }
+    EXPECT_EQ(caught_up_outputs.reports.back().repeat, ReportIsRepeat::yes);
+    EXPECT_EQ(caught_up_book.size(), 0U);
+}
+
 // A halt met during a catch-up halts the engine catching up, as it halted the engine that applied it live.
 TEST_F(MatchingEngineStateMachineTest, AHaltAppliedDuringACatchUpHalts) {
-    machine_.apply_technical_event(technical_event(true, trading_day), 1, trading_day, CommandSource::catch_up);
+    machine_.apply_technical_event(technical_event(true, trading_day), 1, 0, trading_day, CommandSource::catch_up);
     EXPECT_TRUE(machine_.halted());
 }
 

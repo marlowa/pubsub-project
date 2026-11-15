@@ -10,8 +10,10 @@ Subcommands:
 
 The trading day:
   start gives each sequencer the trading day on its command line (--trading-day YYYYMMDD), records it in
-  [run_dir]/trading_day so that a component started or restarted on its own gets the same day, and once every
-  component is running asks for the start of day, pre-open and open in turn (scripts/trading_phase.py start-day).
+  [run_dir]/trading_day so that a component started or restarted on its own gets the same day. Once every
+  component is running, start asks the leading sequencer for the start of day, then pre-open, then open, by calling
+  operator_requests.start_trading_day (scripts/operator_requests.py). That function sends the same requests as the
+  operator's tool, scripts/trading_phase.py start-day; devenv.py calls the function directly and does not run the tool.
   Until pre-open the venue refuses every member's command. The day is --trading-day
   if given; otherwise the day recorded by the last start, unless --fresh-wal starts a new WAL; otherwise today's date
   on this machine, which is a convenience of the development sandbox only (docs/venue/start_and_end_of_day.md).
@@ -256,13 +258,24 @@ def start_the_trading_day(install_dir: Path, trading_day: int) -> None:
     print(f"trading day {trading_day} is open")
 
 
-# How many times a component may take the venue out of service before the supervisor stops putting
-# it back. An interruption is a period in which a member can neither place an order nor cancel one
-# and is told nothing; one is a fault and is defensible, a second from the same instance is that
-# instance being unfit. Giving up is what lets high availability move the entitlement to its peer,
-# which is the outcome the member should have had at the first fault. There is deliberately no
-# window: the count resets when the launcher is started again, so the period is a session.
-# See docs/availability/process_death.md.
+# The number of interruptions after which the supervisor stops restarting a component; with --supervised it is
+# passed to each launcher as launch.py --max-interruptions.
+#
+# An interruption is one occasion on which the component dies and the launcher starts it again. While an instance
+# that leads is down and being restarted, it still holds the lead, because it comes back within its lease period, so
+# its peer does not take over. For that time a member can neither place an order nor cancel one, and the venue tells
+# the member nothing: its orders are accepted and held, with no execution report.
+#
+# One interruption is treated as a fault, and the instance is restarted. A second one from the same instance is
+# treated as a sign that the instance is unfit, and the launcher gives up: it writes "gave up" to the component's
+# launcher state file and exits. The instance then stays down for longer than a lease period, so its peer takes the
+# lead with the arbiter's vote, and service resumes on the peer. That is what the member should have had at the first
+# fault.
+#
+# The count is not reset after a quiet period. Every interruption since the launcher was started counts, however far
+# apart they are, and only starting the launcher again resets the count to zero. The reasoning, and why no time window
+# is used, is in docs/availability/process_death.md, section "A slow flap is a loss of service, and the instance is
+# judged for it".
 MAX_INTERRUPTIONS_PER_SESSION = 2
 
 

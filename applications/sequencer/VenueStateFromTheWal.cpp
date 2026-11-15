@@ -24,6 +24,10 @@ VenueStateFromTheWal::Noted VenueStateFromTheWal::note_record(int64_t seq_no, co
     if (record.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport) && record.has_answers_seq_no) {
         highest_command_answered_ = std::max(highest_command_answered_, record.answers_seq_no);
     }
+    if (record.has_report_position && (!latest_engine_report_.has_value() || record.report_position.is_after(*latest_engine_report_))) {
+        latest_engine_report_ = record.report_position;
+        latest_engine_report_seq_no_ = seq_no;
+    }
     noted.void_added = note_void(seq_no, record);
     if (noted.void_added && how == How::written_by_this_leader) {
         // The engines are sent the voids once this record is committed (take_voids_due), because one that is not may yet be
@@ -131,6 +135,12 @@ bool VenueStateFromTheWal::discard_after(int64_t seq_no) {
     // it.
     voids_.discard_after(seq_no);
     session_cancels_.discard_after(seq_no);
+    // The reports before the latest one cannot be told apart without reading the WAL again, so the latest is forgotten
+    // until the next report is written. Until then nothing waits on it is ready, which is the safe way to be wrong.
+    if (latest_engine_report_seq_no_ > seq_no) {
+        latest_engine_report_.reset();
+        latest_engine_report_seq_no_ = 0;
+    }
     // As for a void: a TechnicalEvent whose record is discarded is no longer in the WAL, and the phase and whether
     // trading is halted are what the latest one left says.
     if (trading_phase_.discard_after(seq_no)) {

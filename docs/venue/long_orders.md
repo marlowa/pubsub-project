@@ -11,7 +11,7 @@ nothing built now has to be undone. Nothing here is built or agreed.
 ## What exists today
 
 Every order is a day order. Anything still open at the end of the trading day is to be cancelled, and its
-member told, before end of day ([BUG-0132](../bug_list.md#bug_0132), not built). Good Till Cancel (GTC) and
+member told, before end of day: the close cancels every order still open ([BUG-0132](../bug_list.md#bug_0132)). Good Till Cancel (GTC) and
 Good Till Date (GTD) orders are recognised in parts of the order handling code, and are exempt from some
 cancellation rules such as cancel on disconnect, but nothing carries them from one trading day to the
 next. The agreed behaviour of long orders on a halt is in the bug list's

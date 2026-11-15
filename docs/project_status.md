@@ -14,7 +14,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
   a matching engine, an authentication service, arbiters and a witness. The sequencer, matching
   engine and arbiters each run as a pair of instances.
 - **A Java admin service and FIX test client**, in `java/`.
-- **A functional specification**, `docs/book`, stating 170 requirements.
+- **A functional specification**, `docs/book`, stating 171 requirements.
 - **One list of design principles**, [design_principles.md](design_principles.md), agreed, with
   where each holds and where it is broken today.
 
@@ -22,7 +22,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 - **A trading day under load.** `perf_run.py --profile profiles/trading_day.toml` runs a shaped day
   of several million orders with cancels.
-- **Failover and restart of each pair.** `ha_test.py` has 111 scenarios: killing each component,
+- **Failover and restart of each pair.** `ha_test.py` has 112 scenarios: killing each component,
   restarting each in each role, stopping a whole machine, a member's open orders surviving a restart
   of the matching engine and a change of engine leader, a command that crashes both engines being
   voided, orders held while no engine leads, and reports held for a gateway surviving the death of
@@ -41,7 +41,7 @@ The [bug list](bug_list.md) holds 40 open entries, 6 of them high severity. Each
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
-- **The specification is mostly untested.** 47 of 170 requirements are verified by a scenario, and
+- **The specification is mostly untested.** 50 of 171 requirements are verified by a scenario, and
   one more by a TLA+ model (`scripts/check_book_requirements.py` counts them; [BUG-0068](bug_list.md#bug_0068)). A scenario
   passing has repeatedly been found to say less than it appeared to, so treat untested requirements
   as unverified.
@@ -55,10 +55,10 @@ they are being fixed. The ones most likely to matter first, by design area:
   that is connected but has stopped working looking healthy ([BUG-0194](bug_list.md#bug_0194)), a
   growing the order book needing more memory than the machine has ([BUG-0028](bug_list.md#bug_0028)),
   and a venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).
-- **The trading day has no start or end procedure.** Nothing archives the day's files, a file left
-  from an earlier day is taken as a restart ([BUG-0137](bug_list.md#bug_0137)), orders open at the
-  close are never cancelled ([BUG-0132](bug_list.md#bug_0132)), and a trading halt is told to a
-  member only in the reply to an order, and cannot be applied to one instrument
+- **The trading day has no start or end procedure.** Every phase is entered on request, and the close
+  cancels every open order, but nothing archives the day's files, a file left from an earlier day is
+  taken as a restart ([BUG-0137](bug_list.md#bug_0137)), and a trading halt or a change of phase is told
+  to a member only in the reply to an order, and cannot be applied to one instrument
   ([BUG-0065](bug_list.md#bug_0065)).
 - **The write-ahead log is never reclaimed during the day** ([BUG-0048](bug_list.md#bug_0048)).
   Whether it may be waits on a decision about how long history must be kept.

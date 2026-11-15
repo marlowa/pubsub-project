@@ -45,6 +45,9 @@ struct RecordingLinks : public TradingPhaseRequestsLinksInterface {
     [[nodiscard]] int64_t next_seq_no() const override {
         return next;
     }
+    [[nodiscard]] std::optional<EngineReportPosition> latest_engine_report_in_wal() const override {
+        return reports_in_wal;
+    }
     [[nodiscard]] bool an_engine_takes_orders() const override {
         return engine_takes_orders;
     }
@@ -74,6 +77,7 @@ struct RecordingLinks : public TradingPhaseRequestsLinksInterface {
     bool engine_takes_orders{true};
     int engine_asked{0};
     bool cannot_write{false};
+    std::optional<EngineReportPosition> reports_in_wal;
     std::vector<pubsub_itc_fw_app::TechnicalEvent> written;
     std::vector<Outcome> answers;
     pubsub_itc_fw_app::TradingPhaseAnswer last_answer{};
@@ -85,6 +89,12 @@ class TradingPhaseRequestsTest : public ::testing::Test {
         requests_ = std::make_unique<TradingPhaseRequests>(links_, logger_);
     }
 
+    // The engine has acted on every command through @p highest_applied, and sent @p reports_sent reports under epoch 3,
+    // holding @p held.
+    void engine_says(int64_t highest_applied, int64_t reports_sent = 0, int64_t held = 0) {
+        requests_->engine_position(highest_applied, TradingPhaseRequests::EngineReports{EngineReportPosition{reports_sent > 0 ? 3 : 0, reports_sent}, held});
+    }
+
     void ask(Phase phase, int32_t trading_day = today) {
         requests_->request(connection_, "alice", trading_day, phase);
     }
@@ -92,7 +102,7 @@ class TradingPhaseRequestsTest : public ::testing::Test {
     // The venue in the start of day, with the matching engine having acted on it.
     void started_and_applied() {
         ask(Phase::StartOfDay);
-        requests_->engine_position(links_.next - 1);
+        engine_says(links_.next - 1);
     }
 
     // The venue open: start of day, pre-open and open, each written.
@@ -106,7 +116,7 @@ class TradingPhaseRequestsTest : public ::testing::Test {
     void closed_and_applied() {
         opened();
         ask(Phase::Closed);
-        requests_->engine_position(links_.next - 1);
+        engine_says(links_.next - 1);
     }
 
     std::vector<std::string> log_;
@@ -163,10 +173,10 @@ TEST_F(TradingPhaseRequestsTest, PreOpenWaitsForTheEngineToHaveActedOnTheStartOf
     EXPECT_EQ(links_.written.size(), 1U);
     EXPECT_EQ(links_.answers.back(), Outcome::NotReady);
     EXPECT_EQ(links_.engine_asked, 1) << "the engine is asked how far it has got";
-    requests_->engine_position(0);
+    engine_says(0);
     ask(Phase::PreOpen);
     EXPECT_EQ(links_.answers.back(), Outcome::NotReady) << "it has not reached the start of day";
-    requests_->engine_position(1);
+    engine_says(1);
     ask(Phase::PreOpen);
     EXPECT_EQ(links_.answers.back(), Outcome::Written);
 }
@@ -177,7 +187,7 @@ TEST_F(TradingPhaseRequestsTest, EveryPhaseIsEnteredOnRequestInOrder) {
     EXPECT_EQ(links_.last_answer.phase, Phase::PreOpen) << "open is not written until it is asked for";
     ask(Phase::Open);
     ask(Phase::Closed);
-    requests_->engine_position(4);
+    engine_says(4);
     ask(Phase::EndOfDay);
     ASSERT_EQ(links_.written.size(), 5U);
     const std::vector<Phase> wanted{Phase::StartOfDay, Phase::PreOpen, Phase::Open, Phase::Closed, Phase::EndOfDay};
@@ -207,13 +217,42 @@ TEST_F(TradingPhaseRequestsTest, TheEndOfDayWaitsForTheEngineToHaveActedOnTheClo
     ask(Phase::EndOfDay);
     EXPECT_EQ(links_.answers.back(), Outcome::NotReady);
     EXPECT_EQ(links_.engine_asked, asked_before + 1) << "the engine is asked how far it has got";
-    requests_->engine_position(close_seq_no - 1);
+    engine_says(close_seq_no - 1);
     ask(Phase::EndOfDay);
     EXPECT_EQ(links_.answers.back(), Outcome::NotReady) << "it has not reached the close";
-    requests_->engine_position(close_seq_no);
+    engine_says(close_seq_no);
     ask(Phase::EndOfDay);
     EXPECT_EQ(links_.answers.back(), Outcome::Written);
     EXPECT_EQ(links_.written.back().phase, Phase::EndOfDay);
+}
+
+// The engine's answer can arrive before the close's reports, which travel on other connections: the end of day waits
+// until the WAL holds every report the engine says it sent, and until it holds none unsent.
+TEST_F(TradingPhaseRequestsTest, TheEndOfDayWaitsForEveryReportTheEngineSentToBeInTheWal) {
+    opened();
+    ask(Phase::Closed);
+    const int64_t close_seq_no = links_.next - 1;
+    engine_says(close_seq_no, 7);
+    links_.reports_in_wal = EngineReportPosition{3, 5};
+    ask(Phase::EndOfDay);
+    EXPECT_EQ(links_.answers.back(), Outcome::NotReady) << "reports 6 and 7 are not yet in the WAL";
+    links_.reports_in_wal = EngineReportPosition{3, 7};
+    engine_says(close_seq_no, 7, 2);
+    ask(Phase::EndOfDay);
+    EXPECT_EQ(links_.answers.back(), Outcome::NotReady) << "the engine holds reports not yet sent";
+    engine_says(close_seq_no, 7);
+    ask(Phase::EndOfDay);
+    EXPECT_EQ(links_.answers.back(), Outcome::Written);
+}
+
+// Reports numbered under a later epoch of the engine come after every report of an earlier one.
+TEST_F(TradingPhaseRequestsTest, AReportInTheWalUnderALaterEpochCoversEveryEarlierOne) {
+    opened();
+    ask(Phase::Closed);
+    engine_says(links_.next - 1, 7);
+    links_.reports_in_wal = EngineReportPosition{4, 1};
+    ask(Phase::EndOfDay);
+    EXPECT_EQ(links_.answers.back(), Outcome::Written);
 }
 
 TEST_F(TradingPhaseRequestsTest, WithNoEngineTheVenueDoesNotMoveToTheEndOfDay) {

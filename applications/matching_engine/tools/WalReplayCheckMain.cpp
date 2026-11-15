@@ -371,8 +371,8 @@ int main(int argc, char** argv) {
                             return;
                         }
                         ++commands;
-                        static_cast<void>(
-                            machine.apply_technical_event(event, record_id, envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
+                        static_cast<void>(machine.apply_technical_event(event, record_id, envelope.wall_time_ns,
+                                                                        envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
                     } else if (envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id)) {
                         pubsub_itc_fw_app::VoidCommandsView command{};
                         if (!pubsub_itc_fw_app::decode(command, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {

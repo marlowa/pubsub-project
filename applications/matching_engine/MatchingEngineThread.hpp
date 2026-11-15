@@ -586,7 +586,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void apply_cancel_book_command(const pubsub_itc_fw_app::CancelBookView& command, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
                                    CommandSource source);
     // Applies a TechnicalEvent command, and tells the test of a halt it set.
-    void apply_technical_event_command(const pubsub_itc_fw_app::TechnicalEventView& event, int64_t sequence_number, int32_t trading_date, CommandSource source);
+    void apply_technical_event_command(const pubsub_itc_fw_app::TechnicalEventView& event, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
+                                       CommandSource source);
     // The leading sequencer sent the voids in its WAL (VoidedCommands): each is added to those the state machine knows
     // of, and one learned of after applying a command it names stops this instance leading
     // (docs/availability/voided_commands.md, section 3.4).

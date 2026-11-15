@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -12,6 +13,7 @@
 
 #include <leader_follower.hpp>
 
+#include "EngineReportPosition.hpp"
 #include "TradingHaltState.hpp"
 #include "TradingPhaseState.hpp"
 
@@ -37,6 +39,8 @@ class TradingPhaseRequestsLinksInterface {
     [[nodiscard]] virtual int64_t last_seq_no() const = 0;
     /// The number the next record written will have.
     [[nodiscard]] virtual int64_t next_seq_no() const = 0;
+    /// The latest of the matching engine's reports in the WAL, by the engine's epoch and its number for the report.
+    [[nodiscard]] virtual std::optional<EngineReportPosition> latest_engine_report_in_wal() const = 0;
     /// Whether a matching engine takes orders now.
     [[nodiscard]] virtual bool an_engine_takes_orders() const = 0;
     /// Asks the matching engine orders are routed to for the highest command it has acted on (EnginePositionQuery); its
@@ -68,7 +72,11 @@ class TradingPhaseRequestsLinksInterface {
  *   NotReady. A person resolves that halt before the venue moves on. Any other halt does not stop the phase moving on.
  * - For pre-open, until the leading matching engine has said it has acted on the start of day; and for the end of day,
  *   until it has said it has acted on the close: NotReady, and the engine is asked how far it has got. The request is to be
- *   sent again.
+ *   sent again. The engine's answer must also show that every report it has sent is in the WAL, and that it holds none
+ *   unsent: the close produces a report for each order it cancels, and the end of day is not written until all of them are
+ *   in the WAL, so that no order record follows it (docs/venue/trading_day_plan.md, section 2.5). The reports travel on
+ *   other connections from the answer, so the answer can arrive first; the sequencer compares the engine's count of its
+ *   reports with the latest report in the WAL.
  * - Otherwise, the TechnicalEvent entering the phase is written.
  *
  * Every change of phase carries whether trading is halted, so a halt is carried into the next phase. Every request and
@@ -83,8 +91,15 @@ class TradingPhaseRequests {
     /// Operator @p operator_name, on @p connection, asks for the venue to enter @p phase on trading day @p trading_day.
     void request(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, int32_t trading_day, pubsub_itc_fw_app::TradingPhase phase);
 
-    /// The matching engine orders are routed to has acted on every command through @p highest_applied.
-    void engine_position(int64_t highest_applied);
+    /// What the matching engine orders are routed to said, in answer to EnginePositionQuery, of its reports.
+    struct EngineReports {
+        EngineReportPosition sent_through{}; ///< the last report it sent; number 0 when it has sent none
+        int64_t held{0};                     ///< how many it holds, not yet sent to every sequencer
+    };
+
+    /// The matching engine orders are routed to has acted on every command through @p highest_applied, and said @p reports
+    /// of its reports.
+    void engine_position(int64_t highest_applied, const EngineReports& reports);
 
     /// This instance has stopped leading: what it knew of the engine's position belongs to the engine it routed to.
     void stopped_leading();
@@ -100,6 +115,8 @@ class TradingPhaseRequests {
     void start_of_day(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, int32_t trading_day);
     // Enters @p phase, any phase after the start of day, if it is the next one and its conditions hold.
     void move_on(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, pubsub_itc_fw_app::TradingPhase phase);
+    // Why the engine's reports are not yet all in the WAL, as the latest answer gave them; empty when they are.
+    [[nodiscard]] std::string reports_outstanding() const;
     // Writes the TechnicalEvent entering @p phase, carrying whether trading is halted. @return its position, or zero if it
     // was not written.
     int64_t write_phase(pubsub_itc_fw_app::TradingPhase phase, int32_t trading_day);
@@ -107,6 +124,7 @@ class TradingPhaseRequests {
     TradingPhaseRequestsLinksInterface& links_;
     pubsub_itc_fw::QuillLogger& logger_;
     int64_t engine_applied_through_{0};
+    EngineReports engine_reports_{};
 };
 
 } // namespaces

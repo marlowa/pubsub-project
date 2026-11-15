@@ -1453,6 +1453,11 @@ class Scenario(NamedTuple):
     # a request sent again must write nothing; once the venue is open an order must be accepted; and the first record of
     # the WAL must be the start of day (R-0164, R-0166). See run_scenario's "start of the trading day" block.
     assert_trading_day_start: bool = False
+    # When True, each sequencer's listener for operators is sent a request to halt trading by a client presenting no
+    # certificate, and by one presenting a certificate signed by another certificate authority. Neither may be answered,
+    # neither may appear in a sequencer's Quill log, and trading must not be halted; a request from a client with the
+    # operator's certificate must be answered (R-0176). See run_scenario's "listener for operators" block.
+    assert_operator_listener_refuses_strangers: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -5263,6 +5268,30 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 112 -- the listener for operators answers only a client with the operator's certificate.
+    #
+    # docs/book/security/security.tex, R-0176. Once the venue is open, each sequencer's listener for operators is sent a
+    # request to halt trading, first by a client that presents no certificate, then by one that presents a certificate
+    # signed by a certificate authority made for the test. Neither may be answered, and neither request may reach a
+    # sequencer: its operator's name must not appear in either sequencer's Quill log. A request from a client with the
+    # operator's certificate must then be answered by the leading sequencer, which must say trading is not halted, and its
+    # operator's name must appear in the log, which shows the log read is the right one.
+    Scenario(
+        number=112,
+        short_name="operator_listener_refuses_strangers",
+        description="The listener for operators refuses a client with no certificate, or with one from another authority",
+        expected_outcome=(
+            "a halt request from a client with no certificate, and from one whose certificate another authority signed, is not "
+            "answered, reaches no sequencer, and halts nothing; a request with the operator's certificate is answered"
+        ),
+        me_ha=True,
+        skip_baseline_orders=True,
+        assert_operator_listener_refuses_strangers=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 92 -- orders are held while no engine leads, for as long as a change of engine leader takes, and refused after that.
     #
     # docs/availability/voided_commands.md, sections 5.1 and 5.2. Both engines are taken away. Several orders are placed
@@ -7062,6 +7091,10 @@ def numbering_goes_backwards(wal_dir: Path, from_position: tuple[int, int]) -> l
     """Each place, from the entry at from_position onwards, where a record's number is not above the one before."""
     ids = [record_id for _, record_id in wal_record_ids(wal_dir, from_position)]
     return [(earlier, later) for earlier, later in zip(ids, ids[1:]) if later <= earlier]
+
+
+# The message type of an execution report in a WAL record's envelope, as generated into fix_orders.hpp; no Python module is generated for it.
+_EXECUTION_REPORT_PDU_ID = 1002
 
 
 def wal_entries(wal_dir: Path):
@@ -9151,6 +9184,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
                 and not scenario.assert_held_answered and not scenario.assert_halt_voids_held_orders and not scenario.expects_no_new_leader
                 and not scenario.assert_operator_lift and not scenario.assert_operator_halt and not scenario.assert_trading_day_start
+                and not scenario.assert_operator_listener_refuses_strangers
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
                 and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained):
@@ -10489,6 +10523,18 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("  the end of day before the close is refused; open is written, and an order in it is accepted -- OK")
 
             enter("closed")
+            cancelled_at_close: dict[str, dict[int, str]] = {}
+            deadline = time.monotonic() + _HELD_ANSWER_TIMEOUT
+            while len(cancelled_at_close) < 2 and time.monotonic() < deadline:
+                report = member.receive_until("8", timeout=1.0)
+                if report is not None and report.get(11) in ("day-pre-open-1", "day-open-1"):
+                    cancelled_at_close[report[11]] = report
+            if sorted(cancelled_at_close) != ["day-open-1", "day-pre-open-1"] or any(
+                    report.get(39) != "4" or report.get(150) != "4" for report in cancelled_at_close.values()):
+                member.close()
+                die(f"the trading day: the close was to cancel both orders resting on the book, each with a report of OrdStatus and ExecType "
+                    f"4, cancelled; the member was sent {cancelled_at_close}")
+            log("  the close cancels both orders resting on the book, and the member is sent a report of each -- OK")
             enter("open", "AlreadyPast")
             member.new_order_single("day-closed-1")
             day_answered("day-closed-1", "an order after the close", "8", "market is closed")
@@ -10533,6 +10579,114 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if event is None or event.phase != leader_follower.TradingPhase.EndOfDay:
                 die(f"the trading day: the last record of {wal_dir} is {envelope}; the end of day was wanted, with nothing after it")
             log("  the WAL's last record is the end of day -- OK")
+            close_seq_no = None
+            answering_close = 0
+            for record_id, _, contents in wal_entries(wal_dir):
+                record = leader_follower.WalRecord.decode(contents)[0]
+                if record.pdu_id == leader_follower.TechnicalEvent.MESSAGE_ID:
+                    if leader_follower.TechnicalEvent.decode(record.payload)[0].phase == leader_follower.TradingPhase.Closed and close_seq_no is None:
+                        close_seq_no = record_id
+                elif close_seq_no is not None and record.pdu_id == _EXECUTION_REPORT_PDU_ID and record.answers_seq_no == close_seq_no:
+                    answering_close += 1
+            if close_seq_no is None or answering_close != 2:
+                die(f"the trading day: the WAL holds {answering_close} report(s) answering the close at seq={close_seq_no}; the two cancels of "
+                    "the orders resting at the close were wanted, each recorded as answering it")
+            log(f"  the WAL records both cancels as answering the close at seq={close_seq_no}, before the end of day -- OK")
+
+            # Both engines apply the close: the leader as it happens, the follower as it follows the WAL, which it applies as
+            # a catch-up. The follower compares its reports of each command with the leader's in the WAL, now the close's
+            # included, and says at Error when they differ. Both logs must show the close cancelling both orders, and one of
+            # them as it happened, so that a check reading the logs of another run cannot pass.
+            applied_as_it_happened = False
+            for engine_log_name in ("matching_engine_primary.log", "matching_engine_secondary.log"):
+                engine_log = prefix / "log" / engine_log_name
+                text = engine_log.read_text(encoding="utf-8", errors="replace") if engine_log.is_file() else ""
+                applied = [line for line in text.splitlines() if f"TechnicalEvent seq={close_seq_no} is in the closed phase -- 2 of 2" in line]
+                differences = [line for line in text.splitlines() if "FollowerReportComparison: following the WAL, command" in line]
+                if not applied:
+                    die(f"the trading day: {engine_log} does not show its engine applying the close at seq={close_seq_no} and cancelling both orders")
+                applied_as_it_happened = applied_as_it_happened or any("during catch-up" not in line for line in applied)
+                if differences:
+                    die(f"the trading day: {engine_log} says the engines did not apply a command alike: {differences[0]}")
+            if not applied_as_it_happened:
+                die("the trading day: neither engine's log shows the close applied as it happened, so the logs are not of this run")
+            log("  both engines applied the close alike, cancelling both orders, and the follower found no report that differs -- OK")
+
+        # ── The listener for operators answers only a client with the operator's certificate (R-0176) ──
+        if scenario.assert_operator_listener_refuses_strangers:
+            import ssl  # pylint: disable=import-outside-toplevel
+
+            leader_follower, pdu_framing = operator_requests.load_messages(prefix)
+            listeners = operator_requests.deployed_listeners(prefix)
+            if len(listeners) != 2:
+                die(f"listener for operators: {len(listeners)} sequencer listener(s) deployed in {prefix}; both sequencers' were wanted")
+            operator_ca = prefix / "etc" / "operator" / "operator_ca.crt"
+
+            # A certificate authority made for the test, and a client certificate it signed: as the deployment makes the
+            # operator's, but from an authority the sequencers do not trust. In the project's tmp directory, never /tmp.
+            other_dir = Path(__file__).resolve().parent.parent / "tmp" / "ha_test_other_operator_authority"
+            shutil.rmtree(other_dir, ignore_errors=True)
+            other_dir.mkdir(parents=True)
+            other_ca, other_ca_key = other_dir / "other_ca.crt", other_dir / "other_ca.key"
+            other_crt, other_key, other_csr = other_dir / "other.crt", other_dir / "other.key", other_dir / "other.csr"
+            other_ext = other_dir / "other.ext"
+            other_ext.write_text("basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=clientAuth\n",
+                                 encoding="utf-8")
+            for command in (
+                ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(other_ca_key), "-out", str(other_ca), "-days", "1",
+                 "-subj", "/CN=ha_test other authority", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"],
+                ["openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout", str(other_key), "-out", str(other_csr), "-subj", "/CN=operator"],
+                ["openssl", "x509", "-req", "-in", str(other_csr), "-CA", str(other_ca), "-CAkey", str(other_ca_key), "-set_serial", "1",
+                 "-days", "1", "-extfile", str(other_ext), "-out", str(other_crt)],
+            ):
+                made = subprocess.run(command, capture_output=True, text=True, check=False)
+                if made.returncode != 0:
+                    die(f"listener for operators: could not make the other authority's certificate: {' '.join(command[:3])}: {made.stderr.strip()}")
+
+            # Each trusts the operator's authority, so the sequencer's own certificate is accepted: only the client's
+            # certificate differs. The first presents none.
+            no_certificate = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=str(operator_ca))
+            other_authority = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=str(operator_ca))
+            other_authority.load_cert_chain(str(other_crt), str(other_key))
+            strangers = (("ha_test-no-certificate", no_certificate, "no certificate"),
+                         ("ha_test-other-authority", other_authority, "a certificate another authority signed"))
+            for name, context, what in strangers:
+                request = leader_follower.OperatorHaltRequest(halt=True, operator_name=name)
+                for listener in listeners:
+                    answer = operator_requests.ask(listener, context, request, leader_follower.OperatorHaltAnswer, pdu_framing, 5.0)
+                    if not isinstance(answer, str):
+                        die(f"listener for operators: {listener[0]} answered a client presenting {what}: {answer}")
+                    log(f"  {listener[0]}, client presenting {what}: {answer}")
+            log("  neither sequencer answers a client with no certificate, or with one another authority signed -- OK")
+
+            control_name = "ha_test-with-certificate"
+            result = operator_requests.ask_for_phase(prefix, TRADING_DAY, "StartOfDay", control_name, listeners=listeners)
+            for line in result.lines:
+                log(f"    {line}")
+            if result.answer is None or result.answer.outcome != leader_follower.TradingPhaseOutcome.AlreadyPast:
+                die("listener for operators: a request from a client with the operator's certificate was not answered by a leading sequencer "
+                    "saying the venue is past the start of day")
+            if result.answer.halted:
+                die("listener for operators: the leading sequencer says trading is halted; a stranger's halt request reached it")
+            log("  a client with the operator's certificate is answered, and trading is not halted -- OK")
+
+            sequencer_logs = [prefix / "log" / f"{name}.log" for name in operator_requests.SEQUENCERS]
+            deadline = time.monotonic() + 10.0
+            texts: list[str] = []
+            while time.monotonic() < deadline:
+                texts = [path.read_text(encoding="utf-8", errors="replace") if path.is_file() else "" for path in sequencer_logs]
+                if all(control_name in text for text in texts):
+                    break
+                time.sleep(0.2)
+            if not all(control_name in text for text in texts):
+                die(f"listener for operators: the request from {control_name} is not in both sequencers' Quill logs, so the logs read "
+                    f"cannot show what reached them: {[str(path) for path in sequencer_logs]}")
+            for name, _, what in strangers:
+                for path, text in zip(sequencer_logs, texts):
+                    if name in text:
+                        die(f"listener for operators: {path} names {name}: a request from a client presenting {what} reached the sequencer")
+            log("  no request from either client reached a sequencer's Quill log, where the operator's request did -- OK")
+            shutil.rmtree(other_dir, ignore_errors=True)
 
         # ── The operator's halt: new orders refused, cancels carried out, the book kept ──
         # Section 6.2. An operator halts trading while an engine leads, and later lifts the halt. Nothing may be cancelled

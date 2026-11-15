@@ -185,13 +185,8 @@ refused.
   one position, both matching engines cancel the same orders, and a replay cancels them again in
   the same way. Every member's view of its orders comes to match the venue's, for the reason
   \reqref{R-0024} gives.}
-  \uncovered{the close does not exist yet}
+  \covers{ha_test:111}
 \end{requirement}
-
-\begin{gap}{BUG-0132}
-  Orders still open at the end of the trading day are never cancelled, and their members are
-  never told.
-\end{gap}
 
 \begin{requirement}{R-0173}{No order record follows end of day}
   No record of an order, a cancel or an execution report shall follow the \texttt{TechnicalEvent}
@@ -201,7 +196,7 @@ refused.
   if nothing that concerns an order comes after it. The requirements above ensure it: no command
   from a member is accepted after the close, and end of day is not entered until every report the
   close produced is in the WAL.}
-  \uncovered{the close cancels no order yet, so no scenario can show that its reports all come before end of day}
+  \covers{ha_test:111}
 \end{requirement}
 
 \subsection{Who is told}

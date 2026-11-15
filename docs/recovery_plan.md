@@ -150,8 +150,8 @@ the bug list:
   [BUG-0131](bug_list.md#bug_0131) (the leading sequencer allocates from the heap for every order) and
   [BUG-0133](bug_list.md#bug_0133) (catch-ups read the log on the thread that sequences orders);
 - gaps in the venue principles, to be ordered with the rest of the bug list in phase 12 unless Andrew
-  brings one forward: [BUG-0132](bug_list.md#bug_0132) (orders open at the end of the day are never
-  cancelled), [BUG-0134](bug_list.md#bug_0134) to [BUG-0136](bug_list.md#bug_0136) (a venue running
+  brings one forward: [BUG-0132](bug_list.md#bug_0132) (orders open at the end of the day: built,
+  and awaiting closure), [BUG-0134](bug_list.md#bug_0134) to [BUG-0136](bug_list.md#bug_0136) (a venue running
   without a standby) and [BUG-0137](bug_list.md#bug_0137) (no start-of-day or end-of-day procedure).
 
 ### Phase 2. Make the build enforce the framework principles

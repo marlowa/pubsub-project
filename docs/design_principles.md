@@ -404,10 +404,10 @@ sequencer's record what was open, cancels each order, tells the members and halt
 **What checks it.** Scenarios 50, 51 and 52 of the high availability tests cover the three recovery
 paths of the open-order region.
 
-**Today: holds within the day, with one gap at the end of it.** The log keeps the whole day: the
-snapshot deletes nothing, and nothing calls `Wal::truncate_below`. But nothing cancels the orders
-still open at the end of the trading day; they disappear when the processes are stopped and the logs
-archived, and their members are never told. Recorded as [BUG-0132](bug_list.md#bug_0132).
+**Today: holds.** The log keeps the whole day: the snapshot deletes nothing, and nothing calls
+`Wal::truncate_below`. The close cancels every order still open, as a command in the log, and each
+member is sent a report of each cancel before the end of day is written
+([BUG-0132](bug_list.md#bug_0132), [trading_day_plan.md](venue/trading_day_plan.md)).
 
 ### V3. At most one instance of a pair acts as leader at any moment
 

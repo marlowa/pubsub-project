@@ -1052,7 +1052,7 @@ void MatchingEngineStateMachine::after_failure(int64_t sequence_number, CommandS
 }
 
 void MatchingEngineStateMachine::send_cancel_by_command(const OrderEntry& entry, int64_t sequence_number, int64_t place, int64_t transact_time,
-                                                        ReportIsRepeat repeat) {
+                                                        ReportIsRepeat repeat, AnswersTheCommand answers) {
     ReportIdentifiers::Buffer exec_id_buf{};
     const std::string_view exec_id = identifiers_.exec_id(exec_id_buf, sequence_number, place);
     ReportIdentifiers::Buffer order_id_buf{};
@@ -1087,9 +1087,10 @@ void MatchingEngineStateMachine::send_cancel_by_command(const OrderEntry& entry,
         er.has_expire_time = true;
         er.expire_time = entry.expire_time;
     }
-    // Sequence number 0: the sequencer routes a report by the sequence number of the order it answers, and this
-    // command was placed by no member, so the session that placed the order rides on the report's envelope instead.
-    outputs_.send_report(er, 0, entry.session, repeat);
+    // The session that placed the order rides on the report's envelope, because no member placed the command, so the
+    // sequencer finds no member's session under its sequence number. A report that answers the command carries the
+    // command's sequence number, which the sequencer records as the command it answers; any other carries 0.
+    outputs_.send_report(er, answers == AnswersTheCommand::yes ? sequence_number : 0, entry.session, repeat);
 }
 
 MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::apply_cancel_book(int64_t orders_placed_through, int64_t sequence_number,
@@ -1174,8 +1175,8 @@ MatchingEngineStateMachine::SessionOrdersCancelled MatchingEngineStateMachine::a
 }
 
 MatchingEngineStateMachine::TechnicalEventApplied MatchingEngineStateMachine::apply_technical_event(const pubsub_itc_fw_app::TechnicalEventView& view,
-                                                                                                    int64_t sequence_number, int32_t trading_date,
-                                                                                                    CommandSource source) {
+                                                                                                    int64_t sequence_number, int64_t transact_time,
+                                                                                                    int32_t trading_date, CommandSource source) {
     TechnicalEventApplied result;
     const bool live = source == CommandSource::live;
     if (!live && applied_before(sequence_number)) {
@@ -1197,9 +1198,28 @@ MatchingEngineStateMachine::TechnicalEventApplied MatchingEngineStateMachine::ap
         book_.publish(sequence_number);
         return result;
     }
+    if (view.phase == pubsub_itc_fw_app::TradingPhase::Closed && !ReportIdentifiers::fits(sequence_number, 0)) {
+        refuse_to_name(sequence_number);
+        return result;
+    }
     result.applied = true;
     result.halt_changed = view.halted != book_.halted();
     set_halted(view.halted ? TradingHalted::yes : TradingHalted::no);
+    if (view.phase == pubsub_itc_fw_app::TradingPhase::Closed) {
+        // The close cancels every order still open (docs/venue/trading_day_plan.md, section 2.4). Every order on the book
+        // was placed before the event, so every one is cancelled.
+        identifiers_.use_trading_date(trading_date);
+        const ReportIsRepeat repeat = live ? ReportIsRepeat::no : ReportIsRepeat::yes;
+        const size_t open_orders = book_.size();
+        int64_t place = 0;
+        result.orders_cancelled = static_cast<int64_t>(book_.remove_placed_through(sequence_number, [&](const OrderEntry& entry) {
+            send_cancel_by_command(entry, sequence_number, place++, transact_time, repeat, AnswersTheCommand::yes);
+        }));
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineStateMachine: TechnicalEvent seq={} is in the closed phase -- {} of {} open order(s) cancelled and reported, each answering "
+                   "seq={}{}",
+                   sequence_number, result.orders_cancelled, open_orders, sequence_number, live ? "" : " -- during catch-up, reported as possible repeats");
+    }
     book_.publish(sequence_number);
     PUBSUB_LOG(logger_, view.halted ? pubsub_itc_fw::FwLogLevel::Error : pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineStateMachine: TechnicalEvent seq={} -- phase {}, trading day {}, {} ({}){}", sequence_number,

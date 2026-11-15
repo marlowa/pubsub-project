@@ -145,6 +145,16 @@ class EngineReportSending {
         return held_.size();
     }
 
+    /// The epoch under which the last report sent was numbered; 0 when none has been sent.
+    [[nodiscard]] int32_t last_numbered_epoch() const {
+        return report_number_epoch_;
+    }
+
+    /// The number of the last report sent, under last_numbered_epoch(); 0 when none has been sent.
+    [[nodiscard]] int64_t last_numbered() const {
+        return report_number_;
+    }
+
   private:
     // Sends each held report on each of the named connections it has not yet been sent on, and drops those sent on
     // every connection expected.

@@ -141,6 +141,15 @@ void TradingPhaseRequests::move_on(const pubsub_itc_fw::ConnectionID& connection
         const pubsub_itc_fw_app::TradingPhase waits_on =
             phase == pubsub_itc_fw_app::TradingPhase::PreOpen ? pubsub_itc_fw_app::TradingPhase::StartOfDay : pubsub_itc_fw_app::TradingPhase::Closed;
         const int64_t waits_on_seq_no = state.entered_at(waits_on).value_or(0);
+        const std::string outstanding = reports_outstanding();
+        if (engine_applied_through_ >= waits_on_seq_no && !outstanding.empty()) {
+            links_.ask_engine_position();
+            answer(connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::NotReady, 0,
+                   fmt::format("the matching engine has acted on the TechnicalEvent entering phase {} at seq={}, but {}; it has been asked again, and the "
+                               "request is to be sent again; nothing was written",
+                               pubsub_itc_fw_app::to_string(waits_on), waits_on_seq_no, outstanding));
+            return;
+        }
         if (engine_applied_through_ < waits_on_seq_no) {
             const bool engine = links_.an_engine_takes_orders();
             if (engine) {
@@ -179,12 +188,31 @@ int64_t TradingPhaseRequests::write_phase(pubsub_itc_fw_app::TradingPhase phase,
     return links_.write_technical_event(event) ? seq_no : 0;
 }
 
-void TradingPhaseRequests::engine_position(int64_t highest_applied) {
+void TradingPhaseRequests::engine_position(int64_t highest_applied, const EngineReports& reports) {
+    // The engine answers on one connection, in order, so the latest answer says the most of its reports.
     engine_applied_through_ = std::max(engine_applied_through_, highest_applied);
+    engine_reports_ = reports;
+}
+
+std::string TradingPhaseRequests::reports_outstanding() const {
+    if (engine_reports_.held > 0) {
+        return fmt::format("it holds {} report(s) not yet sent to every sequencer", engine_reports_.held);
+    }
+    if (engine_reports_.sent_through.number == 0) {
+        return {};
+    }
+    const std::optional<EngineReportPosition> in_wal = links_.latest_engine_report_in_wal();
+    if (!in_wal.has_value() || !engine_reports_.sent_through.is_before_or_at(*in_wal)) {
+        return fmt::format("the WAL does not yet hold every report it has sent: it sent through report {} under epoch {}, and the WAL holds through {}",
+                           engine_reports_.sent_through.number, engine_reports_.sent_through.epoch,
+                           in_wal.has_value() ? fmt::format("report {} under epoch {}", in_wal->number, in_wal->epoch) : std::string("none"));
+    }
+    return {};
 }
 
 void TradingPhaseRequests::stopped_leading() {
     engine_applied_through_ = 0;
+    engine_reports_ = EngineReports{};
 }
 
 void TradingPhaseRequests::answer(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, pubsub_itc_fw_app::TradingPhaseOutcome outcome,

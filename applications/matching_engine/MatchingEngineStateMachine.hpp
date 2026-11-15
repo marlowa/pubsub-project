@@ -235,8 +235,9 @@ class MatchingEngineStateMachine {
 
     /// What a TechnicalEvent command did.
     struct TechnicalEventApplied {
-        bool applied{false};      ///< false when the command was not applied: one a catch-up delivers again, out of sequence, or for an older day
-        bool halt_changed{false}; ///< true when it halted trading that was not halted, or lifted a halt
+        bool applied{false};         ///< false when the command was not applied: one a catch-up delivers again, out of sequence, or for an older day
+        bool halt_changed{false};    ///< true when it halted trading that was not halted, or lifted a halt
+        int64_t orders_cancelled{0}; ///< how many orders it cancelled, each with a report: only an event in the closed phase cancels any
     };
 
     /**
@@ -244,21 +245,30 @@ class MatchingEngineStateMachine {
      * day (docs/venue/trading_phases.md).
      *
      * The event says the state the venue is now in, so the engine takes whether it is halted from it, whatever it was
-     * before. While halted, every live new order is refused and every cancel is still carried out. The phase is not
-     * acted on, because the venue has only the open phase until the start and the end of the trading day are built.
+     * before. While halted, every live new order is refused and every cancel is still carried out.
+     *
+     * An event in the closed phase cancels every order on the book, in the order they were placed, reporting each to the
+     * member that placed it (docs/venue/trading_day_plan.md, section 2.4). Each report answers the event: it is sent with
+     * the event's sequence number, so that the sequencer records it in the WAL as answering the close, and its ExecID is
+     * made from that number and the report's place, from 0, as for CancelBook. The first event in the closed phase is the
+     * close; any later one, such as a halt declared after the close, finds the book empty, because the sequencer accepts
+     * no member's command after the close. The engine does not otherwise act on the phase: the sequencer refuses the
+     * commands a phase does not allow, so the engine treats pre-open like open, which is right for a venue that does no
+     * matching.
      *
      * An event whose trading day is older than the trading date of the record that carries it is refused and reported
      * at Error, so that a halt declared for one day cannot stop trading on a later one. A command at or below the
-     * highest acted on is not applied, as for CancelBook. Nothing is sent to any member.
+     * highest acted on is not applied, as for CancelBook. Apart from the close's cancels, nothing is sent to any member.
      *
      * @param[in] view            The event.
      * @param[in] sequence_number The command's sequence number.
+     * @param[in] transact_time   The time the sequencer recorded for it, written on every report of a cancel it makes.
      * @param[in] trading_date    The trading date of the record that carries it.
      * @param[in] source          Whether it is applied live or during a catch-up.
      * @return What it did.
      */
-    TechnicalEventApplied apply_technical_event(const pubsub_itc_fw_app::TechnicalEventView& view, int64_t sequence_number, int32_t trading_date,
-                                                CommandSource source);
+    TechnicalEventApplied apply_technical_event(const pubsub_itc_fw_app::TechnicalEventView& view, int64_t sequence_number, int64_t transact_time,
+                                                int32_t trading_date, CommandSource source);
 
     /// What learning of a void meant for this engine. See learn_void.
     enum class VoidLearned {
@@ -328,10 +338,14 @@ class MatchingEngineStateMachine {
     }
 
   private:
-    // Reports an order cancelled by a command of the sequencer's own (CancelBook, CancelSessionOrders): its ExecID from the
-    // command's sequence number and the report's place, from 0, and sent with sequence number 0, so that the sequencer
-    // routes it by the session on its envelope.
-    void send_cancel_by_command(const OrderEntry& entry, int64_t sequence_number, int64_t place, int64_t transact_time, ReportIsRepeat repeat);
+    // Whether a report of a cancel made by a command of the sequencer's own names that command as the one it answers.
+    enum class AnswersTheCommand { no, yes };
+    // Reports an order cancelled by a command of the sequencer's own (CancelBook, CancelSessionOrders, the close): its
+    // ExecID from the command's sequence number and the report's place, from 0. Sent with sequence number 0 unless
+    // @p answers says the report answers the command, when it is sent with the command's sequence number; either way the
+    // sequencer routes it by the session on its envelope, because no member placed the command.
+    void send_cancel_by_command(const OrderEntry& entry, int64_t sequence_number, int64_t place, int64_t transact_time, ReportIsRepeat repeat,
+                                AnswersTheCommand answers = AnswersTheCommand::no);
     // Answers a new order or a cancel that a void names, with a rejection saying why, in place of applying it.
     void refuse_voided_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
                              const fix_common::SessionIdentity& session, const fix_common::VoidedRange& voided, ReportIsRepeat repeat);
