@@ -54,6 +54,11 @@ MatchingEnginePublisher::MatchingEnginePublisher(MatchingEnginePublisherConfigur
                                         pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
                                         pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
 
+    // Inbound listener: "technical_events" topic subscribers.
+    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.technical_events_listen_port},
+                                        pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
+                                        pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
+
     // Inbound listener: HA peer.
     if (config_.ha_enabled) {
         reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_listen_host, config_.peer_listen_port},
@@ -82,9 +87,10 @@ MatchingEnginePublisher::MatchingEnginePublisher(MatchingEnginePublisherConfigur
     }
 
     PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEnginePublisher: orders={}:{} er={}:{} sequencer_wal={}:{} sequencer_wal_secondary={}:{} instance_id={}", config_.listen_host,
-               config_.orders_listen_port, config_.listen_host, config_.er_listen_port, config_.sequencer_wal_host, config_.sequencer_wal_port,
-               config_.sequencer_wal_secondary_host, config_.sequencer_wal_secondary_port, config_.instance_id);
+               "MatchingEnginePublisher: orders={}:{} er={}:{} technical_events={}:{} sequencer_wal={}:{} sequencer_wal_secondary={}:{} instance_id={}",
+               config_.listen_host, config_.orders_listen_port, config_.listen_host, config_.er_listen_port, config_.listen_host,
+               config_.technical_events_listen_port, config_.sequencer_wal_host, config_.sequencer_wal_port, config_.sequencer_wal_secondary_host,
+               config_.sequencer_wal_secondary_port, config_.instance_id);
 }
 
 int MatchingEnginePublisher::run() const {

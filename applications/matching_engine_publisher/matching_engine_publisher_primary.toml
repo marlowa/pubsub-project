@@ -15,6 +15,10 @@ listen_port = ${matching_engine_publisher_primary_topics_orders_listen_port}
 [topics.execution_reports]
 listen_port = ${matching_engine_publisher_primary_topics_execution_reports_listen_port}
 
+# Every TechnicalEvent: the venue's phase, trading day, and whether trading is halted.
+[topics.technical_events]
+listen_port = ${matching_engine_publisher_primary_topics_technical_events_listen_port}
+
 [wal]
 directory                 = "${matching_engine_publisher_primary_wal_directory}"
 segment_size              = 4194304

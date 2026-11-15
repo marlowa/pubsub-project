@@ -21,9 +21,10 @@ namespace matching_engine_publisher {
  * writes a local WAL, and fans records out to connected topic subscribers
  * via the topic pub/sub protocol.
  *
- * Two topics are served:
+ * Three topics are served:
  *   "orders"             -- pdu_id 1000 (NOS) and 1001 (OCR)
  *   "execution_reports"  -- pdu_id 1002 (ER)
+ *   "technical_events"   -- pdu_id 153 (TechnicalEvent): the phase, the trading day, and whether trading is halted
  *
  * HA: primary/secondary pair managed by the arbiter pool.
  * Only the leader publishes topic records; the secondary replies with
@@ -49,6 +50,8 @@ struct MatchingEnginePublisherConfiguration {
 
     uint16_t orders_listen_port{7040};
     uint16_t er_listen_port{7041};
+    /// The listener for the "technical_events" topic. `[topics.technical_events] listen_port`.
+    uint16_t technical_events_listen_port{7046};
 
     // WAL -- MEP's own write-ahead log
 

@@ -5256,6 +5256,9 @@ _SCENARIOS: list[Scenario] = [
     # the gateway knows the phase. A TradingSessionStatusRequest (35=g) must be answered at once. Every refusal by phase must
     # come from the gateway: no refused command may reach either sequencer. The binary gateway must answer its session
     # status request, and refuse an order after the close, in the same way.
+    #
+    # Step 8. Both matching engine publishers run. topic_probe, started after the end of day, must read from the leading
+    # publisher's technical_events topic every TechnicalEvent the WAL holds, in order, each with its sequence number.
     Scenario(
         number=111,
         short_name="trading_day_cycle",
@@ -5270,6 +5273,7 @@ _SCENARIOS: list[Scenario] = [
         start_trading_day=False,
         skip_baseline_orders=True,
         binary_gateway=True,
+        with_publishers=True,
         assert_trading_day_start=True,
         orders_during_override=0,
         orders_after_override=0,
@@ -7100,6 +7104,10 @@ def numbering_goes_backwards(wal_dir: Path, from_position: tuple[int, int]) -> l
     ids = [record_id for _, record_id in wal_record_ids(wal_dir, from_position)]
     return [(earlier, later) for earlier, later in zip(ids, ids[1:]) if later <= earlier]
 
+
+# How long topic_probe is left reading the technical_events topic before it is stopped: it replays the day's few records at
+# once, and streams until stopped.
+_TOPIC_PROBE_SECONDS = 5
 
 # The message type of an execution report in a WAL record's envelope, as generated into fix_orders.hpp; no Python module is generated for it.
 _EXECUTION_REPORT_PDU_ID = 1002
@@ -10663,6 +10671,37 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"the trading day: the WAL holds {answering_close} report(s) answering the close at seq={close_seq_no}; the two cancels of "
                     "the orders resting at the close were wanted, each recorded as answering it")
             log(f"  the WAL records both cancels as answering the close at seq={close_seq_no}, before the end of day -- OK")
+
+            # Step 8: every TechnicalEvent is published on the matching engine publisher's technical_events topic, with the
+            # sequencer's sequence number, and a subscriber that starts now reads the whole day's from the beginning
+            # (R-0175). topic_probe streams until stopped, so it is given a few seconds and then stopped.
+            wal_technical_events = []
+            for record_id, _, contents in wal_entries(wal_dir):
+                record = leader_follower.WalRecord.decode(contents)[0]
+                if record.pdu_id == leader_follower.TechnicalEvent.MESSAGE_ID:
+                    wal_technical_events.append(record_id)
+            # Only the leading publisher answers; the other says it does not lead. Each is tried, at the port its deployed
+            # configuration gives the topic.
+            published: list[int] = []
+            probe_output = ""
+            for which in ("primary", "secondary"):
+                publisher_config = prefix / "etc" / "matching_engine_publisher" / f"matching_engine_publisher_{which}.toml"
+                topic_port = installed_toml_section_value(publisher_config, "topics.technical_events", "listen_port")
+                try:
+                    probe = subprocess.run([str(bin_dir / "topic_probe"), "--topics=technical_events", "--port", str(topic_port), "--from-seq-no", "0"],
+                                           capture_output=True, text=True, timeout=_TOPIC_PROBE_SECONDS, check=False)
+                    probe_output = probe.stdout
+                except subprocess.TimeoutExpired as stopped:
+                    raw = stopped.stdout or b""
+                    probe_output = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+                published = [int(match.group(1)) for match in re.finditer(r"^>>> \[technical_events\] seq=(\d+) pdu=TechnicalEvent\(153\)",
+                                                                        probe_output, re.MULTILINE)]
+                if published:
+                    break
+            if not wal_technical_events or published != wal_technical_events:
+                die(f"the trading day: the technical_events topic published TechnicalEvents at {published}; the WAL holds them at "
+                    f"{wal_technical_events}, and every one was wanted, in order, with its sequence number. topic_probe printed:\n{probe_output}")
+            log(f"  the technical_events topic publishes every TechnicalEvent in the WAL, from the start of the day, at seq={published} -- OK")
 
             # Both engines apply the close: the leader as it happens, the follower as it follows the WAL, which it applies as
             # a catch-up. The follower compares its reports of each command with the leader's in the WAL, now the close's

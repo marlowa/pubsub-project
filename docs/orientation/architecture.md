@@ -203,7 +203,8 @@ The development environment's values, from `environments/dev.toml` as deployed i
 | 11050, 11051 | Sequencer primary, secondary: operators, halting trading and lifting a halt (TLS only) |
 | 11020, 11023 | Matching engine primary, secondary: commands from the sequencers |
 | 11025, 11026 | Matching engine primary, secondary: the peer |
-| 11040 to 11043 | Matching engine publisher: topic subscribers |
+| 11040 to 11043 | Matching engine publisher: topic subscribers, `orders` and `execution_reports` (primary 11040, 11041; secondary 11042, 11043) |
+| 11046, 11047 | Matching engine publisher primary, secondary: `technical_events` topic subscribers |
 | 11044, 11045 | Matching engine publisher primary, secondary: the peer |
 | 11070, 11071 | Authentication service a, b: the gateways |
 | 11072, 11073 | Authentication service a, b: the admin service |

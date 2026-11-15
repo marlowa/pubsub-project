@@ -365,16 +365,17 @@ Key properties:
 - **Recovery on restart.** On restart, MEP reads its WAL to find the last record it holds, and asks
   the sequencers with `WalFollowRequest` to be sent the records after it.
 
-### 6.4 Two topics
+### 6.4 Three topics
 
 | Topic name | PDU IDs included | Consumers |
 |---|---|---|
 | `orders` | 1000 (NOS), 1001 (OCR) | market data |
 | `execution_reports` | 1002 (ER) | OAR, market data |
+| `technical_events` | 153 (`TechnicalEvent`) | OAR, market data, and any component that only needs to know the venue's phase ([trading_day_plan.md](../venue/trading_day_plan.md), section 4.3) |
 
 MEP listens on separate ports per topic (see port table). A subscriber subscribes to exactly
-one topic per connection. OAR connects twice (once per topic); market data connects twice.
-Any other process may also connect to either port and subscribe — no configuration change
+one topic per connection. OAR connects once for each topic it follows; market data likewise.
+Any other process may also connect to any topic's port and subscribe — no configuration change
 to MEP is required.
 
 ### 6.5 Topic delivery protocol

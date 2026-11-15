@@ -27,7 +27,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
   of the matching engine and a change of engine leader, a command that crashes both engines being
   voided, orders held while no engine leads, and reports held for a gateway surviving the death of
   the sequencer holding them, and a follower sequencer that has lost the first file of its WAL being
-  sent every record again. All 109 pass, and the 39 that also run with the secondary matching engine leading first pass that
+  sent every record again. All 112 pass, and the 39 that also run with the secondary matching engine leading first pass that
   way too. After each scenario both matching engines are run on its WAL and must give the reports the
   WAL holds, with a sequencer that reads their reports more slowly than they send them, so that each
   run depends on the engine pacing its reports ([BUG-0234](bug_list.md#bug_0234)).
@@ -41,7 +41,7 @@ The [bug list](bug_list.md) holds 40 open entries, 6 of them high severity. Each
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
-- **The specification is mostly untested.** 52 of 171 requirements are verified by a scenario, and
+- **The specification is mostly untested.** 53 of 171 requirements are verified by a scenario, and
   one more by a TLA+ model (`scripts/check_book_requirements.py` counts them; [BUG-0068](bug_list.md#bug_0068)). A scenario
   passing has repeatedly been found to say less than it appeared to, so treat untested requirements
   as unverified.

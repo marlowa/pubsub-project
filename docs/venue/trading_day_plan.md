@@ -1,6 +1,6 @@
 # The trading day: design plan {#trading_day_plan}
 
-**Status: agreed; steps 1 to 7 are done.** This note covers the whole trading day: every phase,
+**Status: agreed; steps 1 to 8 are done.** This note covers the whole trading day: every phase,
 how the venue moves from one to the next, what each component does in each, and how each change reaches
 the components and members that need it. It builds on three other notes and does not repeat them:
 
@@ -47,10 +47,12 @@ section, each with the reason for it.
   every change and as it logs on, and answer a request for one at once: FIX `TradingSessionStatus` (35=h)
   and `TradingSessionStatusRequest` (35=g), and on the binary gateway `TradingSessionStatus` (703) and
   `TradingSessionStatusRequest` (704) ([BUG-0065](../bug_list.md#bug_0065)).
-- **No topic carries the phase.** The matching engine publisher follows the sequencer's WAL and publishes
-  two topics from it, `orders` and `execution_reports` (`applications/pubsub.dsl`). A `TechnicalEvent` in
-  the WAL is on neither, although the order activity recorder's design follows "the technical events"
-  ([oar_external_stream.md](../pubsub/oar_external_stream.md), sections 4.4 and 13.6).
+- **A topic carries the phase (step 8).** The matching engine publisher follows the sequencer's WAL and
+  publishes three topics from it (`applications/pubsub.dsl`): `orders`, `execution_reports`, and
+  `technical_events`, which holds every `TechnicalEvent` with the sequencer's sequence number. A subscriber
+  that starts during the day reads the whole day's changes from the beginning. The order activity
+  recorder's design follows this topic ([oar_external_stream.md](../pubsub/oar_external_stream.md),
+  sections 4.4 and 13.6); `topic_probe --topics=technical_events` prints it.
 - **There is no start-of-day or end-of-day procedure** ([BUG-0137](../bug_list.md#bug_0137)): `devenv.py`, the
   test harness and the performance scripts start the day themselves once the venue is up, and nothing
   closes it.
@@ -397,7 +399,8 @@ They receive them on a third topic of the matching engine publisher:
    the recorder needs. It is tiny, and a subscriber that has just started takes it from the beginning and
    so learns the whole day's state at once, which is the book's requirement that a component that has just
    started can ask rather than wait. The cost: `TechnicalEvent` is defined in the framework's
-   `leader_follower.dsl`, which `pubsub.dsl` does not include today.
+   `leader_follower.dsl`, which `pubsub.dsl` therefore includes. Only the topic registry and the catalog
+   are generated from `pubsub.dsl`, so the message is still defined once in any program.
 Two other ways were considered and are not used:
 
 - **Each such component following the sequencer's WAL itself**, with `WalFollowRequest`, as the publisher does.
@@ -441,6 +444,7 @@ documents and decisions; code starts at step 4.
 7. **The gateways**: `OrderAcceptance` with the trading day and the phase, refusals by phase, and
    `TradingSessionStatus` and its binary equivalent to members ([BUG-0065](../bug_list.md#bug_0065)). Done.
 8. **The `technical_events` topic** on the matching engine publisher, for the components that only need to know.
+   Done: ports 11046 (primary) and 11047 (secondary).
 9. **The schedule and the end-of-day procedure**: the `TradingSchedule` record, the start-of-day request
    that carries it, `TradingScheduleRequest`, the leader's check once a second, and the run procedure that reads
    the day's times from a file; and a component refusing to start on a file from another trading day

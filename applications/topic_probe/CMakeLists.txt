@@ -17,10 +17,12 @@ target_link_libraries(topic_probe PRIVATE
 #   - the topic registry: Topic enum, all_topics, topic_from_name (topics_registry.hpp,
 #     from topics_registry_generated)
 #   - the fix_orders message views/decoders it dumps (fix_orders.hpp, from fix_orders_generated)
+#   - the TechnicalEvent view it dumps (leader_follower.hpp, from leader_follower_generated)
 add_dependencies(topic_probe
         topics_generated
         topics_registry_generated
         fix_orders_generated
+        leader_follower_generated
 )
 
 install(TARGETS topic_probe

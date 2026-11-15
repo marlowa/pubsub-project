@@ -686,9 +686,10 @@ add_custom_target(topics_generated ALL
 # Pub/sub topic catalog: the generated Topic enum + pdu-id/topic membership table
 # (topics_registry.hpp) and the human-readable catalog (topics_catalog.md). Both
 # are generated from the index applications/pubsub.dsl, which `include`s
-# fix_orders.dsl for the message/pdu-id definitions. That include is resolved via
-# --include-dir ${FIX_DSL_INCLUDE_DIR} (fix_orders.dsl is generated into the build tree),
-# so the command depends on BOTH the index and the generated .dsl it includes.
+# fix_orders.dsl and the framework's leader_follower.dsl for the message/pdu-id definitions.
+# Those includes are resolved via --include-dir ${FIX_DSL_INCLUDE_DIR} (fix_orders.dsl is
+# generated into the build tree) and the framework's include directory, so the command depends
+# on the index and on both files it includes.
 set(PUBSUB_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/pubsub.dsl")
 set(PUBSUB_TOPICS_REGISTRY_HPP "${FIX_DSL_INCLUDE_DIR}/topics_registry.hpp")
 set(PUBSUB_TOPICS_CATALOG_DIR "${CMAKE_BINARY_DIR}/generated_docs")
@@ -701,10 +702,11 @@ add_custom_command(
     COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
             --namespace pubsub_itc_fw_app
             --include-dir "${FIX_DSL_INCLUDE_DIR}"
+            --include-dir "${CMAKE_SOURCE_DIR}/libraries/pubsub_itc_fw/include/pubsub_itc_fw"
             "${PUBSUB_DSL_SOURCE}"
             --topics-registry "${PUBSUB_TOPICS_REGISTRY_HPP}"
             --topics-catalog "${PUBSUB_TOPICS_CATALOG_MD}"
-    DEPENDS "${PUBSUB_DSL_SOURCE}" "${FIX_DSL_GENERATED}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
+    DEPENDS "${PUBSUB_DSL_SOURCE}" "${FIX_DSL_GENERATED}" "${LF_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
     COMMENT "Generating topics_registry.hpp + topics_catalog.md from pubsub.dsl"
     VERBATIM
 )

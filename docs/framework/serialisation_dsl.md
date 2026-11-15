@@ -313,7 +313,7 @@ with pybind11, so they need pybind11 available to CMake.
 | `applications/binary_session.dsl` | `pubsub_itc_fw_app` | The binary gateway's session messages: `Logon` (700), `LogonAck` (701) |
 | `applications/matching_engine/matching_engine_replication.dsl` | `pubsub_itc_fw_app` | `EngineSettings` (601), between the two matching engines of a pair |
 | `applications/topics.dsl` | `pubsub_itc_fw_app` | Topic pub/sub protocol: `TopicSubscribeRequest` (107), `TopicSubscribeAck` (108), `TopicPage` (109), `TopicAck` (110), `TopicNotLeader` (111), `TopicLagged` (112), inner type `TopicRecord` |
-| `applications/pubsub.dsl` | — | The topic catalog: includes `fix_orders.dsl` and declares the topics `orders` and `execution_reports`. Generates the topic registry and catalog, not message code |
+| `applications/pubsub.dsl` | — | The topic catalog: includes `fix_orders.dsl` and the framework's `leader_follower.dsl`, and declares the topics `orders`, `execution_reports` and `technical_events`. Generates the topic registry and catalog, not message code |
 | `libraries/pubsub_itc_fw/integration_tests/variable_length_test_protocol.dsl`, `libraries/pubsub_itc_fw/performance/DslBenchProtocol.dsl` | `pubsub_itc_fw` | Test and benchmark messages only |
 
 Pdu ids are not unique across files: 107 and 108 are both `LogPositionRequest`/`LogPositionReply`

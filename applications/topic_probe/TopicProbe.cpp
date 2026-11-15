@@ -11,16 +11,19 @@ receives to stdout, tagged with its topic name. Use it to watch orders / executi
 reports stream out of the MEP live while driving the Java fix-test-client.
 
 Usage:
-  topic_probe [--topics=a,b,... | all] [--host H] [--from-seq-no N]
+  topic_probe [--topics=a,b,... | all] [--host H] [--port P] [--from-seq-no N]
 
   --topics      comma-separated topic names, or 'all' (the default) for every topic
-                the generated registry knows. Names: orders, execution_reports.
+                the generated registry knows. Names: orders, execution_reports,
+                technical_events.
   --host        default 127.0.0.1
+  --port        the port of the one topic given with --topics, such as a secondary
+                publisher's; by default each topic's port is the primary's
   --from-seq-no default 0 -- replay everything each publisher still retains, then
                 stream live. Give a higher number to start nearer the head.
 
 Ports are the MEP primary's deployed defaults (orders -> 11040, execution_reports ->
-11041). Stop with Ctrl-C. If the publisher instance is a follower it answers
+11041, technical_events -> 11046), unless --port gives the port of a single topic. Stop with Ctrl-C. If the publisher instance is a follower it answers
 TopicNotLeader; point the probe at the leader instance's port instead.
 */
 
@@ -41,6 +44,7 @@ TopicNotLeader; point the probe at the leader instance's port instead.
 #include <argparse/argparse.hpp>
 
 #include <fix_orders.hpp>
+#include <leader_follower.hpp>
 #include <topics_registry.hpp>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
@@ -96,6 +100,8 @@ const char* pdu_name(int16_t pdu_id) {
             return "OrderCancelRequest";
         case app::ExecutionReport::message_pdu_id:
             return "ExecutionReport";
+        case app::TechnicalEvent::message_pdu_id:
+            return "TechnicalEvent";
         default:
             return "pdu";
     }
@@ -147,6 +153,9 @@ void print_record(const std::string& topic_name, int64_t seq_no, int16_t pdu_id,
         case app::ExecutionReport::message_pdu_id:
             decoded = decode_and_dump<app::ExecutionReportView>(payload, payload_size);
             break;
+        case app::TechnicalEvent::message_pdu_id:
+            decoded = decode_and_dump<app::TechnicalEventView>(payload, payload_size);
+            break;
         default:
             break;
     }
@@ -191,6 +200,9 @@ int default_port_for_topic(const std::string& topic_name) {
     }
     if (topic_name == "execution_reports") {
         return 11041;
+    }
+    if (topic_name == "technical_events") {
+        return 11046;
     }
     return 0;
 }
@@ -245,8 +257,10 @@ int main(int argc, char** argv) {
     program.add_description("Subscribe to one or more publisher topics (default: all) and print each record.");
     program.add_argument("--topics")
         .default_value(std::string("all"))
-        .help("comma-separated topic names, or 'all' (default) for every known topic: orders, execution_reports");
+        .help("comma-separated topic names, or 'all' (default) for every known topic: orders, execution_reports, technical_events");
     program.add_argument("--host").default_value(std::string("127.0.0.1")).help("publisher host");
+    program.add_argument("--port").scan<'i', int>().default_value(0).help(
+        "the topic's port, for one topic only; 0 (default) uses the primary publisher's deployed port for each topic");
     program.add_argument("--from-seq-no")
         .scan<'i', long long>()
         .default_value(0LL)
@@ -260,14 +274,21 @@ int main(int argc, char** argv) {
     }
 
     const std::string host = program.get<std::string>("--host");
+    const int port = program.get<int>("--port");
     const int64_t from_seq_no = static_cast<int64_t>(program.get<long long>("--from-seq-no"));
 
     const std::vector<std::string> topics = resolve_topics(program.get<std::string>("--topics"));
     if (topics.empty()) {
         return 1; // resolve_topics printed the reason
     }
+    if (port != 0 && (topics.size() != 1 || port < 0 || port > 65535)) {
+        std::cerr << "topic_probe: --port names the port of one topic, so give exactly one topic with --topics, and a port from 1 to 65535\n";
+        return 1;
+    }
+    // A port given names the one topic's port, such as a secondary publisher's; otherwise each topic's is the primary's.
+    const auto port_for_topic = [port](const std::string& topic_name) { return port != 0 ? port : default_port_for_topic(topic_name); };
     for (const std::string& topic_name : topics) {
-        if (default_port_for_topic(topic_name) <= 0) {
+        if (port_for_topic(topic_name) <= 0) {
             std::cerr << "topic_probe: no known port for topic '" << topic_name << "'.\n";
             return 1;
         }
@@ -276,7 +297,7 @@ int main(int argc, char** argv) {
     // Report exactly which topics (and ports) this probe is subscribing to.
     fmt::print("topic_probe: subscribing to {} topic(s) from seq_no={} (Ctrl-C to stop):\n", topics.size(), from_seq_no);
     for (const std::string& topic_name : topics) {
-        fmt::print("  - {} ({}:{})\n", topic_name, host, default_port_for_topic(topic_name));
+        fmt::print("  - {} ({}:{})\n", topic_name, host, port_for_topic(topic_name));
     }
     std::fflush(stdout);
 
@@ -287,7 +308,7 @@ int main(int argc, char** argv) {
     // topic name (each ProbeThread connects to its own), pointing at that topic's port.
     pubsub_itc_fw::ServiceRegistry registry;
     for (const std::string& topic_name : topics) {
-        registry.add(topic_name, pubsub_itc_fw::NetworkEndpointConfiguration{host, static_cast<uint16_t>(default_port_for_topic(topic_name))},
+        registry.add(topic_name, pubsub_itc_fw::NetworkEndpointConfiguration{host, static_cast<uint16_t>(port_for_topic(topic_name))},
                      pubsub_itc_fw::NetworkEndpointConfiguration{});
     }
 

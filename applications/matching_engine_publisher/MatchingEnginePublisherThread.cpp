@@ -60,13 +60,17 @@ MatchingEnginePublisherThread::MatchingEnginePublisherThread(pubsub_itc_fw::Appl
     , follower_name_("mep_" + std::to_string(config.instance_id))
     , orders_inbound_svc_("inbound:" + std::to_string(config.orders_listen_port))
     , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
+    , technical_events_inbound_svc_("inbound:" + std::to_string(config.technical_events_listen_port))
     , peer_inbound_svc_("inbound:" + std::to_string(config.peer_listen_port))
     , orders_publisher_(
           *this, std::string(pubsub_itc_fw_app::to_string(pubsub_itc_fw_app::Topic::orders)),
           [](int16_t pdu_id) { return pubsub_itc_fw_app::pdu_in_topic(pdu_id, pubsub_itc_fw_app::Topic::orders); }, config.wal_directory)
     , er_publisher_(
           *this, std::string(pubsub_itc_fw_app::to_string(pubsub_itc_fw_app::Topic::execution_reports)),
-          [](int16_t pdu_id) { return pubsub_itc_fw_app::pdu_in_topic(pdu_id, pubsub_itc_fw_app::Topic::execution_reports); }, config.wal_directory) {}
+          [](int16_t pdu_id) { return pubsub_itc_fw_app::pdu_in_topic(pdu_id, pubsub_itc_fw_app::Topic::execution_reports); }, config.wal_directory)
+    , technical_events_publisher_(
+          *this, std::string(pubsub_itc_fw_app::to_string(pubsub_itc_fw_app::Topic::technical_events)),
+          [](int16_t pdu_id) { return pubsub_itc_fw_app::pdu_in_topic(pdu_id, pubsub_itc_fw_app::Topic::technical_events); }, config.wal_directory) {}
 
 void MatchingEnginePublisherThread::on_initial_event() {
     // As the sequencer does, and for the same reason: the log's helper thread would otherwise
@@ -150,7 +154,7 @@ void MatchingEnginePublisherThread::on_connection_established(pubsub_itc_fw::Con
     } else if (svc == peer_inbound_svc_) {
         peer_inbound_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: inbound peer connection {} established", id.get_value());
-    } else if (svc == orders_inbound_svc_ || svc == er_inbound_svc_) {
+    } else if (svc == orders_inbound_svc_ || svc == er_inbound_svc_ || svc == technical_events_inbound_svc_) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MepThread: topic subscriber connection {} established on {} -- awaiting TopicSubscribeRequest", id.get_value(), svc);
     }
@@ -179,9 +183,10 @@ void MatchingEnginePublisherThread::on_connection_lost(const pubsub_itc_fw::Conn
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
     } else {
         // Topic subscriber connection (or already gone): the owning publisher tears down
-        // its data+control pair; the other no-ops on a connection it does not own.
+        // its data+control pair; the others no-op on a connection they do not own.
         orders_publisher_.on_connection_lost(id);
         er_publisher_.on_connection_lost(id);
+        technical_events_publisher_.on_connection_lost(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: connection {} lost: {}", id.get_value(), reason);
     }
 }
@@ -190,6 +195,7 @@ void MatchingEnginePublisherThread::on_connection_writable(pubsub_itc_fw::Connec
     // The socket can accept another frame: let the owning publisher stream the next page.
     orders_publisher_.on_connection_writable(id);
     er_publisher_.on_connection_writable(id);
+    technical_events_publisher_.on_connection_writable(id);
 }
 
 void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
@@ -239,7 +245,7 @@ void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw
     }
 
     // Topic subscriber PDUs.
-    if (svc == orders_inbound_svc_ || svc == er_inbound_svc_) {
+    if (svc == orders_inbound_svc_ || svc == er_inbound_svc_ || svc == technical_events_inbound_svc_) {
         if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id) {
             handle_topic_subscribe_request(conn_id, message);
         } else if (message.pdu_id() == pubsub_itc_fw_app::TopicAck::message_pdu_id) {
@@ -293,6 +299,7 @@ void MatchingEnginePublisherThread::adopt_role(pubsub_itc_fw_app::Role new_role)
         // Stop publishing and drop all topic subscribers so they rediscover the new leader.
         orders_publisher_.drop_all_subscribers();
         er_publisher_.drop_all_subscribers();
+        technical_events_publisher_.drop_all_subscribers();
     }
 }
 
@@ -512,6 +519,7 @@ void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(const pubsu
     // caught-up subscriber. Each filters by topic membership and only publishes while leader.
     orders_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
     er_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
+    technical_events_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
 }
 
 void MatchingEnginePublisherThread::handle_topic_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -543,10 +551,16 @@ void MatchingEnginePublisherThread::handle_topic_subscribe_request(const pubsub_
         topic_disconnect(conn_id);
         return;
     }
-    if (topic == pubsub_itc_fw_app::Topic::orders) {
-        orders_publisher_.on_subscribe_request(conn_id, view);
-    } else {
-        er_publisher_.on_subscribe_request(conn_id, view);
+    switch (topic) {
+        case pubsub_itc_fw_app::Topic::orders:
+            orders_publisher_.on_subscribe_request(conn_id, view);
+            return;
+        case pubsub_itc_fw_app::Topic::execution_reports:
+            er_publisher_.on_subscribe_request(conn_id, view);
+            return;
+        case pubsub_itc_fw_app::Topic::technical_events:
+            technical_events_publisher_.on_subscribe_request(conn_id, view);
+            return;
     }
 }
 
@@ -562,11 +576,12 @@ void MatchingEnginePublisherThread::handle_topic_ack(const pubsub_itc_fw::Connec
         return;
     }
 
-    // Fan to both publishers; only the one that owns this connection acts (the ack is the
+    // Fan to every publisher; only the one that owns this connection acts (the ack is the
     // F2 truncation cursor + drives the lag policy). The MEP's WAL truncation itself is a
     // no-op (see topic_truncate_wal).
     orders_publisher_.on_ack(conn_id, view);
     er_publisher_.on_ack(conn_id, view);
+    technical_events_publisher_.on_ack(conn_id, view);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MepThread: TopicAck conn={} last_seq_no={}", conn_id.get_value(), view.last_seq_no);
 }
 
@@ -574,6 +589,7 @@ void MatchingEnginePublisherThread::set_publisher_role(pubsub_itc_fw_app::Role r
     const bool is_leader = (role == pubsub_itc_fw_app::Role::leader);
     orders_publisher_.set_leader(is_leader);
     er_publisher_.set_leader(is_leader);
+    technical_events_publisher_.set_leader(is_leader);
 }
 
 // TopicPublisherHost -- each publisher decides what to send; this thread does it

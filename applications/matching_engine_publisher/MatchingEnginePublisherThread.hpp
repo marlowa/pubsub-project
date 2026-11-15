@@ -42,18 +42,19 @@ namespace matching_engine_publisher {
  *   next is a gap, which makes the client ask again (docs/availability/following_the_wal.md, section 4.3).
  *
  * Topic publisher (inbound from topic subscribers):
- *   Listens on two ports -- one for the "orders" topic (NOS/OCR) and one
- *   for "execution_reports" (ER). The reusable pubsub_itc_fw::TopicPublisher
+ *   Listens on three ports -- one for the "orders" topic (NOS/OCR), one
+ *   for "execution_reports" (ER), and one for "technical_events"
+ *   (TechnicalEvent: the venue's phase, trading day, and halt). The reusable pubsub_itc_fw::TopicPublisher
  *   does the work per topic: it owns the subscribe handshake, socket-paced
  *   streaming straight from the WAL (batched TopicPages, one per writable),
  *   the optional control channel, and the slow-consumer policy. This thread
  *   is the TopicPublisherHost: it decodes inbound PDUs, routes them to the
- *   matching publisher, and performs the actual sends. Both publishers share
- *   this MEP's single WAL.
+ *   matching publisher, and performs the actual sends. All three publishers
+ *   share this MEP's single WAL.
  *
  * HA:
  *   Same arbiter-mediated leader-follower state machine as the sequencer.
- *   Only the leader publishes: on loss of leadership both publishers are set
+ *   Only the leader publishes: on loss of leadership every publisher is set
  *   non-leader (new TopicSubscribeRequests get TopicNotLeader) and all current
  *   subscribers are dropped so they rediscover the new leader.
  */
@@ -89,6 +90,7 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     const std::string follower_name_;
     const std::string orders_inbound_svc_;
     const std::string er_inbound_svc_;
+    const std::string technical_events_inbound_svc_;
     const std::string peer_inbound_svc_;
 
     // MEP's own WAL.
@@ -146,9 +148,10 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     pubsub_itc_fw::ConnectionID arbiter_primary_conn_id_;
     pubsub_itc_fw::ConnectionID arbiter_secondary_conn_id_;
 
-    // Reusable publisher per topic, both streaming from this MEP's shared WAL.
+    // Reusable publisher per topic, all streaming from this MEP's shared WAL.
     pubsub_itc_fw::TopicPublisher orders_publisher_;
     pubsub_itc_fw::TopicPublisher er_publisher_;
+    pubsub_itc_fw::TopicPublisher technical_events_publisher_;
 
     // HA helpers (same state machine as the sequencer)
     pubsub_itc_fw::ConnectionID peer_active_conn() const;

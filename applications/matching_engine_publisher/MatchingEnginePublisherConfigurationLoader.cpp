@@ -48,6 +48,10 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
         validate_port(er_listen_port, "topics.execution_reports.listen_port");
         config.orders_listen_port = static_cast<uint16_t>(orders_listen_port);
         config.er_listen_port = static_cast<uint16_t>(er_listen_port);
+        int32_t technical_events_listen_port = 0;
+        toml.get_required_except("topics.technical_events.listen_port", technical_events_listen_port);
+        validate_port(technical_events_listen_port, "topics.technical_events.listen_port");
+        config.technical_events_listen_port = static_cast<uint16_t>(technical_events_listen_port);
 
         toml.get_required_except("wal.directory", config.wal_directory);
         int64_t wal_segment_size = 0;

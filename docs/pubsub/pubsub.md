@@ -143,9 +143,10 @@ catalog: a record is served on a topic if and only if its pdu id is a declared m
 ## Publishing — worked example: the matching engine publisher
 
 The **matching engine publisher** (`applications/matching_engine_publisher/`) is the reference publisher. It tails the
-order flow and republishes it on two topics — `orders` (new-order and cancel PDUs) and
-`execution_reports` (ERs) — for downstream consumers that do not sit on the low-latency core
-path.
+order flow and republishes it on three topics — `orders` (new-order and cancel PDUs),
+`execution_reports` (ERs), and `technical_events` (each `TechnicalEvent`: the venue's phase, trading
+day, and whether trading is halted) — for downstream consumers that do not sit on the low-latency
+core path.
 
 The publisher owns one `TopicPublisher` per topic over a **shared WAL**, and implements
 `TopicPublisherHost` so the publishers can send and disconnect through the owning
@@ -157,11 +158,12 @@ The publisher owns one `TopicPublisher` per topic over a **shared WAL**, and imp
    ```cpp
    orders_publisher_(*this, to_string(Topic::orders), pdu_in_topic(Topic::orders), wal_directory);
    er_publisher_(*this, to_string(Topic::execution_reports), pdu_in_topic(Topic::execution_reports), wal_directory);
+   technical_events_publisher_(*this, to_string(Topic::technical_events), pdu_in_topic(Topic::technical_events), wal_directory);
    ```
 
 2. **Route inbound subscribe requests by topic name** to the matching publisher; fan `on_ack`,
-   `on_connection_writable`, and `on_connection_lost` to both (each no-ops on a connection it
-   does not own).
+   `on_connection_writable`, and `on_connection_lost` to every publisher (each no-ops on a
+   connection it does not own).
 
 3. **On every appended record, notify both publishers** so an idle subscriber's cursor wakes and
    streams it:
@@ -238,11 +240,12 @@ To run it:
 topic_probe                                          # every topic: replay what is retained, then stream live
 topic_probe --topics=execution_reports --from-seq-no 9000
 topic_probe --topics=orders --host 10.0.0.2
+topic_probe --topics=technical_events --port 11047   # the secondary publisher's technical_events topic
 ```
 
 The ports are the primary publisher's deployed defaults (`orders` → 11040, `execution_reports` →
-11041); there is no option to change them, so to watch a secondary instance its ports would have to
-be the same on its host. Stop with Ctrl-C.
+11041, `technical_events` → 11046). `--port` gives the port of a single topic instead, which is how
+a secondary publisher is watched. Stop with Ctrl-C.
 
 ---
 
