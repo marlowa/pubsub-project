@@ -475,11 +475,12 @@ with the question it answers; step 12's note in section 9 says why they are not 
 | whether trading is halted | yes | yes | yes, for every record written (`append_envelope_to_wal`) |
 | the voided commands | yes, and a record that does not decode is noted as one that cannot be read | yes | yes, for each command of its own (`write_own_command`) |
 | the highest command a report answers | yes | yes | yes, for each report written (`forward_report_from_engine`) |
-| the trading date | no | yes, from each command that carries one, following the leader if they differ | read once, from the first record in the WAL, when the first command needs it (`trading_date_for`) |
+| the trading day and the phase | yes | yes | yes, for every record written (`append_envelope_to_wal`) |
 | the leader's forwarded position | no | yes | no |
 
-Each difference has a reason: the trading date is the date of the first record of the day, which a leader reads and a
-follower is told; and only a follower reads the position its leader has forwarded reports through. When records are
+The trading day and the phase come from the TechnicalEvent records, the first of which enters the start of day
+(`TradingPhaseState`). Only a follower reads the position its leader has forwarded reports through, which is the one
+difference. When records are
 discarded from the WAL (`discarded_after`), the voids and halts after the point are discarded too, and a change in
 whether trading is halted is logged at Warning. The highest command answered is not lowered: a figure too high only
 declines a void that could have been written.

@@ -190,6 +190,44 @@ orders and pass cancels on, and a person lifts the halt (below). See
 [far_back_catch_up.md](../availability/far_back_catch_up.md), section 5. The halt is written once for
 each absence, only by the leader, and never into an empty WAL.
 
+### The trading day and its phases
+
+Each sequencer is started for one trading day, given on its command line as `--trading-day YYYYMMDD`
+(`sequencer <logfile> <config.toml> --trading-day 20261116`); it never works the day out from its
+clock. The first record of the day's WAL is the `TechnicalEvent` that enters the start of day, and it
+fixes the trading day of every later record (`WalRecord.trading_date`). The sequencer keeps the trading
+day and the phase from the `TechnicalEvent` records in its WAL (`TradingPhaseState`), in the same three
+ways as it keeps whether trading is halted.
+
+**Until the venue enters pre-open, it accepts no member's command.** Before the WAL holds a start of
+day, the leading sequencer refuses each one with `CommandRefused`, reason `TradingDayNotStarted`, and
+both gateways answer the member "the trading day has not started"; during the start of day the reason
+is `MarketNotOpen`, and the answer "the market is not open". An order is given OrdRejReason 2, exchange
+closed. Every record before pre-open is therefore one the sequencer wrote itself, which the rule for
+entering pre-open below depends on. Nor, before the start of day, does the sequencer write anything of
+its own: no `SessionEnded`, no halt and no void, because the start of day must be the first record.
+
+An operator, or the procedure that starts the venue, moves the venue from one phase to the next with
+`scripts/trading_phase.py`, which sends a `TradingPhaseRequest` (168) to both sequencers over each one's
+listener for operators, as `operator_halt.py` does. Only the leader acts, and it answers every request
+from its current state with a `TradingPhaseAnswer` (169), so a request sent again does no harm:
+
+- **Start of day** is written only for the day the sequencer was started for, and only on a WAL that
+  holds no record. A WAL that holds records but no start of day is from before the venue kept trading
+  days, and must be archived.
+- **Pre-open** is written only from the start of day, and only once the leading matching engine has
+  said, in answer to an `EnginePositionQuery`, that it has acted on the start of day. Until then the
+  answer is `NotReady`, the engine is asked, and the request is sent again. The sequencer writes open
+  straight after pre-open, so that members trade; it does not yet close.
+- A request for the phase the venue is in, or one it has passed, writes nothing and says so. A phase
+  further ahead than the next is refused. A change of phase carries whether trading is halted, so a
+  halt continues into the next phase, except that the venue does not leave the start of day while it
+  is halted because a matching engine cannot account for the orders the venue holds.
+
+`devenv.py start`, `ha_test.py`, `perf_run.py` and `callgrind_run.py` start the day once the venue is
+up (`scripts/trading_phase.py start-day`, through `operator_requests.start_trading_day`). The design is
+[trading_day_plan.md](trading_day_plan.md).
+
 ### Whether trading is halted, and the operator's halt and lift
 
 The sequencer keeps whether trading is halted from the `TechnicalEvent` records in its WAL
@@ -226,8 +264,9 @@ the operator's certificate (`[operator_certificates]` in the environment file). 
   its rejections and its cancels. Otherwise it declines, saying why (`NoEngineLeads` or
   `ReportsOutstanding`), and the operator asks again.
 
-A follower answers `NotLeader`. Every request is answered with an `OperatorHaltAnswer`, saying what was
-written or why nothing was, and logged at Warning with the operator's name. See
+Before the start of day, the leader answers `TradingDayNotStarted` and writes nothing. A halt carries
+the phase the venue is in. A follower answers `NotLeader`. Every request is answered with an
+`OperatorHaltAnswer`, saying what was written or why nothing was, and logged at Warning with the operator's name. See
 [voided_commands.md](../availability/voided_commands.md), section 6.
 
 When the whole venue was down, the sequencer measures at start-up from the last time it knew of an

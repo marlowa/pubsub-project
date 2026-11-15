@@ -54,16 +54,16 @@ For a live start, the start-of-day procedure checks that the fresh daily files a
 for the date in the run manifest. This check matters on a fresh WAL: with no earlier record, the WAL alone
 cannot tell that a first start-of-day request names yesterday by mistake.
 
-**The sequencer currently takes the date for a new day's WAL from its clock**: the trading date stamped on
-each new order and cancel (`WalRecord.trading_date`) is the UTC date of the first record in the day's WAL
-(`SequencerThread.cpp`, `trading_date_for`, and `VenueStateFromTheWal::trading_date`). The matching engine
-derives the keys of its order identifiers from that field, so it must not change during a day and must be
-the same in every replay. That rule has to change. The first record of a day's WAL becomes the start-of-day
-`TechnicalEvent`; its `trading_day` and its envelope's `WalRecord.trading_date` both carry `D`, and the
-sequencer checks both against the run manifest before writing it. Every later record takes its trading date
-from that first event. The follower learns the date from the replicated record, and a replay reads it from
-the saved one. Adding `D` to the `TechnicalEvent` without changing how envelopes are dated would leave the
-date taken from the clock in place.
+**The sequencer takes the date from the start-of-day event, never from its clock.** Each sequencer is started
+with `--trading-day D`. The first record of a day's WAL is the start-of-day `TechnicalEvent`, which the leading
+sequencer writes only for `D` and only on a WAL that holds no record; its `trading_day` and its envelope's
+`WalRecord.trading_date` both carry `D`. Every later record takes its trading date from that event
+(`SequencerThread::trading_date_to_write`, and `TradingPhaseState`, which `VenueStateFromTheWal` keeps). The
+matching engine derives the keys of its order identifiers from that field, so it does not change during a day
+and is the same in every replay. The follower learns the date from the replicated record, and a replay reads it
+from the saved one. Until the WAL holds a start of day, the sequencer refuses every member's command
+(`CommandRefusedReason::TradingDayNotStarted`) and writes nothing of its own; during the start of day it refuses
+them too (`MarketNotOpen`).
 
 For replay, the developer selects `D` and the archived run for `D`. The replay checks the manifest and the
 WAL records against that date, then applies the existing WAL in sequence. It does not generate a replacement

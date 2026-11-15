@@ -13,6 +13,7 @@
 #include <leader_follower.hpp>
 
 #include "TradingHaltState.hpp"
+#include "TradingPhaseState.hpp"
 #include "VoidFromWal.hpp"
 
 namespace sequencer {
@@ -43,8 +44,8 @@ class HaltAndVoidRequestsLinksInterface {
     [[nodiscard]] virtual int64_t last_seq_no() const = 0;
     /// The number the next record written will have.
     [[nodiscard]] virtual int64_t next_seq_no() const = 0;
-    /// The trading day at wall time @p now_ns.
-    [[nodiscard]] virtual int32_t trading_day(int64_t now_ns) = 0;
+    /// The trading day and the phase, as the WAL says.
+    [[nodiscard]] virtual const TradingPhaseState& trading_phase() const = 0;
     /// Whether a void in the WAL already names command @p seq_no.
     [[nodiscard]] virtual bool voided_already(int64_t seq_no) const = 0;
     /// What the WAL holds at @p seq_no; @p found is false if it holds no such record.
@@ -86,6 +87,7 @@ class HaltAndVoidRequestsLinksInterface {
  * TechnicalEvent that halts, in that order |
  *
  * Every operator request is answered, and the request and the answer are logged at Warning with the operator's name.
+ * Nothing is written while the WAL holds no start of day: there is no trading to halt, and no order to cancel or void.
  *
  * Times on the wall clock are nanoseconds since the Unix epoch. One thread, the sequencer's, calls every member
  * function.
@@ -95,12 +97,11 @@ class HaltAndVoidRequests {
     HaltAndVoidRequests(HaltAndVoidRequestsLinksInterface& links, pubsub_itc_fw::QuillLogger& logger);
 
     /// Operator @p operator_name, on @p connection, asks for trading to be halted if @p halt, or no longer halted.
-    void operator_request(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, bool halt, int64_t now_ns);
+    void operator_request(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, bool halt);
 
     /// Matching engine instance @p instance_id, at @p epoch, on @p connection, cannot account for the orders the venue
     /// holds, and asks for trading to be halted for @p reason. It asks again every second until it has applied a halt.
-    void engine_halt_request(const pubsub_itc_fw::ConnectionID& connection, int64_t instance_id, int32_t epoch, pubsub_itc_fw_app::TechnicalEventReason reason,
-                             int64_t now_ns);
+    void engine_halt_request(const pubsub_itc_fw::ConnectionID& connection, int64_t instance_id, int32_t epoch, pubsub_itc_fw_app::TechnicalEventReason reason);
 
     /// Matching engine instance @p instance_id, on @p connection, died applying command @p seq_no and asks for it to be
     /// voided. It asks again every second until it is answered.
@@ -114,7 +115,7 @@ class HaltAndVoidRequests {
      * applying it; a CancelBook that cancels every order on the book, each reported to its member; and a TechnicalEvent
      * that halts trading. They are held like the orders before them, and sent to the engine that next leads, in order.
      */
-    void recovery_halt(int64_t now_ns);
+    void recovery_halt();
 
   private:
     void answer(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, pubsub_itc_fw_app::OperatorHaltOutcome outcome,
@@ -124,9 +125,9 @@ class HaltAndVoidRequests {
     void void_held_orders_at_the_halt();
     // Whether a TechnicalEvent halts trading or lifts the halt.
     enum class Trading { halts, lifts };
-    // A TechnicalEvent in the open phase, the only phase the venue has until the start and the end of the trading day are
-    // built.
-    [[nodiscard]] pubsub_itc_fw_app::TechnicalEvent technical_event(Trading trading, pubsub_itc_fw_app::TechnicalEventReason reason, int64_t now_ns);
+    // A TechnicalEvent that halts trading or lifts the halt, in the phase and on the trading day the venue is in. Only built
+    // once the trading day has started.
+    [[nodiscard]] pubsub_itc_fw_app::TechnicalEvent technical_event(Trading trading, pubsub_itc_fw_app::TechnicalEventReason reason);
 
     HaltAndVoidRequestsLinksInterface& links_;
     pubsub_itc_fw::QuillLogger& logger_;

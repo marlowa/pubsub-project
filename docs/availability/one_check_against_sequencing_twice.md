@@ -330,7 +330,11 @@ first and with `--secondary-engine-first`, before the next starts.
    whose identity they hold unanswered (section 4.3). Unit tests in each gateway. Nothing sends `CommandRefused` yet,
    so the scenarios are unchanged.
 
-   **As built.** `CommandRefused` is message 164 in `leader_follower.dsl`, with the reason `IdentifierAlreadyUsed`. It
+   **As built.** `CommandRefused` is message 164 in `leader_follower.dsl`, with the reason `IdentifierAlreadyUsed`. The
+   same message carries two further reasons, for a command that reaches the leading sequencer before the venue enters
+   pre-open ([trading_day_plan.md](../venue/trading_day_plan.md)): `TradingDayNotStarted` before the WAL holds a start of
+   day, which both gateways answer with the text "the trading day has not started", and `MarketNotOpen` during the start
+   of day, answered "the market is not open"; each with OrdRejReason Exchange closed for an order. The message
    carries more than section 4.1 lists: the member's session connection id at the gateway, and the refused command
    itself, its PDU id and its encoded bytes exactly as the envelope carried them. A gateway with high availability off
    keeps no copies of commands, and a FIX execution report must carry the order's Symbol and Side, so a refusal that

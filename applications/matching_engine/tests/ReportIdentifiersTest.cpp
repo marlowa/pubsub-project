@@ -28,16 +28,22 @@ ReportIdentifiers::Secret secret_of(uint8_t first) {
 
 constexpr int32_t trading_day = 20261025;
 
-TEST(TradingDateTest, AWallTimeFallsOnItsDateInUtc) {
-    // 2026-10-25T00:00:00Z is 1792886400 seconds after the epoch.
-    constexpr int64_t midnight = 1'792'886'400LL * 1'000'000'000LL;
-    EXPECT_EQ(fix_common::trading_date_of(midnight), 20261025);
-    EXPECT_EQ(fix_common::trading_date_of(midnight - 1), 20261024) << "one nanosecond before midnight is the day before";
-    EXPECT_EQ(fix_common::trading_date_of(0), 19700101);
-    EXPECT_EQ(fix_common::trading_date_of(-1), 19691231);
-    // 2024-02-29T12:00:00Z, a leap day: 1709208000 seconds.
-    EXPECT_EQ(fix_common::trading_date_of(1'709'208'000LL * 1'000'000'000LL), 20240229);
+TEST(TradingDateTest, ADateGivenAsEightDigitsIsTheNumberYyyymmdd) {
+    EXPECT_EQ(fix_common::parse_trading_date("20261025"), 20261025);
+    EXPECT_EQ(fix_common::parse_trading_date("20240229"), 20240229) << "a leap day";
     EXPECT_EQ(fix_common::trading_date_text(20240229), "2024-02-29");
+}
+
+TEST(TradingDateTest, TextThatIsNotADayOfTheCalendarIsRefused) {
+    EXPECT_FALSE(fix_common::parse_trading_date("2026102").has_value()) << "seven digits";
+    EXPECT_FALSE(fix_common::parse_trading_date("2026-10-25").has_value()) << "written with dashes";
+    EXPECT_FALSE(fix_common::parse_trading_date("2026102a").has_value());
+    EXPECT_FALSE(fix_common::parse_trading_date("20261325").has_value()) << "month 13";
+    EXPECT_FALSE(fix_common::parse_trading_date("20261000").has_value()) << "day 0";
+    EXPECT_FALSE(fix_common::parse_trading_date("20261131").has_value()) << "30 days in November";
+    EXPECT_FALSE(fix_common::parse_trading_date("20230229").has_value()) << "2023 is not a leap year";
+    EXPECT_FALSE(fix_common::parse_trading_date("21000229").has_value()) << "2100 is not a leap year";
+    EXPECT_EQ(fix_common::parse_trading_date("20000229"), 20000229) << "2000 is a leap year";
 }
 
 TEST(ReportIdentifiersTest, AnIdentifierIsALetterAndSixteenHexadecimalDigits) {

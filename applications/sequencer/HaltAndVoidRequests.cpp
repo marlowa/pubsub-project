@@ -10,28 +10,38 @@
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace sequencer {
 
 HaltAndVoidRequests::HaltAndVoidRequests(HaltAndVoidRequestsLinksInterface& links, pubsub_itc_fw::QuillLogger& logger) : links_(links), logger_(logger) {}
 
-pubsub_itc_fw_app::TechnicalEvent HaltAndVoidRequests::technical_event(Trading trading, pubsub_itc_fw_app::TechnicalEventReason reason, int64_t now_ns) {
+pubsub_itc_fw_app::TechnicalEvent HaltAndVoidRequests::technical_event(Trading trading, pubsub_itc_fw_app::TechnicalEventReason reason) {
+    const TradingPhaseState& trading_phase = links_.trading_phase();
+    if (!trading_phase.started()) {
+        throw pubsub_itc_fw::PreconditionAssertion("HaltAndVoidRequests::technical_event: the trading day has not started", __FILE__, __LINE__);
+    }
     pubsub_itc_fw_app::TechnicalEvent event{};
-    event.phase = pubsub_itc_fw_app::TradingPhase::Open;
+    event.phase = trading_phase.latest()->phase;
     event.halted = trading == Trading::halts;
-    event.trading_day = links_.trading_day(now_ns);
+    event.trading_day = trading_phase.trading_day();
     event.reason = reason;
     return event;
 }
 
 // ---- An operator's request ------------------------------------------------------------------------------------------
 
-void HaltAndVoidRequests::operator_request(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, bool halt, int64_t now_ns) {
+void HaltAndVoidRequests::operator_request(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, bool halt) {
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning, "HaltAndVoidRequests: operator {} asks for trading to be {}, on connection {}", operator_name,
                halt ? "halted" : "no longer halted", connection.get_value());
     if (!links_.leading()) {
         answer(connection, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::NotLeader, 0,
                "this sequencer does not lead, so it wrote nothing; the sequencer that leads acts on the request");
+        return;
+    }
+    if (!links_.trading_phase().started()) {
+        answer(connection, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::TradingDayNotStarted, 0,
+               "the WAL holds no start of day yet, so there is no trading to halt or halt to lift; nothing was written");
         return;
     }
     const TradingHaltState& trading_halt = links_.trading_halt();
@@ -43,7 +53,7 @@ void HaltAndVoidRequests::operator_request(const pubsub_itc_fw::ConnectionID& co
             return;
         }
         // Nothing is cancelled: an operator's halt keeps the book, and the operator's reasons are not the venue's to guess.
-        const pubsub_itc_fw_app::TechnicalEvent event = technical_event(Trading::halts, pubsub_itc_fw_app::TechnicalEventReason::DeclaredByOperator, now_ns);
+        const pubsub_itc_fw_app::TechnicalEvent event = technical_event(Trading::halts, pubsub_itc_fw_app::TechnicalEventReason::DeclaredByOperator);
         const int64_t seq_no = links_.next_seq_no();
         if (!links_.write_technical_event(event)) {
             answer(connection, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::NotWritten, 0,
@@ -80,7 +90,7 @@ void HaltAndVoidRequests::operator_request(const pubsub_itc_fw::ConnectionID& co
             break;
     }
     const TradingHaltState::TechnicalEventRecord halted_by = *trading_halt.latest();
-    const pubsub_itc_fw_app::TechnicalEvent event = technical_event(Trading::lifts, pubsub_itc_fw_app::TechnicalEventReason::LiftedByOperator, now_ns);
+    const pubsub_itc_fw_app::TechnicalEvent event = technical_event(Trading::lifts, pubsub_itc_fw_app::TechnicalEventReason::LiftedByOperator);
     const int64_t seq_no = links_.next_seq_no();
     if (!links_.write_technical_event(event)) {
         answer(connection, operator_name, pubsub_itc_fw_app::OperatorHaltOutcome::NotWritten, 0,
@@ -102,16 +112,18 @@ void HaltAndVoidRequests::answer(const pubsub_itc_fw::ConnectionID& connection, 
 // ---- A matching engine's request to halt ----------------------------------------------------------------------------
 
 void HaltAndVoidRequests::engine_halt_request(const pubsub_itc_fw::ConnectionID& connection, int64_t instance_id, int32_t epoch,
-                                              pubsub_itc_fw_app::TechnicalEventReason reason, int64_t now_ns) {
+                                              pubsub_itc_fw_app::TechnicalEventReason reason) {
     // As for a cancel of the book: only the leader writes commands, and only for the engine orders are routed to.
     const bool leading = links_.leading();
-    if (!leading || !links_.orders_routed_to(connection)) {
+    if (!leading || !links_.orders_routed_to(connection) || !links_.trading_phase().started()) {
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
                    "HaltAndVoidRequests: HaltRequest from matching engine instance {} on connection {} -- not written: {}", instance_id, connection.get_value(),
-                   !leading ? "this instance does not lead" : "orders are not routed to that engine");
+                   !leading                               ? "this instance does not lead"
+                   : !links_.orders_routed_to(connection) ? "orders are not routed to that engine"
+                                                          : "the WAL holds no start of day yet, so the venue holds no order to account for");
         return;
     }
-    const pubsub_itc_fw_app::TechnicalEvent event = technical_event(Trading::halts, reason, now_ns);
+    const pubsub_itc_fw_app::TechnicalEvent event = technical_event(Trading::halts, reason);
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
                "HaltAndVoidRequests: matching engine instance {} at epoch {} cannot account for the orders the venue holds -- writing a TechnicalEvent that "
                "halts trading on trading day {} ({}); a person must lift it (R-0123, R-0023)",
@@ -179,7 +191,14 @@ void HaltAndVoidRequests::decline(const pubsub_itc_fw::ConnectionID& connection,
 
 // ---- The halt when the venue cannot recover by itself ---------------------------------------------------------------
 
-void HaltAndVoidRequests::recovery_halt(int64_t now_ns) {
+void HaltAndVoidRequests::recovery_halt() {
+    if (!links_.trading_phase().started()) {
+        // No command has been accepted, so no order is held or on the book, and there is no trading to halt.
+        PUBSUB_LOG_STR(logger_, pubsub_itc_fw::FwLogLevel::Info,
+                       "HaltAndVoidRequests: no matching engine could be trading within the longest recovery the venue does by itself, but the WAL holds no "
+                       "start of day yet, so there is nothing to halt -- nothing written");
+        return;
+    }
     // 1. The orders held: no engine has been sent them, so each is rejected by the engine that next leads, rather than
     // applied once trading has halted. The cancels among them are carried out.
     void_held_orders_at_the_halt();
@@ -193,7 +212,7 @@ void HaltAndVoidRequests::recovery_halt(int64_t now_ns) {
     static_cast<void>(links_.write_cancel_book(cancel_book));
 
     // 3. The halt itself.
-    static_cast<void>(links_.write_technical_event(technical_event(Trading::halts, pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong, now_ns)));
+    static_cast<void>(links_.write_technical_event(technical_event(Trading::halts, pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong)));
 }
 
 void HaltAndVoidRequests::void_held_orders_at_the_halt() {

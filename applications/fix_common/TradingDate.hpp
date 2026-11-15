@@ -4,41 +4,49 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include <fmt/format.h>
 
 namespace fix_common {
 
 /**
- * @brief The trading date a wall time falls on: its calendar date in UTC, as the number yyyymmdd.
+ * @brief A trading date given as text in the form yyyymmdd, for example "20261025", as the number yyyymmdd.
  *
- * The leading sequencer writes the trading date on every command it puts in the WAL. It is the date
- * of the first record in the day's WAL, so it stays the same for the whole day even if the day runs
- * past midnight. The matching engine makes its identifiers with a key derived from it
+ * The trading date is given to each run by the procedure that starts it, and no component computes it from its clock
+ * (R-0164; docs/venue/start_and_end_of_day.md). The leading sequencer writes it on every record of the day's WAL, taken
+ * from the start of day; the matching engine makes its identifiers with a key derived from it
  * (docs/availability/deterministic_matching_engine.md, section 3.3).
  *
- * @param[in] wall_time_ns Nanoseconds since 1970-01-01T00:00:00 UTC; may be negative.
- * @return The date, for example 20261025 for 25 October 2026.
+ * @param[in] text Eight digits: the year, the month and the day.
+ * @return The date, or nothing if @p text is not eight digits naming a day of the Gregorian calendar.
  */
-inline int32_t trading_date_of(int64_t wall_time_ns) {
-    constexpr int64_t nanoseconds_per_day = 86'400'000'000'000;
-    int64_t days = wall_time_ns / nanoseconds_per_day;
-    if (wall_time_ns % nanoseconds_per_day < 0) {
-        --days;
+inline std::optional<int32_t> parse_trading_date(std::string_view text) {
+    if (text.size() != 8) {
+        return std::nullopt;
     }
-    // The civil date of a count of days since 1970-01-01, by Howard Hinnant's civil_from_days, which counts in eras of
-    // 400 years starting on 1 March so that the leap day falls at the end of each year it counts.
-    days += 719468;
-    const int64_t era = (days >= 0 ? days : days - 146096) / 146097;
-    const int64_t day_of_era = days - era * 146097;
-    const int64_t year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
-    const int64_t day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    const int64_t month_from_march = (5 * day_of_year + 2) / 153;
-    const int64_t day = day_of_year - (153 * month_from_march + 2) / 5 + 1;
-    const int64_t month = month_from_march < 10 ? month_from_march + 3 : month_from_march - 9;
-    const int64_t year = year_of_era + era * 400 + (month <= 2 ? 1 : 0);
-    return static_cast<int32_t>(year * 10000 + month * 100 + day);
+    int32_t value = 0;
+    for (const char digit : text) {
+        if (digit < '0' || digit > '9') {
+            return std::nullopt;
+        }
+        value = value * 10 + (digit - '0');
+    }
+    const int32_t year = value / 10000;
+    const int32_t month = (value / 100) % 100;
+    const int32_t day = value % 100;
+    if (year < 1 || month < 1 || month > 12 || day < 1) {
+        return std::nullopt;
+    }
+    const bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    constexpr int32_t days_in_month[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const int32_t last_day = month == 2 && leap ? 29 : days_in_month[month - 1];
+    if (day > last_day) {
+        return std::nullopt;
+    }
+    return value;
 }
 
 /**

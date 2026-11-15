@@ -227,11 +227,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, NamedTuple
 
+import operator_requests
 from test_event_listener import (ReceivedEvent, TestEventListener, catch_up, connection_made, follows, granted_to, introduced, lease_changed,
                                  leads, message_of, order_outcome, role_changed)
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 STARTUP_DELAY          = 1.0   # seconds between app launches
+# The trading day every sequencer is started for, and which the harness starts once the venue is up: today's date, fixed
+# when the harness starts so that a run passing midnight keeps one day (docs/venue/start_and_end_of_day.md).
+TRADING_DAY            = int(time.strftime("%Y%m%d"))
+# How long the harness keeps asking for the start of day and pre-open once the venue is up.
+_START_DAY_TIMEOUT     = 60.0
 # Upper bound on how long a logon may take, not an expectation of how long it does take:
 # wait_for_fix_logon returns the moment it sees an outcome, so raising this costs a passing
 # run nothing. It must exceed the gateway's 5s sequence_state_timeout, or a logon that takes
@@ -1439,6 +1445,14 @@ class Scenario(NamedTuple):
     # Skip the baseline burst. Only for a scenario whose subject is a venue that cannot trade, where
     # sending a thousand orders would fail for the reason the scenario exists to state.
     skip_baseline_orders: bool = False
+    # When False, the harness does not ask for the start of day once the venue is up (Phase 2b), so the scenario begins with
+    # every member's command refused. Only for a scenario whose subject is the start of the day.
+    start_trading_day: bool = True
+    # When True, the trading day is started by hand, step by step, with scripts/trading_phase.py: an order before the start
+    # of day must be refused, saying the day has not started; requests out of order, or for another day, must be refused;
+    # a request sent again must write nothing; once the venue is open an order must be accepted; and the first record of
+    # the WAL must be the start of day (R-0164, R-0166). See run_scenario's "start of the trading day" block.
+    assert_trading_day_start: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -5217,6 +5231,32 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 111 -- the trading day is started step by step, and nothing is accepted before it starts.
+    #
+    # docs/venue/trading_day_plan.md, step 4. The harness does not start the day. A member logs on and places an order,
+    # which must be refused, saying the trading day has not started, with OrdRejReason 2, exchange closed. Pre-open must be
+    # refused as not the next phase, and a start of day for another trading day must be refused. The start of day must be
+    # written, and asking for it again must write nothing. Pre-open must then be written, with open after it; a new order
+    # must be accepted; and the first record of the leading sequencer's WAL must be the start of day, for the day the
+    # sequencer was started for.
+    Scenario(
+        number=111,
+        short_name="trading_day_start",
+        description="Orders are refused until the trading day starts, which is entered on request, once, in order",
+        expected_outcome=(
+            "an order before the start of day is refused as the day not started; pre-open first, and a start of day for another day, "
+            "are refused; the start of day is written once; pre-open and open follow; an order is then accepted; the WAL's first "
+            "record is the start of day"
+        ),
+        me_ha=True,
+        start_trading_day=False,
+        skip_baseline_orders=True,
+        assert_trading_day_start=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 92 -- orders are held while no engine leads, for as long as a change of engine leader takes, and refused after that.
     #
     # docs/availability/voided_commands.md, sections 5.1 and 5.2. Both engines are taken away. Several orders are placed
@@ -6765,6 +6805,8 @@ def launch_app(name: str, bin_name: str, config: Path,
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
     # passed as absolute paths, so they are unaffected by the cwd.
     command = [str(bin_dir / bin_name), str(log_dir / f"{name}.log"), str(config)]
+    if bin_name == "sequencer":
+        command += ["--trading-day", str(TRADING_DAY)]
     if run_dir is not None:
         run_dir.mkdir(parents=True, exist_ok=True)
         command = [sys.executable, str(Path(__file__).resolve().parent / "launch.py"),
@@ -8684,6 +8726,21 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  matching engine leads ({elapsed:.1f}s)")
             log("")
 
+        # ── Phase 2b: start the trading day ───────────────────────────────────
+        # Until the WAL holds a start of day every member's command is refused, so the day is started before any order is
+        # sent: the start of day, then pre-open, which the sequencer follows at once with open. Pre-open waits until the
+        # leading matching engine has acted on the start of day, so a scenario with no engine leading yet goes on with the
+        # day unstarted, and says so.
+        log(f"=== Phase 2b: starting trading day {TRADING_DAY} ===")
+        t0 = time.monotonic()
+        if not scenario.start_trading_day:
+            log("  not started: this scenario starts the day itself")
+        elif operator_requests.start_trading_day(prefix, TRADING_DAY, "ha_test", timeout=_START_DAY_TIMEOUT, say=log):
+            log(f"  trading day {TRADING_DAY} is open ({time.monotonic() - t0:.1f}s)")
+        else:
+            log(f"  trading day {TRADING_DAY} did not open within {_START_DAY_TIMEOUT:.0f}s -- continuing, as the scenario may expect that")
+        log("")
+
         # ── Phase 3: baseline orders + in-flight orders ───────────────────────
         if scenario.skip_baseline_orders:
             log("=== Phase 3: skipped — this scenario's subject is a venue that cannot trade ===")
@@ -9087,7 +9144,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # is no book a promotion resumed with to ask about.
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
                 and not scenario.assert_held_answered and not scenario.assert_halt_voids_held_orders and not scenario.expects_no_new_leader
-                and not scenario.assert_operator_lift and not scenario.assert_operator_halt
+                and not scenario.assert_operator_lift and not scenario.assert_operator_halt and not scenario.assert_trading_day_start
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
                 and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained):
@@ -9851,7 +9908,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
             refuser_log.unlink(missing_ok=True)
             environment = dict(os.environ)
             try:
-                completed = subprocess.run([str(bin_dir / bin_name), str(refuser_log), str(config)],
+                # Started as it would be in earnest, with every argument it needs, so that what it refuses is the
+                # configuration and not its command line.
+                trading_day_arguments = ["--trading-day", str(TRADING_DAY)] if bin_name == "sequencer" else []
+                completed = subprocess.run([str(bin_dir / bin_name), str(refuser_log), str(config)] + trading_day_arguments,
                                            capture_output=True, text=True, timeout=30, env=environment,
                                            check=False)
             except subprocess.TimeoutExpired:
@@ -10320,6 +10380,91 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "to be accepted")
             log("  an order sent after the lift is accepted -- OK")
             member.close()
+
+        # ── The start of the trading day: refused until started, entered on request, once, in order ──
+        if scenario.assert_trading_day_start:
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("start of the trading day: the raw client could not log on before the start of day; logging on is allowed in every phase")
+
+            def day_answer_to(cl_ord_id: str) -> dict[int, str] | None:
+                deadline = time.monotonic() + _HELD_ANSWER_TIMEOUT
+                while time.monotonic() < deadline:
+                    report = member.receive_until("8", timeout=1.0)
+                    if report is not None and report.get(11) == cl_ord_id:
+                        return report
+                return None
+
+            def phase_request(action: str, trading_day: int = TRADING_DAY) -> tuple[int, str]:
+                completed = subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "trading_phase.py"), action, "--trading-day",
+                                            str(trading_day), "--operator", "ha_test", "--install-dir", str(prefix), "--timeout", "60"],
+                                           capture_output=True, text=True, timeout=120, check=False)
+                said = (completed.stdout + completed.stderr).strip()
+                log(f"  trading_phase.py {action} --trading-day {trading_day} -> exit {completed.returncode}")
+                for line in said.splitlines():
+                    log(f"    {line}")
+                return completed.returncode, said
+
+            member.new_order_single("day-early-1")
+            refused = day_answer_to("day-early-1")
+            if refused is None or refused.get(39) != "8" or refused.get(103) != "2" or "has not started" not in (refused.get(58) or ""):
+                member.close()
+                die(f"start of the trading day: an order before the start of day was answered with {refused}; a rejection with OrdRejReason 2 "
+                    "and the text 'the trading day has not started' was wanted")
+            log("  an order before the start of day is refused, saying the trading day has not started -- OK")
+
+            for action, day, wanted in (("pre-open", TRADING_DAY, "NotNext"), ("start-of-day", TRADING_DAY + 1, "WrongTradingDay")):
+                status, said = phase_request(action, day)
+                if status != 1 or wanted not in said:
+                    member.close()
+                    die(f"start of the trading day: {action} for {day} was answered with exit {status} and '{said}'; {wanted} was wanted")
+            log("  pre-open before the start of day, and a start of day for another day, are refused -- OK")
+
+            for wanted in ("Written", "AlreadyInPhase"):
+                status, said = phase_request("start-of-day")
+                if status != 0 or wanted not in said:
+                    member.close()
+                    die(f"start of the trading day: the start of day was answered with exit {status} and '{said}'; {wanted} was wanted")
+            log("  the start of day is written, and asking again writes nothing -- OK")
+
+            member.new_order_single("day-early-2")
+            refused = day_answer_to("day-early-2")
+            if refused is None or refused.get(39) != "8" or refused.get(103) != "2" or "market is not open" not in (refused.get(58) or ""):
+                member.close()
+                die(f"start of the trading day: an order in the start of day was answered with {refused}; a rejection with OrdRejReason 2 "
+                    "and the text 'the market is not open' was wanted")
+            log("  an order in the start of day is refused, saying the market is not open -- OK")
+
+            status, said = phase_request("start-day")
+            if status != 0 or "entering pre-open" not in said:
+                member.close()
+                die(f"start of the trading day: pre-open was answered with exit {status} and '{said}'; pre-open and open were to be written")
+            log("  pre-open is written once the engine has acted on the start of day, and open after it -- OK")
+
+            member.new_order_single("day-open-1")
+            accepted = day_answer_to("day-open-1")
+            member.close()
+            if accepted is None or accepted.get(39) != "0":
+                die(f"start of the trading day: an order once the venue is open was answered with {accepted}; it was to be accepted")
+            log("  an order once the venue is open is accepted -- OK")
+
+            leader_follower, _ = operator_requests.load_messages(prefix)
+            sequencer_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
+            wal_dir = sequencer_config.parent / installed_toml_section_value(sequencer_config, "wal", "directory")
+            first = next(iter(wal_entries(wal_dir)), None)
+            envelope = leader_follower.WalRecord.decode(first[2])[0] if first is not None else None
+            if envelope is None or envelope.pdu_id != leader_follower.TechnicalEvent.MESSAGE_ID:
+                die(f"start of the trading day: the first record of {wal_dir} is {envelope}; the start of day was wanted")
+            event = leader_follower.TechnicalEvent.decode(envelope.payload)[0]
+            if event.phase != leader_follower.TradingPhase.StartOfDay or event.trading_day != TRADING_DAY or envelope.trading_date != TRADING_DAY:
+                die(f"start of the trading day: the WAL's first record is {event} dated {envelope.trading_date}; the start of trading day "
+                    f"{TRADING_DAY} was wanted")
+            log(f"  the WAL's first record is the start of trading day {TRADING_DAY} -- OK")
 
         # ── The operator's halt: new orders refused, cancels carried out, the book kept ──
         # Section 6.2. An operator halts trading while an engine leads, and later lifts the halt. Nothing may be cancelled

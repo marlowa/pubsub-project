@@ -60,6 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # the components' test events.
 from perf_run import component_metrics_port, read_counter, read_gateway_counters, wait_for_er_completion  # noqa: E402  -- needs the path set above
 from perf_run import wait_for_order_completion as wait_for_engine_orders  # noqa: E402
+import operator_requests  # noqa: E402  -- starts the trading day once the venue is up
 import devenv  # noqa: E402  -- clears what earlier runs left
 import venue_events  # noqa: E402  -- learns from test events which instances lead
 
@@ -80,6 +81,8 @@ POLL_INTERVAL     = 0.1   # seconds between readings of a gateway's counters
 # Generous, callgrind-scaled upper bounds (wall-clock).  Waiting returns as soon
 # as the event arrives, so these are ceilings, not fixed delays.
 READY_TIMEOUT = 600.0     # leader election + gateway connected under callgrind
+# The trading day every sequencer is started for: today's date, fixed when the run starts.
+TRADING_DAY = int(time.strftime("%Y%m%d"))
 LOGON_TIMEOUT = 300.0     # FIX SCRAM logon round-trip through the slowed gateway
 ORDER_TIMEOUT = 1800.0    # order/ER completion for a burst through slowed components
 
@@ -284,7 +287,7 @@ def launch_app_under_callgrind(name: str, bin_name: str, config: Path,
         f"--callgrind-out-file={output_file_template}",
     ]
 
-    app_cmd = [str(bin_dir / bin_name), str(log_file), str(config)]
+    app_cmd = [str(bin_dir / bin_name), str(log_file), str(config)] + (["--trading-day", str(TRADING_DAY)] if bin_name == "sequencer" else [])
     full_cmd = valgrind_cmd + app_cmd
 
     with open(stderr_file, "w", encoding="utf-8") as stderr_fh, open(
@@ -699,7 +702,7 @@ def main() -> None:
                 log(f"Starting {name} (unprofiled) ...")
                 with open(log_dir / f"{name}.stdout", "w", encoding="utf-8") as stdout_fh:
                     proc = subprocess.Popen(
-                        [str(bin_dir / bin_name), str(log_file), str(config)],
+                        [str(bin_dir / bin_name), str(log_file), str(config)] + (["--trading-day", str(TRADING_DAY)] if bin_name == "sequencer" else []),
                         cwd=cwd, stdout=stdout_fh, stderr=subprocess.STDOUT
                     )
                 log(f"  {name} PID {proc.pid}")
@@ -729,6 +732,11 @@ def main() -> None:
             leaders = venue_events.wait_until_ready(listener, gateway_under_test, READY_TIMEOUT, log)
         except TimeoutError as error:
             die(f"the venue did not become ready: {error}")
+        # Every member's command is refused until the WAL holds a start of day; the sequencer follows pre-open at once with
+        # open (docs/venue/trading_day_plan.md).
+        log(f"Starting trading day {TRADING_DAY} ...")
+        if not operator_requests.start_trading_day(prefix, TRADING_DAY, Path(__file__).stem, timeout=READY_TIMEOUT, say=log):
+            die(f"trading day {TRADING_DAY} did not start, so every order would be refused")
         if leaders.matching_engine != "matching_engine_primary":
             die(f"{leaders.matching_engine} leads, not matching_engine_primary, which is the one profiled")
 

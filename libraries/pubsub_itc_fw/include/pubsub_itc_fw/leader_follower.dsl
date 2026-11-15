@@ -831,9 +831,9 @@ message SessionEndWithdrawn (id=167, version=1)
     i16    gateway_protocol_id
 end
 
-# The venue's trading phase. See docs/venue/trading_phases.md. Until
-# the start and the end of the trading day are built, the venue is
-# always open.
+# The venue's trading phase. See docs/venue/trading_phases.md and
+# docs/venue/trading_day_plan.md. The leading sequencer writes a
+# TechnicalEvent for each phase the venue enters.
 enum TradingPhase : i8 {
     StartOfDay = 1   # the venue is preparing and is not trading
     PreOpen = 2      # members may enter orders; nothing is matched yet
@@ -848,6 +848,8 @@ enum TechnicalEventReason : i8 {
     LiftedByOperator = 2       # a person lifted a halt (R-0023)
     RecoveryTooLong = 3        # no matching engine could be trading within the longest recovery the venue does by itself, so a person decides when trading resumes
     DeclaredByOperator = 4     # a person halted trading; nothing is cancelled, and a person lifts it
+    RequestedByOperator = 5    # a person asked for the venue to enter this phase (TradingPhaseRequest)
+    Scheduled = 6              # the time in the day's schedule for this phase came, and its conditions held
 }
 
 # ------------------------------------------------------------
@@ -1002,6 +1004,7 @@ enum OperatorHaltOutcome : i8 {
     NoEngineLeads = 6        # no matching engine leads, so the halt cannot be lifted yet
     ReportsOutstanding = 7   # the WAL does not yet hold a report of every order and cancel written before the halt
     NotWritten = 8           # the TechnicalEvent could not be encoded, so nothing was written and trading is as it was
+    TradingDayNotStarted = 9 # no start of day is in the WAL, so there is no trading to halt or lift a halt of
 }
 
 # ------------------------------------------------------------
@@ -1016,9 +1019,56 @@ message OperatorHaltAnswer (id=162, version=1)
     string explanation              # the outcome in words, as the sequencer logged it
 end
 
+# What the sequencer did with a TradingPhaseRequest.
+enum TradingPhaseOutcome : i8 {
+    Written = 1              # the TechnicalEvent entering the phase asked for was written
+    AlreadyInPhase = 2       # the venue is in that phase already, on that trading day, so nothing was written
+    AlreadyPast = 3          # the venue has passed that phase already, on that trading day, so nothing was written
+    NotLeader = 4            # this sequencer does not lead, so it wrote nothing; the one that leads acts
+    WrongTradingDay = 5      # the request is for a trading day other than the one this sequencer was started for, or the WAL holds
+    NotNext = 6              # the phase asked for is not the one after the venue's current phase
+    NotReady = 7             # the phase is the next one, but its conditions do not hold yet; nothing was written, and the request can be sent again
+    NotWritten = 8           # the TechnicalEvent could not be encoded, or the WAL could not take it, so nothing was written
+    Unsupported = 9          # this release does not yet move the venue into that phase on request
+}
+
+# ------------------------------------------------------------
+#  168 -- TradingPhaseRequest
+#  Sent by an operator, or by the procedure that starts the trading
+#  day, to each sequencer over its listener for operators, as
+#  OperatorHaltRequest is. Asks for the venue to enter a phase. Only
+#  the sequencer that leads acts. Every request is answered from the
+#  sequencer's current state, so a request sent again does no harm.
+#  See docs/venue/trading_day_and_reference_data.md and
+#  docs/venue/trading_day_plan.md.
+# ------------------------------------------------------------
+message TradingPhaseRequest (id=168, version=1)
+    i32 trading_day                 # YYYYMMDD; the day the request is for
+    TradingPhase requested_phase
+    string operator_name            # who asked, for the Quill log
+end
+
+# ------------------------------------------------------------
+#  169 -- TradingPhaseAnswer
+#  The sequencer's answer to a TradingPhaseRequest, on the same
+#  connection. Says what it did, and the trading state it holds once
+#  the request is dealt with.
+# ------------------------------------------------------------
+message TradingPhaseAnswer (id=169, version=1)
+    TradingPhaseOutcome outcome
+    bool day_started                # whether the WAL holds a start of day; when false, the next three fields say nothing
+    i32 trading_day                 # YYYYMMDD
+    TradingPhase phase
+    bool halted
+    i64 technical_event_seq_no      # the position of the last TechnicalEvent written for this request, or 0 when none was
+    string explanation              # the outcome in words, as the sequencer logged it
+end
+
 # Why the leading sequencer refused a member's command without writing it into the WAL.
 enum CommandRefusedReason : i8 {
     IdentifierAlreadyUsed = 1   # the WAL already holds a command with the same comp id, protocol and ClOrdID, and this one was not marked as sent again
+    TradingDayNotStarted = 2    # the WAL holds no start of day yet, so the venue accepts no member's command
+    MarketNotOpen = 3           # the venue is in a phase that accepts no member's command: the start of day
 }
 
 # ------------------------------------------------------------

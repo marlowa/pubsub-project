@@ -71,6 +71,13 @@ class TradingHaltState {
      */
     bool note_technical_event(int64_t seq_no, bool halted, pubsub_itc_fw_app::TechnicalEventReason reason) {
         const bool was_halted = this->halted();
+        if (halted && was_halted && moves_the_phase(reason)) {
+            // A change of phase while trading is halted carries the halt on, and does not replace it: the halt keeps the
+            // reason it was declared with, and lifting it still waits for the members' commands before the halt itself.
+            const TechnicalEventRecord& halt = events_.back();
+            events_.push_back(TechnicalEventRecord{seq_no, true, halt.reason, halt.last_members_command_before});
+            return false;
+        }
         events_.push_back(TechnicalEventRecord{seq_no, halted, reason, last_members_command()});
         return was_halted != halted;
     }
@@ -133,6 +140,12 @@ class TradingHaltState {
             return recent_[(recent_oldest_ + recent_count_ - 1) % recent_members_commands_kept];
         }
         return latest_forgotten_;
+    }
+
+    /// Whether @p reason is that of a TechnicalEvent written to move the venue to another phase, rather than to halt
+    /// trading or lift a halt.
+    [[nodiscard]] static bool moves_the_phase(pubsub_itc_fw_app::TechnicalEventReason reason) {
+        return reason == pubsub_itc_fw_app::TechnicalEventReason::RequestedByOperator || reason == pubsub_itc_fw_app::TechnicalEventReason::Scheduled;
     }
 
   private:

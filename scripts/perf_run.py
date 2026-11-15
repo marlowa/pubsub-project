@@ -44,6 +44,7 @@ from pathlib import Path
 # A sibling script rather than a package, so it is imported by path as the others here are.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import measurement_machine  # noqa: E402  -- needs the path set above
+import operator_requests  # noqa: E402  -- starts the trading day once the venue is up
 import devenv  # noqa: E402  -- clears what earlier runs left
 import venue_events  # noqa: E402  -- learns from test events which instances lead
 
@@ -60,6 +61,8 @@ STARTUP_DELAY   = 1.0    # seconds between app launches
 # Longest the venue may take, from the last component started, to have a leader for each pair and the gateway under
 # test connected to a sequencer, as the components' test events say. A limit, not a wait: it ends when they say so.
 READY_TIMEOUT   = 60.0
+# The trading day every sequencer is started for: today's date, fixed when the run starts.
+TRADING_DAY = int(time.strftime("%Y%m%d"))
 # Longest we will wait for every FIX session to be established before giving up. A limit
 # rather than a fixed sleep: the wait ends as soon as the gateway reports the last session,
 # so a fast machine is not delayed, and a slow one is not sent orders it cannot deliver.
@@ -381,7 +384,7 @@ def launch_app(name: str, bin_name: str, config: Path,
     cwd = str(workdir) if workdir is not None else str(log_dir)
     with open(log_dir / f"{name}.stdout", "w", encoding="utf-8") as stdout_fh:
         proc = subprocess.Popen(
-            [str(bin_dir / bin_name), str(log_file), str(config)],
+            [str(bin_dir / bin_name), str(log_file), str(config)] + (["--trading-day", str(TRADING_DAY)] if bin_name == "sequencer" else []),
             cwd=cwd,
             stdout=stdout_fh,
             stderr=subprocess.STDOUT,
@@ -1511,6 +1514,11 @@ def main() -> None:
             leaders = venue_events.wait_until_ready(listener, gateway_under_test, READY_TIMEOUT, log)
         except TimeoutError as error:
             die(f"the venue did not become ready: {error}")
+        # Every member's command is refused until the WAL holds a start of day; the sequencer follows pre-open at once with
+        # open (docs/venue/trading_day_plan.md).
+        log(f"Starting trading day {TRADING_DAY} ...")
+        if not operator_requests.start_trading_day(prefix, TRADING_DAY, Path(__file__).stem, timeout=READY_TIMEOUT, say=log):
+            die(f"trading day {TRADING_DAY} did not start, so every order would be refused")
         perf_targets |= {leaders.sequencer, leaders.matching_engine}
         me_metrics_port = component_metrics_port(prefix, "matching_engine", leaders.matching_engine)
 

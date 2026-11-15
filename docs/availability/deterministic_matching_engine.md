@@ -128,26 +128,21 @@ machines and by support staff as the venue's TLS keys are, and the trading date,
 HMAC-SHA256 of the date written yyyy-mm-dd, keyed with the secret, and the key for each kind of identifier is
 HMAC-SHA256 of its name, `OrderID` or `ExecID`, keyed with the day key (decision 2).
 
-The trading date is the UTC date of the first record in the day's WAL, so the engines agree on it even if the day runs
-past midnight or one of them starts after it. An engine does not read the WAL itself, and one that restarts catches up
-from its own position, so it never sees the first record. The leading sequencer therefore writes the date on every new
-order and cancel it puts in the WAL, as `trading_date` on the `WalRecord` envelope, and the engines and
-`wal_replay_check` take it from the command. The sequencer finds the date in one of three ways:
-
-- a follower sequencer notes the date on each command its leader sends it, so on taking the lead it writes the date
-  its leader wrote;
-- a sequencer that leads before it has been sent a command reads the wall time of the first record in its WAL once,
-  with `Wal::first_wall_time_ns`, which reads the start of the earliest segment and nothing else;
-- a sequencer whose WAL holds nothing takes the date of the command it is writing, which then becomes the first record.
+The trading date is the trading day of the start-of-day `TechnicalEvent`, the first record in the day's WAL, so the
+engines agree on it even if the day runs past midnight or one of them starts after it. An engine does not read the WAL
+itself, and one that restarts catches up from its own position, so it never sees the first record. The leading sequencer
+therefore writes the date on every record it puts in the WAL, as `trading_date` on the `WalRecord` envelope, and the
+engines and `wal_replay_check` take it from the command. Every sequencer, leading or following, keeps the trading day
+from the TechnicalEvent records it holds, however it came to hold them, so a sequencer taking the lead writes the day
+its WAL declares. The start-of-day record itself carries the day the sequencer was started for (`--trading-day`), which
+the leading sequencer checks the request against ([trading_day_plan.md](../venue/trading_day_plan.md)).
 
 A command that carries no trading date is a defect in the sequencer, and the engine refuses it, as it refuses a
 command that carries no time (section 5).
 
 The engines never work the date out from their own clocks, which [trading_phases.md](../venue/trading_phases.md)
-forbids: they take the date the sequencer writes. The sequencer takes it from the first record of the day's WAL because
-nothing yet declares the trading day. Once the technical event of trading_phases.md exists, carrying the trading day
-from the start of day ([BUG-0137](../bug_list.md#bug_0137)), the sequencer writes the day it declares, and the engines
-are unchanged.
+forbids, and neither does the sequencer: the engines take the date the sequencer writes, and the sequencer writes the
+day the start of day declares.
 
 The secret is a file of 64 hexadecimal digits, named by `identifiers.secret_file` in each engine's configuration.
 `deploy.py` writes one, readable by its owner alone, where none exists, and never replaces one that does, because the
@@ -489,8 +484,8 @@ turn an identifier back into a sequence number. There is no start-of-day procedu
 
 - **A. Derived from a secret and the trading date.** The deployment holds one long-lived secret, given to both engine
   machines and to support staff as the venue's other secrets are, such as its TLS keys. Each engine computes the day
-  key from that secret and the trading date with HMAC-SHA256. The trading date is the date of the first record in the
-  day's WAL, which both engines read, so they agree even if one starts after midnight. Nothing has to be created or
+  key from that secret and the trading date with HMAC-SHA256. The trading date is the trading day of the start of day, the first
+  record in the day's WAL, which both engines are given, so they agree even if one starts after midnight. Nothing has to be created or
   distributed each day. Against: whoever holds the secret can derive every day's key, so the secret must be guarded
   as closely as a TLS private key, and changing it is a deployment change.
 - **B. Created each day by a start-of-day procedure** and written to a file on both engine machines and in a place

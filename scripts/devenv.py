@@ -8,6 +8,15 @@ Subcommands:
   status             Show running/stopped status for each component.
   restart [name]     Stop and re-start all components, or one named component.
 
+The trading day:
+  start gives each sequencer the trading day on its command line (--trading-day YYYYMMDD), records it in
+  [run_dir]/trading_day so that a component started or restarted on its own gets the same day, and once every
+  component is running asks for the start of day and for pre-open (scripts/trading_phase.py start-day), which the
+  sequencer follows at once with open. Until then the venue refuses every member's command. The day is --trading-day
+  if given; otherwise the day recorded by the last start, unless --fresh-wal starts a new WAL; otherwise today's date
+  on this machine, which is a convenience of the development sandbox only (docs/venue/start_and_end_of_day.md).
+  --no-start-day starts the components and leaves the trading day unstarted.
+
 Options:
   --env PATH         Environment TOML (default: environments/dev.toml).
   --no-ha            Skip components marked ha_only = true.  Refused when the environment
@@ -47,6 +56,8 @@ import sys
 import time
 from pathlib import Path
 
+import operator_requests
+
 # A sandbox aid, and deliberately not staged into a release: on a target host there is no source
 # tree to compare against and the check would be a no-op anyway. Absent means silent rather than
 # broken. See scripts/deployment_freshness.py and docs/bug_list.md, BUG-0015.
@@ -68,6 +79,7 @@ _SCRIPT_DIR       = Path(__file__).resolve().parent
 _PROJECT_ROOT     = _SCRIPT_DIR.parent
 _DEFAULT_ENV_FILE = _PROJECT_ROOT / "environments" / "dev.toml"
 _STARTUP_DELAY    = 1.0   # seconds between component starts
+_START_DAY_TIMEOUT = 120.0  # seconds to keep asking for the start of day and pre-open: until a sequencer leads and an engine has acted on it
 _SHUTDOWN_TIMEOUT = 10.0  # seconds to wait after SIGTERM before SIGKILL
 
 
@@ -207,7 +219,41 @@ def build_command(
         log_file    = log_dir / f"{name}.log"
         config_path = (install_dir / comp["config"]).resolve()
         command = [str(binary_path), str(log_file), str(config_path)]
+        if binary_path.name == "sequencer":
+            command += ["--trading-day", str(recorded_trading_day(run_dir))]
     return command, workdir
+
+
+_TRADING_DAY_FILE = "trading_day"
+
+
+def recorded_trading_day(run_dir: Path) -> int:
+    """The trading day the last full start recorded in run_dir, which every sequencer is started for."""
+    path = run_dir / _TRADING_DAY_FILE
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        sys.exit(f"error: no trading day is recorded in {path}; start the whole venue with 'devenv.py start', which records one")
+
+
+def choose_trading_day(run_dir: Path, given: int | None, fresh_wal: bool) -> int:
+    """The trading day for a full start: the one given; else the one recorded by the last start, which the WAL kept from
+    it belongs to; else, for a new WAL, today's date on this machine."""
+    if given is not None:
+        return given
+    path = run_dir / _TRADING_DAY_FILE
+    if not fresh_wal and path.is_file():
+        return recorded_trading_day(run_dir)
+    return int(time.strftime("%Y%m%d"))
+
+
+def start_the_trading_day(install_dir: Path, trading_day: int) -> None:
+    """Asks for the start of day and for pre-open, each sent again until accepted; exits if the venue does not open."""
+    print(f"=== starting trading day {trading_day} ===")
+    if not operator_requests.start_trading_day(install_dir, trading_day, "devenv", timeout=_START_DAY_TIMEOUT):
+        sys.exit(f"error: trading day {trading_day} did not start; the components are running, and every member's command is refused. "
+                 "See the lines above, and the sequencers' Quill logs")
+    print(f"trading day {trading_day} is open")
 
 
 # How many times a component may take the venue out of service before the supervisor stops putting
@@ -758,10 +804,10 @@ def clear_state_for_a_run(install_dir: Path) -> None:
     clear_durable_state(load_env(_DEFAULT_ENV_FILE), install_dir, fresh_book=True, fresh_wal=True)
 
 
-def cmd_start(  # pylint: disable=too-many-arguments
+def cmd_start(  # pylint: disable=too-many-arguments,too-many-locals
     env: dict, ha_enabled: bool, delay: float, debug: bool = False,
     component: str | None = None, with_prometheus: bool = True, supervised: bool = False,
-    fresh_book: bool = False, fresh_wal: bool = False,
+    fresh_book: bool = False, fresh_wal: bool = False, trading_day: int | None = None, start_day: bool = True,
 ) -> None:
     """Implement the 'start' subcommand: export credentials then start all components.
 
@@ -841,12 +887,18 @@ def cmd_start(  # pylint: disable=too-many-arguments
         write_prometheus_scrape_config(env, install_dir, run_dir)
         print()
 
-    print("=== starting components ===")
+    day = choose_trading_day(run_dir, trading_day, fresh_wal)
+    (run_dir / _TRADING_DAY_FILE).write_text(f"{day}\n", encoding="utf-8")
+
+    print(f"=== starting components for trading day {day} ===")
     for name in order:
         comp = env["components"][name]
         start_one(name, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised)
     print()
     print(f"all components started.  logs → {log_dir}/")
+    if start_day:
+        print()
+        start_the_trading_day(install_dir, day)
 
 
 def cmd_stop(env: dict) -> None:
@@ -883,7 +935,7 @@ def cmd_status(env: dict) -> None:
 
 def cmd_restart(  # pylint: disable=too-many-arguments
     env: dict, ha_enabled: bool, delay: float, component: str | None, debug: bool = False,
-    with_prometheus: bool = True, supervised: bool = False,
+    with_prometheus: bool = True, supervised: bool = False, start_day: bool = True,
 ) -> None:
     """Implement the 'restart' subcommand: stop and restart all or one named component.
 
@@ -927,7 +979,7 @@ def cmd_restart(  # pylint: disable=too-many-arguments
     else:
         cmd_stop(env)
         print()
-        cmd_start(env, ha_enabled, delay, debug=debug, with_prometheus=with_prometheus, supervised=supervised)
+        cmd_start(env, ha_enabled, delay, debug=debug, with_prometheus=with_prometheus, supervised=supervised, start_day=start_day)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -1009,6 +1061,15 @@ def parse_args() -> argparse.Namespace:
              "The venue itself still exposes its metrics endpoints; nothing collects them",
     )
     parser.add_argument(
+        "--trading-day", type=int, default=None, metavar="YYYYMMDD",
+        help="the trading day to start; by default the day the last start recorded, or today's date when --fresh-wal "
+             "starts a new WAL or none was recorded",
+    )
+    parser.add_argument(
+        "--no-start-day", action="store_true",
+        help="start the components but do not ask for the start of day, so that every member's command is refused",
+    )
+    parser.add_argument(
         "--delay", type=float, default=_STARTUP_DELAY, metavar="SECONDS",
         help=f"seconds between component starts (default: {_STARTUP_DELAY})",
     )
@@ -1079,14 +1140,15 @@ def main() -> None:
 
     if args.subcommand == "start":
         cmd_start(env, ha_enabled, args.delay, debug=args.debug, component=args.component, supervised=args.supervised,
-                  with_prometheus=with_prometheus, fresh_book=args.fresh_book, fresh_wal=args.fresh_wal)
+                  with_prometheus=with_prometheus, fresh_book=args.fresh_book, fresh_wal=args.fresh_wal, trading_day=args.trading_day,
+                  start_day=not args.no_start_day)
     elif args.subcommand == "stop":
         cmd_stop(env)
     elif args.subcommand == "status":
         cmd_status(env)
     elif args.subcommand == "restart":
         cmd_restart(env, ha_enabled, args.delay, args.component, debug=args.debug, supervised=args.supervised,
-                    with_prometheus=with_prometheus)
+                    with_prometheus=with_prometheus, start_day=not args.no_start_day)
 
 
 if __name__ == "__main__":

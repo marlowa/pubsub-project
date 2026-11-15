@@ -67,13 +67,14 @@ refused.
   the trading day from their clocks near a boundary would disagree, each correct by its own
   clock, and nothing would detect it. A replay of an earlier day is run on a later date, and must
   produce the same records.}
-  \uncovered{no scenario starts the venue with a given trading day}
+  \covers{ha_test:111}
 \end{requirement}
 
 \begin{gap}{BUG-0137}
-  The leading sequencer takes the trading day from its clock: the date, in UTC, of the first
-  record in the day's WAL. There is no start-of-day \texttt{TechnicalEvent}, and no procedure gives
-  the venue its trading day.
+  No procedure starts or ends the trading day: the development tools and the test harness give
+  each sequencer the day and ask for the start of day themselves. No file but the WAL records the
+  trading day it belongs to, so nothing refuses a file left from an earlier day, and only the
+  sequencer is given the day.
 \end{gap}
 
 \begin{requirement}{R-0165}{A record for an older trading day is refused}
@@ -99,7 +100,7 @@ refused.
   out which of two contradictory states is current. Writing a change only from the phase before
   it is also what makes a repeated request, and a change of leader, harmless: the second attempt
   finds the venue already moved on and writes nothing.}
-  \uncovered{no phase other than open is written yet}
+  \uncovered{only the start of day, pre-open and open are written, and no scenario checks the order}
 \end{requirement}
 
 \begin{requirement}{R-0167}{The venue follows a schedule recorded in its WAL}

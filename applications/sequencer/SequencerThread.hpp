@@ -56,6 +56,7 @@
 #include "ServingWalFollowers.hpp"
 #include "SessionIdentity.hpp"
 #include "TradingHaltState.hpp"
+#include "TradingPhaseRequests.hpp"
 #include "VenueStateFromTheWal.hpp"
 #include "VoidFromWal.hpp"
 #include "VoidedCommandList.hpp"
@@ -479,20 +480,28 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // The leading matching engine's answer to a new leader's question of the highest order it has acted on
     // (EnginePosition): given to OrderRelease.
-    void handle_engine_position(const pubsub_itc_fw::EventMessage& message);
+    void handle_engine_position(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     // The orders held while no engine took them, or while the engine's position was awaited, go now if their records are
     // committed.
     void release_orders_that_waited_for_the_engine();
 
-    // The facts read from the WAL, which every instance keeps whether it leads or follows: whether trading is halted, the
-    // voided commands, the trading date, and the highest command a report answers (section 6.10 of
+    // The facts read from the WAL, which every instance keeps whether it leads or follows: the trading day and the phase,
+    // whether trading is halted, the voided commands, and the highest command a report answers (section 6.10 of
     // docs/venue/dividing_the_sequencer_and_matching_engine.md).
     VenueStateFromTheWal venue_state_{get_logger()};
-    // The trading date to write on a command sequenced at this wall time: the UTC date of the first record in the day's
-    // WAL, as a follower is told it by its leader's commands, or as this instance reads it from its WAL once. The matching
-    // engine makes its identifiers with keys derived from it (docs/availability/deterministic_matching_engine.md, section
-    // 3.3).
-    [[nodiscard]] int32_t trading_date_for(int64_t wall_time_ns);
+    // The trading date to write on a record: the trading day of the start of day in the WAL; or, for the start of day
+    // itself, which is written before the WAL holds one, the day this sequencer was started for. The matching engine
+    // makes its identifiers with keys derived from it (docs/availability/deterministic_matching_engine.md, section 3.3).
+    [[nodiscard]] int32_t trading_date_to_write() const;
+    // Refuses a member's command, which arrived on @p came_by, because the WAL holds no start of day yet (the reason
+    // TradingDayNotStarted) or the venue is in the start of day (MarketNotOpen): CommandRefused, so that the gateway answers
+    // the member and does not send it again. Every record before pre-open is then one this sequencer wrote itself, which
+    // the rule for entering pre-open depends on (TradingPhaseRequests).
+    void refuse_before_the_market_opens(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound);
+    // Sends CommandRefused for @p inbound on @p came_by with @p reason; @p first_seq_no is the record that already holds its
+    // ClOrdID, or zero.
+    void send_command_refused(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound,
+                              pubsub_itc_fw_app::CommandRefusedReason reason, int64_t first_seq_no);
 
     // Sends one matching engine connection every void whose record is committed, if there are any.
     void send_voided_commands(const pubsub_itc_fw::ConnectionID& engine);
@@ -508,15 +517,17 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] inner_pdu_id The command's message type, carried in the envelope as an order's is.
      * @param[in] bytes        The command, encoded; at most HeldOrder::own_payload_capacity bytes.
      * @param[in] size         How many bytes.
+     * @return Whether it was written. Until the WAL holds a start of day, nothing is written but the TechnicalEvent that
+     *         enters it, because the start of day is the first record of the trading day's WAL.
      */
-    void write_own_command(int16_t inner_pdu_id, const uint8_t* bytes, size_t size);
+    bool write_own_command(int16_t inner_pdu_id, const uint8_t* bytes, size_t size);
     // The absence check of EnginePresence: called on engine_absence_timer_id_, and when this instance takes the lead.
     void check_engine_absence();
 
     // Halts trading because no engine could be trading within the longest recovery the venue does by itself
     // (HaltAndVoidRequests::recovery_halt), then tells the gateways the venue is not accepting orders, with the reason.
     // Called by EnginePresence, which decides when.
-    void write_recovery_halt(int64_t now_ns);
+    void write_recovery_halt();
     // Encodes @p command and writes it with write_own_command. @return false, having logged why, if it cannot be encoded.
     template <typename Command> bool write_own_encoded_command(const Command& command, const char* name);
 
@@ -545,6 +556,12 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // An operator asking, over the listener for operators, for trading to be halted or the halt lifted
     // (docs/availability/voided_commands.md, section 6.2): decoded, and handed to HaltAndVoidRequests.
     void handle_operator_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, size_t size);
+    // An operator, or the procedure that starts the trading day, asking over the listener for operators for the venue to
+    // enter a phase (docs/venue/trading_day_plan.md): decoded, and handed to TradingPhaseRequests.
+    void handle_trading_phase_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, size_t size);
+    // Sends @p answer, named @p name for the Quill log, to the operator on @p conn_id, framed as the listener for operators
+    // expects.
+    template <typename Answer> void send_operator_answer(const pubsub_itc_fw::ConnectionID& conn_id, const Answer& answer, const char* name);
     // A matching engine that died applying a command, and whose peer has not applied it, asking for it to be voided
     // (docs/availability/voided_commands.md, section 4.3): decoded, and handed to HaltAndVoidRequests.
     void handle_void_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
@@ -565,7 +582,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         [[nodiscard]] int64_t released_through() const override;
         [[nodiscard]] int64_t last_seq_no() const override;
         [[nodiscard]] int64_t next_seq_no() const override;
-        [[nodiscard]] int32_t trading_day(int64_t now_ns) override;
+        [[nodiscard]] const TradingPhaseState& trading_phase() const override;
         [[nodiscard]] bool voided_already(int64_t seq_no) const override;
         [[nodiscard]] CommandInRecord command_in_wal_at(int64_t seq_no, bool& found) override;
         bool write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) override;
@@ -583,6 +600,32 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // The requests to halt trading or void commands, and the halt written when the venue cannot recover by itself
     // (section 6.14 of docs/venue/dividing_the_sequencer_and_matching_engine.md).
     HaltAndVoidRequests halts_{halt_links_, get_logger()};
+
+    class PhaseLinks : public TradingPhaseRequestsLinksInterface {
+      public:
+        explicit PhaseLinks(SequencerThread& owner) : owner_(owner) {}
+        [[nodiscard]] bool leading() const override;
+        [[nodiscard]] int32_t trading_day_started_for() const override;
+        [[nodiscard]] const TradingPhaseState& trading_phase() const override;
+        [[nodiscard]] const TradingHaltState& trading_halt() const override;
+        [[nodiscard]] int64_t last_seq_no() const override;
+        [[nodiscard]] int64_t next_seq_no() const override;
+        [[nodiscard]] bool an_engine_takes_orders() const override;
+        void ask_engine_position() override;
+        bool write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) override;
+        void answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingPhaseAnswer& answer) override;
+
+      private:
+        SequencerThread& owner_;
+        // Each question asked of the engine for a phase request is numbered from here, far above the numbers OrderRelease
+        // gives its own, so that each answer goes back to whichever asked.
+        int64_t next_request_id_{phase_request_ids_from};
+    };
+    // Where the numbers of the engine position questions asked for a phase request start.
+    static constexpr int64_t phase_request_ids_from = int64_t{1} << 40;
+    PhaseLinks phase_links_{*this};
+    // Requests to move the venue from one phase of the trading day to the next (docs/venue/trading_day_plan.md).
+    TradingPhaseRequests phase_requests_{phase_links_, get_logger()};
 
     class CommandLinks : public CommandChecksLinksInterface {
       public:

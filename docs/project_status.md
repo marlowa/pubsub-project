@@ -22,7 +22,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 - **A trading day under load.** `perf_run.py --profile profiles/trading_day.toml` runs a shaped day
   of several million orders with cancels.
-- **Failover and restart of each pair.** `ha_test.py` has 110 scenarios: killing each component,
+- **Failover and restart of each pair.** `ha_test.py` has 111 scenarios: killing each component,
   restarting each in each role, stopping a whole machine, a member's open orders surviving a restart
   of the matching engine and a change of engine leader, a command that crashes both engines being
   voided, orders held while no engine leads, and reports held for a gateway surviving the death of
@@ -41,7 +41,7 @@ The [bug list](bug_list.md) holds 40 open entries, 6 of them high severity. Each
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
-- **The specification is mostly untested.** 44 of 170 requirements are verified by a scenario, and
+- **The specification is mostly untested.** 45 of 170 requirements are verified by a scenario, and
   one more by a TLA+ model (`scripts/check_book_requirements.py` counts them; [BUG-0068](bug_list.md#bug_0068)). A scenario
   passing has repeatedly been found to say less than it appeared to, so treat untested requirements
   as unverified.

@@ -6,6 +6,7 @@
 #include "PublisherRecordFromWal.hpp"
 #include "SequencerConfigurationLoader.hpp"
 #include "SequencerThread.hpp"
+#include "TradingDate.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -252,8 +254,15 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (argc != 3) {
-        std::cerr << "Usage: sequencer <logfile> <config.toml>\n";
+    // The trading day is given to the run, and never computed from the clock (R-0164; docs/venue/start_and_end_of_day.md).
+    const std::string usage = "Usage: sequencer <logfile> <config.toml> --trading-day YYYYMMDD\n";
+    if (argc != 5 || std::string_view(argv[3]) != "--trading-day") {
+        std::cerr << usage;
+        return 1;
+    }
+    const std::optional<int32_t> trading_day = fix_common::parse_trading_date(argv[4]);
+    if (!trading_day.has_value()) {
+        std::cerr << "Sequencer: --trading-day " << argv[4] << " is not a date written as YYYYMMDD\n" << usage;
         return 1;
     }
 
@@ -279,6 +288,9 @@ int main(int argc, char* argv[]) {
         PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "Sequencer: configuration error: {}", ex.what());
         return 1;
     }
+
+    config.trading_day = *trading_day;
+    PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: started for trading day {}", config.trading_day);
 
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);

@@ -131,6 +131,10 @@ struct SequencerConfiguration {
     /// availability is on: with it off, the secondary refuses to start (R-0163, BUG-0061).
     std::string ha_role{"primary"};
 
+    /// The trading day this sequencer is started for, as the number yyyymmdd, from its --trading-day argument, not from
+    /// the configuration file. It answers a request to start a trading day only for this day (docs/venue/trading_day_plan.md).
+    int32_t trading_day{0};
+
     /** @brief Host address of the primary arbiter's component listener. */
     std::string arbiter_primary_host{"127.0.0.1"};
 

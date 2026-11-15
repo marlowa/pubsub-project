@@ -9,7 +9,7 @@ and can be handed directly to deploy.py:
                   test/bench binaries are excluded)
   lib/            libpubsub_itc_fw.so; admin-service.jar if present;
                   python/ with pdu_framing.py and leader_follower.py, which
-                  operator_halt.py needs
+                  operator_halt.py and trading_phase.py need
   etc/            component config templates
                   (credentials.toml, *.crt, *.key excluded — generated at
                    deploy time)
@@ -19,6 +19,8 @@ and can be handed directly to deploy.py:
   devenv.py       sandbox management script
   deploy.py       deployment script (included if present)
   operator_halt.py  an operator's tool to halt trading or lift a halt
+  trading_phase.py  an operator's tool to start the trading day and move it from one phase to the next
+  operator_requests.py  what the operator's tools and devenv.py share for asking the sequencers
   release.json    version, git hash, build timestamp
 
 Artefact name:  pubsub-<version>-<git-short-hash>-<mode>.tar.gz
@@ -286,7 +288,7 @@ def stage_environments(stage: Path) -> None:
 
 
 def stage_scripts(stage: Path) -> None:
-    scripts = ["devenv.py", "deploy.py", "operator_halt.py"]
+    scripts = ["devenv.py", "deploy.py", "operator_halt.py", "trading_phase.py", "operator_requests.py"]
     for script_name in scripts:
         source = _SCRIPT_DIR / script_name
         if source.is_file():

@@ -590,7 +590,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
     // The leading matching engine's answer to the question a new leader asks on taking the lead.
     if (message.pdu_id() == pubsub_itc_fw_app::EnginePosition::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
-        handle_engine_position(message);
+        handle_engine_position(conn_id, message);
         release_pdu_payload(message);
         return;
     }
@@ -715,6 +715,14 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // the WAL holds each command at most once (docs/availability/one_check_against_sequencing_twice.md, 3.1). One
         // the WAL already holds is answered from the WAL if it was sent again, and refused if it was not
         // (CommandChecks).
+        // Until the WAL holds a start of day, the venue accepts no member's command: the start of day is the first record
+        // of the trading day's WAL, and fixes the trading date of every command after it (docs/venue/trading_day_plan.md).
+        if (!venue_state_.trading_day_started() || venue_state_.trading_phase().latest()->phase == pubsub_itc_fw_app::TradingPhase::StartOfDay) {
+            refuse_before_the_market_opens(message.connection_id(), inbound);
+            release_pdu_payload(message);
+            return;
+        }
+
         if (command_checks_.check(message.connection_id(), inbound, std::chrono::steady_clock::now()) == CommandChecks::Outcome::not_sequenced) {
             release_pdu_payload(message);
             return;
@@ -763,7 +771,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         envelope.has_cl_ord_id = inbound.has_cl_ord_id;
         envelope.cl_ord_id = inbound.cl_ord_id;
         envelope.has_trading_date = true;
-        envelope.trading_date = trading_date_for(wall_time_ns);
+        envelope.trading_date = trading_date_to_write();
         stamp_reports_forwarded_through(envelope);
 
         // The time the gateway read this order off the client connection travels on to the
@@ -1417,6 +1425,7 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
         command_checks_.stopped_leading();
         orders_.stopped_leading();
+        phase_requests_.stopped_leading();
         // Another instance leads, so the venue was not down as a whole; and a follower holds nothing for a matching
         // engine, so the time without one is forgotten (EnginePresence::stopped_leading).
         presence_.stopped_leading(config_.wall_clock->now_ns());
@@ -1783,8 +1792,8 @@ void SequencerThread::PresenceLinks::engine_takes_orders_again(int64_t without_m
     owner_.report(pubsub_itc_fw_app::EngineTakesOrdersAgain{without_ms, orders_held, one_had_before});
 }
 
-void SequencerThread::PresenceLinks::write_recovery_halt(int64_t now_ns) {
-    owner_.write_recovery_halt(now_ns);
+void SequencerThread::PresenceLinks::write_recovery_halt(int64_t /*now_ns*/) {
+    owner_.write_recovery_halt();
 }
 
 std::optional<pubsub_itc_fw::CommandInWal> SequencerThread::CommandLinks::find_command(std::string_view identity, int64_t first_sent_no_earlier_than) {
@@ -1798,20 +1807,34 @@ bool SequencerThread::CommandLinks::answer_from_wal(const pubsub_itc_fw_app::Wal
 void SequencerThread::CommandLinks::refuse(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound, int64_t first_seq_no) {
     const int16_t protocol = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
     owner_.report(pubsub_itc_fw_app::IdentifierRefused{inbound.sender_comp_id, protocol, inbound.cl_ord_id, first_seq_no});
+    owner_.send_command_refused(came_by, inbound, pubsub_itc_fw_app::CommandRefusedReason::IdentifierAlreadyUsed, first_seq_no);
+}
+
+void SequencerThread::refuse_before_the_market_opens(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound) {
+    const bool started = venue_state_.trading_day_started();
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: comp_id='{}' ClOrdID={} refused -- {}, so the venue accepts no member's command", inbound.sender_comp_id, inbound.cl_ord_id,
+               started ? "the venue is in the start of day" : "the WAL holds no start of day yet");
+    send_command_refused(came_by, inbound,
+                         started ? pubsub_itc_fw_app::CommandRefusedReason::MarketNotOpen : pubsub_itc_fw_app::CommandRefusedReason::TradingDayNotStarted, 0);
+}
+
+void SequencerThread::send_command_refused(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound,
+                                           pubsub_itc_fw_app::CommandRefusedReason reason, int64_t first_seq_no) {
     pubsub_itc_fw_app::CommandRefused refused{};
     refused.gateway_session_conn_id = inbound.has_gateway_session_conn_id ? inbound.gateway_session_conn_id : 0;
     refused.sender_comp_id = inbound.sender_comp_id;
     refused.cl_ord_id = inbound.cl_ord_id;
     refused.command_pdu_id = inbound.pdu_id;
     refused.command = inbound.payload;
-    refused.reason = pubsub_itc_fw_app::CommandRefusedReason::IdentifierAlreadyUsed;
+    refused.reason = reason;
     refused.first_seq_no = first_seq_no;
     refused.has_member_msg_seq_num = inbound.has_member_msg_seq_num;
     refused.member_msg_seq_num = inbound.member_msg_seq_num;
     // On the connection the command came by, which the gateway dialled and certainly has open: the connection this
     // sequencer dials to send the gateway its reports may not be open yet, after the gateway has restarted. A refused
     // command has no reports, so nothing on that connection needs to arrive before this.
-    owner_.send_pdu(came_by, pubsub_itc_fw_app::CommandRefused::message_pdu_id, 0, refused);
+    send_pdu(came_by, pubsub_itc_fw_app::CommandRefused::message_pdu_id, 0, refused);
 }
 
 int64_t SequencerThread::CommandLinks::discard_command_search() {
@@ -1858,8 +1881,46 @@ int64_t SequencerThread::HaltLinks::next_seq_no() const {
     return owner_.replicated_wal_->next_seq_no();
 }
 
-int32_t SequencerThread::HaltLinks::trading_day(int64_t now_ns) {
-    return owner_.trading_date_for(now_ns);
+const TradingPhaseState& SequencerThread::HaltLinks::trading_phase() const {
+    return owner_.venue_state_.trading_phase();
+}
+
+bool SequencerThread::PhaseLinks::leading() const {
+    return owner_.role_ == pubsub_itc_fw_app::Role::leader && owner_.replicated_wal_.has_value();
+}
+
+int32_t SequencerThread::PhaseLinks::trading_day_started_for() const {
+    return owner_.config_.trading_day;
+}
+
+const TradingPhaseState& SequencerThread::PhaseLinks::trading_phase() const {
+    return owner_.venue_state_.trading_phase();
+}
+
+const TradingHaltState& SequencerThread::PhaseLinks::trading_halt() const {
+    return owner_.venue_state_.trading_halt();
+}
+
+int64_t SequencerThread::PhaseLinks::last_seq_no() const {
+    return owner_.replicated_wal_.has_value() ? owner_.replicated_wal_->last_seq_no() : 0;
+}
+
+int64_t SequencerThread::PhaseLinks::next_seq_no() const {
+    return owner_.replicated_wal_->next_seq_no();
+}
+
+bool SequencerThread::PhaseLinks::an_engine_takes_orders() const {
+    return owner_.an_engine_takes_orders();
+}
+
+void SequencerThread::PhaseLinks::ask_engine_position() {
+    pubsub_itc_fw_app::EnginePositionQuery query{};
+    query.request_id = next_request_id_++;
+    owner_.send_pdu(owner_.engine_routing_.active(), pubsub_itc_fw_app::EnginePositionQuery::message_pdu_id, 0, query);
+}
+
+bool SequencerThread::PhaseLinks::write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) {
+    return owner_.write_own_encoded_command(event, "TechnicalEvent");
 }
 
 bool SequencerThread::HaltLinks::voided_already(int64_t seq_no) const {
@@ -1919,8 +1980,7 @@ template <typename Command> bool SequencerThread::write_own_encoded_command(cons
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a {} needs {} bytes and could not be encoded", name, bytes_needed);
         return false;
     }
-    write_own_command(static_cast<int16_t>(Command::message_pdu_id), bytes.data(), bytes_written);
-    return true;
+    return write_own_command(static_cast<int16_t>(Command::message_pdu_id), bytes.data(), bytes_written);
 }
 
 template <typename Record> bool SequencerThread::write_own_encoded_record(const Record& record, const char* name) {
@@ -1930,6 +1990,11 @@ template <typename Record> bool SequencerThread::write_own_encoded_record(const 
     std::vector<uint8_t> bytes(bytes_needed);
     if (!pubsub_itc_fw_app::encode(record, bytes.data(), bytes.size(), bytes_written, bytes_needed)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: a {} needs {} bytes and could not be encoded", name, bytes_needed);
+        return false;
+    }
+    if (!venue_state_.trading_day_started()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "SequencerThread: a {} was not written -- the WAL holds no start of day yet, and the start of day is its first record", name);
         return false;
     }
     const int64_t seq = replicated_wal_->next_seq_no();
@@ -1942,7 +2007,7 @@ template <typename Record> bool SequencerThread::write_own_encoded_record(const 
     envelope.has_leader_epoch = true;
     envelope.leader_epoch = current_epoch();
     envelope.has_trading_date = true;
-    envelope.trading_date = trading_date_for(wall_time_ns);
+    envelope.trading_date = trading_date_to_write();
     append_envelope_to_wal(envelope);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: wrote {} at seq={}", name, seq);
     return true;
@@ -1950,6 +2015,13 @@ template <typename Record> bool SequencerThread::write_own_encoded_record(const 
 
 void SequencerThread::session_ended(const fix_common::SessionIdentity& identity, LoggedOutFlag logged_out) {
     if (role_ != pubsub_itc_fw_app::Role::leader || venue_state_.session_cancels().pending(identity)) {
+        return;
+    }
+    if (!venue_state_.trading_day_started()) {
+        // No member's command has been accepted, so the session has no order to cancel.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "SequencerThread: session comp_id='{}' protocol={} ended before the start of day -- it has no order to cancel", identity.comp_id_view(),
+                   identity.protocol);
         return;
     }
     const MemberSessions::CancelOnDisconnectApplied applied = sessions_.applied_instruction(identity);
@@ -1992,8 +2064,8 @@ void SequencerThread::carry_out_due_session_cancels() {
     }
 }
 
-void SequencerThread::write_recovery_halt(int64_t now_ns) {
-    halts_.recovery_halt(now_ns);
+void SequencerThread::write_recovery_halt() {
+    halts_.recovery_halt();
     presence_.refresh_order_acceptance(std::chrono::steady_clock::now());
 }
 
@@ -2007,7 +2079,7 @@ void SequencerThread::handle_halt_request(const pubsub_itc_fw::ConnectionID& con
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode HaltRequest -- dropping");
         return;
     }
-    halts_.engine_halt_request(conn_id, request.instance_id, request.epoch, request.reason, config_.wall_clock->now_ns());
+    halts_.engine_halt_request(conn_id, request.instance_id, request.epoch, request.reason);
 }
 
 void SequencerThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& message) {
@@ -2040,6 +2112,8 @@ void SequencerThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& m
         const uint8_t* payload = header + header_size;
         if (pdu_id == pubsub_itc_fw_app::OperatorHaltRequest::message_pdu_id) {
             handle_operator_halt_request(conn_id, payload, byte_count);
+        } else if (pdu_id == pubsub_itc_fw_app::TradingPhaseRequest::message_pdu_id) {
+            handle_trading_phase_request(conn_id, payload, byte_count);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: operator connection {} sent message pdu_id={}, which is not a request -- ignored", conn_id.get_value(), pdu_id);
@@ -2064,7 +2138,27 @@ void SequencerThread::handle_operator_halt_request(const pubsub_itc_fw::Connecti
     }
     // Copied, so that nothing logged or answered points into the request's bytes, which are committed once it is dealt with.
     const std::string operator_name(request.operator_name);
-    halts_.operator_request(conn_id, operator_name, request.halt, config_.wall_clock->now_ns());
+    halts_.operator_request(conn_id, operator_name, request.halt);
+}
+
+void SequencerThread::handle_trading_phase_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, size_t size) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::TradingPhaseRequestView request{};
+    if (!pubsub_itc_fw_app::decode(request, payload, size, bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: operator connection {} sent a TradingPhaseRequest that did not decode -- ignored", conn_id.get_value());
+        return;
+    }
+    // Copied, so that nothing logged or answered points into the request's bytes, which are committed once it is dealt with.
+    const std::string operator_name(request.operator_name);
+    phase_requests_.request(conn_id, operator_name, request.trading_day, request.requested_phase);
+}
+
+void SequencerThread::PhaseLinks::answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingPhaseAnswer& answer) {
+    owner_.send_operator_answer(connection, answer, "TradingPhaseAnswer");
 }
 
 void SequencerThread::HaltLinks::answer_operator(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::OperatorHaltOutcome outcome,
@@ -2074,19 +2168,22 @@ void SequencerThread::HaltLinks::answer_operator(const pubsub_itc_fw::Connection
     answer.halted = owner_.venue_state_.trading_halt().halted();
     answer.technical_event_seq_no = technical_event_seq_no;
     answer.explanation = explanation;
+    owner_.send_operator_answer(conn_id, answer, "OperatorHaltAnswer");
+}
+
+template <typename Answer> void SequencerThread::send_operator_answer(const pubsub_itc_fw::ConnectionID& conn_id, const Answer& answer, const char* name) {
     // Encoded after a header of the size the framework puts in front of every message.
     constexpr size_t header_size = sizeof(pubsub_itc_fw::PduHeader);
     std::vector<uint8_t> bytes(header_size + pubsub_itc_fw_app::encoded_size(answer));
     size_t bytes_written = 0;
     size_t bytes_needed = 0;
     if (!pubsub_itc_fw_app::encode(answer, bytes.data() + header_size, bytes.size() - header_size, bytes_written, bytes_needed)) {
-        PUBSUB_LOG(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: an OperatorHaltAnswer needs {} bytes and could not be encoded",
-                   bytes_needed);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: an {} needs {} bytes and could not be encoded", name, bytes_needed);
         return;
     }
     // The header in network byte order (PduHeader.hpp): length, message id, version, then zeros but for the canary.
     const auto byte_count = static_cast<uint32_t>(bytes_written);
-    const auto pdu_id = static_cast<uint16_t>(pubsub_itc_fw_app::OperatorHaltAnswer::message_pdu_id);
+    const auto pdu_id = static_cast<uint16_t>(Answer::message_pdu_id);
     bytes[0] = static_cast<uint8_t>(byte_count >> 24);
     bytes[1] = static_cast<uint8_t>(byte_count >> 16);
     bytes[2] = static_cast<uint8_t>(byte_count >> 8);
@@ -2098,7 +2195,7 @@ void SequencerThread::HaltLinks::answer_operator(const pubsub_itc_fw::Connection
     bytes[17] = static_cast<uint8_t>(pubsub_itc_fw::pdu_canary_value >> 16);
     bytes[18] = static_cast<uint8_t>(pubsub_itc_fw::pdu_canary_value >> 8);
     bytes[19] = static_cast<uint8_t>(pubsub_itc_fw::pdu_canary_value);
-    owner_.send_raw(conn_id, bytes.data(), static_cast<uint32_t>(header_size + bytes_written));
+    send_raw(conn_id, bytes.data(), static_cast<uint32_t>(header_size + bytes_written));
 }
 
 void SequencerThread::handle_void_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -2146,10 +2243,17 @@ CommandInRecord SequencerThread::command_in_wal_at(int64_t seq_no, bool& found) 
     return CommandInRecord::OtherRecord;
 }
 
-void SequencerThread::write_own_command(int16_t inner_pdu_id, const uint8_t* bytes, size_t size) {
+bool SequencerThread::write_own_command(int16_t inner_pdu_id, const uint8_t* bytes, size_t size) {
     if (size > HeldOrder::own_payload_capacity) {
         throw pubsub_itc_fw::PreconditionAssertion("SequencerThread::write_own_command: the command is larger than a held command can carry", __FILE__,
                                                    __LINE__);
+    }
+    // The start of day is the first record of the trading day's WAL; until it is written, it is the only command written.
+    if (!venue_state_.trading_day_started() && inner_pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "SequencerThread: command inner_pdu_id={} was not written -- the WAL holds no start of day yet, and the start of day is its first record",
+                   inner_pdu_id);
+        return false;
     }
     const int64_t seq = replicated_wal_->next_seq_no();
     const int64_t wall_time_ns = config_.wall_clock->now_ns();
@@ -2161,7 +2265,7 @@ void SequencerThread::write_own_command(int16_t inner_pdu_id, const uint8_t* byt
     envelope.has_leader_epoch = true;
     envelope.leader_epoch = current_epoch();
     envelope.has_trading_date = true;
-    envelope.trading_date = trading_date_for(wall_time_ns);
+    envelope.trading_date = trading_date_to_write();
     stamp_reports_forwarded_through(envelope);
     append_envelope_to_wal(envelope);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: wrote command inner_pdu_id={} at seq={}", inner_pdu_id, seq);
@@ -2173,15 +2277,11 @@ void SequencerThread::write_own_command(int16_t inner_pdu_id, const uint8_t* byt
     }
     orders_.hold_own_command(envelope, bytes, size);
     release_held_orders_through(replicated_wal_->committed_through());
+    return true;
 }
 
-int32_t SequencerThread::trading_date_for(int64_t wall_time_ns) {
-    // The first record's time is read from the WAL only while the date is not known, which is once (Wal::first_wall_time_ns,
-    // one small read).
-    if (venue_state_.trading_date_known()) {
-        return venue_state_.trading_date(std::nullopt, 0, wall_time_ns);
-    }
-    return venue_state_.trading_date(replicated_wal_->wal().first_wall_time_ns(), replicated_wal_->wal().first_seq_no(), wall_time_ns);
+int32_t SequencerThread::trading_date_to_write() const {
+    return venue_state_.trading_day_started() ? venue_state_.trading_day() : config_.trading_day;
 }
 
 std::optional<SequencerThread::ReportInWal> SequencerThread::first_report_answering(const pubsub_itc_fw::CommandInWal& command) {
@@ -2299,7 +2399,7 @@ void SequencerThread::stamp_reports_forwarded_through(pubsub_itc_fw_app::WalReco
     envelope.reports_forwarded_through_number = through.has_value() ? through->number : 0;
 }
 
-void SequencerThread::handle_engine_position(const pubsub_itc_fw::EventMessage& message) {
+void SequencerThread::handle_engine_position(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
@@ -2308,6 +2408,13 @@ void SequencerThread::handle_engine_position(const pubsub_itc_fw::EventMessage& 
     pubsub_itc_fw_app::EnginePositionView view{};
     if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode EnginePosition -- dropping");
+        return;
+    }
+    if (view.request_id >= phase_request_ids_from) {
+        // Asked for a phase request: only the engine orders are routed to answers for the venue.
+        if (conn_id == engine_routing_.active()) {
+            phase_requests_.engine_position(view.highest_applied);
+        }
         return;
     }
     orders_.engine_position(view.request_id, view.highest_applied);

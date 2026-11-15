@@ -16,7 +16,6 @@
 
 #include "GatewayIds.hpp"
 #include "SessionIdentity.hpp"
-#include "TradingDate.hpp"
 #include "VenueStateFromTheWal.hpp"
 
 namespace sequencer::tests {
@@ -90,38 +89,67 @@ class VenueStateFromTheWalTest : public ::testing::Test {
 
 } // namespaces
 
-TEST_F(VenueStateFromTheWalTest, OnlyAFollowerLearnsTheTradingDateFromACommand) {
-    Record dated = members_order();
-    dated.has_trading_date = true;
-    dated.trading_date = 20261103;
-    static_cast<void>(state_->note_record(1, dated, How::read_at_open));
-    static_cast<void>(state_->note_record(2, dated, How::written_by_this_leader));
-    EXPECT_FALSE(state_->trading_date_known());
-    static_cast<void>(state_->note_record(3, dated, How::written_as_follower));
-    EXPECT_TRUE(state_->trading_date_known());
-    EXPECT_EQ(state_->trading_date(std::nullopt, 0, 0), 20261103);
+namespace {
+
+Record phase_change(const std::vector<uint8_t>& bytes) {
+    return record_of(static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id), bytes);
 }
 
-TEST_F(VenueStateFromTheWalTest, AFollowerFollowsItsLeadersTradingDate) {
+std::vector<uint8_t> entering(pubsub_itc_fw_app::TradingPhase phase, int32_t trading_day, bool halted = false) {
+    return encoded(pubsub_itc_fw_app::TechnicalEvent{phase, halted, trading_day, pubsub_itc_fw_app::TechnicalEventReason::RequestedByOperator});
+}
+
+} // namespaces
+
+TEST_F(VenueStateFromTheWalTest, TheTradingDayHasNotStartedUntilTheWalHoldsAStartOfDay) {
+    EXPECT_FALSE(state_->trading_day_started());
+    EXPECT_EQ(state_->trading_day(), 0);
     Record dated = members_order();
     dated.has_trading_date = true;
     dated.trading_date = 20261103;
     static_cast<void>(state_->note_record(1, dated, How::written_as_follower));
-    dated.trading_date = 20261104;
-    static_cast<void>(state_->note_record(2, dated, How::written_as_follower));
-    EXPECT_EQ(state_->trading_date(std::nullopt, 0, 0), 20261104);
+    EXPECT_FALSE(state_->trading_day_started()) << "the date written on a command is not a start of day";
 }
 
-TEST_F(VenueStateFromTheWalTest, ALeaderTakesTheTradingDateOfTheFirstRecordOnce) {
-    const int64_t first_record = 1793750400LL * 1000000000LL; // 2026-11-03T00:00:00Z
-    const int64_t later = first_record + 3LL * 86400LL * 1000000000LL;
-    EXPECT_EQ(state_->trading_date(first_record, 1, later), fix_common::trading_date_of(first_record));
-    EXPECT_EQ(state_->trading_date(later, 1, later), fix_common::trading_date_of(first_record)) << "known, so not read again";
+TEST_F(VenueStateFromTheWalTest, TheStartOfDayFixesTheTradingDayHoweverTheRecordIsHeld) {
+    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20261116);
+    for (const How how : {How::read_at_open, How::written_as_follower, How::written_by_this_leader}) {
+        VenueStateFromTheWal state(logger_);
+        EXPECT_TRUE(state.note_record(1, phase_change(start), how).phase_changed);
+        EXPECT_TRUE(state.trading_day_started());
+        EXPECT_EQ(state.trading_day(), 20261116);
+        EXPECT_EQ(state.trading_phase().latest()->phase, pubsub_itc_fw_app::TradingPhase::StartOfDay);
+    }
 }
 
-TEST_F(VenueStateFromTheWalTest, AnEmptyWalTakesTheDateOfTheCommandBeingWritten) {
-    const int64_t now = 1793750400LL * 1000000000LL;
-    EXPECT_EQ(state_->trading_date(std::nullopt, 0, now), fix_common::trading_date_of(now));
+TEST_F(VenueStateFromTheWalTest, EachTechnicalEventGivesThePhaseAndDiscardingOneGoesBack) {
+    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20261116);
+    const std::vector<uint8_t> pre_open = entering(pubsub_itc_fw_app::TradingPhase::PreOpen, 20261116);
+    const std::vector<uint8_t> open = entering(pubsub_itc_fw_app::TradingPhase::Open, 20261116);
+    static_cast<void>(state_->note_record(1, phase_change(start), How::written_as_follower));
+    static_cast<void>(state_->note_record(2, phase_change(pre_open), How::written_as_follower));
+    static_cast<void>(state_->note_record(3, phase_change(open), How::written_as_follower));
+    EXPECT_EQ(state_->trading_phase().latest()->phase, pubsub_itc_fw_app::TradingPhase::Open);
+    EXPECT_EQ(state_->trading_phase().entered_at(pubsub_itc_fw_app::TradingPhase::PreOpen), 2);
+    static_cast<void>(state_->discard_after(2));
+    EXPECT_EQ(state_->trading_phase().latest()->phase, pubsub_itc_fw_app::TradingPhase::PreOpen);
+    static_cast<void>(state_->discard_after(0));
+    EXPECT_FALSE(state_->trading_day_started()) << "a discarded start of day leaves no trading day";
+}
+
+TEST_F(VenueStateFromTheWalTest, AChangeOfPhaseWhileHaltedCarriesTheHaltOn) {
+    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20261116);
+    const std::vector<uint8_t> halt_in_start = encoded(pubsub_itc_fw_app::TechnicalEvent{pubsub_itc_fw_app::TradingPhase::StartOfDay, true, 20261116,
+                                                                                         pubsub_itc_fw_app::TechnicalEventReason::DeclaredByOperator});
+    const std::vector<uint8_t> pre_open_halted = entering(pubsub_itc_fw_app::TradingPhase::PreOpen, 20261116, true);
+    static_cast<void>(state_->note_record(1, phase_change(start), How::written_by_this_leader));
+    static_cast<void>(state_->note_record(2, phase_change(halt_in_start), How::written_by_this_leader));
+    const VenueStateFromTheWal::Noted noted = state_->note_record(3, phase_change(pre_open_halted), How::written_by_this_leader);
+    EXPECT_TRUE(noted.phase_changed);
+    EXPECT_FALSE(noted.halt_changed);
+    EXPECT_TRUE(state_->trading_halt().halted());
+    EXPECT_EQ(state_->trading_halt().latest()->reason, pubsub_itc_fw_app::TechnicalEventReason::DeclaredByOperator)
+        << "the halt keeps the reason it was declared with";
 }
 
 TEST_F(VenueStateFromTheWalTest, TheHighestCommandAnsweredRisesWithReportsAndNeverFalls) {

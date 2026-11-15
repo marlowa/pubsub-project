@@ -1619,6 +1619,7 @@ void FixOrderGatewayThread::handle_command_refused(const pubsub_itc_fw::EventMes
     }
 
     const auto [command, why_not] = fix_common::decode_refused_command(view, arena);
+    const fix_common::SequencerRefusalAnswer refusal = fix_common::answer_to_sequencer_refusal(view.reason);
     if (!command.has_value()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "FixOrderGatewayThread: CommandRefused for comp_id='{}' ClOrdID={}: {} -- the member is not told", view.sender_comp_id, view.cl_ord_id,
@@ -1630,22 +1631,21 @@ void FixOrderGatewayThread::handle_command_refused(const pubsub_itc_fw::EventMes
         ++orders_refused_;
         progress_metrics_.count_order_refused();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "FixOrderGatewayThread: connection {} comp_id='{}' NewOrderSingle ClOrdID={} refused by the sequencer: the ClOrdID was first used by "
-                   "record {}",
-                   session->conn_id.get_value(), session->client_comp_id, order.cl_ord_id, view.first_seq_no);
+                   "FixOrderGatewayThread: connection {} comp_id='{}' NewOrderSingle ClOrdID={} refused by the sequencer ({}): {} (record {})",
+                   session->conn_id.get_value(), session->client_comp_id, order.cl_ord_id, pubsub_itc_fw_app::to_string(view.reason), refusal.text,
+                   view.first_seq_no);
         const char side = static_cast<char>(order.side);
-        send_reject_execution_report(*session, order.cl_ord_id, order.symbol, std::string_view(&side, 1), order.order_qty,
-                                     fix_common::identifier_already_used_text, pubsub_itc_fw_app::OrdRejReason::DuplicateOrder);
+        send_reject_execution_report(*session, order.cl_ord_id, order.symbol, std::string_view(&side, 1), order.order_qty, refusal.text, refusal.order_reason);
         return;
     }
     const pubsub_itc_fw_app::OrderCancelRequestView& request = command->cancel;
     ++cancels_refused_;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused by the sequencer: the ClOrdID was "
-               "first used by record {}",
-               session->conn_id.get_value(), session->client_comp_id, request.cl_ord_id, request.orig_cl_ord_id, view.first_seq_no);
-    refuse_cancel(*session, view.has_member_msg_seq_num ? view.member_msg_seq_num : 0, request.cl_ord_id, fix_common::RefusalReason::Other,
-                  fix_common::identifier_already_used_text);
+               "FixOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused by the sequencer ({}): {} "
+               "(record {})",
+               session->conn_id.get_value(), session->client_comp_id, request.cl_ord_id, request.orig_cl_ord_id, pubsub_itc_fw_app::to_string(view.reason),
+               refusal.text, view.first_seq_no);
+    refuse_cancel(*session, view.has_member_msg_seq_num ? view.member_msg_seq_num : 0, request.cl_ord_id, refusal.cancel_reason, refusal.text);
 }
 
 void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMessage& message) {

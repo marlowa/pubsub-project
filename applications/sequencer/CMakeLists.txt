@@ -11,6 +11,7 @@ add_executable(sequencer
         SequencerThread.cpp
         ServingWalFollowers.cpp
         Sequencer.cpp
+        TradingPhaseRequests.cpp
         VenueStateFromTheWal.cpp
 )
 
@@ -121,6 +122,7 @@ add_executable(sequencer_tests
         tests/EnginePresenceTest.cpp
         tests/CommandChecksTest.cpp
         tests/HaltAndVoidRequestsTest.cpp
+        tests/TradingPhaseRequestsTest.cpp
         tests/ServingWalFollowersTest.cpp
         CommandChecks.cpp
         EnginePresence.cpp
@@ -132,6 +134,7 @@ add_executable(sequencer_tests
         ReportForwarding.cpp
         SequencerConfigurationLoader.cpp
         ServingWalFollowers.cpp
+        TradingPhaseRequests.cpp
         VenueStateFromTheWal.cpp
 )
 

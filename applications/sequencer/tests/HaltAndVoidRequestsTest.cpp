@@ -52,8 +52,8 @@ struct RecordingLinks : public HaltAndVoidRequestsLinksInterface {
     [[nodiscard]] int64_t next_seq_no() const override {
         return next;
     }
-    [[nodiscard]] int32_t trading_day(int64_t) override {
-        return 20261104;
+    [[nodiscard]] const TradingPhaseState& trading_phase() const override {
+        return phase;
     }
     [[nodiscard]] bool voided_already(int64_t seq_no) const override {
         return seq_no == voided;
@@ -67,6 +67,8 @@ struct RecordingLinks : public HaltAndVoidRequestsLinksInterface {
             return false;
         }
         written.push_back(std::string("TechnicalEvent ") + (event.halted ? "halts " : "lifts ") + std::string(pubsub_itc_fw_app::to_string(event.reason)));
+        written_phases.push_back(event.phase);
+        written_days.push_back(event.trading_day);
         halt.note_technical_event(next, event.halted, event.reason);
         ++next;
         return true;
@@ -99,6 +101,12 @@ struct RecordingLinks : public HaltAndVoidRequestsLinksInterface {
     bool engine_takes_orders{true};
     int64_t leading_instance{0};
     TradingHaltState halt;
+    // The trading day has started unless a test says otherwise: the start of day is the WAL's first record.
+    TradingPhaseState phase = [] {
+        TradingPhaseState started;
+        started.note_technical_event(1, pubsub_itc_fw_app::TradingPhase::Open, 20261104);
+        return started;
+    }();
     int64_t answered_through{0};
     bool technical_event_cannot_be_encoded{false};
     int64_t released{0};
@@ -106,6 +114,8 @@ struct RecordingLinks : public HaltAndVoidRequestsLinksInterface {
     int64_t voided{0};
     CommandInRecord in_record{CommandInRecord::MembersCommand};
     std::vector<std::string> written;
+    std::vector<pubsub_itc_fw_app::TradingPhase> written_phases;
+    std::vector<int32_t> written_days;
     std::vector<int> voids_sent_to;
     std::vector<Declined> declined;
     std::vector<Outcome> answers;
@@ -119,7 +129,7 @@ class HaltAndVoidRequestsTest : public ::testing::Test {
     }
 
     void operator_asks(bool halt) {
-        requests_->operator_request(operator_connection_, "alice", halt, 0);
+        requests_->operator_request(operator_connection_, "alice", halt);
     }
 
     std::vector<std::string> log_;
@@ -186,14 +196,14 @@ TEST_F(HaltAndVoidRequestsTest, TheHaltIsLiftedOnlyOnceAnEngineLeadsAndHasAnswer
 // ---- A matching engine's request to halt ----------------------------------------------------------------------------
 
 TEST_F(HaltAndVoidRequestsTest, AnEngineOrdersAreRoutedToHaltsTradingWithItsReason) {
-    requests_->engine_halt_request(engine_connection_, 2, 3, EventReason::CannotAccountForBook, 0);
+    requests_->engine_halt_request(engine_connection_, 2, 3, EventReason::CannotAccountForBook);
     EXPECT_EQ(links_.written, (std::vector<std::string>{"TechnicalEvent halts CannotAccountForBook"}));
 }
 
 TEST_F(HaltAndVoidRequestsTest, AnEngineOrdersAreNotRoutedToCannotHaltTrading) {
-    requests_->engine_halt_request(pubsub_itc_fw::ConnectionID{32}, 2, 3, EventReason::CannotAccountForBook, 0);
+    requests_->engine_halt_request(pubsub_itc_fw::ConnectionID{32}, 2, 3, EventReason::CannotAccountForBook);
     links_.is_leading = false;
-    requests_->engine_halt_request(engine_connection_, 2, 3, EventReason::CannotAccountForBook, 0);
+    requests_->engine_halt_request(engine_connection_, 2, 3, EventReason::CannotAccountForBook);
     EXPECT_TRUE(links_.written.empty());
 }
 
@@ -250,7 +260,7 @@ TEST_F(HaltAndVoidRequestsTest, AFollowerDoesNotActOnAVoidRequest) {
 TEST_F(HaltAndVoidRequestsTest, TheRecoveryHaltVoidsTheNewOrdersHeldCancelsTheBookAndHaltsInThatOrder) {
     links_.released = 6;
     links_.answered_through = 4;
-    requests_->recovery_halt(0);
+    requests_->recovery_halt();
     EXPECT_EQ(links_.written,
               (std::vector<std::string>{"VoidCommands 7-10 new orders", "CancelBook RecoveryTooLong every order", "TechnicalEvent halts RecoveryTooLong"}));
 }
@@ -258,15 +268,39 @@ TEST_F(HaltAndVoidRequestsTest, TheRecoveryHaltVoidsTheNewOrdersHeldCancelsTheBo
 TEST_F(HaltAndVoidRequestsTest, TheRecoveryHaltVoidsNothingAReportAnswers) {
     links_.released = 6;
     links_.answered_through = 8;
-    requests_->recovery_halt(0);
+    requests_->recovery_halt();
     ASSERT_FALSE(links_.written.empty());
     EXPECT_EQ(links_.written[0], "VoidCommands 9-10 new orders");
 }
 
 TEST_F(HaltAndVoidRequestsTest, WithNothingHeldTheRecoveryHaltVoidsNothing) {
     links_.released = 10;
-    requests_->recovery_halt(0);
+    requests_->recovery_halt();
     EXPECT_EQ(links_.written, (std::vector<std::string>{"CancelBook RecoveryTooLong every order", "TechnicalEvent halts RecoveryTooLong"}));
+}
+
+} // namespaces
+
+namespace sequencer::tests {
+
+// ---- Before the start of day ----------------------------------------------------------------------------------------
+
+TEST_F(HaltAndVoidRequestsTest, NothingIsWrittenBeforeTheStartOfDay) {
+    links_.phase = TradingPhaseState{};
+    operator_asks(true);
+    requests_->engine_halt_request(engine_connection_, 2, 3, EventReason::CannotAccountForBook);
+    requests_->recovery_halt();
+    EXPECT_TRUE(links_.written.empty()) << "the start of day is the WAL's first record, and there is no trading to halt";
+    EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::TradingDayNotStarted}));
+}
+
+TEST_F(HaltAndVoidRequestsTest, AHaltCarriesThePhaseAndTheTradingDayTheVenueIsIn) {
+    links_.phase = TradingPhaseState{};
+    links_.phase.note_technical_event(1, pubsub_itc_fw_app::TradingPhase::StartOfDay, 20261116);
+    operator_asks(true);
+    ASSERT_EQ(links_.written.size(), 1U);
+    EXPECT_EQ(links_.written_phases, (std::vector<pubsub_itc_fw_app::TradingPhase>{pubsub_itc_fw_app::TradingPhase::StartOfDay}));
+    EXPECT_EQ(links_.written_days, (std::vector<int32_t>{20261116}));
 }
 
 } // namespaces

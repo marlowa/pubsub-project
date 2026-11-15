@@ -1187,6 +1187,7 @@ void BinaryOrderGatewayThread::handle_command_refused(const pubsub_itc_fw::Event
     }
 
     const auto [command, why_not] = fix_common::decode_refused_command(view, arena);
+    const fix_common::SequencerRefusalAnswer refusal = fix_common::answer_to_sequencer_refusal(view.reason);
     if (!command.has_value()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "BinaryOrderGatewayThread: CommandRefused for comp_id='{}' ClOrdID={}: {} -- the member is not told", view.sender_comp_id, view.cl_ord_id,
@@ -1197,18 +1198,19 @@ void BinaryOrderGatewayThread::handle_command_refused(const pubsub_itc_fw::Event
         ++orders_refused_;
         progress_metrics_.count_order_refused();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "BinaryOrderGatewayThread: connection {} comp_id='{}' NewOrderSingle ClOrdID={} refused by the sequencer: the ClOrdID was first used "
-                   "by record {}",
-                   session->conn_id.get_value(), session->comp_id, command->order.cl_ord_id, view.first_seq_no);
-        refuse_new_order(*session, command->order, fix_common::identifier_already_used_text, pubsub_itc_fw_app::OrdRejReason::DuplicateOrder);
+                   "BinaryOrderGatewayThread: connection {} comp_id='{}' NewOrderSingle ClOrdID={} refused by the sequencer ({}): {} (record {})",
+                   session->conn_id.get_value(), session->comp_id, command->order.cl_ord_id, pubsub_itc_fw_app::to_string(view.reason), refusal.text,
+                   view.first_seq_no);
+        refuse_new_order(*session, command->order, refusal.text, refusal.order_reason);
         return;
     }
     ++cancels_refused_;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "BinaryOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused by the sequencer: the ClOrdID "
-               "was first used by record {}",
-               session->conn_id.get_value(), session->comp_id, command->cancel.cl_ord_id, command->cancel.orig_cl_ord_id, view.first_seq_no);
-    refuse_cancel(*session, command->cancel, fix_common::RefusalReason::Other, fix_common::identifier_already_used_text);
+               "BinaryOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest ClOrdID={} OrigClOrdID={} refused by the sequencer ({}): {} "
+               "(record {})",
+               session->conn_id.get_value(), session->comp_id, command->cancel.cl_ord_id, command->cancel.orig_cl_ord_id,
+               pubsub_itc_fw_app::to_string(view.reason), refusal.text, view.first_seq_no);
+    refuse_cancel(*session, command->cancel, refusal.cancel_reason, refusal.text);
 }
 
 void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::EventMessage& message) {
