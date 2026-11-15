@@ -493,11 +493,18 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // itself, which is written before the WAL holds one, the day this sequencer was started for. The matching engine
     // makes its identifiers with keys derived from it (docs/availability/deterministic_matching_engine.md, section 3.3).
     [[nodiscard]] int32_t trading_date_to_write() const;
-    // Refuses a member's command, which arrived on @p came_by, because the WAL holds no start of day yet (the reason
-    // TradingDayNotStarted) or the venue is in the start of day (MarketNotOpen): CommandRefused, so that the gateway answers
-    // the member and does not send it again. Every record before pre-open is then one this sequencer wrote itself, which
-    // the rule for entering pre-open depends on (TradingPhaseRequests).
-    void refuse_before_the_market_opens(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound);
+    // Why the venue refuses every member's command in the phase it is in, or nothing when it accepts them: in pre-open and
+    // open. Before the WAL holds a start of day the reason is TradingDayNotStarted; in the start of day, MarketNotOpen; once
+    // closed, MarketClosed; in the end of day, TradingDayEnded. Refusing members' commands in the start of day means every
+    // record before pre-open is one this sequencer wrote itself, which the rule for entering pre-open depends on
+    // (TradingPhaseRequests).
+    [[nodiscard]] std::optional<pubsub_itc_fw_app::CommandRefusedReason> refusal_by_phase() const;
+    // Whether the venue accepts members' orders and cancels in the phase it is in: in pre-open and open only.
+    [[nodiscard]] bool the_venue_accepts_members_commands() const;
+    // Refuses a member's command, which arrived on @p came_by, for @p reason, which refusal_by_phase gave: CommandRefused,
+    // so that the gateway answers the member and does not send it again.
+    void refuse_by_phase(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound,
+                         pubsub_itc_fw_app::CommandRefusedReason reason);
     // Sends CommandRefused for @p inbound on @p came_by with @p reason; @p first_seq_no is the record that already holds its
     // ClOrdID, or zero.
     void send_command_refused(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound,

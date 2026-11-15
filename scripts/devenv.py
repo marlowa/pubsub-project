@@ -11,8 +11,8 @@ Subcommands:
 The trading day:
   start gives each sequencer the trading day on its command line (--trading-day YYYYMMDD), records it in
   [run_dir]/trading_day so that a component started or restarted on its own gets the same day, and once every
-  component is running asks for the start of day and for pre-open (scripts/trading_phase.py start-day), which the
-  sequencer follows at once with open. Until then the venue refuses every member's command. The day is --trading-day
+  component is running asks for the start of day, pre-open and open in turn (scripts/trading_phase.py start-day).
+  Until pre-open the venue refuses every member's command. The day is --trading-day
   if given; otherwise the day recorded by the last start, unless --fresh-wal starts a new WAL; otherwise today's date
   on this machine, which is a convenience of the development sandbox only (docs/venue/start_and_end_of_day.md).
   --no-start-day starts the components and leaves the trading day unstarted.

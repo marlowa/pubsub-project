@@ -1,6 +1,6 @@
 # The trading day: design plan {#trading_day_plan}
 
-**Status: agreed; no code yet.** This note covers the whole trading day: every phase,
+**Status: agreed; steps 1 to 5 are done.** This note covers the whole trading day: every phase,
 how the venue moves from one to the next, what each component does in each, and how each change reaches
 the components and members that need it. It builds on three other notes and does not repeat them:
 
@@ -19,19 +19,23 @@ section, each with the reason for it.
 
 - **The record.** `TechnicalEvent` (PDU 153) carries the phase, whether trading is halted, the trading day
   and a reason. It is a command in the WAL, which every matching engine applies at its position.
-- **The start of the day is built (step 4).** Each sequencer is started with `--trading-day D`. The first
-  record of the WAL is the `TechnicalEvent` entering `sod`, written on request (`TradingPhaseRequest`, 168,
-  answered with `TradingPhaseAnswer`, 169, through `scripts/trading_phase.py`), and every record takes its
-  trading date from it. Until it is written the sequencer refuses every member's command
-  (`TradingDayNotStarted`). `pre_open` is written on request once the leading engine has acted on the start
-  of day, and `open` straight after it. Members' commands are refused in `sod`, so every record before
-  `pre_open` is one the sequencer wrote, as the pre-open rule in section 2.3 requires. The sequencer keeps the phase from its WAL (`TradingPhaseState`),
-  and a halt carries the current phase. Nothing yet writes `closed` or `eod`.
+- **Every phase is entered on request (steps 4 and 5).** Each sequencer is started with `--trading-day D`.
+  The first record of the WAL is the `TechnicalEvent` entering `sod`, and every record takes its trading
+  date from it. An operator, or the procedure that starts the venue, asks for each phase in turn with
+  `TradingPhaseRequest` (168), answered with `TradingPhaseAnswer` (169), through `scripts/trading_phase.py`.
+  The leading sequencer writes a phase only from the phase before it: `pre_open` once the leading engine
+  has acted on the start of day, `open` and `closed` at once, and `eod` once the leading engine has acted
+  on the close. The sequencer keeps the phase from its WAL (`TradingPhaseState`); a halt carries the
+  current phase, and the phase moves on while trading is halted except while halted because an engine
+  cannot account for the orders the venue holds. No schedule exists yet: every change is asked for.
 - **The gateways learn of a halt, not a phase.** The leading sequencer sends each gateway `OrderAcceptance`
   (127), whose reason can be `Halted`. The gateways refuse new orders while it is, and pass cancels on.
-- **The sequencer refuses commands by phase only before pre-open.** `CommandRefusedReason` has
-  `IdentifierAlreadyUsed`, `TradingDayNotStarted` (before the start of day) and `MarketNotOpen` (during it);
-  there is no refusal for `closed` or `eod` yet.
+- **The sequencer refuses members' commands by phase.** Outside `pre_open` and `open` it refuses each
+  one with `CommandRefused`, reason `TradingDayNotStarted` (before the start of day), `MarketNotOpen`
+  (`sod`), `MarketClosed` (`closed`) or `TradingDayEnded` (`eod`), and both gateways tell the member why.
+- **The close cancels nothing yet.** The matching engine applies the `TechnicalEvent` entering `closed`
+  like any other phase change, so orders open at the close stay on the book until the venue stops
+  ([BUG-0132](../bug_list.md#bug_0132)); step 6 makes the close cancel them.
 - **Members are told nothing until they send an order.** Neither gateway sends or understands FIX
   `TradingSessionStatus` (35=h) or a binary equivalent ([BUG-0065](../bug_list.md#bug_0065)).
 - **No topic carries the phase.** The matching engine publisher follows the sequencer's WAL and publishes
@@ -39,8 +43,8 @@ section, each with the reason for it.
   the WAL is on neither, although the order activity recorder's design follows "the technical events"
   ([oar_external_stream.md](../pubsub/oar_external_stream.md), sections 4.4 and 13.6).
 - **There is no start-of-day or end-of-day procedure** ([BUG-0137](../bug_list.md#bug_0137)): `devenv.py`, the
-  test harness and the performance scripts start the day themselves once the venue is up. Orders still
-  open at the close are never cancelled ([BUG-0132](../bug_list.md#bug_0132)).
+  test harness and the performance scripts start the day themselves once the venue is up, and nothing
+  closes it.
 - **The matching engine does no matching**, deliberately: the venue is an example. Orders rest on the book
   and are cancelled; nothing trades. So the difference between `pre_open` and `open` is, in this venue, a
   difference in name only, and the place where a real venue runs its opening auction is the move from one to
@@ -405,7 +409,9 @@ documents and decisions; code starts at step 4.
    for any other date. The phase request and its answer are built here, for `StartOfDay` and `PreOpen` only.
    The venue then moves to `open` as soon as it is in `pre_open`, so that everything else works as now. Done.
 5. **Every phase in the sequencer**: the full cycle of requests, the sequencer's checks, the refusals by phase
-   with their new `CommandRefusedReason` values, and a halt that carries the phase.
+   with their new `CommandRefusedReason` values, and a halt that carries the phase. Pre-open is no longer
+   followed at once by open: each phase is asked for, and the procedure that starts the venue asks for the
+   start of day, pre-open and open in turn. Done.
 6. **The close**: the matching engine cancels every open order on applying the close, and the sequencer allows
    `eod` only once every report the close produced is in the WAL ([BUG-0132](../bug_list.md#bug_0132)).
 7. **The gateways**: `OrderAcceptance` with the trading day and the phase, refusals by phase, and

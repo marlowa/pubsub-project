@@ -53,21 +53,23 @@ class TradingPhaseRequestsLinksInterface {
  *        docs/venue/trading_day_and_reference_data.md, "Moving from one phase to the next").
  *
  * Only the leader acts. Every request is answered from the sequencer's current state, so a request sent again, after an
- * answer was lost or a change of leader, does no harm:
+ * answer was lost or a change of leader, does no harm. The phases are entered one at a time, in order: start of day,
+ * pre-open, open, closed and end of day. What is done with each request:
  *
- * | The request                                          | Done |
- * |------------------------------------------------------|------|
- * | to a sequencer that does not lead                    | NotLeader, nothing written |
- * | for a trading day other than the one this sequencer was started for, or the WAL holds | WrongTradingDay, nothing written |
- * | for the phase the venue is in                        | AlreadyInPhase, nothing written |
- * | for a phase the venue has passed                     | AlreadyPast, nothing written |
- * | for the start of day, on a WAL that holds no record  | the TechnicalEvent entering the start of day is written as the WAL's first record |
- * | for the start of day, on a WAL that holds records but no start of day | WrongTradingDay: the WAL is from before the venue kept trading days, and must be
- * archived | | for pre-open, in the start of day, once the leading matching engine has acted on the start of day | the TechnicalEvents entering pre-open and
- * then open are written | | for pre-open, before then                            | NotReady, and the engine is asked how far it has got; the request is to be
- * sent again | | for pre-open, while trading is halted because an engine cannot account for the orders the venue holds | NotReady: a person resolves that halt
- * first | | for a phase further ahead than the next              | NotNext, nothing written | | for open, closed or end of day, not yet entered      |
- * Unsupported: this release moves the venue to open straight after pre-open, and does not yet close |
+ * - To a sequencer that does not lead: NotLeader, and nothing is written.
+ * - For a trading day other than the one this sequencer was started for, or the one the WAL holds: WrongTradingDay, and
+ *   nothing is written.
+ * - For the phase the venue is in: AlreadyInPhase. For a phase the venue has passed: AlreadyPast. Nothing is written.
+ * - For the start of day, on a WAL that holds no record: the TechnicalEvent entering the start of day is written as the
+ *   WAL's first record. On a WAL that holds records but no start of day: WrongTradingDay, because the WAL belongs to no
+ *   trading day and must be archived.
+ * - For any later phase that is not the one after the current phase: NotNext, and nothing is written.
+ * - For the next phase, while trading is halted because a matching engine cannot account for the orders the venue holds:
+ *   NotReady. A person resolves that halt before the venue moves on. Any other halt does not stop the phase moving on.
+ * - For pre-open, until the leading matching engine has said it has acted on the start of day; and for the end of day,
+ *   until it has said it has acted on the close: NotReady, and the engine is asked how far it has got. The request is to be
+ *   sent again.
+ * - Otherwise, the TechnicalEvent entering the phase is written.
  *
  * Every change of phase carries whether trading is halted, so a halt is carried into the next phase. Every request and
  * its answer are logged at Warning with the operator's name.
@@ -96,7 +98,8 @@ class TradingPhaseRequests {
     void answer(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, pubsub_itc_fw_app::TradingPhaseOutcome outcome,
                 int64_t technical_event_seq_no, const std::string& explanation);
     void start_of_day(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, int32_t trading_day);
-    void pre_open(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name);
+    // Enters @p phase, any phase after the start of day, if it is the next one and its conditions hold.
+    void move_on(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, pubsub_itc_fw_app::TradingPhase phase);
     // Writes the TechnicalEvent entering @p phase, carrying whether trading is halted. @return its position, or zero if it
     // was not written.
     int64_t write_phase(pubsub_itc_fw_app::TradingPhase phase, int32_t trading_day);

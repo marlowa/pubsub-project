@@ -199,33 +199,53 @@ fixes the trading day of every later record (`WalRecord.trading_date`). The sequ
 day and the phase from the `TechnicalEvent` records in its WAL (`TradingPhaseState`), in the same three
 ways as it keeps whether trading is halted.
 
-**Until the venue enters pre-open, it accepts no member's command.** Before the WAL holds a start of
-day, the leading sequencer refuses each one with `CommandRefused`, reason `TradingDayNotStarted`, and
-both gateways answer the member "the trading day has not started"; during the start of day the reason
-is `MarketNotOpen`, and the answer "the market is not open". An order is given OrdRejReason 2, exchange
-closed. Every record before pre-open is therefore one the sequencer wrote itself, which the rule for
-entering pre-open below depends on. Nor, before the start of day, does the sequencer write anything of
-its own: no `SessionEnded`, no halt and no void, because the start of day must be the first record.
+**The venue accepts members' orders and cancels in pre-open and open only.** In any other phase the
+leading sequencer refuses each one with `CommandRefused`, giving the reason, and both gateways answer
+the member with the matching text. An order is given OrdRejReason 2, exchange closed; a cancel is
+answered with an order cancel reject carrying the same text.
+
+| When | Reason | What the member is told |
+|---|---|---|
+| the WAL holds no start of day yet | `TradingDayNotStarted` | "the trading day has not started" |
+| start of day | `MarketNotOpen` | "the market is not open" |
+| closed | `MarketClosed` | "the market is closed" |
+| end of day | `TradingDayEnded` | "the trading day has ended" |
+
+The refusal is decided from the phase in the sequencer's own WAL, whatever the gateway believed when
+it passed the command on. Because members' commands are refused in the start of day, every record
+before pre-open is one the sequencer wrote itself, which the rule for entering pre-open below depends
+on. Nor, before the start of day, does the sequencer write anything of its own: no `SessionEnded`, no
+halt and no void, because the start of day must be the first record. Outside pre-open and open, a
+member's session ending writes no `SessionEnded`, and a cancel still pending for an earlier session is
+not carried out: before pre-open the member has no order, and from the close on, cancelling the orders
+still open belongs to the close. The matching engine does not yet cancel them when it applies the
+close, so they stay on the book until the venue stops ([BUG-0132](../bug_list.md#bug_0132)).
 
 An operator, or the procedure that starts the venue, moves the venue from one phase to the next with
 `scripts/trading_phase.py`, which sends a `TradingPhaseRequest` (168) to both sequencers over each one's
 listener for operators, as `operator_halt.py` does. Only the leader acts, and it answers every request
-from its current state with a `TradingPhaseAnswer` (169), so a request sent again does no harm:
+from its current state with a `TradingPhaseAnswer` (169), so a request sent again does no harm. The
+phases are entered one at a time, in the order start of day, pre-open, open, closed and end of day:
 
 - **Start of day** is written only for the day the sequencer was started for, and only on a WAL that
-  holds no record. A WAL that holds records but no start of day is from before the venue kept trading
-  days, and must be archived.
+  holds no record. A WAL that holds records but no start of day belongs to no trading day, and must be
+  archived.
 - **Pre-open** is written only from the start of day, and only once the leading matching engine has
   said, in answer to an `EnginePositionQuery`, that it has acted on the start of day. Until then the
-  answer is `NotReady`, the engine is asked, and the request is sent again. The sequencer writes open
-  straight after pre-open, so that members trade; it does not yet close.
+  answer is `NotReady`, the engine is asked, and the request is sent again.
+- **Open** and **closed** are written from the phase before each, with no further condition.
+- **End of day** is written only from closed, and only once the leading matching engine has said that
+  it has acted on the close. Until then the answer is `NotReady`, as for pre-open.
 - A request for the phase the venue is in, or one it has passed, writes nothing and says so. A phase
-  further ahead than the next is refused. A change of phase carries whether trading is halted, so a
-  halt continues into the next phase, except that the venue does not leave the start of day while it
-  is halted because a matching engine cannot account for the orders the venue holds.
+  further ahead than the next is refused as `NotNext`.
+- A change of phase carries whether trading is halted, so a halt continues into the next phase. The
+  phase moves on while trading is halted, except while it is halted because a matching engine cannot
+  account for the orders the venue holds: then every request to move on is answered `NotReady` until a
+  person has resolved the halt.
 
 `devenv.py start`, `ha_test.py`, `perf_run.py` and `callgrind_run.py` start the day once the venue is
-up (`scripts/trading_phase.py start-day`, through `operator_requests.start_trading_day`). The design is
+up (`scripts/trading_phase.py start-day`, through `operator_requests.start_trading_day`), asking for the
+start of day, pre-open and open in turn. The design is
 [trading_day_plan.md](trading_day_plan.md).
 
 ### Whether trading is halted, and the operator's halt and lift

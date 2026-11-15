@@ -95,6 +95,20 @@ class TradingPhaseRequestsTest : public ::testing::Test {
         requests_->engine_position(links_.next - 1);
     }
 
+    // The venue open: start of day, pre-open and open, each written.
+    void opened() {
+        started_and_applied();
+        ask(Phase::PreOpen);
+        ask(Phase::Open);
+    }
+
+    // The venue closed, with the matching engine having acted on the close.
+    void closed_and_applied() {
+        opened();
+        ask(Phase::Closed);
+        requests_->engine_position(links_.next - 1);
+    }
+
     std::vector<std::string> log_;
     pubsub_itc_fw::QuillLogger logger_{pubsub_itc_fw::FwLogLevel::Info, [this](const std::string& line) { log_.push_back(line); }};
     RecordingLinks links_;
@@ -157,14 +171,59 @@ TEST_F(TradingPhaseRequestsTest, PreOpenWaitsForTheEngineToHaveActedOnTheStartOf
     EXPECT_EQ(links_.answers.back(), Outcome::Written);
 }
 
-TEST_F(TradingPhaseRequestsTest, PreOpenIsFollowedAtOnceByOpen) {
+TEST_F(TradingPhaseRequestsTest, EveryPhaseIsEnteredOnRequestInOrder) {
     started_and_applied();
     ask(Phase::PreOpen);
-    ASSERT_EQ(links_.written.size(), 3U);
-    EXPECT_EQ(links_.written[1].phase, Phase::PreOpen);
-    EXPECT_EQ(links_.written[2].phase, Phase::Open);
-    EXPECT_EQ(links_.last_answer.phase, Phase::Open);
-    EXPECT_EQ(links_.last_answer.technical_event_seq_no, 3);
+    EXPECT_EQ(links_.last_answer.phase, Phase::PreOpen) << "open is not written until it is asked for";
+    ask(Phase::Open);
+    ask(Phase::Closed);
+    requests_->engine_position(4);
+    ask(Phase::EndOfDay);
+    ASSERT_EQ(links_.written.size(), 5U);
+    const std::vector<Phase> wanted{Phase::StartOfDay, Phase::PreOpen, Phase::Open, Phase::Closed, Phase::EndOfDay};
+    for (size_t index = 0; index < wanted.size(); ++index) {
+        EXPECT_EQ(links_.written[index].phase, wanted[index]) << "record " << index + 1;
+        EXPECT_EQ(links_.written[index].trading_day, today);
+    }
+    EXPECT_EQ(links_.answers, (std::vector<Outcome>(5, Outcome::Written)));
+    EXPECT_EQ(links_.last_answer.phase, Phase::EndOfDay);
+    EXPECT_EQ(links_.last_answer.technical_event_seq_no, 5);
+}
+
+TEST_F(TradingPhaseRequestsTest, APhaseFurtherAheadThanTheNextIsRefused) {
+    started_and_applied();
+    ask(Phase::Open);
+    ask(Phase::Closed);
+    ask(Phase::EndOfDay);
+    EXPECT_EQ(links_.written.size(), 1U);
+    EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::Written, Outcome::NotNext, Outcome::NotNext, Outcome::NotNext}));
+}
+
+TEST_F(TradingPhaseRequestsTest, TheEndOfDayWaitsForTheEngineToHaveActedOnTheClose) {
+    opened();
+    ask(Phase::Closed);
+    const int64_t close_seq_no = links_.next - 1;
+    const int asked_before = links_.engine_asked;
+    ask(Phase::EndOfDay);
+    EXPECT_EQ(links_.answers.back(), Outcome::NotReady);
+    EXPECT_EQ(links_.engine_asked, asked_before + 1) << "the engine is asked how far it has got";
+    requests_->engine_position(close_seq_no - 1);
+    ask(Phase::EndOfDay);
+    EXPECT_EQ(links_.answers.back(), Outcome::NotReady) << "it has not reached the close";
+    requests_->engine_position(close_seq_no);
+    ask(Phase::EndOfDay);
+    EXPECT_EQ(links_.answers.back(), Outcome::Written);
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDay);
+}
+
+TEST_F(TradingPhaseRequestsTest, WithNoEngineTheVenueDoesNotMoveToTheEndOfDay) {
+    opened();
+    ask(Phase::Closed);
+    links_.engine_takes_orders = false;
+    const int asked_before = links_.engine_asked;
+    ask(Phase::EndOfDay);
+    EXPECT_EQ(links_.answers.back(), Outcome::NotReady);
+    EXPECT_EQ(links_.engine_asked, asked_before) << "there is no engine to ask";
 }
 
 TEST_F(TradingPhaseRequestsTest, WithNoEngineTheVenueDoesNotMoveToPreOpen) {
@@ -176,13 +235,15 @@ TEST_F(TradingPhaseRequestsTest, WithNoEngineTheVenueDoesNotMoveToPreOpen) {
 }
 
 TEST_F(TradingPhaseRequestsTest, AskingForAPhaseAlreadyPassedWritesNothing) {
-    started_and_applied();
-    ask(Phase::PreOpen);
-    ask(Phase::PreOpen);
+    closed_and_applied();
+    const size_t written_before = links_.written.size();
+    links_.answers.clear();
     ask(Phase::StartOfDay);
+    ask(Phase::PreOpen);
     ask(Phase::Open);
-    EXPECT_EQ(links_.written.size(), 3U);
-    EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::Written, Outcome::Written, Outcome::AlreadyPast, Outcome::AlreadyPast, Outcome::AlreadyInPhase}));
+    ask(Phase::Closed);
+    EXPECT_EQ(links_.written.size(), written_before);
+    EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::AlreadyPast, Outcome::AlreadyPast, Outcome::AlreadyPast, Outcome::AlreadyInPhase}));
 }
 
 TEST_F(TradingPhaseRequestsTest, PreOpenBeforeTheStartOfDayIsNotTheNextPhase) {
@@ -191,21 +252,30 @@ TEST_F(TradingPhaseRequestsTest, PreOpenBeforeTheStartOfDayIsNotTheNextPhase) {
     EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::NotNext}));
 }
 
-TEST_F(TradingPhaseRequestsTest, ClosingIsNotYetSupported) {
-    started_and_applied();
+TEST_F(TradingPhaseRequestsTest, TheVenueClosesWhileHaltedByAnOperator) {
+    opened();
+    links_.halt.note_technical_event(links_.next++, true, EventReason::DeclaredByOperator);
     ask(Phase::Closed);
-    ask(Phase::EndOfDay);
-    EXPECT_EQ(links_.written.size(), 1U);
-    EXPECT_EQ(links_.answers.back(), Outcome::Unsupported);
+    EXPECT_EQ(links_.answers.back(), Outcome::Written) << "a halt must not stop the close from cancelling the open orders";
+    EXPECT_EQ(links_.written.back().phase, Phase::Closed);
+    EXPECT_TRUE(links_.written.back().halted);
+}
+
+TEST_F(TradingPhaseRequestsTest, TheVenueDoesNotCloseWhileTheOrdersCannotBeAccountedFor) {
+    opened();
+    links_.halt.note_technical_event(links_.next++, true, EventReason::CannotAccountForBook);
+    const size_t written_before = links_.written.size();
+    ask(Phase::Closed);
+    EXPECT_EQ(links_.written.size(), written_before);
+    EXPECT_EQ(links_.answers.back(), Outcome::NotReady);
 }
 
 TEST_F(TradingPhaseRequestsTest, AHaltIsCarriedIntoTheNextPhase) {
     started_and_applied();
     links_.halt.note_technical_event(links_.next++, true, EventReason::DeclaredByOperator);
     ask(Phase::PreOpen);
-    ASSERT_EQ(links_.written.size(), 3U);
+    ASSERT_EQ(links_.written.size(), 2U);
     EXPECT_TRUE(links_.written[1].halted);
-    EXPECT_TRUE(links_.written[2].halted);
     EXPECT_TRUE(links_.halt.halted());
     EXPECT_EQ(links_.halt.latest()->reason, EventReason::DeclaredByOperator);
 }

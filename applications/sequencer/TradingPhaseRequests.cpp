@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <optional>
+#include <string>
+#include <string_view>
 
 #include <fmt/format.h>
 
@@ -18,6 +20,20 @@ namespace {
 // The position of a phase in the day: start of day first, end of day last.
 int phase_order(pubsub_itc_fw_app::TradingPhase phase) {
     return static_cast<int>(phase);
+}
+
+// What members may do once the venue is in @p phase, for the answer to the operator.
+std::string_view what_members_may_do(pubsub_itc_fw_app::TradingPhase phase) {
+    switch (phase) {
+        case pubsub_itc_fw_app::TradingPhase::PreOpen:
+        case pubsub_itc_fw_app::TradingPhase::Open:
+            return "members' orders and cancels are accepted";
+        case pubsub_itc_fw_app::TradingPhase::StartOfDay:
+        case pubsub_itc_fw_app::TradingPhase::Closed:
+        case pubsub_itc_fw_app::TradingPhase::EndOfDay:
+            break;
+    }
+    return "members' orders and cancels are refused";
 }
 
 } // namespaces
@@ -62,22 +78,11 @@ void TradingPhaseRequests::request(const pubsub_itc_fw::ConnectionID& connection
             return;
         }
     }
-    switch (phase) {
-        case pubsub_itc_fw_app::TradingPhase::StartOfDay:
-            start_of_day(connection, operator_name, trading_day);
-            return;
-        case pubsub_itc_fw_app::TradingPhase::PreOpen:
-            pre_open(connection, operator_name);
-            return;
-        case pubsub_itc_fw_app::TradingPhase::Open:
-        case pubsub_itc_fw_app::TradingPhase::Closed:
-        case pubsub_itc_fw_app::TradingPhase::EndOfDay:
-            break;
+    if (phase == pubsub_itc_fw_app::TradingPhase::StartOfDay) {
+        start_of_day(connection, operator_name, trading_day);
+        return;
     }
-    answer(connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::Unsupported, 0,
-           fmt::format("this release does not move the venue to phase {} on request: it enters open straight after pre-open, and does not yet close; "
-                       "nothing was written",
-                       pubsub_itc_fw_app::to_string(phase)));
+    move_on(connection, operator_name, phase);
 }
 
 void TradingPhaseRequests::start_of_day(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, int32_t trading_day) {
@@ -101,13 +106,25 @@ void TradingPhaseRequests::start_of_day(const pubsub_itc_fw::ConnectionID& conne
                        trading_day));
 }
 
-void TradingPhaseRequests::pre_open(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name) {
+void TradingPhaseRequests::move_on(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, pubsub_itc_fw_app::TradingPhase phase) {
     const TradingPhaseState& state = links_.trading_phase();
-    if (!state.started() || state.latest()->phase != pubsub_itc_fw_app::TradingPhase::StartOfDay) {
-        answer(connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::NotNext, 0,
-               "the WAL holds no start of day yet, and pre-open follows it; nothing was written");
+    if (!state.started()) {
+        answer(
+            connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::NotNext, 0,
+            fmt::format("the WAL holds no start of day yet, and every other phase follows it; phase {} was not written", pubsub_itc_fw_app::to_string(phase)));
         return;
     }
+    const pubsub_itc_fw_app::TradingPhase current = state.latest()->phase;
+    if (phase_order(phase) != phase_order(current) + 1) {
+        answer(connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::NotNext, 0,
+               fmt::format("the venue is in phase {}, and phase {} is not the one after it; phases are entered one at a time, in order, and nothing was "
+                           "written",
+                           pubsub_itc_fw_app::to_string(current), pubsub_itc_fw_app::to_string(phase)));
+        return;
+    }
+    // The phase moves on while trading is halted, except while halted because a matching engine cannot account for the
+    // orders the venue holds: nobody then knows which orders are open, so none can be cancelled at the close, and a person
+    // resolves the halt first (docs/venue/trading_day_plan.md, section 2.6).
     const TradingHaltState& halt = links_.trading_halt();
     if (halt.halted() && halt.latest()->reason == pubsub_itc_fw_app::TechnicalEventReason::CannotAccountForBook) {
         answer(connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::NotReady, 0,
@@ -116,43 +133,40 @@ void TradingPhaseRequests::pre_open(const pubsub_itc_fw::ConnectionID& connectio
                            halt.latest()->seq_no));
         return;
     }
-    // Every record before pre-open is one this sequencer wrote for the start of the day, and the start of day is the last
-    // of them that the engine is sent. The engine has acted on all of them once it has acted on that one.
-    const int64_t start_of_day_seq_no = state.entered_at(pubsub_itc_fw_app::TradingPhase::StartOfDay).value_or(0);
-    if (engine_applied_through_ < start_of_day_seq_no) {
-        const bool engine = links_.an_engine_takes_orders();
-        if (engine) {
-            links_.ask_engine_position();
+    // Pre-open waits until the leading engine has acted on the start of day: every record before pre-open is one this
+    // sequencer wrote for the start of the day, and the start of day is the last of them that the engine is sent. The end
+    // of day waits until the leading engine has acted on the close, so that every report the close produced is in the WAL
+    // before the end of day (section 2.5).
+    if (phase == pubsub_itc_fw_app::TradingPhase::PreOpen || phase == pubsub_itc_fw_app::TradingPhase::EndOfDay) {
+        const pubsub_itc_fw_app::TradingPhase waits_on =
+            phase == pubsub_itc_fw_app::TradingPhase::PreOpen ? pubsub_itc_fw_app::TradingPhase::StartOfDay : pubsub_itc_fw_app::TradingPhase::Closed;
+        const int64_t waits_on_seq_no = state.entered_at(waits_on).value_or(0);
+        if (engine_applied_through_ < waits_on_seq_no) {
+            const bool engine = links_.an_engine_takes_orders();
+            if (engine) {
+                links_.ask_engine_position();
+            }
+            const std::string_view waits_on_name = pubsub_itc_fw_app::to_string(waits_on);
+            answer(connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::NotReady, 0,
+                   engine ? fmt::format("the matching engine has not yet said it has acted on the TechnicalEvent entering phase {} at seq={} (it has said "
+                                        "seq={}); it has been asked, and the request is to be sent again; nothing was written",
+                                        waits_on_name, waits_on_seq_no, engine_applied_through_)
+                          : fmt::format("no matching engine takes orders, so none has acted on the TechnicalEvent entering phase {} at seq={}; the request "
+                                        "is to be sent again once one does, and nothing was written",
+                                        waits_on_name, waits_on_seq_no));
+            return;
         }
-        answer(connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::NotReady, 0,
-               engine ? fmt::format("the matching engine has not yet said it has acted on the start of day at seq={} (it has said seq={}); it has been "
-                                    "asked, and the request is to be sent again; nothing was written",
-                                    start_of_day_seq_no, engine_applied_through_)
-                      : fmt::format("no matching engine takes orders, so none has acted on the start of day at seq={}; the request is to be sent again once "
-                                    "one does, and nothing was written",
-                                    start_of_day_seq_no));
-        return;
     }
     const int32_t trading_day = state.trading_day();
-    const int64_t pre_open_seq_no = write_phase(pubsub_itc_fw_app::TradingPhase::PreOpen, trading_day);
-    if (pre_open_seq_no == 0) {
+    const int64_t seq_no = write_phase(phase, trading_day);
+    if (seq_no == 0) {
         answer(connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::NotWritten, 0,
-               "the TechnicalEvent entering pre-open was not written, so nothing was");
+               fmt::format("the TechnicalEvent entering phase {} was not written, so nothing was", pubsub_itc_fw_app::to_string(phase)));
         return;
     }
-    // Until the venue closes on its own schedule, open follows pre-open at once, so that members trade as they did before
-    // the trading day had phases (docs/venue/trading_day_plan.md, section 5, step 4).
-    const int64_t open_seq_no = write_phase(pubsub_itc_fw_app::TradingPhase::Open, trading_day);
-    if (open_seq_no == 0) {
-        answer(connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::NotWritten, pre_open_seq_no,
-               fmt::format("wrote the TechnicalEvent at seq={} entering pre-open, but the one entering open was not written; asking for pre-open again "
-                           "answers that the venue is in it",
-                           pre_open_seq_no));
-        return;
-    }
-    answer(connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::Written, open_seq_no,
-           fmt::format("wrote the TechnicalEvents at seq={} entering pre-open and at seq={} entering open, on trading day {}; members' commands are accepted",
-                       pre_open_seq_no, open_seq_no, trading_day));
+    answer(connection, operator_name, pubsub_itc_fw_app::TradingPhaseOutcome::Written, seq_no,
+           fmt::format("wrote the TechnicalEvent at seq={} entering phase {} on trading day {}; {}", seq_no, pubsub_itc_fw_app::to_string(phase), trading_day,
+                       what_members_may_do(phase)));
 }
 
 int64_t TradingPhaseRequests::write_phase(pubsub_itc_fw_app::TradingPhase phase, int32_t trading_day) {

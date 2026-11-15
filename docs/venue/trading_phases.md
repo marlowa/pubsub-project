@@ -1,10 +1,12 @@
 # Trading phases and the technical event {#trading_phases}
 
-**Status: the technical event, halting and the start of the day are built; the close and the end of the day
+**Status: the technical event, halting and every phase are built; the close's cancels and telling members
 are design.** The `TechnicalEvent` command, the venue's halt and an operator's halt and lift are built
-([voided_commands.md](../availability/voided_commands.md), section 6). So are the start of day, pre-open and
-open, entered on request ([sequencer.md](sequencer.md), "The trading day and its phases"). Closed, end of day,
-and telling a member that is not trading what the venue is doing, are not. The table of what each phase
+([voided_commands.md](../availability/voided_commands.md), section 6). So is every phase, each entered on
+request, and the sequencer's refusal of members' commands outside pre-open and open
+([sequencer.md](sequencer.md), "The trading day and its phases"). The close cancelling the orders still
+open, the gateways refusing by phase, and telling a member that is not trading what the venue is doing,
+are not. The table of what each phase
 allows is settled below. The requirements are written in the high availability chapter of the functional
 specification (`docs/book`, the section "The venue says what it is doing", R-0164 to R-0175), and the
 plan for building them is in [trading_day_plan.md](trading_day_plan.md).
@@ -232,7 +234,7 @@ added later without changing the `TechnicalEvent`.
    section 4.1). The leading sequencer writes one to halt trading and one to lift the halt, each with
    the phase the venue is in (`HaltAndVoidRequests`, and
    [voided_commands.md](../availability/voided_commands.md), section 6), and one for each phase it enters on
-   request: the start of day, pre-open and open (`TradingPhaseRequests`). The gateways do not read the
+   request, from the start of day to the end of day (`TradingPhaseRequests`). The gateways do not read the
    technical event itself: they act on the sequencer's `OrderAcceptance`, which says whether trading is
    halted.
 4. The per-phase table above. Done.

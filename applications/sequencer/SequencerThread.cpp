@@ -715,10 +715,12 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // the WAL holds each command at most once (docs/availability/one_check_against_sequencing_twice.md, 3.1). One
         // the WAL already holds is answered from the WAL if it was sent again, and refused if it was not
         // (CommandChecks).
-        // Until the WAL holds a start of day, the venue accepts no member's command: the start of day is the first record
-        // of the trading day's WAL, and fixes the trading date of every command after it (docs/venue/trading_day_plan.md).
-        if (!venue_state_.trading_day_started() || venue_state_.trading_phase().latest()->phase == pubsub_itc_fw_app::TradingPhase::StartOfDay) {
-            refuse_before_the_market_opens(message.connection_id(), inbound);
+        // The venue accepts members' orders and cancels in pre-open and open only (docs/venue/trading_day_plan.md, section
+        // 2). Until the WAL holds a start of day nothing is accepted: the start of day is the first record of the trading
+        // day's WAL, and fixes the trading date of every command after it. From the close on, nothing is accepted either,
+        // whatever the gateway believed when it passed the command on.
+        if (const std::optional<pubsub_itc_fw_app::CommandRefusedReason> refusal = refusal_by_phase(); refusal.has_value()) {
+            refuse_by_phase(message.connection_id(), inbound, *refusal);
             release_pdu_payload(message);
             return;
         }
@@ -1810,13 +1812,36 @@ void SequencerThread::CommandLinks::refuse(const pubsub_itc_fw::ConnectionID& ca
     owner_.send_command_refused(came_by, inbound, pubsub_itc_fw_app::CommandRefusedReason::IdentifierAlreadyUsed, first_seq_no);
 }
 
-void SequencerThread::refuse_before_the_market_opens(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound) {
-    const bool started = venue_state_.trading_day_started();
+std::optional<pubsub_itc_fw_app::CommandRefusedReason> SequencerThread::refusal_by_phase() const {
+    if (!venue_state_.trading_day_started()) {
+        return pubsub_itc_fw_app::CommandRefusedReason::TradingDayNotStarted;
+    }
+    switch (venue_state_.trading_phase().latest()->phase) {
+        case pubsub_itc_fw_app::TradingPhase::StartOfDay:
+            return pubsub_itc_fw_app::CommandRefusedReason::MarketNotOpen;
+        case pubsub_itc_fw_app::TradingPhase::Closed:
+            return pubsub_itc_fw_app::CommandRefusedReason::MarketClosed;
+        case pubsub_itc_fw_app::TradingPhase::EndOfDay:
+            return pubsub_itc_fw_app::CommandRefusedReason::TradingDayEnded;
+        case pubsub_itc_fw_app::TradingPhase::PreOpen:
+        case pubsub_itc_fw_app::TradingPhase::Open:
+            break;
+    }
+    return std::nullopt;
+}
+
+bool SequencerThread::the_venue_accepts_members_commands() const {
+    return !refusal_by_phase().has_value();
+}
+
+void SequencerThread::refuse_by_phase(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound,
+                                      pubsub_itc_fw_app::CommandRefusedReason reason) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: comp_id='{}' ClOrdID={} refused -- {}, so the venue accepts no member's command", inbound.sender_comp_id, inbound.cl_ord_id,
-               started ? "the venue is in the start of day" : "the WAL holds no start of day yet");
-    send_command_refused(came_by, inbound,
-                         started ? pubsub_itc_fw_app::CommandRefusedReason::MarketNotOpen : pubsub_itc_fw_app::CommandRefusedReason::TradingDayNotStarted, 0);
+               venue_state_.trading_day_started()
+                   ? fmt::format("the venue is in phase {}", pubsub_itc_fw_app::to_string(venue_state_.trading_phase().latest()->phase))
+                   : std::string("the WAL holds no start of day yet"));
+    send_command_refused(came_by, inbound, reason, 0);
 }
 
 void SequencerThread::send_command_refused(const pubsub_itc_fw::ConnectionID& came_by, const pubsub_itc_fw_app::WalRecordView& inbound,
@@ -2017,11 +2042,12 @@ void SequencerThread::session_ended(const fix_common::SessionIdentity& identity,
     if (role_ != pubsub_itc_fw_app::Role::leader || venue_state_.session_cancels().pending(identity)) {
         return;
     }
-    if (!venue_state_.trading_day_started()) {
-        // No member's command has been accepted, so the session has no order to cancel.
+    if (!the_venue_accepts_members_commands()) {
+        // Before pre-open no member's command has been accepted, so the session has no order to cancel; from the close on,
+        // cancelling every order still open belongs to the close (docs/venue/trading_day_plan.md, section 2.4).
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                   "SequencerThread: session comp_id='{}' protocol={} ended before the start of day -- it has no order to cancel", identity.comp_id_view(),
-                   identity.protocol);
+                   "SequencerThread: session comp_id='{}' protocol={} ended while the venue accepts no member's command -- no cancel is written for it",
+                   identity.comp_id_view(), identity.protocol);
         return;
     }
     const MemberSessions::CancelOnDisconnectApplied applied = sessions_.applied_instruction(identity);
@@ -2040,7 +2066,8 @@ void SequencerThread::session_ended(const fix_common::SessionIdentity& identity,
 }
 
 void SequencerThread::session_bound_again(const fix_common::SessionIdentity& identity) {
-    if (role_ != pubsub_itc_fw_app::Role::leader || !venue_state_.session_cancels().pending(identity)) {
+    // From the close on, a pending cancel is never carried out, so there is nothing to withdraw.
+    if (role_ != pubsub_itc_fw_app::Role::leader || !venue_state_.session_cancels().pending(identity) || !the_venue_accepts_members_commands()) {
         return;
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -2050,7 +2077,10 @@ void SequencerThread::session_bound_again(const fix_common::SessionIdentity& ide
 }
 
 void SequencerThread::carry_out_due_session_cancels() {
-    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value() || venue_state_.session_cancels().size() == 0) {
+    // From the close on, cancelling every order still open belongs to the close (docs/venue/trading_day_plan.md, section
+    // 2.4), so a cancel still pending is not carried out.
+    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value() || venue_state_.session_cancels().size() == 0 ||
+        !the_venue_accepts_members_commands()) {
         return;
     }
     // Collected first: writing each cancel notes its record, which removes the session from what is pending.

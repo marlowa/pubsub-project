@@ -131,40 +131,56 @@ def ask_for_phase(install_dir: Path, trading_day: int, phase_name: str, operator
     return result
 
 
-def start_trading_day(install_dir: Path, trading_day: int, operator: str, *, timeout: float = 60.0,
-                      say: Callable[[str], None] = print) -> bool:
-    """Starts trading day trading_day: asks for the start of day, then for pre-open, which the sequencer follows at once
-    with open, until the venue is open or timeout seconds have passed.
+def enter_phases(install_dir: Path, trading_day: int, phase_names: tuple[str, ...], operator: str, *, timeout: float = 60.0,
+                 say: Callable[[str], None] = print) -> PhaseAnswer:
+    """Asks for each phase in phase_names in turn ("StartOfDay", "PreOpen", ...), going on to the next once the venue is in
+    or past it, until every one is entered or timeout seconds have passed. Returns the last answer the sequencer that leads
+    gave, or one with no answer when none led.
 
-    Each request is sent again until the sequencer that leads has answered it: none may lead yet, and pre-open waits until
-    the matching engine has acted on the start of day. A request sent again does no harm, so this also serves a venue
-    restarted during the day, which answers that it is past both. Returns whether the venue is open on trading_day."""
+    Each request is sent again while no sequencer leads, or while the one that leads answers NotReady: pre-open waits until
+    the matching engine has acted on the start of day, and the end of day until it has acted on the close. Every other
+    refusal ends the attempt. A request sent again does no harm, so this also serves a venue restarted during the day, or
+    left part of the way through by a change of leader: each phase it is in or past already is answered as such, and the
+    rest are asked for."""
     leader_follower, _ = load_messages(install_dir)
     outcome = leader_follower.TradingPhaseOutcome
     done = {outcome.Written, outcome.AlreadyInPhase, outcome.AlreadyPast}
     deadline = time.monotonic() + timeout
     context = tls_context(install_dir)
     listeners = deployed_listeners(install_dir)
+    result = PhaseAnswer(answered_by=None, answer=None, lines=[])
     if not listeners:
         say(f"no sequencer to ask: none is deployed in {install_dir}")
-        return False
-    for phase_name in ("StartOfDay", "PreOpen"):
-        last_lines: list[str] = []
+        return result
+    for phase_name in phase_names:
         while True:
             result = ask_for_phase(install_dir, trading_day, phase_name, operator, listeners=listeners, context=context)
             if result.answer is not None and result.answer.outcome in done:
                 for line in result.lines:
                     say(f"  {phase_name}: {line}")
                 break
-            if result.answer is not None and result.answer.outcome in (outcome.WrongTradingDay, outcome.NotNext, outcome.Unsupported):
+            if result.answer is not None and result.answer.outcome != outcome.NotReady:
                 for line in result.lines:
                     say(f"  {phase_name}: {line}")
-                return False
-            last_lines = result.lines
+                return result
             if time.monotonic() > deadline:
-                for line in last_lines:
+                for line in result.lines:
                     say(f"  {phase_name}: {line}")
                 say(f"  {phase_name}: no sequencer that leads accepted it within {timeout:.0f}s")
-                return False
+                return result
             time.sleep(0.2)
-    return True
+    return result
+
+
+def entered(install_dir: Path, result: PhaseAnswer) -> bool:
+    """Whether result says the venue is in or past the phase asked for."""
+    leader_follower, _ = load_messages(install_dir)
+    outcome = leader_follower.TradingPhaseOutcome
+    return result.answer is not None and result.answer.outcome in (outcome.Written, outcome.AlreadyInPhase, outcome.AlreadyPast)
+
+
+def start_trading_day(install_dir: Path, trading_day: int, operator: str, *, timeout: float = 60.0,
+                      say: Callable[[str], None] = print) -> bool:
+    """Starts trading day trading_day: asks for the start of day, then pre-open, then open, until the venue is open or
+    timeout seconds have passed (enter_phases). Returns whether the venue is open, or past it, on trading_day."""
+    return entered(install_dir, enter_phases(install_dir, trading_day, ("StartOfDay", "PreOpen", "Open"), operator, timeout=timeout, say=say))

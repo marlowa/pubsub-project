@@ -1029,7 +1029,6 @@ enum TradingPhaseOutcome : i8 {
     NotNext = 6              # the phase asked for is not the one after the venue's current phase
     NotReady = 7             # the phase is the next one, but its conditions do not hold yet; nothing was written, and the request can be sent again
     NotWritten = 8           # the TechnicalEvent could not be encoded, or the WAL could not take it, so nothing was written
-    Unsupported = 9          # this release does not yet move the venue into that phase on request
 }
 
 # ------------------------------------------------------------
@@ -1068,7 +1067,9 @@ end
 enum CommandRefusedReason : i8 {
     IdentifierAlreadyUsed = 1   # the WAL already holds a command with the same comp id, protocol and ClOrdID, and this one was not marked as sent again
     TradingDayNotStarted = 2    # the WAL holds no start of day yet, so the venue accepts no member's command
-    MarketNotOpen = 3           # the venue is in a phase that accepts no member's command: the start of day
+    MarketNotOpen = 3           # the venue is in the start of day, and has not yet entered pre-open
+    MarketClosed = 4            # the venue has closed for the day, and the end of day is to follow
+    TradingDayEnded = 5         # the venue is in the end of day, and accepts no member's command until the next trading day starts
 }
 
 # ------------------------------------------------------------

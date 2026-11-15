@@ -100,7 +100,7 @@ refused.
   out which of two contradictory states is current. Writing a change only from the phase before
   it is also what makes a repeated request, and a change of leader, harmless: the second attempt
   finds the venue already moved on and writes nothing.}
-  \uncovered{only the start of day, pre-open and open are written, and no scenario checks the order}
+  \covers{ha_test:111}
 \end{requirement}
 
 \begin{requirement}{R-0167}{The venue follows a schedule recorded in its WAL}
@@ -132,7 +132,7 @@ refused.
   Exchange describes market control actions that override the normal schedule. An early close is
   the common case. Answering from the current state makes a repeated request harmless, so an
   operator whose answer was lost asks again and learns where the venue now is.}
-  \uncovered{no request to change the phase exists yet}
+  \uncovered{an operator can move the venue on, which scenario 111 of the high availability tests checks, but no schedule exists yet to change}
 \end{requirement}
 
 \begin{requirement}{R-0169}{The phase moves on while halted, except when the orders cannot be accounted for}
@@ -144,7 +144,7 @@ refused.
   or the day from ending. When an engine cannot account for the orders, nobody knows which orders
   are open, so the close cannot cancel every open order and tell each member, and a person has to
   resolve what the venue holds first.}
-  \uncovered{no phase other than open is written yet}
+  \uncovered{only unit tests check it: no scenario halts trading and then moves the phase on}
 \end{requirement}
 
 \subsection{What each phase allows}
@@ -157,7 +157,7 @@ refused.
   \rationale{A gateway acts on what the sequencer last told it, and that can be out of date by
   the time a command arrives. The sequencer holds the phase from its WAL, so its refusal is the
   one no out-of-date view can get past.}
-  \uncovered{the sequencer refuses no command because of the venue's state}
+  \covers{ha_test:111}
 \end{requirement}
 
 \begin{requirement}{R-0171}{A gateway refuses a command the phase does not allow, and says why}
@@ -201,7 +201,7 @@ refused.
   if nothing that concerns an order comes after it. The requirements above ensure it: no command
   from a member is accepted after the close, and end of day is not entered until every report the
   close produced is in the WAL.}
-  \uncovered{the end-of-day phase does not exist yet}
+  \uncovered{the close cancels no order yet, so no scenario can show that its reports all come before end of day}
 \end{requirement}
 
 \subsection{Who is told}

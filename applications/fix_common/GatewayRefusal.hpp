@@ -36,9 +36,15 @@ inline constexpr std::string_view identifier_already_used_text = "ClOrdID alread
 /// The text both gateways give a member whose command the sequencer refused because the trading day has not started.
 inline constexpr std::string_view trading_day_not_started_text = "the trading day has not started";
 
-/// The text both gateways give a member whose command the sequencer refused because the venue is in a phase that takes
-/// no member's command.
+/// The text both gateways give a member whose command the sequencer refused because the venue is in the start of day,
+/// and has not yet entered pre-open.
 inline constexpr std::string_view market_not_open_text = "the market is not open";
+
+/// The text both gateways give a member whose command the sequencer refused because the venue has closed for the day.
+inline constexpr std::string_view market_closed_text = "the market is closed";
+
+/// The text both gateways give a member whose command the sequencer refused because the venue is in the end of day.
+inline constexpr std::string_view trading_day_ended_text = "the trading day has ended";
 
 /**
  * @brief How both gateways answer a member whose command the leading sequencer refused (CommandRefused): the text, the
@@ -57,6 +63,10 @@ inline SequencerRefusalAnswer answer_to_sequencer_refusal(pubsub_itc_fw_app::Com
             return SequencerRefusalAnswer{trading_day_not_started_text, pubsub_itc_fw_app::OrdRejReason::ExchangeClosed, RefusalReason::VenueUnavailable};
         case pubsub_itc_fw_app::CommandRefusedReason::MarketNotOpen:
             return SequencerRefusalAnswer{market_not_open_text, pubsub_itc_fw_app::OrdRejReason::ExchangeClosed, RefusalReason::VenueUnavailable};
+        case pubsub_itc_fw_app::CommandRefusedReason::MarketClosed:
+            return SequencerRefusalAnswer{market_closed_text, pubsub_itc_fw_app::OrdRejReason::ExchangeClosed, RefusalReason::VenueUnavailable};
+        case pubsub_itc_fw_app::CommandRefusedReason::TradingDayEnded:
+            return SequencerRefusalAnswer{trading_day_ended_text, pubsub_itc_fw_app::OrdRejReason::ExchangeClosed, RefusalReason::VenueUnavailable};
         case pubsub_itc_fw_app::CommandRefusedReason::IdentifierAlreadyUsed:
             break;
     }

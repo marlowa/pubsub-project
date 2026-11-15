@@ -5231,22 +5231,28 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
-    # 111 -- the trading day is started step by step, and nothing is accepted before it starts.
+    # 111 -- the whole trading day is entered step by step, and members' commands are accepted only while it is open.
     #
-    # docs/venue/trading_day_plan.md, step 4. The harness does not start the day. A member logs on and places an order,
-    # which must be refused, saying the trading day has not started, with OrdRejReason 2, exchange closed. Pre-open must be
-    # refused as not the next phase, and a start of day for another trading day must be refused. The start of day must be
-    # written, and asking for it again must write nothing. Pre-open must then be written, with open after it; a new order
-    # must be accepted; and the first record of the leading sequencer's WAL must be the start of day, for the day the
-    # sequencer was started for.
+    # docs/venue/trading_day_plan.md, steps 4 and 5. The harness does not start the day. A member logs on and places an
+    # order, which must be refused, saying the trading day has not started, with OrdRejReason 2, exchange closed. Pre-open
+    # must be refused as not the next phase, and a start of day for another trading day must be refused. The start of day
+    # must be written, and asking for it again must write nothing. An order in the start of day must be refused, saying the
+    # market is not open. Open must be refused as not the next phase; pre-open must then be written, and an order in
+    # pre-open accepted; open must be written, and an order in it accepted. The end of day must be refused as not the next
+    # phase. The close must be written; an order must then be refused, saying the market is closed, and so must a cancel of
+    # an order accepted earlier. The end of day must be written once the engine has acted on the close; an order must then
+    # be refused, saying the trading day has ended, and a member must still be able to log on. The first record of the
+    # leading sequencer's WAL must be the start of day, for the day the sequencer was started for, and its last record the
+    # end of day.
     Scenario(
         number=111,
-        short_name="trading_day_start",
-        description="Orders are refused until the trading day starts, which is entered on request, once, in order",
+        short_name="trading_day_cycle",
+        description="The trading day is entered phase by phase, on request, once, in order; members trade only in pre-open and open",
         expected_outcome=(
-            "an order before the start of day is refused as the day not started; pre-open first, and a start of day for another day, "
-            "are refused; the start of day is written once; pre-open and open follow; an order is then accepted; the WAL's first "
-            "record is the start of day"
+            "an order before the start of day is refused as the day not started, and one in it as the market not open; a phase "
+            "out of order, and a start of day for another day, are refused; each phase is written once; orders are accepted in "
+            "pre-open and open; after the close an order and a cancel are refused as the market closed, and after the end of day "
+            "an order is refused as the day ended while logging on still works; the WAL runs from the start of day to the end of day"
         ),
         me_ha=True,
         start_trading_day=False,
@@ -8728,7 +8734,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         # ── Phase 2b: start the trading day ───────────────────────────────────
         # Until the WAL holds a start of day every member's command is refused, so the day is started before any order is
-        # sent: the start of day, then pre-open, which the sequencer follows at once with open. Pre-open waits until the
+        # sent: the start of day, then pre-open, then open. Pre-open waits until the
         # leading matching engine has acted on the start of day, so a scenario with no engine leading yet goes on with the
         # day unstarted, and says so.
         log(f"=== Phase 2b: starting trading day {TRADING_DAY} ===")
@@ -10440,18 +10446,71 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "and the text 'the market is not open' was wanted")
             log("  an order in the start of day is refused, saying the market is not open -- OK")
 
-            status, said = phase_request("start-day")
-            if status != 0 or "entering pre-open" not in said:
-                member.close()
-                die(f"start of the trading day: pre-open was answered with exit {status} and '{said}'; pre-open and open were to be written")
-            log("  pre-open is written once the engine has acted on the start of day, and open after it -- OK")
+            def enter(action: str, wanted: str = "Written") -> None:
+                status, said = phase_request(action)
+                if status != (0 if wanted in ("Written", "AlreadyInPhase", "AlreadyPast") else 1) or wanted not in said:
+                    member.close()
+                    die(f"the trading day: {action} was answered with exit {status} and '{said}'; {wanted} was wanted")
 
+            def day_answered(cl_ord_id: str, what: str, status: str, text: str = "") -> None:
+                answer = day_answer_to(cl_ord_id)
+                if answer is None or answer.get(39) != status or text not in (answer.get(58) or ""):
+                    member.close()
+                    die(f"the trading day: {what} was answered with {answer}; OrdStatus {status}"
+                        + (f" and the text '{text}'" if text else "") + " was wanted")
+
+            # A cancel the sequencer refuses is answered with a session-level Reject (35=3), which names the request by
+            # its MsgSeqNum (45) and carries no ClOrdID; an OrderCancelReject (35=9) for it is accepted too.
+            def cancel_refused(cl_ord_id: str, orig_cl_ord_id: str, text: str) -> None:
+                member.order_cancel_request(cl_ord_id, orig_cl_ord_id)
+                deadline = time.monotonic() + _HELD_ANSWER_TIMEOUT
+                while time.monotonic() < deadline:
+                    reject = member.receive_until("3", "9", timeout=1.0)
+                    if reject is not None and reject.get(11) in (None, cl_ord_id):
+                        if text not in (reject.get(58) or ""):
+                            member.close()
+                            die(f"the trading day: a cancel of {orig_cl_ord_id} was rejected with {reject}; the text '{text}' was wanted")
+                        return
+                member.close()
+                die(f"the trading day: a cancel of {orig_cl_ord_id} was not rejected; a rejection saying '{text}' was wanted")
+
+            enter("open", "NotNext")
+            enter("pre-open")
+            log("  open before pre-open is refused, and pre-open is written once the engine has acted on the start of day -- OK")
+
+            member.new_order_single("day-pre-open-1")
+            day_answered("day-pre-open-1", "an order in pre-open", "0")
+            log("  an order in pre-open is accepted -- OK")
+
+            enter("end-of-day", "NotNext")
+            enter("open")
             member.new_order_single("day-open-1")
-            accepted = day_answer_to("day-open-1")
+            day_answered("day-open-1", "an order once the venue is open", "0")
+            log("  the end of day before the close is refused; open is written, and an order in it is accepted -- OK")
+
+            enter("closed")
+            enter("open", "AlreadyPast")
+            member.new_order_single("day-closed-1")
+            day_answered("day-closed-1", "an order after the close", "8", "market is closed")
+            cancel_refused("day-closed-cancel-1", "day-open-1", "market is closed")
+            log("  the close is written; an order and a cancel after it are refused, saying the market is closed -- OK")
+
+            enter("end-of-day")
+            enter("end-of-day", "AlreadyInPhase")
+            member.new_order_single("day-ended-1")
+            day_answered("day-ended-1", "an order in the end of day", "8", "trading day has ended")
             member.close()
-            if accepted is None or accepted.get(39) != "0":
-                die(f"start of the trading day: an order once the venue is open was answered with {accepted}; it was to be accepted")
-            log("  an order once the venue is open is accepted -- OK")
+            log("  the end of day is written once the engine has acted on the close, and an order in it is refused, saying the trading day "
+                "has ended -- OK")
+
+            late = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            late.connect()
+            late.logon(reset_seq_num=True)
+            late_logon = late.receive_until("A", timeout=_RAW_LOGON_TIMEOUT)
+            late.close()
+            if late_logon is None:
+                die("the trading day: a member could not log on in the end of day; logging on is allowed in every phase")
+            log("  a member logs on in the end of day -- OK")
 
             leader_follower, _ = operator_requests.load_messages(prefix)
             sequencer_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
@@ -10465,6 +10524,15 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"start of the trading day: the WAL's first record is {event} dated {envelope.trading_date}; the start of trading day "
                     f"{TRADING_DAY} was wanted")
             log(f"  the WAL's first record is the start of trading day {TRADING_DAY} -- OK")
+            last = None
+            for last in wal_entries(wal_dir):
+                pass
+            envelope = leader_follower.WalRecord.decode(last[2])[0] if last is not None else None
+            event = (leader_follower.TechnicalEvent.decode(envelope.payload)[0]
+                     if envelope is not None and envelope.pdu_id == leader_follower.TechnicalEvent.MESSAGE_ID else None)
+            if event is None or event.phase != leader_follower.TradingPhase.EndOfDay:
+                die(f"the trading day: the last record of {wal_dir} is {envelope}; the end of day was wanted, with nothing after it")
+            log("  the WAL's last record is the end of day -- OK")
 
         # ── The operator's halt: new orders refused, cancels carried out, the book kept ──
         # Section 6.2. An operator halts trading while an engine leads, and later lifts the halt. Nothing may be cancelled
