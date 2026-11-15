@@ -789,8 +789,11 @@ started for the next day on the files of the day just run, each refuse to start 
 day it belongs to. `scripts/trading_day_test.py` runs two trading days through the procedures that start
 and end a day, and checks that the end archives every file of the day and leaves none of them behind.
 
-**Today: it holds.** `scripts/trading_day.py end` stops every component and archives every file of the
-day, and `scripts/trading_day.py start` refuses while a file of another day that a component reads when
+**Today: it holds where every component runs on one machine.** `scripts/trading_day.py end` stops every
+component and archives every file of the day, but only on one machine: on several, it finds no sequencer to
+ask once the sequencers' machines have been ended. The design that replaces it, in which every component
+shuts itself down and archives its own files at the end of the end of day, is in section 4 of
+[start_and_end_of_day.md](venue/start_and_end_of_day.md) and is not built. Whatever ends the day, `scripts/trading_day.py start` refuses while a file of another day that a component reads when
 it starts is present. A Quill log or captured output of another day does not stop a start, because its
 name carries its day and the new day writes to files of its own; nor does the credentials file, which the
 start overwrites before any component runs. Every component is given the trading day on

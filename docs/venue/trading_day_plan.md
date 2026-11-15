@@ -1,6 +1,6 @@
 # The trading day: design plan {#trading_day_plan}
 
-**Status: agreed and built: steps 1 to 9 are done.** This note covers the whole trading day: every phase,
+**Status: agreed and built: steps 1 to 9 are done, except that how the day ends is redesigned and the new design is not built ([start_and_end_of_day.md](start_and_end_of_day.md), section 4).** This note covers the whole trading day: every phase,
 how the venue moves from one to the next, what each component does in each, and how each change reaches
 the components and members that need it. It builds on three other notes and does not repeat them:
 
@@ -177,11 +177,12 @@ and everything the close produced is in the WAL before `eod` is written.
 
 During `eod` nothing further is sequenced. End of day is complete when the order activity recorder reports
 that it has every event up to the `eod` event confirmed by the external messaging system
-([oar_external_stream.md](../pubsub/oar_external_stream.md), section 13.6). The end-of-day procedure then
-stops the components and archives every file the venue wrote during the day
-([BUG-0137](../bug_list.md#bug_0137)). The recorder is not built yet, so until it is, the procedure goes
-straight from `eod` to stopping the components. How the recorder's report reaches the procedure is
-designed with the recorder.
+([oar_external_stream.md](../pubsub/oar_external_stream.md), section 13.6). The leading sequencer then
+writes a second event, the end of the end of day, and every component, on receiving it, shuts itself down
+and archives every file it wrote during the day
+([start_and_end_of_day.md](start_and_end_of_day.md), section 4; [BUG-0137](../bug_list.md#bug_0137)). That
+design is not built; `scripts/trading_day.py end` stops the components and archives the files instead, on one
+machine only, and goes straight from `eod` to stopping the components, since the recorder is not built.
 
 Work belonging to the end of the day, such as receiving the next day's instrument prices, is left with the
 reference data until something uses it.

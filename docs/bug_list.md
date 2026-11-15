@@ -9,7 +9,7 @@
 
 ## Open bugs by severity
 
-6 high, 28 medium, 6 low.
+6 high, 28 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -53,6 +53,7 @@
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
 | [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
+| [BUG-0249](#bug_0249) | low | defect | The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it |
 
 ---
 
@@ -148,6 +149,37 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0249: The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it {#bug_0249}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-15 |
+| Recorded | 2026-11-15 |
+| How | Reading `SequencerThread.cpp` while designing how the day ends ([start_and_end_of_day.md](venue/start_and_end_of_day.md), section 4.2, decision 4) |
+| Impact | After a change of leader, a member can be told the venue is in a phase and then that it is in the phase before it |
+
+**What happens.** The leading sequencer holds each execution report until the follower sequencer has confirmed it
+holds the record the report depends on, so a member never sees a report that a change of leader could lose. A change
+of phase is not held in this way. When the leader writes a `TechnicalEvent` that changes the phase or the halt, it
+tells every gateway at once in an `OrderAcceptance` (`SequencerThread.cpp`, just after each record is written), and
+the gateways tell their members. If the leader stops before the follower sequencer holds that record, the follower
+sequencer is promoted with its WAL still in the phase before, and tells the gateways so. A member is then told, for
+example, that the venue is open, and a moment later that it is in pre-open. The same holds for a halt.
+
+The window is the time the follower sequencer takes to confirm one record, and it matters only when the leader stops
+inside it, so it is rare. The end of day is not exposed to it in a way that loses anything, because no component
+shuts down on the end-of-day begin (section 4.2, decision 3, of the same document).
+
+**What is wanted.** The leader tells the gateways of a change of phase or of halt only once the follower sequencer
+has confirmed the record, as it does for execution reports, or after the limit of time it waits when the follower
+sequencer is absent. A scenario in `ha_test.py` that stops the leader between writing a phase change and receiving
+the confirmation would show it, and would have to fail before the change.
+
+**Principles.** V2 of [design_principles.md](design_principles.md), the log is the record: members are told of a
+phase that the log a new leader holds may never contain. No principle states directly that what a member is told is
+never taken back by a change of leader, which is the rule the execution reports follow.
 
 ### BUG-0245: In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it {#bug_0245}
 
@@ -472,12 +504,46 @@ of the day. To be designed and agreed before code.
     by its schedule from start to end.
   - The start-of-day procedure has no reference data to load, because the venue has none yet
     (`docs/venue/trading_day_and_reference_data.md`); its inputs are the members' credentials.
-  - **Not yet handled: two machines.** Section 4 of the design has each machine run the end of day for its own files,
-    stopping only its own components. The end procedure asks the leading sequencer whether the venue is in the end of
-    day before it stops anything. On the machine that runs it second, the sequencers may already have been stopped by
-    the first, so nothing answers and it refuses. Everything here runs on one machine, where this cannot happen, so it
-    is untested. One remedy is for the second machine to accept the end of day recorded in its own copy of the run
-    manifest, written by the first; that is a decision to make before an environment of two machines is used.
+  - **`end` works only where every component runs on one machine,** as in the development environment. It asks the
+    leading sequencer whether the venue is in the end of day before it stops anything, so run on each of several
+    machines in turn, it finds no sequencer to answer once the sequencers' machines have been ended, and refuses.
+- **How the day ends is redesigned, and the new design is not built.** Section 4 of
+  `docs/venue/start_and_end_of_day.md` replaces `end` with two events in the WAL. The end-of-day begin
+  (`EndOfDayBegin`, the phase called `EndOfDay` today) ends trading, and nothing shuts down on it. The end-of-day end
+  (`EndOfDayEnd`, a new phase) is written by the leading sequencer once the follower sequencer and both publishers hold
+  every record up to the begin. Every component subscribes to both, and on the end-of-day end it shuts itself down in
+  order and archives its own files, on the machine it runs on. No component asks another whether the day ended, and no
+  machine depends on another, however many machines there are. Section 4.2 lists what is agreed and what is still
+  open: the order of shutdown, the limit of time the leader waits for the follower sequencer, a file of each
+  component's last trading state with an exit status the launcher obeys, and confirming that no execution report can
+  reach the sequencer after the begin. `end` may be kept as the manual way to archive the files of a component that
+  missed the end of day.
+
+**What remains before this entry can be closed.** The end of day as section 4 of
+`docs/venue/start_and_end_of_day.md` designs it:
+
+1. **Settle the open decisions in section 4.2:** the order in which components shut down and how each knows its turn
+   has come; the limit of time the leading sequencer waits for the follower sequencer; and confirmation that no
+   execution report can reach the sequencer after the end-of-day begin is written.
+2. **The two events.** Rename the phase `EndOfDay` to `EndOfDayBegin`, add `EndOfDayEnd`, and have the leading
+   sequencer write the end only once the follower sequencer and both publishers have confirmed every record up to the
+   begin, or once the limit of time has passed; and not shut down until the follower sequencer has confirmed the end
+   itself.
+3. **Every component subscribes to both events.** The arbiters, the witness, the authentication services and the
+   administration service receive no phase today, and subscribe to the `technical_events` topic. After the begin,
+   every component treats another component leaving as expected, logged at Info, with no promotion, halt or alarm.
+4. **Each component, on the end-of-day end, shuts itself down in order and archives its own files,** with the listing
+   and checksums `trading_day.py end` uses today.
+5. **The last-state file and the launcher.** Each component keeps a file of its last trading state that outlives the
+   day; a component that exits at the end of day does so with a status that makes `scripts/launch.py` exit rather than
+   restart it; and the start-of-day check accepts that file from the day before.
+6. **The next day's start** archives the captured console output and the run manifest of the day before, which no
+   component can archive itself.
+7. **Decide what becomes of `trading_day.py end`:** kept as the manual way to archive the files of a component that
+   missed the end of day, on the operator's word, or removed.
+8. **Tests.** `scripts/trading_day_test.py` checks the day ending by itself, with no `end`; and scenarios in
+   `ha_test.py` stop the leader between the two events, and between writing the end and the follower sequencer
+   confirming it.
 
 ### BUG-0136: Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known {#bug_0136}
 

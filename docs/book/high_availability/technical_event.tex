@@ -71,10 +71,9 @@ refused.
 \end{requirement}
 
 \begin{gap}{BUG-0137}
-  The procedures that start and end the trading day have been run on one machine only. Where the
-  components are spread over two machines, each machine runs the end of day for its own files and
-  stops only its own components. The machine that runs it second may then find no sequencer
-  running to say that the venue is in end of day, and refuse to archive anything.
+  The procedure that ends the trading day works only where every component runs on one machine.
+  The design that replaces it, in which every component shuts itself down and archives its own
+  files when the leading sequencer writes the end of the end of day, is not built.
 \end{gap}
 
 \begin{requirement}{R-0177}{A component refuses to start on a file from another trading day}
