@@ -1,0 +1,22 @@
+# The times at which the venue enters each phase of a normal trading day, in the venue's local time.
+#
+# The procedure that starts the trading day reads this file, turns each time into a moment in UTC on the trading day it is
+# given, and sends the result to the sequencers with the start-of-day request. The leading sequencer writes it into the
+# WAL, and enters each phase once its time has come and its conditions hold (docs/venue/trading_day_plan.md, section 3).
+#
+# time_zone is the zone the times are written in, as the IANA time zone database names it. Daylight saving is the zone's:
+# 07:50 in London is 07:50 UTC in winter and 06:50 UTC in summer.
+#
+# Each phase is given a time of day, written HH:MM or HH:MM:SS, or "when ready", meaning as soon as its conditions hold.
+# The schedule stops at the first phase left out: that phase and every one after it are then entered only when an
+# operator asks. The start of day itself is not scheduled; the start-of-day request enters it.
+#
+# To change the times during a day, for an early close, send a new schedule with scripts/trading_phase.py schedule.
+
+time_zone = "Europe/London"
+
+[phases]
+pre_open = "07:50"
+open = "08:00"
+closed = "16:30"
+end_of_day = "when ready"

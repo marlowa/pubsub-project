@@ -4,9 +4,9 @@
 Security depends on which connection is being considered. A FIX member connects
 to a gateway, the gateway authenticates the COMPID with the authentication
 service, and an operator manages COMPIDs through a web application. An operator
-also halts trading, lifts a halt, and moves the venue from one phase of the
-trading day to the next, by sending requests to the sequencers over a
-connection of its own. These links do not all have the same protection. In particular, SCRAM keeps a COMPID
+also halts trading, lifts a halt, moves the venue from one phase of the
+trading day to the next, and replaces the day's schedule, by sending requests
+to the sequencers over a connection of its own. These links do not all have the same protection. In particular, SCRAM keeps a COMPID
 password out of the gateway-to-authentication-service exchange, but it does not
 encrypt a member's connection to the gateway. TLS is available for FIX sessions
 but is optional, and the COMPID editor has its own administrator login and
@@ -83,11 +83,12 @@ password on that connection, but does not encrypt the rest of its traffic.
 \section{The operator's connection to the sequencers}
 \label{sec:security:operator_connection}
 
-An operator halts trading, lifts a halt, and asks for the venue to enter the
-next phase of the trading day. Each of these is a request sent to both
-sequencers, and the leading sequencer acts on it. Two tools send them:
+An operator halts trading, lifts a halt, asks for the venue to enter the
+next phase of the trading day, and replaces the times that remain in the day's
+schedule. Each of these is a request sent to both sequencers, and the leading
+sequencer acts on it. Two tools send them:
 \texttt{scripts/operator\_halt.py} for a halt and its lift, and
-\texttt{scripts/trading\_phase.py} for a phase. What the two share, including
+\texttt{scripts/trading\_phase.py} for a phase and the schedule. What the two share, including
 the connection and its security, is in \texttt{scripts/operator\_requests.py}.
 The procedures that start the venue for development and for testing send the
 same requests through the same code.
@@ -146,8 +147,8 @@ The protection has these limits, which a deployment has to take into account:
         \texttt{--operator}; it is not checked against the certificate, and so
         it records who said they acted, not who did.
   \item \textbf{The certificate decides everything.} A client holding the
-        operator's certificate and key may make every request: halt, lift, and
-        move the phase. There is no finer permission.
+        operator's certificate and key may make every request: halt, lift, move
+        the phase, and replace the schedule. There is no finer permission.
   \item \textbf{The authority's private key is in the install directory.} Any
         account that can read \texttt{operator\_ca.key} can sign a certificate
         the sequencers accept. It is protected only by the file's permissions.
@@ -161,8 +162,9 @@ The protection has these limits, which a deployment has to take into account:
 \end{itemize}
 
 \begin{requirement}{R-0176}{Only a client with the operator's certificate can make an operator's request}
-  A sequencer shall act on a request to halt trading, to lift a halt, or to
-  move the venue to another phase of the trading day only when it arrives over
+  A sequencer shall act on a request to halt trading, to lift a halt, to
+  move the venue to another phase of the trading day, or to replace the day's
+  schedule only when it arrives over
   TLS from a client that presented a certificate signed by the operator's
   certificate authority. A sequencer configured without that authority shall
   refuse to start.

@@ -665,9 +665,16 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
                    "MatchingEngineThread: ExecutionReport envelope on connection {} -- not applied (the engine produces reports and applies none)",
                    message.connection_id().get_value());
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::SessionEnded::message_pdu_id) ||
-               inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::SessionEndWithdrawn::message_pdu_id)) {
-        // A record the leading sequencer keeps for cancel on disconnect, which no engine applies. An engine following the
-        // WAL is sent it with every other record, and passes over it; a catch-up, which sends only commands, does not.
+               inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::SessionEndWithdrawn::message_pdu_id) ||
+               inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TradingSchedule::message_pdu_id)) {
+        // A record the leading sequencer keeps for itself, for cancel on disconnect or for the day's schedule, which no
+        // engine applies. An engine following the WAL, and an engine catching up from a stream of every record, is sent it
+        // with every other record and passes over it. During a catch-up it is counted as offered, as a report record is,
+        // because the sequencer counts it among the records it sent, and the catch-up is complete only when the two counts
+        // agree (R-0101).
+        if (role_.role() == MeRole::Reconciling) {
+            catch_up_.record_offered(message.seq_no());
+        }
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: unsupported envelope inner pdu_id {} -- dropping", inner_pdu_id);
     }

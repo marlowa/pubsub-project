@@ -14,26 +14,29 @@
 #include "SessionCancelsPending.hpp"
 #include "TradingHaltState.hpp"
 #include "TradingPhaseState.hpp"
+#include "TradingScheduleState.hpp"
 #include "VoidedCommandList.hpp"
 
 namespace sequencer {
 
 /**
  * @brief The facts the sequencer reads from its WAL, which every instance keeps whether it leads or follows: the trading
- *        day and the phase, whether trading is halted, which commands are voided, and the highest command a report
- *        answers (docs/venue/dividing_the_sequencer_and_matching_engine.md, section 6.10).
+ *        day and the phase, the day's schedule, whether trading is halted, which commands are voided, and the highest
+ *        command a report answers (docs/venue/dividing_the_sequencer_and_matching_engine.md, section 6.10).
  *
  * Every record is noted in one way, note_record(), told how the instance came to hold it:
  *
  * | Fact                                   | read_at_open | written_as_follower | written_by_this_leader |
  * |----------------------------------------|--------------|---------------------|------------------------|
  * | the trading day and the phase          | yes          | yes                 | yes                    |
+ * | the day's schedule                     | yes          | yes                 | yes                    |
  * | whether trading is halted              | yes          | yes                 | yes                    |
  * | the voided commands                    | yes          | yes                 | yes, and the engines are sent the voids once its record is committed |
  * | the highest command a report answers   | yes          | yes                 | yes                    |
  *
  * The trading day and the phase come from the TechnicalEvent records: the first record of the day's WAL is the one that
- * enters the start of day, and it fixes the trading day (TradingPhaseState). Nothing here reads a clock. A record that
+ * enters the start of day, and it fixes the trading day (TradingPhaseState). The schedule comes from the TradingSchedule
+ * records: the latest one is the schedule (TradingScheduleState). Nothing here reads a clock. A record that
  * does not decode is said at Error when the WAL is opened, because a void in it would not be kept.
  *
  * When records are discarded from the WAL, the voids and halts after the point are discarded too. The highest command
@@ -63,9 +66,10 @@ class VenueStateFromTheWal {
 
     /// What noting a record changed.
     struct Noted {
-        bool halt_changed{false};  ///< whether trading is halted changed
-        bool phase_changed{false}; ///< the phase or the trading day changed
-        bool void_added{false};    ///< a void not held before
+        bool halt_changed{false};     ///< whether trading is halted changed
+        bool phase_changed{false};    ///< the phase or the trading day changed
+        bool schedule_changed{false}; ///< a TradingSchedule was noted
+        bool void_added{false};       ///< a void not held before
     };
 
     explicit VenueStateFromTheWal(pubsub_itc_fw::QuillLogger& logger) : logger_(logger) {}
@@ -85,6 +89,10 @@ class VenueStateFromTheWal {
     /// The trading day and the phase.
     [[nodiscard]] const TradingPhaseState& trading_phase() const {
         return trading_phase_;
+    }
+    /// The day's schedule.
+    [[nodiscard]] const TradingScheduleState& trading_schedule() const {
+        return trading_schedule_;
     }
     /// Whether the WAL holds a start of day.
     [[nodiscard]] bool trading_day_started() const {
@@ -123,10 +131,12 @@ class VenueStateFromTheWal {
     bool note_void(int64_t seq_no, const Record& record);
     void note_technical_event(int64_t seq_no, const Record& record, Noted& noted);
     void note_session_cancel(int64_t seq_no, const Record& record);
+    void note_trading_schedule(int64_t seq_no, const Record& record, Noted& noted);
 
     pubsub_itc_fw::QuillLogger& logger_;
     TradingHaltState trading_halt_;
     TradingPhaseState trading_phase_;
+    TradingScheduleState trading_schedule_;
     fix_common::VoidedCommandList voids_;
     // The position of a void written as leader and not yet sent to the engines; zero when there is none.
     int64_t void_awaiting_commit_{0};
@@ -135,7 +145,7 @@ class VenueStateFromTheWal {
     // The position in the WAL of the record holding latest_engine_report_.
     int64_t latest_engine_report_seq_no_{0};
     SessionCancelsPending session_cancels_;
-    // Scratch space for decoding a void or a TechnicalEvent. A command of the sequencer's own is small, and decoding one
+    // Scratch space for decoding a void, a TechnicalEvent or a TradingSchedule. A record of the sequencer's own is small, and decoding one
     // needs no more space than this.
     std::vector<uint8_t> decode_arena_ = std::vector<uint8_t>(1024);
 };

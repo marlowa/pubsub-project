@@ -120,7 +120,7 @@ refused.
   machines keeping their clocks synchronised to an external source, to well within one second.
   While no sequencer leads, nothing can be written, so a change due then is written by the next
   leader as soon as it leads, and the record shows how late it was.}
-  \uncovered{no schedule exists yet}
+  \covers{ha_test:113}
 \end{requirement}
 
 \begin{requirement}{R-0168}{An operator can move the venue on, and change the schedule}
@@ -132,7 +132,7 @@ refused.
   Exchange describes market control actions that override the normal schedule. An early close is
   the common case. Answering from the current state makes a repeated request harmless, so an
   operator whose answer was lost asks again and learns where the venue now is.}
-  \uncovered{an operator can move the venue on, which scenario 111 of the high availability tests checks, but no schedule exists yet to change}
+  \covers{ha_test:111, ha_test:113}
 \end{requirement}
 
 \begin{requirement}{R-0169}{The phase moves on while halted, except when the orders cannot be accounted for}

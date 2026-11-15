@@ -1032,7 +1032,10 @@ message OperatorHaltAnswer (id=162, version=1)
     string explanation              # the outcome in words, as the sequencer logged it
 end
 
-# What the sequencer did with a TradingPhaseRequest.
+# What the sequencer did with a TradingPhaseRequest. Written, for the
+# start of day, means the start of day and its schedule were both
+# written, or the schedule alone when the WAL held the start of day
+# without one.
 enum TradingPhaseOutcome : i8 {
     Written = 1              # the TechnicalEvent entering the phase asked for was written
     AlreadyInPhase = 2       # the venue is in that phase already, on that trading day, so nothing was written
@@ -1042,7 +1045,45 @@ enum TradingPhaseOutcome : i8 {
     NotNext = 6              # the phase asked for is not the one after the venue's current phase
     NotReady = 7             # the phase is the next one, but its conditions do not hold yet; nothing was written, and the request can be sent again
     NotWritten = 8           # the TechnicalEvent could not be encoded, or the WAL could not take it, so nothing was written
+    ScheduleRefused = 9      # the schedule sent with the start of day is not one the venue can follow, so nothing was written
 }
+
+# ------------------------------------------------------------
+#  230 -- TradingScheduleEntry
+#  One phase of the day's schedule and the earliest moment the venue
+#  may enter it. Nested only, in TradingSchedule and in the requests
+#  that carry a schedule, and never sent on its own. The moment is
+#  in UTC: the procedure that starts the day turns the venue's local
+#  times into moments, and the sequencer never deals with time zones.
+#  See docs/venue/trading_day_plan.md, section 3.2.
+# ------------------------------------------------------------
+message TradingScheduleEntry (id=230, version=1)
+    TradingPhase phase              # the phase to enter
+    i64 earliest_utc_ns             # the earliest moment to enter it, in nanoseconds since 1970 UTC; 0 means as soon as its conditions hold
+end
+
+# ------------------------------------------------------------
+#  231 -- TradingSchedule
+#  A record the leading sequencer writes into the WAL, carried as the
+#  payload of a WalRecord envelope, straight after the start of day
+#  and whenever an operator replaces the times that remain. It is
+#  not a command: no matching engine applies it, and a catch-up does
+#  not send it. Every sequencer keeps the latest one, so that a new
+#  leader knows when the next phase is due, and the WAL shows why
+#  each phase was entered when it was.
+#
+#  The entries are consecutive phases in order, starting from the
+#  phase after the one the venue was in when the schedule was
+#  written. The schedule stops at the first phase it leaves out:
+#  that phase, and every one after it, is entered only when an
+#  operator asks. A schedule with no entries is a day run entirely
+#  by hand. See docs/venue/trading_day_plan.md, section 3.2.
+# ------------------------------------------------------------
+message TradingSchedule (id=231, version=1)
+    i32 trading_day                         # YYYYMMDD; the trading day the WAL is for
+    list<TradingScheduleEntry> entries      # in phase order
+    string operator_name                    # who supplied it
+end
 
 # ------------------------------------------------------------
 #  168 -- TradingPhaseRequest
@@ -1058,6 +1099,7 @@ message TradingPhaseRequest (id=168, version=1)
     i32 trading_day                 # YYYYMMDD; the day the request is for
     TradingPhase requested_phase
     string operator_name            # who asked, for the Quill log
+    list<TradingScheduleEntry> schedule     # read only with StartOfDay: the day's schedule from PreOpen; empty for a day run by hand
 end
 
 # ------------------------------------------------------------
@@ -1073,6 +1115,49 @@ message TradingPhaseAnswer (id=169, version=1)
     TradingPhase phase
     bool halted
     i64 technical_event_seq_no      # the position of the last TechnicalEvent written for this request, or 0 when none was
+    i64 schedule_seq_no             # the position of the TradingSchedule written for this request, or 0 when none was
+    string explanation              # the outcome in words, as the sequencer logged it
+end
+
+# What the sequencer did with a TradingScheduleRequest.
+enum TradingScheduleOutcome : i8 {
+    Written = 1              # a TradingSchedule holding the new times was written
+    NotLeader = 2            # this sequencer does not lead, so it wrote nothing; the one that leads acts
+    WrongTradingDay = 3      # the request is for a trading day other than the one this sequencer was started for, or the WAL holds
+    TradingDayNotStarted = 4 # no start of day is in the WAL; the day's first schedule is sent with the start-of-day request
+    Refused = 5              # the schedule names a phase the venue has entered or passed, or is not in order, so nothing was written
+    NotWritten = 6           # the TradingSchedule could not be encoded, or the WAL could not take it, so nothing was written
+}
+
+# ------------------------------------------------------------
+#  232 -- TradingScheduleRequest
+#  Sent by an operator to each sequencer over its listener for
+#  operators, as TradingPhaseRequest is. Replaces the times that
+#  remain in the day's schedule, for an early close for example. The
+#  entries are the whole of the new schedule: consecutive phases in
+#  order, starting from the phase after the one the venue is in. Only
+#  the sequencer that leads acts, and every request is answered from
+#  its current state. See docs/venue/trading_day_plan.md, section 3.2.
+# ------------------------------------------------------------
+message TradingScheduleRequest (id=232, version=1)
+    i32 trading_day                         # YYYYMMDD; the day the request is for
+    list<TradingScheduleEntry> entries      # the new schedule, from the phase after the current one
+    string operator_name                    # who asked, for the Quill log
+end
+
+# ------------------------------------------------------------
+#  233 -- TradingScheduleAnswer
+#  The sequencer's answer to a TradingScheduleRequest, on the same
+#  connection. Says what it did, and the trading state it holds once
+#  the request is dealt with.
+# ------------------------------------------------------------
+message TradingScheduleAnswer (id=233, version=1)
+    TradingScheduleOutcome outcome
+    bool day_started                # whether the WAL holds a start of day; when false, the next three fields say nothing
+    i32 trading_day                 # YYYYMMDD
+    TradingPhase phase
+    bool halted
+    i64 schedule_seq_no             # the position of the TradingSchedule written, or 0 when none was
     string explanation              # the outcome in words, as the sequencer logged it
 end
 

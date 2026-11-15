@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -16,12 +17,14 @@
 #include "EngineReportPosition.hpp"
 #include "TradingHaltState.hpp"
 #include "TradingPhaseState.hpp"
+#include "TradingScheduleState.hpp"
 
 namespace sequencer {
 
 /**
  * @brief What the sequencer thread supplies so that TradingPhaseRequests can read the facts it decides from, write a
- *        TechnicalEvent into the WAL, ask the matching engine how far it has got, and answer the one who asked.
+ *        TechnicalEvent or a TradingSchedule into the WAL, ask the matching engine how far it has got, and answer the one
+ *        who asked.
  */
 class TradingPhaseRequestsLinksInterface {
   public:
@@ -33,6 +36,8 @@ class TradingPhaseRequestsLinksInterface {
     [[nodiscard]] virtual int32_t trading_day_started_for() const = 0;
     /// The trading day and the phase, as the WAL says.
     [[nodiscard]] virtual const TradingPhaseState& trading_phase() const = 0;
+    /// The day's schedule, as the WAL says.
+    [[nodiscard]] virtual const TradingScheduleState& trading_schedule() const = 0;
     /// Whether trading is halted, and by which TechnicalEvent, as the WAL says.
     [[nodiscard]] virtual const TradingHaltState& trading_halt() const = 0;
     /// The last record in the WAL; zero when the WAL holds none.
@@ -48,12 +53,18 @@ class TradingPhaseRequestsLinksInterface {
     virtual void ask_engine_position() = 0;
     /// Writes @p event into the WAL as a command of the sequencer's own. @return false if it was not written.
     virtual bool write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) = 0;
+    /// Writes @p schedule into the WAL as a record of the sequencer's own, which no engine applies. @return false if it was
+    /// not written.
+    virtual bool write_trading_schedule(const pubsub_itc_fw_app::TradingSchedule& schedule) = 0;
     /// Sends the one on @p connection @p answer.
     virtual void answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingPhaseAnswer& answer) = 0;
+    /// Sends the one on @p connection @p answer.
+    virtual void answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingScheduleAnswer& answer) = 0;
 };
 
 /**
- * @brief Requests to move the venue from one phase of the trading day to the next (docs/venue/trading_day_plan.md and
+ * @brief Moves the venue from one phase of the trading day to the next, when an operator asks or when the time in the
+ *        day's schedule comes, and records and replaces the schedule (docs/venue/trading_day_plan.md and
  *        docs/venue/trading_day_and_reference_data.md, "Moving from one phase to the next").
  *
  * Only the leader acts. Every request is answered from the sequencer's current state, so a request sent again, after an
@@ -64,9 +75,12 @@ class TradingPhaseRequestsLinksInterface {
  * - For a trading day other than the one this sequencer was started for, or the one the WAL holds: WrongTradingDay, and
  *   nothing is written.
  * - For the phase the venue is in: AlreadyInPhase. For a phase the venue has passed: AlreadyPast. Nothing is written.
- * - For the start of day, on a WAL that holds no record: the TechnicalEvent entering the start of day is written as the
- *   WAL's first record. On a WAL that holds records but no start of day: WrongTradingDay, because the WAL belongs to no
- *   trading day and must be archived.
+ * - For the start of day, on a WAL that holds no record: the schedule sent with the request is checked
+ *   (schedule_problem), and if it is not one the venue can follow, ScheduleRefused, and nothing is written. Otherwise the
+ *   TechnicalEvent entering the start of day is written as the WAL's first record, and the TradingSchedule straight after
+ *   it, empty for a day run by hand. On a WAL that holds the start of day without a schedule, because the leader stopped
+ *   between the two, the schedule alone is written. On a WAL that holds records but no start of day: WrongTradingDay,
+ *   because the WAL belongs to no trading day and must be archived.
  * - For any later phase that is not the one after the current phase: NotNext, and nothing is written.
  * - For the next phase, while trading is halted because a matching engine cannot account for the orders the venue holds:
  *   NotReady. A person resolves that halt before the venue moves on. Any other halt does not stop the phase moving on.
@@ -82,6 +96,17 @@ class TradingPhaseRequestsLinksInterface {
  * Every change of phase carries whether trading is halted, so a halt is carried into the next phase. Every request and
  * its answer are logged at Warning with the operator's name.
  *
+ * Replacing the schedule (schedule_request): the new schedule must start at the phase after the one the venue is in, so it
+ * never names a phase the venue has entered or passed. It is written as a new TradingSchedule, which replaces the one
+ * before it from its position in the WAL onwards.
+ *
+ * Following the schedule (scheduled_check, once a second): when the latest schedule gives a time for the phase after the
+ * current one, and that time has come by the leader's clock, the phase is entered exactly as an operator's request would
+ * enter it, with the same conditions, and with the reason Scheduled. If a condition does not hold, nothing is written,
+ * and the next check tries again, so the phase is entered as soon as it does. A change is written only while the venue is
+ * in the phase before it, so a check repeated, or an operator's request in the same second, or a new leader, leaves one
+ * record (section 3.3 of the plan).
+ *
  * One thread, the sequencer's, calls every member function.
  */
 class TradingPhaseRequests {
@@ -89,7 +114,23 @@ class TradingPhaseRequests {
     TradingPhaseRequests(TradingPhaseRequestsLinksInterface& links, pubsub_itc_fw::QuillLogger& logger);
 
     /// Operator @p operator_name, on @p connection, asks for the venue to enter @p phase on trading day @p trading_day.
-    void request(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, int32_t trading_day, pubsub_itc_fw_app::TradingPhase phase);
+    /// With the start of day, @p schedule is the day's schedule; with any other phase it is not read.
+    void request(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, int32_t trading_day, pubsub_itc_fw_app::TradingPhase phase,
+                 const std::vector<ScheduledPhase>& schedule = {});
+
+    /// Operator @p operator_name, on @p connection, asks for the times that remain on trading day @p trading_day to be
+    /// replaced by @p schedule.
+    void schedule_request(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, int32_t trading_day,
+                          const std::vector<ScheduledPhase>& schedule);
+
+    /**
+     * @brief The check once a second: enters the next phase if the schedule's time for it has come by @p now_utc_ns,
+     *        nanoseconds since 1970 UTC by the leader's clock, and its conditions hold.
+     *
+     * When the time is no more than @p check_interval_ns away, and the phase waits on the matching engine, the engine is
+     * asked how far it has got now, so that its answer is here by the check at which the time comes.
+     */
+    void scheduled_check(int64_t now_utc_ns, int64_t check_interval_ns = 1'000'000'000);
 
     /// What the matching engine orders are routed to said, in answer to EnginePositionQuery, of its reports.
     struct EngineReports {
@@ -110,21 +151,40 @@ class TradingPhaseRequests {
     }
 
   private:
-    void answer(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, pubsub_itc_fw_app::TradingPhaseOutcome outcome,
-                int64_t technical_event_seq_no, const std::string& explanation);
-    void start_of_day(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, int32_t trading_day);
-    // Enters @p phase, any phase after the start of day, if it is the next one and its conditions hold.
-    void move_on(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, pubsub_itc_fw_app::TradingPhase phase);
+    // What an attempt to enter a phase, or to write a schedule, came to.
+    struct Attempt {
+        pubsub_itc_fw_app::TradingPhaseOutcome outcome{pubsub_itc_fw_app::TradingPhaseOutcome::NotWritten};
+        int64_t technical_event_seq_no{0};
+        int64_t schedule_seq_no{0};
+        std::string explanation;
+    };
+
+    void answer(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, const Attempt& attempt);
+    void answer_schedule(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, pubsub_itc_fw_app::TradingScheduleOutcome outcome,
+                         int64_t schedule_seq_no, const std::string& explanation);
+    Attempt start_of_day(std::string_view operator_name, int32_t trading_day, const std::vector<ScheduledPhase>& schedule);
+    // Writes the schedule for the day that has started, after the start of day. @return its position, or zero if it was
+    // not written.
+    int64_t write_schedule(std::string_view operator_name, int32_t trading_day, const std::vector<ScheduledPhase>& schedule);
+    // Enters @p phase, any phase after the start of day, if it is the next one and its conditions hold, giving @p reason
+    // as the cause.
+    Attempt move_on(pubsub_itc_fw_app::TradingPhase phase, pubsub_itc_fw_app::TechnicalEventReason reason);
+    // Asks the matching engine how far it has got, if @p phase waits on it and it has not yet said it has acted on what
+    // the phase waits for.
+    void ask_engine_ahead_of(pubsub_itc_fw_app::TradingPhase phase);
     // Why the engine's reports are not yet all in the WAL, as the latest answer gave them; empty when they are.
     [[nodiscard]] std::string reports_outstanding() const;
     // Writes the TechnicalEvent entering @p phase, carrying whether trading is halted. @return its position, or zero if it
     // was not written.
-    int64_t write_phase(pubsub_itc_fw_app::TradingPhase phase, int32_t trading_day);
+    int64_t write_phase(pubsub_itc_fw_app::TradingPhase phase, int32_t trading_day, pubsub_itc_fw_app::TechnicalEventReason reason);
 
     TradingPhaseRequestsLinksInterface& links_;
     pubsub_itc_fw::QuillLogger& logger_;
     int64_t engine_applied_through_{0};
     EngineReports engine_reports_{};
+    // Why the last scheduled check that found a phase due did not enter it, as it was logged at Warning; a check that finds
+    // the same reason logs it at Debug, so a phase waiting on its conditions is reported once, not every second.
+    std::string scheduled_check_waiting_;
 };
 
 } // namespaces

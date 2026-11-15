@@ -556,6 +556,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void session_bound_again(const fix_common::SessionIdentity& identity);
     // Writes CancelSessionOrders for every session whose grace period has run out. Called on engine_absence_timer_id_.
     void carry_out_due_session_cancels();
+    // Enters the next phase of the trading day if the time the day's schedule gives it has come by this sequencer's clock and
+    // its conditions hold (TradingPhaseRequests::scheduled_check). Called on engine_absence_timer_id_, and on taking the lead.
+    void carry_out_due_phase_change();
     // A matching engine about to lead that cannot account for the orders the venue holds, asking for trading to be halted:
     // decoded, and handed to HaltAndVoidRequests.
     void handle_halt_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
@@ -566,6 +569,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // An operator, or the procedure that starts the trading day, asking over the listener for operators for the venue to
     // enter a phase (docs/venue/trading_day_plan.md): decoded, and handed to TradingPhaseRequests.
     void handle_trading_phase_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, size_t size);
+    // An operator asking over the listener for operators for the times that remain in the day's schedule to be replaced
+    // (docs/venue/trading_day_plan.md, section 3.2): decoded, and handed to TradingPhaseRequests.
+    void handle_trading_schedule_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, size_t size);
     // Sends @p answer, named @p name for the Quill log, to the operator on @p conn_id, framed as the listener for operators
     // expects.
     template <typename Answer> void send_operator_answer(const pubsub_itc_fw::ConnectionID& conn_id, const Answer& answer, const char* name);
@@ -614,6 +620,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         [[nodiscard]] bool leading() const override;
         [[nodiscard]] int32_t trading_day_started_for() const override;
         [[nodiscard]] const TradingPhaseState& trading_phase() const override;
+        [[nodiscard]] const TradingScheduleState& trading_schedule() const override;
         [[nodiscard]] const TradingHaltState& trading_halt() const override;
         [[nodiscard]] int64_t last_seq_no() const override;
         [[nodiscard]] int64_t next_seq_no() const override;
@@ -621,7 +628,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         [[nodiscard]] bool an_engine_takes_orders() const override;
         void ask_engine_position() override;
         bool write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) override;
+        bool write_trading_schedule(const pubsub_itc_fw_app::TradingSchedule& schedule) override;
         void answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingPhaseAnswer& answer) override;
+        void answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingScheduleAnswer& answer) override;
 
       private:
         SequencerThread& owner_;
@@ -632,7 +641,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // Where the numbers of the engine position questions asked for a phase request start.
     static constexpr int64_t phase_request_ids_from = int64_t{1} << 40;
     PhaseLinks phase_links_{*this};
-    // Requests to move the venue from one phase of the trading day to the next (docs/venue/trading_day_plan.md).
+    // Requests to move the venue from one phase of the trading day to the next, the day's schedule, and the check that
+    // follows it (docs/venue/trading_day_plan.md).
     TradingPhaseRequests phase_requests_{phase_links_, get_logger()};
 
     class CommandLinks : public CommandChecksLinksInterface {

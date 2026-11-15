@@ -47,10 +47,12 @@ RUN dnf install -y maven \
 # Python.h (needed to *compile* the generated extension) and the pip pybind11
 # supplies the module plus its cmake dir (the DSL test harness does
 # `import pybind11` and feeds cmake -Dpybind11_DIR); both are required for the
-# pybind11 round-trip tests to configure, build, and load.
+# pybind11 round-trip tests to configure, build, and load. backports.zoneinfo gives
+# Python 3.8 the time zones that scripts/operator_requests.py reads a day's schedule
+# with; Python has them itself from 3.9.
 RUN dnf install -y python3-pip python38-devel \
     && dnf clean all \
-    && pip3 install pytest pylint tomli gcovr pybind11
+    && pip3 install pytest pylint tomli gcovr pybind11 backports.zoneinfo
 
 # Liquibase — copied from the host installation in docker-deps/ (no internet required)
 COPY docker-deps/liquibase /opt/liquibase

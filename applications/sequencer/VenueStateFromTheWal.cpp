@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <string>
+#include <utility>
 
 #include <fmt/format.h>
 
@@ -36,7 +37,43 @@ VenueStateFromTheWal::Noted VenueStateFromTheWal::note_record(int64_t seq_no, co
     }
     note_technical_event(seq_no, record, noted);
     note_session_cancel(seq_no, record);
+    note_trading_schedule(seq_no, record, noted);
     return noted;
+}
+
+void VenueStateFromTheWal::note_trading_schedule(int64_t seq_no, const Record& record, Noted& noted) {
+    if (record.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::TradingSchedule::message_pdu_id)) {
+        return;
+    }
+    pubsub_itc_fw::BumpAllocator allocator(decode_arena_.data(), decode_arena_.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::TradingScheduleView schedule{};
+    if (!pubsub_itc_fw_app::decode(schedule, record.payload, record.size, bytes_consumed, allocator, arena_bytes_needed)) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                   "VenueStateFromTheWal: the TradingSchedule at seq={} did not decode -- its times are not known, and the schedule before it, if any, is "
+                   "kept",
+                   seq_no);
+        return;
+    }
+    if (schedule.trading_day != trading_phase_.trading_day()) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                   "VenueStateFromTheWal: the TradingSchedule at seq={} states trading day {}, where the WAL's start of day states {} -- a WAL holds one "
+                   "trading day, so this record is from another; it is kept as the latest all the same",
+                   seq_no, schedule.trading_day, trading_phase_.trading_day());
+    }
+    TradingScheduleState::ScheduleRecord kept{};
+    kept.seq_no = seq_no;
+    kept.trading_day = schedule.trading_day;
+    kept.operator_name = std::string(schedule.operator_name);
+    for (const pubsub_itc_fw_app::TradingScheduleEntryView& entry : schedule.entries) {
+        kept.entries.push_back(ScheduledPhase{entry.phase, entry.earliest_utc_ns});
+    }
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+               "VenueStateFromTheWal: the WAL holds a TradingSchedule at seq={} for trading day {}, supplied by operator {}: {}", seq_no, schedule.trading_day,
+               kept.operator_name, schedule_in_words(kept.entries));
+    trading_schedule_.note_schedule(std::move(kept));
+    noted.schedule_changed = true;
 }
 
 void VenueStateFromTheWal::note_session_cancel(int64_t seq_no, const Record& record) {
@@ -135,6 +172,12 @@ bool VenueStateFromTheWal::discard_after(int64_t seq_no) {
     // it.
     voids_.discard_after(seq_no);
     session_cancels_.discard_after(seq_no);
+    if (trading_schedule_.discard_after(seq_no)) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning, "VenueStateFromTheWal: the WAL is cut back to seq={}, removing a TradingSchedule -- {}", seq_no,
+                   trading_schedule_.recorded() ? fmt::format("the schedule is the one at seq={}: {}", trading_schedule_.latest()->seq_no,
+                                                              schedule_in_words(trading_schedule_.latest()->entries))
+                                                : std::string("the WAL now holds no schedule"));
+    }
     // The reports before the latest one cannot be told apart without reading the WAL again, so the latest is forgotten
     // until the next report is written. Until then nothing waits on it is ready, which is the safe way to be wrong.
     if (latest_engine_report_seq_no_ > seq_no) {

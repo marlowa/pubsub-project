@@ -159,6 +159,7 @@ TradingPhaseRequest {
     trading_day
     requested_phase
     operator_name
+    schedule         # with the start of day only: the day's schedule (trading_day_plan.md, section 3.2)
 }
 
 TradingPhaseAnswer {
@@ -167,6 +168,7 @@ TradingPhaseAnswer {
     phase
     halted
     technical_event_seq_no   # the position of the TechnicalEvent written, or 0 when none was
+    schedule_seq_no          # the position of the TradingSchedule written, or 0 when none was
     explanation      # the outcome in words, as the sequencer logged it
 }
 ```

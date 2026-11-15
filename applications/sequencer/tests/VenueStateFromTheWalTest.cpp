@@ -243,4 +243,36 @@ TEST_F(VenueStateFromTheWalTest, CancelsOnDisconnectAreKeptFromTheWal) {
     EXPECT_FALSE(state_->session_cancels().pending(member));
 }
 
+TEST_F(VenueStateFromTheWalTest, TheLatestTradingScheduleIsTheScheduleAndDiscardingOneGoesBack) {
+    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20261116);
+    static_cast<void>(state_->note_record(1, phase_change(start), How::read_at_open));
+    std::vector<pubsub_itc_fw_app::TradingScheduleEntry> first_entries{{pubsub_itc_fw_app::TradingPhase::PreOpen, 1000},
+                                                                       {pubsub_itc_fw_app::TradingPhase::Open, 2000}};
+    pubsub_itc_fw_app::TradingSchedule first{};
+    first.trading_day = 20261116;
+    first.entries = pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::TradingScheduleEntry>{first_entries.data(), first_entries.size()};
+    first.operator_name = "alice";
+    const std::vector<uint8_t> first_bytes = encoded(first);
+    std::vector<pubsub_itc_fw_app::TradingScheduleEntry> second_entries{{pubsub_itc_fw_app::TradingPhase::PreOpen, 500}};
+    pubsub_itc_fw_app::TradingSchedule second{};
+    second.trading_day = 20261116;
+    second.entries = pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::TradingScheduleEntry>{second_entries.data(), second_entries.size()};
+    second.operator_name = "bob";
+    const std::vector<uint8_t> second_bytes = encoded(second);
+    const auto pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::TradingSchedule::message_pdu_id);
+
+    EXPECT_FALSE(state_->trading_schedule().recorded());
+    EXPECT_TRUE(state_->note_record(2, record_of(pdu_id, first_bytes), How::written_as_follower).schedule_changed);
+    EXPECT_TRUE(state_->note_record(7, record_of(pdu_id, second_bytes), How::written_by_this_leader).schedule_changed);
+    ASSERT_TRUE(state_->trading_schedule().recorded());
+    EXPECT_EQ(state_->trading_schedule().latest()->seq_no, 7);
+    EXPECT_EQ(state_->trading_schedule().latest()->operator_name, "bob");
+    EXPECT_EQ(state_->trading_schedule().entry_for(pubsub_itc_fw_app::TradingPhase::PreOpen)->earliest_utc_ns, 500);
+    EXPECT_FALSE(state_->trading_schedule().entry_for(pubsub_itc_fw_app::TradingPhase::Open).has_value()) << "the later schedule replaces the earlier";
+
+    static_cast<void>(state_->discard_after(6));
+    EXPECT_EQ(state_->trading_schedule().latest()->seq_no, 2);
+    EXPECT_EQ(state_->trading_schedule().entry_for(pubsub_itc_fw_app::TradingPhase::Open)->earliest_utc_ns, 2000);
+}
+
 } // namespaces

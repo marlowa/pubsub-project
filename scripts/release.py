@@ -285,6 +285,17 @@ def stage_environments(stage: Path) -> None:
         shutil.copy2(toml_file, stage_env_dir / toml_file.name)
         count += 1
     print(f"  environments/  {count} file(s)")
+    # The trading day's schedules: the times at which the venue enters each phase, in its local time. Kept apart from the
+    # environment files, which every *.toml directly in environments/ is taken to be.
+    source_schedules = source_env_dir / "schedules"
+    if source_schedules.is_dir():
+        stage_schedules = stage_env_dir / "schedules"
+        stage_schedules.mkdir()
+        schedules = 0
+        for toml_file in sorted(source_schedules.glob("*.toml")):
+            shutil.copy2(toml_file, stage_schedules / toml_file.name)
+            schedules += 1
+        print(f"  environments/schedules/  {schedules} file(s)")
 
 
 def stage_scripts(stage: Path) -> None:

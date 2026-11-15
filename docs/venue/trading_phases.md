@@ -1,9 +1,9 @@
 # Trading phases and the technical event {#trading_phases}
 
 **Status: the technical event, halting, every phase, the close, the gateways' refusals, telling
-members, and the topic for components that only need to know are built; the schedule is design.** The `TechnicalEvent` command, the venue's halt and an operator's halt and lift are built
+members, the topic for components that only need to know, and the schedule are built; the start-of-day and end-of-day procedures are design.** The `TechnicalEvent` command, the venue's halt and an operator's halt and lift are built
 ([voided_commands.md](../availability/voided_commands.md), section 6). So is every phase, each entered on
-request, and the sequencer's refusal of members' commands outside pre-open and open
+request or at the time in the day's schedule ([trading_day_plan.md](trading_day_plan.md), section 3), and the sequencer's refusal of members' commands outside pre-open and open
 ([sequencer.md](sequencer.md), "The trading day and its phases"), the close cancelling every order
 still open ([matching_engine.md](matching_engine.md)), and both gateways refusing by phase and telling every
 member what the venue is doing ([fix_order_gateway.md](fix_order_gateway.md),

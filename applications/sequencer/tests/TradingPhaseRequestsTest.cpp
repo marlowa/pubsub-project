@@ -21,11 +21,12 @@ namespace {
 using Outcome = pubsub_itc_fw_app::TradingPhaseOutcome;
 using Phase = pubsub_itc_fw_app::TradingPhase;
 using EventReason = pubsub_itc_fw_app::TechnicalEventReason;
+using ScheduleOutcome = pubsub_itc_fw_app::TradingScheduleOutcome;
 
 constexpr int32_t today = 20261116;
 
-// The facts TradingPhaseRequests decides from, and every TechnicalEvent written and answer sent, in order. Writing a
-// TechnicalEvent notes it, as the sequencer notes every record it writes.
+// The facts TradingPhaseRequests decides from, and every TechnicalEvent and TradingSchedule written and answer sent, in
+// order. Writing either notes it, as the sequencer notes every record it writes.
 struct RecordingLinks : public TradingPhaseRequestsLinksInterface {
     [[nodiscard]] bool leading() const override {
         return is_leading;
@@ -35,6 +36,9 @@ struct RecordingLinks : public TradingPhaseRequestsLinksInterface {
     }
     [[nodiscard]] const TradingPhaseState& trading_phase() const override {
         return phase;
+    }
+    [[nodiscard]] const TradingScheduleState& trading_schedule() const override {
+        return schedule;
     }
     [[nodiscard]] const TradingHaltState& trading_halt() const override {
         return halt;
@@ -64,23 +68,48 @@ struct RecordingLinks : public TradingPhaseRequestsLinksInterface {
         ++next;
         return true;
     }
+    bool write_trading_schedule(const pubsub_itc_fw_app::TradingSchedule& record) override {
+        if (cannot_write_schedule) {
+            return false;
+        }
+        TradingScheduleState::ScheduleRecord kept{};
+        kept.seq_no = next;
+        kept.trading_day = record.trading_day;
+        kept.operator_name = std::string(record.operator_name);
+        for (const pubsub_itc_fw_app::TradingScheduleEntry& entry : record.entries) {
+            kept.entries.push_back(ScheduledPhase{entry.phase, entry.earliest_utc_ns});
+        }
+        schedules_written.push_back(kept);
+        schedule.note_schedule(kept);
+        ++next;
+        return true;
+    }
     void answer(const pubsub_itc_fw::ConnectionID&, const pubsub_itc_fw_app::TradingPhaseAnswer& reply) override {
         answers.push_back(reply.outcome);
         last_answer = reply;
+    }
+    void answer(const pubsub_itc_fw::ConnectionID&, const pubsub_itc_fw_app::TradingScheduleAnswer& reply) override {
+        schedule_answers.push_back(reply.outcome);
+        last_schedule_answer = reply;
     }
 
     bool is_leading{true};
     int32_t started_for{today};
     TradingPhaseState phase;
+    TradingScheduleState schedule;
     TradingHaltState halt;
     int64_t next{1};
     bool engine_takes_orders{true};
     int engine_asked{0};
     bool cannot_write{false};
+    bool cannot_write_schedule{false};
     std::optional<EngineReportPosition> reports_in_wal;
     std::vector<pubsub_itc_fw_app::TechnicalEvent> written;
     std::vector<Outcome> answers;
     pubsub_itc_fw_app::TradingPhaseAnswer last_answer{};
+    std::vector<TradingScheduleState::ScheduleRecord> schedules_written;
+    std::vector<ScheduleOutcome> schedule_answers;
+    pubsub_itc_fw_app::TradingScheduleAnswer last_schedule_answer{};
 };
 
 class TradingPhaseRequestsTest : public ::testing::Test {
@@ -97,6 +126,16 @@ class TradingPhaseRequestsTest : public ::testing::Test {
 
     void ask(Phase phase, int32_t trading_day = today) {
         requests_->request(connection_, "alice", trading_day, phase);
+    }
+
+    // Asks for the start of day with @p schedule.
+    void start_with(const std::vector<ScheduledPhase>& schedule) {
+        requests_->request(connection_, "alice", today, Phase::StartOfDay, schedule);
+    }
+
+    // Asks for the times that remain to be replaced by @p schedule.
+    void replace_schedule(const std::vector<ScheduledPhase>& schedule, int32_t trading_day = today) {
+        requests_->schedule_request(connection_, "alice", trading_day, schedule);
     }
 
     // The venue in the start of day, with the matching engine having acted on it.
@@ -138,6 +177,9 @@ TEST_F(TradingPhaseRequestsTest, TheStartOfDayIsWrittenAsTheFirstRecordOfAnEmpty
     EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::Written}));
     EXPECT_TRUE(links_.last_answer.day_started);
     EXPECT_EQ(links_.last_answer.technical_event_seq_no, 1);
+    ASSERT_EQ(links_.schedules_written.size(), 1U) << "the schedule follows the start of day, empty for a day run by hand";
+    EXPECT_TRUE(links_.schedules_written[0].entries.empty());
+    EXPECT_EQ(links_.last_answer.schedule_seq_no, 2);
 }
 
 TEST_F(TradingPhaseRequestsTest, ASequencerThatDoesNotLeadWritesNothing) {
@@ -187,7 +229,7 @@ TEST_F(TradingPhaseRequestsTest, EveryPhaseIsEnteredOnRequestInOrder) {
     EXPECT_EQ(links_.last_answer.phase, Phase::PreOpen) << "open is not written until it is asked for";
     ask(Phase::Open);
     ask(Phase::Closed);
-    engine_says(4);
+    engine_says(links_.next - 1);
     ask(Phase::EndOfDay);
     ASSERT_EQ(links_.written.size(), 5U);
     const std::vector<Phase> wanted{Phase::StartOfDay, Phase::PreOpen, Phase::Open, Phase::Closed, Phase::EndOfDay};
@@ -197,7 +239,7 @@ TEST_F(TradingPhaseRequestsTest, EveryPhaseIsEnteredOnRequestInOrder) {
     }
     EXPECT_EQ(links_.answers, (std::vector<Outcome>(5, Outcome::Written)));
     EXPECT_EQ(links_.last_answer.phase, Phase::EndOfDay);
-    EXPECT_EQ(links_.last_answer.technical_event_seq_no, 5);
+    EXPECT_EQ(links_.last_answer.technical_event_seq_no, 6) << "the start of day, its schedule, and four phases";
 }
 
 TEST_F(TradingPhaseRequestsTest, APhaseFurtherAheadThanTheNextIsRefused) {
@@ -339,6 +381,237 @@ TEST_F(TradingPhaseRequestsTest, AnEventThatCannotBeWrittenIsSaidSo) {
     ask(Phase::StartOfDay);
     EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::NotWritten}));
     EXPECT_FALSE(links_.last_answer.day_started);
+}
+
+// ---- The day's schedule ---------------------------------------------------------------------------------------------
+
+TEST_F(TradingPhaseRequestsTest, TheScheduleSentWithTheStartOfDayIsWrittenStraightAfterIt) {
+    start_with({{Phase::PreOpen, 1000}, {Phase::Open, 2000}});
+    ASSERT_EQ(links_.written.size(), 1U);
+    ASSERT_EQ(links_.schedules_written.size(), 1U);
+    const TradingScheduleState::ScheduleRecord& schedule = links_.schedules_written[0];
+    EXPECT_EQ(schedule.seq_no, 2);
+    EXPECT_EQ(schedule.trading_day, today);
+    EXPECT_EQ(schedule.operator_name, "alice");
+    EXPECT_EQ(schedule.entries, (std::vector<ScheduledPhase>{{Phase::PreOpen, 1000}, {Phase::Open, 2000}}));
+    EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::Written}));
+    EXPECT_EQ(links_.last_answer.technical_event_seq_no, 1);
+    EXPECT_EQ(links_.last_answer.schedule_seq_no, 2);
+}
+
+TEST_F(TradingPhaseRequestsTest, AScheduleTheVenueCannotFollowIsRefusedAndNothingIsWritten) {
+    start_with({{Phase::Open, 1000}});
+    start_with({{Phase::PreOpen, 2000}, {Phase::Open, 1000}});
+    start_with({{Phase::PreOpen, 1000}, {Phase::Closed, 2000}});
+    start_with({{Phase::PreOpen, -1}});
+    EXPECT_TRUE(links_.written.empty());
+    EXPECT_TRUE(links_.schedules_written.empty());
+    EXPECT_EQ(links_.answers, (std::vector<Outcome>(4, Outcome::ScheduleRefused)));
+    EXPECT_FALSE(links_.last_answer.day_started);
+}
+
+TEST_F(TradingPhaseRequestsTest, AScheduleCheckAllowsAsSoonAsPossibleAfterATime) {
+    EXPECT_EQ(schedule_problem(Phase::StartOfDay, {{Phase::PreOpen, 1000}, {Phase::Open, 0}, {Phase::Closed, 3000}, {Phase::EndOfDay, 0}}), "");
+    EXPECT_EQ(schedule_problem(Phase::StartOfDay, {}), "") << "a day run entirely by hand";
+    EXPECT_EQ(schedule_problem(Phase::Open, {{Phase::Closed, 3000}}), "");
+    EXPECT_NE(schedule_problem(Phase::Open, {{Phase::Open, 3000}}), "") << "a schedule never names the phase the venue is in";
+    EXPECT_NE(schedule_problem(Phase::Open, {{Phase::EndOfDay, 3000}}), "") << "nor skips one";
+    EXPECT_NE(schedule_problem(Phase::StartOfDay, {{Phase::PreOpen, 3000}, {Phase::Open, 0}, {Phase::Closed, 2000}}), "")
+        << "a time after an as-soon-as-possible entry is still compared with the times before it";
+}
+
+// The leader stopped between writing the start of day and the schedule: the request sent again writes the schedule alone.
+TEST_F(TradingPhaseRequestsTest, AStartOfDayWithoutItsScheduleIsGivenItByTheRequestSentAgain) {
+    links_.cannot_write_schedule = true;
+    start_with({{Phase::PreOpen, 1000}});
+    EXPECT_EQ(links_.answers.back(), Outcome::NotWritten);
+    EXPECT_EQ(links_.written.size(), 1U);
+    EXPECT_TRUE(links_.schedules_written.empty());
+    links_.cannot_write_schedule = false;
+    start_with({{Phase::PreOpen, 1000}});
+    EXPECT_EQ(links_.answers.back(), Outcome::Written);
+    EXPECT_EQ(links_.written.size(), 1U) << "the start of day is not written twice";
+    ASSERT_EQ(links_.schedules_written.size(), 1U);
+    EXPECT_EQ(links_.last_answer.technical_event_seq_no, 0);
+    EXPECT_EQ(links_.last_answer.schedule_seq_no, 2);
+    start_with({{Phase::PreOpen, 1000}});
+    EXPECT_EQ(links_.answers.back(), Outcome::AlreadyInPhase);
+    EXPECT_EQ(links_.schedules_written.size(), 1U) << "once a schedule is recorded, the start-of-day request does not replace it";
+}
+
+TEST_F(TradingPhaseRequestsTest, NoPhaseIsEnteredBeforeItsTime) {
+    start_with({{Phase::PreOpen, 1000}});
+    engine_says(links_.next - 1);
+    requests_->scheduled_check(999);
+    EXPECT_EQ(links_.written.size(), 1U);
+    requests_->scheduled_check(1000);
+    ASSERT_EQ(links_.written.size(), 2U);
+    EXPECT_EQ(links_.written[1].phase, Phase::PreOpen);
+    EXPECT_EQ(links_.written[1].reason, EventReason::Scheduled);
+}
+
+TEST_F(TradingPhaseRequestsTest, TheEngineIsAskedOneCheckAheadSoThePhaseIsEnteredAtTheCheckItsTimeComes) {
+    start_with({{Phase::PreOpen, 5000}});
+    requests_->scheduled_check(3000, 1000);
+    EXPECT_EQ(links_.engine_asked, 0) << "more than one check ahead";
+    requests_->scheduled_check(4000, 1000);
+    EXPECT_EQ(links_.engine_asked, 1) << "one check ahead";
+    engine_says(1);
+    requests_->scheduled_check(5000, 1000);
+    ASSERT_EQ(links_.written.size(), 2U) << "entered at the check its time comes";
+    EXPECT_EQ(links_.written[1].phase, Phase::PreOpen);
+}
+
+TEST_F(TradingPhaseRequestsTest, AScheduledPhaseWaitsForItsConditions) {
+    start_with({{Phase::PreOpen, 1000}});
+    requests_->scheduled_check(2000);
+    EXPECT_EQ(links_.written.size(), 1U) << "the engine has not said it acted on the start of day";
+    EXPECT_EQ(links_.engine_asked, 1);
+    engine_says(1);
+    requests_->scheduled_check(2001);
+    ASSERT_EQ(links_.written.size(), 2U);
+    EXPECT_EQ(links_.written[1].phase, Phase::PreOpen);
+}
+
+TEST_F(TradingPhaseRequestsTest, AWaitingPhaseIsReportedOnceAtWarningNotEverySecond) {
+    start_with({{Phase::PreOpen, 0}});
+    links_.engine_takes_orders = false;
+    log_.clear();
+    requests_->scheduled_check(1);
+    requests_->scheduled_check(2);
+    requests_->scheduled_check(3);
+    logger_.flush();
+    size_t reported = 0;
+    for (const std::string& line : log_) {
+        reported += line.find("was not entered") != std::string::npos ? 1 : 0;
+    }
+    EXPECT_EQ(reported, 1U);
+}
+
+TEST_F(TradingPhaseRequestsTest, TheScheduleTakesTheVenueThroughEveryPhase) {
+    start_with({{Phase::PreOpen, 0}, {Phase::Open, 0}, {Phase::Closed, 5000}, {Phase::EndOfDay, 0}});
+    engine_says(links_.next - 1);
+    requests_->scheduled_check(1);
+    requests_->scheduled_check(2);
+    EXPECT_EQ(links_.written.size(), 3U) << "one phase for each check";
+    requests_->scheduled_check(4999);
+    EXPECT_EQ(links_.written.size(), 3U);
+    requests_->scheduled_check(5000);
+    EXPECT_EQ(links_.written.size(), 4U);
+    requests_->scheduled_check(5001);
+    EXPECT_EQ(links_.written.size(), 4U) << "the end of day waits for the engine to have acted on the close";
+    engine_says(links_.next - 1);
+    requests_->scheduled_check(5002);
+    ASSERT_EQ(links_.written.size(), 5U);
+    const std::vector<Phase> wanted{Phase::StartOfDay, Phase::PreOpen, Phase::Open, Phase::Closed, Phase::EndOfDay};
+    for (size_t index = 0; index < wanted.size(); ++index) {
+        EXPECT_EQ(links_.written[index].phase, wanted[index]) << "record " << index + 1;
+        EXPECT_EQ(links_.written[index].reason, index == 0 ? EventReason::RequestedByOperator : EventReason::Scheduled) << "record " << index + 1;
+    }
+    requests_->scheduled_check(9000);
+    EXPECT_EQ(links_.written.size(), 5U) << "nothing follows the end of day";
+}
+
+TEST_F(TradingPhaseRequestsTest, APhaseTheScheduleLeavesOutIsEnteredOnlyOnRequest) {
+    start_with({{Phase::PreOpen, 0}});
+    engine_says(links_.next - 1);
+    requests_->scheduled_check(1);
+    requests_->scheduled_check(1'000'000);
+    EXPECT_EQ(links_.written.size(), 2U);
+    EXPECT_EQ(links_.written.back().phase, Phase::PreOpen);
+    ask(Phase::Open);
+    EXPECT_EQ(links_.written.back().phase, Phase::Open);
+}
+
+TEST_F(TradingPhaseRequestsTest, ASequencerThatDoesNotLeadDoesNotFollowTheSchedule) {
+    start_with({{Phase::PreOpen, 0}});
+    engine_says(links_.next - 1);
+    links_.is_leading = false;
+    requests_->scheduled_check(1);
+    EXPECT_EQ(links_.written.size(), 1U);
+}
+
+TEST_F(TradingPhaseRequestsTest, ARequestAndTheScheduleTogetherEnterAPhaseOnce) {
+    start_with({{Phase::PreOpen, 0}});
+    engine_says(links_.next - 1);
+    ask(Phase::PreOpen);
+    requests_->scheduled_check(1);
+    requests_->scheduled_check(2);
+    EXPECT_EQ(links_.written.size(), 2U);
+    EXPECT_EQ(links_.written.back().reason, EventReason::RequestedByOperator);
+}
+
+TEST_F(TradingPhaseRequestsTest, TheScheduleClosesTheVenueWhileHaltedByAnOperator) {
+    start_with({{Phase::PreOpen, 0}, {Phase::Open, 0}, {Phase::Closed, 100}});
+    engine_says(links_.next - 1);
+    requests_->scheduled_check(1);
+    requests_->scheduled_check(2);
+    links_.halt.note_technical_event(links_.next++, true, EventReason::DeclaredByOperator);
+    requests_->scheduled_check(100);
+    EXPECT_EQ(links_.written.back().phase, Phase::Closed);
+    EXPECT_TRUE(links_.written.back().halted);
+}
+
+TEST_F(TradingPhaseRequestsTest, TheScheduleDoesNotCloseTheVenueWhileTheOrdersCannotBeAccountedFor) {
+    start_with({{Phase::PreOpen, 0}, {Phase::Open, 0}, {Phase::Closed, 100}});
+    engine_says(links_.next - 1);
+    requests_->scheduled_check(1);
+    requests_->scheduled_check(2);
+    links_.halt.note_technical_event(links_.next++, true, EventReason::CannotAccountForBook);
+    requests_->scheduled_check(100);
+    EXPECT_EQ(links_.written.back().phase, Phase::Open);
+}
+
+TEST_F(TradingPhaseRequestsTest, AReplacedScheduleTakesEffect) {
+    start_with({{Phase::PreOpen, 0}, {Phase::Open, 0}, {Phase::Closed, 5000}});
+    engine_says(links_.next - 1);
+    requests_->scheduled_check(1);
+    requests_->scheduled_check(2);
+    replace_schedule({{Phase::Closed, 3000}, {Phase::EndOfDay, 0}});
+    EXPECT_EQ(links_.schedule_answers, (std::vector<ScheduleOutcome>{ScheduleOutcome::Written}));
+    ASSERT_EQ(links_.schedules_written.size(), 2U);
+    EXPECT_EQ(links_.last_schedule_answer.schedule_seq_no, links_.schedules_written[1].seq_no);
+    requests_->scheduled_check(3000);
+    EXPECT_EQ(links_.written.back().phase, Phase::Closed) << "the early close";
+}
+
+TEST_F(TradingPhaseRequestsTest, AnEmptyReplacementLeavesTheRestOfTheDayToTheOperator) {
+    start_with({{Phase::PreOpen, 0}, {Phase::Open, 0}, {Phase::Closed, 5000}});
+    engine_says(links_.next - 1);
+    requests_->scheduled_check(1);
+    requests_->scheduled_check(2);
+    replace_schedule({});
+    EXPECT_EQ(links_.schedule_answers.back(), ScheduleOutcome::Written);
+    requests_->scheduled_check(6000);
+    EXPECT_EQ(links_.written.back().phase, Phase::Open);
+}
+
+TEST_F(TradingPhaseRequestsTest, AReplacementNamingAPhaseEnteredOrPassedIsRefused) {
+    opened();
+    const size_t schedules_before = links_.schedules_written.size();
+    replace_schedule({{Phase::Open, 3000}, {Phase::Closed, 4000}});
+    replace_schedule({{Phase::PreOpen, 3000}});
+    replace_schedule({{Phase::EndOfDay, 3000}});
+    EXPECT_EQ(links_.schedule_answers, (std::vector<ScheduleOutcome>(3, ScheduleOutcome::Refused)));
+    EXPECT_EQ(links_.schedules_written.size(), schedules_before);
+}
+
+TEST_F(TradingPhaseRequestsTest, AReplacementIsRefusedByAFollowerBeforeTheDayAndForAnotherDay) {
+    replace_schedule({{Phase::PreOpen, 3000}});
+    ask(Phase::StartOfDay);
+    replace_schedule({{Phase::PreOpen, 3000}}, 20261117);
+    links_.is_leading = false;
+    replace_schedule({{Phase::PreOpen, 3000}});
+    EXPECT_EQ(links_.schedule_answers,
+              (std::vector<ScheduleOutcome>{ScheduleOutcome::TradingDayNotStarted, ScheduleOutcome::WrongTradingDay, ScheduleOutcome::NotLeader}));
+    EXPECT_EQ(links_.schedules_written.size(), 1U) << "only the start of day's own";
+}
+
+TEST_F(TradingPhaseRequestsTest, AScheduleThatCannotBeWrittenIsSaidSo) {
+    ask(Phase::StartOfDay);
+    links_.cannot_write_schedule = true;
+    replace_schedule({{Phase::PreOpen, 3000}});
+    EXPECT_EQ(links_.schedule_answers, (std::vector<ScheduleOutcome>{ScheduleOutcome::NotWritten}));
 }
 
 } // namespaces

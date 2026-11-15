@@ -42,6 +42,16 @@ namespace sequencer {
 
 namespace {
 
+// The entries of a schedule as a request carries them, copied out of the request's bytes.
+std::vector<ScheduledPhase> scheduled_phases(const pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::TradingScheduleEntryView>& entries) {
+    std::vector<ScheduledPhase> phases;
+    phases.reserve(entries.length());
+    for (const pubsub_itc_fw_app::TradingScheduleEntryView& entry : entries) {
+        phases.push_back(ScheduledPhase{entry.phase, entry.earliest_utc_ns});
+    }
+    return phases;
+}
+
 // What VenueStateFromTheWal reads from a record's envelope, as decoded (WalRecordView) or about to be written (WalRecord).
 template <typename Envelope> VenueStateFromTheWal::Record record_of(const Envelope& envelope) {
     VenueStateFromTheWal::Record record{};
@@ -1245,6 +1255,7 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     if (id == engine_absence_timer_id_) {
         check_engine_absence();
         carry_out_due_session_cancels();
+        carry_out_due_phase_change();
         return;
     }
 
@@ -1427,6 +1438,10 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
         // An absence longer than the venue allows, found at start-up or measured while following, is acted on before
         // anything new is sequenced.
         check_engine_absence();
+
+        // A phase whose time in the schedule passed while no sequencer led is entered now, if its conditions hold, rather
+        // than at the next check (docs/venue/trading_day_plan.md, section 3.5).
+        carry_out_due_phase_change();
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
         command_checks_.stopped_leading();
         orders_.stopped_leading();
@@ -1916,6 +1931,10 @@ const TradingPhaseState& SequencerThread::PhaseLinks::trading_phase() const {
     return owner_.venue_state_.trading_phase();
 }
 
+const TradingScheduleState& SequencerThread::PhaseLinks::trading_schedule() const {
+    return owner_.venue_state_.trading_schedule();
+}
+
 const TradingHaltState& SequencerThread::PhaseLinks::trading_halt() const {
     return owner_.venue_state_.trading_halt();
 }
@@ -1944,6 +1963,11 @@ void SequencerThread::PhaseLinks::ask_engine_position() {
 
 bool SequencerThread::PhaseLinks::write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) {
     return owner_.write_own_encoded_command(event, "TechnicalEvent");
+}
+
+bool SequencerThread::PhaseLinks::write_trading_schedule(const pubsub_itc_fw_app::TradingSchedule& schedule) {
+    // A record, not a command: no engine applies the schedule, so it is not sent to the matching engine as an order is.
+    return owner_.write_own_encoded_record(schedule, "TradingSchedule");
 }
 
 bool SequencerThread::HaltLinks::voided_already(int64_t seq_no) const {
@@ -2092,6 +2116,13 @@ void SequencerThread::carry_out_due_session_cancels() {
     }
 }
 
+void SequencerThread::carry_out_due_phase_change() {
+    if (role_ != pubsub_itc_fw_app::Role::leader || !replicated_wal_.has_value()) {
+        return;
+    }
+    phase_requests_.scheduled_check(config_.wall_clock->now_ns());
+}
+
 void SequencerThread::write_recovery_halt() {
     halts_.recovery_halt();
     presence_.refresh_order_acceptance(std::chrono::steady_clock::now());
@@ -2142,6 +2173,8 @@ void SequencerThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& m
             handle_operator_halt_request(conn_id, payload, byte_count);
         } else if (pdu_id == pubsub_itc_fw_app::TradingPhaseRequest::message_pdu_id) {
             handle_trading_phase_request(conn_id, payload, byte_count);
+        } else if (pdu_id == pubsub_itc_fw_app::TradingScheduleRequest::message_pdu_id) {
+            handle_trading_schedule_request(conn_id, payload, byte_count);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: operator connection {} sent message pdu_id={}, which is not a request -- ignored", conn_id.get_value(), pdu_id);
@@ -2182,7 +2215,26 @@ void SequencerThread::handle_trading_phase_request(const pubsub_itc_fw::Connecti
     }
     // Copied, so that nothing logged or answered points into the request's bytes, which are committed once it is dealt with.
     const std::string operator_name(request.operator_name);
-    phase_requests_.request(conn_id, operator_name, request.trading_day, request.requested_phase);
+    phase_requests_.request(conn_id, operator_name, request.trading_day, request.requested_phase, scheduled_phases(request.schedule));
+}
+
+void SequencerThread::handle_trading_schedule_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, size_t size) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::TradingScheduleRequestView request{};
+    if (!pubsub_itc_fw_app::decode(request, payload, size, bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: operator connection {} sent a TradingScheduleRequest that did not decode -- ignored", conn_id.get_value());
+        return;
+    }
+    const std::string operator_name(request.operator_name);
+    phase_requests_.schedule_request(conn_id, operator_name, request.trading_day, scheduled_phases(request.entries));
+}
+
+void SequencerThread::PhaseLinks::answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingScheduleAnswer& answer) {
+    owner_.send_operator_answer(connection, answer, "TradingScheduleAnswer");
 }
 
 void SequencerThread::PhaseLinks::answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingPhaseAnswer& answer) {

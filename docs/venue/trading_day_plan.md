@@ -1,6 +1,6 @@
 # The trading day: design plan {#trading_day_plan}
 
-**Status: agreed; steps 1 to 8 are done.** This note covers the whole trading day: every phase,
+**Status: agreed; steps 1 to 8 are done, and step 9 is under way: the schedule is built, and the procedures are not.** This note covers the whole trading day: every phase,
 how the venue moves from one to the next, what each component does in each, and how each change reaches
 the components and members that need it. It builds on three other notes and does not repeat them:
 
@@ -27,7 +27,16 @@ section, each with the reason for it.
   has acted on the start of day, `open` and `closed` at once, and `eod` once the leading engine has acted
   on the close. The sequencer keeps the phase from its WAL (`TradingPhaseState`); a halt carries the
   current phase, and the phase moves on while trading is halted except while halted because an engine
-  cannot account for the orders the venue holds. No schedule exists yet: every change is asked for.
+  cannot account for the orders the venue holds.
+- **The schedule (step 9).** The start-of-day request carries the day's schedule, and the leading sequencer
+  writes it as a `TradingSchedule` record (231) straight after the start of day: for each phase from `pre_open`
+  on, the earliest moment in UTC at which to enter it. Once a second the leading sequencer enters the next phase
+  when its time has come and its conditions hold, with the reason `Scheduled`. An operator replaces the times
+  that remain with `TradingScheduleRequest` (232), answered with `TradingScheduleAnswer` (233). Every
+  sequencer keeps the latest schedule from its WAL (`TradingScheduleState`), so a new leader follows it.
+  `scripts/trading_phase.py --schedule` reads the day's times from a file in the venue's local time, such as
+  `environments/schedules/trading_schedule.toml`, and turns them into moments in UTC on the trading day given. A day
+  started with no schedule, as the development tools and the test harness start it, is run by hand.
 - **The gateways learn the phase and refuse by it (step 7).** The leading sequencer sends each gateway
   `OrderAcceptance` (127) when the gateway connects and whenever the trading day, the phase, whether trading
   is halted, or whether the venue accepts orders changes. It carries all of them. Each gateway refuses every
@@ -223,24 +232,23 @@ leader to write a record, and the record changes the state everywhere.
 
 ### 3.2 The schedule is a record in the WAL
 
-A new DSL record, written by the leading sequencer as a command, as `TechnicalEvent` is:
+A DSL record in `leader_follower.dsl`, written by the leading sequencer into the WAL. It is a record of the
+sequencer's own, as `SessionEnded` is, not a command: no matching engine applies it, an engine following the WAL
+passes over it, and a catch-up, which sends only commands, does not send it.
 
 ```text
-message TradingScheduleEntry (id=0)            # an inner record, as TopicRecord is
+message TradingScheduleEntry (id=230)          # nested only, in the schedule and in the requests that carry one
     TradingPhase phase                         # the phase to enter
     i64 earliest_utc_ns                        # the earliest moment to enter it, in nanoseconds since 1970 UTC;
                                                # 0 means as soon as its conditions hold
 end
 
-message TradingSchedule (id=<new>)
+message TradingSchedule (id=231)
     i32 trading_day                            # YYYYMMDD; the trading day the WAL is for
-    list<TradingScheduleEntry> entries         # in phase order, from PreOpen onwards
+    list<TradingScheduleEntry> entries         # consecutive phases in order, from the phase after the current one
     string operator_name                       # who supplied it
 end
 ```
-
-The DSL already supports a list of messages as a field (`list<SeqNumRange>`, for example), so nothing new is
-needed from the compiler.
 
 - **Times are moments in UTC, not local times.** The sequencer never deals with time zones, daylight saving or
   holidays. The run procedure turns the venue's local times for day `D` into moments in UTC, and the WAL
@@ -257,9 +265,11 @@ needed from the compiler.
 **How the schedule reaches the sequencer.** The run procedure already supplies the trading date `D`. It also
 reads the day's times for each phase from a small file, turns them into moments in UTC, and sends both in the
 start-of-day request, which is the `TradingPhaseRequest` of
-[trading_day_and_reference_data.md](trading_day_and_reference_data.md) with a schedule attached. The leading
-sequencer checks that `D` is the run manifest's date, that the entries are in phase order, and that their times
-never decrease. It then writes two records, one after the other:
+[trading_day_and_reference_data.md](trading_day_and_reference_data.md) with its `schedule` field filled. The
+leading sequencer checks that `D` is the day it was started for, which is the run manifest's date; that the
+entries name consecutive phases in order, starting from `pre_open`; and that the times that are not 0 never
+decrease. A schedule that fails the check is refused with `ScheduleRefused`, and nothing is written. Otherwise
+it writes two records, one after the other:
 
 ```text
 seq 1  TechnicalEvent(StartOfDay, D, reason Scheduled)
@@ -272,10 +282,19 @@ have already passed when it is written is valid: the phases are entered at once,
 its conditions hold.
 
 **Changing the schedule during the day**, for an early close for example, is a new request on the same
-listener, `TradingScheduleRequest`, carrying the trading day, a complete new list of entries and the operator's
-name. The sequencer refuses it if it names a phase the venue has already entered or passed, and otherwise writes
-a new `TradingSchedule` record, which replaces the previous one from its position in the WAL onwards. Every
-change is therefore recorded, with who asked for it, at a definite position among the orders.
+listener, `TradingScheduleRequest` (232), carrying the trading day, a complete new list of entries and the
+operator's name, and answered with `TradingScheduleAnswer` (233). The entries must start from the phase after the
+one the venue is in, so the sequencer refuses a list that names a phase the venue has already entered or passed,
+and otherwise writes a new `TradingSchedule` record, which replaces the previous one from its position in the WAL
+onwards. A list with no entries leaves the rest of the day to the operator. Every change is therefore recorded,
+with who asked for it, at a definite position among the orders.
+
+**The schedule file.** The run procedure, and `scripts/trading_phase.py --schedule`, read the day's times from a
+TOML file: `time_zone` names the zone the times are written in, as the IANA time zone database names it, and the
+table `[phases]` gives `pre_open`, `open`, `closed` and `end_of_day` each a time of day, `HH:MM` or `HH:MM:SS`, or
+`"when ready"` for as soon as its conditions hold. A phase left out stops the schedule there.
+`environments/schedules/trading_schedule.toml` is the venue's normal day. Daylight saving is the time zone's, so 07:50 in
+London is 07:50 UTC in winter and 06:50 UTC in summer.
 
 ### 3.3 How a scheduled time causes a phase change
 
@@ -287,8 +306,15 @@ change is therefore recorded, with who asked for it, at a definite position amon
   `carry_out_due_session_cancels` on the same timer. It looks up the entry for the phase after the current
   one. If there is one, its time has passed by the leader's wall clock, and the phase's conditions hold, it
   writes the `TechnicalEvent` for that phase with the reason `Scheduled`, through the path the halts already use
-  (`write_technical_event`). A phase change is then up to a second later than its time, which is enough for
-  an example venue. If more exact timing is ever wanted, the leader also starts a one-off timer
+  (`write_technical_event`). The checks are the ones an operator's request meets, in one function
+  (`TradingPhaseRequests::move_on`), so a scheduled change and a requested one cannot differ. A phase change is
+  then up to a second later than its time, which is enough for an example venue.
+- **The engine is asked one check ahead.** `pre_open` and `eod` wait on the matching engine having acted on an
+  earlier record, which the leader learns only by asking (`EnginePositionQuery`). When the time of either is no
+  more than one check away, the leader asks the engine then, so that the answer has arrived by the check at which
+  the time comes, and the phase is entered at that check rather than the one after.
+- **A phase waiting on its conditions is reported once.** When the time has come and a condition does not hold,
+  the check says why at Warning, and says it again only at Debug until the reason changes. If more exact timing is ever wanted, the leader also starts a one-off timer
   (`start_one_off_timer`) for the time remaining, and starts it again whenever the phase or the schedule
   changes and whenever it takes the lead; the check once a second stays as a backstop.
 - **A halt is obeyed.** The check moves the phase on while trading is halted only as section 2.6 allows: not while halted because a matching engine cannot account for the orders the venue holds.
@@ -448,7 +474,9 @@ documents and decisions; code starts at step 4.
 9. **The schedule and the end-of-day procedure**: the `TradingSchedule` record, the start-of-day request
    that carries it, `TradingScheduleRequest`, the leader's check once a second, and the run procedure that reads
    the day's times from a file; and a component refusing to start on a file from another trading day
-   ([BUG-0137](../bug_list.md#bug_0137)).
+   ([BUG-0137](../bug_list.md#bug_0137)). The schedule is done: the records, the requests, the check, the schedule
+   file and `trading_phase.py --schedule`, checked by scenario 113. Each file recording its trading day, and the
+   procedures themselves ([start_and_end_of_day.md](start_and_end_of_day.md), section 5), are not.
 
 Steps 6 to 8 do not depend on one another and can be done in any order after step 5.
 

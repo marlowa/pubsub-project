@@ -1458,6 +1458,11 @@ class Scenario(NamedTuple):
     # neither may appear in a sequencer's Quill log, and trading must not be halted; a request from a client with the
     # operator's certificate must be answered (R-0176). See run_scenario's "listener for operators" block.
     assert_operator_listener_refuses_strangers: bool = False
+    # When True, the trading day is started with a schedule, and the leading sequencer must take the venue through every
+    # phase by itself at the times given; the times that remain are replaced during the day, and the leading sequencer is
+    # killed before the close, which the new leader must write at its time (R-0167, R-0168). See run_scenario's "the
+    # venue follows the day's schedule" block.
+    assert_trading_day_by_schedule: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -5299,6 +5304,35 @@ _SCENARIOS: list[Scenario] = [
         me_ha=True,
         skip_baseline_orders=True,
         assert_operator_listener_refuses_strangers=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 113 -- the venue follows the day's schedule, through a change of the schedule and a change of leader.
+    #
+    # docs/venue/trading_day_plan.md, section 3, and step 9. The harness does not start the day. The start of day is asked
+    # for with a schedule: pre-open a few seconds later, open a few seconds after that, the close long after, and the end
+    # of day as soon as the close is complete. The leading sequencer must enter pre-open and open by itself. Once the venue
+    # is open, a replacement schedule naming open, which the venue has entered, must be refused, and one bringing the close
+    # forward must be written. The leading sequencer is then killed. The other must take the lead and enter the close at
+    # its new time, and the end of day once the engine has acted on the close. The surviving WAL must hold the start of
+    # day, the schedule straight after it, the replacement, and one TechnicalEvent for each later phase, with the reason
+    # Scheduled, each written no earlier than its time and no more than two seconds after it, and the close written under
+    # a later leader epoch than open.
+    Scenario(
+        number=113,
+        short_name="trading_day_by_schedule",
+        description="The leading sequencer enters each phase at the time in the day's schedule, through a change of the schedule and of leader",
+        expected_outcome=(
+            "pre-open, open, the close and the end of day are each entered once, by the schedule, no earlier than their times and "
+            "within two seconds of them; a replacement naming a phase entered is refused and one bringing the close forward is "
+            "written; after the leader is killed the new leader writes the close at its new time"
+        ),
+        me_ha=True,
+        start_trading_day=False,
+        skip_baseline_orders=True,
+        assert_trading_day_by_schedule=True,
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -9211,7 +9245,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
                 and not scenario.assert_held_answered and not scenario.assert_halt_voids_held_orders and not scenario.expects_no_new_leader
                 and not scenario.assert_operator_lift and not scenario.assert_operator_halt and not scenario.assert_trading_day_start
-                and not scenario.assert_operator_listener_refuses_strangers
+                and not scenario.assert_operator_listener_refuses_strangers and not scenario.assert_trading_day_by_schedule
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
                 and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained):
@@ -10733,6 +10767,116 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 if reached:
                     die(f"the trading day: a command the phase refuses reached {sequencer_name}, so the gateway did not refuse it: {reached[0]}")
             log("  every order and cancel the phase refused was refused by the gateway, and none reached a sequencer -- OK")
+
+        # ── The venue follows the day's schedule (R-0167, R-0168) ──
+        if scenario.assert_trading_day_by_schedule:
+            leader_follower, _ = operator_requests.load_messages(prefix)
+            second = 1_000_000_000
+            started_at = time.time_ns()
+            pre_open_at = started_at + 4 * second
+            open_at = started_at + 8 * second
+            first_schedule = [("PreOpen", pre_open_at), ("Open", open_at), ("Closed", started_at + 3600 * second), ("EndOfDay", 0)]
+            log(f"  asking for the start of day with the schedule: {operator_requests.schedule_in_words(first_schedule)}")
+            started = operator_requests.enter_phases(prefix, TRADING_DAY, ("StartOfDay",), "ha_test", timeout=_START_DAY_TIMEOUT, say=log,
+                                                     schedule=first_schedule)
+            if not operator_requests.entered(prefix, started) or started.answer.schedule_seq_no != 2:
+                die(f"the day's schedule: the start of day with its schedule was not written as the first two records: {started.lines}")
+            log("  the start of day is written, with its schedule straight after it -- OK")
+
+            def phase_now(listeners=None):
+                """The phase the leading sequencer says the venue is in, and its name, asked without changing anything."""
+                answer = operator_requests.ask_for_phase(prefix, TRADING_DAY, "StartOfDay", "ha_test", listeners=listeners)
+                if answer.answer is None or not answer.answer.day_started:
+                    return None, answer.answered_by
+                return answer.answer.phase, answer.answered_by
+
+            def await_phase(phase, timeout: float, listeners=None) -> str:
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    current, leader_name = phase_now(listeners)
+                    if current == phase:
+                        return leader_name
+                    time.sleep(0.5)
+                current = phase_now(listeners)[0]
+                current_name = leader_follower.TradingPhase(current).name if current is not None else "no phase: the day has not started"
+                die(f"the day's schedule: the venue did not reach phase {phase.name} within {timeout:.0f}s; it is in {current_name}")
+                return ""
+
+            leader_name = await_phase(leader_follower.TradingPhase.Open, 30.0)
+            log(f"  the venue entered pre-open and open by itself; {leader_name} leads -- OK")
+
+            refused = operator_requests.replace_schedule(prefix, TRADING_DAY, [("Open", time.time_ns() + 60 * second)], "ha_test", say=log)
+            if refused.answer is None or refused.answer.outcome != leader_follower.TradingScheduleOutcome.Refused:
+                die(f"the day's schedule: a replacement naming open, which the venue has entered, was not refused: {refused.lines}")
+            close_at = time.time_ns() + 10 * second
+            replaced = operator_requests.replace_schedule(prefix, TRADING_DAY, [("Closed", close_at), ("EndOfDay", 0)], "ha_test", say=log)
+            if replaced.answer is None or replaced.answer.outcome != leader_follower.TradingScheduleOutcome.Written:
+                die(f"the day's schedule: the replacement bringing the close forward was not written: {replaced.lines}")
+            log("  a replacement naming a phase entered is refused, and one bringing the close forward is written -- OK")
+
+            survivor = "sequencer_secondary" if leader_name == "sequencer_primary" else "sequencer_primary"
+            leader_proc = proc_by_name.get(leader_name)
+            if leader_proc is None or leader_proc.poll() is not None:
+                die(f"the day's schedule: {leader_name} is not running, so there is no leader to kill")
+            takeover_from = _TEST_EVENTS.mark()
+            log(f"  SIGKILL -> {leader_name} (PID {leader_proc.pid})")
+            leader_proc.kill()
+            leader_proc.wait()
+            if leader_proc.poll() is None or Path(f"/proc/{leader_proc.pid}").exists():
+                die(f"the day's schedule: {leader_name} (PID {leader_proc.pid}) is still running after SIGKILL")
+            found, elapsed = await_expectation(expect_leads(survivor), args.failover_timeout, takeover_from)
+            if not found:
+                die(f"the day's schedule: {survivor} did not take the lead within {args.failover_timeout:.0f}s of {leader_name} being killed")
+            log(f"  {survivor} took the lead {elapsed:.1f}s after the kill")
+            if time.time_ns() >= close_at:
+                die("the day's schedule: the new leader took the lead after the close was due, so its writing the close on time shows nothing")
+            survivor_listener = [listener for listener in operator_requests.deployed_listeners(prefix) if listener[0] == survivor]
+            await_phase(leader_follower.TradingPhase.EndOfDay, 60.0, listeners=survivor_listener)
+            log("  the new leader entered the close and the end of day by itself -- OK")
+
+            survivor_config = prefix / "etc" / "sequencer" / f"{survivor}.toml"
+            survivor_wal = survivor_config.parent / installed_toml_section_value(survivor_config, "wal", "directory")
+            events = []
+            schedules = []
+            for record_id, _, contents in wal_entries(survivor_wal):
+                record = leader_follower.WalRecord.decode(contents)[0]
+                if record.pdu_id == leader_follower.TechnicalEvent.MESSAGE_ID:
+                    events.append((record_id, record, leader_follower.TechnicalEvent.decode(record.payload)[0]))
+                elif record.pdu_id == leader_follower.TradingSchedule.MESSAGE_ID:
+                    schedules.append((record_id, leader_follower.TradingSchedule.decode(record.payload)[0]))
+            sent_first = [(leader_follower.TradingPhase[name], earliest) for name, earliest in first_schedule]
+            if (len(schedules) != 2 or schedules[0][0] != 2
+                    or [(entry.phase, entry.earliest_utc_ns) for entry in schedules[0][1].entries] != sent_first
+                    or [(entry.phase, entry.earliest_utc_ns) for entry in schedules[1][1].entries]
+                    != [(leader_follower.TradingPhase.Closed, close_at), (leader_follower.TradingPhase.EndOfDay, 0)]):
+                die(f"the day's schedule: {survivor_wal} holds the schedules {schedules}; the first, at seq=2, and the replacement were wanted")
+            phases = [event.phase for _, _, event in events]
+            wanted_phases = [leader_follower.TradingPhase.StartOfDay, leader_follower.TradingPhase.PreOpen, leader_follower.TradingPhase.Open,
+                             leader_follower.TradingPhase.Closed, leader_follower.TradingPhase.EndOfDay]
+            if phases != wanted_phases:
+                die(f"the day's schedule: {survivor_wal} holds TechnicalEvents for {[phase.name for phase in phases]}; one for each phase, in "
+                    "order, was wanted")
+            if events[0][1].pdu_id != leader_follower.TechnicalEvent.MESSAGE_ID or events[0][0] != 1:
+                die(f"the day's schedule: the start of day is at seq={events[0][0]}; the first record was wanted")
+            if not schedules[0][0] < events[2][0] < schedules[1][0] < events[3][0]:
+                die(f"the day's schedule: the replacement at seq={schedules[1][0]} is not between open at seq={events[2][0]} and the close at "
+                    f"seq={events[3][0]}")
+            late_limit = 2 * second
+            for (record_id, record, event), due in zip(events[1:4], (pre_open_at, open_at, close_at)):
+                if event.reason != leader_follower.TechnicalEventReason.Scheduled:
+                    die(f"the day's schedule: {event.phase.name} at seq={record_id} gives the reason {event.reason.name}; Scheduled was wanted")
+                late = record.wall_time_ns - due
+                if late < 0 or late > late_limit:
+                    die(f"the day's schedule: {event.phase.name} at seq={record_id} was written {late / second:+.3f}s after its time; no earlier "
+                        f"than its time and no more than {late_limit / second:.0f}s after it was wanted")
+                log(f"  {event.phase.name} written {late / second:.3f}s after its time, by the schedule -- OK")
+            if events[4][2].reason != leader_follower.TechnicalEventReason.Scheduled:
+                die(f"the day's schedule: the end of day gives the reason {events[4][2].reason.name}; Scheduled was wanted")
+            if not events[3][1].leader_epoch > events[2][1].leader_epoch:
+                die(f"the day's schedule: the close was written under leader epoch {events[3][1].leader_epoch} and open under "
+                    f"{events[2][1].leader_epoch}; the close was wanted from the new leader, under a later epoch")
+            log(f"  the close was written by the new leader, under epoch {events[3][1].leader_epoch} where open was under "
+                f"{events[2][1].leader_epoch} -- OK")
 
         # ── The listener for operators answers only a client with the operator's certificate (R-0176) ──
         if scenario.assert_operator_listener_refuses_strangers:

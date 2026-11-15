@@ -235,7 +235,8 @@ phases are entered one at a time, in the order start of day, pre-open, open, clo
 
 - **Start of day** is written only for the day the sequencer was started for, and only on a WAL that
   holds no record. A WAL that holds records but no start of day belongs to no trading day, and must be
-  archived.
+  archived. The request carries the day's schedule, which is written straight after it as a
+  `TradingSchedule` record; see "The day's schedule" below.
 - **Pre-open** is written only from the start of day, and only once the leading matching engine has
   said, in answer to an `EnginePositionQuery`, that it has acted on the start of day. Until then the
   answer is `NotReady`, the engine is asked, and the request is sent again.
@@ -258,8 +259,36 @@ phases are entered one at a time, in the order start of day, pre-open, open, clo
 
 `devenv.py start`, `ha_test.py`, `perf_run.py` and `callgrind_run.py` start the day once the venue is
 up (`scripts/trading_phase.py start-day`, through `operator_requests.start_trading_day`), asking for the
-start of day, pre-open and open in turn. The design is
+start of day with no schedule, then pre-open and open in turn. The design is
 [trading_day_plan.md](trading_day_plan.md).
+
+#### The day's schedule
+
+The start-of-day request carries the day's schedule: for each phase from pre-open on, the earliest moment, in
+nanoseconds since 1970 UTC, at which to enter it, or 0 for as soon as its conditions hold. The entries name
+consecutive phases in order, and the times that are not 0 never decrease; a schedule that breaks either rule is
+refused as `ScheduleRefused`, and nothing is written. The schedule may stop at any phase, and every phase after
+its last entry is entered only on request. An empty schedule is a day run by hand.
+
+The leading sequencer writes the schedule as a `TradingSchedule` record (231) straight after the start of day.
+It is a record of the sequencer's own, as `SessionEnded` is, not a command: no matching engine applies it. If
+the leader stopped between the two records, the request sent again writes the schedule alone. Every sequencer
+keeps the latest `TradingSchedule` in its WAL (`TradingScheduleState`), in the same three ways as it keeps the
+phase, so a new leader knows the times.
+
+Once a second, on the timer that carries out cancels on disconnect, the leading sequencer looks up the time the
+schedule gives the phase after the current one. When that time has come by its clock, it enters the phase
+exactly as a request would, with the same conditions, giving the reason `Scheduled`. If a condition does not
+hold, nothing is written, the reason is logged at Warning once, and the next check tries again. When the time
+is no more than one check away and the phase waits on the matching engine, the engine is asked how far it has
+got then, so that pre-open and the end of day are entered at the check their time comes. A new leader runs the
+check as soon as it leads. A change is written only from the phase before it, so a check repeated, a request in
+the same second, or a change of leader leaves one record.
+
+An operator replaces the times that remain with `scripts/trading_phase.py schedule --schedule FILE`, which sends
+a `TradingScheduleRequest` (232), answered with a `TradingScheduleAnswer` (233). The new schedule must start at
+the phase after the one the venue is in; one that names a phase the venue has entered or passed is refused. It
+is written as a new `TradingSchedule`, which replaces the one before it from its position in the WAL onwards.
 
 ### Whether trading is halted, and the operator's halt and lift
 
