@@ -6,6 +6,7 @@ add_executable(fix_common_tests
         tests/RefusedCommandTest.cpp
         tests/RollingWindowThrottleTest.cpp
         tests/SessionThrottlesTest.cpp
+        tests/TradingSessionTest.cpp
         tests/ThrottleHeapUseTest.cpp
         tests/VoidedCommandListTest.cpp
 )

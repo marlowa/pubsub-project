@@ -44,6 +44,7 @@
 #include "SentAgainEnvelope.hpp"
 #include "ThrottleRefusalMetrics.hpp"
 #include "ThrottledCommand.hpp"
+#include "TradingSession.hpp"
 
 // authentication.hpp must be included before fix_orders.hpp because only
 // authentication.hpp defines BytesView inside the PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS
@@ -625,6 +626,21 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // The OrdRejReason of that refusal: ExchangeClosed while trading is halted, as the matching engine says when it refuses
     // an order because trading is halted, and Other otherwise.
     [[nodiscard]] pubsub_itc_fw_app::OrdRejReason venue_refusal_ord_rej_reason() const;
+
+    // What the venue is doing -- the trading day, the phase, and whether trading is halted -- as the leading sequencer last
+    // said in OrderAcceptance; none until it has said (docs/venue/trading_day_plan.md, section 4).
+    std::optional<fix_common::TradingSessionState> trading_session_;
+    // Why the phase refuses every member's order and cancel, by the rule the sequencer refuses by; none when the phase
+    // allows them, or when the sequencer has not yet said what the venue is doing, so that the sequencer decides.
+    [[nodiscard]] std::optional<pubsub_itc_fw_app::CommandRefusedReason> refusal_by_phase() const;
+    // Notes what the venue is doing, from OrderAcceptance; on a change, tells every logged-on member (35=h) and the test.
+    void note_trading_session(const fix_common::TradingSessionState& told);
+    // Sends @p session a TradingSessionStatus (35=h) saying what the venue is doing: unsolicited when @p request_id is
+    // empty, otherwise in answer to the TradingSessionStatusRequest (35=g) that carried it as TradSesReqID (335).
+    void send_trading_session_status(FixSession& session, std::string_view request_id);
+    // A member asks what the venue is doing (35=g): answered at once from what the gateway holds, so that asking is never
+    // traffic on the sequencer. Every member is sent every change whatever SubscriptionRequestType (263) says.
+    void handle_trading_session_status_request(FixSession& session, const ParsedFixMessage& msg);
 
     /// Whether the sequencer reported a session's numbering before the gateway opened the session.
     enum class SessionNumbering {

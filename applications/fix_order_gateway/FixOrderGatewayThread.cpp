@@ -505,6 +505,8 @@ void FixOrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMess
                         handle_new_order_single(session, msg, reader);
                     } else if (type == MsgType::OrderCancelRequest) {
                         handle_order_cancel_request(session, msg);
+                    } else if (type == MsgType::TradingSessionStatusRequest) {
+                        handle_trading_session_status_request(session, msg);
                     } else {
                         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} ({}) ignoring MsgType='{}'",
                                    conn_id.get_value(), conn_id.service_name(), type);
@@ -1316,6 +1318,12 @@ void FixOrderGatewayThread::complete_session_establishment(FixSession& session, 
 
     session.session_established = true;
 
+    // Told at once what the venue is doing, so that a member logging on before the market opens, or after it closes,
+    // knows why its orders would be refused (docs/venue/trading_day_plan.md, section 4.2).
+    if (trading_session_.has_value()) {
+        send_trading_session_status(session, {});
+    }
+
     // Now that the numbering is settled, ask for the reports produced for this member while it had no
     // connection. The leading sequencer sends any there are as ordinary reports, which this gateway
     // numbers on from here (R-0005, docs/bug_list.md BUG-0088).
@@ -1674,6 +1682,8 @@ void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMe
         send_waiting_replay_requests_again(view.leader_epoch);
     }
 
+    note_trading_session(fix_common::TradingSessionState{view.day_started, view.trading_day, view.phase, view.halted});
+
     if (view.accepting == venue_accepting_orders_ && view.reason == venue_refusal_reason_) {
         // The sequencer repeats this while the venue is degraded, so most arrivals say nothing
         // new. Logged on the change, not on the arrival -- the same rule the heartbeats follow,
@@ -1722,6 +1732,66 @@ const char* FixOrderGatewayThread::venue_refusal_text() const {
         default:
             return "Venue is not accepting orders: no matching engine available";
     }
+}
+
+std::optional<pubsub_itc_fw_app::CommandRefusedReason> FixOrderGatewayThread::refusal_by_phase() const {
+    if (!trading_session_.has_value()) {
+        return std::nullopt;
+    }
+    return fix_common::refusal_by_phase(trading_session_->day_started, trading_session_->phase);
+}
+
+void FixOrderGatewayThread::note_trading_session(const fix_common::TradingSessionState& told) {
+    if (trading_session_.has_value() && *trading_session_ == told) {
+        return;
+    }
+    trading_session_ = told;
+    int32_t members_told = 0;
+    for (auto& [conn_id, session] : sessions_) {
+        if (session.session_established) {
+            send_trading_session_status(session, {});
+            ++members_told;
+        }
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixOrderGatewayThread: the venue is now in {} -- {} logged-on member(s) sent TradingSessionStatus (35=h); orders and cancels are {}",
+               fix_common::session_status_text(told), members_told,
+               refusal_by_phase().has_value() ? "refused" : "passed on, unless refused for another reason");
+    report(pubsub_itc_fw_app::TradingSessionChanged{told.day_started, told.trading_day, told.day_started ? static_cast<int32_t>(told.phase) : 0, told.halted,
+                                                    members_told});
+}
+
+void FixOrderGatewayThread::send_trading_session_status(FixSession& session, std::string_view request_id) {
+    FixMessage status;
+    status.set(Tag::MsgType, MsgType::TradingSessionStatus);
+    if (!request_id.empty()) {
+        status.set(Tag::TradSesReqID, request_id);
+    }
+    // The venue has one trading session a day; FIX names it Day.
+    status.set(Tag::TradingSessionID, std::string_view("1"));
+    status.set(Tag::UnsolicitedIndicator, std::string_view(request_id.empty() ? "Y" : "N"));
+    if (!trading_session_.has_value()) {
+        // Only in answer to a request: nothing is sent unasked until the sequencer has said what the venue is doing.
+        status.set(Tag::TradSesStatus, std::string_view("0"));
+        status.set(Tag::Text, std::string_view("the gateway has not yet been told what the venue is doing"));
+        send_fix_to_session(session, status);
+        return;
+    }
+    if (trading_session_->day_started) {
+        status.set(Tag::TradeDate, std::to_string(trading_session_->trading_day));
+    }
+    status.set(Tag::TradSesStatus, std::string(1, static_cast<char>(fix_common::session_status(*trading_session_))));
+    status.set(Tag::Text, fix_common::session_status_text(*trading_session_));
+    send_fix_to_session(session, status);
+}
+
+void FixOrderGatewayThread::handle_trading_session_status_request(FixSession& session, const ParsedFixMessage& msg) {
+    const std::string_view request_id = msg.get(Tag::TradSesReqID);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} comp_id='{}' TradingSessionStatusRequest TradSesReqID={}",
+               session.conn_id.get_value(), session.client_comp_id, request_id);
+    // An empty TradSesReqID would make the answer look unsolicited; the codec refuses one before it reaches here, as the
+    // field is required.
+    send_trading_session_status(session, request_id.empty() ? std::string_view("-") : request_id);
 }
 
 pubsub_itc_fw_app::OrdRejReason FixOrderGatewayThread::venue_refusal_ord_rej_reason() const {
@@ -2075,6 +2145,17 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
     // Logged at Debug. The condition is reported once, at Warning, when it changes -- see
     // handle_order_acceptance -- and the running count rides on GW-PROGRESS every five seconds.
     // A line per refused order would reproduce the 1,087,912-line flood this bug is about.
+    // Refused by the phase before anything else about the venue: the sequencer would refuse it by the same rule (R-0171).
+    if (const std::optional<pubsub_itc_fw_app::CommandRefusedReason> refusal = refusal_by_phase(); refusal.has_value()) {
+        ++orders_refused_;
+        progress_metrics_.count_order_refused();
+        const fix_common::SequencerRefusalAnswer answer = fix_common::answer_to_sequencer_refusal(*refusal);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "FixOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused by the phase: {}",
+                   session.conn_id.get_value(), cl_ord_id, answer.text);
+        send_reject_execution_report(session, msg, std::string(answer.text), answer.order_reason);
+        return;
+    }
+
     if (!venue_accepting_orders_) {
         ++orders_refused_;
         progress_metrics_.count_order_refused();
@@ -2308,6 +2389,18 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
     //
     // The exception is a halt while an engine leads (OrderAcceptanceReason::Halted): the engine carries out cancels
     // while trading is halted, so a cancel is passed on and only new orders are refused.
+    // Refused by the phase, as a new order is: after the close the close has cancelled every order, and before pre-open
+    // no member has one (R-0171).
+    if (const std::optional<pubsub_itc_fw_app::CommandRefusedReason> refusal = refusal_by_phase(); refusal.has_value()) {
+        ++cancels_refused_;
+        const fix_common::SequencerRefusalAnswer answer = fix_common::answer_to_sequencer_refusal(*refusal);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused by the phase: {}", session.conn_id.get_value(),
+                   cl_ord_id, orig_cl_ord_id, answer.text);
+        refuse_cancel(session, msg, answer.cancel_reason, answer.text);
+        return;
+    }
+
     if (!venue_accepting_orders_ && venue_refusal_reason_ != pubsub_itc_fw_app::OrderAcceptanceReason::Halted) {
         ++cancels_refused_;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,

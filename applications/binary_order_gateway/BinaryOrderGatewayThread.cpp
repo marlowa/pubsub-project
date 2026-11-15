@@ -380,6 +380,10 @@ void BinaryOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::Eve
         handle_order_cancel_request(*session, message);
         return;
     }
+    if (pdu_id == pubsub_itc_fw_app::TradingSessionStatusRequest::message_pdu_id) {
+        handle_trading_session_status_request(*session, message);
+        return;
+    }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                "BinaryOrderGatewayThread: unsupported PDU id {} from comp id '{}' on connection {} -- dropping", pdu_id, session->comp_id,
@@ -758,6 +762,10 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
                    "BinaryOrderGatewayThread: comp_id='{}' reconnected within the grace period -- the venue leaves its orders resting", session.comp_id);
     }
     send_logon_ack(session.conn_id, pubsub_itc_fw_app::LogonOutcome::Accepted, {});
+    // Told at once what the venue is doing, as the FIX gateway tells a member that logs on (trading_day_plan.md, 4.2).
+    if (trading_session_.has_value()) {
+        send_trading_session_status(session.conn_id, {});
+    }
 }
 
 BinarySession* BinaryOrderGatewayThread::find_session_by_conn_id(int32_t conn_id_value) {
@@ -791,6 +799,18 @@ void BinaryOrderGatewayThread::handle_new_order_single(BinarySession& session, c
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused: {}",
                    session.conn_id.get_value(), order.cl_ord_id, invalid);
         refuse_new_order(session, order, invalid);
+        release_pdu_payload(message);
+        return;
+    }
+
+    // Refused by the phase before anything else about the venue, by the rule the sequencer refuses by (R-0171).
+    if (const std::optional<pubsub_itc_fw_app::CommandRefusedReason> phase_refusal = refusal_by_phase(); phase_refusal.has_value()) {
+        ++orders_refused_;
+        progress_metrics_.count_order_refused();
+        const fix_common::SequencerRefusalAnswer answer = fix_common::answer_to_sequencer_refusal(*phase_refusal);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "BinaryOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused by the phase: {}",
+                   session.conn_id.get_value(), order.cl_ord_id, answer.text);
+        refuse_new_order(session, order, answer.text, answer.order_reason);
         release_pdu_payload(message);
         return;
     }
@@ -855,6 +875,18 @@ void BinaryOrderGatewayThread::handle_order_cancel_request(BinarySession& sessio
                    "BinaryOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused: {}", session.conn_id.get_value(),
                    request.cl_ord_id, request.orig_cl_ord_id, invalid.reason);
         refuse_cancel(session, request, invalid.kind, invalid.reason, invalid.field);
+        release_pdu_payload(message);
+        return;
+    }
+
+    // Refused by the phase, as a new order is (R-0171).
+    if (const std::optional<pubsub_itc_fw_app::CommandRefusedReason> phase_refusal = refusal_by_phase(); phase_refusal.has_value()) {
+        ++cancels_refused_;
+        const fix_common::SequencerRefusalAnswer answer = fix_common::answer_to_sequencer_refusal(*phase_refusal);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "BinaryOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused by the phase: {}", session.conn_id.get_value(),
+                   request.cl_ord_id, request.orig_cl_ord_id, answer.text);
+        refuse_cancel(session, request, answer.cancel_reason, answer.text);
         release_pdu_payload(message);
         return;
     }
@@ -960,6 +992,7 @@ void BinaryOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::Even
             unanswered_commands_->on_new_leader(view.leader_epoch, first_seen);
         }
     }
+    note_trading_session(fix_common::TradingSessionState{view.day_started, view.trading_day, view.phase, view.halted});
     if (view.accepting == venue_accepting_orders_ && view.reason == venue_refusal_reason_) {
         // Logged on the change, not on each arrival: the sequencer repeats this while the venue is degraded.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "BinaryOrderGatewayThread: OrderAcceptance unchanged accepting={}", view.accepting);
@@ -990,6 +1023,76 @@ void BinaryOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::Even
                "BinaryOrderGatewayThread: the venue is no longer accepting orders -- no matching engine has led for {}s, and {} order(s) and cancel(s) "
                "are held until one does. New orders and cancels are refused until it is",
                view.no_engine_for_seconds, view.held_order_count);
+}
+
+std::optional<pubsub_itc_fw_app::CommandRefusedReason> BinaryOrderGatewayThread::refusal_by_phase() const {
+    if (!trading_session_.has_value()) {
+        return std::nullopt;
+    }
+    return fix_common::refusal_by_phase(trading_session_->day_started, trading_session_->phase);
+}
+
+void BinaryOrderGatewayThread::note_trading_session(const fix_common::TradingSessionState& told) {
+    if (trading_session_.has_value() && *trading_session_ == told) {
+        return;
+    }
+    trading_session_ = told;
+    int32_t members_told = 0;
+    for (const auto& [conn_id_value, session] : sessions_) {
+        if (session.logged_on) {
+            send_trading_session_status(session.conn_id, {});
+            ++members_told;
+        }
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "BinaryOrderGatewayThread: the venue is now in {} -- {} logged-on member(s) sent TradingSessionStatus; orders and cancels are {}",
+               fix_common::session_status_text(told), members_told,
+               refusal_by_phase().has_value() ? "refused" : "passed on, unless refused for another reason");
+}
+
+void BinaryOrderGatewayThread::send_trading_session_status(const pubsub_itc_fw::ConnectionID& conn_id, std::string_view request_id) {
+    pubsub_itc_fw_app::TradingSessionStatus status{};
+    status.unsolicited = request_id.empty();
+    if (!request_id.empty()) {
+        status.has_request_id = true;
+        status.request_id = request_id;
+    }
+    std::string text;
+    if (!trading_session_.has_value()) {
+        // Only in answer to a request: nothing is sent unasked until the sequencer has said what the venue is doing.
+        status.state = pubsub_itc_fw_app::TradingSessionState::Unknown;
+        text = "the gateway has not yet been told what the venue is doing";
+    } else {
+        status.state = static_cast<pubsub_itc_fw_app::TradingSessionState>(static_cast<char>(fix_common::session_status(*trading_session_)) - '0');
+        status.day_started = trading_session_->day_started;
+        status.trading_day = trading_session_->trading_day;
+        status.phase = trading_session_->day_started ? static_cast<int32_t>(trading_session_->phase) : 0;
+        status.halted = trading_session_->halted;
+        text = fix_common::session_status_text(*trading_session_);
+    }
+    status.text = text;
+    send_pdu(conn_id, pubsub_itc_fw_app::TradingSessionStatus::message_pdu_id, 0, status);
+}
+
+void BinaryOrderGatewayThread::handle_trading_session_status_request(BinarySession& session, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    pubsub_itc_fw_app::TradingSessionStatusRequestView request{};
+    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: connection {} comp_id='{}' TradingSessionStatusRequest could not be decoded -- dropping",
+                   session.conn_id.get_value(), session.comp_id);
+        release_pdu_payload(message);
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: connection {} comp_id='{}' TradingSessionStatusRequest request_id={}",
+               session.conn_id.get_value(), session.comp_id, request.request_id);
+    // An empty request_id would make the answer look unsolicited, so it is answered as "-".
+    const std::string request_id(request.request_id.empty() ? std::string_view("-") : request.request_id);
+    release_pdu_payload(message);
+    send_trading_session_status(session.conn_id, request_id);
 }
 
 fix_common::GatewayRefusal BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, const uint8_t* payload, size_t size,

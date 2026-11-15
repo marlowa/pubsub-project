@@ -169,7 +169,7 @@ refused.
   \rationale{A command refused at the gateway costs the sequencer nothing. A member must be able
   to tell a command refused because the market is closed from one refused because trading is
   halted, because the first is expected every evening and the second needs attention.}
-  \uncovered{the gateways learn whether trading is halted, not the phase}
+  \covers{ha_test:111}
 \end{requirement}
 
 \begin{requirement}{R-0172}{The close cancels every open order, and each member is told}
@@ -217,7 +217,7 @@ subscribe.
   learn the venue's state only by sending an order and having it refused. Every member is told
   every change, with no list of which members asked, because every member wants to know when the
   market closes.}
-  \uncovered{neither gateway sends or understands 35=h or a binary equivalent}
+  \covers{ha_test:111}
 \end{requirement}
 
 \begin{gap}{BUG-0065}

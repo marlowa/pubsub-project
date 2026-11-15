@@ -52,6 +52,7 @@
 #include "SentAgainEnvelope.hpp"
 #include "ThrottleRefusalMetrics.hpp"
 #include "ThrottledCommand.hpp"
+#include "TradingSession.hpp"
 
 namespace binary_order_gateway {
 
@@ -434,6 +435,20 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // Commands refused because the venue was not accepting orders, reported on GW-PROGRESS.
     int64_t orders_refused_{0};
     int64_t cancels_refused_{0};
+
+    // What the venue is doing -- the trading day, the phase, and whether trading is halted -- as the leading sequencer last
+    // said in OrderAcceptance; none until it has said (docs/venue/trading_day_plan.md, section 4). The FIX gateway holds
+    // the same, and both refuse and report by the same functions (fix_common/TradingSession.hpp).
+    std::optional<fix_common::TradingSessionState> trading_session_;
+    // Why the phase refuses every member's order and cancel; none when it allows them, or before the sequencer has said.
+    [[nodiscard]] std::optional<pubsub_itc_fw_app::CommandRefusedReason> refusal_by_phase() const;
+    // Notes what the venue is doing, from OrderAcceptance; on a change, sends every logged-on member a TradingSessionStatus.
+    void note_trading_session(const fix_common::TradingSessionState& told);
+    // Sends the member on @p conn_id a TradingSessionStatus: unsolicited when @p request_id is empty, otherwise in answer
+    // to the TradingSessionStatusRequest that carried it.
+    void send_trading_session_status(const pubsub_itc_fw::ConnectionID& conn_id, std::string_view request_id);
+    // A member asks what the venue is doing: answered at once from what the gateway holds.
+    void handle_trading_session_status_request(BinarySession& session, const pubsub_itc_fw::EventMessage& message);
 
     // Where a member's command is decoded to be checked: the views of its repeating groups live
     // here. Starts small and grows when an order with large groups needs more, up to

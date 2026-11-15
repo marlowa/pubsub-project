@@ -82,12 +82,11 @@ disorderly conditions.
   \covers{ha_test:94, ha_test:95}
 \end{requirement}
 
-\begin{gap}{BUG-0065}
-  An operator halts trading and lifts the halt, and a member placing an order
-  during a halt is told in the reply that the venue is halted. A member that is
-  connected and not trading, or that logs on during a halt, is told nothing, and
-  no member is told when trading resumes. \reqref{R-0023} is met only in part
-  until then.
+\begin{gap}{}
+  Every logged-on member is told of a halt and of its lift by a trading session
+  status (\reqref{R-0174}), and a member that logs on during a halt is told at
+  once. No scenario halts trading and checks that a member not trading is told:
+  scenario 111 checks the trading session status for each phase, not for a halt.
 \end{gap}
 
 \begin{requirement}{R-0024}{A halt that cancels open orders reports every cancellation}

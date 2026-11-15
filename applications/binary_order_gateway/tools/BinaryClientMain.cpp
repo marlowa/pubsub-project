@@ -65,6 +65,7 @@ struct Options {
     // How long to wait for each reply, in seconds; 0 waits for ever. A test that sends an order
     // the venue cannot answer needs the client to give up and say so.
     int reply_timeout_seconds{0};
+    std::string session_status_request_id;
 };
 
 bool parse_options(int argc, char** argv, Options& options) {
@@ -95,6 +96,8 @@ bool parse_options(int argc, char** argv, Options& options) {
             options.order_qty = argv[++index];
         } else if (argument == "--price" && has_value) {
             options.price = argv[++index];
+        } else if (argument == "--session-status" && has_value) {
+            options.session_status_request_id = argv[++index];
         } else if (argument == "--reply-timeout" && has_value) {
             options.reply_timeout_seconds = std::stoi(argv[++index]);
         } else {
@@ -102,6 +105,7 @@ bool parse_options(int argc, char** argv, Options& options) {
             fmt::print("          [--target-comp-id ID] [--symbol SYM] [--orders N]\n");
             fmt::print("          [--cl-ord-id ID] [--cancel ORIG-CL-ORD-ID]\n");
             fmt::print("          [--side C] [--order-qty Q] [--price P] [--reply-timeout S]\n");
+            fmt::print("          [--session-status REQUEST-ID]\n");
             fmt::print("\n");
             fmt::print("  --cl-ord-id  use this ClOrdID instead of a generated one, so a later\n");
             fmt::print("               run on a new connection can refer to the same order\n");
@@ -111,6 +115,10 @@ bool parse_options(int argc, char** argv, Options& options) {
             fmt::print("  --side, --order-qty, --price\n");
             fmt::print("               the order's fields, sent as given even when invalid, so a\n");
             fmt::print("               test can check what the venue refuses (default 1, 100, 100.00)\n");
+            fmt::print("  --session-status\n");
+            fmt::print("               ask what the venue is doing (TradingSessionStatusRequest) with\n");
+            fmt::print("               this request id, print the answer, and exit, rather than\n");
+            fmt::print("               placing orders\n");
             fmt::print("  --reply-timeout\n");
             fmt::print("               give up waiting for a reply after this many seconds and\n");
             fmt::print("               exit with status 3 (default: wait for ever)\n");
@@ -268,6 +276,33 @@ CancelOutcome print_cancel_reply(int16_t pdu_id, int64_t seq_no, const std::vect
     return report.ord_status == pubsub_itc_fw_app::OrdStatus::Rejected ? CancelOutcome::Refused : CancelOutcome::Cancelled;
 }
 
+/**
+ * @brief Prints a TradingSessionStatus, which the gateway sends unasked when the member logs on and whenever what the venue
+ *        is doing changes, as well as in answer to a request.
+ * @return Whether the PDU was one; if it was, the request id it answers, empty when it was unasked, is put in
+ *         @p request_id.
+ */
+bool print_if_session_status(int16_t pdu_id, int64_t seq_no, const std::vector<uint8_t>& payload, std::vector<uint8_t>& arena_buffer, std::string& request_id) {
+    if (pdu_id != pubsub_itc_fw_app::TradingSessionStatus::message_pdu_id) {
+        return false;
+    }
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    pubsub_itc_fw_app::TradingSessionStatusView status{};
+    if (!pubsub_itc_fw_app::decode(status, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
+        fmt::print("failed to decode TradingSessionStatus\n");
+        request_id.clear();
+        return true;
+    }
+    request_id = status.has_request_id ? std::string(status.request_id) : std::string();
+    // Text comes last because it contains spaces.
+    fmt::print("TradingSessionStatus seq={} State={} DayStarted={} TradingDay={} Phase={} Halted={} Unsolicited={} RequestId={} Text={}\n", seq_no,
+               pubsub_itc_fw_app::to_string(status.state), status.day_started ? "Y" : "N", status.trading_day, status.phase, status.halted ? "Y" : "N",
+               status.unsolicited ? "Y" : "N", request_id.empty() ? "-" : request_id, status.text);
+    return true;
+}
+
 int64_t now_nanoseconds() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
@@ -323,6 +358,36 @@ int main(int argc, char** argv) {
         }
     }
     fmt::print("logged on as '{}'\n", options.comp_id);
+    std::string session_status_request_id;
+
+    // Session status mode: ask what the venue is doing, print every TradingSessionStatus until the answer, and exit.
+    if (!options.session_status_request_id.empty()) {
+        pubsub_itc_fw_app::TradingSessionStatusRequest request{};
+        request.request_id = options.session_status_request_id;
+        if (!send_pdu(socket_fd, pubsub_itc_fw_app::TradingSessionStatusRequest::message_pdu_id, request)) {
+            fmt::print("failed to send TradingSessionStatusRequest\n");
+            ::close(socket_fd);
+            return 1;
+        }
+        fmt::print("sent TradingSessionStatusRequest RequestId={}\n", options.session_status_request_id);
+        while (true) {
+            if (!receive_pdu(socket_fd, pdu_id, seq_no, payload)) {
+                const bool timed_out = errno == EAGAIN || errno == EWOULDBLOCK;
+                fmt::print(timed_out ? "no answer to the TradingSessionStatusRequest within the reply timeout\n" : "connection closed with no answer\n");
+                ::close(socket_fd);
+                return timed_out ? 3 : 1;
+            }
+            if (!print_if_session_status(pdu_id, seq_no, payload, arena_buffer, session_status_request_id)) {
+                fmt::print("unexpected PDU id {}\n", pdu_id);
+                continue;
+            }
+            if (session_status_request_id == options.session_status_request_id) {
+                ::close(socket_fd);
+                fmt::print("done\n");
+                return 0;
+            }
+        }
+    }
 
     // Cancel mode: refer to an order by ClOrdID and say nothing about where it was placed.
     // The venue is expected to find it from this session's identity, which is the same
@@ -363,6 +428,11 @@ int main(int argc, char** argv) {
                 fmt::print("connection closed with no reply to the cancel\n");
                 ::close(socket_fd);
                 return 1;
+            }
+            // Sent unasked at logon and on each change: printed, and not counted as a reply.
+            if (print_if_session_status(pdu_id, seq_no, payload, arena_buffer, session_status_request_id)) {
+                --received;
+                continue;
             }
             const CancelOutcome outcome = print_cancel_reply(pdu_id, seq_no, payload, arena_buffer);
             if (outcome == CancelOutcome::Failed) {
@@ -408,6 +478,11 @@ int main(int argc, char** argv) {
             fmt::print("connection closed after {} execution report(s)\n", received);
             ::close(socket_fd);
             return 1;
+        }
+        // Sent unasked at logon and on each change: printed, and not counted as a reply.
+        if (print_if_session_status(pdu_id, seq_no, payload, arena_buffer, session_status_request_id)) {
+            --received;
+            continue;
         }
         if (pdu_id != pubsub_itc_fw_app::ExecutionReport::message_pdu_id) {
             fmt::print("unexpected PDU id {}\n", pdu_id);

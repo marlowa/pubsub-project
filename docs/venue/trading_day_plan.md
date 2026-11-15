@@ -1,6 +1,6 @@
 # The trading day: design plan {#trading_day_plan}
 
-**Status: agreed; steps 1 to 6 are done.** This note covers the whole trading day: every phase,
+**Status: agreed; steps 1 to 7 are done.** This note covers the whole trading day: every phase,
 how the venue moves from one to the next, what each component does in each, and how each change reaches
 the components and members that need it. It builds on three other notes and does not repeat them:
 
@@ -28,17 +28,25 @@ section, each with the reason for it.
   on the close. The sequencer keeps the phase from its WAL (`TradingPhaseState`); a halt carries the
   current phase, and the phase moves on while trading is halted except while halted because an engine
   cannot account for the orders the venue holds. No schedule exists yet: every change is asked for.
-- **The gateways learn of a halt, not a phase.** The leading sequencer sends each gateway `OrderAcceptance`
-  (127), whose reason can be `Halted`. The gateways refuse new orders while it is, and pass cancels on.
+- **The gateways learn the phase and refuse by it (step 7).** The leading sequencer sends each gateway
+  `OrderAcceptance` (127) when the gateway connects and whenever the trading day, the phase, whether trading
+  is halted, or whether the venue accepts orders changes. It carries all of them. Each gateway refuses every
+  order and cancel the phase does not allow before it reaches the sequencer, by the rule the sequencer
+  refuses by, with the same texts (`fix_common/TradingSession.hpp`). A halt still refuses new orders and
+  passes cancels on.
 - **The sequencer refuses members' commands by phase.** Outside `pre_open` and `open` it refuses each
   one with `CommandRefused`, reason `TradingDayNotStarted` (before the start of day), `MarketNotOpen`
   (`sod`), `MarketClosed` (`closed`) or `TradingDayEnded` (`eod`), and both gateways tell the member why.
+  A gateway that knows the phase refuses such a command itself, so the sequencer's refusal is for a
+  gateway whose view is out of date.
 - **The close cancels every open order (step 6).** Each matching engine, applying the `TechnicalEvent` that
   enters `closed`, cancels every order on its book and sends a report of each to its member, answering the
   close. The sequencer writes `eod` only once the leading engine has acted on the close and every report it
   sent is in the WAL ([BUG-0132](../bug_list.md#bug_0132)).
-- **Members are told nothing until they send an order.** Neither gateway sends or understands FIX
-  `TradingSessionStatus` (35=h) or a binary equivalent ([BUG-0065](../bug_list.md#bug_0065)).
+- **Members are told (step 7).** Both gateways send every logged-on member a trading session status on
+  every change and as it logs on, and answer a request for one at once: FIX `TradingSessionStatus` (35=h)
+  and `TradingSessionStatusRequest` (35=g), and on the binary gateway `TradingSessionStatus` (703) and
+  `TradingSessionStatusRequest` (704) ([BUG-0065](../bug_list.md#bug_0065)).
 - **No topic carries the phase.** The matching engine publisher follows the sequencer's WAL and publishes
   two topics from it, `orders` and `execution_reports` (`applications/pubsub.dsl`). A `TechnicalEvent` in
   the WAL is on neither, although the order activity recorder's design follows "the technical events"
@@ -344,11 +352,13 @@ only need to **know** it. Its book section requires both to be served, and the t
 - **The sequencer** holds the phase from its WAL, as it already holds whether trading is halted, and refuses
   every member command the phase does not allow, with a new `CommandRefusedReason` for each, so that no
   gateway's view of the venue, however out of date, can let a command through.
-- **The gateways** take the phase from the sequencer's control connection, as they take a halt now.
-  `OrderAcceptance` gains the trading day and the phase, and a reason for each phase that refuses orders. The
-  leading sequencer sends it when a gateway connects and whenever it changes, and a newly promoted leader sends
-  the state it derived from its WAL. A gateway refuses what the phase does not allow before it reaches the
-  sequencer, and says why.
+- **The gateways** take the phase from the sequencer's control connection, as they take a halt.
+  `OrderAcceptance` carries whether the trading day has started, the trading day, the phase, and whether
+  trading is halted. The leading sequencer sends it when a gateway connects and whenever any of them changes,
+  and a newly promoted leader sends the state it derived from its WAL. A gateway works out the reason a
+  phase refuses orders with the same function the sequencer refuses by, `fix_common::refusal_by_phase`, so
+  the three cannot differ; the reason is not sent. A gateway refuses what the phase does not allow before it
+  reaches the sequencer, and says why.
 
 ### 4.2 Members
 
@@ -363,8 +373,12 @@ What members are told:
 - **Every member receives every change, with no list of which members asked**, whatever the request's
   `SubscriptionRequestType` (263) says. Keeping a subscription for each member adds state to the gateway for
   nothing a member needs, since every member wants to know when the market closes.
-- **The binary gateway gains an equivalent message and request**, defined in the DSL from the same phase
-  enum, so the two gateways cannot drift.
+- **The binary gateway gains an equivalent message and request**, `TradingSessionStatus` and
+  `TradingSessionStatusRequest` in `binary_session.dsl`. The DSL copies an included file's definitions into
+  the file that includes it, so the binary protocol cannot use `TradingPhase` from `leader_follower.dsl`
+  without defining it twice in the gateway. Its state therefore has an enum of its own, with the numbers of
+  FIX TradSesStatus (340), and gives the phase as `TradingPhase` numbers it. Both gateways work out what they
+  send with the same function, `fix_common::session_status`, so the two cannot drift.
 
 This also closes the part of [BUG-0065](../bug_list.md#bug_0065) about a member that is not trading never
 being told of a halt.
@@ -425,7 +439,7 @@ documents and decisions; code starts at step 4.
    `eod` only once every report the close produced is in the WAL ([BUG-0132](../bug_list.md#bug_0132)). Done:
    `EnginePosition` carries how far the engine has sent its reports, as section 2.5 explains.
 7. **The gateways**: `OrderAcceptance` with the trading day and the phase, refusals by phase, and
-   `TradingSessionStatus` and its binary equivalent to members ([BUG-0065](../bug_list.md#bug_0065)).
+   `TradingSessionStatus` and its binary equivalent to members ([BUG-0065](../bug_list.md#bug_0065)). Done.
 8. **The `technical_events` topic** on the matching engine publisher, for the components that only need to know.
 9. **The schedule and the end-of-day procedure**: the `TradingSchedule` record, the start-of-day request
    that carries it, `TradingScheduleRequest`, the leader's check once a second, and the run procedure that reads

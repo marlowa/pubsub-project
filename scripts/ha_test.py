@@ -5249,10 +5249,17 @@ _SCENARIOS: list[Scenario] = [
     # be refused, saying the trading day has ended, and a member must still be able to log on. The first record of the
     # leading sequencer's WAL must be the start of day, for the day the sequencer was started for, and its last record the
     # end of day.
+    #
+    # Steps 6 and 7. The close must cancel both orders resting on the book, each with a report to the member, recorded in
+    # the WAL as answering the close, and both engines must apply it alike. The member must be sent a TradingSessionStatus
+    # (35=h) as it logs on and at each phase, saying what it may do; one is waited for before each order is sent, so that
+    # the gateway knows the phase. A TradingSessionStatusRequest (35=g) must be answered at once. Every refusal by phase must
+    # come from the gateway: no refused command may reach either sequencer. The binary gateway must answer its session
+    # status request, and refuse an order after the close, in the same way.
     Scenario(
         number=111,
         short_name="trading_day_cycle",
-        description="The trading day is entered phase by phase, on request, once, in order; members trade only in pre-open and open",
+        description="The trading day is entered phase by phase, on request, once, in order; members trade only in pre-open and open, and are told",
         expected_outcome=(
             "an order before the start of day is refused as the day not started, and one in it as the market not open; a phase "
             "out of order, and a start of day for another day, are refused; each phase is written once; orders are accepted in "
@@ -5262,6 +5269,7 @@ _SCENARIOS: list[Scenario] = [
         me_ha=True,
         start_trading_day=False,
         skip_baseline_orders=True,
+        binary_gateway=True,
         assert_trading_day_start=True,
         orders_during_override=0,
         orders_after_override=0,
@@ -7419,16 +7427,23 @@ _BINARY_CANCEL_REJECT_LINE = re.compile(
     r"CxlRejReason=(?P<cxl_rej_reason>\S+) Text=(?P<text>.*)$")
 # The gateway's answer to a request it refused itself (RequestRefused in binary_session.dsl). Reason is the number the FIX
 # gateway gives in SessionRejectReason (373) for the same refusal.
+# A TradingSessionStatus as binary_client prints it (binary_session.dsl): sent unasked at logon and on each change, and in
+# answer to a TradingSessionStatusRequest, which names it by RequestId.
+_BINARY_SESSION_STATUS_LINE = re.compile(
+    r"^TradingSessionStatus seq=(?P<seq>\S+) State=(?P<state>\S+) DayStarted=(?P<day_started>\S+) TradingDay=(?P<trading_day>\S+) "
+    r"Phase=(?P<phase>\S+) Halted=(?P<halted>\S+) Unsolicited=(?P<unsolicited>\S+) RequestId=(?P<request_id>\S+) Text=(?P<text>.*)$")
 _BINARY_REQUEST_REFUSED_LINE = re.compile(
     r"^RequestRefused seq=(?P<seq>\S+) ClOrdID=(?P<cl_ord_id>\S*) RefusedPduId=(?P<refused_pdu_id>\S+) Reason=(?P<reason>\S+) "
     r"Field=(?P<field>\S*) Text=(?P<text>.*)$")
 
 
-def run_binary_client(bin_dir: Path, port: int, *arguments: str, comp_id: str = _BINARY_COMP_ID) -> tuple[int, list[dict[str, str]], str]:
+def run_binary_client(bin_dir: Path, port: int, *arguments: str, comp_id: str = _BINARY_COMP_ID,
+                      session_status: bool = False) -> tuple[int, list[dict[str, str]], str]:
     """Run binary_client once as comp_id, the binary test comp id unless another is named, and parse the replies it printed.
 
-    Returns its exit status, one dictionary for each ExecutionReport, OrderCancelReject or RequestRefused it printed (with
-    "kind" naming which), and its whole output for a failure message. Exit status 3 means it gave up waiting for a reply.
+    Returns its exit status, one dictionary for each ExecutionReport, OrderCancelReject or RequestRefused it printed, and
+    for each TradingSessionStatus too when session_status is true (with "kind" naming which); a TradingSessionStatus has
+    no ClOrdID, and the gateway sends one unasked at every logon, so it is left out unless asked for, and its whole output for a failure message. Exit status 3 means it gave up waiting for a reply.
     """
     command = [str(bin_dir / "binary_client"), "--host", "127.0.0.1", "--port", str(port),
                "--comp-id", comp_id, "--password", FIX8_PASSWORD,
@@ -7447,6 +7462,10 @@ def run_binary_client(bin_dir: Path, port: int, *arguments: str, comp_id: str = 
         refused = _BINARY_REQUEST_REFUSED_LINE.match(line)
         if refused:
             replies.append({"kind": "RequestRefused", **refused.groupdict()})
+            continue
+        status = _BINARY_SESSION_STATUS_LINE.match(line)
+        if status and session_status:
+            replies.append({"kind": "TradingSessionStatus", **status.groupdict()})
     return result.returncode, replies, result.stdout + result.stderr
 
 
@@ -10440,6 +10459,23 @@ def run_scenario(scenario: Scenario, args) -> bool:
                         return report
                 return None
 
+            # What the member is told the venue is doing (TradingSessionStatus, 35=h): TradSesStatus (340) and the Text (58).
+            def session_told(status: str, text: str, what: str, client=None) -> dict[int, str]:
+                client = client or member
+                deadline = time.monotonic() + _HELD_ANSWER_TIMEOUT
+                seen: list[dict[int, str]] = []
+                while time.monotonic() < deadline:
+                    message = client.receive_until("h", timeout=1.0)
+                    if message is None:
+                        continue
+                    seen.append(message)
+                    if message.get(340) == status and text in (message.get(58) or ""):
+                        return message
+                client.close()
+                die(f"the trading day: {what}: the member was to be sent a TradingSessionStatus with TradSesStatus {status} and the text "
+                    f"'{text}'; it was sent {seen}")
+                return {}
+
             def phase_request(action: str, trading_day: int = TRADING_DAY) -> tuple[int, str]:
                 completed = subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "trading_phase.py"), action, "--trading-day",
                                             str(trading_day), "--operator", "ha_test", "--install-dir", str(prefix), "--timeout", "60"],
@@ -10449,6 +10485,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 for line in said.splitlines():
                     log(f"    {line}")
                 return completed.returncode, said
+
+            session_told("3", "the trading day has not started", "on logging on before the start of day")
+            log("  a member logging on before the start of day is told the session is closed and the day has not started (35=h) -- OK")
 
             member.new_order_single("day-early-1")
             refused = day_answer_to("day-early-1")
@@ -10472,6 +10511,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     die(f"start of the trading day: the start of day was answered with exit {status} and '{said}'; {wanted} was wanted")
             log("  the start of day is written, and asking again writes nothing -- OK")
 
+            session_told("3", f"trading day {TRADING_DAY}: the start of day", "once the start of day is written")
             member.new_order_single("day-early-2")
             refused = day_answer_to("day-early-2")
             if refused is None or refused.get(39) != "8" or refused.get(103) != "2" or "market is not open" not in (refused.get(58) or ""):
@@ -10510,6 +10550,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             enter("open", "NotNext")
             enter("pre-open")
+            session_told("4", f"trading day {TRADING_DAY}: pre-open", "once pre-open is written")
             log("  open before pre-open is refused, and pre-open is written once the engine has acted on the start of day -- OK")
 
             member.new_order_single("day-pre-open-1")
@@ -10518,6 +10559,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             enter("end-of-day", "NotNext")
             enter("open")
+            session_told("2", f"trading day {TRADING_DAY}: open", "once open is written")
+            member.send("g", [(335, "ha-test-g-1"), (263, "0")])
+            answered_g = session_told("2", f"trading day {TRADING_DAY}: open", "in answer to a TradingSessionStatusRequest (35=g)")
+            if answered_g.get(335) != "ha-test-g-1" or answered_g.get(325) != "N" or answered_g.get(336) != "1" or answered_g.get(75) != str(TRADING_DAY):
+                member.close()
+                die(f"the trading day: the answer to a TradingSessionStatusRequest was {answered_g}; TradSesReqID ha-test-g-1, UnsolicitedIndicator "
+                    f"N, TradingSessionID 1 and TradeDate {TRADING_DAY} were wanted")
+            log("  the member is told of pre-open and open as each is written, and a TradingSessionStatusRequest is answered at once -- OK")
             member.new_order_single("day-open-1")
             day_answered("day-open-1", "an order once the venue is open", "0")
             log("  the end of day before the close is refused; open is written, and an order in it is accepted -- OK")
@@ -10535,13 +10584,33 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"the trading day: the close was to cancel both orders resting on the book, each with a report of OrdStatus and ExecType "
                     f"4, cancelled; the member was sent {cancelled_at_close}")
             log("  the close cancels both orders resting on the book, and the member is sent a report of each -- OK")
+            session_told("3", f"trading day {TRADING_DAY}: closed", "once the close is written")
             enter("open", "AlreadyPast")
             member.new_order_single("day-closed-1")
             day_answered("day-closed-1", "an order after the close", "8", "market is closed")
             cancel_refused("day-closed-cancel-1", "day-open-1", "market is closed")
             log("  the close is written; an order and a cancel after it are refused, saying the market is closed -- OK")
 
+            # The binary gateway, after the close: it answers a session status request, and refuses an order, as the FIX
+            # gateway does.
+            binary_port = binary_gateway_listen_port(prefix)
+            _, binary_replies, binary_output = run_binary_client(bin_dir, binary_port, "--session-status", "ha-test-bin-g-1", session_status=True)
+            binary_answer = [reply for reply in binary_replies if reply["kind"] == "TradingSessionStatus" and reply["request_id"] == "ha-test-bin-g-1"]
+            if (not binary_answer or binary_answer[0]["state"] != "Closed" or binary_answer[0]["phase"] != "4" or binary_answer[0]["unsolicited"] != "N"
+                    or binary_answer[0]["trading_day"] != str(TRADING_DAY)):
+                member.close()
+                die(f"the trading day: the binary gateway was to answer a TradingSessionStatusRequest with State Closed, Phase 4 and the trading "
+                    f"day; binary_client printed:\n{binary_output}")
+            _, binary_replies, binary_output = run_binary_client(bin_dir, binary_port, "--orders", "1", "--cl-ord-id", "day-bin-closed-1")
+            binary_reports = [reply for reply in binary_replies if reply["kind"] == "ExecutionReport"]
+            if not binary_reports or binary_reports[0]["ord_status"] != "Rejected" or "market is closed" not in binary_reports[0]["text"]:
+                member.close()
+                die(f"the trading day: the binary gateway was to refuse an order after the close, saying the market is closed; binary_client "
+                    f"printed:\n{binary_output}")
+            log("  the binary gateway answers a session status request after the close, and refuses an order, saying the market is closed -- OK")
+
             enter("end-of-day")
+            session_told("3", f"trading day {TRADING_DAY}: the end of day", "once the end of day is written")
             enter("end-of-day", "AlreadyInPhase")
             member.new_order_single("day-ended-1")
             day_answered("day-ended-1", "an order in the end of day", "8", "trading day has ended")
@@ -10553,9 +10622,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
             late.connect()
             late.logon(reset_seq_num=True)
             late_logon = late.receive_until("A", timeout=_RAW_LOGON_TIMEOUT)
-            late.close()
             if late_logon is None:
+                late.close()
                 die("the trading day: a member could not log on in the end of day; logging on is allowed in every phase")
+            session_told("3", f"trading day {TRADING_DAY}: the end of day", "on logging on in the end of day", client=late)
+            late.close()
             log("  a member logs on in the end of day -- OK")
 
             leader_follower, _ = operator_requests.load_messages(prefix)
@@ -10611,6 +10682,18 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if not applied_as_it_happened:
                 die("the trading day: neither engine's log shows the close applied as it happened, so the logs are not of this run")
             log("  both engines applied the close alike, cancelling both orders, and the follower found no report that differs -- OK")
+
+            # Every refusal by phase is the gateway's: no refused command reaches a sequencer (R-0171). Each sequencer logs a
+            # command it refuses by phase; the operator's requests in the same log show it is this run's.
+            for sequencer_name in operator_requests.SEQUENCERS:
+                sequencer_log = prefix / "log" / f"{sequencer_name}.log"
+                text = sequencer_log.read_text(encoding="utf-8", errors="replace") if sequencer_log.is_file() else ""
+                if "TradingPhaseRequests: operator ha_test asks" not in text:
+                    die(f"the trading day: {sequencer_log} does not hold the operator's phase requests, so it cannot show what reached the sequencer")
+                reached = [line for line in text.splitlines() if "so the venue accepts no member's command" in line]
+                if reached:
+                    die(f"the trading day: a command the phase refuses reached {sequencer_name}, so the gateway did not refuse it: {reached[0]}")
+            log("  every order and cancel the phase refused was refused by the gateway, and none reached a sequencer -- OK")
 
         # ── The listener for operators answers only a client with the operator's certificate (R-0176) ──
         if scenario.assert_operator_listener_refuses_strangers:
@@ -13759,18 +13842,24 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # 2. The member noticed the gap and asked. Asserted on the number it asked for, not
             #    merely that it asked: a member that requested the wrong range would still log a
             #    ResendRequest, and the range is what the rest of this depends on.
-            # One past what -R set. The member accepts the Logon it is holding a gap over --
+            # One or two past what -R set. The member accepts the Logon it is holding a gap over --
             # that is what ignore_logon_sequence_check buys -- and its expected-receive advances
-            # over it before the gap is acted on, so it asks from the number after.
-            asks_from = resume_from + 1
+            # over it before the gap is acted on, so it asks from the number after. The gateway
+            # sends a TradingSessionStatus (35=h) straight after the Logon, and when that arrives
+            # before the member has acted on the gap, its expected-receive advances over that too,
+            # and it asks from the number after that. Which it is depends on timing on the member's
+            # side, so both are accepted; any other number is a wrong range.
+            asks_from_choices = (resume_from + 1, resume_from + 2)
             started = time.monotonic()
-            requested = gateway_event("fix_order_gateway_a", "ResendRequested", gateway_from, _RESEND_TIMEOUT, begin_seq_no=asks_from)
-            found, elapsed = requested is not None, time.monotonic() - started
+            requested = gateway_event("fix_order_gateway_a", "ResendRequested", gateway_from, _RESEND_TIMEOUT)
+            found, elapsed = requested is not None and requested.begin_seq_no in asks_from_choices, time.monotonic() - started
+            asks_from = requested.begin_seq_no if found else asks_from_choices[0]
             if not found:
                 die(f"resend: the member never asked for the gap. It was started expecting "
                     f"MsgSeqNum={resume_from} and was sent a Logon numbered {logon_seq}, so it had "
                     f"{_RESEND_GAP_MESSAGES} messages missing and should have sent a "
-                    f"ResendRequest BeginSeqNo={asks_from}. Check, in order: that -R took (the "
+                    f"ResendRequest BeginSeqNo {asks_from_choices[0]} or {asks_from_choices[1]}"
+                    f"{f', but asked from {requested.begin_seq_no}' if requested is not None else ''}. Check, in order: that -R took (the "
                     "client's session log names the number it expected); that the generated config "
                     "carries ignore_logon_sequence_check, without which fix8 logs off over a gap it "
                     "sees on the Logon instead of asking about it; and that the gateway parsed the "

@@ -163,6 +163,39 @@ engine is decided in three places:
    [FIX Test Client](fix_test_client.md#ftc_advanced_nos) has an Advanced section on its order form
    for the optional fields, and raw FIX and Groovy scripting for anything else.
 
+## What the venue is doing: refusals by phase, and 35=h
+
+The leading sequencer tells the gateway, in `OrderAcceptance`, whether the trading day has started,
+the trading day, the phase, and whether trading is halted, when the gateway connects and whenever any
+of them changes ([trading_day_plan.md](trading_day_plan.md), section 4).
+
+**Refusals by phase.** Outside pre-open and open, the gateway refuses every new order and every cancel
+before it reaches the sequencer, by the rule the sequencer refuses by (`fix_common/TradingSession.hpp`),
+with the same texts: "the trading day has not started", "the market is not open", "the market is
+closed" and "the trading day has ended". A new order is rejected with OrdRejReason 2, exchange closed; a
+cancel with a session-level Reject (35=3), SessionRejectReason 101. These refusals come before the
+refusals for an unavailable venue. Until the sequencer has said what the venue is doing, nothing is
+refused by phase, and the sequencer decides.
+
+**`TradingSessionStatus` (35=h).** Each time the trading day, the phase or the halt changes, the gateway
+sends every logged-on member a 35=h with UnsolicitedIndicator (325) Y, and it sends one to each member
+as the member logs on, straight after the Logon reply. It carries:
+
+| Tag | Value |
+|---|---|
+| TradingSessionID (336) | 1, Day: the venue has one trading session a day |
+| TradSesStatus (340) | 4 pre-open and 2 open, or 1 halted while trading is halted; 3 closed for the start of day, the close, the end of day, and the time before the trading day starts |
+| TradeDate (75) | the trading day, once it has started |
+| Text (58) | what the venue is doing in words, such as "trading day 20261116: open" or "trading day 20261116: pre-open, trading halted" |
+
+**`TradingSessionStatusRequest` (35=g)** is answered at once with a 35=h, from what the gateway holds,
+never passed to the sequencer. The answer echoes TradSesReqID (335) and has UnsolicitedIndicator N.
+Every member is sent every change whatever its SubscriptionRequestType (263) says: the gateway keeps no
+list of which members asked. Before the sequencer has said anything, the answer has TradSesStatus 0,
+unknown, and nothing is sent unasked. The binary gateway sends the same information in its own
+`TradingSessionStatus`, worked out by the same function
+([binary_order_gateway.md](binary_order_gateway.md)).
+
 ## Authentication
 
 The member sends its password in the Logon (tag 554), which is why the member listener should use

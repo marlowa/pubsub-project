@@ -79,8 +79,11 @@ every scenario, so that the limit can be compared with the changes of engine lea
 The leading sequencer sends `OrderAcceptance` to every gateway it holds a connection to: when
 acceptance changes in either direction, every five seconds while the venue is not accepting, and to
 a gateway at the moment it connects, so that a gateway connecting during an outage learns the state
-rather than assuming all is well. The message carries whether the venue is accepting, how many orders
-are held and for how long no engine has led, and the epoch of the leadership that sent it. A gateway that
+rather than assuming all is well. It is also sent whenever the trading day, the phase, or whether trading
+is halted changes. The message carries whether the venue is accepting, how many orders are held and for
+how long no engine has led, the epoch of the leadership that sent it, and what the venue is doing: whether
+the trading day has started, the trading day, the phase, and whether trading is halted. A gateway refuses
+by the phase and tells its members ([trading_day_plan.md](../venue/trading_day_plan.md), section 4). A gateway that
 sees an epoch higher than any before knows a new instance leads, and sends it again every command still
 unanswered ([Commands during a change of leader](commands_during_a_change_of_leader.md)).
 

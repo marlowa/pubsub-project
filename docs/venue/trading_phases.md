@@ -1,12 +1,13 @@
 # Trading phases and the technical event {#trading_phases}
 
-**Status: the technical event, halting, every phase and the close are built; the gateways' part and
-telling members are design.** The `TechnicalEvent` command, the venue's halt and an operator's halt and lift are built
+**Status: the technical event, halting, every phase, the close, the gateways' refusals and telling
+members are built; the topic for components that only need to know, and the schedule, are design.** The `TechnicalEvent` command, the venue's halt and an operator's halt and lift are built
 ([voided_commands.md](../availability/voided_commands.md), section 6). So is every phase, each entered on
 request, and the sequencer's refusal of members' commands outside pre-open and open
-([sequencer.md](sequencer.md), "The trading day and its phases"), and the close cancelling every order
-still open ([matching_engine.md](matching_engine.md)). The gateways refusing by phase, and telling a member
-that is not trading what the venue is doing, are not. The table of what each phase
+([sequencer.md](sequencer.md), "The trading day and its phases"), the close cancelling every order
+still open ([matching_engine.md](matching_engine.md)), and both gateways refusing by phase and telling every
+member what the venue is doing ([fix_order_gateway.md](fix_order_gateway.md),
+[binary_order_gateway.md](binary_order_gateway.md)). The table of what each phase
 allows is settled below. The requirements are written in the high availability chapter of the functional
 specification (`docs/book`, the section "The venue says what it is doing", R-0164 to R-0175), and the
 plan for building them is in [trading_day_plan.md](trading_day_plan.md).
@@ -26,10 +27,11 @@ trading is halted from those records, and while it is, it tells the gateways so 
 `Halted`: they refuse new orders, saying the venue is halted, with OrdRejReason Exchange closed, and
 pass cancels on, which the engine carries out while halted.
 
-What the venue does not do is tell a member that is connected and not trading, or that connects during
-the halt, that the venue is halted and when it resumes: a member learns of the halt from the reply to
-an order. That is what remains of [BUG-0065](../bug_list.md#bug_0065), with the phases other than open and the
-table below, and it is what R-0126 waits on.
+Every logged-on member is told of a halt, and of its lift, by a trading session status (FIX 35=h, and its
+binary counterpart), and a member that logs on during a halt is told at once ([fix_order_gateway.md](fix_order_gateway.md)).
+What the venue does not do is halt one instrument: a halt is venue-wide. That is what remains of
+[BUG-0065](../bug_list.md#bug_0065). R-0126, the venue saying it has no instance of a component, is still to
+be built on these messages.
 
 This note settles the shape of the mechanism.
 
@@ -235,8 +237,8 @@ added later without changing the `TechnicalEvent`.
    the phase the venue is in (`HaltAndVoidRequests`, and
    [voided_commands.md](../availability/voided_commands.md), section 6), and one for each phase it enters on
    request, from the start of day to the end of day (`TradingPhaseRequests`). The gateways do not read the
-   technical event itself: they act on the sequencer's `OrderAcceptance`, which says whether trading is
-   halted.
+   technical event itself: they act on the sequencer's `OrderAcceptance`, which says the trading day, the
+   phase, and whether trading is halted.
 4. The per-phase table above. Done.
 5. Implementation, and scenarios, in the order [trading_day_plan.md](trading_day_plan.md) sets out.
 
@@ -251,7 +253,6 @@ shows whether a rule is sufficient as well as necessary.
   broadcasts `OrderAcceptance`; see also [Order acceptance](../availability/order_acceptance.md)
 - [Matching engine](matching_engine.md) — whether trading is halted is kept in the book's file
   (`OrderBook`), so that it outlives the process, and the ways the engine comes to halt
-- [Bug list](../bug_list.md#bug_0065) — BUG-0065, the venue telling a member of a halt only in the reply
-  to an order, and being unable to halt one instrument
+- [Bug list](../bug_list.md#bug_0065) — BUG-0065, a trading halt that cannot be applied to one instrument
 - [Process death](../availability/process_death.md) — R-0126, which cannot be built until the venue
   can announce something about itself

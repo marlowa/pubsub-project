@@ -238,3 +238,20 @@ message OrderAcceptanceChanged (id=207, version=1)
     bool halted_for_recovery    # true: refused because the venue is halted while it recovers (RecoveryTooLong)
     bool halted                 # true: trading is halted while an engine leads (Halted): new orders are refused and cancels passed on
 end
+
+# ------------------------------------------------------------
+#  208 -- TradingSessionChanged
+#  What the leading sequencer says the venue is doing has changed
+#  (OrderAcceptance): the trading day, the phase, or whether trading
+#  is halted. From now on the gateway refuses every order and cancel
+#  the phase does not allow, and it has sent every logged-on member a
+#  TradingSessionStatus (35=h). Sent on the change, not on each
+#  arrival.
+# ------------------------------------------------------------
+message TradingSessionChanged (id=208, version=1)
+    bool day_started            # whether the trading day has started; when false, trading_day and phase say nothing
+    i32  trading_day            # YYYYMMDD
+    i32  phase                  # numbered as TradingPhase in leader_follower.dsl: 1 start of day, 2 pre-open, 3 open, 4 closed, 5 end of day
+    bool halted                 # whether trading is halted
+    i32  members_told           # how many logged-on members were sent a TradingSessionStatus
+end

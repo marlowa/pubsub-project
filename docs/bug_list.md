@@ -14,7 +14,7 @@
 | Id | Severity | Kind | Title |
 |---|---|---|---|
 | [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
-| [BUG-0065](#bug_0065) | high | task | The venue tells a member of a trading halt only in the reply to an order, and cannot halt one instrument |
+| [BUG-0065](#bug_0065) | high | task | A trading halt cannot be applied to one instrument |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
@@ -896,7 +896,7 @@ Any of them needs the soak and fairness tests the reactor's other foundational c
 
 ---
 
-### BUG-0065: The venue tells a member of a trading halt only in the reply to an order, and cannot halt one instrument {#bug_0065}
+### BUG-0065: A trading halt cannot be applied to one instrument {#bug_0065}
 
 | | |
 |---|---|
@@ -905,7 +905,7 @@ Any of them needs the soak and fairness tests the reactor's other foundational c
 | Found | 2026-08-28 |
 | Recorded | 2026-08-28 |
 | How | Andrew observing that members will not put up with "service not available" indefinitely, while reviewing the escalation design for [BUG-0009](#bug_0009) |
-| Impact | A member that is connected and not trading, or that logs on during a halt, is not told the venue is halted, and learns it only by placing an order. A halt cannot be limited to one instrument |
+| Impact | A halt stops trading in every instrument, so a problem with one instrument stops trading in all of them |
 
 **What is built.** The venue has a halted state, distinct from refusing orders for want of a matching engine. It is a
 `TechnicalEvent` command in the WAL, which every matching engine applies, and which the leading sequencer writes when
@@ -916,11 +916,17 @@ the halt has been answered. The sequencer keeps the halted state from its WAL, a
 orders saying the venue is halted and pass cancels on, which the engine carries out while halted
 ([voided_commands.md](availability/voided_commands.md), section 6).
 
-**What remains**, by decision 8 of that design: `TradingSessionStatus` (FIX 35=h), and its equivalent on the binary
-gateway, is neither sent nor understood, so a member that is not trading, or that logs on during a halt, is not told
-the venue is halted or when it resumes (R-0023, which is partly met until then); a halt is always venue-wide; and the
-table of what each trading phase allows ([trading_phases.md](venue/trading_phases.md)) does not exist. The rest of
-this entry is the analysis these were designed from.
+**What remains**: a halt is always venue-wide; it cannot be applied to one instrument. The rest of this entry is the
+analysis the work was designed from.
+
+**Where it stands, 15 November 2026.** Members are told. Both gateways send every logged-on member a
+`TradingSessionStatus` (FIX 35=h, and its binary counterpart) each time the phase, the trading day or the halt changes,
+and to each member as it logs on, and answer a request for it (35=g) at once; a halt is reported as TradSesStatus 1,
+halted. The table of what each phase allows exists, in [trading_phases.md](venue/trading_phases.md), and both gateways
+and the sequencer refuse by it (step 7 of [trading_day_plan.md](venue/trading_day_plan.md)). Scenario 111 checks a
+member is told at logon and at each phase, and that a request is answered. A member logging on during a halt is now told
+the venue is halted, and is told when it resumes. What is left is a halt for one instrument, which belongs with the
+instrument list ([BUG-0242](#bug_0242)).
 
 **How it works in practice, from a venue Andrew has operated:** the matching engine holds a halted
 state, and a member placing an order is told so in the FIX reply. That is the mechanism that must

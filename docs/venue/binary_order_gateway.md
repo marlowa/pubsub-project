@@ -30,7 +30,7 @@ Every message is a 24-byte `PduHeader` followed by a DSL-encoded payload -- the 
 the components use between themselves, so the listener is a `FrameworkPdu` one and the
 framework does the framing. There is no byte-stream parsing anywhere in this application.
 
-Two message types are specific to this gateway, defined in `applications/binary_session.dsl`
+Five message types are specific to this gateway, defined in `applications/binary_session.dsl`
 (ids 700-709):
 
 | PDU | Direction | Purpose |
@@ -38,6 +38,8 @@ Two message types are specific to this gateway, defined in `applications/binary_
 | `Logon` | client → gateway | `comp_id`, `password`, `target_comp_id` |
 | `LogonAck` | gateway → client | `LogonOutcome`, plus optional text for logs |
 | `RequestRefused` | gateway → client | The gateway's answer to a request to cancel it refuses itself: the request's `cl_ord_id`, the refused message's PDU id, a `RefusalReason`, the reason in text, and the field at fault where there is one |
+| `TradingSessionStatus` | gateway → client | What the venue is doing: the state as FIX gives it in TradSesStatus (340), whether the trading day has started, the trading day, the phase, whether trading is halted, whether it was sent unasked, the same in words, and the request it answers if any. The counterpart of FIX 35=h |
+| `TradingSessionStatusRequest` | client → gateway | A member asks what the venue is doing, naming its request with `request_id`. The counterpart of FIX 35=g |
 
 Everything else is the DD-derived order messages from `fix_orders.dsl` (ids 1000+):
 `NewOrderSingle` (1000) and `OrderCancelRequest` (1001) inbound, `ExecutionReport` (1002) and
@@ -95,10 +97,13 @@ gateway's metrics and to find the matching engine's refusals of a cancel.
    key), Symbol and OrderQty at most `[order_limits]` in the configuration.
 3. **Every quantity and price is a decimal number**, by the FIX codec's own rule
    (`fix_codec::FixField::is_decimal`).
-4. **A sequencer is connected, and the venue is accepting orders.** The primary sequencer counts,
+4. **The phase allows it, a sequencer is connected, and the venue is accepting orders.** Orders and
+   cancels are refused outside pre-open and open, with the texts and reasons the sequencer gives
+   ("the trading day has not started", "the market is not open", "the market is closed", "the trading
+   day has ended"), by the same rule (`fix_common/TradingSession.hpp`). The primary sequencer counts,
    and so does the secondary when `ha_enabled` is true. The leading sequencer says whether the
-   venue is accepting orders with an `OrderAcceptance` message, on the connection it holds to the
-   gateway, as it does to the FIX gateway.
+   venue is accepting orders, and what it is doing, with an `OrderAcceptance` message, on the
+   connection it holds to the gateway, as it does to the FIX gateway.
 5. **The session is within its throttle limits** ([gateway_throttles.md](gateway_throttles.md)).
 6. **There is room to remember the command.** With high availability on, every command passed on
    is kept until the sequencer answers it, so that it can be sent again to a new sequencer leader
@@ -127,7 +132,7 @@ gateway gives in SessionRejectReason (373) for the same refusal, so the two gate
 | 5, `ValueIncorrect` | A field holds a value the protocol does not define, is too long, or is not a decimal number; `field` names it |
 | 99, `Other` | The `ClOrdID` has been used before; the text is "ClOrdID already used today" |
 | 100, `ThrottleLimitExceeded` | The session is over its limit on cancels; the text names the limit |
-| 101, `VenueUnavailable` | No sequencer is connected, the venue is not accepting orders, or too many commands are waiting to be answered |
+| 101, `VenueUnavailable` | The phase does not allow cancels, no sequencer is connected, the venue is not accepting orders, or too many commands are waiting to be answered |
 
 The binary protocol has no sequence numbers, so `RequestRefused` names the refused request by its
 ClOrdID.
@@ -212,6 +217,24 @@ binary gateway, which is how every environment except development is configured.
 **Startup order** is as for the FIX order gateway: it does not matter. The sequencer dials this
 gateway's ER listener and retries every two seconds until it answers.
 
+## What the venue is doing
+
+The gateway holds what the leading sequencer last said the venue is doing, in `OrderAcceptance`: whether
+the trading day has started, the trading day, the phase, and whether trading is halted. Each time any of
+them changes, it sends every logged-on member a `TradingSessionStatus`, marked unsolicited, and it sends
+one to each member as the member logs on, straight after the `LogonAck`. A `TradingSessionStatusRequest`
+is answered at once from what the gateway holds, never passed to the sequencer, with the request's
+`request_id`. Every member is sent every change; there is no list of which members asked. Before the
+sequencer has said anything, nothing is sent unasked, and a request is answered with the state `Unknown`.
+
+The state uses the numbers FIX gives in TradSesStatus (340): pre-open (4) and open (2) as themselves,
+or halted (1) while trading is halted; closed (3) for the start of day, the close, the end of day, and the
+time before the trading day starts. The FIX gateway works out its 35=h with the same function
+(`fix_common/TradingSession.hpp`), so the two gateways report every moment alike. The phase is also given
+as a number, as `TradingPhase` numbers it in `leader_follower.dsl`, and the text is the one the FIX
+gateway gives in Text (58), such as "trading day 20261116: open". The design is
+[trading_day_plan.md](trading_day_plan.md), section 4.2.
+
 ## Reference client
 
 `bin/binary_client` logs on, sends orders, and prints the ERs that come back:
@@ -221,7 +244,10 @@ binary_client --port 9890 --comp-id BINCLIENT --password stubpassword --orders 3
 ```
 
 It uses plain sockets and the generated codecs rather than the framework, which shows that a
-client needs nothing from `pubsub_itc_fw` beyond the PDU header layout.
+client needs nothing from `pubsub_itc_fw` beyond the PDU header layout. It prints every
+`TradingSessionStatus` it is sent, and does not count one as the reply to an order or a cancel.
+`--session-status REQUEST-ID` asks what the venue is doing instead of placing orders, prints the
+answer, and exits.
 
 ## Load generator
 

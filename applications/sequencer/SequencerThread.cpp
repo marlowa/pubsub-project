@@ -20,6 +20,7 @@
 #include <LeasePairNumbers.hpp>
 #include <OrderPathMetrics.hpp>
 #include <TradingDate.hpp>
+#include <TradingSession.hpp>
 #include <lease_messages.hpp>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
@@ -1663,13 +1664,16 @@ void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord&
                    "SequencerThread: the envelope was stamped seq={} but the replicated WAL wrote the record as {} -- the two numberings differ",
                    envelope.seq_no, written_as);
     }
-    // Every record this instance writes as leader passes here, so whether trading is halted is kept as it is written. The
-    // gateways are told at once of a change.
     // Every record this instance writes as leader is noted as it is written: a report, for the highest command answered;
-    // a void of its own, sent to the engines once committed; and a member's command or a TechnicalEvent, for whether
-    // trading is halted, which the gateways are told of when it changes.
-    if (venue_state_.note_record(written_as, record_of(envelope), VenueStateFromTheWal::How::written_by_this_leader).halt_changed) {
-        presence_.refresh_order_acceptance(std::chrono::steady_clock::now());
+    // a void of its own, sent to the engines once committed; and a TechnicalEvent, for the phase and whether trading is
+    // halted. The gateways are told at once of a change to either: OrderAcceptance carries both, and a gateway refuses by
+    // the phase and tells its members (docs/venue/trading_day_plan.md, section 4.1). A change of halt can change whether
+    // the venue accepts orders, which tells the gateways itself; otherwise they are told here.
+    const VenueStateFromTheWal::Noted noted = venue_state_.note_record(written_as, record_of(envelope), VenueStateFromTheWal::How::written_by_this_leader);
+    if (noted.halt_changed || noted.phase_changed) {
+        if (!presence_.refresh_order_acceptance(std::chrono::steady_clock::now())) {
+            broadcast_order_acceptance();
+        }
     }
 }
 
@@ -1815,21 +1819,9 @@ void SequencerThread::CommandLinks::refuse(const pubsub_itc_fw::ConnectionID& ca
 }
 
 std::optional<pubsub_itc_fw_app::CommandRefusedReason> SequencerThread::refusal_by_phase() const {
-    if (!venue_state_.trading_day_started()) {
-        return pubsub_itc_fw_app::CommandRefusedReason::TradingDayNotStarted;
-    }
-    switch (venue_state_.trading_phase().latest()->phase) {
-        case pubsub_itc_fw_app::TradingPhase::StartOfDay:
-            return pubsub_itc_fw_app::CommandRefusedReason::MarketNotOpen;
-        case pubsub_itc_fw_app::TradingPhase::Closed:
-            return pubsub_itc_fw_app::CommandRefusedReason::MarketClosed;
-        case pubsub_itc_fw_app::TradingPhase::EndOfDay:
-            return pubsub_itc_fw_app::CommandRefusedReason::TradingDayEnded;
-        case pubsub_itc_fw_app::TradingPhase::PreOpen:
-        case pubsub_itc_fw_app::TradingPhase::Open:
-            break;
-    }
-    return std::nullopt;
+    // The same rule both gateways refuse by (fix_common/TradingSession.hpp).
+    return fix_common::refusal_by_phase(venue_state_.trading_day_started(), venue_state_.trading_day_started() ? venue_state_.trading_phase().latest()->phase
+                                                                                                               : pubsub_itc_fw_app::TradingPhase::StartOfDay);
 }
 
 bool SequencerThread::the_venue_accepts_members_commands() const {
@@ -2507,6 +2499,10 @@ void SequencerThread::send_order_acceptance(const pubsub_itc_fw::ConnectionID& c
     state.reason = presence_.acceptance();
     state.has_leader_epoch = true;
     state.leader_epoch = current_epoch();
+    state.day_started = venue_state_.trading_day_started();
+    state.trading_day = venue_state_.trading_day();
+    state.phase = venue_state_.trading_day_started() ? venue_state_.trading_phase().latest()->phase : pubsub_itc_fw_app::TradingPhase::StartOfDay;
+    state.halted = venue_state_.trading_halt().halted();
     send_pdu(conn_id, pubsub_itc_fw_app::OrderAcceptance::message_pdu_id, 0, state);
 }
 

@@ -755,6 +755,13 @@ message OrderAcceptance (id=127, version=1)
     # knows a new instance leads, and sends it again every command it is still holding unanswered
     # (docs/availability/commands_during_a_change_of_leader.md, section 3.2).
     optional i32 leader_epoch
+    # What the venue is doing, as the leading sequencer's WAL says (docs/venue/trading_day_plan.md,
+    # section 4.1). Sent whenever any of it changes, as well as when acceptance changes. A gateway
+    # refuses every order and cancel the phase does not allow, saying why, and tells its members.
+    bool day_started                # whether the WAL holds a start of day; when false, trading_day and phase say nothing
+    i32  trading_day                # YYYYMMDD
+    TradingPhase phase
+    bool halted                     # whether trading is halted, whatever the reason; the reason above says what follows from it
 end
 
 # ============================================================

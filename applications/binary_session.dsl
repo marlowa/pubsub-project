@@ -12,9 +12,11 @@
 #
 #  What a client cannot get from fix_orders.dsl is a way to say who it is. FIX
 #  carries that in its Logon (35=A) and SenderCompID; Logon and LogonAck below
-#  are the binary equivalent. The protocol adds one more message, RequestRefused,
-#  the gateway's answer to a request it refuses itself before the request
-#  reaches the matching engine: the counterpart of a FIX session-level Reject.
+#  are the binary equivalent. The protocol adds RequestRefused, the gateway's
+#  answer to a request it refuses itself before the request reaches the
+#  matching engine: the counterpart of a FIX session-level Reject. And it adds
+#  TradingSessionStatus and TradingSessionStatusRequest, the counterparts of
+#  FIX 35=h and 35=g, which tell a member what the venue is doing.
 #
 #  Sequence:
 #
@@ -42,7 +44,7 @@
 #
 #  ID range:
 #    700-709 reserved for the binary session protocol (700 Logon, 701 LogonAck,
-#    702 RequestRefused). 100-401 leader/follower, 500-519 authentication
+#    702 RequestRefused, 703 TradingSessionStatus, 704 TradingSessionStatusRequest). 100-401 leader/follower, 500-519 authentication
 #    service and its admin channel, 600-619 matching engine replication, 1000+
 #    the DD-derived order messages.
 # -----------------------------------------------------------------------------
@@ -143,4 +145,58 @@ message RequestRefused (id=702, version=1)
     RefusalReason reason
     string        text           # the reason in words, naming the field or the limit
     optional string field        # the field at fault, for RequiredFieldMissing and ValueIncorrect; optional fields come last
+end
+
+# ---------------------------------------------------------------------------
+# TradingSessionState
+#
+# The state of the trading session, as a member sees it. The numbers are the
+# ones FIX gives in TradSesStatus (340), and both gateways work them out with
+# the same function (fix_common/TradingSession.hpp), so the two cannot report
+# the same moment differently. Pre-open and open are reported as themselves,
+# or as Halted while trading is halted; the start of day, closed, the end of
+# day, and the time before the trading day starts are reported as Closed.
+# ---------------------------------------------------------------------------
+
+enum TradingSessionState : i32 {
+    Unknown = 0   # the gateway has not yet been told what the venue is doing
+    Halted  = 1
+    Open    = 2
+    Closed  = 3
+    PreOpen = 4
+}
+
+# ---------------------------------------------------------------------------
+# TradingSessionStatus (id=703)
+#
+# What the venue is doing: the counterpart of FIX TradingSessionStatus (35=h).
+# The gateway sends it to every logged-on member each time the phase, the
+# trading day, or whether trading is halted changes, and to each member as it
+# logs on, once the gateway knows. It also answers TradingSessionStatusRequest
+# with it. Every member is sent every change: there is no list of which
+# members asked (docs/venue/trading_day_plan.md, section 4.2).
+# ---------------------------------------------------------------------------
+
+message TradingSessionStatus (id=703, version=1)
+    TradingSessionState state
+    bool   day_started               # whether the trading day has started; when false, trading_day and phase say nothing
+    i32    trading_day               # YYYYMMDD
+    i32    phase                     # the venue's phase, numbered as TradingPhase in leader_follower.dsl: 1 start of day, 2 pre-open, 3 open, 4 closed, 5 end of day
+    bool   halted                    # whether trading is halted
+    bool   unsolicited               # true when sent because something changed or the member logged on; false in answer to a request
+    string text                      # what the venue is doing, in words, as the FIX gateway gives it in Text (58)
+    optional string request_id       # the request_id of the TradingSessionStatusRequest this answers
+end
+
+# ---------------------------------------------------------------------------
+# TradingSessionStatusRequest (id=704)
+#
+# A member asks what the venue is doing: the counterpart of FIX
+# TradingSessionStatusRequest (35=g). The gateway answers it itself, from what
+# the sequencer last told it, so a member asking is never traffic on the
+# sequencer.
+# ---------------------------------------------------------------------------
+
+message TradingSessionStatusRequest (id=704, version=1)
+    string request_id                # echoed in the answer
 end
