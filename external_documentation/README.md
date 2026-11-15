@@ -71,6 +71,7 @@ still publishes at the addresses given.
 | `lme_lmeselect_v10_functional_definition_v1_5_1.pdf` | The London Metal Exchange: LMEselect v10 Functional Definition, version 1.5.1: the market states of the trading day, pauses and halts, order types, cancel on disconnect and the inbound message throttle | lme.com, saved from a browser on 15 November 2026, because the site refuses a download by a script |
 | `lme_ptrm_user_guide_v1_6.pdf` | The London Metal Exchange: LMEptrm User Guide, version 1.6, the pre-trade risk management interface: risk limits, risk groups and the kill switch | lme.com, saved from a browser on 15 November 2026, for the same reason |
 | `lme_optic_user_guide_v2_0.pdf` | The London Metal Exchange: LMEoptic User Guide, version 2.0, a web application in which a member sees its active orders and trades for the day and cancels them, apart from its own trading systems | lme.com, saved from a browser on 15 November 2026, for the same reason |
+| `lme_lmetrader_admin_setup_guide_v2_1.pdf` | The London Metal Exchange: LMEtrader User Setup Guide for LMEselect 10, version 2.1. LMEtrader is a trading front end that Trading Technologies provides and manages for the exchange; the guide sets out how a member's administrator creates accounts, users, roles and permissions, risk limits and connections | lme.com, saved from a browser on 15 November 2026, for the same reason as the others |
 | `lme_lmeselectmd_fix_specification_examples_v9_0.pdf` | The London Metal Exchange: LMEselectMD FIX Specification Examples, version 9.0 (January 2017), market data, from an earlier generation of the system | [lme.com](https://www.lme.com/en/Trading/Systems//-/media/Files/Trading/Systems/LMEselectMD/Select-7-MDD-FIX-Specification-Examples.pdf) |
 
 ## What they are used for
@@ -84,6 +85,14 @@ still publishes at the addresses given.
   workflows and third-party or ISV platforms", so that a member keeps that control during an outage of its own systems.
   It shows only the current trading session: after the close, the session's orders and trades are removed from it
   (LMEoptic user guide, sections 1 and 2.6).
+
+**Who administers what for a member**, for the COMPID editor and its administrator roles
+([security.tex](../docs/book/security/security.tex), "COMPID editor and administrator access"):
+
+- For LMEtrader, the provider's onboarding team creates the member company and its first administrator, and from then
+  on the member's own administrator creates the member's accounts and users, gives each user a role and permissions,
+  assigns risk limits, and assigns connections to accounts; a risk administrator is set up separately for LMEptrm
+  (LMEtrader user setup guide, sections 1 to 5 and appendix A, which lists the permissions of each role).
 
 **How a venue answers a logon it refuses, and a member that will not stop**, for
 [BUG-0059](../docs/bug_list.md#bug_0059):
