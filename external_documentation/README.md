@@ -56,7 +56,53 @@ taken from the `master` branch on that date, so a later copy may differ.
 The Javadoc of `Cluster` for Aeron 1.41.4 at javadoc.io, which says the same as `aeron_cluster_Cluster.java`, refused
 the download (HTTP 404).
 
+### The London Metal Exchange's LMEselect
+
+Downloaded on 15 November 2026. LMEselect is the London Metal Exchange's electronic trading system; its page,
+lme.com/Trading/Systems/LMEselect, lists the current specifications, but it, and the newest issues of the order entry
+and risk management specifications (order entry v1.9.2, risk management v1.8) and the LMEselect v10 conformance guide,
+refused the download (HTTP 403, a check that a browser is in use). The copies below are earlier issues the exchange
+still publishes at the addresses given.
+
+| File | Publisher, and what it is | Where it came from |
+|---|---|---|
+| `lme_order_entry_gateway_fix_specification_v1_2.pdf` | The London Metal Exchange: Order Entry Gateway FIX Specification, version 1.2 (January 2022), FIX 5.0 SP2 over FIXT.1.1 | [lme.com](https://www.lme.com/-/media/Files/Trading/New-initiatives/New-trading-platform/Timeline/Order-Entry-Gateway-FIX-Specification-v1-2.pdf) |
+| `lme_drop_copy_gateway_fix_specification_v1_4.pdf` | The London Metal Exchange: Drop Copy Gateway FIX Specification, version 1.4 (June 2023) | [lme.com](https://www.lme.com/-/media/files/trading/new-initiatives/new-trading-platform/access/drop-copy-gateway-fix-specification.pdf) |
+| `lme_lmeselect_v10_functional_definition_v1_5_1.pdf` | The London Metal Exchange: LMEselect v10 Functional Definition, version 1.5.1: the market states of the trading day, pauses and halts, order types, cancel on disconnect and the inbound message throttle | lme.com, saved from a browser on 15 November 2026, because the site refuses a download by a script |
+| `lme_ptrm_user_guide_v1_6.pdf` | The London Metal Exchange: LMEptrm User Guide, version 1.6, the pre-trade risk management interface: risk limits, risk groups and the kill switch | lme.com, saved from a browser on 15 November 2026, for the same reason |
+| `lme_optic_user_guide_v2_0.pdf` | The London Metal Exchange: LMEoptic User Guide, version 2.0, a web application in which a member sees its active orders and trades for the day and cancels them, apart from its own trading systems | lme.com, saved from a browser on 15 November 2026, for the same reason |
+| `lme_lmeselectmd_fix_specification_examples_v9_0.pdf` | The London Metal Exchange: LMEselectMD FIX Specification Examples, version 9.0 (January 2017), market data, from an earlier generation of the system | [lme.com](https://www.lme.com/en/Trading/Systems//-/media/Files/Trading/Systems/LMEselectMD/Select-7-MDD-FIX-Specification-Examples.pdf) |
+
 ## What they are used for
+
+**What a member can see and cancel of what the venue holds for it**, for
+[BUG-0089](../docs/bug_list.md#bug_0089):
+
+- The London Metal Exchange's LMEoptic shows a member every active order and executed trade of the current business
+  day, "including orders submitted under all FIX and binary sessions, regardless of submission method", and lets it
+  cancel orders one at a time, in groups, all at once, by contract or by trader. It "operates independently of trading
+  workflows and third-party or ISV platforms", so that a member keeps that control during an outage of its own systems.
+  It shows only the current trading session: after the close, the session's orders and trades are removed from it
+  (LMEoptic user guide, sections 1 and 2.6).
+
+**How a venue answers a logon it refuses, and a member that will not stop**, for
+[BUG-0059](../docs/bug_list.md#bug_0059):
+
+- The London Metal Exchange's order entry gateway disconnects a client that sends anything before the exchange of
+  Logon messages is complete. It answers a Logon refused for a wrong password, a locked comp id, or a time when logon is
+  not permitted with a Logout or a Reject before ending the session, but ends the session with no message at all for
+  other reasons, an unknown comp id among them. Repeated password failures lock the comp id until the member contacts
+  the exchange. A second connection from a comp id already logged on ends both connections (order entry specification,
+  sections 1.1.3 and 1.2). Nothing in it says what happens to a connection whose BeginString is not FIXT.1.1, or to a
+  client that reconnects repeatedly.
+- LMEselect v10 counts each comp id's messages in whole seconds, not a sliding second, and rejects those over the limit;
+  cancels are exempt. Separately, "a system protection throttle will disconnect a user if the incoming message volume
+  exceeds a multiple of the threshold limit. Reconnection is permitted after a second" (functional definition, section
+  2.2.11): a short, fixed refusal after a disconnection, not a block.
+- The same gateway limits the order submissions, amends, quote requests and security definition requests a comp id may
+  send in each second, and exempts cancels. Each message over the limit is refused with a Business Message Reject,
+  whose reason is either "Throttle limit exceeded" or "Throttle limit exceeded, session will be disconnected" (order
+  entry specification, section 3.16, and the reasons listed for BusinessRejectReason).
 
 **How an exchange answers a message its gateway refuses**, for the design in
 [gateway_refusals.md](../docs/venue/gateway_refusals.md):
@@ -88,6 +134,18 @@ the download (HTTP 404).
 **How the trading day moves from one phase to the next**, for the design in
 [trading_day_plan.md](../docs/venue/trading_day_plan.md):
 
+- The London Metal Exchange's LMEselect v10 divides the day into market states (system inaccessible, day start,
+  pre-open, open, post trade, close) "configured to transition at the times specified in the trading schedule". The
+  exchange changes the schedule for one instrument, to extend trading, or to close early, for example on Christmas Eve,
+  and tells members. A pause or a halt is a condition imposed on top of the market state, on the whole market or any
+  level of the product hierarchy; "the trading schedule will continue to operate but with restrictions of the state
+  condition that has been imposed". A pause keeps orders on the book and allows cancels; a halt removes the affected
+  orders; a technical halt, applied when a system component fails, removes them too and tells members to clear their
+  own books (functional definition, sections 1.1 to 1.4).
+- Its pre-trade risk management lets a member's risk manager, or the exchange, suspend a member, a risk group or an end
+  client, which stops new orders and amendments but allows cancels, or halt one, which also pulls every order it has in
+  the market. Either lasts until lifted, and neither side can lift a kill the other imposed (LMEptrm user guide,
+  section 8).
 - The London Stock Exchange's phases follow a published schedule, the trading cycles in its Business Parameters
   document, and can be overridden by "market control actions invoked by London Stock Exchange that override the normal
   schedule"; halt, suspend and resume are separate, unscheduled sessions. Each instrument has its own cycle, and its

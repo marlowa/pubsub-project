@@ -1147,6 +1147,79 @@ session whose provisioning does not name it -- `ha_test.py` scenario 20 tests ex
 What is genuinely missing is the automatic half: something that counts per peer, decides when a
 count is excessive, and acts on it without an operator watching. Nothing here is built.
 
+#### What the FIX gateway does today
+
+- **Framing is by BodyLength.** The parser reads BeginString (8) and BodyLength (9) and uses
+  BodyLength to find the end of each message (`FixParser.hpp`). It never scans for `10=` to find
+  the end, which would be wrong, because those bytes can appear inside a field's data.
+- **The wrong protocol is caught on the first bytes.** The gateway compares the first bytes received
+  on a connection with `8=FIXT.1.1<SOH>` (`FixOrderGatewayThread.cpp`, the preamble check). A member
+  sending `8=FIX.4.4` fails before any message is parsed.
+- **What follows is the problem this entry describes.** The gateway closes the connection at once
+  and sends the member nothing. It logs one line at Info, "connection N invalid FIX preamble --
+  disconnecting", which names neither the member's address nor what it sent, so support cannot tell
+  from the log who is looping or which version they are using. Nothing counts the failures, no
+  metric shows them, and nothing slows the member down. The session's state is set up when the
+  connection is accepted, before the check, so every attempt pays for that and for its teardown.
+
+#### The plan
+
+In this order, each step checked before the next is started, and each new check made to fail on
+purpose first:
+
+1. **Measure before deciding how hard to push back.** A client that connects, sends a FIX 4.4
+   Logon, is disconnected and connects again at once, as fast as it can, while ordinary members
+   trade. Three numbers: what one attempt costs the gateway's thread; how many attempts a second
+   such a client reaches; and how much, if at all, the other members' round trip suffers. If the
+   cost is small, the logging and the metric in steps 2 and 3 matter more than the cooldown in
+   step 5.
+2. **Say who, and what they sent.** The line logged for a failed preamble names the peer's address
+   and port and the BeginString received (the bytes up to the first SOH, shortened and with
+   anything unprintable escaped), at Warning. A looping member must not turn the log itself into
+   the cost, so after the first failure from a peer the gateway logs a count for that peer at
+   intervals, not a line for every attempt.
+3. **Count it.** A counter of failed preambles, and a gauge of how many peers are in a cooldown
+   (step 5). Not a label for each address: the number of distinct addresses is not bounded, and a
+   label for each would make the metric itself grow without limit.
+4. **Make the refused attempt as cheap as it can be.** Set up only what the preamble check needs
+   until the check passes, so that a connection failing it costs an accept, one read and a close.
+   Refusing a connection still costs an accept; only a firewall rule outside the venue avoids that,
+   and the gateway's log line is what tells an operator which rule to write.
+5. **A cooldown for each peer, not a block.** The gateway keeps, for each peer address, how many
+   preambles have failed within a window. When a peer passes the threshold it enters a cooldown, and
+   while it lasts each connection from that address is closed as soon as it is accepted, without
+   reading from it. The gateway logs at Warning when a peer enters a cooldown and when it leaves
+   one, naming the address and the BeginString it was sending, so that support can contact the
+   member. The cooldown ends by itself. Suspending a comp id stays a deliberate act by an operator,
+   through the credentials path described above.
+   - **The table has a fixed size**, set in the configuration, and when it is full the peer seen
+     least recently is dropped from it. A connection from many different addresses must not make
+     the table grow without limit. Completing a TCP connection needs a real address, so addresses
+     cannot simply be invented, but a scan from many real ones is possible.
+   - **The window and the cooldown are measured on the monotonic clock**, never the wall clock,
+     which a time adjustment can move.
+   - **No lock is needed.** The gateway accepts connections and reads from them on its one reactor
+     thread, so the table belongs to that thread alone.
+   - **The address alone is the key.** Before logon nothing the peer says about itself is proven,
+     so a comp id read from a failed Logon cannot be trusted to separate one member from another.
+     Several members behind one address translation share a cooldown; the threshold has to be
+     set with that in mind.
+   - **No address is exempt, loopback included.** The development venue runs entirely on loopback,
+     so an exemption would mean the cooldown is never exercised. The threshold, window and cooldown
+     are settings, and a scenario sets them low to trigger the cooldown on purpose.
+6. **The binary gateway.** Check what it does with a connection whose first message is not one of
+   its own, and give it the same logging, counting and cooldown if it has the same gap.
+
+**One question is open: whether to tell the member why.** The gateway could send a Logout naming
+the version it expects before closing, written in the member's own BeginString so that the member's
+engine can read it. Some FIX engines stop retrying when given a reason, and many do not. It is to
+be decided once step 1 shows what the loop costs.
+
+**What would show it done.** A scenario in which a client loops with FIX 4.4 while members trade.
+The gateway must log the peer and what it sent, count the failures, put the peer in a cooldown at
+the threshold and say so, refuse its connections without reading them while the cooldown lasts,
+release it afterwards, and leave the other members' orders unaffected.
+
 ### BUG-0069: The sequencer, arbiters and witness report no metrics at all {#bug_0069}
 
 | | |
