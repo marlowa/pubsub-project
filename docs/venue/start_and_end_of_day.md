@@ -1,6 +1,6 @@
 # Starting and ending the trading day {#start_and_end_of_day}
 
-**Status: agreed and built (section 5): each file records its trading day and is refused on another day, and `scripts/trading_day.py` carries out both procedures.** This note is step 3 of
+**Status: the start of the day is agreed and built (sections 3 and 5): each file records its trading day and is refused on another day, and `scripts/trading_day.py start` starts a day. How the day ends is agreed in shape and open in its details (section 4): each component shuts itself down and archives its own files when it receives the end of day.** This note is step 3 of
 [trading_day_plan.md](trading_day_plan.md). It lists every file the venue writes during a trading day, and sets out
 the procedure that starts a day and the procedure that ends one
 ([BUG-0137](../bug_list.md#bug_0137)). The choices made are collected in the last section.
@@ -148,40 +148,197 @@ trading day `D` and the name of the file of the day's times for each phase. It d
 
 Logging on is allowed in every phase, so members may connect as soon as the gateways are up at step 6.
 
-## 4. The end-of-day procedure
+## 4. Ending the trading day
 
-The procedure is run once the venue has entered `eod`. It does not move the venue on by itself: closing early is an
-operator's request to the sequencer, made on purpose, not a side effect of ending the day.
+**Status: the shape is agreed; the decisions in section 4.2 are open except where they say otherwise, and none of it is built.** What is built today
+is a procedure run from outside the venue, described in section 4.3, which this design replaces.
 
-1. **Check that the venue is in `eod`** for the day named in the run manifest. The procedure asks the leading
+### 4.1 How the day ends
+
+The end of day is a trading phase, like the start of day, and reaches every component in the same way. The leading
+sequencer enters it at the time the day's schedule gives, or when an operator asks for it with
+`trading_phase.py end-of-day`, which a scheduler such as cron can run at a fixed time just as the start of day is run.
+Entering it is a `TechnicalEvent` (153) in the WAL. From there it reaches each component by the routes that exist
+today for every phase:
+
+- the matching engines apply it from the WAL;
+- the follower sequencer copies it into its own WAL;
+- the matching engine publishers read it from their copy of the WAL and publish it on the `technical_events` topic;
+- the leading sequencer tells each gateway in an `OrderAcceptance` (127), which carries the trading day and the phase.
+
+**Each component, on receiving the end of day, shuts itself down in an orderly way, and archiving its own files is
+part of that shutdown.** It finishes what it is doing, closes its WAL, its regions and its other files, and moves
+every file in section 2.1 that it wrote into `<archive_dir>/<D>/<machine>/`, keeping the file's path below the
+installation. It writes a listing of every file it moves, with its size and a SHA-256 checksum, before removing
+anything from its place, and checks each archived copy against the listing, as section 4.3 describes for the
+procedure built today. Then it exits.
+
+Three things follow from this:
+
+- **There is no separate archiving step.** Nothing outside the venue has to run for the day to end, just as nothing
+  has to run for the day to proceed once it has started (section 3, step 8).
+- **No component has to ask whether the day ended.** Receiving the end of day is the evidence that it ended. A
+  component never archives on any other evidence, so a venue that stops during the day, by a crash or by an operator
+  stopping it, leaves every file in place for a restart.
+- **No machine depends on another.** Each component archives the files it wrote, on the machine it runs on, so
+  `archive_dir` need not be shared between machines, and the components can be spread over as many machines as the
+  environment file says. The pre-production environment, `environments/preprod.toml`, uses ten.
+
+### 4.2 What the design has to settle
+
+Each of these is open unless it says otherwise. Where a choice is suggested, it is a suggestion, not a decision.
+
+Two senses of "follower" appear below and are kept apart. **The follower sequencer** is the instance of the
+sequencer pair that does not lead; there is at most one. **The WAL's receivers** are every component the leading
+sequencer sends the WAL's records to as it writes them (`WalFollowerService`, and `ReplicatedWal` for the follower
+sequencer): the follower sequencer, both matching engines and both matching engine publishers. Only the leading
+sequencer writes the WAL. The follower sequencer and each publisher keep a copy of it; the matching engines keep none,
+and apply each record as it arrives.
+
+1. **Every component subscribes to the end of day.** Agreed. It is what tells a component that from now on the
+   departure of another component is expected (decision 2). The matching engines, the publishers, the follower
+   sequencer and the gateways receive it today, by the routes in section 4.1. The arbiters, the witness, the
+   authentication services and the administration service receive no phase change at all, and have to subscribe to
+   the `technical_events` topic, which exists to carry the phase to whatever subscribes. A component that subscribes
+   depends on the publishers being up, so the publishers have to be among the last to stop. Whether there is one
+   end-of-day event or two is decision 3.
+
+2. **Other components leaving must not be taken for a failure.** Agreed, and it follows from decision 1. During the
+   day, a component that loses another treats the loss as a fault and acts on it: a follower sequencer whose leader
+   stops asks the arbiters to let it lead; a sequencer whose arbiters stop loses its lease; a gateway whose
+   sequencer stops tries to connect again, and tells its members trading is unavailable; a matching engine whose
+   sequencer stops waits for one. Once a component has received the end of day, each of these is expected: the
+   departure is logged at Info and leads to no promotion, no halt and no alarm. What is still open is the order of
+   shutdown, so that a component leaves only once nothing still running depends on it. One order that fits the
+   dependencies is: the gateways first, then the administration service and the authentication services, then the
+   matching engines, then the follower sequencer, then the leading sequencer, then the publishers, and the arbiters
+   and the witness last, which is close to the reverse of the start order in `[startup_order]`. How each component
+   knows its turn has come is part of the decision: it could wait for those before it to disconnect, or be told by
+   the leading sequencer.
+
+3. **Nothing is archived before the day's record is complete.** Two things have to be true before the leading
+   sequencer closes its WAL and archives it.
+   - **Every report has arrived.** The matching engines never write the WAL, but what they do is recorded in it:
+     each engine sends its execution reports to the sequencer, which writes them into the WAL. At the close each
+     engine cancels every open order and sends a report of each cancel, and the end of day is written only once the
+     engine has acted on the close (`scripts/trading_phase.py`). That ordering looks to be enough, but it is to be
+     confirmed that no report can reach the sequencer after the end of day is written. A report that did would be
+     missing from the archived WAL, and would never reach the member.
+   - **Every copy is complete.** The follower sequencer and both publishers hold every record up to the end of day,
+     and the order activity recorder has reported that every event up to the end of day is confirmed by the external
+     messaging system ([trading_day_plan.md](trading_day_plan.md), decision 4; the recorder is not built).
+
+   There are two ways to arrange this:
+   - **one event.** The end-of-day phase means "shut down", and the leading sequencer, before it shuts down itself,
+     waits until the follower sequencer and both publishers confirm they hold every record up to it;
+   - **two events.** The end-of-day phase means "the day is over; stop trading and finish copying", and a second
+     event, written by the leading sequencer once every copy is confirmed complete, means "shut down and archive
+     now". The second event is a record in the WAL like the first, so every component receives it by the same
+     routes, and both sequencers' WALs end with it.
+
+   Two events make the moment every copy is complete a single record that every component sees, rather than a
+   condition one component judges for itself, and they deal with the first of the scenarios below. The choice is
+   open.
+
+4. **What happens when the two sequencers' WALs differ at the end of day.** The leading sequencer sends each record
+   to the follower sequencer and waits for it to confirm before sending the execution reports that depend on it to
+   the gateways, so the follower sequencer holds every record whose reports a member has seen. What it can lack is a
+   short tail of records the leader has written and has not yet seen confirmed. **A change of phase is not held in
+   this way:** the leader tells the gateways of it in an `OrderAcceptance` as soon as it has written it
+   (`SequencerThread.cpp`, after each record is written). These are the cases:
+   1. **The leader writes the end of day and stops before the follower sequencer has it.** The gateways have
+      already been told of the end of day, and with this design have begun to shut down. The arbiters promote the
+      follower sequencer, whose WAL ends in the closed phase. If the end of day was scheduled, the new leader enters
+      it at once, because its time has passed, and writes its own end-of-day record. If an operator asked for it,
+      the new leader stays closed until asked again, and the gateways are told the venue is closed after being told
+      the day ended. Either the end of day has to be held until the follower sequencer confirms it, like a report, or
+      the event that makes components shut down has to be one written only once every copy is complete, which is the
+      second event of decision 3.
+   2. **Both sequencers hold the end of day, and the leader shuts down while the follower sequencer is a record or
+      two behind.** If the follower sequencer then archives what it holds, the two archived WALs differ in their
+      last records. The leader must not shut down until the follower sequencer has confirmed every record up to the
+      last it writes; after that nothing more is written, and the two archived WALs are the same.
+   3. **No follower sequencer is running at the end of day,** because the venue has been running without its
+      standby. The leader archives alone. The follower sequencer's machine still holds the day's WAL up to the point
+      the follower stopped, and that machine is dealt with by decision 6.
+   4. **The follower sequencer is still being caught up** when the end of day arrives, after a restart late in the
+      day. The leader waits for it to finish, but only for a limit of time, after which it treats the follower
+      sequencer as absent, as in case 3. The limit is to be decided.
+   5. **The follower sequencer holds the end of day, and the leader never receives its confirmation,** because the
+      connection broke. The leader waits for the same limit and then archives. Both WALs may be complete, but the
+      leader cannot know it, and says so in its log at Warning.
+
+5. **Each component keeps a file of its last trading state, and the launcher does not restart a component that left
+   at the end of day.** The launcher, `scripts/launch.py`, restarts its component whenever it exits, for any reason,
+   because during the day any exit is a loss of service. Suggested:
+   - **the file.** Each component keeps a small text file under the installation, beginning with the trading day like
+     the other small files: `trading_day=20261116 EndOfDay`, written under a temporary name and renamed into place
+     whenever the phase changes. It is an ordinary file, not shared memory, and the venue never writes to a public
+     directory such as `/dev/shm`. A component reads it first when it starts. If it says the end of day of the day the
+     component was started for, the component has no work to do: it archives anything of the day still present and
+     exits. This settles a component restarted after the end of day (decision 8);
+   - **the exit status.** The file alone does not stop the launcher, which would start the component, see it exit,
+     and start it again without end. A component that exits at the end of day does so with a status that means
+     "stopped for the end of day", and the launcher, seeing it, exits too;
+   - **the file outlives the day.** It is not archived at the end of day; the next one overwrites it. On starting day
+     D+1, a file saying the end of day of D shows the component finished D in good order. A file saying an earlier
+     phase, or an older day, shows it missed the end of day, which is decision 6 found without being looked for. The
+     start-of-day check of section 3, step 2 needs one exception for this file, since it is meant to come from the
+     day before.
+
+6. **A component that misses the end of day keeps its files.** A component that was not running when the end of day
+   was entered, or whose machine could not be reached, never receives it, and its files stay where they are. Its
+   last-state file says so (decision 5). The next day's start then refuses because of those files (section 3, step
+   2), which is safe: nothing is lost and nothing is taken for the new day's. An operator then has to archive them
+   by hand. The procedure built today, `trading_day.py end` (section 4.3), could be kept for exactly that, as the
+   manual way to archive one machine's files, rather than as the normal way to end a day. By then nothing may be
+   running to ask whether the day ended, so the evidence it asks for would be the operator's word, given as an
+   option and recorded in the listing.
+
+7. **Files a component cannot archive itself.** A component can move every file it opened. It cannot move the files
+   something else holds open or wrote for it:
+   - **the captured console output**, standard output and standard error, which the launcher holds open for as long
+     as the process runs. Agreed: the next day's start moves it into the previous day's archive. By then the
+     launcher has exited and closed it, and its name carries the day, so it can never be taken for the new day's;
+   - **the run manifest and the exported `credentials.toml`**, written by the start-of-day procedure. The
+     authentication services read and rewrite `credentials.toml` during the day, so they can archive it. The run
+     manifest belongs to no component, so the next day's start can archive it with the console output.
+
+8. **A component started during the end of day.** A component restarted after the end of day was entered finds it
+   in its last-state file (decision 5) and does what it would have done had it been running. A component that also
+   meets the end of day in records it receives while being caught up has to act on it once, after it has caught up,
+   and not part of the way through.
+
+### 4.3 What is built today
+
+`scripts/trading_day.py end` is a procedure run by an operator on a machine, after the venue has entered the end
+of day. It does not move the venue on by itself.
+
+1. **It checks that the venue is in the end of day** for the day named in the run manifest, by asking the leading
    sequencer for its state with a `TradingStateQuery` (234), which writes nothing and is answered with a
-   `TradingPhaseAnswer` whose outcome is `StateOnly`. If no sequencer leads, for instance because the venue stopped
-   after entering `eod`, the procedure refuses, and the venue is started again on the day's files, as a restart, so
-   that it can be asked. If the venue is in an earlier phase, the procedure refuses and says which phase it is
-   in and when `eod` is scheduled.
-2. **Wait for the order activity recorder** to report that every event up to the `eod` event is confirmed by the
-   external messaging system. The recorder is not built, and how its report reaches this procedure is designed with
-   it ([trading_day_plan.md](trading_day_plan.md), decision 4). Until then this step is skipped.
-3. **Stop every component**, in the reverse of the order they were started in, and check that each process has
-   exited by its process identifier. If any has not exited, the procedure stops and archives nothing, because a
-   running component may have the files open or mapped.
-4. **Archive every file in section 2.1.** The procedure moves each one into `<archive_dir>/<D>/<machine>/`, where
-   `archive_dir` is a setting in the environment file,
-   keeping its path below the installation, so that the files from the two machines of a pair stay apart. Before
-   removing anything from its place, it writes a listing of every file with its size and a SHA-256 checksum, and
-   checks each archived copy against it. A move within one filesystem is a rename; a move to another filesystem is
-   a copy, checked and synced, followed by the removal of the original.
-5. **Report.** The procedure reports where the archive is, how many files and bytes it holds, and that the
-   installation now holds no file of the day. The next day's start-of-day procedure finds nothing at step 2.
+   `TradingPhaseAnswer` whose outcome is `StateOnly`. If no sequencer leads, or the venue is in an earlier phase,
+   it refuses, and says which phase the venue is in and when the end of day is scheduled.
+2. **It would wait for the order activity recorder** to report that every event up to the end of day is confirmed.
+   The recorder is not built, so this step is skipped.
+3. **It stops every component on the machine**, in the reverse of the order they were started in, and checks that
+   each process has exited by its process identifier. If any has not, it archives nothing, because a running
+   component may have the files open or mapped.
+4. **It archives every file in section 2.1** into `<archive_dir>/<D>/<machine>/`, keeping each file's path below the
+   installation; a file outside the installation goes under `outside_the_installation/` with its absolute path.
+   Before removing anything from its place, it writes `listing.txt`, naming every file with its size and a SHA-256
+   checksum, and checks each archived copy against it. A move within one filesystem is a rename; a move to another
+   filesystem is a copy, checked and synced, followed by the removal of the original. An archive stopped part of the
+   way through is finished by running the procedure again. The run manifest is moved last.
+5. **It reports** where the archive is, how many files and bytes it holds, and that the installation holds no file
+   of the day.
+
+`scripts/trading_day_test.py` checks it on one machine. On more than one machine it does not work: the machine that
+runs it after the sequencers' machines have stopped finds no sequencer to answer step 1, and refuses
+([BUG-0137](../bug_list.md#bug_0137)). That is why the design in section 4.1 replaces it. Its listing, its checks of
+each copy and its way of moving files across filesystems carry over to the archiving each component does.
 
 The archive is the day's record. How long archives are kept, and where they are sent, is an operational matter
 outside the venue.
-
-Each machine archives its own files. In the development environment every component runs on one machine, so one
-run of the procedure archives everything; in an environment with two machines the procedure runs on each, and
-step 3 on each machine stops only the components on that machine. That case is not handled yet: the machine that
-runs the procedure second may find no sequencer running to answer step 1, and refuses
-([BUG-0137](../bug_list.md#bug_0137)).
 
 ## 5. What has to be built
 
@@ -209,7 +366,7 @@ judged against it:
   components. `devenv.py start --fresh-wal --fresh-book` remains for development runs, and clears what a test run
   leaves, including regions set aside as unusable, so that `trading_day.py start` finds none of it. **Built.** The
   question `end` asks, `TradingStateQuery`, is new: no request that existed could ask for the phase without the risk
-  of changing it.
+  of changing it. The `end` command is to be replaced by each component archiving its own files (section 4).
 - **The Quill logs** carry the trading day in their file names, such as `sequencer_primary.20261116.log`, so that
   two days can never share a file. The captured standard output files are named in the same way. **Built**, for the
   components `devenv.py` and `trading_day.py` start. The test harnesses (`ha_test.py`, `perf_run.py` and
