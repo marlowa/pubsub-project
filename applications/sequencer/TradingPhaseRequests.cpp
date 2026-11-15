@@ -94,6 +94,26 @@ void TradingPhaseRequests::request(const pubsub_itc_fw::ConnectionID& connection
     answer(connection, operator_name, move_on(phase, pubsub_itc_fw_app::TechnicalEventReason::RequestedByOperator));
 }
 
+void TradingPhaseRequests::state_query(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name) {
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "TradingPhaseRequests: operator {} asks for the trading state, on connection {}", operator_name,
+               connection.get_value());
+    if (!links_.leading()) {
+        answer(connection, operator_name,
+               Attempt{pubsub_itc_fw_app::TradingPhaseOutcome::NotLeader, 0, 0,
+                       "this sequencer does not lead; the state given is the one its WAL holds, and the sequencer that leads gives the venue's"},
+               pubsub_itc_fw::FwLogLevel::Info);
+        return;
+    }
+    const TradingPhaseState& state = links_.trading_phase();
+    answer(connection, operator_name,
+           Attempt{pubsub_itc_fw_app::TradingPhaseOutcome::StateOnly, 0, 0,
+                   state.started()
+                       ? fmt::format("the venue is in phase {} of trading day {}, entered at seq={}", pubsub_itc_fw_app::to_string(state.latest()->phase),
+                                     state.trading_day(), state.entered_at(state.latest()->phase).value_or(0))
+                       : std::string("the WAL holds no start of day")},
+           pubsub_itc_fw::FwLogLevel::Info);
+}
+
 TradingPhaseRequests::Attempt TradingPhaseRequests::start_of_day(std::string_view operator_name, int32_t trading_day,
                                                                  const std::vector<ScheduledPhase>& schedule) {
     const TradingPhaseState& state = links_.trading_phase();
@@ -375,7 +395,8 @@ void TradingPhaseRequests::stopped_leading() {
     engine_reports_ = EngineReports{};
 }
 
-void TradingPhaseRequests::answer(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, const Attempt& attempt) {
+void TradingPhaseRequests::answer(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, const Attempt& attempt,
+                                  pubsub_itc_fw::FwLogLevel level) {
     const TradingPhaseState& state = links_.trading_phase();
     pubsub_itc_fw_app::TradingPhaseAnswer reply{};
     reply.outcome = attempt.outcome;
@@ -386,8 +407,8 @@ void TradingPhaseRequests::answer(const pubsub_itc_fw::ConnectionID& connection,
     reply.technical_event_seq_no = attempt.technical_event_seq_no;
     reply.schedule_seq_no = attempt.schedule_seq_no;
     reply.explanation = attempt.explanation;
-    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning, "TradingPhaseRequests: answering operator {} on connection {}: {} -- {}", operator_name,
-               connection.get_value(), pubsub_itc_fw_app::to_string(attempt.outcome), attempt.explanation);
+    PUBSUB_LOG(logger_, level, "TradingPhaseRequests: answering operator {} on connection {}: {} -- {}", operator_name, connection.get_value(),
+               pubsub_itc_fw_app::to_string(attempt.outcome), attempt.explanation);
     links_.answer(connection, reply);
 }
 

@@ -290,6 +290,12 @@ a `TradingScheduleRequest` (232), answered with a `TradingScheduleAnswer` (233).
 the phase after the one the venue is in; one that names a phase the venue has entered or passed is refused. It
 is written as a new `TradingSchedule`, which replaces the one before it from its position in the WAL onwards.
 
+The procedure that ends the trading day, `scripts/trading_day.py end`, asks for the trading state with a
+`TradingStateQuery` (234), which writes nothing. The leading sequencer answers with a `TradingPhaseAnswer` whose
+outcome is `StateOnly`, giving the trading day, the phase and whether trading is halted; one that does not lead
+answers `NotLeader`, with the state its WAL holds. A question is logged at Info, not Warning, because it changes
+nothing.
+
 ### Whether trading is halted, and the operator's halt and lift
 
 The sequencer keeps whether trading is halted from the `TechnicalEvent` records in its WAL

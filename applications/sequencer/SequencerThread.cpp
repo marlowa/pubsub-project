@@ -2197,6 +2197,8 @@ void SequencerThread::on_raw_socket_message(const pubsub_itc_fw::EventMessage& m
             handle_trading_phase_request(conn_id, payload, byte_count);
         } else if (pdu_id == pubsub_itc_fw_app::TradingScheduleRequest::message_pdu_id) {
             handle_trading_schedule_request(conn_id, payload, byte_count);
+        } else if (pdu_id == pubsub_itc_fw_app::TradingStateQuery::message_pdu_id) {
+            handle_trading_state_query(conn_id, payload, byte_count);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: operator connection {} sent message pdu_id={}, which is not a request -- ignored", conn_id.get_value(), pdu_id);
@@ -2253,6 +2255,21 @@ void SequencerThread::handle_trading_schedule_request(const pubsub_itc_fw::Conne
     }
     const std::string operator_name(request.operator_name);
     phase_requests_.schedule_request(conn_id, operator_name, request.trading_day, scheduled_phases(request.entries));
+}
+
+void SequencerThread::handle_trading_state_query(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, size_t size) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::TradingStateQueryView query{};
+    if (!pubsub_itc_fw_app::decode(query, payload, size, bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: operator connection {} sent a TradingStateQuery that did not decode -- ignored", conn_id.get_value());
+        return;
+    }
+    const std::string operator_name(query.operator_name);
+    phase_requests_.state_query(conn_id, operator_name);
 }
 
 void SequencerThread::PhaseLinks::answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingScheduleAnswer& answer) {

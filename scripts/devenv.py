@@ -33,7 +33,9 @@ Options:
                      goes to <name>.launcher.pid, and stop signals that.
 
 PID files are written to [run_dir]/<name>.pid as configured in the env TOML.
-Logs are written to [log_dir]/<name>.log and [log_dir]/<name>.stdout.
+Each component's Quill log is [log_dir]/<name>.<trading day>.log, and what it writes to its standard output and
+standard error is captured in [log_dir]/<name>.<trading day>.stdout, so that two trading days never share a file
+(docs/venue/start_and_end_of_day.md, decision 2).
 Both directories are created automatically on first start.
 
 The database password is read from PUBSUB_APP_DB_PASSWORD; if not set it falls
@@ -80,6 +82,9 @@ _SCRIPT_DIR       = Path(__file__).resolve().parent
 # everything the project owns -- environments/, db/, installed/ -- hangs off here.
 _PROJECT_ROOT     = _SCRIPT_DIR.parent
 _DEFAULT_ENV_FILE = _PROJECT_ROOT / "environments" / "dev.toml"
+# The same two, for scripts that use this module: scripts/trading_day.py reads the environment file as this one does.
+PROJECT_ROOT      = _PROJECT_ROOT
+DEFAULT_ENV_FILE  = _DEFAULT_ENV_FILE
 _STARTUP_DELAY    = 1.0   # seconds between component starts
 _START_DAY_TIMEOUT = 120.0  # seconds to keep asking for the start of day and pre-open: until a sequencer leads and an engine has acted on it
 _SHUTDOWN_TIMEOUT = 10.0  # seconds to wait after SIGTERM before SIGKILL
@@ -115,6 +120,15 @@ def resolve_paths(env: dict) -> tuple[Path, Path, Path]:
     log_dir     = (_PROJECT_ROOT / env["paths"]["log_dir"]).resolve()
     run_dir     = (_PROJECT_ROOT / env["paths"]["run_dir"]).resolve()
     return install_dir, log_dir, run_dir
+
+
+def archive_dir(env: dict) -> Path:
+    """Where scripts/trading_day.py end archives each trading day's files: [paths] archive_dir in the environment file,
+    as an absolute Path."""
+    configured = env["paths"].get("archive_dir")
+    if not configured:
+        sys.exit("error: the environment file has no [paths] archive_dir, which says where each trading day's files are archived")
+    return (_PROJECT_ROOT / configured).resolve()
 
 
 def startup_order(env: dict, ha_enabled: bool) -> list[str]:
@@ -218,15 +232,27 @@ def build_command(
             command.append(str((install_dir / comp["config"]).resolve()))
     else:
         binary_path = (install_dir / comp["binary"]).resolve()
-        log_file    = log_dir / f"{name}.log"
+        day         = recorded_trading_day(run_dir)
         config_path = (install_dir / comp["config"]).resolve()
         # Every component is given the trading day, and holds every file it writes during the day to it
         # (docs/venue/start_and_end_of_day.md, decision 1).
-        command = [str(binary_path), str(log_file), str(config_path), "--trading-day", str(recorded_trading_day(run_dir))]
+        command = [str(binary_path), str(quill_log_path(log_dir, name, day)), str(config_path), "--trading-day", str(day)]
     return command, workdir
 
 
 _TRADING_DAY_FILE = "trading_day"
+
+
+def quill_log_path(log_dir: Path, name: str, trading_day: int) -> Path:
+    """The Quill log of component name for trading_day, such as sequencer_primary.20261116.log. Quill appends to a file
+    that exists, so the day in the name is what keeps two days out of one file (docs/venue/start_and_end_of_day.md,
+    decision 2). A log rotated by size keeps the same start, with a number before .log."""
+    return log_dir / f"{name}.{trading_day}.log"
+
+
+def captured_output_path(log_dir: Path, name: str, trading_day: int) -> Path:
+    """Where what component name writes to its standard output and standard error on trading_day is captured."""
+    return log_dir / f"{name}.{trading_day}.stdout"
 
 
 def recorded_trading_day(run_dir: Path) -> int:
@@ -296,7 +322,7 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
     launched with its working directory set to comp['workdir'] (created if
     absent) and with install_dir/lib prepended to LD_LIBRARY_PATH so that
     libpubsub_itc_fw.so is found at runtime.  stdout and stderr are redirected
-    to log_dir/<name>.stdout.
+    to log_dir/<name>.<trading day>.stdout.
     """
     existing_pid = read_pid(run_dir, name)
     if existing_pid is not None and is_pid_alive(existing_pid):
@@ -315,7 +341,7 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
     if background_wrapper.is_file() and os.access(background_wrapper, os.X_OK):
         command = [str(background_wrapper)] + command
 
-    stdout_path = log_dir / f"{name}.stdout"
+    stdout_path = captured_output_path(log_dir, name, recorded_trading_day(run_dir))
 
     if "binary" in comp:
         binary_path = (install_dir / comp["binary"]).resolve()
@@ -570,15 +596,22 @@ scrape_configs:
 
 # ── Credential export ─────────────────────────────────────────────────────────
 
-def export_credentials(install_dir: Path, env: dict) -> None:
+def credentials_path(install_dir: Path) -> Path:
+    """The credentials file the authentication services read, which export_credentials writes."""
+    return install_dir / "etc" / "authentication_service" / "credentials.toml"
+
+
+def export_credentials(install_dir: Path, env: dict) -> int:
     """Re-export SCRAM credentials from the database to credentials.toml.
 
     Calls db/export_credentials.py using the database settings from the env
-    TOML.  Exits the process if the script fails.
+    TOML.  Exits the process if the script fails. Returns how many credentials the
+    database query found, as the script reports it, so that a caller can check the
+    file holds as many.
     """
     script      = _PROJECT_ROOT / "db" / "export_credentials.py"
     db          = env["db"]
-    creds_file  = install_dir / "etc" / "authentication_service" / "credentials.toml"
+    creds_file  = credentials_path(install_dir)
     result = subprocess.run(
         [sys.executable, str(script),
          "--credentials-file", str(creds_file),
@@ -598,7 +631,11 @@ def export_credentials(install_dir: Path, env: dict) -> None:
               f"{db['host']}:{db['port']}/{db['name']} as user {db['user']}",
               file=sys.stderr)
         sys.exit(1)
-    print("  credentials exported")
+    found = re.search(r"found (\d+) active credential", result.stdout)
+    if found is None:
+        sys.exit(f"error: export_credentials.py did not say how many credentials it found; what it said:\n{result.stdout}")
+    print(f"  credentials exported: {found.group(1)}")
+    return int(found.group(1))
 
 
 # ── Subcommands ───────────────────────────────────────────────────────────────
@@ -686,7 +723,7 @@ _REGION = ("order_book", "region_path")
 _WAL = ("wal", "directory")
 
 
-def _durable_paths(env: dict, install_dir: Path, section: str, key: str) -> list[Path]:
+def durable_paths(env: dict, install_dir: Path, section: str, key: str) -> list[Path]:
     """Every path named by [section] key across the deployed component configs."""
     found: list[Path] = []
     for comp in env["components"].values():
@@ -708,7 +745,7 @@ def _durable_paths(env: dict, install_dir: Path, section: str, key: str) -> list
     return sorted(set(found))
 
 
-def _deployed_values(env: dict, install_dir: Path, key: str) -> list[Path]:
+def deployed_values(env: dict, install_dir: Path, key: str) -> list[Path]:
     """Every path named by `key`, in any table, across the deployed component configs.
 
     Only for key names specific enough that a match anywhere is the thing meant, unlike the WAL's
@@ -739,7 +776,7 @@ def _deployed_values(env: dict, install_dir: Path, key: str) -> list[Path]:
     return sorted(set(found))
 
 
-def _lease_records(env: dict, install_dir: Path) -> list[Path]:
+def lease_records(env: dict, install_dir: Path) -> list[Path]:
     """The lease records and epoch files that belong to the same trading day as the write-ahead logs.
 
     Each arbiter keeps the promise of its vote in its promise file, and beside it, with
@@ -750,9 +787,9 @@ def _lease_records(env: dict, install_dir: Path) -> list[Path]:
     directories, which are cleared with the logs. The publishers keep none.
     """
     records: list[Path] = []
-    for promise_file in _deployed_values(env, install_dir, "promise_file"):
+    for promise_file in deployed_values(env, install_dir, "promise_file"):
         records += [promise_file, Path(f"{promise_file}.component_statements")]
-    for epoch_file in _deployed_values(env, install_dir, "epoch_state_file"):
+    for epoch_file in deployed_values(env, install_dir, "epoch_state_file"):
         records += [epoch_file, Path(f"{epoch_file}.lease_promise")]
     return records
 
@@ -768,7 +805,7 @@ def clear_durable_state(env: dict, install_dir: Path, *, fresh_book: bool, fresh
                                           (fresh_wal, _WAL, "write-ahead log")):
         if not wanted:
             continue
-        paths = _durable_paths(env, install_dir, section, key)
+        paths = durable_paths(env, install_dir, section, key)
         if not paths:
             print(f"=== clearing {label}: nothing configured ===")
             continue
@@ -784,6 +821,13 @@ def clear_durable_state(env: dict, install_dir: Path, *, fresh_book: bool, fresh
                 print(f"  removed {path} ({size / 1e6:.0f} MB)")
             else:
                 print(f"  {path} (absent already)")
+            # A region the engine found damaged at start-up is moved aside with ".unusable" added, and belongs to the
+            # same day as the region (docs/venue/start_and_end_of_day.md, section 2.1).
+            unusable = Path(f"{path}.unusable")
+            if section == _REGION[0] and unusable.exists():
+                size = unusable.stat().st_size
+                unusable.unlink()
+                print(f"  removed {unusable} ({size / 1e6:.0f} MB)")
     # A fresh write-ahead log starts a new trading day, and the epochs start again with it. Records
     # of lease promises and of statements kept from the earlier day would outlive it: an arbiter
     # holding a statement from a higher epoch of that day treats every statement of the new day as
@@ -792,7 +836,7 @@ def clear_durable_state(env: dict, install_dir: Path, *, fresh_book: bool, fresh
     # before each scenario, in clear_lease_promise_records.
     if fresh_wal:
         print("=== clearing lease promise records, arbiters' statements and matching engines' epochs ===")
-        for path in _lease_records(env, install_dir):
+        for path in lease_records(env, install_dir):
             if path.exists():
                 path.unlink()
                 print(f"  removed {path}")
@@ -868,6 +912,35 @@ def cmd_start(  # pylint: disable=too-many-arguments,too-many-locals
         start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised)
         return
 
+    print("=== exporting credentials ===")
+    export_credentials(install_dir, env)
+    print()
+
+    if debug:
+        print("=== enabling debug logging ===")
+        patch_debug_logging(install_dir)
+        print()
+
+    day = choose_trading_day(run_dir, trading_day, fresh_wal)
+    start_components(env, ha_enabled, delay, day, debug=debug, with_prometheus=with_prometheus, supervised=supervised)
+    if start_day:
+        print()
+        start_the_trading_day(install_dir, day)
+
+
+def start_components(  # pylint: disable=too-many-arguments
+    env: dict, ha_enabled: bool, delay: float, trading_day: int, *, debug: bool = False, with_prometheus: bool = True,
+    supervised: bool = False,
+) -> None:
+    """Start every component, in the order the environment file gives, for trading_day.
+
+    Removes the register of processor cores in use first, writes the Prometheus scrape configuration when the scraper
+    is to be started, and records trading_day in [run_dir]/trading_day, from which each component is given the day on
+    its command line and its log files are named. Used by cmd_start and by scripts/trading_day.py.
+    """
+    install_dir, log_dir, run_dir = resolve_paths(env)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
     order = startup_order(env, ha_enabled)
 
     # CPU registry lives under install_dir/run/ (same location that deploy.py
@@ -882,15 +955,6 @@ def cmd_start(  # pylint: disable=too-many-arguments,too-many-locals
             stale.unlink()
             print(f"removed stale {stale.name}")
 
-    print("=== exporting credentials ===")
-    export_credentials(install_dir, env)
-    print()
-
-    if debug:
-        print("=== enabling debug logging ===")
-        patch_debug_logging(install_dir)
-        print()
-
     if not with_prometheus:
         order = [name for name in order if not env["components"][name].get("metrics_only", False)]
     elif any(env["components"][name].get("metrics_only", False) for name in order):
@@ -901,18 +965,14 @@ def cmd_start(  # pylint: disable=too-many-arguments,too-many-locals
         write_prometheus_scrape_config(env, install_dir, run_dir)
         print()
 
-    day = choose_trading_day(run_dir, trading_day, fresh_wal)
-    (run_dir / _TRADING_DAY_FILE).write_text(f"{day}\n", encoding="utf-8")
+    (run_dir / _TRADING_DAY_FILE).write_text(f"{trading_day}\n", encoding="utf-8")
 
-    print(f"=== starting components for trading day {day} ===")
+    print(f"=== starting components for trading day {trading_day} ===")
     for name in order:
         comp = env["components"][name]
         start_one(name, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised)
     print()
     print(f"all components started.  logs → {log_dir}/")
-    if start_day:
-        print()
-        start_the_trading_day(install_dir, day)
 
 
 def cmd_stop(env: dict) -> None:

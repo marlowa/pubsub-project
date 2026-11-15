@@ -67,6 +67,9 @@ description = "Pre-production deployment. Full production topology; separate hos
 install_dir = "/opt/pubsub"
 log_dir     = "/opt/pubsub/log"
 run_dir     = "/opt/pubsub/run"
+# Where scripts/trading_day.py end moves every file the venue wrote during a trading day, under
+# <archive_dir>/<trading day>/<machine>/ (docs/venue/start_and_end_of_day.md, section 4).
+archive_dir = "/opt/pubsub/archive"
 
 # ── Database ──────────────────────────────────────────────────────────────────
 

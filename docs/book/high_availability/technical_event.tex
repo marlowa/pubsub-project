@@ -71,10 +71,10 @@ refused.
 \end{requirement}
 
 \begin{gap}{BUG-0137}
-  No procedure starts or ends the trading day: the development tools and the test harness give
-  each component the day and ask for the start of day themselves, and nothing archives the day's
-  files. Each file a component reads when it starts records its trading day, and the component
-  refuses one from another day, but the Quill logs are not named by day.
+  The procedures that start and end the trading day have been run on one machine only. Where the
+  components are spread over two machines, each machine runs the end of day for its own files and
+  stops only its own components. The machine that runs it second may then find no sequencer
+  running to say that the venue is in end of day, and refuse to archive anything.
 \end{gap}
 
 \begin{requirement}{R-0177}{A component refuses to start on a file from another trading day}

@@ -1,6 +1,6 @@
 # The trading day: design plan {#trading_day_plan}
 
-**Status: agreed; steps 1 to 8 are done, and step 9 is under way: the schedule is built, and every file refuses another day; the procedures are not.** This note covers the whole trading day: every phase,
+**Status: agreed and built: steps 1 to 9 are done.** This note covers the whole trading day: every phase,
 how the venue moves from one to the next, what each component does in each, and how each change reaches
 the components and members that need it. It builds on three other notes and does not repeat them:
 
@@ -474,10 +474,12 @@ documents and decisions; code starts at step 4.
 9. **The schedule and the end-of-day procedure**: the `TradingSchedule` record, the start-of-day request
    that carries it, `TradingScheduleRequest`, the leader's check once a second, and the run procedure that reads
    the day's times from a file; and a component refusing to start on a file from another trading day
-   ([BUG-0137](../bug_list.md#bug_0137)). The schedule is done: the records, the requests, the check, the schedule
-   file and `trading_phase.py --schedule`, checked by scenario 113. So is each file recording its trading day, and
-   each component refusing one from another day, checked by scenario 114. The procedures themselves
-   ([start_and_end_of_day.md](start_and_end_of_day.md), section 5) are not.
+   ([BUG-0137](../bug_list.md#bug_0137)). Done. The schedule: the records, the requests, the check, the schedule
+   file and `trading_phase.py --schedule`, checked by scenario 113. Each file recording its trading day, and
+   each component refusing one from another day, checked by scenario 114. The procedures themselves,
+   `scripts/trading_day.py start` and `end` ([start_and_end_of_day.md](start_and_end_of_day.md), section 5), with the
+   Quill logs named by day, the archive directory, and `TradingStateQuery` (234), which asks for the phase without
+   changing it; checked by `scripts/trading_day_test.py`, which runs two days through both procedures.
 
 Steps 6 to 8 do not depend on one another and can be done in any order after step 5.
 

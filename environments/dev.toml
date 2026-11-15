@@ -22,6 +22,9 @@ description = "Single-machine developer sandbox. All components on localhost."
 install_dir = "installed"     # binaries, component configs, certs
 log_dir     = "installed/log" # component stdout/stderr and applog files
 run_dir     = "installed/run"        # PID files written here by devenv.py
+# Where scripts/trading_day.py end moves every file the venue wrote during a trading day, under
+# <archive_dir>/<trading day>/<machine>/ (docs/venue/start_and_end_of_day.md, section 4).
+archive_dir = "installed/archive"
 
 # ── Database ──────────────────────────────────────────────────────────────────
 # Used by deploy.py (runs create_db.py and export_credentials.py) and by

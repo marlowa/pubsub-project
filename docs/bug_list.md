@@ -439,7 +439,7 @@ of the day. To be designed and agreed before code.
 
 **Principle.** V12 in `docs/design_principles.md`.
 
-**Where it stands, 15 November 2026.** Items 1 and 4 are done; items 2 and 3 are not.
+**Where it stands, 15 November 2026.** All four items are built.
 
 - **Item 1, the list of files,** is section 2 of `docs/venue/start_and_end_of_day.md`.
 - **Item 4, the refusal at start-up,** is built:
@@ -454,8 +454,30 @@ of the day. To be designed and agreed before code.
     each refuses. With the small files moved aside, the sequencer must refuse the WAL and the matching engine the
     region, which must be left unchanged.
   - `devenv.py start --fresh-wal` now also removes the matching engines' epoch files, which a fresh run otherwise kept.
-- **Items 2 and 3, the end-of-day and start-of-day procedures,** are not built, and nor are the Quill logs named by day
-  or the archive directory.
+- **Items 2 and 3, the end-of-day and start-of-day procedures,** are built, as `scripts/trading_day.py end` and
+  `start`, following sections 3 and 4 of `docs/venue/start_and_end_of_day.md`:
+  - `start` refuses while any process of the installation runs, or while a file of another day that a component reads
+    when it starts is present, naming each. It writes the run manifest (`var/run_manifest.toml`), exports the members'
+    credentials and checks the file holds as many as the database query found, starts every component for the day,
+    and asks for the start of day with the schedule. Run again on the same day, it restarts the venue on the day's
+    files.
+  - `end` asks the leading sequencer for the state with `TradingStateQuery` (234), which writes nothing, and refuses
+    unless the venue is in the end of day of the manifest's day. It stops every component, checks each has exited,
+    and moves every file of the day into `<archive_dir>/<day>/<machine>/`, with a listing of each file's size and
+    SHA-256 checksum against which every archived copy is checked.
+  - The Quill logs and captured output of the components `devenv.py` and `trading_day.py` start are named by day,
+    such as `sequencer_primary.20261116.log`, and each environment file sets `archive_dir`.
+  - `scripts/trading_day_test.py` runs two trading days through both procedures on the deployed venue: a refusal for a
+    file of another day, a start, a restart, a refusal to end before the end of day, an end, and a second day that runs
+    by its schedule from start to end.
+  - The start-of-day procedure has no reference data to load, because the venue has none yet
+    (`docs/venue/trading_day_and_reference_data.md`); its inputs are the members' credentials.
+  - **Not yet handled: two machines.** Section 4 of the design has each machine run the end of day for its own files,
+    stopping only its own components. The end procedure asks the leading sequencer whether the venue is in the end of
+    day before it stops anything. On the machine that runs it second, the sequencers may already have been stopped by
+    the first, so nothing answers and it refuses. Everything here runs on one machine, where this cannot happen, so it
+    is untested. One remedy is for the second machine to accept the end of day recorded in its own copy of the run
+    manifest, written by the first; that is a decision to make before an environment of two machines is used.
 
 ### BUG-0136: Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known {#bug_0136}
 

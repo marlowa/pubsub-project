@@ -20,6 +20,7 @@ and can be handed directly to deploy.py:
   deploy.py       deployment script (included if present)
   operator_halt.py  an operator's tool to halt trading or lift a halt
   trading_phase.py  an operator's tool to start the trading day and move it from one phase to the next
+  trading_day.py  the procedures that start and end a trading day
   operator_requests.py  what the operator's tools and devenv.py share for asking the sequencers
   release.json    version, git hash, build timestamp
 
@@ -299,7 +300,7 @@ def stage_environments(stage: Path) -> None:
 
 
 def stage_scripts(stage: Path) -> None:
-    scripts = ["devenv.py", "deploy.py", "operator_halt.py", "trading_phase.py", "operator_requests.py"]
+    scripts = ["devenv.py", "deploy.py", "operator_halt.py", "trading_phase.py", "trading_day.py", "operator_requests.py"]
     for script_name in scripts:
         source = _SCRIPT_DIR / script_name
         if source.is_file():

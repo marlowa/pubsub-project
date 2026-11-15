@@ -123,6 +123,11 @@ class TradingPhaseRequests {
     void schedule_request(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, int32_t trading_day,
                           const std::vector<ScheduledPhase>& schedule);
 
+    /// Operator @p operator_name, on @p connection, asks for the trading state with a TradingStateQuery. Nothing is
+    /// written: the sequencer that leads answers StateOnly, and one that does not lead answers NotLeader, each with the
+    /// state as it knows it.
+    void state_query(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name);
+
     /**
      * @brief The check once a second: enters the next phase if the schedule's time for it has come by @p now_utc_ns,
      *        nanoseconds since 1970 UTC by the leader's clock, and its conditions hold.
@@ -159,7 +164,9 @@ class TradingPhaseRequests {
         std::string explanation;
     };
 
-    void answer(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, const Attempt& attempt);
+    // Answers @p attempt, logging the answer at @p level: Warning for a request that may change the venue, Info for a question.
+    void answer(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, const Attempt& attempt,
+                pubsub_itc_fw::FwLogLevel level = pubsub_itc_fw::FwLogLevel::Warning);
     void answer_schedule(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, pubsub_itc_fw_app::TradingScheduleOutcome outcome,
                          int64_t schedule_seq_no, const std::string& explanation);
     Attempt start_of_day(std::string_view operator_name, int32_t trading_day, const std::vector<ScheduledPhase>& schedule);

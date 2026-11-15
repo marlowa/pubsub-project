@@ -572,6 +572,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // An operator asking over the listener for operators for the times that remain in the day's schedule to be replaced
     // (docs/venue/trading_day_plan.md, section 3.2): decoded, and handed to TradingPhaseRequests.
     void handle_trading_schedule_request(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, size_t size);
+    // An operator, or the procedure that ends the trading day, asking over the listener for operators for the trading
+    // state (docs/venue/start_and_end_of_day.md, section 4): decoded, and handed to TradingPhaseRequests, which writes nothing.
+    void handle_trading_state_query(const pubsub_itc_fw::ConnectionID& conn_id, const uint8_t* payload, size_t size);
     // Sends @p answer, named @p name for the Quill log, to the operator on @p conn_id, framed as the listener for operators
     // expects.
     template <typename Answer> void send_operator_answer(const pubsub_itc_fw::ConnectionID& conn_id, const Answer& answer, const char* name);

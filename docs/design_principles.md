@@ -786,15 +786,20 @@ start-up. The phases of the day are in [trading_phases.md](venue/trading_phases.
 
 **What checks it.** Scenario 114 of `ha_test.py`: the sequencer, matching engine, arbiter and publisher,
 started for the next day on the files of the day just run, each refuse to start and name a file and the
-day it belongs to.
+day it belongs to. `scripts/trading_day_test.py` runs two trading days through the procedures that start
+and end a day, and checks that the end archives every file of the day and leaves none of them behind.
 
-**Today: the refusal holds; the procedures do not exist.** Every component is given the trading day on
+**Today: it holds.** `scripts/trading_day.py end` stops every component and archives every file of the
+day, and `scripts/trading_day.py start` refuses while a file of another day that a component reads when
+it starts is present. A Quill log or captured output of another day does not stop a start, because its
+name carries its day and the new day writes to files of its own; nor does the credentials file, which the
+start overwrites before any component runs. Every component is given the trading day on
 its command line. Every file in section 2.1 of [start_and_end_of_day.md](venue/start_and_end_of_day.md)
 that a component reads when it starts records the day it belongs to, and the component refuses one from
 another day, or one that records none: the sequencer's WAL, epoch, lease promise and record of the last
 engine routed to; the publisher's WAL; the matching engine's open-order region, epoch and lease promise;
-and the arbiter's lease promise and record of statements. No procedure yet starts or ends a day, nothing
-archives the day's files, and the Quill logs are not named by day ([BUG-0137](bug_list.md#bug_0137)).
+and the arbiter's lease promise and record of statements. The Quill logs and captured output of the
+components that `devenv.py` and `trading_day.py` start are named by day ([BUG-0137](bug_list.md#bug_0137)).
 
 ### V13. Nothing the venue needs in order to run depends on something optional
 

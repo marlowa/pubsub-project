@@ -182,6 +182,39 @@ TEST_F(TradingPhaseRequestsTest, TheStartOfDayIsWrittenAsTheFirstRecordOfAnEmpty
     EXPECT_EQ(links_.last_answer.schedule_seq_no, 2);
 }
 
+TEST_F(TradingPhaseRequestsTest, AQuestionAboutTheStateIsAnsweredAndWritesNothing) {
+    requests_->state_query(connection_, "alice");
+    EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::StateOnly}));
+    EXPECT_FALSE(links_.last_answer.day_started);
+    EXPECT_EQ(links_.next, 1) << "a question writes nothing, not even the start of day";
+
+    closed_and_applied();
+    ask(Phase::EndOfDay);
+    const int64_t next_before = links_.next;
+    requests_->state_query(connection_, "alice");
+    EXPECT_EQ(links_.answers.back(), Outcome::StateOnly);
+    EXPECT_TRUE(links_.last_answer.day_started);
+    EXPECT_EQ(links_.last_answer.trading_day, today);
+    EXPECT_EQ(links_.last_answer.phase, Phase::EndOfDay);
+    EXPECT_EQ(links_.next, next_before);
+}
+
+TEST_F(TradingPhaseRequestsTest, AQuestionAboutTheStateInTheClosedPhaseDoesNotEndTheDay) {
+    closed_and_applied();
+    const int64_t next_before = links_.next;
+    requests_->state_query(connection_, "alice");
+    EXPECT_EQ(links_.last_answer.phase, Phase::Closed);
+    EXPECT_EQ(links_.next, next_before) << "the end of day is entered only when asked for, or at its time";
+}
+
+TEST_F(TradingPhaseRequestsTest, ASequencerThatDoesNotLeadAnswersAQuestionAboutTheStateAsNotLeader) {
+    started_and_applied();
+    links_.is_leading = false;
+    requests_->state_query(connection_, "alice");
+    EXPECT_EQ(links_.answers.back(), Outcome::NotLeader);
+    EXPECT_TRUE(links_.last_answer.day_started) << "the state it knows from its WAL is given all the same";
+}
+
 TEST_F(TradingPhaseRequestsTest, ASequencerThatDoesNotLeadWritesNothing) {
     links_.is_leading = false;
     ask(Phase::StartOfDay);

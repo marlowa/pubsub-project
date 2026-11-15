@@ -55,10 +55,11 @@ they are being fixed. The ones most likely to matter first, by design area:
   that is connected but has stopped working looking healthy ([BUG-0194](bug_list.md#bug_0194)), a
   growing the order book needing more memory than the machine has ([BUG-0028](bug_list.md#bug_0028)),
   and a venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).
-- **The trading day has no start or end procedure.** Every phase is entered on request or at the time in
-  the day's schedule, the close cancels every open order, every member is told of each change, and each
-  component refuses a file left from another day. But nothing archives the day's files
-  ([BUG-0137](bug_list.md#bug_0137)), and a trading halt cannot be applied to one instrument
+- **The trading day is built, and only lightly tried.** Every phase is entered on request or at the time in
+  the day's schedule, the close cancels every open order, every member is told of each change, each
+  component refuses a file left from another day, and `scripts/trading_day.py` starts a day and ends it by
+  archiving every file the day wrote ([BUG-0137](bug_list.md#bug_0137)). The procedures are checked by
+  `scripts/trading_day_test.py` on one machine only. A trading halt cannot be applied to one instrument
   ([BUG-0065](bug_list.md#bug_0065)).
 - **The write-ahead log is never reclaimed during the day** ([BUG-0048](bug_list.md#bug_0048)).
   Whether it may be waits on a decision about how long history must be kept.

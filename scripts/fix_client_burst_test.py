@@ -207,10 +207,21 @@ def wait_for_ers(client, expected, timeout):
     return count_new_ers(rows)
 
 
+def sequencer_log_names(log_dir):
+    """The sequencers' Quill logs: devenv.py names each by component and trading day, such as
+    sequencer_primary.20261116.log, so the newest of each is the running venue's."""
+    names = []
+    for component in ("sequencer_primary", "sequencer_secondary"):
+        logs = sorted(log_dir.glob(f"{component}.[0-9]*.log"), key=lambda path: path.stat().st_mtime)
+        if logs:
+            names.append(logs[-1].name)
+    return names
+
+
 def scan_seq_logs(log_dir, sizes_before):
     """Read new sequencer-log bytes since ``sizes_before``; return (fails, infos)."""
     fails, infos = [], []
-    for name in ("sequencer_primary.log", "sequencer_secondary.log"):
+    for name in sequencer_log_names(log_dir):
         path = log_dir / name
         if not path.is_file():
             continue
@@ -228,7 +239,7 @@ def scan_seq_logs(log_dir, sizes_before):
 def snapshot_sizes(log_dir):
     """Record current byte sizes of the sequencer logs (to scan only the burst)."""
     sizes = {}
-    for name in ("sequencer_primary.log", "sequencer_secondary.log"):
+    for name in sequencer_log_names(log_dir):
         path = log_dir / name
         sizes[name] = path.stat().st_size if path.is_file() else 0
     return sizes

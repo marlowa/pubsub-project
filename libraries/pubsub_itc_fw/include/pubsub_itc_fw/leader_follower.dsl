@@ -1046,6 +1046,7 @@ enum TradingPhaseOutcome : i8 {
     NotReady = 7             # the phase is the next one, but its conditions do not hold yet; nothing was written, and the request can be sent again
     NotWritten = 8           # the TechnicalEvent could not be encoded, or the WAL could not take it, so nothing was written
     ScheduleRefused = 9      # the schedule sent with the start of day is not one the venue can follow, so nothing was written
+    StateOnly = 10           # the answer to a TradingStateQuery, which asks for the trading state and never writes anything
 }
 
 # ------------------------------------------------------------
@@ -1117,6 +1118,20 @@ message TradingPhaseAnswer (id=169, version=1)
     i64 technical_event_seq_no      # the position of the last TechnicalEvent written for this request, or 0 when none was
     i64 schedule_seq_no             # the position of the TradingSchedule written for this request, or 0 when none was
     string explanation              # the outcome in words, as the sequencer logged it
+end
+
+# ------------------------------------------------------------
+#  234 -- TradingStateQuery
+#  Sent by an operator, or by the procedure that ends the trading
+#  day, to each sequencer over its listener for operators. Asks for
+#  the trading state: the trading day, the phase, and whether trading
+#  is halted. It never writes anything. The sequencer that leads
+#  answers with a TradingPhaseAnswer whose outcome is StateOnly; one
+#  that does not lead answers NotLeader, with the state as it knows
+#  it from its WAL. See docs/venue/start_and_end_of_day.md, section 4.
+# ------------------------------------------------------------
+message TradingStateQuery (id=234, version=1)
+    string operator_name            # who asked, for the Quill log
 end
 
 # What the sequencer did with a TradingScheduleRequest.

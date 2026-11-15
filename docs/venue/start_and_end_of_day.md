@@ -1,6 +1,6 @@
 # Starting and ending the trading day {#start_and_end_of_day}
 
-**Status: agreed; each file records its trading day and is refused on another day (section 5); the procedures are not built.** This note is step 3 of
+**Status: agreed and built (section 5): each file records its trading day and is refused on another day, and `scripts/trading_day.py` carries out both procedures.** This note is step 3 of
 [trading_day_plan.md](trading_day_plan.md). It lists every file the venue writes during a trading day, and sets out
 the procedure that starts a day and the procedure that ends one
 ([BUG-0137](../bug_list.md#bug_0137)). The choices made are collected in the last section.
@@ -35,8 +35,11 @@ the framework for code that creates, writes or renames a file. The paths are tho
 
 ### 2.1 Files that belong to one trading day
 
-Every file here is moved into the day's archive at the end of the day. None of them may be present when a day
-starts.
+Every file here is moved into the day's archive at the end of the day. Only those a component reads when it starts
+stop a new day from starting if they are left from another day: the WALs and the files beside them, the open-order
+regions, the epoch files, the lease promise records and the arbiters' statements. The others cannot be taken for the
+new day's, and a venue that refused to start because an old Quill log was lying about, or because a credentials file
+it is about to overwrite was present, would be refusing for nothing (section 3, step 2).
 
 | Written by | File | What it holds | Setting |
 |---|---|---|---|
@@ -53,8 +56,8 @@ starts.
 | Each arbiter | the lease promise file with `.component_statements` added | The statements component leaders have made about whether their followers may lead (`ComponentStatementStore`) | follows `lease_promise_file` |
 | Each FIX order gateway, when capture is turned on | the capture file | Every byte received and sent on every FIX session, with times | `fix_capture_file` (`fix_capture.bin`); emptied at each start |
 | Every component | its Quill log, and, for the components configured to rotate it, the earlier files (`max_file_size`, `max_backup_files`) | What the component did, at the levels configured | `log_dir` (`installed/log`), one file per component and trading day, such as `sequencer_primary.20261116.log` |
-| Every component | the captured output of the process | What the process wrote to its standard output and standard error | `log_dir`, `<component>.stdout` |
-| The start-of-day procedure | the run manifest | The trading day, the schedule and the release the day runs with (section 3) | proposed: `var/run_manifest.toml` |
+| Every component | the captured output of the process | What the process wrote to its standard output and standard error | `log_dir`, `<component>.<trading day>.stdout` |
+| The start-of-day procedure | the run manifest | The trading day, the schedule and the release the day runs with (section 3) | `var/run_manifest.toml` under the installation |
 | The start-of-day procedure | `credentials.toml`, exported from the database | Every member's stored SCRAM credentials, as the authentication services load them, with each change the administration service sends during the day | `credentials_file` |
 
 Each store that replaces its file safely (`EpochStore`, `LeasePromiseStore`, `ComponentStatementStore`, and the
@@ -95,7 +98,12 @@ trading day `D` and the name of the file of the day's times for each phase. It d
 
 1. **Check that nothing is running.** No process of the installation may be running. The procedure checks each one
    by its process identifier, not by the exit status of a stop command, and stops if any is found.
-2. **Check that no file from another day is present.** For every file in section 2.1:
+2. **Check that no file from another day is present** that a component reads when it starts: the WALs and the files
+   beside them, the open-order regions, the epoch files, the lease promise records and the arbiters' statements. The other files in section 2.1 cannot be taken for the new day's, so they do not stop it:
+   a Quill log or captured output has its day in its name, the credentials file is exported again at step 4 before any
+   component starts, a FIX capture file is emptied as its gateway starts, and a region set aside as unusable is never
+   read again. The deployment writes a credentials file too, so a check of every file would refuse the first day after
+   every deployment. The end-of-day procedure archives them all the same. For the files checked:
    - if none is present, the day starts fresh;
    - if the run manifest is present, names `D` and says the day's inputs are complete, this is a restart during
      day `D`, not a start of day. The procedure goes to step 6 and starts the components on their files, as a
@@ -106,9 +114,11 @@ trading day `D` and the name of the file of the day's times for each phase. It d
    - if the run manifest is present, names `D` and says the day's inputs are not complete, an earlier start of
      day `D` stopped before it had them. No component has started, so the procedure carries on from step 3 and
      repeats everything from there;
-   - if the run manifest names another day, or any file in section 2.1 is present with no run manifest, the
-     procedure refuses. It names every file it found and the day each belongs to, and says that the end-of-day
-     procedure for that day has to be run first. It never deletes or moves anything itself.
+   - if the run manifest names another day, or any file checked is present with no run manifest, the procedure
+     refuses. It names every file it found, with the day each belongs to where the procedure reads it: the day a
+     small text file records in its first field, or the day a run manifest names. The day a WAL or a region holds is
+     read by the component that uses it. The procedure says that the end-of-day procedure for that day has to be run
+     first, and never deletes or moves anything itself.
 3. **Write the run manifest**, `var/run_manifest.toml`: the trading day `D`; the schedule, as the moments in UTC
    that the venue's local times for `D` come to; the release installed (from `release.json`); the time the
    manifest was written; and `inputs_complete = false`. Every later step, and the start-of-day request, takes `D`
@@ -144,7 +154,10 @@ The procedure is run once the venue has entered `eod`. It does not move the venu
 operator's request to the sequencer, made on purpose, not a side effect of ending the day.
 
 1. **Check that the venue is in `eod`** for the day named in the run manifest. The procedure asks the leading
-   sequencer for its state. If the venue is in an earlier phase, the procedure refuses and says which phase it is
+   sequencer for its state with a `TradingStateQuery` (234), which writes nothing and is answered with a
+   `TradingPhaseAnswer` whose outcome is `StateOnly`. If no sequencer leads, for instance because the venue stopped
+   after entering `eod`, the procedure refuses, and the venue is started again on the day's files, as a restart, so
+   that it can be asked. If the venue is in an earlier phase, the procedure refuses and says which phase it is
    in and when `eod` is scheduled.
 2. **Wait for the order activity recorder** to report that every event up to the `eod` event is confirmed by the
    external messaging system. The recorder is not built, and how its report reaches this procedure is designed with
@@ -166,7 +179,9 @@ outside the venue.
 
 Each machine archives its own files. In the development environment every component runs on one machine, so one
 run of the procedure archives everything; in an environment with two machines the procedure runs on each, and
-step 3 on each machine stops only the components on that machine.
+step 3 on each machine stops only the components on that machine. That case is not handled yet: the machine that
+runs the procedure second may find no sequencer running to answer step 1, and refuses
+([BUG-0137](../bug_list.md#bug_0137)).
 
 ## 5. What has to be built
 
@@ -190,11 +205,18 @@ judged against it:
   scripts start.
 - **`devenv.py start --fresh-wal` removes the matching engines' epoch files.** **Built.**
 - **The procedures themselves**, as one script, `scripts/trading_day.py`, with the commands `start` and `end`,
-  using the same reading of the environment file as `devenv.py`. `devenv.py start --fresh-wal --fresh-book` remains
-  for development runs.
+  using the same reading of the environment file as `devenv.py`, and the same functions to start and stop the
+  components. `devenv.py start --fresh-wal --fresh-book` remains for development runs, and clears what a test run
+  leaves, including regions set aside as unusable, so that `trading_day.py start` finds none of it. **Built.** The
+  question `end` asks, `TradingStateQuery`, is new: no request that existed could ask for the phase without the risk
+  of changing it.
 - **The Quill logs** carry the trading day in their file names, such as `sequencer_primary.20261116.log`, so that
-  two days can never share a file. The captured standard output files are named in the same way.
+  two days can never share a file. The captured standard output files are named in the same way. **Built**, for the
+  components `devenv.py` and `trading_day.py` start. The test harnesses (`ha_test.py`, `perf_run.py` and
+  `callgrind_run.py`) start their own components with logs named without a day, and clear them before each run; the
+  procedures leave those files alone.
 - **The `archive_dir` setting** in each environment file, `installed/archive` in the development environment.
+  **Built.**
 
 ## 6. Decisions
 

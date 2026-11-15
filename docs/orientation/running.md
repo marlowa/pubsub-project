@@ -226,7 +226,7 @@ Options: `--skip-certs`, `--force-certs`, `--skip-db`, `--skip-create-db`, `--dr
 python3 scripts/devenv.py start
 ```
 
-Components are started in the order defined in `[startup_order]` in the env TOML, with a 1-second delay between each. Logs go to `installed/log/<name>.log` (application log) and `installed/log/<name>.stdout` (stdout/stderr). PID files go to `<run_dir>/<name>.pid`, where `run_dir` is set in the `[paths]` section of the env TOML (`installed/run` in `dev.toml`).
+Components are started in the order defined in `[startup_order]` in the env TOML, with a 1-second delay between each. Each component's Quill log is `installed/log/<name>.<trading day>.log`, such as `sequencer_primary.20261116.log`, and what it writes to its standard output and standard error is captured in `installed/log/<name>.<trading day>.stdout`. The trading day is in the name so that two days never share a file. PID files go to `<run_dir>/<name>.pid`, where `run_dir` is set in the `[paths]` section of the env TOML (`installed/run` in `dev.toml`).
 
 **Checking status:**
 
@@ -271,7 +271,7 @@ python3 scripts/devenv.py --env environments/test-1.toml start
 | `--delay SECONDS` | `1.0` | Pause between component starts |
 | `--debug` | off | Set every C++ component's application log level to debug before starting |
 | `--supervised` | off | Start each component under `scripts/launch.py`, which restarts it if it dies ([process death](../availability/process_death.md)) |
-| `--fresh-book` | off | Delete the matching engines' open-order regions first, so the venue starts holding no orders; the write-ahead log is left alone |
+| `--fresh-book` | off | Delete the matching engines' open-order regions first, and any region set aside as `.unusable`, so the venue starts holding no orders; the write-ahead log is left alone |
 | `--fresh-wal` | off | Delete the write-ahead logs first; never implied by `--fresh-book` |
 | `--no-prometheus` | off | Skip components marked `metrics_only = true`, the Prometheus scraper |
 | `--db-port PORT` | from `[db]` | The PostgreSQL port, as for `deploy.py` |
@@ -301,3 +301,35 @@ See [Trading-day load](../operations/trading_day_load.md) for the measurements.
 ---
 
 Back to [orientation](../orientation/README.md), or the [documentation contents](../README.md).
+
+## Starting and ending a trading day (`trading_day.py`)
+
+`devenv.py start` is for development runs. A trading day is started and ended by `scripts/trading_day.py`, which carries
+out the procedures in [Starting and ending the trading day](../venue/start_and_end_of_day.md). It reads the
+environment file as `devenv.py` does, and uses the same functions to start and stop the components.
+
+```bash
+python3 scripts/trading_day.py --operator alice start --trading-day 20261116 --schedule environments/schedules/trading_schedule.toml
+python3 scripts/trading_day.py --operator alice end
+```
+
+`start` refuses while any process of the installation is running, or while any file of another trading day that a
+component reads when it starts is present: the WALs and the files beside them, the open-order regions, the epoch files,
+the lease promise records and the arbiters' statements. It names each file it found. When none is present it writes the run manifest, `installed/var/run_manifest.toml`, exports the
+members' credentials and checks them, starts every component with `--trading-day`, and asks for the start of day with the
+schedule. Run again on the same day, once the manifest says the day's inputs are complete, it restarts the venue on the
+day's files. The other files of a day cannot be taken for the new day's, so they do not stop it: a Quill log or captured
+output has its day in its name, the credentials file is exported again before any component starts, and a FIX capture
+file is emptied as its gateway starts. A Quill log or captured output without a trading day in its name is one a test
+harness wrote, and is neither checked nor archived.
+
+`end` asks the leading sequencer for the trading state, with a question that writes nothing, and refuses unless the venue
+is in the end of day of the day the manifest names. It then stops every component, checks each has exited, and moves
+every file of the day, including the Quill logs and captured output named with that day, into
+`<archive_dir>/<trading day>/<machine>/`, with `listing.txt` giving each file's size and
+SHA-256 checksum. `archive_dir` is set in the `[paths]` section of the environment file (`installed/archive` in
+`dev.toml`). A file outside the installation, such as a WAL on another disk, is archived below
+`outside_the_installation/` at its whole path.
+
+After a test harness has run, `devenv.py start --fresh-wal --fresh-book` clears the WALs, regions and records it left,
+so that `trading_day.py start` finds none of them.

@@ -3,9 +3,9 @@
 """
 operator_requests.py — what the operator's tools share: finding each sequencer's listener for operators, connecting to it
 over TLS with the operator's certificate, sending one request and reading its answer, starting a trading day, reading
-the day's schedule from a file, and replacing the schedule during the day.
+the day's schedule from a file, replacing the schedule during the day, and asking for the trading state.
 
-Used by operator_halt.py, trading_phase.py, devenv.py and ha_test.py. Each sequencer's listener accepts only TLS, and
+Used by operator_halt.py, trading_phase.py, trading_day.py, devenv.py and ha_test.py. Each sequencer's listener accepts only TLS, and
 only a client presenting a certificate signed by the operator's certificate authority. deploy.py makes the authority, the
 operator's certificate and each listener's certificate ([operator_certificates] in the environment file).
 
@@ -269,6 +269,40 @@ def entered(install_dir: Path, result: PhaseAnswer) -> bool:
     leader_follower, _ = load_messages(install_dir)
     outcome = leader_follower.TradingPhaseOutcome
     return result.answer is not None and result.answer.outcome in (outcome.Written, outcome.AlreadyInPhase, outcome.AlreadyPast)
+
+
+def trading_state(install_dir: Path, operator: str, *, timeout: float = 30.0, say: Callable[[str], None] = print) -> PhaseAnswer:
+    """Asks every sequencer for the trading state with a TradingStateQuery, which writes nothing, again while none leads,
+    until timeout seconds have passed. Returns the answer of the sequencer that leads, whose outcome is StateOnly, or one
+    with no answer when none led. Its day_started, trading_day, phase and halted fields are the venue's state."""
+    leader_follower, pdu_framing = load_messages(install_dir)
+    query = leader_follower.TradingStateQuery(operator_name=operator)
+    context = tls_context(install_dir)
+    listeners = deployed_listeners(install_dir)
+    deadline = time.monotonic() + timeout
+    result = PhaseAnswer(answered_by=None, answer=None, lines=[])
+    if not listeners:
+        say(f"no sequencer to ask: none is deployed in {install_dir}")
+        return result
+    while True:
+        result = PhaseAnswer(answered_by=None, answer=None, lines=[])
+        for listener in listeners:
+            answer = ask(listener, context, query, leader_follower.TradingPhaseAnswer, pdu_framing, 5.0)
+            if isinstance(answer, str):
+                result.lines.append(answer)
+                continue
+            result.lines.append(f"{listener[0]}: {answer.outcome.name} -- {answer.explanation}")
+            if answer.outcome == leader_follower.TradingPhaseOutcome.StateOnly:
+                result.answered_by = listener[0]
+                result.answer = answer
+        if result.answer is not None or time.monotonic() > deadline:
+            break
+        time.sleep(0.2)
+    for line in result.lines:
+        say(f"  state: {line}")
+    if result.answer is None:
+        say(f"  state: no sequencer that leads answered within {timeout:.0f}s")
+    return result
 
 
 def start_trading_day(install_dir: Path, trading_day: int, operator: str, *, timeout: float = 60.0,
