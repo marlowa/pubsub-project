@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 251 |
-| Open | 43 (23 defects, 20 tasks) |
+| Bugs recorded | 252 |
+| Open | 44 (24 defects, 20 tasks) |
 | Closed | 208 |
-| Next id | BUG-0252 |
+| Next id | BUG-0253 |
 
 ## Open bugs by severity
 
-6 high, 29 medium, 8 low.
+6 high, 30 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,6 +48,7 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0251](#bug_0251) | medium | defect | Under a burst of orders faster than it can process, the leading sequencer loses its lease to a backlog on its own thread, and the follower matching engine is taken out of service |
+| [BUG-0252](#bug_0252) | medium | defect | The leading sequencer's lease ran out as it finished sending a restarted follower sequencer the whole WAL |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -151,6 +152,47 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0252: The leading sequencer's lease ran out as it finished sending a restarted follower sequencer the whole WAL {#bug_0252}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-16 |
+| Recorded | 2026-11-16 |
+| How | Measuring how long a follower sequencer takes to catch up a day's WAL ([start_and_end_of_day.md](venue/start_and_end_of_day.md), section 4.2, decision 4) |
+| Impact | A change of epoch with no failure, a second catch-up of the whole WAL, and a matching engine caught up again; on a WAL of a day's size the catch-up would take many minutes |
+
+**What happened.** On the development venue, after 1.8 million orders sent at a rate the venue sustained (3,600,008
+records in the WAL, and no change of leader while they were sent), the follower sequencer, the secondary, was stopped,
+its WAL moved aside, and it was started again holding nothing. The Quill logs are kept in
+`tmp/catch_up_measurement/` in the development checkout.
+
+1. At 23:00:38.85 the leader began sending the follower every record; a second connection at 23:00:40.90 resumed
+   from record 419,098, the follower logging that record 419,227 had arrived after 419,098.
+2. At 23:00:50.955 the leader logged that the follower had been sent every record through 3,600,012, and in the same
+   millisecond that its lease had run out, "neither the peer nor the arbiter renewed it in time", and that it stopped
+   leading at epoch 1.
+3. It asked to lead at epoch 5, was granted it by the peer at once, and began sending the follower the same 3,328,535
+   records again, which took until 23:01:09.86. Meanwhile, at 23:00:53, a matching engine's connection closed, the
+   leader logged that no matching engine took orders, and the matching engine on connection 6 was caught up again
+   with 147,621 records.
+4. While it was caught up, the follower logged many times that its store of reports kept in case it takes the lead
+   was full, and that a report still needed had been overwritten.
+
+**What is not known.** Why the lease was not renewed during the first catch-up, when the arbiter's grant alone, with
+the leader's own vote, is a majority; and why the second catch-up, which took almost twice as long, did not lose it.
+One possibility, not checked: every message any thread sends goes through one queue into the reactor, in order, so a
+lease request may wait behind the records being sent. [BUG-0251](#bug_0251), where the reactor thread was at 100% of a
+core, may have the same cause. Whether overwriting a kept report the follower still needs could lose a report if it
+then took the lead.
+
+**What is wanted.** The cause found; a leader's lease is renewed while it sends a follower the whole WAL, however
+long that takes; and a scenario in `ha_test.py` that restarts the follower sequencer with an empty WAL behind a WAL of
+a few million records, which would have to fail before the change.
+
+**Principles.** V11 of [design_principles.md](design_principles.md): a follower being caught up is a loss of
+resilience, and must not become a change of leader.
 
 ### BUG-0251: Under a burst of orders faster than it can process, the leading sequencer loses its lease to a backlog on its own thread, and the follower matching engine is taken out of service {#bug_0251}
 
@@ -619,7 +661,8 @@ of the day. To be designed and agreed before code.
 chosen, in items 1 and 2.
 
 1. **Measure how long a follower sequencer takes to catch up a day's WAL** in the development environment, and choose
-   from it the limit of time the leading sequencer waits for the copies of the WAL. The limit is a setting of the
+   from it the limit of time the leading sequencer waits for the copies of the WAL. **Measured** (section 4.2,
+   decision 4): 176,000 to 316,000 records a second; the limit is still to be chosen from it. The limit is a setting of the
    sequencer's configuration, with a shorter value in other environments such as production.
 2. **The two events. Built** (`EndOfDayCopies`, `TradingPhaseRequests`, and scenarios 111 and 113 of `ha_test.py`).
    Rename the phase `EndOfDay` to `EndOfDayBegin`, add `EndOfDayEnd`, and have the leading

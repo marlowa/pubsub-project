@@ -377,6 +377,19 @@ and apply each record as it arrives.
       WAL the only full record of the day. The value for the development environment is to be chosen by measuring how
       long a follower sequencer takes to catch up a day's WAL there, and other environments, such as production, set
       a shorter one.
+
+      **Measured on the development machine, 16 November 2026,** in its power-saving configuration, so the figures
+      are lower bounds. 1.8 million orders were sent at 20,000 a second, which wrote 3,600,008 records, 1.6 GB,
+      about 450 bytes a record: each order and its acknowledgement. The follower sequencer was stopped, its WAL set
+      aside, and started again with none, so that it had to be sent the whole WAL:
+      - the leader sent it 3,180,914 records in 10.05 seconds, about 316,000 a second, after a first connection had
+        sent the first 419,098;
+      - at the moment that catch-up ended, the leader's lease ran out and it took the lead again at a later epoch,
+        which started the same catch-up again ([BUG-0252](../bug_list.md#bug_0252)); the second sent 3,328,535 records
+        in 18.9 seconds, about 176,000 a second, while a matching engine was also being caught up.
+
+      At these rates a WAL of 10 million records takes 30 to 60 seconds to send. A day of 50 million orders and as
+      many cancels, with a report of each, is about 200 million records, which would take 11 to 19 minutes.
    5. **The follower sequencer holds a record, and the leader never receives its confirmation,** because the
       connection broke. The leader waits for the same limit and then goes on without the confirmation: when the
       record is the end-of-day begin or one before it, the leader writes the end-of-day end; when it is the
