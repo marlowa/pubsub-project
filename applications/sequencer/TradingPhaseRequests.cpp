@@ -31,7 +31,8 @@ std::string_view what_members_may_do(pubsub_itc_fw_app::TradingPhase phase) {
             return "members' orders and cancels are accepted";
         case pubsub_itc_fw_app::TradingPhase::StartOfDay:
         case pubsub_itc_fw_app::TradingPhase::Closed:
-        case pubsub_itc_fw_app::TradingPhase::EndOfDay:
+        case pubsub_itc_fw_app::TradingPhase::EndOfDayBegin:
+        case pubsub_itc_fw_app::TradingPhase::EndOfDayEnd:
             break;
     }
     return "members' orders and cancels are refused";
@@ -39,7 +40,9 @@ std::string_view what_members_may_do(pubsub_itc_fw_app::TradingPhase phase) {
 
 } // namespaces
 
-TradingPhaseRequests::TradingPhaseRequests(TradingPhaseRequestsLinksInterface& links, pubsub_itc_fw::QuillLogger& logger) : links_(links), logger_(logger) {}
+TradingPhaseRequests::TradingPhaseRequests(TradingPhaseRequestsLinksInterface& links, pubsub_itc_fw::QuillLogger& logger, int32_t end_of_day_publishers,
+                                           int64_t longest_wait_for_copies_ns)
+    : links_(links), logger_(logger), copies_(end_of_day_publishers, longest_wait_for_copies_ns) {}
 
 void TradingPhaseRequests::request(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, int32_t trading_day,
                                    pubsub_itc_fw_app::TradingPhase phase, const std::vector<ScheduledPhase>& schedule) {
@@ -90,6 +93,18 @@ void TradingPhaseRequests::request(const pubsub_itc_fw::ConnectionID& connection
                                        pubsub_itc_fw_app::to_string(current))});
             return;
         }
+    }
+    if (phase == pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
+        // Asking for it would let the components shut down before every copy of the WAL is complete, which is what the two
+        // events of the end of day prevent (docs/venue/start_and_end_of_day.md, section 4.2).
+        const std::string progress = copies_last_logged_.empty() ? std::string() : fmt::format("; at the last check, {}", copies_last_logged_);
+        answer(connection, operator_name,
+               Attempt{pubsub_itc_fw_app::TradingPhaseOutcome::WrittenByTheVenue, 0, 0,
+                       fmt::format("the end-of-day end is never asked for: the leading sequencer writes it by itself, once the venue is in the "
+                                   "end-of-day begin and every copy of the WAL holds the begin, or once the limit of time has passed; nothing was "
+                                   "written{}",
+                                   progress)});
+        return;
     }
     answer(connection, operator_name, move_on(phase, pubsub_itc_fw_app::TechnicalEventReason::RequestedByOperator));
 }
@@ -247,7 +262,12 @@ void TradingPhaseRequests::scheduled_check(int64_t now_utc_ns, int64_t check_int
         return;
     }
     const pubsub_itc_fw_app::TradingPhase current = state.latest()->phase;
-    if (current == pubsub_itc_fw_app::TradingPhase::EndOfDay) {
+    if (current == pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
+        note_the_follower_holds_the_end();
+        return;
+    }
+    if (current == pubsub_itc_fw_app::TradingPhase::EndOfDayBegin) {
+        end_of_day_end_check(now_utc_ns);
         return;
     }
     const auto next = static_cast<pubsub_itc_fw_app::TradingPhase>(phase_order(current) + 1);
@@ -281,7 +301,7 @@ void TradingPhaseRequests::scheduled_check(int64_t now_utc_ns, int64_t check_int
 }
 
 void TradingPhaseRequests::ask_engine_ahead_of(pubsub_itc_fw_app::TradingPhase phase) {
-    if (phase != pubsub_itc_fw_app::TradingPhase::PreOpen && phase != pubsub_itc_fw_app::TradingPhase::EndOfDay) {
+    if (phase != pubsub_itc_fw_app::TradingPhase::PreOpen && phase != pubsub_itc_fw_app::TradingPhase::EndOfDayBegin) {
         return;
     }
     const pubsub_itc_fw_app::TradingPhase waits_on =
@@ -320,7 +340,7 @@ TradingPhaseRequests::Attempt TradingPhaseRequests::move_on(pubsub_itc_fw_app::T
     // sequencer wrote for the start of the day, and the start of day is the last of them that the engine is sent. The end
     // of day waits until the leading engine has acted on the close, so that every report the close produced is in the WAL
     // before the end of day (section 2.5).
-    if (phase == pubsub_itc_fw_app::TradingPhase::PreOpen || phase == pubsub_itc_fw_app::TradingPhase::EndOfDay) {
+    if (phase == pubsub_itc_fw_app::TradingPhase::PreOpen || phase == pubsub_itc_fw_app::TradingPhase::EndOfDayBegin) {
         const pubsub_itc_fw_app::TradingPhase waits_on =
             phase == pubsub_itc_fw_app::TradingPhase::PreOpen ? pubsub_itc_fw_app::TradingPhase::StartOfDay : pubsub_itc_fw_app::TradingPhase::Closed;
         const int64_t waits_on_seq_no = state.entered_at(waits_on).value_or(0);
@@ -393,6 +413,71 @@ std::string TradingPhaseRequests::reports_outstanding() const {
 void TradingPhaseRequests::stopped_leading() {
     engine_applied_through_ = 0;
     engine_reports_ = EngineReports{};
+    copies_.forget();
+    copies_last_logged_.clear();
+}
+
+void TradingPhaseRequests::publisher_holds(const pubsub_itc_fw::ConnectionID& connection, int64_t last_seq_no) {
+    copies_.publisher_holds(connection, last_seq_no);
+}
+
+void TradingPhaseRequests::publisher_gone(const pubsub_itc_fw::ConnectionID& connection) {
+    copies_.publisher_gone(connection);
+}
+
+void TradingPhaseRequests::end_of_day_end_check(int64_t now_utc_ns) {
+    const TradingPhaseState& state = links_.trading_phase();
+    const int64_t begin_seq_no = state.entered_at(pubsub_itc_fw_app::TradingPhase::EndOfDayBegin).value_or(state.latest()->seq_no);
+    copies_.start(begin_seq_no, now_utc_ns);
+    const EndOfDayCopies::Assessment assessment = copies_.assess(links_.follower_sequencer_holds_through(), now_utc_ns);
+    if (assessment.verdict == EndOfDayCopies::Verdict::Waiting) {
+        links_.ask_publishers_what_they_hold(begin_seq_no);
+        if (assessment.explanation != copies_last_logged_) {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "TradingPhaseRequests: the end-of-day end is not yet written -- {}", assessment.explanation);
+            copies_last_logged_ = assessment.explanation;
+        }
+        return;
+    }
+    const bool complete = assessment.verdict == EndOfDayCopies::Verdict::EveryCopyComplete;
+    const pubsub_itc_fw_app::TechnicalEventReason reason =
+        complete ? pubsub_itc_fw_app::TechnicalEventReason::EveryCopyComplete : pubsub_itc_fw_app::TechnicalEventReason::CopiesNotCompleteInTime;
+    const int64_t seq_no = write_phase(pubsub_itc_fw_app::TradingPhase::EndOfDayEnd, state.trading_day(), reason);
+    if (seq_no == 0) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                   "TradingPhaseRequests: the TechnicalEvent entering the end-of-day end was not written; the next check tries again -- {}",
+                   assessment.explanation);
+        return;
+    }
+    copies_last_logged_.clear();
+    if (complete) {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                   "TradingPhaseRequests: wrote the TechnicalEvent at seq={} entering the end-of-day end of trading day {}, because every copy of the WAL "
+                   "holds the end-of-day begin -- {}",
+                   seq_no, state.trading_day(), assessment.explanation);
+        return;
+    }
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+               "TradingPhaseRequests: wrote the TechnicalEvent at seq={} entering the end-of-day end of trading day {} with a copy of the WAL still "
+               "incomplete, because the limit of time for the copies has passed; the copy that is incomplete may lack the end of the day's record -- {}",
+               seq_no, state.trading_day(), assessment.explanation);
+}
+
+void TradingPhaseRequests::note_the_follower_holds_the_end() {
+    const TradingPhaseState& state = links_.trading_phase();
+    const int64_t end_seq_no = state.entered_at(pubsub_itc_fw_app::TradingPhase::EndOfDayEnd).value_or(state.latest()->seq_no);
+    if (end_acknowledgement_logged_for_ == end_seq_no) {
+        return;
+    }
+    const std::optional<int64_t> follower = links_.follower_sequencer_holds_through();
+    if (follower.has_value() && *follower < end_seq_no) {
+        return;
+    }
+    end_acknowledgement_logged_for_ = end_seq_no;
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "TradingPhaseRequests: {}",
+               follower.has_value()
+                   ? fmt::format("the follower sequencer has acknowledged the end-of-day end at seq={}, so both sequencers' WALs end with it", end_seq_no)
+                   : fmt::format("the end-of-day end is at seq={}, and there is no follower sequencer to acknowledge it, because high availability is off",
+                                 end_seq_no));
 }
 
 void TradingPhaseRequests::answer(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, const Attempt& attempt,

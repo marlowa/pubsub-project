@@ -45,7 +45,8 @@ inline std::optional<pubsub_itc_fw_app::CommandRefusedReason> refusal_by_phase(b
             return pubsub_itc_fw_app::CommandRefusedReason::MarketNotOpen;
         case pubsub_itc_fw_app::TradingPhase::Closed:
             return pubsub_itc_fw_app::CommandRefusedReason::MarketClosed;
-        case pubsub_itc_fw_app::TradingPhase::EndOfDay:
+        case pubsub_itc_fw_app::TradingPhase::EndOfDayBegin:
+        case pubsub_itc_fw_app::TradingPhase::EndOfDayEnd:
             return pubsub_itc_fw_app::CommandRefusedReason::TradingDayEnded;
         case pubsub_itc_fw_app::TradingPhase::PreOpen:
         case pubsub_itc_fw_app::TradingPhase::Open:
@@ -82,7 +83,8 @@ inline SessionStatus session_status(const TradingSessionState& state) {
             return state.halted ? SessionStatus::Halted : SessionStatus::Open;
         case pubsub_itc_fw_app::TradingPhase::StartOfDay:
         case pubsub_itc_fw_app::TradingPhase::Closed:
-        case pubsub_itc_fw_app::TradingPhase::EndOfDay:
+        case pubsub_itc_fw_app::TradingPhase::EndOfDayBegin:
+        case pubsub_itc_fw_app::TradingPhase::EndOfDayEnd:
             break;
     }
     return SessionStatus::Closed;
@@ -99,7 +101,8 @@ inline const char* phase_in_words(pubsub_itc_fw_app::TradingPhase phase) {
             return "open";
         case pubsub_itc_fw_app::TradingPhase::Closed:
             return "closed";
-        case pubsub_itc_fw_app::TradingPhase::EndOfDay:
+        case pubsub_itc_fw_app::TradingPhase::EndOfDayBegin:
+        case pubsub_itc_fw_app::TradingPhase::EndOfDayEnd:
             break;
     }
     return "the end of day";

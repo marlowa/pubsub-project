@@ -6230,6 +6230,28 @@ def set_installed_recovery_limit(prefix: Path, seconds: int) -> int:
     return changed
 
 
+def set_installed_end_of_day_publishers(prefix: Path, publishers: int) -> int:
+    """Set end_of_day.publishers in every deployed sequencer config to the number of matching engine publishers the scenario
+    starts.
+
+    deploy.py counts the publishers the environment starts, two in the development environment, but most scenarios start
+    none. A leading sequencer told to wait for two publishers that never run would wait the whole limit of time before it
+    wrote the end-of-day end. Written on every launch, for the reason set_installed_recovery_limit gives.
+    """
+    changed = 0
+    pattern = re.compile(r"^(publishers\s*=\s*)\d+", re.M)
+    for toml_path in sorted((prefix / "etc" / "sequencer").glob("*.toml")):
+        try:
+            text = toml_path.read_text(errors="replace")
+        except OSError:
+            continue
+        result, count = pattern.subn(lambda m: m.group(1) + str(publishers), text)
+        if count and result != text:
+            toml_path.write_text(result)
+            changed += 1
+    return changed
+
+
 _ENGINE_COMPONENTS = ("matching_engine", "matching_engine_primary", "matching_engine_secondary")
 _SEQUENCER_COMPONENTS = ("sequencer_primary", "sequencer_secondary")
 
@@ -8509,6 +8531,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # leaves an arbiter that now refuses to start.
     # The recovery limit, on every launch for the same reason.
     set_installed_recovery_limit(prefix, scenario.automatic_recovery_limit_seconds)
+    # The publishers the leading sequencer waits for at the end of day: those this scenario starts.
+    set_installed_end_of_day_publishers(prefix, 2 if scenario.with_publishers else 0)
     # The promotion policy, on every launch and for the same reason: a scenario that set it
     # one way must not leave a later one asserting against a policy it did not choose.
 
@@ -10684,7 +10708,20 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             enter("end-of-day")
             session_told("3", f"trading day {TRADING_DAY}: the end of day", "once the end of day is written")
-            enter("end-of-day", "AlreadyInPhase")
+            # The leading sequencer writes the end-of-day end by itself once the follower sequencer and both publishers hold the
+            # begin (docs/venue/start_and_end_of_day.md, section 4.2). Each is up to date, so it follows within a few seconds.
+            deadline = time.monotonic() + 30.0
+            state = None
+            while time.monotonic() < deadline:
+                state = operator_requests.trading_state(prefix, "ha_test", timeout=5.0, say=lambda _line: None).answer
+                if state is not None and state.phase.name == "EndOfDayEnd":
+                    break
+                time.sleep(0.5)
+            if state is None or state.phase.name != "EndOfDayEnd":
+                member.close()
+                die(f"the trading day: the end-of-day end was not written within 30s of the begin; the leading sequencer says {state}")
+            log("  the leading sequencer writes the end-of-day end by itself once every copy of the WAL holds the begin -- OK")
+            enter("end-of-day", "AlreadyPast")
             member.new_order_single("day-ended-1")
             day_answered("day-ended-1", "an order in the end of day", "8", "trading day has ended")
             member.close()
@@ -10720,9 +10757,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
             envelope = leader_follower.WalRecord.decode(last[2])[0] if last is not None else None
             event = (leader_follower.TechnicalEvent.decode(envelope.payload)[0]
                      if envelope is not None and envelope.pdu_id == leader_follower.TechnicalEvent.MESSAGE_ID else None)
-            if event is None or event.phase != leader_follower.TradingPhase.EndOfDay:
-                die(f"the trading day: the last record of {wal_dir} is {envelope}; the end of day was wanted, with nothing after it")
-            log("  the WAL's last record is the end of day -- OK")
+            if (event is None or event.phase != leader_follower.TradingPhase.EndOfDayEnd
+                    or event.reason != leader_follower.TechnicalEventReason.EveryCopyComplete):
+                die(f"the trading day: the last record of {wal_dir} is {envelope} holding {event}; the end-of-day end, written because every "
+                    "copy of the WAL was complete, was wanted, with nothing after it")
+            log("  the WAL's last record is the end-of-day end, written because every copy of the WAL was complete -- OK")
             close_seq_no = None
             answering_close = 0
             for record_id, _, contents in wal_entries(wal_dir):
@@ -10883,7 +10922,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             started_at = time.time_ns()
             pre_open_at = started_at + 4 * second
             open_at = started_at + 8 * second
-            first_schedule = [("PreOpen", pre_open_at), ("Open", open_at), ("Closed", started_at + 3600 * second), ("EndOfDay", 0)]
+            first_schedule = [("PreOpen", pre_open_at), ("Open", open_at), ("Closed", started_at + 3600 * second), ("EndOfDayBegin", 0)]
             log(f"  asking for the start of day with the schedule: {operator_requests.schedule_in_words(first_schedule)}")
             started = operator_requests.enter_phases(prefix, TRADING_DAY, ("StartOfDay",), "ha_test", timeout=_START_DAY_TIMEOUT, say=log,
                                                      schedule=first_schedule)
@@ -10917,7 +10956,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if refused.answer is None or refused.answer.outcome != leader_follower.TradingScheduleOutcome.Refused:
                 die(f"the day's schedule: a replacement naming open, which the venue has entered, was not refused: {refused.lines}")
             close_at = time.time_ns() + 10 * second
-            replaced = operator_requests.replace_schedule(prefix, TRADING_DAY, [("Closed", close_at), ("EndOfDay", 0)], "ha_test", say=log)
+            replaced = operator_requests.replace_schedule(prefix, TRADING_DAY, [("Closed", close_at), ("EndOfDayBegin", 0)], "ha_test", say=log)
             if replaced.answer is None or replaced.answer.outcome != leader_follower.TradingScheduleOutcome.Written:
                 die(f"the day's schedule: the replacement bringing the close forward was not written: {replaced.lines}")
             log("  a replacement naming a phase entered is refused, and one bringing the close forward is written -- OK")
@@ -10939,7 +10978,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if time.time_ns() >= close_at:
                 die("the day's schedule: the new leader took the lead after the close was due, so its writing the close on time shows nothing")
             survivor_listener = [listener for listener in operator_requests.deployed_listeners(prefix) if listener[0] == survivor]
-            await_phase(leader_follower.TradingPhase.EndOfDay, 60.0, listeners=survivor_listener)
+            # The end-of-day end does not follow here: the old leader, now the missing follower sequencer, is not restarted, so
+            # the new leader waits the whole limit of time for its copy (docs/venue/start_and_end_of_day.md, section 4.2).
+            await_phase(leader_follower.TradingPhase.EndOfDayBegin, 60.0, listeners=survivor_listener)
             log("  the new leader entered the close and the end of day by itself -- OK")
 
             survivor_config = prefix / "etc" / "sequencer" / f"{survivor}.toml"
@@ -10956,11 +10997,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if (len(schedules) != 2 or schedules[0][0] != 2
                     or [(entry.phase, entry.earliest_utc_ns) for entry in schedules[0][1].entries] != sent_first
                     or [(entry.phase, entry.earliest_utc_ns) for entry in schedules[1][1].entries]
-                    != [(leader_follower.TradingPhase.Closed, close_at), (leader_follower.TradingPhase.EndOfDay, 0)]):
+                    != [(leader_follower.TradingPhase.Closed, close_at), (leader_follower.TradingPhase.EndOfDayBegin, 0)]):
                 die(f"the day's schedule: {survivor_wal} holds the schedules {schedules}; the first, at seq=2, and the replacement were wanted")
             phases = [event.phase for _, _, event in events]
             wanted_phases = [leader_follower.TradingPhase.StartOfDay, leader_follower.TradingPhase.PreOpen, leader_follower.TradingPhase.Open,
-                             leader_follower.TradingPhase.Closed, leader_follower.TradingPhase.EndOfDay]
+                             leader_follower.TradingPhase.Closed, leader_follower.TradingPhase.EndOfDayBegin]
             if phases != wanted_phases:
                 die(f"the day's schedule: {survivor_wal} holds TechnicalEvents for {[phase.name for phase in phases]}; one for each phase, in "
                     "order, was wanted")

@@ -58,6 +58,12 @@ struct RecordingLinks : public TradingPhaseRequestsLinksInterface {
     void ask_engine_position() override {
         ++engine_asked;
     }
+    [[nodiscard]] std::optional<int64_t> follower_sequencer_holds_through() const override {
+        return follower_holds;
+    }
+    void ask_publishers_what_they_hold(int64_t wanted_through) override {
+        publishers_asked.push_back(wanted_through);
+    }
     bool write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) override {
         if (cannot_write) {
             return false;
@@ -101,6 +107,9 @@ struct RecordingLinks : public TradingPhaseRequestsLinksInterface {
     int64_t next{1};
     bool engine_takes_orders{true};
     int engine_asked{0};
+    // Nothing: high availability is off, and there is no follower sequencer.
+    std::optional<int64_t> follower_holds;
+    std::vector<int64_t> publishers_asked;
     bool cannot_write{false};
     bool cannot_write_schedule{false};
     std::optional<EngineReportPosition> reports_in_wal;
@@ -115,8 +124,32 @@ struct RecordingLinks : public TradingPhaseRequestsLinksInterface {
 class TradingPhaseRequestsTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        requests_ = std::make_unique<TradingPhaseRequests>(links_, logger_);
+        requests_ = std::make_unique<TradingPhaseRequests>(links_, logger_, 0, longest_wait_ns);
     }
+
+    // Replaces the requests with ones that wait for @p publishers matching engine publishers at the end of day.
+    void waiting_for_publishers(int32_t publishers) {
+        requests_ = std::make_unique<TradingPhaseRequests>(links_, logger_, publishers, longest_wait_ns);
+    }
+
+    // The venue in the end-of-day begin, entered on request. @return the begin's position.
+    int64_t in_the_end_of_day_begin() {
+        closed_and_applied();
+        ask(Phase::EndOfDayBegin);
+        return links_.next - 1;
+    }
+
+    // How many lines of the Quill log contain @p words.
+    size_t lines_saying(const std::string& words) {
+        logger_.flush();
+        size_t found = 0;
+        for (const std::string& line : log_) {
+            found += line.find(words) != std::string::npos ? 1 : 0;
+        }
+        return found;
+    }
+
+    static constexpr int64_t longest_wait_ns = 60'000'000'000;
 
     // The engine has acted on every command through @p highest_applied, and sent @p reports_sent reports under epoch 3,
     // holding @p held.
@@ -189,13 +222,13 @@ TEST_F(TradingPhaseRequestsTest, AQuestionAboutTheStateIsAnsweredAndWritesNothin
     EXPECT_EQ(links_.next, 1) << "a question writes nothing, not even the start of day";
 
     closed_and_applied();
-    ask(Phase::EndOfDay);
+    ask(Phase::EndOfDayBegin);
     const int64_t next_before = links_.next;
     requests_->state_query(connection_, "alice");
     EXPECT_EQ(links_.answers.back(), Outcome::StateOnly);
     EXPECT_TRUE(links_.last_answer.day_started);
     EXPECT_EQ(links_.last_answer.trading_day, today);
-    EXPECT_EQ(links_.last_answer.phase, Phase::EndOfDay);
+    EXPECT_EQ(links_.last_answer.phase, Phase::EndOfDayBegin);
     EXPECT_EQ(links_.next, next_before);
 }
 
@@ -263,15 +296,15 @@ TEST_F(TradingPhaseRequestsTest, EveryPhaseIsEnteredOnRequestInOrder) {
     ask(Phase::Open);
     ask(Phase::Closed);
     engine_says(links_.next - 1);
-    ask(Phase::EndOfDay);
+    ask(Phase::EndOfDayBegin);
     ASSERT_EQ(links_.written.size(), 5U);
-    const std::vector<Phase> wanted{Phase::StartOfDay, Phase::PreOpen, Phase::Open, Phase::Closed, Phase::EndOfDay};
+    const std::vector<Phase> wanted{Phase::StartOfDay, Phase::PreOpen, Phase::Open, Phase::Closed, Phase::EndOfDayBegin};
     for (size_t index = 0; index < wanted.size(); ++index) {
         EXPECT_EQ(links_.written[index].phase, wanted[index]) << "record " << index + 1;
         EXPECT_EQ(links_.written[index].trading_day, today);
     }
     EXPECT_EQ(links_.answers, (std::vector<Outcome>(5, Outcome::Written)));
-    EXPECT_EQ(links_.last_answer.phase, Phase::EndOfDay);
+    EXPECT_EQ(links_.last_answer.phase, Phase::EndOfDayBegin);
     EXPECT_EQ(links_.last_answer.technical_event_seq_no, 6) << "the start of day, its schedule, and four phases";
 }
 
@@ -279,7 +312,7 @@ TEST_F(TradingPhaseRequestsTest, APhaseFurtherAheadThanTheNextIsRefused) {
     started_and_applied();
     ask(Phase::Open);
     ask(Phase::Closed);
-    ask(Phase::EndOfDay);
+    ask(Phase::EndOfDayBegin);
     EXPECT_EQ(links_.written.size(), 1U);
     EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::Written, Outcome::NotNext, Outcome::NotNext, Outcome::NotNext}));
 }
@@ -289,16 +322,16 @@ TEST_F(TradingPhaseRequestsTest, TheEndOfDayWaitsForTheEngineToHaveActedOnTheClo
     ask(Phase::Closed);
     const int64_t close_seq_no = links_.next - 1;
     const int asked_before = links_.engine_asked;
-    ask(Phase::EndOfDay);
+    ask(Phase::EndOfDayBegin);
     EXPECT_EQ(links_.answers.back(), Outcome::NotReady);
     EXPECT_EQ(links_.engine_asked, asked_before + 1) << "the engine is asked how far it has got";
     engine_says(close_seq_no - 1);
-    ask(Phase::EndOfDay);
+    ask(Phase::EndOfDayBegin);
     EXPECT_EQ(links_.answers.back(), Outcome::NotReady) << "it has not reached the close";
     engine_says(close_seq_no);
-    ask(Phase::EndOfDay);
+    ask(Phase::EndOfDayBegin);
     EXPECT_EQ(links_.answers.back(), Outcome::Written);
-    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDay);
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDayBegin);
 }
 
 // The engine's answer can arrive before the close's reports, which travel on other connections: the end of day waits
@@ -309,14 +342,14 @@ TEST_F(TradingPhaseRequestsTest, TheEndOfDayWaitsForEveryReportTheEngineSentToBe
     const int64_t close_seq_no = links_.next - 1;
     engine_says(close_seq_no, 7);
     links_.reports_in_wal = EngineReportPosition{3, 5};
-    ask(Phase::EndOfDay);
+    ask(Phase::EndOfDayBegin);
     EXPECT_EQ(links_.answers.back(), Outcome::NotReady) << "reports 6 and 7 are not yet in the WAL";
     links_.reports_in_wal = EngineReportPosition{3, 7};
     engine_says(close_seq_no, 7, 2);
-    ask(Phase::EndOfDay);
+    ask(Phase::EndOfDayBegin);
     EXPECT_EQ(links_.answers.back(), Outcome::NotReady) << "the engine holds reports not yet sent";
     engine_says(close_seq_no, 7);
-    ask(Phase::EndOfDay);
+    ask(Phase::EndOfDayBegin);
     EXPECT_EQ(links_.answers.back(), Outcome::Written);
 }
 
@@ -326,7 +359,7 @@ TEST_F(TradingPhaseRequestsTest, AReportInTheWalUnderALaterEpochCoversEveryEarli
     ask(Phase::Closed);
     engine_says(links_.next - 1, 7);
     links_.reports_in_wal = EngineReportPosition{4, 1};
-    ask(Phase::EndOfDay);
+    ask(Phase::EndOfDayBegin);
     EXPECT_EQ(links_.answers.back(), Outcome::Written);
 }
 
@@ -335,7 +368,7 @@ TEST_F(TradingPhaseRequestsTest, WithNoEngineTheVenueDoesNotMoveToTheEndOfDay) {
     ask(Phase::Closed);
     links_.engine_takes_orders = false;
     const int asked_before = links_.engine_asked;
-    ask(Phase::EndOfDay);
+    ask(Phase::EndOfDayBegin);
     EXPECT_EQ(links_.answers.back(), Outcome::NotReady);
     EXPECT_EQ(links_.engine_asked, asked_before) << "there is no engine to ask";
 }
@@ -444,11 +477,11 @@ TEST_F(TradingPhaseRequestsTest, AScheduleTheVenueCannotFollowIsRefusedAndNothin
 }
 
 TEST_F(TradingPhaseRequestsTest, AScheduleCheckAllowsAsSoonAsPossibleAfterATime) {
-    EXPECT_EQ(schedule_problem(Phase::StartOfDay, {{Phase::PreOpen, 1000}, {Phase::Open, 0}, {Phase::Closed, 3000}, {Phase::EndOfDay, 0}}), "");
+    EXPECT_EQ(schedule_problem(Phase::StartOfDay, {{Phase::PreOpen, 1000}, {Phase::Open, 0}, {Phase::Closed, 3000}, {Phase::EndOfDayBegin, 0}}), "");
     EXPECT_EQ(schedule_problem(Phase::StartOfDay, {}), "") << "a day run entirely by hand";
     EXPECT_EQ(schedule_problem(Phase::Open, {{Phase::Closed, 3000}}), "");
     EXPECT_NE(schedule_problem(Phase::Open, {{Phase::Open, 3000}}), "") << "a schedule never names the phase the venue is in";
-    EXPECT_NE(schedule_problem(Phase::Open, {{Phase::EndOfDay, 3000}}), "") << "nor skips one";
+    EXPECT_NE(schedule_problem(Phase::Open, {{Phase::EndOfDayBegin, 3000}}), "") << "nor skips one";
     EXPECT_NE(schedule_problem(Phase::StartOfDay, {{Phase::PreOpen, 3000}, {Phase::Open, 0}, {Phase::Closed, 2000}}), "")
         << "a time after an as-soon-as-possible entry is still compared with the times before it";
 }
@@ -522,7 +555,7 @@ TEST_F(TradingPhaseRequestsTest, AWaitingPhaseIsReportedOnceAtWarningNotEverySec
 }
 
 TEST_F(TradingPhaseRequestsTest, TheScheduleTakesTheVenueThroughEveryPhase) {
-    start_with({{Phase::PreOpen, 0}, {Phase::Open, 0}, {Phase::Closed, 5000}, {Phase::EndOfDay, 0}});
+    start_with({{Phase::PreOpen, 0}, {Phase::Open, 0}, {Phase::Closed, 5000}, {Phase::EndOfDayBegin, 0}});
     engine_says(links_.next - 1);
     requests_->scheduled_check(1);
     requests_->scheduled_check(2);
@@ -536,13 +569,17 @@ TEST_F(TradingPhaseRequestsTest, TheScheduleTakesTheVenueThroughEveryPhase) {
     engine_says(links_.next - 1);
     requests_->scheduled_check(5002);
     ASSERT_EQ(links_.written.size(), 5U);
-    const std::vector<Phase> wanted{Phase::StartOfDay, Phase::PreOpen, Phase::Open, Phase::Closed, Phase::EndOfDay};
+    const std::vector<Phase> wanted{Phase::StartOfDay, Phase::PreOpen, Phase::Open, Phase::Closed, Phase::EndOfDayBegin};
     for (size_t index = 0; index < wanted.size(); ++index) {
         EXPECT_EQ(links_.written[index].phase, wanted[index]) << "record " << index + 1;
         EXPECT_EQ(links_.written[index].reason, index == 0 ? EventReason::RequestedByOperator : EventReason::Scheduled) << "record " << index + 1;
     }
     requests_->scheduled_check(9000);
-    EXPECT_EQ(links_.written.size(), 5U) << "nothing follows the end of day";
+    ASSERT_EQ(links_.written.size(), 6U) << "with no follower sequencer and no publisher, every copy is complete at once";
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDayEnd);
+    EXPECT_EQ(links_.written.back().reason, EventReason::EveryCopyComplete);
+    requests_->scheduled_check(9001);
+    EXPECT_EQ(links_.written.size(), 6U) << "nothing follows the end-of-day end";
 }
 
 TEST_F(TradingPhaseRequestsTest, APhaseTheScheduleLeavesOutIsEnteredOnlyOnRequest) {
@@ -600,7 +637,7 @@ TEST_F(TradingPhaseRequestsTest, AReplacedScheduleTakesEffect) {
     engine_says(links_.next - 1);
     requests_->scheduled_check(1);
     requests_->scheduled_check(2);
-    replace_schedule({{Phase::Closed, 3000}, {Phase::EndOfDay, 0}});
+    replace_schedule({{Phase::Closed, 3000}, {Phase::EndOfDayBegin, 0}});
     EXPECT_EQ(links_.schedule_answers, (std::vector<ScheduleOutcome>{ScheduleOutcome::Written}));
     ASSERT_EQ(links_.schedules_written.size(), 2U);
     EXPECT_EQ(links_.last_schedule_answer.schedule_seq_no, links_.schedules_written[1].seq_no);
@@ -624,7 +661,7 @@ TEST_F(TradingPhaseRequestsTest, AReplacementNamingAPhaseEnteredOrPassedIsRefuse
     const size_t schedules_before = links_.schedules_written.size();
     replace_schedule({{Phase::Open, 3000}, {Phase::Closed, 4000}});
     replace_schedule({{Phase::PreOpen, 3000}});
-    replace_schedule({{Phase::EndOfDay, 3000}});
+    replace_schedule({{Phase::EndOfDayBegin, 3000}});
     EXPECT_EQ(links_.schedule_answers, (std::vector<ScheduleOutcome>(3, ScheduleOutcome::Refused)));
     EXPECT_EQ(links_.schedules_written.size(), schedules_before);
 }
@@ -645,6 +682,122 @@ TEST_F(TradingPhaseRequestsTest, AScheduleThatCannotBeWrittenIsSaidSo) {
     links_.cannot_write_schedule = true;
     replace_schedule({{Phase::PreOpen, 3000}});
     EXPECT_EQ(links_.schedule_answers, (std::vector<ScheduleOutcome>{ScheduleOutcome::NotWritten}));
+}
+
+TEST_F(TradingPhaseRequestsTest, TheEndOfDayEndIsNeverWrittenOnRequest) {
+    in_the_end_of_day_begin();
+    const size_t written_before = links_.written.size();
+    ask(Phase::EndOfDayEnd);
+    EXPECT_EQ(links_.answers.back(), Outcome::WrittenByTheVenue);
+    EXPECT_EQ(links_.written.size(), written_before);
+}
+
+TEST_F(TradingPhaseRequestsTest, TheEndOfDayEndIsNotWrittenOnRequestBeforeTheBegin) {
+    closed_and_applied();
+    ask(Phase::EndOfDayEnd);
+    EXPECT_EQ(links_.answers.back(), Outcome::WrittenByTheVenue);
+    EXPECT_EQ(links_.written.back().phase, Phase::Closed);
+}
+
+TEST_F(TradingPhaseRequestsTest, ARequestForTheEndOfDayEndOnceWrittenIsAnsweredAlreadyInPhase) {
+    in_the_end_of_day_begin();
+    requests_->scheduled_check(1);
+    ASSERT_EQ(links_.written.back().phase, Phase::EndOfDayEnd);
+    ask(Phase::EndOfDayEnd);
+    EXPECT_EQ(links_.answers.back(), Outcome::AlreadyInPhase);
+}
+
+TEST_F(TradingPhaseRequestsTest, AScheduleThatNamesTheEndOfDayEndIsRefused) {
+    start_with({{Phase::PreOpen, 0}, {Phase::Open, 0}, {Phase::Closed, 0}, {Phase::EndOfDayBegin, 0}, {Phase::EndOfDayEnd, 0}});
+    EXPECT_EQ(links_.answers.back(), Outcome::ScheduleRefused);
+    EXPECT_TRUE(links_.written.empty());
+}
+
+TEST_F(TradingPhaseRequestsTest, TheEndOfDayEndWaitsForTheFollowerSequencerToHoldTheBegin) {
+    links_.follower_holds = 0;
+    const int64_t begin_seq_no = in_the_end_of_day_begin();
+    links_.follower_holds = begin_seq_no - 1;
+    requests_->scheduled_check(1);
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDayBegin) << "the follower sequencer lacks the begin";
+    links_.follower_holds = begin_seq_no;
+    requests_->scheduled_check(2);
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDayEnd);
+    EXPECT_EQ(links_.written.back().reason, EventReason::EveryCopyComplete);
+}
+
+TEST_F(TradingPhaseRequestsTest, TheEndOfDayEndWaitsForEveryPublisherWaitedFor) {
+    waiting_for_publishers(2);
+    const int64_t begin_seq_no = in_the_end_of_day_begin();
+    const pubsub_itc_fw::ConnectionID first{71};
+    const pubsub_itc_fw::ConnectionID second{72};
+    requests_->scheduled_check(1);
+    EXPECT_EQ(links_.publishers_asked, (std::vector<int64_t>{begin_seq_no})) << "each check asks the publishers";
+    requests_->publisher_holds(first, begin_seq_no);
+    requests_->publisher_holds(second, begin_seq_no - 1);
+    requests_->scheduled_check(2);
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDayBegin) << "the second publisher lacks the begin";
+    EXPECT_EQ(links_.publishers_asked.size(), 2U);
+    requests_->publisher_holds(second, begin_seq_no);
+    requests_->scheduled_check(3);
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDayEnd);
+    EXPECT_EQ(links_.publishers_asked.size(), 2U) << "nobody is asked once every copy is complete";
+}
+
+TEST_F(TradingPhaseRequestsTest, APublisherWhoseConnectionWentNoLongerCounts) {
+    waiting_for_publishers(1);
+    const int64_t begin_seq_no = in_the_end_of_day_begin();
+    const pubsub_itc_fw::ConnectionID publisher{71};
+    requests_->publisher_holds(publisher, begin_seq_no);
+    requests_->publisher_gone(publisher);
+    requests_->scheduled_check(1);
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDayBegin);
+}
+
+TEST_F(TradingPhaseRequestsTest, TheEndOfDayEndIsWrittenWithACopyIncompleteOnceTheLimitPasses) {
+    links_.follower_holds = 0;
+    in_the_end_of_day_begin();
+    requests_->scheduled_check(1000);
+    requests_->scheduled_check(1000 + longest_wait_ns - 1);
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDayBegin);
+    requests_->scheduled_check(1000 + longest_wait_ns);
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDayEnd);
+    EXPECT_EQ(links_.written.back().reason, EventReason::CopiesNotCompleteInTime);
+    EXPECT_EQ(lines_saying("with a copy of the WAL still incomplete"), 1U);
+}
+
+TEST_F(TradingPhaseRequestsTest, ANewLeaderWaitsTheWholeTimeForTheCopiesAgain) {
+    links_.follower_holds = 0;
+    in_the_end_of_day_begin();
+    requests_->scheduled_check(1000);
+    requests_->stopped_leading();
+    requests_->scheduled_check(1000 + longest_wait_ns);
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDayBegin) << "the wait starts again at the new leader's first check";
+    requests_->scheduled_check(1000 + 2 * longest_wait_ns);
+    EXPECT_EQ(links_.written.back().phase, Phase::EndOfDayEnd);
+}
+
+TEST_F(TradingPhaseRequestsTest, TheWaitForTheCopiesIsLoggedOncePerChange) {
+    links_.follower_holds = 0;
+    const int64_t begin_seq_no = in_the_end_of_day_begin();
+    requests_->scheduled_check(1);
+    requests_->scheduled_check(2);
+    links_.follower_holds = begin_seq_no - 1;
+    requests_->scheduled_check(3);
+    EXPECT_EQ(lines_saying("the end-of-day end is not yet written"), 2U);
+}
+
+TEST_F(TradingPhaseRequestsTest, TheFollowerSequencerAcknowledgingTheEndIsLoggedOnce) {
+    links_.follower_holds = 0;
+    const int64_t begin_seq_no = in_the_end_of_day_begin();
+    links_.follower_holds = begin_seq_no;
+    requests_->scheduled_check(1);
+    const int64_t end_seq_no = links_.next - 1;
+    requests_->scheduled_check(2);
+    EXPECT_EQ(lines_saying("has acknowledged the end-of-day end"), 0U);
+    links_.follower_holds = end_seq_no;
+    requests_->scheduled_check(3);
+    requests_->scheduled_check(4);
+    EXPECT_EQ(lines_saying("has acknowledged the end-of-day end"), 1U);
 }
 
 } // namespaces

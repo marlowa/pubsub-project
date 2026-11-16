@@ -85,6 +85,10 @@ send_every_report = true
 automatic_recovery_limit_seconds = 12
 orders_held_at_most_seconds = 4
 
+[end_of_day]
+publishers = 2
+longest_wait_for_copies_seconds = 45
+
 [logging]
 applog_level = "info"
 syslog_level = "critical"
@@ -379,6 +383,32 @@ TEST(SequencerConfigurationLoaderTest, RejectsARecoveryLimitBelowOneSecond) {
     std::string sections(required_sections);
     const std::string limit = "automatic_recovery_limit_seconds = 12";
     sections.replace(sections.find(limit), limit.size(), "automatic_recovery_limit_seconds = 0");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
+}
+
+TEST(SequencerConfigurationLoaderTest, ReadsWhatTheEndOfDayWaitsFor) {
+    const auto config = load_with_gateways(one_gateway);
+    EXPECT_EQ(config.end_of_day_publishers, 2);
+    EXPECT_EQ(config.end_of_day_longest_wait_for_copies_seconds, 45);
+}
+
+TEST(SequencerConfigurationLoaderTest, RejectsAnEndOfDayWaitBelowOneSecond) {
+    std::string sections(required_sections);
+    const std::string limit = "longest_wait_for_copies_seconds = 45";
+    sections.replace(sections.find(limit), limit.size(), "longest_wait_for_copies_seconds = 0");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
+}
+
+TEST(SequencerConfigurationLoaderTest, RejectsANegativeNumberOfPublishers) {
+    std::string sections(required_sections);
+    const std::string publishers = "publishers = 2";
+    sections.replace(sections.find(publishers), publishers.size(), "publishers = -1");
     pubsub_itc_fw::TomlConfiguration toml;
     const auto [ok, err] = toml.load_string(sections + one_gateway);
     ASSERT_TRUE(ok) << err;

@@ -942,6 +942,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def publishers_started(env: dict) -> int:
+    """How many matching engine publishers the environment starts: every component run from the publisher's binary,
+    leaving out those marked ha_only when high availability is off."""
+    ha_enabled = bool(env.get("ha", {}).get("enabled", False))
+    return sum(1 for component in env.get("components", {}).values()
+               if Path(str(component.get("binary", ""))).name == "matching_engine_publisher" and (ha_enabled or not component.get("ha_only", False)))
+
+
 def refuse_a_placeholder_environment(env: dict, env_path: Path, allowed: bool) -> None:
     """Stop unless the environment is a real one, or the caller has asked for a placeholder by name.
 
@@ -1015,6 +1023,10 @@ def main() -> None:
     # the component TOMLs are expanded before the layout is computed, and it is
     # this file that decides where run/ lives.
     namespace["shared_reactor_cpu_layout_file"] = str(cpu_run_dir / "cpu_layout.toml")
+    # How many matching engine publishers the leading sequencer waits for at the end of day: those the environment
+    # starts. Counted here rather than declared, so that it cannot disagree with the components the environment lists
+    # (docs/venue/start_and_end_of_day.md, section 4.2).
+    namespace["end_of_day_publishers"] = str(publishers_started(env))
 
     # Nothing else clears these -- they are ordinary files, not tmpfs entries that
     # a reboot would remove -- so a fresh install starts from an empty registry

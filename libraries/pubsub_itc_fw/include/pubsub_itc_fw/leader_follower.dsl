@@ -852,7 +852,8 @@ enum TradingPhase : i8 {
     PreOpen = 2      # members may enter orders; nothing is matched yet
     Open = 3         # continuous trading
     Closed = 4       # trading has finished for the day
-    EndOfDay = 5     # work that belongs after trading
+    EndOfDayBegin = 5  # the day's trading is over and the copies of the WAL are completed; nothing shuts down
+    EndOfDayEnd = 6    # every copy of the WAL is complete: shut down and archive. Written only by the leading sequencer, never asked for
 }
 
 # Why a technical event was written.
@@ -863,6 +864,8 @@ enum TechnicalEventReason : i8 {
     DeclaredByOperator = 4     # a person halted trading; nothing is cancelled, and a person lifts it
     RequestedByOperator = 5    # a person asked for the venue to enter this phase (TradingPhaseRequest)
     Scheduled = 6              # the time in the day's schedule for this phase came, and its conditions held
+    EveryCopyComplete = 7      # the follower sequencer and every publisher hold every record up to the end-of-day begin
+    CopiesNotCompleteInTime = 8  # the end-of-day end was written when the limit of time ran out, with a copy of the WAL still incomplete
 }
 
 # ------------------------------------------------------------
@@ -1047,6 +1050,7 @@ enum TradingPhaseOutcome : i8 {
     NotWritten = 8           # the TechnicalEvent could not be encoded, or the WAL could not take it, so nothing was written
     ScheduleRefused = 9      # the schedule sent with the start of day is not one the venue can follow, so nothing was written
     StateOnly = 10           # the answer to a TradingStateQuery, which asks for the trading state and never writes anything
+    WrittenByTheVenue = 11   # the phase asked for is the end-of-day end, which the leading sequencer writes by itself once every copy of the WAL is complete
 }
 
 # ------------------------------------------------------------

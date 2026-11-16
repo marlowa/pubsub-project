@@ -22,7 +22,9 @@ that each process derives from its own clock.
 
 - **Trading day** is the venue's business date, represented as `YYYYMMDD`.
 - **Trading phase** is the current state of the venue: `sod`, `pre_open`, `open`, `closed`, or `eod`. In
-  the DSL these are the `TradingPhase` values `StartOfDay`, `PreOpen`, `Open`, `Closed` and `EndOfDay`.
+  the DSL these are the `TradingPhase` values `StartOfDay`, `PreOpen`, `Open`, `Closed`, and two for `eod`:
+  `EndOfDayBegin`, which ends trading, and `EndOfDayEnd`, which the leading sequencer writes by itself once
+  every copy of the WAL is complete ([start_and_end_of_day.md](start_and_end_of_day.md), section 4).
 - **Phase change** is a sequenced `TechnicalEvent` record that states the resulting phase. A
   `TechnicalEvent` with phase `StartOfDay` moves the venue into `sod`; the record announces the state, it
   is not the state itself.

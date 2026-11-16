@@ -51,7 +51,7 @@ The venue is always in exactly one phase, and the phases form a cycle:
 | `pre_open` | Members may connect and enter orders; nothing is matched yet. |
 | `open` | Continuous trading. |
 | `closed` | Trading has finished for the day. |
-| `eod` | End of day. Work that belongs after trading, such as receiving instrument prices for the next day. |
+| `eod` | End of day. Work that belongs after trading, such as receiving instrument prices for the next day. It is two events in the WAL: `EndOfDayBegin` ends trading, and `EndOfDayEnd`, which the leading sequencer writes by itself once every copy of the WAL is complete, tells every component to shut down ([start_and_end_of_day.md](start_and_end_of_day.md), section 4). |
 
 **SOD and EOD are phases and not moments.** Work happens during them — end of day is when the
 venue receives the instrument prices it will need tomorrow — and a period with duration and its own

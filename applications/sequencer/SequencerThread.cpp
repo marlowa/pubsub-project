@@ -450,6 +450,7 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway order connection {} established{}", id.get_value(),
                    orders_.reading() != OrderRelease::Reading::reading ? " -- reading from it is paused while orders wait" : "");
     } else if (svc == wal_subscriber_inbound_svc_) {
+        publisher_connections_.push_back(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: publisher connection {} established -- awaiting WalFollowRequest",
                    id.get_value());
     } else if (svc == "inbound:" + std::to_string(config_.er_listen_port)) {
@@ -571,6 +572,8 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway order connection {} lost: {}", id.get_value(), reason);
     } else if (is_publisher_connection(id)) {
         serving_.publisher_connection_lost(id);
+        publisher_connections_.erase(std::remove(publisher_connections_.begin(), publisher_connections_.end(), id), publisher_connections_.end());
+        phase_requests_.publisher_gone(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: publisher connection {} lost: {}", id.get_value(), reason);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound connection {} lost: {}", id.get_value(), reason);
@@ -654,6 +657,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     if (svc == wal_subscriber_inbound_svc_) {
         if (message.pdu_id() == pubsub_itc_fw::WalFollowRequest::message_pdu_id) {
             handle_publisher_follow_request(conn_id, message);
+        } else if (message.pdu_id() == pubsub_itc_fw::WalHeldReply::message_pdu_id) {
+            handle_publisher_held_reply(conn_id, message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unexpected PDU {} on publisher connection {} -- dropping",
                        message.pdu_id(), conn_id.get_value());
@@ -1983,6 +1988,21 @@ void SequencerThread::PhaseLinks::ask_engine_position() {
     owner_.send_pdu(owner_.engine_routing_.active(), pubsub_itc_fw_app::EnginePositionQuery::message_pdu_id, 0, query);
 }
 
+std::optional<int64_t> SequencerThread::PhaseLinks::follower_sequencer_holds_through() const {
+    if (!owner_.replicated_wal_.has_value() || owner_.replicated_wal_->alone()) {
+        return std::nullopt;
+    }
+    return owner_.replicated_wal_->follower_acknowledged_through();
+}
+
+void SequencerThread::PhaseLinks::ask_publishers_what_they_hold(int64_t wanted_through) {
+    pubsub_itc_fw::WalHeldRequest request{};
+    request.wanted_through = wanted_through;
+    for (const pubsub_itc_fw::ConnectionID& connection : owner_.publisher_connections_) {
+        owner_.send_pdu(connection, pubsub_itc_fw::WalHeldRequest::message_pdu_id, 0, request);
+    }
+}
+
 bool SequencerThread::PhaseLinks::write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) {
     return owner_.write_own_encoded_command(event, "TechnicalEvent");
 }
@@ -3183,6 +3203,22 @@ void SequencerThread::handle_publisher_follow_request(const pubsub_itc_fw::Conne
     // publisher if it takes the lead, when the publisher asks it again.
     const pubsub_itc_fw::Leading leading = role_ == pubsub_itc_fw_app::Role::leader ? pubsub_itc_fw::Leading::Leads : pubsub_itc_fw::Leading::DoesNotLead;
     serving_.publisher_asks(conn_id, view, leading);
+}
+
+void SequencerThread::handle_publisher_held_reply(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw::WalHeldReplyView view{};
+    if (!pubsub_itc_fw::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode a publisher's WalHeldReply -- dropping");
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: the publisher on connection {} holds every record up to {}",
+               conn_id.get_value(), view.last_seq_no);
+    phase_requests_.publisher_holds(conn_id, view.last_seq_no);
 }
 
 // ME failover reconciliation (Slice D)

@@ -28,7 +28,7 @@ from typing import Callable, List, Tuple
 SEQUENCERS = ("sequencer_primary", "sequencer_secondary")
 
 # The phases a schedule may give a time to, in order, as a schedule file names them, with the name the messages use.
-SCHEDULE_PHASES = (("pre_open", "PreOpen"), ("open", "Open"), ("closed", "Closed"), ("end_of_day", "EndOfDay"))
+SCHEDULE_PHASES = (("pre_open", "PreOpen"), ("open", "Open"), ("closed", "Closed"), ("end_of_day", "EndOfDayBegin"))
 
 # The value a schedule file gives a phase that is to be entered as soon as its conditions hold, at no particular time.
 WHEN_READY = "when ready"
@@ -154,8 +154,8 @@ def read_schedule_file(path: Path, trading_day: int) -> Schedule:
 
     The file is TOML. time_zone names the zone the times are written in, as the IANA time zone database names it
     ("Europe/London"). The table [phases] gives each phase a time of day, "HH:MM" or "HH:MM:SS", or "when ready" for as soon
-    as its conditions hold. The phases are pre_open, open, closed and end_of_day, and the schedule stops at the first one
-    left out: that phase and every one after it are entered only when an operator asks, so a phase after one left out is an
+    as its conditions hold. The phases are pre_open, open, closed and end_of_day, which is the end-of-day begin, and the
+    schedule stops at the first one left out: that phase and every one after it are entered only when an operator asks, so a phase after one left out is an
     error. Daylight saving is the time zone's: 07:50 in London is 07:50 UTC in winter and 06:50 UTC in summer. Raises
     ValueError, saying what is wrong, for a file that does not give a schedule."""
     with path.open("rb") as schedule_file:

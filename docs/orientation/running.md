@@ -324,7 +324,8 @@ file is emptied as its gateway starts. A Quill log or captured output without a 
 harness wrote, and is neither checked nor archived.
 
 `end` asks the leading sequencer for the trading state, with a question that writes nothing, and refuses unless the venue
-is in the end of day of the day the manifest names. It works only where every component runs on one machine, as here;
+is in the end-of-day end of the day the manifest names, which the leading sequencer writes by itself once every copy of
+the WAL is complete. It works only where every component runs on one machine, as here;
 section 4 of [Starting and ending the trading day](../venue/start_and_end_of_day.md) describes the design that
 replaces it, in which every component shuts itself down at the end of the day and its launcher archives its files. After that check, `end` stops every component, checks each has exited, and moves
 every file of the day, including the Quill logs and captured output named with that day, into

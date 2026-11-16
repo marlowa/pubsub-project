@@ -42,8 +42,9 @@ inline std::string utc_time_text(int64_t utc_ns) {
  *
  * A schedule names consecutive phases in order, starting from the phase after @p current, so that it never names a phase
  * the venue has entered or passed. It may stop at any phase: the phase after its last entry, and every one after that, is
- * then entered only when an operator asks. A time is never negative, and the times that are not zero never decrease from
- * one entry to the next. Zero means "as soon as the phase's conditions hold", and may follow any time.
+ * then entered only when an operator asks. It never names EndOfDayEnd, which the leading sequencer writes by itself once
+ * every copy of the WAL is complete (docs/venue/start_and_end_of_day.md, section 4). A time is never negative, and the times that are not zero never decrease
+ * from one entry to the next. Zero means "as soon as the phase's conditions hold", and may follow any time.
  */
 inline std::string schedule_problem(pubsub_itc_fw_app::TradingPhase current, const std::vector<ScheduledPhase>& entries) {
     int expected = static_cast<int>(current) + 1;
@@ -58,6 +59,11 @@ inline std::string schedule_problem(pubsub_itc_fw_app::TradingPhase current, con
             }
             return fmt::format("entry {} is phase {}, where the phase after {} was expected; the entries name consecutive phases in order", index + 1,
                                pubsub_itc_fw_app::to_string(entry.phase), pubsub_itc_fw_app::to_string(entries[index - 1].phase));
+        }
+        if (entry.phase == pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
+            return fmt::format("entry {} is phase EndOfDayEnd, which the leading sequencer writes by itself once every copy of the WAL is complete; a "
+                               "schedule ends at EndOfDayBegin",
+                               index + 1);
         }
         if (entry.earliest_utc_ns < 0) {
             return fmt::format("entry {}, phase {}, has a negative time", index + 1, pubsub_itc_fw_app::to_string(entry.phase));

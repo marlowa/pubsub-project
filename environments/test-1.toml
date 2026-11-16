@@ -333,6 +333,16 @@ automatic_recovery_limit_seconds = 10
 # already held stay held. Declared once here: both sequencers of the pair must use the same figure
 # (docs/availability/voided_commands.md, section 5.2).
 orders_held_at_most_seconds = 5
+
+# The longest the leading sequencer waits, after the end-of-day begin, for the follower sequencer
+# and the matching engine publishers to hold every record up to it, before it writes the
+# end-of-day end with a copy still incomplete (docs/venue/start_and_end_of_day.md, section 4.2,
+# decision 4). Waiting too long costs only a later shutdown, because nothing is trading; giving
+# up too early leaves a copy of the day's WAL incomplete. Provisional: shorter than the development
+# environment's, and to be set once the development figure has been measured.
+# Declared once here: both sequencers of the pair must use the same figure.
+end_of_day_longest_wait_for_copies_seconds = 300
+
 # Metrics for the whole venue. One edit turns the scrape endpoints on or off
 # everywhere; each component still has its own listener host and port below.
 # On in every environment. Setting it to false turns every endpoint off, and the

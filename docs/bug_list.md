@@ -569,17 +569,18 @@ chosen, in items 1 and 2.
 1. **Measure how long a follower sequencer takes to catch up a day's WAL** in the development environment, and choose
    from it the limit of time the leading sequencer waits for the copies of the WAL. The limit is a setting of the
    sequencer's configuration, with a shorter value in other environments such as production.
-2. **The two events.** Rename the phase `EndOfDay` to `EndOfDayBegin`, add `EndOfDayEnd`, and have the leading
+2. **The two events. Built** (`EndOfDayCopies`, `TradingPhaseRequests`, and scenarios 111 and 113 of `ha_test.py`).
+   Rename the phase `EndOfDay` to `EndOfDayBegin`, add `EndOfDayEnd`, and have the leading
    sequencer write the end only once the follower sequencer and both publishers have confirmed every record up to the
-   begin, or once the limit of time has passed; and not shut down until the follower sequencer has confirmed the end
-   itself. Each publisher, after publishing the end, stays up for a fixed time set in its configuration, provisionally
-   10 seconds.
+   begin, or once the limit of time has passed, and log when the follower sequencer has confirmed it holds the end.
 3. **Every component subscribes to both events.** The arbiters, the witness, the authentication services and the
    administration service receive no phase today, and subscribe to the `technical_events` topic. From the end-of-day
    end onwards, and not before, every component treats another component leaving as expected, logged at Info, with no
    promotion, halt or alarm.
 4. **Each component, on the end-of-day end, shuts itself down** and exits with the status that means it stopped for
-   the end of day.
+   the end of day. The leading sequencer does not shut down until the follower sequencer has confirmed it holds the
+   end itself. Each publisher, after publishing the end, stays up for a fixed time set in its configuration,
+   provisionally 10 seconds.
 5. **The launcher archives.** `scripts/launch.py`, seeing that status, does not restart its component, and archives
    the component's files, its captured console output among them, with the listing and checksums `trading_day.py end`
    uses today, moved into code the two share.

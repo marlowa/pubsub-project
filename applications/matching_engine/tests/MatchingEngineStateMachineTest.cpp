@@ -736,8 +736,9 @@ TEST_F(MatchingEngineStateMachineTest, NoPhaseButTheClosedOneCancelsAnOrder) {
     machine_.apply_new_order(new_order("ORD-1"), 1, taken_at, trading_day, member, CommandSource::live);
     outputs_.reports.clear();
     int64_t seq_no = 2;
-    for (const pubsub_itc_fw_app::TradingPhase phase : {pubsub_itc_fw_app::TradingPhase::StartOfDay, pubsub_itc_fw_app::TradingPhase::PreOpen,
-                                                        pubsub_itc_fw_app::TradingPhase::Open, pubsub_itc_fw_app::TradingPhase::EndOfDay}) {
+    for (const pubsub_itc_fw_app::TradingPhase phase :
+         {pubsub_itc_fw_app::TradingPhase::StartOfDay, pubsub_itc_fw_app::TradingPhase::PreOpen, pubsub_itc_fw_app::TradingPhase::Open,
+          pubsub_itc_fw_app::TradingPhase::EndOfDayBegin, pubsub_itc_fw_app::TradingPhase::EndOfDayEnd}) {
         EXPECT_EQ(machine_.apply_technical_event(entering(phase), seq_no++, taken_at, trading_day, CommandSource::live).orders_cancelled, 0);
     }
     EXPECT_TRUE(outputs_.reports.empty());

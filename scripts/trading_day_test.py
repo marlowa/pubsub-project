@@ -19,8 +19,8 @@ The checks, in order:
   4. end refuses while the venue is open, and stops nothing.
   5. With every component stopped, start refuses a schedule that differs from the run manifest's, and then, given no
      schedule, restarts the venue on the day's files, which is still open.
-  6. Once an operator has closed the venue and asked for the end of day, end stops every component and archives every
-     file of the day: the listing names each one with its checksum, each archived copy matches, the Quill logs named
+  6. Once an operator has closed the venue and asked for the end of day, the leading sequencer writes the end-of-day end
+     by itself, and end then stops every component and archives every file of the day: the listing names each one with its checksum, each archived copy matches, the Quill logs named
      with the day are among them, and the installation holds no file of the day.
   7. start begins the second day, which needs nothing from the first, with a schedule that enters every phase as soon
      as its conditions hold; the venue reaches the end of day by itself, and end archives it.
@@ -30,6 +30,7 @@ Exit status: 0 when every check passes, 1 otherwise.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import shutil
 import socket
@@ -184,8 +185,10 @@ def main() -> int:  # pylint: disable=too-many-statements
     check(seen == f"phase Open of trading day {_FIRST_DAY}", "the venue is still open", seen)
 
     log(f"6. trading day {_FIRST_DAY} ends")
-    check(ask_for_phase(install_dir, _FIRST_DAY, "Closed") and ask_for_phase(install_dir, _FIRST_DAY, "EndOfDay"),
+    check(ask_for_phase(install_dir, _FIRST_DAY, "Closed") and ask_for_phase(install_dir, _FIRST_DAY, "EndOfDayBegin"),
           "an operator closes the venue and asks for the end of day")
+    seen = wait_for_phase(install_dir, _FIRST_DAY, "EndOfDayEnd")
+    check(seen == f"phase EndOfDayEnd of trading day {_FIRST_DAY}", "the leading sequencer writes the end-of-day end by itself", seen)
     status, output = run_procedure("end")
     check(status == 0 and "the installation holds no file of trading day" in output, "end succeeds")
     check(not trading_day.running_processes(env, install_dir), "every process has exited")
@@ -196,8 +199,8 @@ def main() -> int:  # pylint: disable=too-many-statements
                                {"pre_open": "when ready", "open": "when ready", "closed": "when ready", "end_of_day": "when ready"})
     status, output = run_procedure("start", "--trading-day", str(_SECOND_DAY), "--schedule", str(whole_day))
     check(status == 0, "start succeeds with nothing of the first day present")
-    seen = wait_for_phase(install_dir, _SECOND_DAY, "EndOfDay")
-    check(seen == f"phase EndOfDay of trading day {_SECOND_DAY}", "the venue reaches the end of day by the schedule alone", seen)
+    seen = wait_for_phase(install_dir, _SECOND_DAY, "EndOfDayEnd")
+    check(seen == f"phase EndOfDayEnd of trading day {_SECOND_DAY}", "the venue reaches the end of day by the schedule alone", seen)
     status, output = run_procedure("end")
     check(status == 0, "end succeeds")
     check_archive(env, install_dir, _SECOND_DAY)
@@ -223,6 +226,9 @@ def stop_whatever_is_running() -> None:
 
 
 if __name__ == "__main__":
+    # Parsed before anything else, so that --help describes the test and does nothing: the build runs every top-level
+    # script with --help, and this one, run, clears the installation's WALs and regions and starts the venue.
+    argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
     try:
         sys.exit(main())
     finally:

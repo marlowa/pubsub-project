@@ -3,6 +3,9 @@
 
 #include "MatchingEnginePublisherThread.hpp"
 
+#include <algorithm>
+#include <cstdint>
+
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -271,6 +274,8 @@ void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw
                        conn_id.get_value());
         } else if (message.pdu_id() == pubsub_itc_fw::WalLeaderChanged::message_pdu_id) {
             handle_leader_changed(conn_id, message);
+        } else if (message.pdu_id() == pubsub_itc_fw::WalHeldRequest::message_pdu_id) {
+            handle_held_request(conn_id, message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: unexpected PDU {} from sequencer connection {} -- dropping",
                        message.pdu_id(), conn_id.get_value());
@@ -512,6 +517,29 @@ void MatchingEnginePublisherThread::handle_leader_changed(const pubsub_itc_fw::C
                "MepThread: the sequencer on connection {} now leads (epoch={}) -- asking it for the records after {}", conn_id.get_value(), changed.epoch,
                follower_client_->last_seq_no());
     follower_client_->on_leader_changed(conn_id);
+}
+
+void MatchingEnginePublisherThread::handle_held_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_needed = 0;
+    size_t consumed = 0;
+    pubsub_itc_fw::WalHeldRequestView request{};
+    if (!pubsub_itc_fw::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode WalHeldRequest -- dropping");
+        return;
+    }
+    // The client says -1 before it holds anything; the reply says zero, as the message defines.
+    const int64_t held_through = std::max<int64_t>(0, follower_client_->last_seq_no());
+    // Asked once a second until the copy is complete; the sequencer logs each change in what the copies hold.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+               "MepThread: the sequencer on connection {} asks how far this publisher's copy of the WAL goes, waiting for record {} -- it holds every "
+               "record up to {}",
+               conn_id.get_value(), request.wanted_through, held_through);
+    pubsub_itc_fw::WalHeldReply reply{};
+    reply.last_seq_no = held_through;
+    send_pdu(conn_id, pubsub_itc_fw::WalHeldReply::message_pdu_id, 0, reply);
 }
 
 void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {

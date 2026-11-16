@@ -33,7 +33,8 @@ TEST(TradingSessionTest, OnlyPreOpenAndOpenAllowMembersCommands) {
     EXPECT_EQ(refusal_by_phase(true, Phase::PreOpen), std::nullopt);
     EXPECT_EQ(refusal_by_phase(true, Phase::Open), std::nullopt);
     EXPECT_EQ(refusal_by_phase(true, Phase::Closed), std::optional<Reason>(Reason::MarketClosed));
-    EXPECT_EQ(refusal_by_phase(true, Phase::EndOfDay), std::optional<Reason>(Reason::TradingDayEnded));
+    EXPECT_EQ(refusal_by_phase(true, Phase::EndOfDayBegin), std::optional<Reason>(Reason::TradingDayEnded));
+    EXPECT_EQ(refusal_by_phase(true, Phase::EndOfDayEnd), std::optional<Reason>(Reason::TradingDayEnded)) << "a member sees no difference between the two";
 }
 
 // Members are told pre-open and open as themselves, or as halted while trading is halted; the venue's own preparation and
@@ -46,7 +47,8 @@ TEST(TradingSessionTest, TheSessionStatusIsWhatAMemberCanDo) {
     EXPECT_EQ(session_status(in(Phase::Open, true)), SessionStatus::Halted);
     EXPECT_EQ(session_status(in(Phase::PreOpen, true)), SessionStatus::Halted);
     EXPECT_EQ(session_status(in(Phase::Closed, true)), SessionStatus::Closed) << "once closed, a halt changes nothing a member can do";
-    EXPECT_EQ(session_status(in(Phase::EndOfDay)), SessionStatus::Closed);
+    EXPECT_EQ(session_status(in(Phase::EndOfDayBegin)), SessionStatus::Closed);
+    EXPECT_EQ(session_status(in(Phase::EndOfDayEnd)), SessionStatus::Closed);
     EXPECT_EQ(static_cast<char>(SessionStatus::Halted), '1');
     EXPECT_EQ(static_cast<char>(SessionStatus::Open), '2');
     EXPECT_EQ(static_cast<char>(SessionStatus::Closed), '3');
@@ -57,7 +59,8 @@ TEST(TradingSessionTest, TheTextNamesTheDayThePhaseAndAHalt) {
     EXPECT_EQ(session_status_text(TradingSessionState{}), "the trading day has not started");
     EXPECT_EQ(session_status_text(in(Phase::Open)), "trading day 20261116: open");
     EXPECT_EQ(session_status_text(in(Phase::PreOpen, true)), "trading day 20261116: pre-open, trading halted");
-    EXPECT_EQ(session_status_text(in(Phase::EndOfDay)), "trading day 20261116: the end of day");
+    EXPECT_EQ(session_status_text(in(Phase::EndOfDayBegin)), "trading day 20261116: the end of day");
+    EXPECT_EQ(session_status_text(in(Phase::EndOfDayEnd)), "trading day 20261116: the end of day");
 }
 
 // A change is noticed when the day, the phase or the halt changes; before the day starts the phase is not compared,

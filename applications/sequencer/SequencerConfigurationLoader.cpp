@@ -258,6 +258,16 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
             throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: recovery.orders_held_at_most_seconds must be >= 1, got " +
                                                         std::to_string(config.orders_held_at_most_seconds));
         }
+        toml.get_required_except("end_of_day.publishers", config.end_of_day_publishers);
+        if (config.end_of_day_publishers < 0) {
+            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: end_of_day.publishers must not be negative, got " +
+                                                        std::to_string(config.end_of_day_publishers));
+        }
+        toml.get_required_except("end_of_day.longest_wait_for_copies_seconds", config.end_of_day_longest_wait_for_copies_seconds);
+        if (config.end_of_day_longest_wait_for_copies_seconds < 1) {
+            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: end_of_day.longest_wait_for_copies_seconds must be >= 1, got " +
+                                                        std::to_string(config.end_of_day_longest_wait_for_copies_seconds));
+        }
 
         std::string applog_level_str;
         std::string syslog_level_str;

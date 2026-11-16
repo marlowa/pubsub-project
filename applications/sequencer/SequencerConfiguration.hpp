@@ -279,6 +279,27 @@ struct SequencerConfiguration {
      */
     int32_t orders_held_at_most_seconds{5};
 
+    /**
+     * @brief How many matching engine publishers the leading sequencer waits for at the end of day.
+     *        `[end_of_day] publishers`.
+     *
+     * After the end-of-day begin, the leading sequencer writes the end-of-day end only once this many publishers have
+     * said their copy of the WAL holds every record up to the begin, or once longest_wait_for_copies_seconds has passed
+     * (docs/venue/start_and_end_of_day.md, section 4.2, decision 3). deploy.py fills it in by counting the publishers the
+     * environment starts, so that it cannot disagree with them; it is zero in an environment that runs none.
+     */
+    int32_t end_of_day_publishers{0};
+
+    /**
+     * @brief The longest the leading sequencer waits, after the end-of-day begin, for the follower sequencer and the
+     *        publishers to hold every record up to it. `[end_of_day] longest_wait_for_copies_seconds`.
+     *
+     * Once it has passed, the end-of-day end is written with a copy still incomplete, and that is logged at Warning
+     * (section 4.2, decision 4, cases 4 and 5). Counted from when this instance, leading, first finds the venue in the
+     * end-of-day begin, so a new leader waits the whole time again. Both instances of the pair must have the same figure.
+     */
+    int32_t end_of_day_longest_wait_for_copies_seconds{600};
+
     // External WAL subscriber listener (MEP primary and secondary connect here)
 
     /** @brief Host address on which the external WAL subscriber listener binds. */

@@ -1,6 +1,6 @@
 # Starting and ending the trading day {#start_and_end_of_day}
 
-**Status: the start of the day is agreed and built (sections 3 and 5): each file records its trading day and is refused on another day, and `scripts/trading_day.py start` starts a day. How the day ends is agreed and not built (section 4): when each component receives the end of day it shuts itself down, and its launcher archives its files.** This note is step 3 of
+**Status: the start of the day is agreed and built (sections 3 and 5): each file records its trading day and is refused on another day, and `scripts/trading_day.py start` starts a day. How the day ends is agreed and partly built (section 4): the end of day is two events, and the leading sequencer writes the second once every copy of the WAL is complete; when each component receives it, it is to shut itself down and its launcher to archive its files, which is not built.** This note is step 3 of
 [trading_day_plan.md](trading_day_plan.md). It lists every file the venue writes during a trading day, and sets out
 the procedure that starts a day and the procedure that ends one
 ([BUG-0137](../bug_list.md#bug_0137)). The choices made are collected in the last section.
@@ -150,7 +150,11 @@ Logging on is allowed in every phase, so members may connect as soon as the gate
 
 ## 4. Ending the trading day
 
-**Status: agreed, and not built.** Two values are still to be chosen: how long the leading sequencer waits for the
+**Status: agreed, and partly built.** The two events are built: the leading sequencer writes the end-of-day end
+once the follower sequencer and the publishers hold every record up to the begin, or once the limit of time has
+passed, and refuses an operator's request for it (decisions 3 and 4). Nothing yet happens when a component receives
+the end-of-day end: no component shuts down, and nothing is archived, except by `trading_day.py end` as section 4.3
+describes. Two values are still to be chosen: how long the leading sequencer waits for the
 copies of the WAL, which is to be measured (section 4.2, decision 4), and how long a publisher stays up after
 publishing the end-of-day end, which is provisional (decision 2). What is built today
 is a procedure run from outside the venue, described in section 4.3, which this design replaces.
@@ -303,6 +307,31 @@ and apply each record as it arrives.
      decision 4 has passed. It means "shut down and archive now". It is a record in the WAL like the first, so every
      component receives it by the same routes, and both sequencers' WALs end with it.
 
+   **How the leading sequencer learns that each copy is complete.** The follower sequencer acknowledges every record
+   it writes (`WalAck`), so the leading sequencer always knows the last record it holds. A publisher acknowledges
+   nothing as it goes. So after the begin, the leading sequencer asks each publisher, once a second, for the last
+   record its copy of the WAL holds (`WalHeldRequest`), and the publisher answers on the same connection
+   (`WalHeldReply`). This costs nothing during the day, and works after a change of leader, because the new leader
+   simply asks again. An answer from a publisher whose connection has since gone no longer counts.
+
+   **How many publishers it waits for** is the setting `[end_of_day] publishers` in the sequencer's configuration.
+   `deploy.py` fills it in by counting the publishers the environment starts, so that it cannot disagree with them:
+   two in the development environment, one there with high availability off, and none in the pre-production,
+   production and test environments, which run no publisher. A publisher that is down or restarting is therefore
+   waited for, up to the limit of time in decision 4, rather than left out.
+
+   **Only the leading sequencer writes the end-of-day end.** An operator who asks for it is refused, with the outcome
+   `WrittenByTheVenue`, and nothing is written; a schedule that names it is refused. Otherwise an operator could make
+   every component shut down before the copies were complete. The operator's command `trading_phase.py end-of-day`
+   and the schedule's key `end_of_day` keep their names, and mean the end-of-day begin, the only part of the end of
+   day an operator can ask for or schedule. The end-of-day end carries the reason `EveryCopyComplete`, or
+   `CopiesNotCompleteInTime` when the limit of time ran out, and in that case the leading sequencer says at Warning
+   which copy was incomplete.
+
+   **A member sees no difference between the two events.** In both, a member's new order or cancel is refused with
+   the reason `TradingDayEnded`, and the gateways report the trading session as closed, with the text "the end of
+   day".
+
    The moment every copy is complete is then a single record that every component sees, rather than a condition
    each component judges for itself. Why one event is not enough is the first case of decision 4: the leader tells
    the gateways of a phase as soon as it has written it, before the follower sequencer holds it, so a single event
@@ -335,8 +364,10 @@ and apply each record as it arrives.
       follower stopped, and that machine is dealt with by decision 6.
    4. **The follower sequencer is still being caught up** when the end-of-day begin arrives, after a restart late in the
       day. The leader waits for it to finish, but only for a limit of time, after which it treats the follower
-      sequencer as absent, as in case 3. **The limit is a setting of the sequencer's configuration, with a value for
-      each environment.** Waiting too long costs little, because nothing is trading and the machines merely shut down
+      sequencer as absent, as in case 3. **The limit is a setting of the sequencer's configuration,
+      `[end_of_day] longest_wait_for_copies_seconds`, with a value for each environment.** It is counted from the
+      moment the leading sequencer first finds the venue in the end-of-day begin, so a new leader waits the whole time
+      again. Waiting too long costs little, because nothing is trading and the machines merely shut down
       later; giving up too early leaves the follower sequencer's archived WAL incomplete, and the leading sequencer's
       WAL the only full record of the day. The value for the development environment is to be chosen by measuring how
       long a follower sequencer takes to catch up a day's WAL there, and other environments, such as production, set
@@ -399,10 +430,12 @@ and apply each record as it arrives.
 `scripts/trading_day.py end` is a procedure run by an operator on a machine, after the venue has entered the end
 of day. It does not move the venue on by itself.
 
-1. **It checks that the venue is in the end of day** for the day named in the run manifest, by asking the leading
-   sequencer for its state with a `TradingStateQuery` (234), which writes nothing and is answered with a
+1. **It checks that the venue is in the end-of-day end** for the day named in the run manifest, by asking the
+   leading sequencer for its state with a `TradingStateQuery` (234), which writes nothing and is answered with a
    `TradingPhaseAnswer` whose outcome is `StateOnly`. If no sequencer leads, or the venue is in an earlier phase,
-   it refuses, and says which phase the venue is in and when the end of day is scheduled.
+   it refuses, and says which phase the venue is in and when the end of day is scheduled. In the end-of-day begin
+   it refuses too, saying that the end-of-day end follows once the copies of the WAL are complete, because stopping
+   the venue before then could leave a copy incomplete.
 2. **It would wait for the order activity recorder** to report that every event up to the end of day is confirmed.
    The recorder is not built, so this step is skipped.
 3. **It stops every component on the machine**, in the reverse of the order they were started in, and checks that

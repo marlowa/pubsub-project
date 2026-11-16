@@ -1,6 +1,7 @@
 add_executable(sequencer
         SequencerConfigurationLoader.cpp
         CommandChecks.cpp
+        EndOfDayCopies.cpp
         EnginePresence.cpp
         HaltAndVoidRequests.cpp
         KeptReports.cpp
@@ -31,6 +32,7 @@ add_dependencies(sequencer fix_orders_generated leader_follower_generated sequen
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(sequencer PRIVATE
         CommandChecks.hpp
+        EndOfDayCopies.hpp
         EngineAbsenceRule.hpp
         EnginePresence.hpp
         EngineRoutedStamp.hpp
@@ -122,9 +124,11 @@ add_executable(sequencer_tests
         tests/EnginePresenceTest.cpp
         tests/CommandChecksTest.cpp
         tests/HaltAndVoidRequestsTest.cpp
+        tests/EndOfDayCopiesTest.cpp
         tests/TradingPhaseRequestsTest.cpp
         tests/ServingWalFollowersTest.cpp
         CommandChecks.cpp
+        EndOfDayCopies.cpp
         EnginePresence.cpp
         HaltAndVoidRequests.cpp
         KeptReports.cpp

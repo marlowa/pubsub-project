@@ -630,6 +630,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         [[nodiscard]] std::optional<EngineReportPosition> latest_engine_report_in_wal() const override;
         [[nodiscard]] bool an_engine_takes_orders() const override;
         void ask_engine_position() override;
+        [[nodiscard]] std::optional<int64_t> follower_sequencer_holds_through() const override;
+        void ask_publishers_what_they_hold(int64_t wanted_through) override;
         bool write_technical_event(const pubsub_itc_fw_app::TechnicalEvent& event) override;
         bool write_trading_schedule(const pubsub_itc_fw_app::TradingSchedule& schedule) override;
         void answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingPhaseAnswer& answer) override;
@@ -646,7 +648,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     PhaseLinks phase_links_{*this};
     // Requests to move the venue from one phase of the trading day to the next, the day's schedule, and the check that
     // follows it (docs/venue/trading_day_plan.md).
-    TradingPhaseRequests phase_requests_{phase_links_, get_logger()};
+    TradingPhaseRequests phase_requests_{phase_links_, get_logger(), config_.end_of_day_publishers,
+                                         int64_t{config_.end_of_day_longest_wait_for_copies_seconds} * 1'000'000'000};
+    // The matching engine publishers' connections, which the leading sequencer asks at the end of day how far their copies
+    // of the WAL go; there are few.
+    std::vector<pubsub_itc_fw::ConnectionID> publisher_connections_;
 
     class CommandLinks : public CommandChecksLinksInterface {
       public:
@@ -713,6 +719,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // leads, otherwise caught up from the position it gives, up to the last record committed, and then sent
     // each record as it is committed.
     void handle_publisher_follow_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    // A matching engine publisher's answer to WalHeldRequest: the last record its copy of the WAL holds.
+    void handle_publisher_held_reply(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     // Whether @p connection is a matching engine publisher's.
     [[nodiscard]] bool is_publisher_connection(const pubsub_itc_fw::ConnectionID& connection) const {
         return connection.service_name() == wal_subscriber_inbound_svc_;

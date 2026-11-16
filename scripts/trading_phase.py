@@ -18,7 +18,10 @@ phase is entered only once the one before it has been. The design is docs/venue/
     from here.
   * open: continuous trading. This venue does no matching, so its matching engine treats pre-open and open alike.
   * closed: members' orders and cancels are refused from here.
-  * end-of-day: written once the matching engine has acted on the close.
+  * end-of-day: the end-of-day begin, written once the matching engine has acted on the close. Nothing more is traded, and
+    the copies of the WAL are completed. The leading sequencer then writes the end-of-day end by itself, once the follower
+    sequencer and the publishers hold every record up to the begin; the end-of-day end is never asked for, and a request
+    for it is refused (docs/venue/start_and_end_of_day.md, section 4).
   * start-day: start-of-day, pre-open and open in turn; this is what devenv.py and ha_test.py do once the venue is up.
   * schedule: replaces the times that remain in the day's schedule with those in the file --schedule names, for an early
     close for example. The file gives times only to the phases after the one the venue is in: a phase the venue has
@@ -56,7 +59,7 @@ from pathlib import Path
 import operator_requests
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_PHASES = {"start-of-day": "StartOfDay", "pre-open": "PreOpen", "open": "Open", "closed": "Closed", "end-of-day": "EndOfDay"}
+_PHASES = {"start-of-day": "StartOfDay", "pre-open": "PreOpen", "open": "Open", "closed": "Closed", "end-of-day": "EndOfDayBegin"}
 
 
 def _default_install_dir() -> Path:

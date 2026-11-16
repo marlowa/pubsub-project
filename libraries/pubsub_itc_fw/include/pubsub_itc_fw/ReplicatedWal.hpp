@@ -373,6 +373,13 @@ class ReplicatedWal {
         return committed_through_;
     }
 
+    /// As the leader: the last record the follower has acknowledged holding, since this instance took the lead or the
+    /// follower last asked where the two WALs agree. Zero when it has acknowledged none. Unlike committed_through(),
+    /// this never moves for a record committed without the follower, so it says what the follower holds.
+    [[nodiscard]] int64_t follower_acknowledged_through() const {
+        return peer_acked_through_;
+    }
+
     /// As the leader: whether records are committed only once the follower acknowledges them, because a
     /// follower is connected, its WAL agrees with this one, and it keeps up.
     [[nodiscard]] bool waits_for_follower() const;

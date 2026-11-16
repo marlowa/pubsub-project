@@ -82,7 +82,7 @@ end
 #  thread of its own, then is handed over to new records as they
 #  come. The design is docs/availability/following_the_wal.md.
 #  The records themselves are sent as the application's own
-#  messages; these five are the library's.
+#  messages; these seven are the library's.
 # ============================================================
 
 # ------------------------------------------------------------
@@ -152,4 +152,26 @@ message WalFollowStarted (id=155, version=1)
     i64 after_seq_no # the position the request named, echoed: the records sent are numbered after it
     i64 serving_through_seq_no # the last record the follower may be sent now; more may be released before it is caught up
     i64 application_value # a value of the application's own, which the library carries and never reads
+end
+
+# ------------------------------------------------------------
+#  113 -- WalHeldRequest
+#  Sent by the leading instance to a follower of the WAL that keeps
+#  a copy of it, such as a matching engine publisher, to ask for the
+#  last record its copy holds. The leading sequencer asks after the
+#  end-of-day begin, once a second, until the copy holds the record
+#  it names, so that it writes the end-of-day end only once every
+#  copy is complete (docs/venue/start_and_end_of_day.md, section 4).
+# ------------------------------------------------------------
+message WalHeldRequest (id=113, version=1)
+    i64 wanted_through # the record the asker waits for the copy to hold, for the follower's Quill log
+end
+
+# ------------------------------------------------------------
+#  114 -- WalHeldReply
+#  The follower's answer to WalHeldRequest, on the same connection.
+#  Its copy holds every record up to last_seq_no.
+# ------------------------------------------------------------
+message WalHeldReply (id=114, version=1)
+    i64 last_seq_no # the last record the follower's copy of the WAL holds, or zero if it holds none
 end

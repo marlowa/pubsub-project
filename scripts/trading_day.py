@@ -8,7 +8,7 @@ Every trading day starts with none of the previous day's files (principle V12 of
 procedure checks that for the files a component reads when it starts; an old Quill log, or a credentials file it is
 about to overwrite, does not stop it. It writes the run manifest, exports the day's inputs, starts every component for the day and asks for
 the start of day with the day's schedule. From then on the leading sequencer moves the venue from one phase to the next
-by the schedule in its WAL. The end procedure checks that the venue has reached the end of day, stops every component,
+by the schedule in its WAL. The end procedure checks that the venue has reached the end-of-day end, stops every component,
 and moves every file the venue wrote during the day into the day's archive, so that the next day starts on none of them.
 
   start --trading-day D --schedule FILE --operator NAME
@@ -32,7 +32,8 @@ and moves every file the venue wrote during the day into the day's archive, so t
 
   end --operator NAME
       1. Asks the sequencer that leads for the trading state, with a question that writes nothing, and refuses unless the
-         venue is in the end of day of the day the run manifest names. The procedure never moves the venue on itself.
+         venue is in the end-of-day end of the day the run manifest names, which the leading sequencer writes by itself once
+         every copy of the WAL is complete. The procedure never moves the venue on itself.
       2. Stops every component in the reverse of the order they were started in, and checks by its process identifier
          that each one has exited. If any has not, it stops and archives nothing.
       3. Writes a listing of every file of the day, with its size and SHA-256 checksum, under
@@ -443,15 +444,21 @@ def cmd_end(env: dict, args: argparse.Namespace) -> int:  # pylint: disable=too-
               "Nothing was stopped or moved.")
         return 1
     answer = state.answer
-    if not answer.day_started or answer.trading_day != day or answer.phase.name != "EndOfDay":
+    if answer.day_started and answer.trading_day == day and answer.phase.name == "EndOfDayBegin":
+        print(f"refused: the venue is in the end-of-day begin of trading day {day}. The leading sequencer writes the end-of-day end by itself "
+              "once the follower sequencer and the publishers hold every record up to the begin, or once the limit of time for that has "
+              "passed; run this again then. Stopping the venue before then could leave a copy of the day's WAL incomplete. Nothing was "
+              "stopped or moved.")
+        return 1
+    if not answer.day_started or answer.trading_day != day or answer.phase.name != "EndOfDayEnd":
         where = f"phase {answer.phase.name} of trading day {answer.trading_day}" if answer.day_started else "no trading day"
-        due = [words for phase_name, earliest in manifest.schedule if phase_name == "EndOfDay"
+        due = [words for phase_name, earliest in manifest.schedule if phase_name == "EndOfDayBegin"
                for words in [operator_requests.schedule_in_words([(phase_name, earliest)])]]
-        print(f"refused: the venue is in {where}, not in the end of day of trading day {day}. "
+        print(f"refused: the venue is in {where}, not in the end-of-day end of trading day {day}. "
               f"{'The schedule enters it: ' + due[0] + '.' if due else 'The schedule does not enter it; trading_phase.py end-of-day asks for it.'} "
               "This procedure never moves the venue on itself. Nothing was stopped or moved.")
         return 1
-    print(f"the venue is in the end of day of trading day {day}")
+    print(f"the venue is in the end-of-day end of trading day {day}: every copy of the WAL is complete, or the time allowed for them has passed")
     print("the order activity recorder is not built, so there is no confirmation of the day's events to wait for")
 
     print()
@@ -606,7 +613,7 @@ def main() -> int:
     start.add_argument("--delay", type=float, default=1.0, metavar="SECONDS", help="seconds between component starts (default: 1.0)")
     start.add_argument("--supervised", action="store_true", help="start each component under scripts/launch.py, which restarts it if it dies")
     start.add_argument("--no-prometheus", action="store_true", help="do not start the Prometheus scraper")
-    subparsers.add_parser("end", help="end the trading day the run manifest names, once the venue is in the end of day")
+    subparsers.add_parser("end", help="end the trading day the run manifest names, once the venue is in the end-of-day end")
     args = parser.parse_args()
 
     env_path = args.env if args.env.is_absolute() else (devenv.PROJECT_ROOT / args.env)

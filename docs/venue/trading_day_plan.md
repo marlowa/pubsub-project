@@ -274,7 +274,7 @@ it writes two records, one after the other:
 
 ```text
 seq 1  TechnicalEvent(StartOfDay, D, reason Scheduled)
-seq 2  TradingSchedule(D, [PreOpen 07:50Z, Open 08:00Z, Closed 16:30Z, EndOfDay 0])
+seq 2  TradingSchedule(D, [PreOpen 07:50Z, Open 08:00Z, Closed 16:30Z, EndOfDayBegin 0])
 ```
 
 If the leader fails between the two, the request sent again finds the venue in `sod` with no schedule recorded,

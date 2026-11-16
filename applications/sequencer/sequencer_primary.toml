@@ -77,6 +77,16 @@ automatic_recovery_limit_seconds = ${shared_automatic_recovery_limit_seconds}
 # refuse new orders until one leads. See docs/availability/voided_commands.md, section 5.2.
 orders_held_at_most_seconds = ${shared_orders_held_at_most_seconds}
 
+[end_of_day]
+# How many matching engine publishers the leading sequencer waits for after the end-of-day begin: it
+# writes the end-of-day end only once this many have said their copy of the WAL holds every record up
+# to the begin, or once the limit below has passed. deploy.py counts the publishers the environment
+# starts, so that this cannot disagree with them. See docs/venue/start_and_end_of_day.md, section 4.2.
+publishers = ${end_of_day_publishers}
+# The longest the leading sequencer waits for the follower sequencer and the publishers to hold every
+# record up to the end-of-day begin, before it writes the end-of-day end with a copy still incomplete.
+longest_wait_for_copies_seconds = ${shared_end_of_day_longest_wait_for_copies_seconds}
+
 [ha]
 ha_enabled                  = ${ha_enabled}
 instance_id                 = 1
