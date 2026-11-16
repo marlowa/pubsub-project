@@ -19,9 +19,10 @@ The checks, in order:
   4. end refuses while the venue is open, and stops nothing.
   5. With every component stopped, start refuses a schedule that differs from the run manifest's, and then, given no
      schedule, restarts the venue on the day's files, which is still open.
-  6. Once an operator has closed the venue and asked for the end of day, the leading sequencer writes the end-of-day end
-     by itself, and end then stops every component and archives every file of the day: the listing names each one with its checksum, each archived copy matches, the Quill logs named
-     with the day are among them, and the installation holds no file of the day.
+  6. Once an operator has closed the venue and asked for the end of day, the leading sequencer writes the end-of-day
+     end by itself, and end then stops every component and archives every file of the day: the listing names each one
+     with its checksum, each archived copy matches, the Quill logs named with the day are among them, and the
+     installation holds no file of the day.
   7. With only the run manifest and credentials of an earlier day, 20991229, left in place, start archives both with a
      listing of their own and begins the second day, which needs nothing from the first, with a schedule that enters
      every phase as soon as its conditions hold; the venue reaches the end of day by itself, and end, on the operator's

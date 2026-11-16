@@ -193,8 +193,8 @@ day, and holds open the file that captures the component's console output. On se
 not restart the component. It closes the captured console output, and moves every file in section 2.1 that belongs
 to its component, the captured console output among them, into `<archive_dir>/<D>/<machine>/`, keeping each file's
 path below the installation. It writes a listing of every file it moves, with its size and a SHA-256 checksum,
-named after its component so that the launchers on one machine do not share a listing, before removing anything
-from its place, and checks each archived copy against the listing, using the code that
+named after its component, `listing.<component>.txt`, so that the launchers on one machine do not share a listing,
+before removing anything from its place, and checks each archived copy against the listing, using the code that
 `trading_day.py end` uses today (section 4.3). Then the launcher exits.
 
 The archiving is done by the launcher and not by the component's own process for three reasons. The launcher acts
@@ -394,9 +394,13 @@ and apply each record as it arrives.
      launcher archives whatever of the day's files is still present. This settles a component restarted after the
      end of day (decision 8);
    - **the exit status.** The file alone does not stop the launcher, which would start the component, see it exit,
-     and start it again without end. A component that exits at the end of day does so with a status that means
-     "stopped for the end of day". The launcher, seeing it, does not restart the component: it archives the
-     component's files (section 4.1), and exits;
+     and start it again without end. A component that exits at the end of day does so with status 3, which means
+     "stopped for the end of day" (`STOPPED_FOR_THE_END_OF_DAY` in `scripts/launch.py`). The launcher, seeing it,
+     does not restart the component and counts no interruption: it archives the component's files (section 4.1),
+     and exits. **Built in the launcher:** it is given the environment file and the trading day with
+     `--environment` and `--trading-day`, which `devenv.py --supervised` passes, and finds the component's files with
+     `files_of_the_component` in `scripts/trading_day.py`. No component exits with status 3 yet, because none shuts
+     itself down yet;
    - **the file outlives the day.** It is not archived at the end of day; the next one overwrites it. On starting day
      D+1, a file saying the end-of-day end of D shows the component finished D in good order. A file saying an earlier
      phase, or an older day, shows it missed the end of day, which is decision 6 found without being looked for. The

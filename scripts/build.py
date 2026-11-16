@@ -262,8 +262,12 @@ def run_pytest(source_dir, build_dir=None):
     environment = dict(os.environ)
     if build_dir is not None:
         environment["PUBSUB_BUILD_DIR"] = str(Path(build_dir).resolve())
+    # pytest's temporary directories go below the build tree, or tmp/ in the checkout, and never in the machine-wide
+    # temporary directory (coding-rules-for-ai-chatbots.txt, "Where files are written"). pytest empties the directory it
+    # is given at the start of each run, so it is one of its own.
+    basetemp = (Path(build_dir).resolve() if build_dir is not None else source_dir / "tmp") / "pytest_dsl"
     run_command(
-        [sys.executable, "-m", "pytest", "-q"],
+        [sys.executable, "-m", "pytest", "-q", f"--basetemp={basetemp}"],
         cwd=python_dir,
         env=environment,
         description="Running Python DSL test suite"
@@ -285,8 +289,11 @@ def run_scripts_pytest(source_dir):
         print(f"NOTE: no script tests at {tests_dir} -- skipping")
         return
 
+    # pytest's temporary directories go below tmp/ in the checkout, which git ignores, never in the machine-wide
+    # temporary directory; see run_pytest.
+    basetemp = source_dir / "tmp" / "pytest_scripts"
     run_command(
-        [sys.executable, "-m", "pytest", "-q", str(tests_dir)],
+        [sys.executable, "-m", "pytest", "-q", f"--basetemp={basetemp}", str(tests_dir)],
         cwd=source_dir,
         description="Running script test suite"
     )

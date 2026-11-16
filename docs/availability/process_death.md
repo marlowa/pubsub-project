@@ -49,6 +49,11 @@ Three rules it follows, and each is deliberate:
   nothing but starting the launcher again resets the count. `devenv.py --supervised` passes
   `--max-interruptions 2` (`MAX_INTERRUPTIONS_PER_SESSION`), which is the rule in the section below.
   When it gives up, `launch.py` writes `gave up` to `<name>.launcher.state` and exits with status 1.
+- **It does not restart a component that stopped for the end of day.** A component that exits with
+  status 3 has stopped because it received the end-of-day end, which is not a death. The launcher
+  counts no interruption, archives the component's files of the day, and exits
+  ([start_and_end_of_day.md](../venue/start_and_end_of_day.md), section 4.1). `devenv.py
+  --supervised` gives it the environment file and the trading day it needs for that.
 
 **There is no systemd and there will not be.** The supervision design has to work without it.
 

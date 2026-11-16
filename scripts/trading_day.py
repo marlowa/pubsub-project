@@ -628,6 +628,24 @@ def archive_the_day(env: dict, install_dir: Path, day: int, evidence: str) -> in
     return 0
 
 
+def files_of_the_component(env: dict, install_dir: Path, name: str, day: int) -> List[Path]:
+    """Every file of trading day day that component name wrote, as section 2.1 of docs/venue/start_and_end_of_day.md
+    lists them: its WAL and the files beside it, its open-order region, its epoch file, lease promise record and
+    statements, its FIX capture file, and its Quill log and captured output named with the day. Not the run manifest or
+    the credentials, which no single component owns."""
+    one = dict(env, components={name: env["components"][name]})
+    credentials = devenv.credentials_path(install_dir)
+    owned_by_none = {manifest_path(install_dir), credentials, Path(f"{credentials}.tmp")}
+    return [day_file.path for day_file in files_of_the_day(one, install_dir, logs_of_day=day) if day_file.path not in owned_by_none]
+
+
+def remove_empty_wal_directories(env: dict, install_dir: Path, name: str) -> None:
+    """Removes the WAL directories of component name once they are empty, as the end of day leaves them."""
+    one = dict(env, components={name: env["components"][name]})
+    for wal_directory in devenv.durable_paths(one, install_dir, "wal", "directory"):
+        _remove_empty_directories(wal_directory)
+
+
 def archive_what_no_component_owns(env: dict, install_dir: Path, day: int) -> bool:
     """Moves the run manifest and the exported credentials of trading day day into that day's archive, with a listing of
     their own. No single component owns them: the start-of-day procedure writes both, and both authentication services use

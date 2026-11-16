@@ -194,3 +194,68 @@ def test_never_giving_up_is_the_default(tmp_path):
     launcher = launch.Launcher("x", tmp_path, ["prog"], 2.0, 5.0, 0)
     launcher.consecutive_failures = 1000
     assert launcher.give_up() is False
+
+
+# -- the end of day -----------------------------------------------------------
+
+STOPS_FOR_THE_END_OF_DAY = f"import sys; print('stopping for the end of day', flush=True); sys.exit({launch.STOPPED_FOR_THE_END_OF_DAY})"
+
+
+def test_a_child_that_stops_for_the_end_of_day_is_not_restarted(tmp_path):
+    """Exit status 3 means the component stopped for the end of day: no restart, and no interruption counted."""
+    launcher = start_launcher(tmp_path, child(STOPS_FOR_THE_END_OF_DAY), minimum_runtime=0)
+    assert launcher.wait(timeout=10) == 0
+    state = read_state(tmp_path)
+    assert state["status"] == "stopped for the end of day; files not archived"
+    assert state["restarts"] == "0"
+    assert state["interruptions"] == "0"
+
+
+def test_the_end_of_day_archives_the_components_files_and_its_captured_output_last(tmp_path):
+    """Given the environment and the day, the launcher archives what the component wrote, listed and checked."""
+    day = 20991229
+    install = tmp_path / "installed"
+    (install / "etc").mkdir(parents=True)
+    (install / "etc" / "demo.toml").write_text('[wal]\ndirectory = "var/demo_wal"\n', encoding="utf-8")
+    (install / "etc" / "other.toml").write_text('[wal]\ndirectory = "var/other_wal"\n', encoding="utf-8")
+    log_dir = install / "log"
+    log_dir.mkdir()
+    segment = install / "var" / "demo_wal" / "wal.000001"
+    segment.parent.mkdir(parents=True)
+    segment.write_bytes(b"the day's records")
+    other_segment = install / "var" / "other_wal" / "wal.000001"
+    other_segment.parent.mkdir(parents=True)
+    other_segment.write_bytes(b"another component's records")
+    quill_log = log_dir / f"demo.{day}.log"
+    quill_log.write_text("the component's Quill log\n", encoding="utf-8")
+    environment = tmp_path / "environment.toml"
+    environment.write_text("\n".join([
+        "[paths]",
+        f'install_dir = "{install}"',
+        f'log_dir = "{log_dir}"',
+        f'run_dir = "{tmp_path / "run"}"',
+        f'archive_dir = "{tmp_path / "archive"}"',
+        "[components.demo]",
+        'config = "etc/demo.toml"',
+        "[components.other]",
+        'config = "etc/other.toml"',
+        "",
+    ]), encoding="utf-8")
+    captured = log_dir / f"demo.{day}.stdout"
+    argv = [sys.executable, str(SCRIPTS_DIR / "launch.py"), "--name", "demo", "--run-dir", str(tmp_path / "run"),
+            "--minimum-runtime", "0", "--environment", str(environment), "--trading-day", str(day), "--"] + child(STOPS_FOR_THE_END_OF_DAY)
+    with captured.open("w", encoding="utf-8") as output:
+        status = subprocess.run(argv, stdout=output, stderr=subprocess.STDOUT, timeout=60, check=False).returncode
+    assert status == 0, (tmp_path / "run" / "demo.launcher.state").read_text(encoding="utf-8")
+
+    archive = next((tmp_path / "archive" / str(day)).iterdir())
+    listing = (archive / "listing.demo.txt").read_text(encoding="utf-8")
+    for original in (segment, quill_log, captured):
+        assert str(original) in listing
+        assert not original.exists(), f"{original} is still in place"
+        assert (archive / original.relative_to(install)).is_file()
+    assert str(other_segment) not in listing and other_segment.is_file(), "another component's files are left alone"
+    assert not segment.parent.exists(), "the emptied WAL directory is removed"
+    archived_output = (archive / captured.relative_to(install)).read_text(encoding="utf-8")
+    assert "stopping for the end of day" in archived_output and "is archived last" in archived_output
+    assert read_state(tmp_path / "run")["status"].startswith("stopped for the end of day; its files are archived in")

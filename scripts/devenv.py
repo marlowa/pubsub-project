@@ -109,9 +109,12 @@ def _tomllib():
 
 
 def load_env(path: Path) -> dict:
-    """Load and return the environment TOML file as a nested dict."""
+    """Load and return the environment TOML file as a nested dict. Its absolute path is kept under the key
+    environment_file, which no environment file uses, so that a launcher can be told which file its component belongs to."""
     with open(path, "rb") as file_handle:
-        return _tomllib().load(file_handle)
+        env = _tomllib().load(file_handle)
+    env["environment_file"] = str(Path(path).resolve())
+    return env
 
 
 def resolve_paths(env: dict) -> tuple[Path, Path, Path]:
@@ -308,7 +311,7 @@ MAX_INTERRUPTIONS_PER_SESSION = 2
 def start_one(  # pylint: disable=too-many-arguments,too-many-locals
     name: str, comp: dict,
     install_dir: Path, log_dir: Path, run_dir: Path,
-    delay: float, debug: bool = False, supervised: bool = False,
+    delay: float, debug: bool = False, supervised: bool = False, environment_file: str | None = None,
 ) -> None:
     """Start a single component, writing a PID file on success.
 
@@ -374,9 +377,12 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
         # launch.py restarts the component if it dies. It is put in front of the command
         # rather than given knowledge of the venue: it wraps one process, knows only the
         # command line below, and has no idea what a primary or a leader is.
+        # The environment file and the trading day let it archive the component's files when the component stops for the
+        # end of day (docs/venue/start_and_end_of_day.md, section 4.1).
+        archiving = ["--environment", environment_file, "--trading-day", str(recorded_trading_day(run_dir))] if environment_file else []
         command = [sys.executable, str(_SCRIPT_DIR / "launch.py"),
                    "--name", name, "--run-dir", str(run_dir),
-                   "--max-interruptions", str(MAX_INTERRUPTIONS_PER_SESSION), "--"] + list(command)
+                   "--max-interruptions", str(MAX_INTERRUPTIONS_PER_SESSION)] + archiving + ["--"] + list(command)
 
     with stdout_path.open("w") as stdout_file:
         proc = subprocess.Popen(  # pylint: disable=consider-using-with
@@ -909,7 +915,8 @@ def cmd_start(  # pylint: disable=too-many-arguments,too-many-locals
         # restarting it by itself.
         if comp.get("metrics_only", False):
             write_prometheus_scrape_config(env, install_dir, run_dir)
-        start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised)
+        start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised,
+                  environment_file=env.get("environment_file"))
         return
 
     print("=== exporting credentials ===")
@@ -970,7 +977,8 @@ def start_components(  # pylint: disable=too-many-arguments
     print(f"=== starting components for trading day {trading_day} ===")
     for name in order:
         comp = env["components"][name]
-        start_one(name, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised)
+        start_one(name, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised,
+                  environment_file=env.get("environment_file"))
     print()
     print(f"all components started.  logs → {log_dir}/")
 
@@ -1049,7 +1057,8 @@ def cmd_restart(  # pylint: disable=too-many-arguments
         comp = env["components"][component]
         if comp.get("metrics_only", False):
             write_prometheus_scrape_config(env, install_dir, run_dir)
-        start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised)
+        start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised,
+                  environment_file=env.get("environment_file"))
     else:
         cmd_stop(env)
         print()

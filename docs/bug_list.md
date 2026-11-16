@@ -583,7 +583,8 @@ chosen, in items 1 and 2.
    provisionally 10 seconds.
 5. **The launcher archives.** `scripts/launch.py`, seeing that status, does not restart its component, and archives
    the component's files, its captured console output among them, with the listing and checksums `trading_day.py end`
-   uses today, moved into code the two share.
+   uses today, moved into code the two share. **Built** in the launcher, for exit status 3, and checked by
+   `scripts/tests/test_launch.py`; it takes effect once components exit with that status (item 4).
 6. **The last-state file.** Each component keeps a file of its last trading state that outlives the day, and the
    start-of-day check accepts that file from the day before.
 7. **The next day's start** archives the run manifest and `credentials.toml` of the day before, which belong to no

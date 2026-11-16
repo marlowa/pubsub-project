@@ -59,14 +59,22 @@ Options:
                               makes the period a session rather than a clock.
                               See docs/availability/process_death.md.
 
+  --environment FILE          The environment file the component belongs to, and
+  --trading-day YYYYMMDD      the trading day it was started for. Given together, they let
+                              this script archive the component's files when the component
+                              stops for the end of day (below). Without them it archives
+                              nothing, and says so.
+
   -- COMMAND [ARG...]         The command to run, after a bare --. The separator is
                               conventional rather than required, but without it any leading
                               dashes in COMMAND will be read as options to this script.
 
 Exit status:
-  0   stood down as asked, by signal or by a stop file
+  0   stood down as asked, by signal or by a stop file; or the component stopped for the
+      end of day, and its files were archived, or there was nothing to archive them with
   1   gave up -- after --max-consecutive-failures failed starts, or --max-interruptions
-      interruptions
+      interruptions; or the component stopped for the end of day and archiving its files
+      failed, which is said, with the file, in the captured output
 
 Files it writes, all in --run-dir:
   <name>.pid              the COMPONENT's pid -- the plain file devenv.py, perf_run.py and
@@ -78,16 +86,18 @@ Files it writes, all in --run-dir:
                           and when it was last updated. Readable with cat.
   <name>.stop             not written by this script -- read by it. See below.
 
-Wraps exactly one process. It knows the command line it was given and nothing
-else: not the topology, not which instance is primary, not who leads. That
-ignorance is the design. A launcher that also assigned roles would have to know
+Wraps exactly one process. It knows the command line it was given and, for the end
+of day only, the environment file and the trading day: not the topology, not which
+instance is primary, not who leads. That ignorance is the design. A launcher that also assigned roles would have to know
 the whole venue, and would become something every deployment had to run; this one
 is optional, and a component started without it behaves identically.
 
 See docs/availability/design_notes.md#ha_supervisor_role and #ha_automatic_restart.
 
 What it does
-  - Starts the command, and restarts it when it exits, for any reason.
+  - Starts the command, and restarts it when it exits, for any reason but one: an exit
+    with status 3 means the component stopped for the end of day, and it is not
+    restarted (below).
   - Treats a death sooner than --minimum-runtime as a failed start rather than a
     normal exit, and waits --failure-sleep before trying again, so a
     deterministic fault produces a slow retry instead of a spin.
@@ -96,6 +106,17 @@ What it does
     process at all. Its own pid goes to <name>.launcher.pid.
   - Counts restarts into <name>.launcher.state, so the count is readable without
     a metrics stack of any kind.
+
+The end of day
+  A component that receives the end-of-day end shuts itself down and exits with status 3,
+  STOPPED_FOR_THE_END_OF_DAY. This script then does not restart it and does not count an
+  interruption. Given --environment and --trading-day, it archives every file of that day
+  the component wrote, as section 2.1 of docs/venue/start_and_end_of_day.md lists them,
+  into <archive_dir>/<day>/<machine>/, with a listing named listing.<name>.txt, using the
+  code trading_day.py end uses: each file's size and SHA-256 checksum are written before
+  anything is moved, and each archived copy is checked. The captured console output, which
+  this script holds open, is archived last, after this script has stopped writing to it.
+  Then it exits. See docs/venue/start_and_end_of_day.md, section 4.1.
 
 Stopping it
   Send it SIGTERM or SIGINT and it forwards that to the child, waits, and exits
@@ -121,6 +142,10 @@ from pathlib import Path
 # component runs for hours, so seconds is a generous line to draw.
 DEFAULT_MINIMUM_RUNTIME_SECONDS = 2.0
 
+# The exit status with which a component says it stopped for the end of day: it is not restarted, and its files are
+# archived (docs/venue/start_and_end_of_day.md, section 4.2, decision 5).
+STOPPED_FOR_THE_END_OF_DAY = 3
+
 # How long to wait after a failed start before trying again. Long enough that a component
 # failing deterministically retries slowly rather than spinning, short enough that a
 # transient cause is recovered from quickly.
@@ -138,8 +163,9 @@ log.name = "?"
 class Launcher:
     """Starts one command and restarts it when it exits."""
 
-    def __init__(self, name: str, run_dir: Path, command: list, minimum_runtime: float,
-                 failure_sleep: float, max_consecutive_failures: int, max_interruptions: int = 0) -> None:
+    def __init__(self, name: str, run_dir: Path, command: list, minimum_runtime: float,  # pylint: disable=too-many-arguments
+                 failure_sleep: float, max_consecutive_failures: int, max_interruptions: int = 0,
+                 environment_file: Path | None = None, trading_day: int | None = None) -> None:
         self.name = name
         self.run_dir = run_dir
         self.command = command
@@ -147,6 +173,9 @@ class Launcher:
         self.failure_sleep = failure_sleep
         self.max_consecutive_failures = max_consecutive_failures
         self.max_interruptions = max_interruptions
+        # What archiving the component's files at the end of day needs; None when this script was not told.
+        self.environment_file = environment_file
+        self.trading_day = trading_day
 
         self.child = None
         self.stopping = False
@@ -339,6 +368,10 @@ class Launcher:
             description, ran_for = self.wait_for_child()
             self.remove_file(self.child_pid_path)
 
+            if self.child.returncode == STOPPED_FOR_THE_END_OF_DAY:
+                log(f"child ended ({description}) after {ran_for:.1f}s: it stopped for the end of day, and is not restarted")
+                return self.archive_for_the_end_of_day()
+
             if self.stop_requested():
                 log(f"child ended ({description}) after a stop request; not restarting")
                 self.write_state("stopped")
@@ -360,6 +393,47 @@ class Launcher:
                 self.consecutive_failures = 0
                 log(f"child ended ({description}) after {ran_for:.1f}s -- restarting")
                 self.write_state("restarting")
+
+    def archive_for_the_end_of_day(self) -> int:
+        """Archive every file of the day the component wrote, the captured console output last. Returns this script's exit
+        status: 0 when every file was archived, or there was nothing to archive them with; 1 when archiving failed.
+
+        The code that lists, checks and moves the files is trading_day.py's, imported here and nowhere else, so that a
+        launcher that never meets the end of day needs nothing beyond the standard library."""
+        if self.environment_file is None or self.trading_day is None:
+            log("its files are not archived: this launcher was not given --environment and --trading-day")
+            self.write_state("stopped for the end of day; files not archived")
+            return 0
+        self.write_state("stopped for the end of day; archiving its files")
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import devenv  # pylint: disable=import-outside-toplevel
+        import trading_day  # pylint: disable=import-outside-toplevel
+        env = devenv.load_env(self.environment_file)
+        install_dir, log_dir, _ = devenv.resolve_paths(env)
+        archive = trading_day.day_archive(env, self.trading_day)
+        listing = f"listing.{self.name}.txt"
+        heading = (f"The files of {self.name} of trading day {self.trading_day} on {archive.name}, archived by its launcher when it "
+                   "stopped for the end of day")
+        captured = devenv.captured_output_path(log_dir, self.name, self.trading_day)
+        files = [path for path in trading_day.files_of_the_component(env, install_dir, self.name, self.trading_day) if path != captured]
+        log(f"archiving {len(files)} file(s) of {self.name} of trading day {self.trading_day} into {archive}, listed in {listing}")
+        if trading_day.archive_files(install_dir, archive, listing, heading, files) is None:
+            self.write_state("stopped for the end of day; archiving its files FAILED")
+            return 1
+        trading_day.remove_empty_wal_directories(env, install_dir, self.name)
+        if captured.is_file():
+            log(f"archived; the captured console output, {captured}, is archived last, and nothing more is written to it")
+            sys.stdout.flush()
+            sys.stderr.flush()
+            nowhere = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(nowhere, sys.stdout.fileno())
+            os.dup2(nowhere, sys.stderr.fileno())
+            os.close(nowhere)
+            if trading_day.archive_files(install_dir, archive, listing, heading, [captured]) is None:
+                self.write_state(f"stopped for the end of day; archiving {captured} FAILED")
+                return 1
+        self.write_state(f"stopped for the end of day; its files are archived in {archive}")
+        return 0
 
     def give_up(self) -> bool:
         """Whether to stop trying. Zero means never give up, which is the default.
@@ -421,6 +495,11 @@ def parse_arguments(argv: list) -> argparse.Namespace:
     parser.add_argument("--max-interruptions", type=int, default=0,
                         help="give up after this many interruptions -- deaths, however long the component had "
                              "been running; 0 means never (default: 0)")
+    parser.add_argument("--environment", type=Path,
+                        help="the environment file the component belongs to; with --trading-day, its files are archived when it "
+                             "stops for the end of day")
+    parser.add_argument("--trading-day", type=int,
+                        help="the trading day the component was started for, YYYYMMDD")
     parser.add_argument("command", nargs=argparse.REMAINDER,
                         help="the command to run, after a bare --")
 
@@ -440,7 +519,8 @@ def main() -> int:
     log.name = arguments.name
     launcher = Launcher(arguments.name, arguments.run_dir, arguments.command,
                         arguments.minimum_runtime, arguments.failure_sleep,
-                        arguments.max_consecutive_failures, arguments.max_interruptions)
+                        arguments.max_consecutive_failures, arguments.max_interruptions,
+                        arguments.environment, arguments.trading_day)
     return launcher.run()
 
 
