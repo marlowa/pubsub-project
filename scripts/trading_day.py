@@ -30,10 +30,13 @@ and moves every file the venue wrote during the day into the day's archive, so t
          in it or past it.
       7. Reports the trading day, the phase the venue is in, and the schedule, and exits.
 
-  end --operator NAME
+  end --operator NAME [--operator-says-the-day-ended]
       1. Asks the sequencer that leads for the trading state, with a question that writes nothing, and refuses unless the
          venue is in the end-of-day end of the day the run manifest names, which the leading sequencer writes by itself once
-         every copy of the WAL is complete. The procedure never moves the venue on itself.
+         every copy of the WAL is complete. The procedure never moves the venue on itself. With
+         --operator-says-the-day-ended it asks nothing, and takes the operator's word that the day ended instead, which the
+         listing records with the operator's name. That is the way to archive the files of a component that missed the end
+         of day, once nothing may be running to ask (docs/venue/start_and_end_of_day.md, section 4.2, decision 6).
       2. Stops every component in the reverse of the order they were started in, and checks by its process identifier
          that each one has exited. If any has not, it stops and archives nothing.
       3. Writes a listing of every file of the day, with its size and SHA-256 checksum, under
@@ -56,6 +59,7 @@ Exit status: 0 when the procedure did what it says; 1 when it refused or somethi
 Usage:
     ./trading_day.py start --trading-day 20261116 --schedule environments/schedules/trading_schedule.toml --operator alice
     ./trading_day.py end --operator alice
+    ./trading_day.py end --operator alice --operator-says-the-day-ended
 """
 
 from __future__ import annotations
@@ -80,6 +84,8 @@ import operator_requests
 
 _MANIFEST = Path("var") / "run_manifest.toml"
 _LISTING = "listing.txt"
+# The listing the next day's start writes for the run manifest and credentials it archives.
+_LISTING_AT_THE_NEXT_START = "listing.next_start.txt"
 _OUTSIDE = "outside_the_installation"
 _START_DAY_TIMEOUT = 120.0  # seconds to keep asking for the start of day: until a sequencer leads
 _STOP_CHECK_TIMEOUT = 5.0   # seconds to wait, after the stop, for every process to have exited
@@ -301,6 +307,20 @@ def cmd_start(env: dict, args: argparse.Namespace) -> int:  # pylint: disable=to
         return 1
 
     manifest = read_manifest(install_dir)
+    if manifest is not None and manifest.trading_day != day:
+        # The day before ended in good order when nothing a component reads at start is left of it but the run manifest:
+        # every component archived its own files. The manifest and the credentials belong to no component, and are archived
+        # here. Anything else left means a component missed the end of day, and the start refuses below, leaving the
+        # manifest for trading_day.py end to name the day (docs/venue/start_and_end_of_day.md, section 4.2, decisions 6 and 7).
+        others = [day_file for day_file in files_of_the_day(env, install_dir)
+                  if day_file.read_at_start and day_file.path != manifest_path(install_dir)]
+        if not others:
+            print(f"the run manifest names trading day {manifest.trading_day}, and no other file of that day that a component reads "
+                  "when it starts is left, so that day ended in good order")
+            if not archive_what_no_component_owns(env, install_dir, manifest.trading_day):
+                print("refused: the run manifest and credentials of the day before could not all be archived. Nothing was started.")
+                return 1
+            manifest = None
     present = [day_file for day_file in files_of_the_day(env, install_dir) if day_file.read_at_start]
     restart = False
     if manifest is None and present:
@@ -437,6 +457,10 @@ def cmd_end(env: dict, args: argparse.Namespace) -> int:  # pylint: disable=too-
     day = manifest.trading_day
     print(f"=== ending trading day {day} ===")
 
+    if args.operator_says_the_day_ended:
+        print(f"the leading sequencer is not asked: operator {args.operator} says trading day {day} ended, and the listing records it")
+        return _stop_and_archive(env, install_dir, run_dir, day, f"on the word of operator {args.operator}, without asking the leading sequencer")
+
     state = operator_requests.trading_state(install_dir, args.operator)
     if state.answer is None:
         print(f"refused: no sequencer that leads answered, so it is not known that the venue is in the end of day. If the venue is "
@@ -460,7 +484,12 @@ def cmd_end(env: dict, args: argparse.Namespace) -> int:  # pylint: disable=too-
         return 1
     print(f"the venue is in the end-of-day end of trading day {day}: every copy of the WAL is complete, or the time allowed for them has passed")
     print("the order activity recorder is not built, so there is no confirmation of the day's events to wait for")
+    return _stop_and_archive(env, install_dir, run_dir, day, "once the leading sequencer said the venue was in the end-of-day end")
 
+
+def _stop_and_archive(env: dict, install_dir: Path, run_dir: Path, day: int, evidence: str) -> int:
+    """Stops every component of the installation, checks each has exited, and archives every file of day, saying in the
+    listing on what evidence the day was taken to have ended."""
     print()
     pids = [pid for name in env["components"] for pid in (devenv.read_pid(run_dir, name), devenv.read_launcher_pid(run_dir, name))
             if pid is not None and devenv.is_pid_alive(pid)]
@@ -476,7 +505,7 @@ def cmd_end(env: dict, args: argparse.Namespace) -> int:  # pylint: disable=too-
     print("every process of the installation has exited")
 
     print()
-    return archive_the_day(env, install_dir, day)
+    return archive_the_day(env, install_dir, day, evidence)
 
 
 def _archived_path(path: Path, install_dir: Path, archive: Path) -> Path:
@@ -513,25 +542,23 @@ def _read_listing(listing: Path) -> Dict[str, tuple]:
     return entries
 
 
-def archive_the_day(env: dict, install_dir: Path, day: int) -> int:  # pylint: disable=too-many-locals
-    """Moves every file of the day into <archive_dir>/<day>/<machine>/, after writing a listing of each with its size and
-    checksum, and checks each archived copy against it (docs/venue/start_and_end_of_day.md, section 4, step 4)."""
-    archive_root = devenv.archive_dir(env)
-    machine = socket.gethostname().split(".")[0]
-    archive = archive_root / str(day) / machine
-    files = files_of_the_day(env, install_dir, logs_of_day=day)
-    print(f"=== archiving {len(files)} file(s) of trading day {day} into {archive} ===")
+def archive_files(install_dir: Path, archive: Path, listing_name: str, heading: str, files: List[Path]) -> Optional[int]:  # pylint: disable=too-many-locals
+    """Moves files into archive, each at its path below the installation, or below outside_the_installation/ at its whole
+    path. Before anything is moved, the listing archive/listing_name is written, naming each file with its size and SHA-256
+    checksum, under the comment heading, and kept from an earlier run that stopped part of the way through. A move within
+    one filesystem is a rename; across filesystems the file is copied, synced and checked before the original is removed.
+    Every archived copy is checked against the listing at the end. Returns the number of bytes the listing names, or None
+    when something failed, which is printed (docs/venue/start_and_end_of_day.md, section 4.3, step 4)."""
     archive.mkdir(parents=True, exist_ok=True)
-
-    listing_path = archive / _LISTING
+    listing_path = archive / listing_name
     listing = _read_listing(listing_path)
-    for day_file in files:
-        listing[str(day_file.path)] = (_checksum(day_file.path), day_file.path.stat().st_size)
-    lines = [f"# Every file of trading day {day} on {machine}: SHA-256 checksum, size in bytes, and where the file was.",
+    for path in files:
+        listing[str(path)] = (_checksum(path), path.stat().st_size)
+    lines = [f"# {heading}: SHA-256 checksum, size in bytes, and where the file was.",
              "# Each is archived below this directory at its path below the installation, or below "
              f"{_OUTSIDE}/ at its whole path."]
     lines += [f"{checksum}  {size}  {original}" for original, (checksum, size) in sorted(listing.items())]
-    temporary = listing_path.with_name(_LISTING + ".tmp")
+    temporary = listing_path.with_name(listing_name + ".tmp")
     with temporary.open("w", encoding="utf-8") as listing_file:
         listing_file.write("\n".join(lines) + "\n")
         listing_file.flush()
@@ -539,15 +566,14 @@ def archive_the_day(env: dict, install_dir: Path, day: int) -> int:  # pylint: d
     os.replace(temporary, listing_path)
     _sync_directory(archive)
 
-    for day_file in files:
-        original = day_file.path
+    for original in files:
         checksum, _ = listing[str(original)]
         target = _archived_path(original, install_dir, archive)
         if target.exists():
             if _checksum(target) != checksum:
                 print(f"failed: {target} is already in the archive and differs from {original}; neither was changed, and the files "
                       "after it were not moved")
-                return 1
+                return None
             original.unlink()
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -562,7 +588,7 @@ def archive_the_day(env: dict, install_dir: Path, day: int) -> int:  # pylint: d
             if _checksum(target) != checksum:
                 print(f"failed: the copy of {original} at {target} does not match its checksum; the original is left in place, and the "
                       "files after it were not moved")
-                return 1
+                return None
             original.unlink()
         _sync_directory(target.parent)
         _sync_directory(original.parent)
@@ -570,6 +596,24 @@ def archive_the_day(env: dict, install_dir: Path, day: int) -> int:  # pylint: d
     bad = [original for original, (checksum, _) in listing.items() if _checksum(_archived_path(Path(original), install_dir, archive)) != checksum]
     if bad:
         print(f"failed: these archived copies do not match the listing: {', '.join(bad)}")
+        return None
+    return sum(size for _, size in listing.values())
+
+
+def day_archive(env: dict, day: int) -> Path:
+    """Where this machine's files of trading day day are archived: <archive_dir>/<day>/<machine>/."""
+    return devenv.archive_dir(env) / str(day) / socket.gethostname().split(".")[0]
+
+
+def archive_the_day(env: dict, install_dir: Path, day: int, evidence: str) -> int:
+    """Moves every file of the day into <archive_dir>/<day>/<machine>/, after writing a listing of each with its size and
+    checksum, and checks each archived copy against it (docs/venue/start_and_end_of_day.md, section 4, step 4)."""
+    archive = day_archive(env, day)
+    files = files_of_the_day(env, install_dir, logs_of_day=day)
+    print(f"=== archiving {len(files)} file(s) of trading day {day} into {archive} ===")
+    total = archive_files(install_dir, archive, _LISTING, f"Every file of trading day {day} on {archive.name}, archived by trading_day.py end {evidence}",
+                          [day_file.path for day_file in files])
+    if total is None:
         return 1
 
     for wal_directory in devenv.durable_paths(env, install_dir, "wal", "directory"):
@@ -579,10 +623,27 @@ def archive_the_day(env: dict, install_dir: Path, day: int) -> int:  # pylint: d
     if left:
         print("failed: these files of a trading day are still in place: " + ", ".join(str(day_file.path) for day_file in left))
         return 1
-    total = sum(size for _, size in listing.values())
-    print(f"archived {len(listing)} file(s), {total:,} bytes, in {archive}")
+    print(f"archived {len(_read_listing(archive / _LISTING))} file(s), {total:,} bytes, in {archive}")
     print(f"the installation holds no file of trading day {day}; the next trading day starts on none of them")
     return 0
+
+
+def archive_what_no_component_owns(env: dict, install_dir: Path, day: int) -> bool:
+    """Moves the run manifest and the exported credentials of trading day day into that day's archive, with a listing of
+    their own. No single component owns them: the start-of-day procedure writes both, and both authentication services use
+    the credentials, so the next day's start archives them (docs/venue/start_and_end_of_day.md, section 4.2, decision 7).
+    Returns whether every file was archived."""
+    credentials = devenv.credentials_path(install_dir)
+    files = [path for path in (manifest_path(install_dir), credentials, Path(f"{credentials}.tmp")) if path.is_file()]
+    archive = day_archive(env, day)
+    print(f"=== archiving the run manifest and credentials of trading day {day} into {archive} ===")
+    total = archive_files(install_dir, archive, _LISTING_AT_THE_NEXT_START,
+                          f"The files of trading day {day} on {archive.name} that no component owns, archived by the next day's start",
+                          files)
+    if total is None:
+        return False
+    print(f"archived {len(files)} file(s), {total:,} bytes, in {archive}")
+    return True
 
 
 def _remove_empty_directories(directory: Path) -> None:
@@ -613,7 +674,11 @@ def main() -> int:
     start.add_argument("--delay", type=float, default=1.0, metavar="SECONDS", help="seconds between component starts (default: 1.0)")
     start.add_argument("--supervised", action="store_true", help="start each component under scripts/launch.py, which restarts it if it dies")
     start.add_argument("--no-prometheus", action="store_true", help="do not start the Prometheus scraper")
-    subparsers.add_parser("end", help="end the trading day the run manifest names, once the venue is in the end-of-day end")
+    end_parser = subparsers.add_parser("end", help="end the trading day the run manifest names, once the venue is in the end-of-day end")
+    end_parser.add_argument("--operator-says-the-day-ended", action="store_true",
+                            help="do not ask the leading sequencer; take the operator's word that the day ended, and record it in the "
+                                 "listing. For archiving the files of a component that missed the end of day, when nothing may be "
+                                 "running to ask")
     args = parser.parse_args()
 
     env_path = args.env if args.env.is_absolute() else (devenv.PROJECT_ROOT / args.env)

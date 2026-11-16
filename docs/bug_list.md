@@ -587,10 +587,11 @@ chosen, in items 1 and 2.
 6. **The last-state file.** Each component keeps a file of its last trading state that outlives the day, and the
    start-of-day check accepts that file from the day before.
 7. **The next day's start** archives the run manifest and `credentials.toml` of the day before, which belong to no
-   single component, before it checks for files of another day.
+   single component, once it has found no other file of that day. **Built** (`trading_day.py start`, checked by
+   `trading_day_test.py`).
 8. **`trading_day.py end` becomes the manual fallback:** it archives the files of a component that missed the end of
    day, on the operator's word given on its command line and recorded in the listing, instead of asking the leading
-   sequencer.
+   sequencer. **Built** (`--operator-says-the-day-ended`, checked by `trading_day_test.py`).
 9. **Tests.** `scripts/trading_day_test.py` checks the day ending by itself, with no `end`; and scenarios in
    `ha_test.py` stop the leader between the two events, and between writing the end and the follower sequencer
    confirming it.

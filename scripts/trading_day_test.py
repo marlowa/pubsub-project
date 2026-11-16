@@ -22,8 +22,10 @@ The checks, in order:
   6. Once an operator has closed the venue and asked for the end of day, the leading sequencer writes the end-of-day end
      by itself, and end then stops every component and archives every file of the day: the listing names each one with its checksum, each archived copy matches, the Quill logs named
      with the day are among them, and the installation holds no file of the day.
-  7. start begins the second day, which needs nothing from the first, with a schedule that enters every phase as soon
-     as its conditions hold; the venue reaches the end of day by itself, and end archives it.
+  7. With only the run manifest and credentials of an earlier day, 20991229, left in place, start archives both with a
+     listing of their own and begins the second day, which needs nothing from the first, with a schedule that enters
+     every phase as soon as its conditions hold; the venue reaches the end of day by itself, and end, on the operator's
+     word and without asking the leading sequencer, archives it, and the listing records the operator's word.
 
 Exit status: 0 when every check passes, 1 otherwise.
 """
@@ -46,6 +48,9 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPT_DIR.parent
 _FIRST_DAY = 20991230
 _SECOND_DAY = 20991231
+# A day that ended in good order before the first: only its run manifest and credentials are left, for the next start to
+# archive (docs/venue/start_and_end_of_day.md, section 4.2, decision 7).
+_EARLIER_DAY = 20991229
 _OPERATOR = "trading_day_test"
 _failures: list[str] = []
 
@@ -143,7 +148,7 @@ def main() -> int:  # pylint: disable=too-many-statements
     log("clearing what earlier runs left")
     devenv.clear_durable_state(env, install_dir, fresh_book=True, fresh_wal=True)
     trading_day.manifest_path(install_dir).unlink(missing_ok=True)
-    for day in (_FIRST_DAY, _SECOND_DAY):
+    for day in (_EARLIER_DAY, _FIRST_DAY, _SECOND_DAY):
         shutil.rmtree(devenv.archive_dir(env) / str(day), ignore_errors=True)
 
     log("1. a lease promise record of another day stops the start")
@@ -197,13 +202,28 @@ def main() -> int:  # pylint: disable=too-many-statements
     log(f"7. trading day {_SECOND_DAY} runs by its schedule from start to end")
     whole_day = write_schedule(work / "whole_day_when_ready.toml",
                                {"pre_open": "when ready", "open": "when ready", "closed": "when ready", "end_of_day": "when ready"})
+    manifest_left = trading_day.manifest_path(install_dir)
+    trading_day.write_manifest(install_dir, trading_day.Manifest(_EARLIER_DAY, [], True), None)
+    credentials_left = devenv.credentials_path(install_dir)
+    credentials_left.write_text("# the credentials of an earlier day, left for the next start to archive\n", encoding="utf-8")
     status, output = run_procedure("start", "--trading-day", str(_SECOND_DAY), "--schedule", str(whole_day))
-    check(status == 0, "start succeeds with nothing of the first day present")
+    check(status == 0, "start succeeds with nothing of the first day present, and only the run manifest and credentials of an earlier day")
+    earlier_archive = trading_day.day_archive(env, _EARLIER_DAY)
+    earlier_listing = earlier_archive / "listing.next_start.txt"
+    listed = earlier_listing.read_text(encoding="utf-8") if earlier_listing.is_file() else ""
+    check(str(manifest_left) in listed and str(credentials_left) in listed,
+          "start archives the run manifest and credentials of the earlier day, with a listing of their own", listed)
+    check(f"trading_day = {_EARLIER_DAY}" in (earlier_archive / manifest_left.relative_to(install_dir)).read_text(encoding="utf-8")
+          if (earlier_archive / manifest_left.relative_to(install_dir)).is_file() else False,
+          "the archived run manifest is the earlier day's")
     seen = wait_for_phase(install_dir, _SECOND_DAY, "EndOfDayEnd")
     check(seen == f"phase EndOfDayEnd of trading day {_SECOND_DAY}", "the venue reaches the end of day by the schedule alone", seen)
-    status, output = run_procedure("end")
-    check(status == 0, "end succeeds")
+    status, output = run_procedure("end", "--operator-says-the-day-ended")
+    check(status == 0 and "the leading sequencer is not asked" in output, "end on the operator's word succeeds without asking", output)
     check_archive(env, install_dir, _SECOND_DAY)
+    second_listing = trading_day.day_archive(env, _SECOND_DAY) / "listing.txt"
+    check(second_listing.is_file() and f"on the word of operator {_OPERATOR}" in second_listing.read_text(encoding="utf-8"),
+          "the listing records the operator's word")
 
     check(not trading_day.running_processes(env, install_dir), "nothing of the installation is left running")
 

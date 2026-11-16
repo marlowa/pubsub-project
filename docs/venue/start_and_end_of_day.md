@@ -114,11 +114,16 @@ trading day `D` and the name of the file of the day's times for each phase. It d
    - if the run manifest is present, names `D` and says the day's inputs are not complete, an earlier start of
      day `D` stopped before it had them. No component has started, so the procedure carries on from step 3 and
      repeats everything from there;
-   - if the run manifest names another day, or any file checked is present with no run manifest, the procedure
-     refuses. It names every file it found, with the day each belongs to where the procedure reads it: the day a
+   - if the run manifest names another day, and no other file checked is present, that day ended in good order:
+     every component archived its own files. The run manifest and `credentials.toml` belong to no component, so the
+     procedure archives both into that day's archive, with a listing of their own, `listing.next_start.txt`, written
+     and checked as the end-of-day procedure writes and checks its listing, and the day starts fresh (section 4.2,
+     decision 7);
+   - if the run manifest names another day and any other file checked is present, or any file checked is present
+     with no run manifest, a component missed the end of day, and the procedure refuses. It names every file it found, with the day each belongs to where the procedure reads it: the day a
      small text file records in its first field, or the day a run manifest names. The day a WAL or a region holds is
      read by the component that uses it. The procedure says that the end-of-day procedure for that day has to be run
-     first, and never deletes or moves anything itself.
+     first, and moves nothing: the run manifest stays, to name the day to `trading_day.py end`.
 3. **Write the run manifest**, `var/run_manifest.toml`: the trading day `D`; the schedule, as the moments in UTC
    that the venue's local times for `D` come to; the release installed (from `release.json`); the time the
    manifest was written; and `inputs_complete = false`. Every later step, and the start-of-day request, takes `D`
@@ -405,8 +410,9 @@ and apply each record as it arrives.
    by hand. **The procedure built today, `trading_day.py end` (section 4.3), is kept for exactly that,** as the
    manual way to archive the files left on one machine, and is no longer the normal way to end a day. By then nothing
    may be running to ask whether the day ended, so instead of asking the leading sequencer it takes the operator's
-   word, given as an option on its command line and recorded in the listing. It shares its code for listing,
-   checking and moving files with the launcher.
+   word, given with `--operator-says-the-day-ended` and recorded, with the operator's name, at the head of the
+   listing. **Built.** Its code for listing, checking and moving files, `archive_files` in `scripts/trading_day.py`,
+   is the code the launcher is to use.
 
 7. **Files that belong to no single component.** The launcher archives every file of its component, including the
    captured console output, standard output and standard error, which it holds open for as long as the component
@@ -415,9 +421,12 @@ and apply each record as it arrives.
    - **the exported `credentials.toml`**, also written by the start-of-day procedure, and read and rewritten during
      the day by both authentication services, which can run on the same machine and use the same file.
 
-   The next day's start moves both into the previous day's archive, before it checks for files of another day and
-   before it writes new ones. Neither can be taken for the new day's: the run manifest names its trading day, and
-   `credentials.toml` is exported again before any component starts.
+   The next day's start moves both into the previous day's archive, once it has found no other file of that day that
+   a component reads when it starts, and before it writes new ones. **Built** (section 3, step 2). When another file of
+   that day is present, a component missed the end of day, and the start refuses and moves nothing, so that the run
+   manifest is still there to name the day to `trading_day.py end` (decision 6). Neither file can be taken for the new
+   day's: the run manifest names its trading day, and `credentials.toml` is exported again before any component
+   starts.
 
 8. **A component started during the end of day.** A component restarted after the end-of-day end was written finds
    it in its last-state file (decision 5) and does what it would have done had it been running. A component restarted
@@ -435,7 +444,8 @@ of day. It does not move the venue on by itself.
    `TradingPhaseAnswer` whose outcome is `StateOnly`. If no sequencer leads, or the venue is in an earlier phase,
    it refuses, and says which phase the venue is in and when the end of day is scheduled. In the end-of-day begin
    it refuses too, saying that the end-of-day end follows once the copies of the WAL are complete, because stopping
-   the venue before then could leave a copy incomplete.
+   the venue before then could leave a copy incomplete. With `--operator-says-the-day-ended` it asks nothing, and
+   takes the operator's word instead (section 4.2, decision 6).
 2. **It would wait for the order activity recorder** to report that every event up to the end of day is confirmed.
    The recorder is not built, so this step is skipped.
 3. **It stops every component on the machine**, in the reverse of the order they were started in, and checks that
