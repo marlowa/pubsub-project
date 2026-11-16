@@ -326,7 +326,7 @@ harness wrote, and is neither checked nor archived.
 `end` asks the leading sequencer for the trading state, with a question that writes nothing, and refuses unless the venue
 is in the end of day of the day the manifest names. It works only where every component runs on one machine, as here;
 section 4 of [Starting and ending the trading day](../venue/start_and_end_of_day.md) describes the design that
-replaces it, in which every component archives its own files at the end of the day. It then stops every component, checks each has exited, and moves
+replaces it, in which every component shuts itself down at the end of the day and its launcher archives its files. After that check, `end` stops every component, checks each has exited, and moves
 every file of the day, including the Quill logs and captured output named with that day, into
 `<archive_dir>/<trading day>/<machine>/`, with `listing.txt` giving each file's size and
 SHA-256 checksum. `archive_dir` is set in the `[paths]` section of the environment file (`installed/archive` in

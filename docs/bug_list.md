@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 248 |
-| Open | 40 (20 defects, 20 tasks) |
+| Bugs recorded | 250 |
+| Open | 42 (22 defects, 20 tasks) |
 | Closed | 208 |
-| Next id | BUG-0249 |
+| Next id | BUG-0251 |
 
 ## Open bugs by severity
 
-6 high, 28 medium, 7 low.
+6 high, 28 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -54,6 +54,7 @@
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
 | [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
 | [BUG-0249](#bug_0249) | low | defect | The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it |
+| [BUG-0250](#bug_0250) | low | defect | A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member |
 
 ---
 
@@ -149,6 +150,47 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0250: A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member {#bug_0250}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-16 |
+| Recorded | 2026-11-16 |
+| How | Reading the matching engine and the sequencer while confirming that no execution report can reach the sequencer after the end-of-day begin ([start_and_end_of_day.md](venue/start_and_end_of_day.md), section 4.2, decision 3) |
+| Impact | A matching engine restarted late in a busy day can write millions of repeat reports into the WAL and send them to members |
+
+**What happens.** A matching engine that restarts replays the day's WAL to rebuild its book, and the replay produces
+again every report the engine produced the first time. Until the engine is told whether it leads, it holds those
+reports, so that it can send them if it takes the lead and discard them if it follows. It holds at most 50,000
+(`max_held_reports` in `applications/matching_engine/EngineReportSending.hpp`). Beyond that it sends each report to
+the sequencers as it is produced, marked as a possible repeat, and says so once at Warning. The comment there gives
+the reason: a member that already holds a report can discard a repeat, and a member that never receives one cannot
+recover it.
+
+The leading sequencer writes every report it receives from either engine into the WAL, and sends it to the member's
+gateway (`SequencerThread::forward_report_from_engine`). It does not check whether the WAL already holds the report,
+although each report carries the engine's epoch and its number among the engine's reports, which is enough to tell.
+
+The venue is planned for 50 million orders a day, and every order produces at least one report. An engine restarted
+late in such a day could therefore send the sequencer tens of millions of repeats beyond the first 50,000. Each would
+be written into the WAL, copied to the follower sequencer and to both publishers, published on the
+`execution_reports` topic, and sent to a member, all while the venue is trading.
+
+Nothing is lost because of this, and the end of day is not harmed by it: the original of every report is in the WAL,
+and a repeat written after the end-of-day begin is still written before the end-of-day end, which the follower
+sequencer has to confirm before the leading sequencer shuts down.
+
+**What is wanted.** A decision on which of these to do, and then a scenario in `ha_test.py` that restarts an engine
+after more than 50,000 reports and fails before the change:
+
+- the leading sequencer discards a report from an engine whose epoch and number the WAL already holds, so that the
+  limit in the engine stops mattering for the WAL and for members;
+- or the engine is told whether it leads before its replay produces any reports, so that it never needs to hold them.
+
+**Principles.** V2 of [design_principles.md](design_principles.md), the log is the record: the record of the day
+should say what happened once, not as many times as an engine restarted.
 
 ### BUG-0249: The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it {#bug_0249}
 
@@ -507,41 +549,48 @@ of the day. To be designed and agreed before code.
   - **`end` works only where every component runs on one machine,** as in the development environment. It asks the
     leading sequencer whether the venue is in the end of day before it stops anything, so run on each of several
     machines in turn, it finds no sequencer to answer once the sequencers' machines have been ended, and refuses.
-- **How the day ends is redesigned, and the new design is not built.** Section 4 of
+- **How the day ends is redesigned and agreed, and the new design is not built.** Section 4 of
   `docs/venue/start_and_end_of_day.md` replaces `end` with two events in the WAL. The end-of-day begin
   (`EndOfDayBegin`, the phase called `EndOfDay` today) ends trading, and nothing shuts down on it. The end-of-day end
   (`EndOfDayEnd`, a new phase) is written by the leading sequencer once the follower sequencer and both publishers hold
-  every record up to the begin. Every component subscribes to both, and on the end-of-day end it shuts itself down in
-  order and archives its own files, on the machine it runs on. No component asks another whether the day ended, and no
-  machine depends on another, however many machines there are. Section 4.2 lists what is agreed and what is still
-  open: the order of shutdown, the limit of time the leader waits for the follower sequencer, a file of each
-  component's last trading state with an exit status the launcher obeys, and confirming that no execution report can
-  reach the sequencer after the begin. `end` may be kept as the manual way to archive the files of a component that
-  missed the end of day.
+  every record up to the begin, or once a limit of time has passed. Every component subscribes to both. On the
+  end-of-day end each component shuts itself down, in no order relative to the others, and exits with a status that
+  tells its launcher, `scripts/launch.py`, not to restart it; the launcher then archives the component's files on the
+  machine they run on. No component asks another whether the day ended, and no machine depends on another, however
+  many machines there are. A component leaving is expected only from the end-of-day end onwards; before it, a
+  departure is a failure, handled as during the day. No execution report the WAL does not already hold can reach the
+  sequencer after the begin; repeats can, which is [BUG-0250](#bug_0250). `end` is kept as the manual way to archive
+  the files of a component that missed the end of day.
 
 **What remains before this entry can be closed.** The end of day as section 4 of
-`docs/venue/start_and_end_of_day.md` designs it:
+`docs/venue/start_and_end_of_day.md` designs it. Every decision in section 4.2 is agreed; two values are still to be
+chosen, in items 1 and 2.
 
-1. **Settle the open decisions in section 4.2:** the order in which components shut down and how each knows its turn
-   has come; the limit of time the leading sequencer waits for the follower sequencer; and confirmation that no
-   execution report can reach the sequencer after the end-of-day begin is written.
+1. **Measure how long a follower sequencer takes to catch up a day's WAL** in the development environment, and choose
+   from it the limit of time the leading sequencer waits for the copies of the WAL. The limit is a setting of the
+   sequencer's configuration, with a shorter value in other environments such as production.
 2. **The two events.** Rename the phase `EndOfDay` to `EndOfDayBegin`, add `EndOfDayEnd`, and have the leading
    sequencer write the end only once the follower sequencer and both publishers have confirmed every record up to the
    begin, or once the limit of time has passed; and not shut down until the follower sequencer has confirmed the end
-   itself.
+   itself. Each publisher, after publishing the end, stays up for a fixed time set in its configuration, provisionally
+   10 seconds.
 3. **Every component subscribes to both events.** The arbiters, the witness, the authentication services and the
-   administration service receive no phase today, and subscribe to the `technical_events` topic. After the begin,
-   every component treats another component leaving as expected, logged at Info, with no promotion, halt or alarm.
-4. **Each component, on the end-of-day end, shuts itself down in order and archives its own files,** with the listing
-   and checksums `trading_day.py end` uses today.
-5. **The last-state file and the launcher.** Each component keeps a file of its last trading state that outlives the
-   day; a component that exits at the end of day does so with a status that makes `scripts/launch.py` exit rather than
-   restart it; and the start-of-day check accepts that file from the day before.
-6. **The next day's start** archives the captured console output and the run manifest of the day before, which no
-   component can archive itself.
-7. **Decide what becomes of `trading_day.py end`:** kept as the manual way to archive the files of a component that
-   missed the end of day, on the operator's word, or removed.
-8. **Tests.** `scripts/trading_day_test.py` checks the day ending by itself, with no `end`; and scenarios in
+   administration service receive no phase today, and subscribe to the `technical_events` topic. From the end-of-day
+   end onwards, and not before, every component treats another component leaving as expected, logged at Info, with no
+   promotion, halt or alarm.
+4. **Each component, on the end-of-day end, shuts itself down** and exits with the status that means it stopped for
+   the end of day.
+5. **The launcher archives.** `scripts/launch.py`, seeing that status, does not restart its component, and archives
+   the component's files, its captured console output among them, with the listing and checksums `trading_day.py end`
+   uses today, moved into code the two share.
+6. **The last-state file.** Each component keeps a file of its last trading state that outlives the day, and the
+   start-of-day check accepts that file from the day before.
+7. **The next day's start** archives the run manifest and `credentials.toml` of the day before, which belong to no
+   single component, before it checks for files of another day.
+8. **`trading_day.py end` becomes the manual fallback:** it archives the files of a component that missed the end of
+   day, on the operator's word given on its command line and recorded in the listing, instead of asking the leading
+   sequencer.
+9. **Tests.** `scripts/trading_day_test.py` checks the day ending by itself, with no `end`; and scenarios in
    `ha_test.py` stop the leader between the two events, and between writing the end and the follower sequencer
    confirming it.
 

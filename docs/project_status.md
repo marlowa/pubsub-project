@@ -37,7 +37,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 41 open entries, 6 of them high severity. Each one is judged,
+The [bug list](bug_list.md) holds 42 open entries, 6 of them high severity. Each one is judged,
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
@@ -60,7 +60,8 @@ they are being fixed. The ones most likely to matter first, by design area:
   component refuses a file left from another day, and `scripts/trading_day.py` starts a day and ends it by
   archiving every file the day wrote ([BUG-0137](bug_list.md#bug_0137)). The procedures are checked by
   `scripts/trading_day_test.py`, and the end works only where every component runs on one machine. Its
-  replacement, in which every component archives its own files at the end of the day, is designed and not built. A trading halt cannot be applied to one instrument
+  replacement, in which every component shuts itself down at the end of the day and its launcher archives its
+  files, is agreed and not built. A trading halt cannot be applied to one instrument
   ([BUG-0065](bug_list.md#bug_0065)).
 - **The write-ahead log is never reclaimed during the day** ([BUG-0048](bug_list.md#bug_0048)).
   Whether it may be waits on a decision about how long history must be kept.

@@ -1,6 +1,6 @@
 # Starting and ending the trading day {#start_and_end_of_day}
 
-**Status: the start of the day is agreed and built (sections 3 and 5): each file records its trading day and is refused on another day, and `scripts/trading_day.py start` starts a day. How the day ends is agreed in shape and open in its details (section 4): each component shuts itself down and archives its own files when it receives the end of day.** This note is step 3 of
+**Status: the start of the day is agreed and built (sections 3 and 5): each file records its trading day and is refused on another day, and `scripts/trading_day.py start` starts a day. How the day ends is agreed and not built (section 4): when each component receives the end of day it shuts itself down, and its launcher archives its files.** This note is step 3 of
 [trading_day_plan.md](trading_day_plan.md). It lists every file the venue writes during a trading day, and sets out
 the procedure that starts a day and the procedure that ends one
 ([BUG-0137](../bug_list.md#bug_0137)). The choices made are collected in the last section.
@@ -150,7 +150,9 @@ Logging on is allowed in every phase, so members may connect as soon as the gate
 
 ## 4. Ending the trading day
 
-**Status: the shape is agreed; the decisions in section 4.2 are open except where they say otherwise, and none of it is built.** What is built today
+**Status: agreed, and not built.** Two values are still to be chosen: how long the leading sequencer waits for the
+copies of the WAL, which is to be measured (section 4.2, decision 4), and how long a publisher stays up after
+publishing the end-of-day end, which is provisional (decision 2). What is built today
 is a procedure run from outside the venue, described in section 4.3, which this design replaces.
 
 ### 4.1 How the day ends
@@ -174,27 +176,42 @@ by these routes (decision 3):
 - **the end-of-day end** (`EndOfDayEnd`, a new phase) is written by the leading sequencer only once every copy of the
   WAL is complete, and means "shut down and archive now".
 
-**Each component, on receiving the end-of-day end, shuts itself down in an orderly way, and archiving its own files
-is part of that shutdown.** It finishes what it is doing, closes its WAL, its regions and its other files, and moves
-every file in section 2.1 that it wrote into `<archive_dir>/<D>/<machine>/`, keeping the file's path below the
-installation. It writes a listing of every file it moves, with its size and a SHA-256 checksum, before removing
-anything from its place, and checks each archived copy against the listing, as section 4.3 describes for the
-procedure built today. Then it exits.
+**Each component, on receiving the end-of-day end, shuts itself down in an orderly way, and its launcher then
+archives its files.** The component finishes what it is doing, closes its WAL, its regions and its other files, and
+exits with a status that means "stopped for the end of day" (decision 5). Every component is started by its own
+launcher, `scripts/launch.py`, which runs on the same machine, restarts the component whenever it exits during the
+day, and holds open the file that captures the component's console output. On seeing that status, the launcher does
+not restart the component. It closes the captured console output, and moves every file in section 2.1 that belongs
+to its component, the captured console output among them, into `<archive_dir>/<D>/<machine>/`, keeping each file's
+path below the installation. It writes a listing of every file it moves, with its size and a SHA-256 checksum,
+named after its component so that the launchers on one machine do not share a listing, before removing anything
+from its place, and checks each archived copy against the listing, using the code that
+`trading_day.py end` uses today (section 4.3). Then the launcher exits.
 
-Three things follow from this:
+The archiving is done by the launcher and not by the component's own process for three reasons. The launcher acts
+only after the component has exited, so no file it moves can still be open or mapped. It holds the captured console
+output, which the component cannot move. And the code that lists, checks and moves the files exists once, in
+Python, rather than being written again in C++ for the components built on the framework and in Java for the
+administration service.
+
+There is no order in which components shut down: each does so as soon as it receives the end-of-day end, with the two
+exceptions in decision 2. Once the end is written, trading is over and every copy of the WAL is complete, so no
+running component needs anything more from another, except to be told of the end itself.
+
+Three things follow from this design:
 
 - **There is no separate archiving step.** Nothing outside the venue has to run for the day to end, just as nothing
   has to run for the day to proceed once it has started (section 3, step 8).
 - **No component has to ask whether the day ended.** Receiving the end-of-day end is the evidence that it ended. A
-  component never archives on any other evidence, so a venue that stops during the day, by a crash or by an operator
+  launcher never archives on any other evidence, so a venue that stops during the day, by a crash or by an operator
   stopping it, leaves every file in place for a restart.
-- **No machine depends on another.** Each component archives the files it wrote, on the machine it runs on, so
-  `archive_dir` need not be shared between machines, and the components can be spread over as many machines as the
-  environment file says. The pre-production environment, `environments/preprod.toml`, uses ten.
+- **No machine depends on another.** Each launcher archives the files of its own component, on the machine they both
+  run on, so `archive_dir` need not be shared between machines, and the components can be spread over as many
+  machines as the environment file says. The pre-production environment, `environments/preprod.toml`, uses ten.
 
 ### 4.2 What the design has to settle
 
-Each of these is open unless it says otherwise. Where a choice is suggested, it is a suggestion, not a decision.
+Each of these is agreed, except the two values the status of section 4 names.
 
 Two senses of "follower" appear below and are kept apart. **The follower sequencer** is the instance of the
 sequencer pair that does not lead; there is at most one. **The WAL's receivers** are every component the leading
@@ -203,35 +220,75 @@ sequencer): the follower sequencer, both matching engines and both matching engi
 sequencer writes the WAL. The follower sequencer and each publisher keep a copy of it; the matching engines keep none,
 and apply each record as it arrives.
 
-1. **Every component subscribes to the end of day.** Agreed. It is what tells a component that from now on the
-   departure of another component is expected (decision 2). The matching engines, the publishers, the follower
-   sequencer and the gateways receive it today, by the routes in section 4.1. The arbiters, the witness, the
-   authentication services and the administration service receive no phase change at all, and have to subscribe to
-   the `technical_events` topic, which exists to carry the phase to whatever subscribes. A component that subscribes
-   depends on the publishers being up, so the publishers have to be among the last to stop. The end of day is two
-   events (decision 3), and a component subscribes to both.
+1. **Every component subscribes to the end of day.** The end of day is two events (decision 3), and every component
+   receives both. The matching engines, the publishers, the follower sequencer and the gateways receive every phase
+   today, by the routes in section 4.1. The arbiters, the witness, the authentication services and the administration
+   service receive no phase change at all, and have to subscribe to the `technical_events` topic, which exists to
+   carry the phase to whatever subscribes. The end-of-day end is what tells a component that from then on the
+   departure of another component is expected (decision 2).
 
-2. **Other components leaving must not be taken for a failure.** Agreed, and it follows from decision 1. During the
-   day, a component that loses another treats the loss as a fault and acts on it: a follower sequencer whose leader
-   stops asks the arbiters to let it lead; a sequencer whose arbiters stop loses its lease; a gateway whose
-   sequencer stops tries to connect again, and tells its members trading is unavailable; a matching engine whose
-   sequencer stops waits for one. Once a component has received the end of day, each of these is expected: the
-   departure is logged at Info and leads to no promotion, no halt and no alarm. What is still open is the order of
-   shutdown, so that a component leaves only once nothing still running depends on it. One order that fits the
-   dependencies is: the gateways first, then the administration service and the authentication services, then the
-   matching engines, then the follower sequencer, then the leading sequencer, then the publishers, and the arbiters
-   and the witness last, which is close to the reverse of the start order in `[startup_order]`. How each component
-   knows its turn has come is part of the decision: it could wait for those before it to disconnect, or be told by
-   the leading sequencer.
+2. **Other components leaving at the end of day must not be taken for a failure, and there is no order of
+   shutdown.** During the day, a component that loses another treats the loss as a fault and acts on it: a follower
+   sequencer whose leader stops asks the arbiters to let it lead; a sequencer whose arbiters stop loses its lease; a
+   gateway whose sequencer stops tries to connect again, and tells its members trading is unavailable; a matching
+   engine whose sequencer stops waits for one.
+
+   **From the end-of-day end onwards, and not before, each of these is expected:** the departure is logged at Info
+   and leads to no promotion, no halt and no alarm. Between the end-of-day begin and the end-of-day end, no component
+   shuts down, so a component that leaves in that interval has failed, and is treated exactly as it would be during
+   the day. This matters because the venue still has work to do in that interval. If the leading sequencer stops
+   after writing the begin, the follower sequencer has to be promoted so that the end is written at all; were the
+   departure taken as expected, nothing would ever write the end, and no component would ever shut down.
+
+   **Each component shuts itself down as soon as it receives the end-of-day end,** in no order relative to the
+   others. An order of shutdown would be needed only if a component still running depended on one that had left.
+   Once the end is written, trading is over and every copy of the WAL is complete, so the only thing any component
+   still needs from another is to be told of the end. Two kinds of component do that telling, and they are the two
+   exceptions:
+   - **the leading sequencer** tells the follower sequencer, both matching engines, both publishers and the
+     gateways. It does not shut down until the follower sequencer has confirmed that it holds the end-of-day end
+     (decision 4, case 2);
+   - **each publisher** tells the arbiters, the witness, the authentication services and the administration service,
+     by publishing the end on the `technical_events` topic. A publisher cannot know whether a subscriber has received
+     a message, so after publishing the end it stays up for a fixed time, so that a subscriber reconnecting at that
+     moment still receives it. The time is a setting of the publisher's configuration, provisionally 10 seconds. A
+     subscriber that still misses the end keeps its files (decision 6).
+
+   The gateways are told of the end as soon as the leading sequencer has written it, before the follower sequencer
+   holds it ([BUG-0249](../bug_list.md#bug_0249)). A gateway can therefore shut down on an end that a change of
+   leader then loses. That does no harm: the gateway was about to shut down in any case, its files are the same
+   either way, and the new leader writes an end of its own.
 
 3. **Nothing is archived before the day's record is complete.** Two things have to be true before the leading
    sequencer closes its WAL and archives it.
    - **Every report has arrived.** The matching engines never write the WAL, but what they do is recorded in it:
      each engine sends its execution reports to the sequencer, which writes them into the WAL. At the close each
-     engine cancels every open order and sends a report of each cancel, and the end-of-day begin is written only once
-     the engine has acted on the close (`scripts/trading_phase.py`). That ordering looks to be enough, but it is to be
-     confirmed that no report can reach the sequencer after the end-of-day begin is written. A report that did would be
-     missing from the archived WAL, and would never reach the member.
+     engine cancels every open order and sends a report of each cancel. A report that reached the sequencer after the
+     end-of-day begin would be missing from the archived WAL, and would never reach the member. **No report that the
+     WAL does not already hold can reach the sequencer after the begin,** for four reasons, found by reading the code:
+     1. Before writing the begin, the leading sequencer asks the matching engine that orders are routed to how far it
+        has got, and writes the begin only when the engine has acted on the close, holds no report it has not sent,
+        and every report it has sent is in the WAL (`TradingPhaseRequests::move_on` in
+        `applications/sequencer/TradingPhaseRequests.cpp`).
+     2. From the close onwards, the sequencer itself refuses every member's new order and cancel, whatever the gateway
+        believed when it passed the command on, and answers with a `CommandRefused` sent straight to the gateway. No
+        member's command reaches an engine after the close, so none produces a report.
+     3. The commands the sequencer writes for itself produce no report after the close. Cancelling the orders of a
+        session that has disconnected is not carried out from the close onwards. The `CancelBook` written when the venue
+        cannot recover by itself finds the book empty, because the close cancelled every order. A `VoidCommands` for the
+        new orders held at that halt finds none, because none has been accepted since the close. A matching engine's
+        request to void a command it died applying is declined, because the engine orders are routed to has applied
+        and answered every command before the close.
+     4. If the matching engine orders are routed to stops after the begin and the other engine takes the lead, the new
+        one sends only the reports it kept that come after the latest report in the WAL, and there are none.
+
+     The one kind of report that can still arrive is a repeat of one the WAL already holds. A matching engine that
+     restarts replays the day's WAL, and until it is told whether it leads it holds the reports the replay produces,
+     up to 50,000 of them. Beyond that it sends each as it is produced, marked as a possible repeat, and the leading
+     sequencer writes it into the WAL without checking whether the WAL already holds it
+     ([BUG-0250](../bug_list.md#bug_0250)). Nothing is missing from the archive because of this: the original of every
+     such report is before the begin, and a repeat written after the begin is before the end, which the follower
+     sequencer confirms it holds before the leading sequencer shuts down.
    - **Every copy is complete.** The follower sequencer and both publishers hold every record up to the end-of-day
      begin, and the order activity recorder has reported that every event up to it is confirmed by the external
      messaging system ([trading_day_plan.md](trading_day_plan.md), decision 4; the recorder is not built).
@@ -273,29 +330,37 @@ and apply each record as it arrives.
       down at all. The leader must not shut down until the follower sequencer has confirmed the end-of-day end
       itself; after that nothing more is written, and the two archived WALs are the same.
    3. **No follower sequencer is running at the end of day,** because the venue has been running without its
-      standby. The leader archives alone. The follower sequencer's machine still holds the day's WAL up to the point
-      the follower stopped, and that machine is dealt with by decision 6.
+      standby. The leader writes the end-of-day end without the follower sequencer's confirmation, shuts down, and its
+      launcher archives its files. The follower sequencer's machine still holds the day's WAL up to the point the
+      follower stopped, and that machine is dealt with by decision 6.
    4. **The follower sequencer is still being caught up** when the end-of-day begin arrives, after a restart late in the
       day. The leader waits for it to finish, but only for a limit of time, after which it treats the follower
-      sequencer as absent, as in case 3. The limit is to be decided.
+      sequencer as absent, as in case 3. **The limit is a setting of the sequencer's configuration, with a value for
+      each environment.** Waiting too long costs little, because nothing is trading and the machines merely shut down
+      later; giving up too early leaves the follower sequencer's archived WAL incomplete, and the leading sequencer's
+      WAL the only full record of the day. The value for the development environment is to be chosen by measuring how
+      long a follower sequencer takes to catch up a day's WAL there, and other environments, such as production, set
+      a shorter one.
    5. **The follower sequencer holds a record, and the leader never receives its confirmation,** because the
       connection broke. The leader waits for the same limit and then goes on without the confirmation: when the
       record is the end-of-day begin or one before it, the leader writes the end-of-day end; when it is the
-      end-of-day end, the leader shuts down and archives. Both WALs may be complete, but the
+      end-of-day end, the leader shuts down, and its launcher archives its files. Both WALs may be complete, but the
       leader cannot know it, and says so in its log at Warning.
 
 5. **Each component keeps a file of its last trading state, and the launcher does not restart a component that left
    at the end of day.** The launcher, `scripts/launch.py`, restarts its component whenever it exits, for any reason,
-   because during the day any exit is a loss of service. Suggested:
+   because during the day any exit is a loss of service. Agreed:
    - **the file.** Each component keeps a small text file under the installation, beginning with the trading day like
      the other small files: `trading_day=20261116 EndOfDayEnd`, written under a temporary name and renamed into place
      whenever the phase changes. It is an ordinary file, not shared memory, and the venue never writes to a public
      directory such as `/dev/shm`. A component reads it first when it starts. If it says the end-of-day end of the day the
-     component was started for, the component has no work to do: it archives anything of the day still present and
-     exits. This settles a component restarted after the end of day (decision 8);
+     component was started for, the component has no work to do: it exits at once with the status below, and its
+     launcher archives whatever of the day's files is still present. This settles a component restarted after the
+     end of day (decision 8);
    - **the exit status.** The file alone does not stop the launcher, which would start the component, see it exit,
      and start it again without end. A component that exits at the end of day does so with a status that means
-     "stopped for the end of day", and the launcher, seeing it, exits too;
+     "stopped for the end of day". The launcher, seeing it, does not restart the component: it archives the
+     component's files (section 4.1), and exits;
    - **the file outlives the day.** It is not archived at the end of day; the next one overwrites it. On starting day
      D+1, a file saying the end-of-day end of D shows the component finished D in good order. A file saying an earlier
      phase, or an older day, shows it missed the end of day, which is decision 6 found without being looked for. The
@@ -306,19 +371,22 @@ and apply each record as it arrives.
    was entered, or whose machine could not be reached, never receives it, and its files stay where they are. Its
    last-state file says so (decision 5). The next day's start then refuses because of those files (section 3, step
    2), which is safe: nothing is lost and nothing is taken for the new day's. An operator then has to archive them
-   by hand. The procedure built today, `trading_day.py end` (section 4.3), could be kept for exactly that, as the
-   manual way to archive one machine's files, rather than as the normal way to end a day. By then nothing may be
-   running to ask whether the day ended, so the evidence it asks for would be the operator's word, given as an
-   option and recorded in the listing.
+   by hand. **The procedure built today, `trading_day.py end` (section 4.3), is kept for exactly that,** as the
+   manual way to archive the files left on one machine, and is no longer the normal way to end a day. By then nothing
+   may be running to ask whether the day ended, so instead of asking the leading sequencer it takes the operator's
+   word, given as an option on its command line and recorded in the listing. It shares its code for listing,
+   checking and moving files with the launcher.
 
-7. **Files a component cannot archive itself.** A component can move every file it opened. It cannot move the files
-   something else holds open or wrote for it:
-   - **the captured console output**, standard output and standard error, which the launcher holds open for as long
-     as the process runs. Agreed: the next day's start moves it into the previous day's archive. By then the
-     launcher has exited and closed it, and its name carries the day, so it can never be taken for the new day's;
-   - **the run manifest and the exported `credentials.toml`**, written by the start-of-day procedure. The
-     authentication services read and rewrite `credentials.toml` during the day, so they can archive it. The run
-     manifest belongs to no component, so the next day's start can archive it with the console output.
+7. **Files that belong to no single component.** The launcher archives every file of its component, including the
+   captured console output, standard output and standard error, which it holds open for as long as the component
+   runs and closes once the component has exited. Two files belong to no single component:
+   - **the run manifest**, written by the start-of-day procedure for the whole installation on a machine;
+   - **the exported `credentials.toml`**, also written by the start-of-day procedure, and read and rewritten during
+     the day by both authentication services, which can run on the same machine and use the same file.
+
+   The next day's start moves both into the previous day's archive, before it checks for files of another day and
+   before it writes new ones. Neither can be taken for the new day's: the run manifest names its trading day, and
+   `credentials.toml` is exported again before any component starts.
 
 8. **A component started during the end of day.** A component restarted after the end-of-day end was written finds
    it in its last-state file (decision 5) and does what it would have done had it been running. A component restarted
@@ -352,7 +420,9 @@ of day. It does not move the venue on by itself.
 `scripts/trading_day_test.py` checks it on one machine. On more than one machine it does not work: the machine that
 runs it after the sequencers' machines have stopped finds no sequencer to answer step 1, and refuses
 ([BUG-0137](../bug_list.md#bug_0137)). That is why the design in section 4.1 replaces it. Its listing, its checks of
-each copy and its way of moving files across filesystems carry over to the archiving each component does.
+each copy and its way of moving files across filesystems carry over to the archiving each launcher does, which
+uses the same code. The procedure itself is kept as the manual way to archive the files of a component that missed
+the end of day (section 4.2, decision 6).
 
 The archive is the day's record. How long archives are kept, and where they are sent, is an operational matter
 outside the venue.
@@ -383,7 +453,9 @@ judged against it:
   components. `devenv.py start --fresh-wal --fresh-book` remains for development runs, and clears what a test run
   leaves, including regions set aside as unusable, so that `trading_day.py start` finds none of it. **Built.** The
   question `end` asks, `TradingStateQuery`, is new: no request that existed could ask for the phase without the risk
-  of changing it. The `end` command is to be replaced by each component archiving its own files (section 4).
+  of changing it. As the normal way to end a day, the `end` command is to be replaced by each component shutting
+  down on the end-of-day end and its launcher archiving its files (section 4); it is kept as the manual way to
+  archive the files of a component that missed the end of day.
 - **The Quill logs** carry the trading day in their file names, such as `sequencer_primary.20261116.log`, so that
   two days can never share a file. The captured standard output files are named in the same way. **Built**, for the
   components `devenv.py` and `trading_day.py` start. The test harnesses (`ha_test.py`, `perf_run.py` and
@@ -403,3 +475,15 @@ judged against it:
    covers.
 3. **The archive goes where the `archive_dir` setting in the environment file says**, `installed/archive` in the
    development environment.
+4. **The end of day is two events in the WAL.** The end-of-day begin ends trading, and nothing shuts down on it. The
+   end-of-day end is written once the follower sequencer and both publishers hold every record up to the begin, or
+   once a limit of time set for each environment has passed, and every component shuts down on it (section 4.2,
+   decisions 3 and 4).
+5. **Another component leaving is expected only from the end-of-day end onwards.** Between the two events a
+   departure is a failure, handled as it would be during the day (section 4.2, decision 2).
+6. **There is no order of shutdown.** Each component shuts down as soon as it receives the end-of-day end, except
+   that the leading sequencer waits for the follower sequencer to confirm it holds the end, and each publisher stays
+   up for a fixed time after publishing it (section 4.2, decision 2).
+7. **Each component's launcher archives the component's files** once the component has exited with the status that
+   means it stopped for the end of day. `trading_day.py end` is kept as the manual way to archive the files of a
+   component that missed the end of day, on the operator's word (section 4.1, and section 4.2, decisions 5 and 6).
