@@ -235,6 +235,18 @@ preamble check (see FixMessage.hpp expected_preamble) and disconnects immediatel
 BeginString is received. Any test code, scripts, or utilities that construct raw FIX messages must
 use "8=FIXT.1.1" as the BeginString.
 
+Python scripts: argparse, always
+
+Every Python script that can be run reads its arguments with argparse, and parses them before it
+does anything else, even when it takes no options at all. Then --help describes the script and
+does nothing more. Do not read sys.argv by hand, and do not answer --help with a hand-written check.
+
+The reason. The build runs every script in scripts/ with --help, to check that each one can describe
+itself, and it is safe only if --help does nothing else. A script that ignores its arguments is
+run in full by that check on every build; for trading_day_test.py that means clearing the
+installation's write-ahead logs and regions and starting the venue. build.py fails a runnable script
+whose --help does not begin with argparse's "usage:" line.
+
 Text formatting: fmt, never printf
 
 Do not use printf, sprintf, snprintf, fprintf or their v- variants. Use fmt. The project

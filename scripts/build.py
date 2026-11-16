@@ -160,8 +160,13 @@ def check_scripts_support_help(source_dir):
     all, because a `from __future__` import preceded it, so `description=__doc__` passed
     None and --help showed nothing. Eleven scripts had the same fault.
 
-    Running each one is safe only because --help exits before any of them does work. A script
-    that acts at import time would be exercised by this check, which is itself worth knowing.
+    Running each one is safe only because --help exits before any of them does work, so that is
+    checked too: a script's answer must begin with argparse's "usage:" line. Every script that can
+    be run parses its arguments with argparse before doing anything (coding-rules-for-ai-chatbots.txt).
+    A script that ignores its arguments does its work instead, and can still pass: trading_day_test.py
+    run this way clears the installation's write-ahead logs and regions and starts the venue. A
+    module with no `__main__` block, such as operator_requests.py, has nothing to run, prints nothing,
+    and is let through.
     """
     scripts_dir = source_dir / "scripts"
     scripts = sorted(str(path.relative_to(source_dir)) for path in scripts_dir.glob("*.py"))
@@ -178,6 +183,12 @@ def check_scripts_support_help(source_dir):
                                     capture_output=True, timeout=60, check=False)
         except subprocess.TimeoutExpired:
             broken.append((name, "timed out -- does it do work before parsing arguments?"))
+            continue
+        said = result.stdout.decode(errors="replace")
+        runnable = "__main__" in (source_dir / name).read_text(encoding="utf-8", errors="replace")
+        if result.returncode == 0 and runnable and not said.lstrip().startswith("usage:"):
+            broken.append((name, "--help did not print argparse's usage line, so the script may have done its work instead; "
+                                 "parse the arguments with argparse before anything else"))
             continue
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).decode(errors="replace").strip()

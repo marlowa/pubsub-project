@@ -18,6 +18,7 @@ Usage:
 HTML_DIR defaults to build/docs/html relative to the repository root.
 """
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -29,9 +30,9 @@ title_pattern = re.compile(r"\btitle=\"([^\"]*)\"", re.IGNORECASE)
 architecture_map_marker = "dot_architecture"
 
 
-def find_html_dir(argv):
-    if len(argv) > 1:
-        return Path(argv[1])
+def find_html_dir(given):
+    if given is not None:
+        return Path(given)
     repository_root = Path(__file__).resolve().parent.parent
     return repository_root / "build" / "docs" / "html"
 
@@ -42,13 +43,9 @@ def href_is_broken(href):
 
 
 def main(argv):
-    # Answering --help is required of every script under scripts/, and is checked by
-    # build.py. No argparse here: one optional positional does not earn it.
-    if any(argument in ("-h", "--help") for argument in argv[1:]):
-        print(__doc__)
-        return 0
-
-    html_dir = find_html_dir(argv)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("html_dir", nargs="?", help="the Doxygen HTML directory (default: build/docs/html in the repository)")
+    html_dir = find_html_dir(parser.parse_args(argv[1:]).html_dir)
     if not html_dir.is_dir():
         print(f"check_architecture_map: HTML directory not found: {html_dir}",
               file=sys.stderr)

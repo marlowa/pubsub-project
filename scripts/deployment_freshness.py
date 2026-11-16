@@ -163,7 +163,9 @@ def report(install_dir: Path, source_dir: Path | None = None, label: str = 'WARN
 
 
 if __name__ == '__main__':
-    import sys
-    target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / 'installed'
-    report(target)
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('install_dir', nargs='?', type=Path, default=Path(__file__).resolve().parent.parent / 'installed',
+                        help='the installation to compare with this working tree (default: installed/ in the repository)')
+    report(parser.parse_args().install_dir)
     raise SystemExit(0)
