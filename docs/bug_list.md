@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 250 |
-| Open | 42 (22 defects, 20 tasks) |
+| Bugs recorded | 251 |
+| Open | 43 (23 defects, 20 tasks) |
 | Closed | 208 |
-| Next id | BUG-0251 |
+| Next id | BUG-0252 |
 
 ## Open bugs by severity
 
-6 high, 28 medium, 8 low.
+6 high, 29 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -47,6 +47,7 @@
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
+| [BUG-0251](#bug_0251) | medium | defect | Under a burst of orders faster than it can process, the leading sequencer loses its lease to a backlog on its own thread, and the follower matching engine is taken out of service |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -150,6 +151,57 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0251: Under a burst of orders faster than it can process, the leading sequencer loses its lease to a backlog on its own thread, and the follower matching engine is taken out of service {#bug_0251}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-16 |
+| Recorded | 2026-11-16 |
+| How | Filling the development venue's WAL for a measurement: `binary_load_client` with 4 sessions sending 1.8 million orders with no `--rate`, as fast as the sockets accepted them |
+| Impact | A change of sequencer leader with no failure, and the venue left without a standby matching engine it can trust until that engine is restarted |
+
+**What happened.** The run is a deliberate overload: orders were offered at about 117,000 a second round trip, and the
+load client's own note says the latencies were dominated by queueing. The evidence is kept in
+`tmp/leader_change_under_load/` in the development checkout (Quill logs of both sequencers, both matching engines
+and both arbiters). The times are from the development machine on 16 November 2026, in its power-saving
+configuration.
+
+1. From 22:55:07 the leading sequencer, the primary, ran as if alone several times, because the follower's storage
+   for orders waiting on it filled, and asked the arbiters for statements that its peer could not lead, and then that
+   it could.
+2. Its sequencer thread logged its last line at 22:55:14.57, and nothing more for 60 seconds, while running at 100%
+   of a core. It was working through a backlog, not stuck: a trading-state question sent at about 22:55:56 was
+   answered at 22:56:16.79, in the order it arrived. The backlog is most likely the execution reports for the 1.8
+   million orders, which it logs only at Debug.
+3. Its lease renewals wait in the same queue, so they stopped reaching the arbiters. The lease period is 3 seconds.
+   At 22:55:19.98 the arbiters granted the secondary the lead at epoch 2, from record 191,470.
+4. The primary went on acting as leader until it reached the end of its backlog: at 22:56:14 it held orders waiting
+   for a voter, at 22:56:15 it accepted the follower matching engine's request to follow its WAL from record
+   174,246, and at 22:56:16 it wrote `SessionEnded` records at seq 331,701 to 331,704 under epoch 1. At 22:56:17 it
+   stepped down, and at 22:56:18 it discarded records 191,470 to 565,638, which it had never committed. The WAL is
+   intact: the majority leases did what they are for.
+5. The follower matching engine, the secondary, logged at 22:55:22 that it had produced a report of command 0 that
+   the leader did not send, and so took itself out of service as a standby, as V11 requires, until restarted. At
+   22:56:15 it received record 174,247 from the old leader where record 590,967 was due, applied nothing from that
+   answer, and asked to be caught up again.
+
+**What is not known.** Why the follower engine's reports of command 0 differed: command 0 is the number carried by
+reports no member's command produced, such as cancels on a change of leader. Whether a leader whose lease has run out
+by its own clock may act on anything while it works through a backlog: here it accepted an engine's request to follow
+its WAL after its lease had run out. Whether an overload this large is one the venue is required to survive without
+a change of leader is a decision, not a defect, and is Andrew's.
+
+**What is wanted.** The leading sequencer's lease renewal does not wait behind a backlog of work on its own thread,
+or the sequencer stops taking work before its backlog outlasts a lease; a sequencer whose lease has run out by its own
+clock acts on nothing until it has renewed it; and the cause of the differing reports of command 0 is found. A
+scenario in `ha_test.py` that offers orders faster than the venue can process them would show each, and would have
+to fail before the change.
+
+**Principles.** V11 of [design_principles.md](design_principles.md): a fault in the standby is a loss of resilience,
+not a loss of service. The follower engine was correctly taken out of service as a standby, and the venue went on
+trading throughout. The change of sequencer leader itself had no fault behind it.
 
 ### BUG-0250: A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member {#bug_0250}
 
