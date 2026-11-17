@@ -162,7 +162,7 @@ went looking.
 | Severity | medium |
 | Found | 2026-11-17 |
 | Recorded | 2026-11-17 |
-| How | Andrew built the book on a RHEL 8 machine and had many errors; checked in a `rockylinux:8` container |
+| How | Andrew built the book on a RHEL 8 machine and had many errors, among them that `cleveref.sty` was missing; checked in a `rockylinux:8` container |
 | Impact | The book, its PDF and its EPUB, can be built only on the development machine, which has TeX Live 2023 |
 
 **What happens.** `docs/book/Makefile` runs `lualatex`, `makeglossaries`, `bibtex` and `tex4ebook`, and the book uses
