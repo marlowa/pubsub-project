@@ -48,7 +48,7 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0251](#bug_0251) | medium | defect | Under a burst of orders faster than it can process, the leading sequencer loses its lease to a backlog on its own thread, and the follower matching engine is taken out of service |
-| [BUG-0252](#bug_0252) | medium | defect | The leading sequencer's lease ran out as it finished sending a restarted follower sequencer the whole WAL |
+| [BUG-0252](#bug_0252) | medium | defect | When a member's session ends with hundreds of thousands of resting orders, the leading sequencer and the leading matching engine both lose their leases |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -173,7 +173,7 @@ run. Run with `--help` and no venue, the program prints the usage text and then 
 option prints it and exits with a non-zero status, as today. The rule for Python scripts in
 `coding-rules-for-ai-chatbots.txt` does not cover C++ programs, so nothing checks this.
 
-### BUG-0252: The leading sequencer's lease ran out as it finished sending a restarted follower sequencer the whole WAL {#bug_0252}
+### BUG-0252: When a member's session ends with hundreds of thousands of resting orders, the leading sequencer and the leading matching engine both lose their leases {#bug_0252}
 
 | | |
 |---|---|
@@ -200,16 +200,37 @@ its WAL moved aside, and it was started again holding nothing. The Quill logs ar
 4. While it was caught up, the follower logged many times that its store of reports kept in case it takes the lead
    was full, and that a report still needed had been overwritten.
 
-**What is not known.** Why the lease was not renewed during the first catch-up, when the arbiter's grant alone, with
-the leader's own vote, is a majority; and why the second catch-up, which took almost twice as long, did not lose it.
-One possibility, not checked: every message any thread sends goes through one queue into the reactor, in order, so a
-lease request may wait behind the records being sent. [BUG-0251](#bug_0251), where the reactor thread was at 100% of a
-core, may have the same cause. Whether overwriting a kept report the follower still needs could lose a report if it
-then took the lead.
+**The cause, found on 17 November 2026 by repeating the run.** The catch-up of the follower sequencer is not the
+cause; it was under way by coincidence. The load client's four sessions had ended 45 seconds earlier, each with about
+450,000 resting orders, and their grace periods ran out during the catch-up. In the repeat the grace periods ran out
+before the follower sequencer was restarted, and the same thing happened:
 
-**What is wanted.** The cause found; a leader's lease is renewed while it sends a follower the whole WAL, however
-long that takes; and a scenario in `ha_test.py` that restarts the follower sequencer with an empty WAL behind a WAL of
-a few million records, which would have to fail before the change.
+1. At 20:18:15.936 the leading sequencer wrote the four `CancelSessionOrders` commands, in microseconds.
+2. **The matching engine lost its lease.** It carried out each cancel in one go, about 0.9 seconds for 450,000
+   orders, and the four ran one after another on the thread that also runs the matching engine's lease, from
+   20:18:15.9 to 20:18:19.7. Its lease tick did not run for 3,792 ms, longer than the lease period of 3,000 ms, so it
+   stopped leading.
+3. **The leading sequencer lost its lease.** The matching engine sent it an execution report for each cancelled
+   order, about 1.7 million in four seconds, faster than the sequencer's thread could process them. Every message for
+   that thread, timer events included, goes through one queue in the order it arrives, and that queue has no limit.
+   The timer event that runs the lease waited behind the reports, and the sequencer's thread also asks for timer
+   events to be handled only once the queue is empty (`prioritise_data_over_timers()` in `SequencerThread.hpp`). Its
+   lease tick did not run for 6,937 ms, and it stopped leading. It led again at the next epoch at once, which is what
+   started the second catch-up.
+
+A thread that samples every 10 ms which threads are waiting in the kernel found the sequencer's thread waiting only
+now and then, on pages of the WAL being written to disk, and running the rest of the time: the six seconds are work,
+not waiting. The run, the sampler and the Quill logs are kept in `tmp/bug0252/` in the development checkout.
+
+[BUG-0251](#bug_0251) is very probably the same defect in the sequencer: there, orders arrived faster than the
+thread could process them, and its lease tick waited behind them in the same way.
+
+The overwritten kept reports in step 4 above are still not explained: whether overwriting a kept report the
+follower still needs could lose a report if it then took the lead.
+
+**What is wanted.** A leader's lease is renewed however much work its thread has queued, and however long one piece
+of that work takes; and a scenario in `ha_test.py` that ends a session holding several hundred thousand resting
+orders, which has to fail before the change.
 
 **Principles.** V11 of [design_principles.md](design_principles.md): a follower being caught up is a loss of
 resilience, and must not become a change of leader.
