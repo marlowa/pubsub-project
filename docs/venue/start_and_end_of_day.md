@@ -159,10 +159,8 @@ Logging on is allowed in every phase, so members may connect as soon as the gate
 once the follower sequencer and the publishers hold every record up to the begin, or once the limit of time has
 passed, and refuses an operator's request for it (decisions 3 and 4). Nothing yet happens when a component receives
 the end-of-day end: no component shuts down, and nothing is archived, except by `trading_day.py end` as section 4.3
-describes. Two values are still to be chosen: how long the leading sequencer waits for the
-copies of the WAL, which is to be measured (section 4.2, decision 4), and how long a publisher stays up after
-publishing the end-of-day end, which is provisional (decision 2). What is built today
-is a procedure run from outside the venue, described in section 4.3, which this design replaces.
+describes. What is built today is a procedure run from outside the venue, described in section 4.3, which this
+design replaces.
 
 ### 4.1 How the day ends
 
@@ -260,7 +258,7 @@ and apply each record as it arrives.
    - **each publisher** tells the arbiters, the witness, the authentication services and the administration service,
      by publishing the end on the `technical_events` topic. A publisher cannot know whether a subscriber has received
      a message, so after publishing the end it stays up for a fixed time, so that a subscriber reconnecting at that
-     moment still receives it. The time is a setting of the publisher's configuration, provisionally 10 seconds. A
+     moment still receives it. The time is a setting of the publisher's configuration, 10 seconds. A
      subscriber that still misses the end keeps its files (decision 6).
 
    The gateways are told of the end as soon as the leading sequencer has written it, before the follower sequencer
@@ -374,9 +372,8 @@ and apply each record as it arrives.
       moment the leading sequencer first finds the venue in the end-of-day begin, so a new leader waits the whole time
       again. Waiting too long costs little, because nothing is trading and the machines merely shut down
       later; giving up too early leaves the follower sequencer's archived WAL incomplete, and the leading sequencer's
-      WAL the only full record of the day. The value for the development environment is to be chosen by measuring how
-      long a follower sequencer takes to catch up a day's WAL there, and other environments, such as production, set
-      a shorter one.
+      WAL the only full record of the day. **Every environment sets 600 seconds.** In the environments other than
+      development the figure is provisional, and says so in the environment file, until a figure for each is chosen.
 
       **Measured on the development machine, 16 November 2026,** in its power-saving configuration, so the figures
       are lower bounds. 1.8 million orders were sent at 20,000 a second, which wrote 3,600,008 records, 1.6 GB,
@@ -399,8 +396,9 @@ and apply each record as it arrives.
 5. **Each component keeps a file of its last trading state, and the launcher does not restart a component that left
    at the end of day.** The launcher, `scripts/launch.py`, restarts its component whenever it exits, for any reason,
    because during the day any exit is a loss of service. Agreed:
-   - **the file.** Each component keeps a small text file under the installation, beginning with the trading day like
-     the other small files: `trading_day=20261116 EndOfDayEnd`, written under a temporary name and renamed into place
+   - **the file.** Each component keeps a small text file in the venue's run directory, the directory named by
+     `[paths] run_dir` in the environment file, which also holds the component's process identifier file. The file
+     begins with the trading day like the other small files: `trading_day=20261116 EndOfDayEnd`, written under a temporary name and renamed into place
      whenever the phase changes. It is an ordinary file, not shared memory, and the venue never writes to a public
      directory such as `/dev/shm`. A component reads it first when it starts. If it says the end-of-day end of the day the
      component was started for, the component has no work to do: it exits at once with the status below, and its

@@ -352,10 +352,10 @@ orders_held_at_most_seconds = 5
 # and the matching engine publishers to hold every record up to it, before it writes the
 # end-of-day end with a copy still incomplete (docs/venue/start_and_end_of_day.md, section 4.2,
 # decision 4). Waiting too long costs only a later shutdown, because nothing is trading; giving
-# up too early leaves a copy of the day's WAL incomplete. Provisional: shorter than the development
-# environment's, and to be set once the development figure has been measured.
+# up too early leaves a copy of the day's WAL incomplete. Provisional: the same figure as the
+# development environment's, until a figure for this environment is chosen.
 # Declared once here: both sequencers of the pair must use the same figure.
-end_of_day_longest_wait_for_copies_seconds = 300
+end_of_day_longest_wait_for_copies_seconds = 600
 
 # Metrics for the whole venue. One edit turns the scrape endpoints on or off
 # everywhere; each component still has its own listener host and port below.

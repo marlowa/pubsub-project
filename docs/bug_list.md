@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 252 |
-| Open | 44 (24 defects, 20 tasks) |
+| Bugs recorded | 253 |
+| Open | 45 (25 defects, 20 tasks) |
 | Closed | 208 |
-| Next id | BUG-0253 |
+| Next id | BUG-0254 |
 
 ## Open bugs by severity
 
-6 high, 30 medium, 8 low.
+6 high, 30 medium, 9 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -57,6 +57,7 @@
 | [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
 | [BUG-0249](#bug_0249) | low | defect | The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it |
 | [BUG-0250](#bug_0250) | low | defect | A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member |
+| [BUG-0253](#bug_0253) | low | defect | `binary_load_client --help` prints its help and then tries to connect to the venue |
 
 ---
 
@@ -152,6 +153,25 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0253: `binary_load_client --help` prints its help and then tries to connect to the venue {#bug_0253}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-16 |
+| Recorded | 2026-11-17 |
+| How | Checking which programs answer `--help` without doing anything else, while adding the rule that every Python script parses its arguments with argparse |
+| Impact | Asking the load client how to use it starts a run: with a venue listening it logs on and sends orders; without one it fails with "connect: Connection refused" |
+
+**What happens.** `parse_options` in `applications/binary_order_gateway/tools/BinaryLoadClientMain.cpp` prints the
+usage text when it meets an option it does not recognise, and returns `true` when that option is `--help`, the same
+value it returns for a valid command line. `main` then goes on to connect every session and log on, as for a real
+run. Run with `--help` and no venue, the program prints the usage text and then "connect: Connection refused".
+
+**What is wanted.** `--help` prints the usage text and exits with status 0, doing nothing else, and an unrecognised
+option prints it and exits with a non-zero status, as today. The rule for Python scripts in
+`coding-rules-for-ai-chatbots.txt` does not cover C++ programs, so nothing checks this.
 
 ### BUG-0252: The leading sequencer's lease ran out as it finished sending a restarted follower sequencer the whole WAL {#bug_0252}
 
@@ -657,13 +677,12 @@ of the day. To be designed and agreed before code.
   the files of a component that missed the end of day.
 
 **What remains before this entry can be closed.** The end of day as section 4 of
-`docs/venue/start_and_end_of_day.md` designs it. Every decision in section 4.2 is agreed; two values are still to be
-chosen, in items 1 and 2.
+`docs/venue/start_and_end_of_day.md` designs it. Every decision in section 4.2 is agreed.
 
 1. **Measure how long a follower sequencer takes to catch up a day's WAL** in the development environment, and choose
-   from it the limit of time the leading sequencer waits for the copies of the WAL. **Measured** (section 4.2,
-   decision 4): 176,000 to 316,000 records a second; the limit is still to be chosen from it. The limit is a setting of the
-   sequencer's configuration, with a shorter value in other environments such as production.
+   from it the limit of time the leading sequencer waits for the copies of the WAL. **Done** (section 4.2,
+   decision 4): 176,000 to 316,000 records a second. The limit is a setting of the sequencer's configuration, 600
+   seconds in every environment, and provisional in all but the development environment.
 2. **The two events. Built** (`EndOfDayCopies`, `TradingPhaseRequests`, and scenarios 111 and 113 of `ha_test.py`).
    Rename the phase `EndOfDay` to `EndOfDayBegin`, add `EndOfDayEnd`, and have the leading
    sequencer write the end only once the follower sequencer and both publishers have confirmed every record up to the
@@ -675,13 +694,15 @@ chosen, in items 1 and 2.
 4. **Each component, on the end-of-day end, shuts itself down** and exits with the status that means it stopped for
    the end of day. The leading sequencer does not shut down until the follower sequencer has confirmed it holds the
    end itself. Each publisher, after publishing the end, stays up for a fixed time set in its configuration,
-   provisionally 10 seconds.
+   10 seconds.
 5. **The launcher archives.** `scripts/launch.py`, seeing that status, does not restart its component, and archives
    the component's files, its captured console output among them, with the listing and checksums `trading_day.py end`
    uses today, moved into code the two share. **Built** in the launcher, for exit status 3, and checked by
    `scripts/tests/test_launch.py`; it takes effect once components exit with that status (item 4).
-6. **The last-state file.** Each component keeps a file of its last trading state that outlives the day, and the
-   start-of-day check accepts that file from the day before.
+6. **The last-state file.** Each component keeps a file of its last trading state, in the venue's run directory,
+   that outlives the day, and the start-of-day check accepts that file from the day before. Still to be settled
+   before it is built: how `ha_test.py`, which starts components again on a day's files to check them, keeps a
+   component from finding the end-of-day end in that file and exiting at once.
 7. **The next day's start** archives the run manifest and `credentials.toml` of the day before, which belong to no
    single component, once it has found no other file of that day. **Built** (`trading_day.py start`, checked by
    `trading_day_test.py`).

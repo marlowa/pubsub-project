@@ -470,8 +470,8 @@ orders_held_at_most_seconds = 5
 # and the matching engine publishers to hold every record up to it, before it writes the
 # end-of-day end with a copy still incomplete (docs/venue/start_and_end_of_day.md, section 4.2,
 # decision 4). Waiting too long costs only a later shutdown, because nothing is trading; giving
-# up too early leaves a copy of the day's WAL incomplete. Provisional: this figure is to be set
-# from a measurement of how long a follower sequencer takes to catch up a day's WAL here.
+# up too early leaves a copy of the day's WAL incomplete. A follower sequencer here is sent
+# 176,000 to 316,000 records a second when it catches up (the measurement is in the same section).
 # Declared once here: both sequencers of the pair must use the same figure.
 end_of_day_longest_wait_for_copies_seconds = 600
 
