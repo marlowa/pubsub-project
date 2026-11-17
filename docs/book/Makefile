@@ -5,7 +5,40 @@ JOB    := book
 CHECK  := ../../scripts/check_book_requirements.py
 CHECK_EPUB := ../../scripts/check_epub.py
 
-.PHONY: all check clean text epub
+.PHONY: all check clean text epub tools-for-the-pdf tools-for-the-epub tools-for-the-text
+
+# What each output needs from TeX Live and from the system. The book is built on a machine with a current TeX Live,
+# such as TeX Live 2023: RHEL 8 and Rocky 8 provide no package holding glossaries, makeglossaries, cleveref, tex4ebook
+# or make4ht, so the book cannot be built there from the distribution's own packages. Each check below names
+# everything missing and stops before LaTeX runs, rather than letting the first missing package stop a LaTeX pass.
+# The packages are those the book's .tex and .sty files load; a package added there is added here too.
+PDF_COMMANDS  := lualatex makeglossaries bibtex
+PDF_PACKAGES  := amsmath booktabs cleveref enumitem fontenc geometry glossaries hyperref lmodern longtable microtype \
+                 tcolorbox xcolor
+EPUB_COMMANDS := tex4ebook
+TEXT_COMMANDS := make4ht pandoc
+
+# Prints each missing command and package after the given heading, and fails if any is missing.
+define require_tools
+	@missing=""; \
+	for command in $(1); do command -v $$command >/dev/null 2>&1 || missing="$$missing $$command"; done; \
+	for package in $(2); do kpsewhich $$package.sty >/dev/null 2>&1 || missing="$$missing $$package.sty"; done; \
+	if [ -n "$$missing" ]; then \
+	  echo "The book's $(3) cannot be built on this machine, which lacks:$$missing"; \
+	  echo "Build the book on a machine with a current TeX Live, such as TeX Live 2023. RHEL 8 and Rocky 8 provide"; \
+	  echo "no package holding glossaries, makeglossaries, cleveref, tex4ebook or make4ht."; \
+	  exit 1; \
+	fi
+endef
+
+tools-for-the-pdf:
+	$(call require_tools,$(PDF_COMMANDS),$(PDF_PACKAGES),PDF)
+
+tools-for-the-epub:
+	$(call require_tools,$(EPUB_COMMANDS),,EPUB)
+
+tools-for-the-text:
+	$(call require_tools,$(TEXT_COMMANDS),,plain-text copy)
 
 # The PDF and the EPUB together: building the book builds both.
 all: $(JOB).pdf $(JOB).epub
@@ -14,7 +47,7 @@ all: $(JOB).pdf $(JOB).epub
 # because converting the book to EPUB or HTML runs LaTeX again under the same name and writes
 # $(JOB).log and $(JOB).req afresh. "make check" reads the copies, so it checks the PDF's pass
 # whatever was built after it.
-$(JOB).pdf: $(shell find . -name '*.tex' -o -name '*.sty' -o -name '*.bib')
+$(JOB).pdf: $(shell find . -name '*.tex' -o -name '*.sty' -o -name '*.bib') | tools-for-the-pdf
 	$(LATEX) $(JOB).tex
 	makeglossaries $(JOB)
 	$(LATEX) $(JOB).tex
@@ -38,7 +71,7 @@ check: $(JOB).pdf $(JOB).epub
 # that no page headers, footers or contents leaders appear in the text.
 text: $(JOB).txt
 
-$(JOB).txt: $(JOB).pdf $(JOB).mk4
+$(JOB).txt: $(JOB).pdf $(JOB).mk4 | tools-for-the-text
 	make4ht -u $(JOB).tex >/dev/null 2>&1 || true
 	pandoc -f html -t plain --wrap=preserve $(JOB).html -o $(JOB).txt
 
@@ -50,7 +83,7 @@ $(JOB).txt: $(JOB).pdf $(JOB).mk4
 # EPUB was written, and "make check" then reads the EPUB to confirm it is sound.
 epub: $(JOB).epub
 
-$(JOB).epub: $(JOB).pdf $(JOB).mk4
+$(JOB).epub: $(JOB).pdf $(JOB).mk4 | tools-for-the-epub
 	rm -f $(JOB).epub
 	tex4ebook -e $(JOB).mk4 -f epub3 $(JOB).tex > $(JOB)-epub-conversion.log 2>&1 || true
 	@! grep '^! ' $(JOB).log | grep -v 'Missing \\begin{document}' || { echo "errors converting the book to EPUB: see $(JOB).log"; exit 1; }

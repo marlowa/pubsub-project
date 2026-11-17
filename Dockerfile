@@ -68,6 +68,10 @@ RUN ln -s /opt/liquibase/liquibase /usr/bin/liquibase
 RUN dnf install -y --enablerepo=powertools doxygen graphviz \
     && dnf clean all
 
+# No TeX. The book in docs/book is built only on a machine with a current TeX Live, such as TeX Live 2023: Rocky 8
+# provides no package holding glossaries, makeglossaries, cleveref, tex4ebook or make4ht. docs/book/Makefile checks
+# for them first and says which are missing.
+
 # TLA+ tools (the TLC model checker), used by scripts/tla_trace_pages.py to reproduce the
 # counterexamples of docs/availability/tla/MajorityLeaseHA.tla at install time. Not packaged
 # for Rocky 8: it is a single jar published on the TLA+ project's GitHub releases page, and runs

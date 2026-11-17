@@ -37,7 +37,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 46 open entries, 6 of them high severity. Each one is judged,
+The [bug list](bug_list.md) holds 45 open entries, 6 of them high severity. Each one is judged,
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
@@ -94,6 +94,7 @@ plan is finished.
    sequencer's WAL must be mounted `lazytime`; see
    [filesystem requirements](operations/filesystem_requirements.md).
 3. Run `python3 scripts/ha_test.py --scenario all` against the deployed venue.
-4. Build and check the specification with `make -C docs/book check`.
+4. Build and check the specification with `make -C docs/book check`, on a machine with a current TeX Live such as
+   TeX Live 2023. RHEL 8 and Rocky 8 cannot build it from their own packages, and the Makefile says what is missing.
 5. Read `coding-rules-for-ai-chatbots.txt` in the repository root before changing code; the build
    enforces much of what it says.

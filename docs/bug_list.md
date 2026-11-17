@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 254 |
-| Open | 46 (26 defects, 20 tasks) |
-| Closed | 208 |
+| Open | 45 (25 defects, 20 tasks) |
+| Closed | 209 |
 | Next id | BUG-0255 |
 
 ## Open bugs by severity
 
-6 high, 31 medium, 9 low.
+6 high, 30 medium, 9 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,7 +48,6 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0251](#bug_0251) | medium | defect | Under a burst of orders faster than it can process, the leading sequencer loses its lease to a backlog on its own thread, and the follower matching engine is taken out of service |
-| [BUG-0254](#bug_0254) | medium | defect | The book cannot be built on RHEL 8: the distribution lacks packages it needs, and the Rocky 8 Dockerfile installs no TeX |
 | [BUG-0252](#bug_0252) | medium | defect | When a member's session ends with hundreds of thousands of resting orders, the leading sequencer and the leading matching engine both lose their leases |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -154,30 +153,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0254: The book cannot be built on RHEL 8: the distribution lacks packages it needs, and the Rocky 8 Dockerfile installs no TeX {#bug_0254}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-17 |
-| Recorded | 2026-11-17 |
-| How | Andrew built the book on a RHEL 8 machine and had many errors, among them that `cleveref.sty` was missing; checked in a `rockylinux:8` container |
-| Impact | The book, its PDF and its EPUB, can be built only on the development machine, which has TeX Live 2023 |
-
-**What happens.** `docs/book/Makefile` runs `lualatex`, `makeglossaries`, `bibtex` and `tex4ebook`, and the book uses
-the LaTeX packages glossaries, cleveref, tcolorbox, enumitem, microtype, booktabs, lmodern, hyperref and others. Rocky 8,
-with its AppStream, PowerTools and EPEL repositories enabled, has TeX Live 2018. It provides `lualatex`, `bibtex`,
-`pandoc`, tcolorbox, enumitem, microtype, booktabs and lmodern, but **no package provides glossaries,
-`makeglossaries`, cleveref, `tex4ebook` or `make4ht`**: `dnf provides` finds none of them. So the book cannot be
-built on RHEL 8 from the distribution's packages at all, whatever else differs between TeX Live 2018 and 2023.
-
-The repository's `Dockerfile`, which stands for the RHEL 8 target, installs no TeX, so nothing has ever checked the
-book there.
-
-**What is wanted.** A decision on how the book is built for RHEL 8: from a TeX Live installed from upstream rather
-than from the distribution, or built only on a machine that has a current TeX Live, with the Rocky 8 image left
-without TeX. Whichever is chosen goes into the `Dockerfile` and is checked there.
 
 ### BUG-0253: `binary_load_client --help` prints its help and then tries to connect to the venue {#bug_0253}
 
@@ -2513,6 +2488,27 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0254: The book cannot be built on RHEL 8: the distribution lacks packages it needs, and the Rocky 8 Dockerfile installs no TeX {#bug_0254}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-17 |
+| Recorded | 2026-11-17 |
+| Fixed | 2026-11-17 -- by Andrew's decision, the book is built only on a machine with a current TeX Live, and the Rocky 8 image has no TeX. `docs/book/Makefile` first checks that every command and LaTeX package each output needs is present, and otherwise names everything missing and stops before LaTeX runs. Checked in a `rockylinux:8` container with every TeX package Rocky 8 provides installed: `make` stops naming `makeglossaries`, `cleveref.sty` and `glossaries.sty` |
+| How | Andrew built the book on a RHEL 8 machine and had many errors, among them that `cleveref.sty` was missing; checked in a `rockylinux:8` container |
+| Impact | The book, its PDF and its EPUB, can be built only on the development machine, which has TeX Live 2023 |
+
+**What happens.** `docs/book/Makefile` runs `lualatex`, `makeglossaries`, `bibtex` and `tex4ebook`, and the book uses
+the LaTeX packages glossaries, cleveref, tcolorbox, enumitem, microtype, booktabs, lmodern, hyperref and others. Rocky 8,
+with its AppStream, PowerTools and EPEL repositories enabled, has TeX Live 2018. It provides `lualatex`, `bibtex`,
+`pandoc`, tcolorbox, enumitem, microtype, booktabs and lmodern, but **no package provides glossaries,
+`makeglossaries`, cleveref, `tex4ebook` or `make4ht`**: `dnf provides` finds none of them. So the book cannot be
+built on RHEL 8 from the distribution's packages at all, whatever else differs between TeX Live 2018 and 2023.
+
+The repository's `Dockerfile`, which stands for the RHEL 8 target, installs no TeX, so nothing has ever checked the
+book there.
 
 ### BUG-0056: The FIX gateway stopped completing logons while still running {#bug_0056}
 
