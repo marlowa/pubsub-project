@@ -441,6 +441,65 @@ TEST_F(WalHandedOverFollowersTest, WhenTheRoomForRecordsIsFullLaterRecordsAreRea
     EXPECT_TRUE(sent_from_memory(1, 17));
 }
 
+// Records sent from their kept copies are not read from the WAL, and must not be read later either: a record that has to
+// be read from the WAL after a long run of them is read from just after the last of them, not from wherever the reading
+// last stopped. Reading from there checked the checksum of every record of the run on the calling thread, which on a
+// day's WAL took seconds (docs/bug_list.md, BUG-0252).
+TEST_F(WalHandedOverFollowersTest, ARecordReadFromTheWalAfterManySentFromMemoryIsReadWithoutReadingThemAgain) {
+    append_through(10);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_, {3, 64 * 1024});
+    followers.add(first_, 10, wal_->scan_start_for(11));
+    static_cast<void>(followers.send_to_all(10));
+    for (int64_t seq_no = 11; seq_no <= 1000; ++seq_no) {
+        write_and_keep(followers, seq_no);
+        static_cast<void>(followers.send_to_all(seq_no));
+    }
+    ASSERT_TRUE(sent_from_memory(1, 11) && sent_from_memory(1, 1000)) << "the run of records is sent from memory";
+
+    for (int64_t seq_no = 1001; seq_no <= 1004; ++seq_no) {
+        write_and_keep(followers, seq_no);
+    }
+    ASSERT_EQ(followers.records_kept(), 3U) << "room for three records, so record 1004 is not kept";
+    const int64_t read_before = followers.records_read_from_the_wal();
+    EXPECT_TRUE(followers.send_to_all(1004).empty());
+
+    EXPECT_TRUE(sent_from_memory(1, 1003));
+    EXPECT_TRUE(sent_from_wal(1, 1004));
+    EXPECT_EQ(followers.records_read_from_the_wal() - read_before, 1) << "only record 1004 is read from the WAL";
+    const std::vector<int64_t> sent = links_.sent_to(1);
+    ASSERT_EQ(sent.size(), 994U);
+    EXPECT_EQ(sent.front(), 11);
+    EXPECT_EQ(sent.back(), 1004);
+}
+
+// When the last record sent from memory was kept while a later record was already in the WAL, the position just after
+// it is not known, and the reading starts from the beginning of the segment that holds the next record: at most one
+// segment is read, not the run of records before it.
+TEST_F(WalHandedOverFollowersTest, WhereThePositionAfterTheLastRecordSentFromMemoryIsNotKnownOneSegmentAtMostIsRead) {
+    append_through(10);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_, {3, 64 * 1024});
+    followers.add(first_, 10, wal_->scan_start_for(11));
+    static_cast<void>(followers.send_to_all(10));
+    for (int64_t seq_no = 11; seq_no <= 500; ++seq_no) {
+        write_and_keep(followers, seq_no);
+        static_cast<void>(followers.send_to_all(seq_no));
+    }
+
+    // Record 501 is kept only once record 502 is in the WAL, so where 501 ends is not known as it is kept.
+    append_through(502);
+    const std::vector<uint8_t> bytes(200, static_cast<uint8_t>(501));
+    followers.written(501, kept_type, bytes.data(), bytes.size());
+    const int64_t read_before = followers.records_read_from_the_wal();
+    EXPECT_TRUE(followers.send_to_all(502).empty());
+
+    EXPECT_TRUE(sent_from_memory(1, 501));
+    EXPECT_TRUE(sent_from_wal(1, 502));
+    // A segment of 4,096 bytes holds fewer than twenty records of 200 bytes.
+    const int64_t read = followers.records_read_from_the_wal() - read_before;
+    EXPECT_GE(read, 1);
+    EXPECT_LE(read, 20) << "the records read from the WAL are those of one segment at most, not the run sent from memory";
+}
+
 TEST_F(WalHandedOverFollowersTest, ARecordRefusedForLackOfRoomStopsLaterRecordsBeingKeptUntilTheRoomEmpties) {
     append_through(10);
     // Room for two records of 200 bytes, not three.

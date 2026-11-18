@@ -122,10 +122,19 @@ been sent to every publisher in step. Removing records from the front of both ri
 the store involves.
 
 The shared reading's cursor still has to be at the right place for the records that are read from the WAL.
-When records are sent from the store, the cursor is not moved, and the next record that has to be read from
-the WAL is found by the cursor reading on from where it last stopped, passing over the records it has
-already sent. Passing over a record still checks its checksum, but this happens only after the store has
-been full, which is rare. Step 2 (section 6) measures how rare.
+When records are sent from the store, the cursor is not moved. Instead, each record in the store carries the
+position in the WAL just after it, taken from the WAL's write position as the record is stored, when the
+record is the newest in the WAL. When the next record has to be read from the WAL, the cursor is first opened
+just after the last record sent from the store, and reads only what follows. Where that position is not
+known, because the record was stored after a later one had been written, the cursor is opened at the start of
+the segment that holds the next record, and passes over at most the records before it in that segment.
+
+Reading on from wherever the cursor last stopped instead would pass over every record sent from the store
+since, checking each one's checksum, on the sequencer's thread. The store fills whenever records are written
+faster than they are committed, for example while the leading sequencer waits for a voter's confirmation after
+its follower has left, during the flood of reports a session's cancel causes; a cursor left at the start of
+the day then read 1.6 GB and held the thread for six seconds (docs/bug_list.md, BUG-0252).
+`WalHandedOverFollowers::records_read_from_the_wal()` counts the records the shared reading reads.
 
 A publisher that is still catching up on its own cursor (section 4.3 of following_the_wal.md) reads from the
 WAL as it does now. It is never sent from the store. Once it joins the shared reading, it is sent from the

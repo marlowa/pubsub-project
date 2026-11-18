@@ -66,7 +66,13 @@ void WalHandedOverFollowers::written(int64_t seq_no, int16_t pdu_id, const uint8
         }
     }
     std::memcpy(kept_bytes_.data() + begin, bytes, size);
-    [[maybe_unused]] const bool kept = kept_records_->push_back(KeptRecord{seq_no, pdu_id, begin, size});
+    // The WAL's write position is just after this record only while it is the newest record in the WAL; otherwise the
+    // position is not known here, and a reading that needs it starts from the beginning of the record's segment.
+    std::optional<WalPosition> after;
+    if (wal_.last_seq_no() == seq_no) {
+        after = wal_.write_position();
+    }
+    [[maybe_unused]] const bool kept = kept_records_->push_back(KeptRecord{seq_no, pdu_id, begin, size, after});
     kept_bytes_next_ = begin + size;
     kept_last_seq_no_ = seq_no;
 }
@@ -135,6 +141,13 @@ void WalHandedOverFollowers::close_shared_reading_if_unused() {
 }
 
 bool WalHandedOverFollowers::read_next_record(Reading& reading) {
+    if (reading.resume_at.has_value()) {
+        reading.cursor.open(directory_, *reading.resume_at);
+    } else if (reading.resume_in_segment_of_next) {
+        reading.cursor.open(directory_, wal_.scan_start_for(reading.last_seq_no + 1));
+    }
+    reading.resume_at.reset();
+    reading.resume_in_segment_of_next = false;
     // Only before the write position: everything there is completely written.
     const WalPosition written = wal_.write_position();
     while (before(reading.cursor.position(), written)) {
@@ -150,6 +163,7 @@ bool WalHandedOverFollowers::read_next_record(Reading& reading) {
                 return false;
             }
         }
+        ++records_read_from_the_wal_;
         if (record_id <= reading.last_seq_no) {
             continue; // dealt with already
         }
@@ -225,12 +239,15 @@ void WalHandedOverFollowers::send_kept_record(int64_t seq_no) {
 void WalHandedOverFollowers::send_on_shared_reading(int64_t through_seq_no, std::vector<std::pair<ConnectionID, int64_t>>& damaged) {
     Reading& reading = *shared_reading_;
     while (reading.last_seq_no < through_seq_no) {
-        // The next record is sent from its kept copy if there is one. The cursor is not moved: when a record is next
-        // read from the WAL, the cursor passes over those already sent, as it does any record already dealt with.
+        // The next record is sent from its kept copy if there is one.
         discard_kept_records_through(reading.last_seq_no);
         const int64_t next_seq_no = reading.last_seq_no + 1;
         if (!reading.holding && kept_records_.has_value() && !kept_records_->empty() && kept_records_->front().seq_no == next_seq_no) {
             send_kept_record(next_seq_no);
+            // The cursor is not moved now; it is opened just after this record if a later one has to be read from the
+            // WAL, or, where that position is not known, at the start of the segment that holds the next record.
+            reading.resume_at = kept_records_->front().after;
+            reading.resume_in_segment_of_next = !reading.resume_at.has_value();
             kept_records_->pop_front();
             if (kept_records_->empty()) {
                 kept_bytes_next_ = 0;

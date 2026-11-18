@@ -130,6 +130,12 @@ class WalHandedOverFollowers {
         return kept_records_.has_value() ? kept_records_->size() : 0;
     }
 
+    /// How many records the shared reading has read from the WAL, including those it passed over because they had
+    /// been sent already. Each costs a check of its checksum on the calling thread.
+    [[nodiscard]] int64_t records_read_from_the_wal() const {
+        return records_read_from_the_wal_;
+    }
+
     /**
      * @brief From now on @p follower is sent each record above @p through, read from @p resume_at on.
      *
@@ -186,6 +192,13 @@ class WalHandedOverFollowers {
         int64_t held_seq_no{0};
         const uint8_t* held_bytes{nullptr};
         size_t held_size{0};
+        /// Where the cursor is to be opened before it next reads, when records have been sent from their kept copies
+        /// since it last read: just after the last of them. Without it the cursor would read forward over every record
+        /// sent from memory since it last read, which can be most of the day's WAL.
+        std::optional<WalPosition> resume_at;
+        /// Records have been sent from their kept copies since the cursor last read, and the position just after the
+        /// last of them is not known: the cursor is to be opened at the start of the segment holding the next record.
+        bool resume_in_segment_of_next{false};
     };
 
     struct Follower {
@@ -218,6 +231,8 @@ class WalHandedOverFollowers {
         int16_t pdu_id{0};
         size_t begin{0};
         size_t size{0};
+        /// The position in the WAL just after the record, when it was known as the record was kept.
+        std::optional<WalPosition> after;
     };
 
     /// Sends the followers in step that lack it record @p seq_no, from the kept copy at the front of kept_records_.
@@ -247,6 +262,7 @@ class WalHandedOverFollowers {
     size_t kept_bytes_next_{0};
     /// The newest kept record's number, while any is kept.
     int64_t kept_last_seq_no_{0};
+    int64_t records_read_from_the_wal_{0};
 };
 
 } // namespaces
