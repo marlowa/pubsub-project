@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 257 |
-| Open | 46 (26 defects, 20 tasks) |
-| Closed | 211 |
+| Open | 45 (25 defects, 20 tasks) |
+| Closed | 212 |
 | Next id | BUG-0258 |
 
 ## Open bugs by severity
 
-6 high, 30 medium, 10 low.
+6 high, 30 medium, 9 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -57,7 +57,6 @@
 | [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
 | [BUG-0249](#bug_0249) | low | defect | The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it |
 | [BUG-0250](#bug_0250) | low | defect | A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member |
-| [BUG-0257](#bug_0257) | low | defect | Scenario 115 reads the Quill logs of running components to find a lease that ran out, and a record not yet written would be missed |
 | [BUG-0253](#bug_0253) | low | defect | `binary_load_client --help` prints its help and then tries to connect to the venue |
 
 ---
@@ -154,27 +153,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0257: Scenario 115 reads the Quill logs of running components to find a lease that ran out, and a record not yet written would be missed {#bug_0257}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-11-18 |
-| Recorded | 2026-11-18 |
-| How | Andrew asked whether Quill's flushing could be relied on, after the KeptReports test was changed to flush its log |
-| Impact | The check that no sequencer or matching engine lost its lease could pass when one did, if the line saying so were still in Quill's buffer when the scenario read the file |
-
-**What happens.** Scenario 115 of `ha_test.py` reads each sequencer's and matching engine's Quill log, while they run,
-for the words "lease ran out" and "did not tick for". Quill writes its records from a thread of its own, so a record can
-still be in its buffer when the file is read; the project relies on Quill's log only after a process has finished, or
-through a flush inside the process, as unit tests do. The scenario does not depend on the log alone: it also compares
-each pair's highest epoch before and after, and an instance writes a new epoch to its file, and must succeed, before it
-asks to lead in it (`EpochRecordedBeforeAsking`), so a lease lost and taken again always shows there. The scenario's
-reading of the cancels from the log can only make it wait or fail, never pass wrongly.
-
-**What is wanted.** Test events that say a lease ran out, from the sequencer and the matching engine, so that the
-scenario learns of it as the harness learns of everything else, and the log is read for nothing it depends on.
 
 ### BUG-0256: During a flood of execution reports the follower sequencer overwrites kept reports still needed, and logs a warning for each one {#bug_0256}
 
@@ -2483,6 +2461,29 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0257: Scenario 115 reads the Quill logs of running components to find a lease that ran out, and a record not yet written would be missed {#bug_0257}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-18 |
+| Recorded | 2026-11-18 |
+| Fixed | 2026-11-18 -- scenario 115 reads no Quill log. It learns that the leading sequencer wrote each cancel from the new sequencer test event `SessionCancelWritten` (222), that the leading matching engine finished each, and how many orders it cancelled, from the new engine test event `SessionOrdersCancelled` (223), that no lease ran out from `LeaseChanged`, and that no leader stopped leading from `RoleChanged`, each looked for only after every running component has answered a checkpoint. With the engine made to carry out all its pieces at once, it failed on the `LeaseChanged` of matching_engine_primary; restored, it passed |
+| How | Andrew asked whether Quill's flushing could be relied on, after the KeptReports test was changed to flush its log |
+| Impact | The check that no sequencer or matching engine lost its lease could pass when one did, if the line saying so were still in Quill's buffer when the scenario read the file |
+
+**What happens.** Scenario 115 of `ha_test.py` reads each sequencer's and matching engine's Quill log, while they run,
+for the words "lease ran out" and "did not tick for". Quill writes its records from a thread of its own, so a record can
+still be in its buffer when the file is read; the project relies on Quill's log only after a process has finished, or
+through a flush inside the process, as unit tests do. The scenario does not depend on the log alone: it also compares
+each pair's highest epoch before and after, and an instance writes a new epoch to its file, and must succeed, before it
+asks to lead in it (`EpochRecordedBeforeAsking`), so a lease lost and taken again always shows there. The scenario's
+reading of the cancels from the log can only make it wait or fail, never pass wrongly.
+
+This breaks the rule of phase 6 of the recovery plan ([test_events.md](availability/test_events.md)): no high
+availability test decides whether it passes from a Quill log. The events the scenario needs for leases already exist:
+`LeaseChanged`, whose change `RanOut` says a lease ran out, and `RoleChanged`.
 
 ### BUG-0255: The matching engine cancels all of a session's orders as one piece of work, which can take longer than its lease {#bug_0255}
 

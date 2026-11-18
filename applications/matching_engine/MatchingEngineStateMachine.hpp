@@ -364,6 +364,7 @@ class MatchingEngineStateMachine {
         enum class Command { cancel_book, cancel_session_orders, close };
         Command command{Command::cancel_book};
         int64_t sequence_number{0};
+        fix_common::SessionIdentity session_cancelled; ///< for a cancel of a session's orders, the session
         BookCancelledByCommand book;
         SessionOrdersCancelled session;
         TechnicalEventApplied technical_event;

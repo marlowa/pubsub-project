@@ -253,3 +253,16 @@ message DiedApplying (id=218, version=1)
     i64                 command        # the command it died applying
     DiedApplyingOutcome outcome
 end
+
+# ------------------------------------------------------------
+#  223 -- SessionOrdersCancelled
+#  The engine finished carrying out a CancelSessionOrders command, in
+#  one call or in pieces (docs/availability/pacing_the_engines_reports.md,
+#  section 7), and sent a cancel report for each order it cancelled.
+# ------------------------------------------------------------
+message SessionOrdersCancelled (id=223, version=1)
+    string comp_id          # the member's comp id
+    i16 gateway_protocol    # 1 for FIX, 2 for binary
+    i64 seq_no              # the record in the WAL that holds the command
+    i64 orders_cancelled    # the orders cancelled, each with a report
+end

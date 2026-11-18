@@ -1321,6 +1321,7 @@ MatchingEngineStateMachine::CancelFinished MatchingEngineStateMachine::finish_ca
                        under_way.sequence_number, cancelled, finished.book.orders_kept, under_way.orders_placed_through);
             break;
         case CancelFinished::Command::cancel_session_orders:
+            finished.session_cancelled = under_way.session;
             finished.session.applied = true;
             finished.session.orders_cancelled = cancelled;
             book_.publish(under_way.sequence_number);

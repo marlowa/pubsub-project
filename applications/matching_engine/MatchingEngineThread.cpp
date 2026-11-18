@@ -775,9 +775,12 @@ void MatchingEngineThread::apply_command(const pubsub_itc_fw::EventMessage& mess
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode CancelSessionOrders -- dropping");
         } else {
             const CommandSource source = command_source_for(message.seq_no());
-            static_cast<void>(state_machine_.apply_cancel_session_orders(fix_common::SessionIdentity::make(view.comp_id, view.gateway_protocol_id),
-                                                                         message.seq_no(), envelope.wall_time_ns,
-                                                                         envelope.has_trading_date ? envelope.trading_date : 0, source));
+            const fix_common::SessionIdentity session = fix_common::SessionIdentity::make(view.comp_id, view.gateway_protocol_id);
+            const MatchingEngineStateMachine::SessionOrdersCancelled result = state_machine_.apply_cancel_session_orders(
+                session, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0, source);
+            if (result.applied && result.finished) {
+                report_session_orders_cancelled(session, message.seq_no(), result.orders_cancelled);
+            }
         }
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id)) {
@@ -829,6 +832,8 @@ bool MatchingEngineThread::CancelPiecesLinks::carry_out_piece() {
     if (finished->command == MatchingEngineStateMachine::CancelFinished::Command::cancel_book) {
         owner_.report_cancel_book(owner_.cancel_book_under_way_, finished->book);
         owner_.cancel_book_under_way_ = 0;
+    } else if (finished->command == MatchingEngineStateMachine::CancelFinished::Command::cancel_session_orders) {
+        owner_.report_session_orders_cancelled(finished->session_cancelled, finished->sequence_number, finished->session.orders_cancelled);
     }
     owner_.order_book_.set_applying(0);
     return true;
@@ -2007,6 +2012,13 @@ void MatchingEngineThread::apply_cancel_book_command(const pubsub_itc_fw_app::Ca
         return;
     }
     report_cancel_book(sequence_number, result);
+}
+
+void MatchingEngineThread::report_session_orders_cancelled(const fix_common::SessionIdentity& session, int64_t sequence_number, int64_t orders_cancelled) {
+    if (test_events_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::SessionOrdersCancelled::message_pdu_id,
+                                 pubsub_itc_fw_app::SessionOrdersCancelled{session.comp_id_view(), session.protocol, sequence_number, orders_cancelled});
+    }
 }
 
 void MatchingEngineThread::report_cancel_book(int64_t sequence_number, const MatchingEngineStateMachine::BookCancelledByCommand& result) {

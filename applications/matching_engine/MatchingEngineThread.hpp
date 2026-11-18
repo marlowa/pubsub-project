@@ -611,6 +611,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
                                    CommandSource source);
     // Says what a CancelBook did, once its last piece is done: a test event and an Error, since the members lost their orders.
     void report_cancel_book(int64_t sequence_number, const MatchingEngineStateMachine::BookCancelledByCommand& result);
+    // Sends the test event SessionOrdersCancelled, once a cancel of a session's orders is finished.
+    void report_session_orders_cancelled(const fix_common::SessionIdentity& session, int64_t sequence_number, int64_t orders_cancelled);
     // Applies a TechnicalEvent command, and tells the test of a halt it set.
     void apply_technical_event_command(const pubsub_itc_fw_app::TechnicalEventView& event, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
                                        CommandSource source);

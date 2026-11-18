@@ -2154,7 +2154,10 @@ void SequencerThread::carry_out_due_session_cancels() {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: session comp_id='{}' protocol={} did not bind again within its grace period -- cancelling its resting orders",
                    identity.comp_id_view(), identity.protocol);
-        static_cast<void>(write_own_encoded_command(pubsub_itc_fw_app::CancelSessionOrders{identity.comp_id_view(), identity.protocol}, "CancelSessionOrders"));
+        const int64_t seq_no = replicated_wal_->next_seq_no();
+        if (write_own_encoded_command(pubsub_itc_fw_app::CancelSessionOrders{identity.comp_id_view(), identity.protocol}, "CancelSessionOrders")) {
+            report(pubsub_itc_fw_app::SessionCancelWritten{identity.comp_id_view(), identity.protocol, seq_no});
+        }
     }
 }
 

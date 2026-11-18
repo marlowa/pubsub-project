@@ -254,3 +254,15 @@ message ReportSentFromWal (id=221, version=1)
     i64 command_seq_no      # the record in the WAL that holds the command
     i64 report_seq_no       # the record in the WAL that holds the report forwarded
 end
+
+# ------------------------------------------------------------
+#  222 -- SessionCancelWritten
+#  A member's session did not bind again within its grace period, and
+#  the leading sequencer wrote a CancelSessionOrders command to cancel
+#  its resting orders.
+# ------------------------------------------------------------
+message SessionCancelWritten (id=222, version=1)
+    string comp_id          # the member's comp id
+    i16 gateway_protocol    # 1 for FIX, 2 for binary
+    i64 seq_no              # the record in the WAL that holds the command
+end
