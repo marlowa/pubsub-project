@@ -239,7 +239,10 @@ pieces make that time longer, not different.
    `CancelInPieces`. Unit tests: what arrives during a cancel is acted on after it, in order; a held command that starts
    another cancel waits for it; no piece is carried out while pacing holds the commands, and the next is asked for when
    pacing lets them go.
-3. **Scenario 115 of `ha_test.py`** checks that no matching engine loses its lease, which it now only reports, and the
-   check that runs engines on a copy of the WAL is run after it again, and must receive every report. Both must fail
-   without the change.
+3. **Scenario 115 of `ha_test.py`** checks that no matching engine loses its lease, and the check that runs engines on
+   a copy of the WAL is run after it, and must receive every report. Both must fail without the change. The scenario
+   decides from test events, as every high availability test does ([test_events.md](test_events.md)): the matching
+   engine's `SessionOrdersCancelled` says it has finished a session's cancel and how many orders it cancelled, the
+   sequencer's `SessionCancelWritten` says the cancel was written, and `LeaseChanged` and `RoleChanged` say whether a
+   lease ran out or a leader stopped leading.
 
