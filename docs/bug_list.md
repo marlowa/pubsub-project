@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 256 |
-| Open | 45 (25 defects, 20 tasks) |
+| Bugs recorded | 257 |
+| Open | 46 (26 defects, 20 tasks) |
 | Closed | 211 |
-| Next id | BUG-0257 |
+| Next id | BUG-0258 |
 
 ## Open bugs by severity
 
-6 high, 30 medium, 9 low.
+6 high, 30 medium, 10 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -57,6 +57,7 @@
 | [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
 | [BUG-0249](#bug_0249) | low | defect | The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it |
 | [BUG-0250](#bug_0250) | low | defect | A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member |
+| [BUG-0257](#bug_0257) | low | defect | Scenario 115 reads the Quill logs of running components to find a lease that ran out, and a record not yet written would be missed |
 | [BUG-0253](#bug_0253) | low | defect | `binary_load_client --help` prints its help and then tries to connect to the venue |
 
 ---
@@ -154,6 +155,27 @@ went looking.
 
 ## Open
 
+### BUG-0257: Scenario 115 reads the Quill logs of running components to find a lease that ran out, and a record not yet written would be missed {#bug_0257}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-18 |
+| Recorded | 2026-11-18 |
+| How | Andrew asked whether Quill's flushing could be relied on, after the KeptReports test was changed to flush its log |
+| Impact | The check that no sequencer or matching engine lost its lease could pass when one did, if the line saying so were still in Quill's buffer when the scenario read the file |
+
+**What happens.** Scenario 115 of `ha_test.py` reads each sequencer's and matching engine's Quill log, while they run,
+for the words "lease ran out" and "did not tick for". Quill writes its records from a thread of its own, so a record can
+still be in its buffer when the file is read; the project relies on Quill's log only after a process has finished, or
+through a flush inside the process, as unit tests do. The scenario does not depend on the log alone: it also compares
+each pair's highest epoch before and after, and an instance writes a new epoch to its file, and must succeed, before it
+asks to lead in it (`EpochRecordedBeforeAsking`), so a lease lost and taken again always shows there. The scenario's
+reading of the cancels from the log can only make it wait or fail, never pass wrongly.
+
+**What is wanted.** Test events that say a lease ran out, from the sequencer and the matching engine, so that the
+scenario learns of it as the harness learns of everything else, and the log is read for nothing it depends on.
+
 ### BUG-0256: During a flood of execution reports the follower sequencer overwrites kept reports still needed, and logs a warning for each one {#bug_0256}
 
 | | |
@@ -173,9 +195,21 @@ forwarded them before it stopped". It logged that warning 24,098 times in a few 
 because `KeptReports::keep` logs whenever the number lost changes. The Quill log is kept in `tmp/catch_up_measurement/`
 in the development checkout.
 
-**What is wanted.** A decision on whether the store must hold every report of such a flood, or whether losing them
-is acceptable while the leader is alive and forwarding, with the size the store would need. And the warning logged
-once when reports start being lost, with the number lost reported when it stops, rather than once for each report.
+**The warning: fixed, 18 November 2026.** `KeptReports` now says once that reports are being overwritten, and once
+more when a whole discard interval, a second, has passed with none overwritten, with how many were lost in the run and
+in all. `KeptReportsTest.ARunOfReportsLostIsSaidWhenItBeginsAndWhenItEndsNotForEachReport` checks it, and with the old
+behaviour restored finds 1,000 Warnings where one is wanted.
+
+**Whether the loss matters.** The store holds 262,144 reports, sized for what a follower must hold when its leader dies
+at the highest rate measured: about 4.25 seconds at 34,000 orders a second. A cancel of 1.8 million resting orders is
+far beyond that. In the run on 16 November the 24,098 reports were overwritten in 45 ms at 23:00:52.85, while the
+follower was being caught up, from 23:00:38.8 to 23:01:09.9, after its leader had said at 23:00:39.6 that it may not
+lead. A follower that may not lead cannot need its kept reports, so that loss could not have reached a member. A
+follower that may lead loses a kept report only when the leader's records do not yet say the report was forwarded,
+which the follower learns within a fraction of a second when it is in step.
+
+**What is wanted.** A decision on whether losing kept reports is acceptable in these cases, or whether the store must
+hold every report of such a flood, with the size that would need.
 
 ### BUG-0253: `binary_load_client --help` prints its help and then tries to connect to the venue {#bug_0253}
 

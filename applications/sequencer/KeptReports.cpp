@@ -27,15 +27,19 @@ void KeptReports::keep(int64_t er_seq_no, const uint8_t* bytes, size_t size, con
     store_.discard_without_position_received_before(from);
     store_.keep(er_seq_no, bytes, size, now, from, position);
     const auto lost_now = static_cast<int64_t>(store_.lost());
-    if (lost_now != lost_reported_) {
-        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                   "KeptReports: the store of reports kept in case this instance takes the lead is full, and {} report(s) still needed have been "
-                   "overwritten. If this instance takes the lead now, those reports reach their members only if the leader forwarded them before it "
-                   "stopped",
-                   lost_now - lost_reported_);
-        lost_reported_ = lost_now;
-        links_.kept_reports_lost(lost_now);
+    if (lost_now == lost_reported_) {
+        return;
     }
+    if (!losing_) {
+        losing_ = true;
+        lost_before_this_run_ = lost_reported_;
+        PUBSUB_LOG_STR(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                       "KeptReports: the store of reports kept in case this instance takes the lead is full, and reports still needed are being "
+                       "overwritten. If this instance takes the lead now, those reports reach their members only if the leader forwarded them before "
+                       "it stopped. How many is said once a second passes with none overwritten");
+    }
+    lost_reported_ = lost_now;
+    links_.kept_reports_lost(lost_now);
 }
 
 void KeptReports::leader_record_written(int64_t written_ns, const std::optional<EngineReportPosition>& through) {
@@ -75,6 +79,14 @@ void KeptReports::tick(Clock::time_point now) {
     if (now - discarded_at_ >= discard_interval) {
         discarded_at_ = now;
         discard_those_the_leader_forwarded();
+        if (losing_ && lost_reported_ == lost_at_last_interval_) {
+            losing_ = false;
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                       "KeptReports: no kept report has been overwritten for a second -- {} report(s) still needed were overwritten while the store "
+                       "was full, {} in all since this instance started",
+                       lost_reported_ - lost_before_this_run_, lost_reported_);
+        }
+        lost_at_last_interval_ = lost_reported_;
     }
 }
 

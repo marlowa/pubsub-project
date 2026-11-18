@@ -1,6 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -139,6 +140,29 @@ TEST_F(KeptReportsTest, TheTimerDiscardsOnceAnInterval) {
     EXPECT_EQ(kept_->count(), 1U) << "not yet a discard interval since the last";
     kept_->tick(start_ + KeptReports::discard_interval);
     EXPECT_EQ(kept_->count(), 0U);
+}
+
+// A run of reports lost to a full store is said twice, when it begins and once a discard interval has passed with none
+// lost, with how many were lost, not once for each report: a flood of reports once wrote one Warning for each of 24,098
+// (BUG-0256).
+TEST_F(KeptReportsTest, ARunOfReportsLostIsSaidWhenItBeginsAndWhenItEndsNotForEachReport) {
+    const auto says = [this](const std::string& words) {
+        logger_.flush();
+        return std::count_if(log_.begin(), log_.end(), [&words](const std::string& line) { return line.find(words) != std::string::npos; });
+    };
+    for (size_t index = 0; index < KeptReports::capacity_reports + 1000; ++index) {
+        keep(static_cast<int64_t>(index), start_, EngineReportPosition{1, static_cast<int64_t>(index)});
+    }
+    EXPECT_EQ(links_.lost, 1000);
+    EXPECT_EQ(says("reports still needed are being overwritten"), 1);
+
+    // An interval in which reports were lost does not end the run; the next, with none lost, does.
+    kept_->tick(start_ + KeptReports::discard_interval);
+    EXPECT_EQ(says("no kept report has been overwritten for a second"), 0);
+    kept_->tick(start_ + 2 * KeptReports::discard_interval);
+    EXPECT_EQ(says("no kept report has been overwritten for a second -- 1000 report(s) still needed were overwritten"), 1);
+    kept_->tick(start_ + 3 * KeptReports::discard_interval);
+    EXPECT_EQ(says("no kept report has been overwritten for a second"), 1) << "said once";
 }
 
 TEST_F(KeptReportsTest, AReportLostToAFullStoreIsCounted) {

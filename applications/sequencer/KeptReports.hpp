@@ -135,9 +135,15 @@ class KeptReports {
 
     KeptReportStore store_{capacity_bytes, capacity_reports};
     Clock::time_point last_granted_to_leader_{};
-    // The number of kept reports lost when that was last said, so that a loss is said when it happens rather than for
-    // every report lost after it.
+    // The number of kept reports lost so far, as last given to the gauge.
     int64_t lost_reported_{0};
+    // Whether the store is losing reports now: set by the first report lost, and cleared once a whole discard interval has
+    // passed with none lost, so that a run of losses is said twice, when it begins and when it ends, not once for each
+    // report. One report kept without a loss does not end it: making room by bytes can free two copies at once.
+    bool losing_{false};
+    // The number lost before the present run of losses began, and when the last discard interval ended.
+    int64_t lost_before_this_run_{0};
+    int64_t lost_at_last_interval_{0};
     Clock::time_point discarded_at_{};
     int64_t discarded_as_forwarded_{0};
     // The positions the leader's records have said it forwarded through, oldest first, each when it moved.
