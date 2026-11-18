@@ -246,6 +246,44 @@ TimerID ApplicationThread::start_recurring_timer(std::chrono::microseconds inter
     return schedule_timer(interval, TimerType(TimerType::Recurring));
 }
 
+TimerID ApplicationThread::start_recurring_timer_checked_between_messages(std::chrono::microseconds interval) {
+    const TimerID id = start_recurring_timer(interval);
+    const int64_t interval_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(interval).count();
+    timers_checked_between_messages_.push_back(TimerCheckedBetweenMessages{id, interval_ns, HighResolutionClock::now().time_since_epoch().count()});
+    return id;
+}
+
+bool ApplicationThread::run_timers_due_between_messages(int64_t now_ns) {
+    bool any_ran = false;
+    // By index, and with the id copied out, because a handler may start or cancel a timer, which changes the list.
+    for (size_t index = 0; index < timers_checked_between_messages_.size(); ++index) {
+        TimerCheckedBetweenMessages& timer = timers_checked_between_messages_[index];
+        if (now_ns - timer.last_ran_ns < timer.interval_ns) {
+            continue;
+        }
+        timer.last_ran_ns = now_ns;
+        const TimerID id = timer.id;
+        on_timer_id_event(id);
+        any_ran = true;
+    }
+    return any_ran;
+}
+
+void ApplicationThread::run_queued_timer(TimerID id) {
+    for (TimerCheckedBetweenMessages& timer : timers_checked_between_messages_) {
+        if (timer.id != id) {
+            continue;
+        }
+        const int64_t now_ns = HighResolutionClock::now().time_since_epoch().count();
+        if (now_ns - timer.last_ran_ns < timer.interval_ns / 2) {
+            return;
+        }
+        timer.last_ran_ns = now_ns;
+        break;
+    }
+    on_timer_id_event(id);
+}
+
 void ApplicationThread::cancel_timer(TimerID id) {
     assert_called_from_owner();
 
@@ -255,6 +293,9 @@ void ApplicationThread::cancel_timer(TimerID id) {
     if (!id.is_valid()) {
         return;
     }
+    timers_checked_between_messages_.erase(std::remove_if(timers_checked_between_messages_.begin(), timers_checked_between_messages_.end(),
+                                                          [id](const TimerCheckedBetweenMessages& timer) { return timer.id == id; }),
+                                           timers_checked_between_messages_.end());
 
     PUBSUB_LOG(logger_, FwLogLevel::Info, "Thread {} sending cancel timer command to reactor for timer id {}", thread_name_, id.get_value());
     ReactorControlCommand command(ReactorControlCommand::CommandTag::CancelTimer);
@@ -657,7 +698,15 @@ void ApplicationThread::process_message(const EventMessage& message) {
         throw PreconditionAssertion("Non-reactor event received before thread is fully operational", __FILE__, __LINE__);
     }
 
-    set_time_event_started(HighResolutionClock::now());
+    HighResolutionClock::time_point started = HighResolutionClock::now();
+    // A timer checked between messages runs here, before the message, once its interval has passed, however many
+    // messages are still waiting. Not for a timer's own event, which run_queued_timer deals with.
+    if (is_operational && tag != EventType::Timer && !timers_checked_between_messages_.empty() &&
+        run_timers_due_between_messages(started.time_since_epoch().count())) {
+        // The time the message's own handler starts, so that the timer's handler is not counted as the message's.
+        started = HighResolutionClock::now();
+    }
+    set_time_event_started(started);
 
     switch (tag) {
         case EventType::Initial: {
@@ -694,7 +743,7 @@ void ApplicationThread::process_message(const EventMessage& message) {
 
         case EventType::Timer: {
             PUBSUB_LOG(logger_, FwLogLevel::Debug, "Thread {}: Received timer message", thread_name_);
-            on_timer_id_event(message.timer_id());
+            run_queued_timer(message.timer_id());
             break;
         }
 

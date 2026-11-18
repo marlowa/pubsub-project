@@ -154,7 +154,7 @@ void ArbiterThread::on_initial_event() {
         },
         "StatementWriter");
     peer_contact_.emplace(config_.lease, std::chrono::steady_clock::now());
-    lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
+    lease_tick_timer_id_ = start_recurring_timer_checked_between_messages(pubsub_itc_fw::LeaseTiming::tick_interval);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "ArbiterThread: deciding the active arbiter by leases (period={} ms, drift allowance={} ms, renewal every {} ms); no vote is granted or asked "
                "for during the first period",

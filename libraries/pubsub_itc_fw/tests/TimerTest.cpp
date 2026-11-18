@@ -626,6 +626,109 @@ TEST_F(TimerTest, AFiredOneOffTimerReleasesItsTimerDescriptor) {
         << open_timer_descriptors() << " timer descriptors still open after the one-off fired, against " << timer_descriptors_before << " before it was armed";
 }
 
+// FloodedThread -- a thread that, like the sequencer, prioritises data over timers, and is sent more messages than it
+// can handle at once: each takes about a millisecond. It counts how often its recurring timer runs while the messages
+// are still being handled. The timer is either an ordinary one or one checked between messages.
+
+constexpr int flood_messages = 600;
+constexpr auto flood_message_cost = std::chrono::milliseconds(1);
+constexpr auto flood_timer_interval = std::chrono::milliseconds(20);
+
+class FloodedThread : public ApplicationThread {
+  public:
+    FloodedThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, bool checked_between_messages)
+        : ApplicationThread(token, logger, reactor, "FloodedThread", ThreadID{1}, make_queue_config(), make_allocator_config("FloodedPool"),
+                            ApplicationThreadConfiguration{})
+        , checked_between_messages_(checked_between_messages) {}
+
+    std::atomic<int> messages_handled{0};
+    std::atomic<int> timer_runs_during_the_flood{0};
+    std::atomic<int> timer_runs{0};
+    std::atomic<bool> timer_started{false};
+
+  protected:
+    bool prioritise_data_over_timers() const override {
+        return true;
+    }
+
+    void on_app_ready_event() override {
+        timer_id_ =
+            checked_between_messages_ ? start_recurring_timer_checked_between_messages(flood_timer_interval) : start_recurring_timer(flood_timer_interval);
+        timer_started.store(true, std::memory_order_release);
+    }
+
+    void on_timer_event(TimerID id) override {
+        if (id != timer_id_) {
+            return;
+        }
+        timer_runs.fetch_add(1, std::memory_order_acq_rel);
+        const int handled = messages_handled.load(std::memory_order_acquire);
+        if (handled > 0 && handled < flood_messages) {
+            timer_runs_during_the_flood.fetch_add(1, std::memory_order_acq_rel);
+        }
+    }
+
+    void on_itc_message(const EventMessage&) override {
+        const auto until = std::chrono::steady_clock::now() + flood_message_cost;
+        while (std::chrono::steady_clock::now() < until) {}
+        messages_handled.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+  private:
+    const bool checked_between_messages_;
+    TimerID timer_id_{};
+};
+
+namespace {
+
+// Starts the thread, then sends it every message at once, faster than it handles them, and waits until it has handled
+// them all.
+bool flood(const std::shared_ptr<FloodedThread>& thread, const std::function<bool(std::function<bool()>, int)>& wait_for) {
+    if (!wait_for([&] { return thread->timer_started.load(std::memory_order_acquire); }, wait_milliseconds)) {
+        return false;
+    }
+    for (int index = 0; index < flood_messages; ++index) {
+        thread->post_message(ThreadID{1}, EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0));
+    }
+    return wait_for([&] { return thread->messages_handled.load(std::memory_order_acquire) >= flood_messages; }, 10 * wait_milliseconds);
+}
+
+} // namespaces
+
+// The flood is real: an ordinary timer does not run at all while the messages are handled, because its event waits
+// until the queue is empty. Without this, the next test could pass because the thread was never kept busy.
+TEST_F(TimerTest, AnOrdinaryTimerDoesNotRunWhileAThreadThatPrioritisesDataIsFlooded) {
+    auto thread = ApplicationThread::create<FloodedThread>(logger_->logger, *reactor_, false);
+    reactor_->register_thread(thread);
+    start_reactor();
+    ASSERT_TRUE(flood(thread, [this](std::function<bool()> pred, int timeout_ms) { return wait_for(std::move(pred), timeout_ms); }));
+    EXPECT_EQ(thread->timer_runs_during_the_flood.load(), 0);
+}
+
+// About 600 ms of work and a 20 ms timer: the timer checked between messages runs throughout, about 30 times. At
+// least 15 is asked for, so that a slow or loaded machine does not fail the test.
+TEST_F(TimerTest, ATimerCheckedBetweenMessagesRunsWhileTheThreadIsFlooded) {
+    auto thread = ApplicationThread::create<FloodedThread>(logger_->logger, *reactor_, true);
+    reactor_->register_thread(thread);
+    start_reactor();
+    ASSERT_TRUE(flood(thread, [this](std::function<bool()> pred, int timeout_ms) { return wait_for(std::move(pred), timeout_ms); }));
+    EXPECT_GE(thread->timer_runs_during_the_flood.load(), 15);
+}
+
+// With nothing to do, the timer checked between messages runs from its queued event alone, at its interval and not
+// twice as often: over 500 ms of a 20 ms timer, about 25 runs. The bounds allow for a loaded machine.
+TEST_F(TimerTest, AnIdleThreadRunsATimerCheckedBetweenMessagesAtItsInterval) {
+    auto thread = ApplicationThread::create<FloodedThread>(logger_->logger, *reactor_, true);
+    reactor_->register_thread(thread);
+    start_reactor();
+    ASSERT_TRUE(wait_for([&] { return thread->timer_started.load(std::memory_order_acquire); }));
+    const int runs_before = thread->timer_runs.load();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const int runs = thread->timer_runs.load() - runs_before;
+    EXPECT_GE(runs, 10);
+    EXPECT_LE(runs, 30);
+}
+
 TEST_F(TimerTest, SlowHandlerCoalescesExpirations) {
     auto t = ApplicationThread::create<SlowHandlerThread>(logger_->logger, *reactor_);
     reactor_->register_thread(t);

@@ -352,6 +352,26 @@ class ApplicationThread {
     TimerID start_recurring_timer(std::chrono::microseconds interval);
 
     /**
+     * @brief Starts a recurring timer that keeps its interval however much work is waiting in this thread's queue.
+     *
+     * An ordinary timer's event goes into this thread's queue behind every message already there, and a thread that
+     * prioritises data over timers handles it only once the queue is empty. A thread given more work than it can do,
+     * such as a flood of execution reports, can then go seconds without its timer running. This timer is also checked
+     * by the clock before each message is handled: once its interval has passed since it last ran, on_timer_event is
+     * called with its id at once, between that message and the one before. Its queued event still arrives, so that an
+     * idle thread runs it too, and runs it only when at least half the interval has passed since it last ran, so that
+     * the two ways do not run it twice in quick succession.
+     *
+     * Meant for the timer that renews a lease, whose lateness makes another instance take the lead. It cannot help when
+     * one message takes longer than the interval to handle, since nothing runs while a handler runs.
+     *
+     * @param [in] interval The timer interval, which must be greater than zero; refused with PreconditionAssertion
+     *                      otherwise.
+     * @return the TimerID for the timer created; retain it to recognise it in on_timer_event or to cancel it.
+     */
+    TimerID start_recurring_timer_checked_between_messages(std::chrono::microseconds interval);
+
+    /**
      * @brief Cancels a timer.
      * @param [in] id The TimerID returned when the timer was started. Unknown or
      *                already-fired ids are ignored.
@@ -1004,6 +1024,22 @@ class ApplicationThread {
     // by this thread, read by the reactor thread; see get_time_event_started().
     std::atomic<int64_t> time_event_started_ns_{0};
     std::atomic<int64_t> time_event_finished_ns_{0};
+
+    // A timer started with start_recurring_timer_checked_between_messages: its id, its interval, and when it last ran,
+    // in nanoseconds on HighResolutionClock. Only this thread reads or writes these.
+    struct TimerCheckedBetweenMessages {
+        TimerID id;
+        int64_t interval_ns{0};
+        int64_t last_ran_ns{0};
+    };
+    std::vector<TimerCheckedBetweenMessages> timers_checked_between_messages_;
+
+    // Runs each timer checked between messages whose interval has passed by now_ns. Returns whether any ran.
+    bool run_timers_due_between_messages(int64_t now_ns);
+
+    // Called when a timer's queued event arrives. A timer checked between messages runs only if at least half its
+    // interval has passed since it last ran; any other timer runs.
+    void run_queued_timer(TimerID id);
 
     // Non-template helper for send_pdu. Defined in ApplicationThread.cpp where
     // Reactor is fully defined, avoiding incomplete-type errors in translation

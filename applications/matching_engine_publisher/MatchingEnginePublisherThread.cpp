@@ -152,7 +152,7 @@ void MatchingEnginePublisherThread::on_initial_event() {
         lease_agent_.emplace("MepThread", get_logger(), lease_links_, fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher),
                              self_id, peer_id, arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), 0,
                              pubsub_itc_fw::PeerStatementsFlag{pubsub_itc_fw::PeerStatementsFlag::PeerAlwaysMayLead});
-        lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
+        lease_tick_timer_id_ = start_recurring_timer_checked_between_messages(pubsub_itc_fw::LeaseTiming::tick_interval);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MepThread: ha_enabled=true -- leading only while the peer or the arbiter grants a lease (period={} ms)", config_.lease.period.count());
     }

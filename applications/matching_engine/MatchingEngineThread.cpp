@@ -289,7 +289,7 @@ void MatchingEngineThread::on_app_ready_event() {
         }
         lease_agent_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), lease_promise_store_.load_statement(),
                                        std::chrono::steady_clock::now());
-        lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
+        lease_tick_timer_id_ = start_recurring_timer_checked_between_messages(pubsub_itc_fw::LeaseTiming::tick_interval);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: leading only while the peer or the arbiter grants a lease (period={} ms); nothing is asked for during the first "
                    "period",

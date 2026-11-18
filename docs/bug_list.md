@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 254 |
-| Open | 45 (25 defects, 20 tasks) |
+| Bugs recorded | 255 |
+| Open | 46 (26 defects, 20 tasks) |
 | Closed | 209 |
-| Next id | BUG-0255 |
+| Next id | BUG-0256 |
 
 ## Open bugs by severity
 
-6 high, 30 medium, 9 low.
+6 high, 31 medium, 9 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,6 +48,7 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0251](#bug_0251) | medium | defect | Under a burst of orders faster than it can process, the leading sequencer loses its lease to a backlog on its own thread, and the follower matching engine is taken out of service |
+| [BUG-0255](#bug_0255) | medium | defect | The matching engine cancels all of a session's orders as one piece of work, which can take longer than its lease |
 | [BUG-0252](#bug_0252) | medium | defect | When a member's session ends with hundreds of thousands of resting orders, the leading sequencer and the leading matching engine both lose their leases |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -154,6 +155,33 @@ went looking.
 
 ## Open
 
+### BUG-0255: The matching engine cancels all of a session's orders as one piece of work, which can take longer than its lease {#bug_0255}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-17 |
+| Recorded | 2026-11-17 |
+| How | Scenario 115 of `ha_test.py`, written for [BUG-0252](#bug_0252) |
+| Impact | A member's session that ends with many resting orders makes the leading matching engine lose its lease, although nothing has failed: a change of engine leader, and the engine caught up again |
+
+**What happens.** When a session's grace period runs out, the leading sequencer writes a `CancelSessionOrders`, and the
+matching engine carries it out in one call, cancelling every resting order of the session and producing a report for
+each. For 450,000 orders that took between 0.9 and 2.3 seconds. The lease is renewed by a timer that runs between
+messages (`start_recurring_timer_checked_between_messages`), so nothing renews it while that call runs. The engine
+asks for its lease to be renewed between two such calls, but the answer arrives behind the next cancel already queued,
+and is read only once that has been carried out too. In scenario 115 the engine's lease tick did not run for 2,321 ms
+across the cancel of one session's orders, and with the cancel before it the engine went more than the lease period of
+3,000 ms without reading a renewal, and stopped leading.
+
+A member that keeps hundreds of thousands of orders resting is plausible on a busy day (50 million orders a day), and
+the time grows with the number of orders: two million would take several seconds in one call.
+
+**What is wanted.** The matching engine cancels a session's orders in pieces, a bounded number at a time, with the
+lease and other messages handled between the pieces, while staying a deterministic state machine: both matching
+engines must cancel the same orders in the same order and produce the same reports. Scenario 115 then checks that no
+matching engine loses its lease, which it now only reports.
+
 ### BUG-0253: `binary_load_client --help` prints its help and then tries to connect to the venue {#bug_0253}
 
 | | |
@@ -228,9 +256,24 @@ thread could process them, and its lease tick waited behind them in the same way
 The overwritten kept reports in step 4 above are still not explained: whether overwriting a kept report the
 follower still needs could lose a report if it then took the lead.
 
-**What is wanted.** A leader's lease is renewed however much work its thread has queued, and however long one piece
-of that work takes; and a scenario in `ha_test.py` that ends a session holding several hundred thousand resting
-orders, which has to fail before the change.
+**Built, not yet shown by a scenario (18 November 2026).** By Andrew's decision, the lease is renewed by the clock
+between messages: `ApplicationThread::start_recurring_timer_checked_between_messages` starts a recurring timer that is
+also checked before each message is handled, and runs as soon as its interval has passed, however many messages are
+waiting ([Threading](framework/threading.md)). The sequencer, the matching engine, the matching engine publisher and
+the arbiter start their lease timers this way. `TimerTest.ATimerCheckedBetweenMessagesRunsWhileTheThreadIsFlooded`
+checks it, and fails with no run during the flood when the check is disabled. It cannot help a single message that
+takes longer than the lease, which is the matching engine's case, [BUG-0255](#bug_0255).
+
+A scenario was written that ends four sessions of 450,000 resting orders each and stops the follower sequencer ten
+seconds before their grace periods run out. Under `ha_test.py` it does not reproduce the sequencer's stall, even with
+the old timer, although the same load started with `devenv.py` reproduced it at the first attempt; which difference
+between the two matters is not known. The scenario is kept out of `ha_test.py` until it reproduces the stall, as
+`tmp/bug0252/ha_test_scenario115.diff` in the development checkout. Its runs also found the check that replays the WAL
+into a fresh matching engine receiving 1.8 million reports where 3.6 million were expected, one for each order and
+one for each cancel, and none more in five minutes; that is not yet explained.
+
+**What is wanted.** A scenario in `ha_test.py` that ends a session holding several hundred thousand resting orders,
+which fails with the sequencer's old lease timer and passes with the new one; and the missing reports explained.
 
 **Principles.** V11 of [design_principles.md](design_principles.md): a follower being caught up is a loss of
 resilience, and must not become a change of leader.

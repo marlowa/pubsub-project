@@ -39,7 +39,7 @@ Subclasses override these to implement their behaviour:
 | `on_app_ready_event()` | All threads are operational; start sending traffic |
 | `on_termination_event(reason)` | A `Termination` event arrived, for example because the process received SIGTERM or SIGINT; release resources |
 | `on_itc_message(msg)` | ITC message delivered from another thread — **pure virtual** |
-| `on_timer_event(id)` | A timer fired; `id` is the `TimerID` returned by `start_one_off_timer`/`start_recurring_timer` (compare against retained ids to identify it) |
+| `on_timer_event(id)` | A timer fired; `id` is the `TimerID` returned by `start_one_off_timer`, `start_recurring_timer` or `start_recurring_timer_checked_between_messages` (compare against retained ids to identify it) |
 | `on_pubsub_message(msg)` | Pub/sub delivery |
 | `on_raw_socket_message(msg)` | Raw byte stream delivery (see [Socket Comms](socket_comms.md)) |
 | `on_framework_pdu_message(msg)` | Inbound PDU delivered — **the thread must call `release_pdu_payload(msg)` once it has finished with the payload**, which returns the chunk to the reactor's inbound slab allocator |
@@ -53,6 +53,27 @@ One further virtual changes the order of delivery rather than receiving an event
 `true` has `Timer` events held back during each pass over its queue and processed after the
 other messages taken in the same pass, so that a heartbeat or snapshot timer does not delay a
 data message that arrived at the same moment.
+
+### A timer that keeps its interval under load
+A timer's event goes into the thread's queue behind every message already there. A thread given
+more work than it can do keeps a long queue, and its timers wait behind it; a thread that
+prioritises data over timers runs them only once the queue is empty. A sequencer sent an
+execution report for each of 1.8 million cancelled orders went seven seconds without its timers
+running.
+
+`start_recurring_timer_checked_between_messages(interval)` starts a recurring timer that is also
+checked by the clock before each message is handled. Once its interval has passed since it last
+ran, `on_timer_event` is called with its id at once, between that message and the one before,
+however many messages are still waiting. The clock is the one already read before each message
+for the handler's timing, so no further clock is read on the path of an order. Its event still
+arrives through the queue as an ordinary timer's does, so that an idle thread runs it too, and
+runs it then only when at least half the interval has passed since it last ran, so that the two
+ways do not run it twice in quick succession.
+
+The timer that renews a lease is started this way in every component that holds one: the
+sequencer, the matching engine, the matching engine publisher and the arbiter. A lease renewed
+late lets another instance take the lead, although nothing has failed. Nothing runs while a
+handler runs, so a single message whose handling takes longer than the lease still delays it.
 
 ### Idle Blocking: eventfd-Based Wake
 A thread with an empty queue blocks rather than spin-sleeping, because sleeping is slow to
