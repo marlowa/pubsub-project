@@ -57,9 +57,7 @@ data message that arrived at the same moment.
 ### A timer that keeps its interval under load
 A timer's event goes into the thread's queue behind every message already there. A thread given
 more work than it can do keeps a long queue, and its timers wait behind it; a thread that
-prioritises data over timers runs them only once the queue is empty. A sequencer sent an
-execution report for each of 1.8 million cancelled orders went seven seconds without its timers
-running.
+prioritises data over timers runs them only once the queue is empty.
 
 `start_recurring_timer_checked_between_messages(interval)` starts a recurring timer that is also
 checked by the clock before each message is handled. Once its interval has passed since it last
@@ -74,6 +72,8 @@ The timer that renews a lease is started this way in every component that holds 
 sequencer, the matching engine, the matching engine publisher and the arbiter. A lease renewed
 late lets another instance take the lead, although nothing has failed. Nothing runs while a
 handler runs, so a single message whose handling takes longer than the lease still delays it.
+Nor does it help a lease whose renewals are granted by messages that wait in the same queue:
+the grants still arrive behind the queued work.
 
 ### Idle Blocking: eventfd-Based Wake
 A thread with an empty queue blocks rather than spin-sleeping, because sleeping is slow to

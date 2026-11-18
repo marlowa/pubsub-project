@@ -228,52 +228,46 @@ its WAL moved aside, and it was started again holding nothing. The Quill logs ar
 4. While it was caught up, the follower logged many times that its store of reports kept in case it takes the lead
    was full, and that a report still needed had been overwritten.
 
-**The cause, found on 17 November 2026 by repeating the run.** The catch-up of the follower sequencer is not the
-cause; it was under way by coincidence. The load client's four sessions had ended 45 seconds earlier, each with about
-450,000 resting orders, and their grace periods ran out during the catch-up. In the repeat the grace periods ran out
-before the follower sequencer was restarted, and the same thing happened:
+**The cause, found on 18 November 2026 with a profiler.** The leading sequencer's thread spends the six seconds
+inside one call, computing, and reaches no message in between: a sampler of the thread's state found it running in 568
+of 587 samples, and with the lease timer checked between messages (below) the gap was the same. `perf` over those six
+seconds puts every sample on one path: handling an engine's report (`forward_report_from_engine`), writing it to the
+WAL, and, as its commit point moves, sending the newly committed records to the matching engine publishers and to the
+follower matching engine (`WalHandedOverFollowers::send_to_all`, `send_on_shared_reading`, `read_next_record`), 97% of
+it in `Crc32::feed`, half for each.
 
-1. At 20:18:15.936 the leading sequencer wrote the four `CancelSessionOrders` commands, in microseconds.
-2. **The matching engine lost its lease.** It carried out each cancel in one go, about 0.9 seconds for 450,000
-   orders, and the four ran one after another on the thread that also runs the matching engine's lease, from
-   20:18:15.9 to 20:18:19.7. Its lease tick did not run for 3,792 ms, longer than the lease period of 3,000 ms, so it
-   stopped leading.
-3. **The leading sequencer lost its lease.** The matching engine sent it an execution report for each cancelled
-   order, about 1.7 million in four seconds, faster than the sequencer's thread could process them. Every message for
-   that thread, timer events included, goes through one queue in the order it arrives, and that queue has no limit.
-   The timer event that runs the lease waited behind the reports, and the sequencer's thread also asks for timer
-   events to be handled only once the queue is empty (`prioritise_data_over_timers()` in `SequencerThread.hpp`). Its
-   lease tick did not run for 6,937 ms, and it stopped leading. It led again at the next epoch at once, which is what
-   started the second catch-up.
+`WalHandedOverFollowers` sends each newly committed record from a copy kept in memory when it has one, and then does
+not move its cursor in the WAL. When a record has no kept copy, `read_next_record` reads forward from wherever the
+cursor last stopped, reading and checking the checksum of every record on the way and skipping each one already sent.
+The cursor can be far back, at worst at the start of the day, so one record without a kept copy makes the sequencer's
+thread read the WAL from there: 1.6 GB here, checked a byte at a time, once for the publishers and once for the
+follower matching engines.
 
-A thread that samples every 10 ms which threads are waiting in the kernel found the sequencer's thread waiting only
-now and then, on pages of the WAL being written to disk, and running the rest of the time: the six seconds are work,
-not waiting. The run, the sampler and the Quill logs are kept in `tmp/bug0252/` in the development checkout.
+A record goes without a kept copy when the room for them is full: 32,768 records (`records_kept_for_publishers`).
+Records are kept until they are committed and sent. When the follower sequencer leaves, the leader commits nothing
+more until a voter has confirmed that the follower may not lead, about 50 ms; during the flood of execution reports
+that a session's cancel causes, more than 32,768 records can be written in that time. That is why each stall began as
+the follower sequencer left or was being caught up during such a flood, and why scenario 115, in which the follower
+left three seconds after the flood, did not reproduce it. The cost grows with the WAL: on a day of 200 million records
+it would be minutes.
 
-[BUG-0251](#bug_0251) is very probably the same defect in the sequencer: there, orders arrived faster than the
-thread could process them, and its lease tick waited behind them in the same way.
+The cause first given here, that the lease's timer waited in the thread's queue behind the reports, was wrong: with
+the lease timer checked between messages the leader still lost its lease, after 5,963 ms without a tick. That change,
+`ApplicationThread::start_recurring_timer_checked_between_messages` ([Threading](framework/threading.md)), used by the
+lease timers of the sequencer, the matching engine, the matching engine publisher and the arbiter, is kept, because a
+queue of work can starve a timer, but it does not fix this defect. Nor does it fix [BUG-0251](#bug_0251): in a run on
+18 November in which the venue fell far behind its orders, the leader with the change lost its lease 39 times in 84
+seconds with its tick running, because the grants that renew a lease are messages in the same queue, behind the orders.
 
-The overwritten kept reports in step 4 above are still not explained: whether overwriting a kept report the
-follower still needs could lose a report if it then took the lead.
+The overwritten kept reports in step 4 above are still not explained: whether overwriting a kept report the follower
+still needs could lose a report if it then took the lead. Nor is it explained why the check that replays the WAL into a
+fresh matching engine, after a run of scenario 115, received 1.8 million reports where 3.6 million were expected, one
+for each order and one for each cancel, and none more in five minutes. The runs, the samplers' output and the profiles
+are kept in `tmp/bug0252/` in the development checkout, and scenario 115 as `tmp/bug0252/ha_test_scenario115.diff`.
 
-**Built, not yet shown by a scenario (18 November 2026).** By Andrew's decision, the lease is renewed by the clock
-between messages: `ApplicationThread::start_recurring_timer_checked_between_messages` starts a recurring timer that is
-also checked before each message is handled, and runs as soon as its interval has passed, however many messages are
-waiting ([Threading](framework/threading.md)). The sequencer, the matching engine, the matching engine publisher and
-the arbiter start their lease timers this way. `TimerTest.ATimerCheckedBetweenMessagesRunsWhileTheThreadIsFlooded`
-checks it, and fails with no run during the flood when the check is disabled. It cannot help a single message that
-takes longer than the lease, which is the matching engine's case, [BUG-0255](#bug_0255).
-
-A scenario was written that ends four sessions of 450,000 resting orders each and stops the follower sequencer ten
-seconds before their grace periods run out. Under `ha_test.py` it does not reproduce the sequencer's stall, even with
-the old timer, although the same load started with `devenv.py` reproduced it at the first attempt; which difference
-between the two matters is not known. The scenario is kept out of `ha_test.py` until it reproduces the stall, as
-`tmp/bug0252/ha_test_scenario115.diff` in the development checkout. Its runs also found the check that replays the WAL
-into a fresh matching engine receiving 1.8 million reports where 3.6 million were expected, one for each order and
-one for each cancel, and none more in five minutes; that is not yet explained.
-
-**What is wanted.** A scenario in `ha_test.py` that ends a session holding several hundred thousand resting orders,
-which fails with the sequencer's old lease timer and passes with the new one; and the missing reports explained.
+**What is wanted.** The publishers and the follower matching engines are sent a record that has no kept copy without
+the WAL being read from where the cursor last stopped; and a scenario in `ha_test.py` in which the follower sequencer
+leaves during the flood of reports from a session's cancel, which fails before the change.
 
 **Principles.** V11 of [design_principles.md](design_principles.md): a follower being caught up is a loss of
 resilience, and must not become a change of leader.
