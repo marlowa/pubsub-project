@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 256 |
-| Open | 46 (26 defects, 20 tasks) |
-| Closed | 210 |
+| Open | 45 (25 defects, 20 tasks) |
+| Closed | 211 |
 | Next id | BUG-0257 |
 
 ## Open bugs by severity
 
-6 high, 31 medium, 9 low.
+6 high, 30 medium, 9 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,7 +48,6 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0251](#bug_0251) | medium | defect | Under a burst of orders faster than it can process, the leading sequencer loses its lease to a backlog on its own thread, and the follower matching engine is taken out of service |
-| [BUG-0255](#bug_0255) | medium | defect | The matching engine cancels all of a session's orders as one piece of work, which can take longer than its lease |
 | [BUG-0256](#bug_0256) | medium | defect | During a flood of execution reports the follower sequencer overwrites kept reports still needed, and logs a warning for each one |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -177,43 +176,6 @@ in the development checkout.
 **What is wanted.** A decision on whether the store must hold every report of such a flood, or whether losing them
 is acceptable while the leader is alive and forwarding, with the size the store would need. And the warning logged
 once when reports start being lost, with the number lost reported when it stops, rather than once for each report.
-
-### BUG-0255: The matching engine cancels all of a session's orders as one piece of work, which can take longer than its lease {#bug_0255}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-17 |
-| Recorded | 2026-11-17 |
-| How | Scenario 115 of `ha_test.py`, written for [BUG-0252](#bug_0252) |
-| Impact | A member's session that ends with many resting orders makes the leading matching engine lose its lease, although nothing has failed: a change of engine leader, and the engine caught up again. Where the sequencer reads the reports more slowly than the engine sends them, the connection is closed and the reports on it are lost |
-
-**What happens.** When a session's grace period runs out, the leading sequencer writes a `CancelSessionOrders`, and the
-matching engine carries it out in one call, cancelling every resting order of the session and producing a report for
-each. For 450,000 orders that took between 0.9 and 2.3 seconds. The lease is renewed by a timer that runs between
-messages (`start_recurring_timer_checked_between_messages`), so nothing renews it while that call runs. The engine
-asks for its lease to be renewed between two such calls, but the answer arrives behind the next cancel already queued,
-and is read only once that has been carried out too. In scenario 115 the engine's lease tick did not run for 2,321 ms
-across the cancel of one session's orders, and with the cancel before it the engine went more than the lease period of
-3,000 ms without reading a renewal, and stopped leading.
-
-A member that keeps hundreds of thousands of orders resting is plausible on a busy day (50 million orders a day), and
-the time grows with the number of orders: two million would take several seconds in one call.
-
-**Reports are lost when the sequencer reads them more slowly than they are sent.** The matching engine paces the reports
-it sends by pausing the commands it receives while too many sends wait on the connection (BUG-0234), but one cancel of a
-session's orders is a single command that produces a report for every order at once, so nothing paces it. In the check
-that replays the WAL into a fresh matching engine after scenario 115, which reads the reports slowly on purpose and
-allows 16,384 sends to wait, the engine's connection to the sequencer was closed, "it is not reading what is sent to
-it", and the engine logged that 1,797,760 reports sent on it were not known to have been written: the 1.8 million
-reports missing from that check. The limit deployed is 65,536 waiting sends (`connection_waiting_sends_maximum`), below
-the 450,000 reports of one such cancel.
-
-**What is wanted.** The matching engine cancels a session's orders in pieces, a bounded number at a time, with the
-lease and other messages handled between the pieces, and the reports paced as those of separate commands are, while
-staying a deterministic state machine: both matching engines must cancel the same orders in the same order and produce
-the same reports. Scenario 115 then checks that no matching engine loses its lease, which it now only reports, and the
-replay check after it receives every report.
 
 ### BUG-0253: `binary_load_client --help` prints its help and then tries to connect to the venue {#bug_0253}
 
@@ -2487,6 +2449,38 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0255: The matching engine cancels all of a session's orders as one piece of work, which can take longer than its lease {#bug_0255}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-17 |
+| Recorded | 2026-11-17 |
+| Fixed | 2026-11-18 -- by Andrew's decisions, CancelSessionOrders, CancelBook and the close cancel 2,000 orders at a time, the engine returning to its run loop between the pieces so that its lease and the pacing of its reports run, holding every message from a sequencer's order connection meanwhile and acting on them in order afterwards ([Pacing the engine's reports](availability/pacing_the_engines_reports.md#cancelling_many_orders), section 7; `MatchingEngineStateMachine::continue_cancel`, `CancelInPieces`). A piece sends at most as many reports as pacing pauses at, which the build checks. Ten unit tests, each made to fail on purpose. Scenario 115 of `ha_test.py` now checks that no matching engine loses its lease, and runs the check of engines on a copy of the WAL after it: before the change both failed in every run; after it, the scenario passed, each engine sending all 3,600,000 reports of the replay, and the leader's WAL holding every one of the 1.8 million cancel reports, over a million of which had been lost in each earlier run |
+| How | Scenario 115 of `ha_test.py`, written for [BUG-0252](#bug_0252) |
+| Impact | A member's session that ends with many resting orders makes the leading matching engine lose its lease, although nothing has failed: a change of engine leader, and the engine caught up again. Where the sequencer reads the reports more slowly than the engine sends them, the connection is closed and the reports on it are lost |
+
+**What happens.** When a session's grace period runs out, the leading sequencer writes a `CancelSessionOrders`, and the
+matching engine carries it out in one call, cancelling every resting order of the session and producing a report for
+each. For 450,000 orders that took between 0.9 and 2.3 seconds. The lease is renewed by a timer that runs between
+messages (`start_recurring_timer_checked_between_messages`), so nothing renews it while that call runs. The engine
+asks for its lease to be renewed between two such calls, but the answer arrives behind the next cancel already queued,
+and is read only once that has been carried out too. In scenario 115 the engine's lease tick did not run for 2,321 ms
+across the cancel of one session's orders, and with the cancel before it the engine went more than the lease period of
+3,000 ms without reading a renewal, and stopped leading.
+
+A member that keeps hundreds of thousands of orders resting is plausible on a busy day (50 million orders a day), and
+the time grows with the number of orders: two million would take several seconds in one call.
+
+**Reports are lost when the sequencer reads them more slowly than they are sent.** The matching engine paces the reports
+it sends by pausing the commands it receives while too many sends wait on the connection (BUG-0234), but one cancel of a
+session's orders is a single command that produces a report for every order at once, so nothing paces it. In the check
+that replays the WAL into a fresh matching engine after scenario 115, which reads the reports slowly on purpose and
+allows 16,384 sends to wait, the engine's connection to the sequencer was closed, "it is not reading what is sent to
+it", and the engine logged that 1,797,760 reports sent on it were not known to have been written: the 1.8 million
+reports missing from that check. The limit deployed is 65,536 waiting sends (`connection_waiting_sends_maximum`), below
+the 450,000 reports of one such cancel.
 
 ### BUG-0252: When a member's session ends with hundreds of thousands of resting orders, the leading sequencer and the leading matching engine both lose their leases {#bug_0252}
 

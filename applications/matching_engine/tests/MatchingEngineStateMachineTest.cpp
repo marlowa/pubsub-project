@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -27,6 +28,7 @@
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
 #include <ReportIdentifiers.hpp>
@@ -1270,6 +1272,149 @@ TEST_F(MatchingEngineStateMachineTest, TwoStateMachinesGivenTheSameCommandsProdu
         EXPECT_EQ(first_report.cl_ord_id, second_report.cl_ord_id) << "report " << index;
         EXPECT_EQ(first_report.transact_time, second_report.transact_time) << "report " << index;
     }
+}
+
+// ---- A command that cancels many orders, carried out in pieces (docs/availability/pacing_the_engines_reports.md, section 7)
+
+// Fills @p machine's book, the fixture's region of four orders, with four orders placed at sequence numbers 2 to 5, two
+// for each member, in an order the map does not keep.
+void place_four_orders(MatchingEngineStateMachine& machine, const fix_common::SessionIdentity& member, const fix_common::SessionIdentity& other) {
+    machine.apply_new_order(new_order("ORD-C"), 2, taken_at, trading_day, member, CommandSource::live);
+    machine.apply_new_order(new_order("ORD-A"), 3, taken_at, trading_day, other, CommandSource::live);
+    machine.apply_new_order(new_order("ORD-B"), 4, taken_at, trading_day, member, CommandSource::live);
+    machine.apply_new_order(new_order("ORD-D"), 5, taken_at, trading_day, other, CommandSource::live);
+}
+
+// Carries out every remaining piece of @p machine's cancel, counting the pieces, and returns what the command did.
+MatchingEngineStateMachine::CancelFinished finish_in_pieces(MatchingEngineStateMachine& machine, OrderBook& book, int64_t sequence_number, int& pieces) {
+    while (true) {
+        EXPECT_NE(book.published(), sequence_number) << "the book is published only once the last piece is done";
+        std::optional<MatchingEngineStateMachine::CancelFinished> finished = machine.continue_cancel();
+        ++pieces;
+        if (finished.has_value()) {
+            EXPECT_FALSE(machine.cancel_under_way());
+            return *finished;
+        }
+        EXPECT_TRUE(machine.cancel_under_way());
+    }
+}
+
+// Whether two engines sent the same reports, in the same order, with the same ExecIDs.
+void expect_the_same_reports(const std::vector<RecordedReport>& one_call, const std::vector<RecordedReport>& in_pieces) {
+    ASSERT_EQ(one_call.size(), in_pieces.size());
+    for (size_t index = 0; index < one_call.size(); ++index) {
+        EXPECT_EQ(one_call[index].exec_id, in_pieces[index].exec_id) << "report " << index;
+        EXPECT_EQ(one_call[index].cl_ord_id, in_pieces[index].cl_ord_id) << "report " << index;
+        EXPECT_EQ(one_call[index].sequence_number, in_pieces[index].sequence_number) << "report " << index;
+        EXPECT_EQ(one_call[index].exec_type, in_pieces[index].exec_type) << "report " << index;
+    }
+}
+
+// The close cancels the same orders, in the same order and with the same ExecIDs, whether in one call or one order at a
+// time, and publishes the book to its sequence number only once the last piece is done.
+TEST_F(MatchingEngineStateMachineTest, TheCloseCarriedOutInPiecesSendsTheSameReportsAsInOneCall) {
+    OrderBook pieces_book;
+    pieces_book.open(dir_ + "/close_in_pieces.region", region_capacity, map_capacity);
+    RecordingOutputs pieces_outputs;
+    MatchingEngineStateMachine pieces{pieces_book, second_identifiers_, pieces_outputs, logger_};
+    pieces.set_orders_per_piece(1);
+    place_four_orders(machine_, member, other_member);
+    place_four_orders(pieces, member, other_member);
+    outputs_.reports.clear();
+    pieces_outputs.reports.clear();
+
+    const MatchingEngineStateMachine::TechnicalEventApplied one_call =
+        machine_.apply_technical_event(entering(pubsub_itc_fw_app::TradingPhase::Closed), 6, taken_at + 9, trading_day, CommandSource::live);
+    ASSERT_TRUE(one_call.finished) << "four orders are fewer than a piece";
+    ASSERT_EQ(one_call.orders_cancelled, 4);
+
+    const MatchingEngineStateMachine::TechnicalEventApplied first =
+        pieces.apply_technical_event(entering(pubsub_itc_fw_app::TradingPhase::Closed), 6, taken_at + 9, trading_day, CommandSource::live);
+    EXPECT_TRUE(first.applied);
+    EXPECT_FALSE(first.finished);
+    EXPECT_EQ(pieces_outputs.reports.size(), 1U) << "one order a piece";
+    int continued = 0;
+    const MatchingEngineStateMachine::CancelFinished finished = finish_in_pieces(pieces, pieces_book, 6, continued);
+    EXPECT_EQ(continued, 3);
+    EXPECT_EQ(finished.command, MatchingEngineStateMachine::CancelFinished::Command::close);
+    EXPECT_EQ(finished.technical_event.orders_cancelled, 4);
+    EXPECT_EQ(pieces_book.published(), 6);
+    EXPECT_EQ(pieces_book.size(), 0U);
+    EXPECT_TRUE(pieces_book.consistency_problem().empty());
+    expect_the_same_reports(outputs_.reports, pieces_outputs.reports);
+}
+
+// CancelSessionOrders in pieces: the same reports, and the same outcome named by each order's ClOrdID, as in one call,
+// and the other member's orders stay.
+TEST_F(MatchingEngineStateMachineTest, ACancelOfASessionsOrdersCarriedOutInPiecesSendsTheSameReportsAsInOneCall) {
+    OrderBook pieces_book;
+    pieces_book.open(dir_ + "/session_in_pieces.region", region_capacity, map_capacity);
+    RecordingOutputs pieces_outputs;
+    MatchingEngineStateMachine pieces{pieces_book, second_identifiers_, pieces_outputs, logger_};
+    pieces.set_orders_per_piece(1);
+    place_four_orders(machine_, member, other_member);
+    place_four_orders(pieces, member, other_member);
+    outputs_.reports.clear();
+    outputs_.outcomes.clear();
+    pieces_outputs.reports.clear();
+    pieces_outputs.outcomes.clear();
+
+    ASSERT_EQ(machine_.apply_cancel_session_orders(member, 6, taken_at, trading_day, CommandSource::live).orders_cancelled, 2);
+    const MatchingEngineStateMachine::SessionOrdersCancelled first = pieces.apply_cancel_session_orders(member, 6, taken_at, trading_day, CommandSource::live);
+    EXPECT_TRUE(first.applied);
+    EXPECT_FALSE(first.finished);
+    int continued = 0;
+    const MatchingEngineStateMachine::CancelFinished finished = finish_in_pieces(pieces, pieces_book, 6, continued);
+    EXPECT_EQ(continued, 1);
+    EXPECT_EQ(finished.session.orders_cancelled, 2);
+    expect_the_same_reports(outputs_.reports, pieces_outputs.reports);
+    ASSERT_EQ(pieces_outputs.outcomes.size(), 2U);
+    EXPECT_EQ(pieces_outputs.outcomes[0].cl_ord_id, "ORD-C");
+    EXPECT_EQ(pieces_outputs.outcomes[1].cl_ord_id, "ORD-B");
+    EXPECT_TRUE(pieces_book.contains(OrderKey::make(other_member, "ORD-A")));
+    EXPECT_TRUE(pieces_book.contains(OrderKey::make(other_member, "ORD-D")));
+    EXPECT_EQ(pieces_book.published(), 6);
+}
+
+// CancelBook in pieces: the same reports as in one call, and the orders placed after its position kept.
+TEST_F(MatchingEngineStateMachineTest, ACancelBookCarriedOutInPiecesSendsTheSameReportsAsInOneCall) {
+    OrderBook pieces_book;
+    pieces_book.open(dir_ + "/book_in_pieces.region", region_capacity, map_capacity);
+    RecordingOutputs pieces_outputs;
+    MatchingEngineStateMachine pieces{pieces_book, second_identifiers_, pieces_outputs, logger_};
+    pieces.set_orders_per_piece(2);
+    place_four_orders(machine_, member, other_member);
+    place_four_orders(pieces, member, other_member);
+    outputs_.reports.clear();
+    pieces_outputs.reports.clear();
+
+    const MatchingEngineStateMachine::BookCancelledByCommand one_call = machine_.apply_cancel_book(4, 6, taken_at, trading_day, CommandSource::live);
+    ASSERT_EQ(one_call.reports_sent, 3);
+    const MatchingEngineStateMachine::BookCancelledByCommand first = pieces.apply_cancel_book(4, 6, taken_at, trading_day, CommandSource::live);
+    EXPECT_FALSE(first.finished);
+    int continued = 0;
+    const MatchingEngineStateMachine::CancelFinished finished = finish_in_pieces(pieces, pieces_book, 6, continued);
+    EXPECT_EQ(continued, 1) << "three orders, two a piece";
+    EXPECT_EQ(finished.book.reports_sent, 3);
+    EXPECT_EQ(finished.book.open_orders, 4);
+    EXPECT_EQ(finished.book.orders_kept, 1);
+    EXPECT_TRUE(pieces_book.contains(OrderKey::make(other_member, "ORD-D"))) << "placed after the command's position";
+    expect_the_same_reports(outputs_.reports, pieces_outputs.reports);
+}
+
+// While a cancel has pieces still to carry out, no other command may be applied: the caller must hold them.
+TEST_F(MatchingEngineStateMachineTest, NoCommandIsAppliedWhileACancelHasPiecesLeft) {
+    machine_.set_orders_per_piece(1);
+    place_four_orders(machine_, member, other_member);
+    ASSERT_FALSE(machine_.apply_cancel_book(5, 6, taken_at, trading_day, CommandSource::live).finished);
+    EXPECT_THROW(machine_.apply_new_order(new_order("ORD-E"), 7, taken_at, trading_day, member, CommandSource::live), pubsub_itc_fw::PreconditionAssertion);
+    EXPECT_THROW(static_cast<void>(machine_.apply_cancel_session_orders(member, 7, taken_at, trading_day, CommandSource::live)),
+                 pubsub_itc_fw::PreconditionAssertion);
+    int continued = 0;
+    static_cast<void>(finish_in_pieces(machine_, book_, 6, continued));
+    EXPECT_THROW(static_cast<void>(machine_.continue_cancel()), pubsub_itc_fw::PreconditionAssertion) << "nothing is under way";
+    machine_.apply_new_order(new_order("ORD-E"), 7, taken_at, trading_day, member, CommandSource::live);
+    EXPECT_TRUE(book_.contains(OrderKey::make(member, "ORD-E")));
 }
 
 } // un-named namespace

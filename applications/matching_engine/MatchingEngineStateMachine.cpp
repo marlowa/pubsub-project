@@ -12,6 +12,7 @@
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 #include "FixOrderLimits.hpp"
 #include "OrderKey.hpp"
@@ -108,6 +109,7 @@ void MatchingEngineStateMachine::note_caught_up_to(int64_t sequence_number) {
 
 void MatchingEngineStateMachine::apply_new_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
                                                  int32_t trading_date, const fix_common::SessionIdentity& session, CommandSource source) {
+    refuse_while_a_cancel_is_under_way("NewOrderSingle", sequence_number);
     begin_command();
     try {
         apply_new_order_unguarded(view, sequence_number, transact_time, trading_date, session, source);
@@ -139,6 +141,7 @@ void MatchingEngineStateMachine::apply_new_order(const pubsub_itc_fw_app::NewOrd
 
 void MatchingEngineStateMachine::apply_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
                                               int32_t trading_date, const fix_common::SessionIdentity& session, CommandSource source) {
+    refuse_while_a_cancel_is_under_way("OrderCancelRequest", sequence_number);
     begin_command();
     try {
         apply_cancel_unguarded(view, sequence_number, transact_time, trading_date, session, source);
@@ -812,6 +815,7 @@ MatchingEngineStateMachine::VoidLearned MatchingEngineStateMachine::learn_void(c
 
 MatchingEngineStateMachine::VoidCommandsApplied MatchingEngineStateMachine::apply_void_commands(const pubsub_itc_fw_app::VoidCommandsView& view,
                                                                                                 int64_t sequence_number, CommandSource source) {
+    refuse_while_a_cancel_is_under_way("VoidCommands", sequence_number);
     VoidCommandsApplied result;
     const bool live = source == CommandSource::live;
     if (!live && applied_before(sequence_number)) {
@@ -1096,6 +1100,7 @@ void MatchingEngineStateMachine::send_cancel_by_command(const OrderEntry& entry,
 MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::apply_cancel_book(int64_t orders_placed_through, int64_t sequence_number,
                                                                                                  int64_t transact_time, int32_t trading_date,
                                                                                                  CommandSource source) {
+    refuse_while_a_cancel_is_under_way("CancelBook", sequence_number);
     BookCancelledByCommand result;
     const bool live = source == CommandSource::live;
     if (!live && applied_before(sequence_number)) {
@@ -1119,27 +1124,32 @@ MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::a
                    sequence_number, transact_time == 0 ? "time" : "trading date");
     }
     identifiers_.use_trading_date(trading_date);
-    const ReportIsRepeat repeat = live ? ReportIsRepeat::no : ReportIsRepeat::yes;
     result.applied = true;
     result.open_orders = static_cast<int64_t>(book_.size());
     PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineStateMachine: CancelBook seq={} -- cancelling the orders placed at or before seq={}, of {} on the book{}", sequence_number,
                orders_placed_through, book_.size(), live ? "" : " -- during catch-up, reported as possible repeats");
 
-    int64_t place = 0;
-    result.reports_sent = static_cast<int64_t>(book_.remove_placed_through(
-        orders_placed_through, [&](const OrderEntry& entry) { send_cancel_by_command(entry, sequence_number, place++, transact_time, repeat); }));
-    result.orders_kept = static_cast<int64_t>(book_.size());
-    book_.publish(sequence_number);
-    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineStateMachine: CancelBook seq={} -- {} order(s) cancelled and reported, {} placed after seq={} kept", sequence_number,
-               result.reports_sent, result.orders_kept, orders_placed_through);
+    CancelUnderWay under_way;
+    under_way.command = CancelFinished::Command::cancel_book;
+    under_way.sequence_number = sequence_number;
+    under_way.transact_time = transact_time;
+    under_way.live = live;
+    under_way.open_orders = result.open_orders;
+    under_way.orders_placed_through = orders_placed_through;
+    under_way.chosen = book_.choose_placed_through(orders_placed_through);
+    const std::optional<CancelFinished> finished = start_cancel(std::move(under_way));
+    if (finished.has_value()) {
+        return finished->book;
+    }
+    result.finished = false;
     return result;
 }
 
 MatchingEngineStateMachine::SessionOrdersCancelled MatchingEngineStateMachine::apply_cancel_session_orders(const fix_common::SessionIdentity& session,
                                                                                                            int64_t sequence_number, int64_t transact_time,
                                                                                                            int32_t trading_date, CommandSource source) {
+    refuse_while_a_cancel_is_under_way("CancelSessionOrders", sequence_number);
     SessionOrdersCancelled result;
     const bool live = source == CommandSource::live;
     if (!live && applied_before(sequence_number)) {
@@ -1157,26 +1167,26 @@ MatchingEngineStateMachine::SessionOrdersCancelled MatchingEngineStateMachine::a
         return result;
     }
     identifiers_.use_trading_date(trading_date);
-    const ReportIsRepeat repeat = live ? ReportIsRepeat::no : ReportIsRepeat::yes;
     result.applied = true;
-    int64_t place = 0;
-    result.orders_cancelled = static_cast<int64_t>(book_.remove_session_orders(session, [&](const OrderEntry& entry) {
-        send_cancel_by_command(entry, sequence_number, place++, transact_time, repeat);
-        // Named by the order's own ClOrdID: the cancel is the venue's, and the member sent no ClOrdID for it.
-        outputs_.order_outcome(session, entry.get_cl_ord_id(), pubsub_itc_fw_app::OrderOutcomeKind::Cancelled, repeat, sequence_number, entry.get_cl_ord_id());
-    }));
-    book_.publish(sequence_number);
-    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineStateMachine: CancelSessionOrders seq={} -- session comp_id='{}' protocol={} did not return within its grace period: {} "
-               "order(s) cancelled and reported, its GoodTillCancel and GoodTillDate orders left{}",
-               sequence_number, session.comp_id_view(), session.protocol, result.orders_cancelled,
-               live ? "" : " -- during catch-up, reported as possible repeats");
+    CancelUnderWay under_way;
+    under_way.command = CancelFinished::Command::cancel_session_orders;
+    under_way.sequence_number = sequence_number;
+    under_way.transact_time = transact_time;
+    under_way.live = live;
+    under_way.session = session;
+    under_way.chosen = book_.choose_session_orders(session);
+    const std::optional<CancelFinished> finished = start_cancel(std::move(under_way));
+    if (finished.has_value()) {
+        return finished->session;
+    }
+    result.finished = false;
     return result;
 }
 
 MatchingEngineStateMachine::TechnicalEventApplied MatchingEngineStateMachine::apply_technical_event(const pubsub_itc_fw_app::TechnicalEventView& view,
                                                                                                     int64_t sequence_number, int64_t transact_time,
                                                                                                     int32_t trading_date, CommandSource source) {
+    refuse_while_a_cancel_is_under_way("TechnicalEvent", sequence_number);
     TechnicalEventApplied result;
     const bool live = source == CommandSource::live;
     if (!live && applied_before(sequence_number)) {
@@ -1207,18 +1217,27 @@ MatchingEngineStateMachine::TechnicalEventApplied MatchingEngineStateMachine::ap
     set_halted(view.halted ? TradingHalted::yes : TradingHalted::no);
     if (view.phase == pubsub_itc_fw_app::TradingPhase::Closed) {
         // The close cancels every order still open (docs/venue/trading_day_plan.md, section 2.4). Every order on the book
-        // was placed before the event, so every one is cancelled.
+        // was placed before the event, so every one is cancelled, and each report answers the event.
         identifiers_.use_trading_date(trading_date);
-        const ReportIsRepeat repeat = live ? ReportIsRepeat::no : ReportIsRepeat::yes;
-        const size_t open_orders = book_.size();
-        int64_t place = 0;
-        result.orders_cancelled = static_cast<int64_t>(book_.remove_placed_through(sequence_number, [&](const OrderEntry& entry) {
-            send_cancel_by_command(entry, sequence_number, place++, transact_time, repeat, AnswersTheCommand::yes);
-        }));
-        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineStateMachine: TechnicalEvent seq={} is in the closed phase -- {} of {} open order(s) cancelled and reported, each answering "
-                   "seq={}{}",
-                   sequence_number, result.orders_cancelled, open_orders, sequence_number, live ? "" : " -- during catch-up, reported as possible repeats");
+        CancelUnderWay under_way;
+        under_way.command = CancelFinished::Command::close;
+        under_way.sequence_number = sequence_number;
+        under_way.transact_time = transact_time;
+        under_way.live = live;
+        under_way.answers = AnswersTheCommand::yes;
+        under_way.open_orders = static_cast<int64_t>(book_.size());
+        under_way.technical_event = result;
+        under_way.phase = view.phase;
+        under_way.trading_day = view.trading_day;
+        under_way.halted = view.halted;
+        under_way.reason = view.reason;
+        under_way.chosen = book_.choose_placed_through(sequence_number);
+        const std::optional<CancelFinished> finished = start_cancel(std::move(under_way));
+        if (finished.has_value()) {
+            return finished->technical_event;
+        }
+        result.finished = false;
+        return result;
     }
     book_.publish(sequence_number);
     PUBSUB_LOG(logger_, view.halted ? pubsub_itc_fw::FwLogLevel::Error : pubsub_itc_fw::FwLogLevel::Info,
@@ -1226,6 +1245,105 @@ MatchingEngineStateMachine::TechnicalEventApplied MatchingEngineStateMachine::ap
                pubsub_itc_fw_app::to_string(view.phase), view.trading_day, view.halted ? "trading is halted" : "trading is not halted",
                pubsub_itc_fw_app::to_string(view.reason), live ? "" : " -- during catch-up");
     return result;
+}
+
+void MatchingEngineStateMachine::set_orders_per_piece(size_t orders) {
+    orders_per_piece_ = std::max<size_t>(orders, 1);
+}
+
+void MatchingEngineStateMachine::refuse_while_a_cancel_is_under_way(const char* command, int64_t sequence_number) const {
+    if (cancel_under_way_.has_value()) {
+        throw pubsub_itc_fw::PreconditionAssertion(
+            fmt::format("MatchingEngineStateMachine: a {} at seq={} was to be applied while the cancel of seq={} has {} of its {} order(s) still to cancel -- "
+                        "no command may be applied until it is finished",
+                        command, sequence_number, cancel_under_way_->sequence_number, cancel_under_way_->chosen.size() - cancel_under_way_->next,
+                        cancel_under_way_->chosen.size()),
+            __FILE__, __LINE__);
+    }
+}
+
+std::optional<MatchingEngineStateMachine::CancelFinished> MatchingEngineStateMachine::start_cancel(CancelUnderWay under_way) {
+    cancel_piece(under_way);
+    if (under_way.next == under_way.chosen.size()) {
+        return finish_cancel(under_way);
+    }
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineStateMachine: the command at seq={} cancels {} order(s), {} at a time -- the rest are cancelled in pieces, with the lease "
+               "and the pacing of reports dealt with between them, and no other command applied until the last",
+               under_way.sequence_number, under_way.chosen.size(), orders_per_piece_);
+    cancel_under_way_.emplace(std::move(under_way));
+    return std::nullopt;
+}
+
+std::optional<MatchingEngineStateMachine::CancelFinished> MatchingEngineStateMachine::continue_cancel() {
+    if (!cancel_under_way_.has_value()) {
+        throw pubsub_itc_fw::PreconditionAssertion("MatchingEngineStateMachine::continue_cancel: no cancel is under way", __FILE__, __LINE__);
+    }
+    cancel_piece(*cancel_under_way_);
+    if (cancel_under_way_->next < cancel_under_way_->chosen.size()) {
+        return std::nullopt;
+    }
+    const CancelFinished finished = finish_cancel(*cancel_under_way_);
+    cancel_under_way_.reset();
+    return finished;
+}
+
+void MatchingEngineStateMachine::cancel_piece(CancelUnderWay& under_way) {
+    const ReportIsRepeat repeat = under_way.live ? ReportIsRepeat::no : ReportIsRepeat::yes;
+    // The report's place among the command's reports is the order's place in the list chosen, so the ExecIDs are those
+    // one call would give, however the orders are divided into pieces.
+    auto place = static_cast<int64_t>(under_way.next);
+    under_way.next += book_.remove_chosen(under_way.chosen, under_way.next, orders_per_piece_, [&](const OrderEntry& entry) {
+        send_cancel_by_command(entry, under_way.sequence_number, place++, under_way.transact_time, repeat, under_way.answers);
+        if (under_way.command == CancelFinished::Command::cancel_session_orders) {
+            // Named by the order's own ClOrdID: the cancel is the venue's, and the member sent no ClOrdID for it.
+            outputs_.order_outcome(under_way.session, entry.get_cl_ord_id(), pubsub_itc_fw_app::OrderOutcomeKind::Cancelled, repeat, under_way.sequence_number,
+                                   entry.get_cl_ord_id());
+        }
+    });
+}
+
+MatchingEngineStateMachine::CancelFinished MatchingEngineStateMachine::finish_cancel(const CancelUnderWay& under_way) {
+    CancelFinished finished;
+    finished.command = under_way.command;
+    finished.sequence_number = under_way.sequence_number;
+    const auto cancelled = static_cast<int64_t>(under_way.chosen.size());
+    const char* during_catch_up = under_way.live ? "" : " -- during catch-up, reported as possible repeats";
+    switch (under_way.command) {
+        case CancelFinished::Command::cancel_book:
+            finished.book.applied = true;
+            finished.book.open_orders = under_way.open_orders;
+            finished.book.reports_sent = cancelled;
+            finished.book.orders_kept = static_cast<int64_t>(book_.size());
+            book_.publish(under_way.sequence_number);
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+                       "MatchingEngineStateMachine: CancelBook seq={} -- {} order(s) cancelled and reported, {} placed after seq={} kept",
+                       under_way.sequence_number, cancelled, finished.book.orders_kept, under_way.orders_placed_through);
+            break;
+        case CancelFinished::Command::cancel_session_orders:
+            finished.session.applied = true;
+            finished.session.orders_cancelled = cancelled;
+            book_.publish(under_way.sequence_number);
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+                       "MatchingEngineStateMachine: CancelSessionOrders seq={} -- session comp_id='{}' protocol={} did not return within its grace period: "
+                       "{} order(s) cancelled and reported, its GoodTillCancel and GoodTillDate orders left{}",
+                       under_way.sequence_number, under_way.session.comp_id_view(), under_way.session.protocol, cancelled, during_catch_up);
+            break;
+        case CancelFinished::Command::close:
+            finished.technical_event = under_way.technical_event;
+            finished.technical_event.orders_cancelled = cancelled;
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+                       "MatchingEngineStateMachine: TechnicalEvent seq={} is in the closed phase -- {} of {} open order(s) cancelled and reported, each "
+                       "answering seq={}{}",
+                       under_way.sequence_number, cancelled, under_way.open_orders, under_way.sequence_number, during_catch_up);
+            book_.publish(under_way.sequence_number);
+            PUBSUB_LOG(logger_, under_way.halted ? pubsub_itc_fw::FwLogLevel::Error : pubsub_itc_fw::FwLogLevel::Info,
+                       "MatchingEngineStateMachine: TechnicalEvent seq={} -- phase {}, trading day {}, {} ({}){}", under_way.sequence_number,
+                       pubsub_itc_fw_app::to_string(under_way.phase), under_way.trading_day, under_way.halted ? "trading is halted" : "trading is not halted",
+                       pubsub_itc_fw_app::to_string(under_way.reason), under_way.live ? "" : " -- during catch-up");
+            break;
+    }
+    return finished;
 }
 
 } // namespaces

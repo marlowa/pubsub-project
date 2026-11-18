@@ -256,6 +256,15 @@ struct AddedReport {
 // The differences printed in full; past this many, only counted.
 constexpr size_t differences_shown = 20;
 
+// A command that cancels many orders is carried out in pieces, so that a running engine deals with its lease and the
+// pacing of its reports between them (docs/availability/pacing_the_engines_reports.md, section 7). Here nothing runs
+// between them, so the rest are carried out at once, with the same reports one call would give.
+void finish_cancel_in_pieces(MatchingEngineStateMachine& machine) {
+    while (machine.cancel_under_way()) {
+        static_cast<void>(machine.continue_cancel());
+    }
+}
+
 } // un-named namespace
 
 int main(int argc, char** argv) {
@@ -364,6 +373,7 @@ int main(int argc, char** argv) {
                         ++commands;
                         static_cast<void>(machine.apply_cancel_book(command.orders_placed_through, record_id, envelope.wall_time_ns,
                                                                     envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
+                        finish_cancel_in_pieces(machine);
                     } else if (envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) {
                         pubsub_itc_fw_app::TechnicalEventView event{};
                         if (!pubsub_itc_fw_app::decode(event, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
@@ -373,6 +383,7 @@ int main(int argc, char** argv) {
                         ++commands;
                         static_cast<void>(machine.apply_technical_event(event, record_id, envelope.wall_time_ns,
                                                                         envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
+                        finish_cancel_in_pieces(machine);
                     } else if (envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id)) {
                         pubsub_itc_fw_app::VoidCommandsView command{};
                         if (!pubsub_itc_fw_app::decode(command, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
@@ -391,6 +402,7 @@ int main(int argc, char** argv) {
                         static_cast<void>(machine.apply_cancel_session_orders(fix_common::SessionIdentity::make(command.comp_id, command.gateway_protocol_id),
                                                                               record_id, envelope.wall_time_ns,
                                                                               envelope.has_trading_date ? envelope.trading_date : 0, CommandSource::live));
+                        finish_cancel_in_pieces(machine);
                     } else if (inner == pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) {
                         pubsub_itc_fw_app::NewOrderSingleView order{};
                         if (!pubsub_itc_fw_app::decode(order, envelope.payload.data, envelope.payload.size, bytes_consumed, arena, arena_bytes_needed)) {

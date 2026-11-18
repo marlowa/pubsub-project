@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint> // IWYU pragma: keep
 #include <functional>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -173,6 +174,7 @@ class MatchingEngineStateMachine {
     /// What a CancelBook command did.
     struct BookCancelledByCommand {
         bool applied{false};     ///< false when the command was not applied: one a catch-up delivers again, or out of sequence
+        bool finished{true};     ///< false when its cancels go on in pieces, by continue_cancel(); the counts are then not yet final
         int64_t open_orders{0};  ///< how many orders the book held when the command was applied
         int64_t reports_sent{0}; ///< how many orders were cancelled, each with a report
         int64_t orders_kept{0};  ///< how many orders, placed after the command's position, stay on the book
@@ -209,6 +211,7 @@ class MatchingEngineStateMachine {
     /// What a CancelSessionOrders command did.
     struct SessionOrdersCancelled {
         bool applied{false};         ///< whether it was applied: false for one passed over or refused
+        bool finished{true};         ///< false when its cancels go on in pieces, by continue_cancel(); the count is then not yet final
         int64_t orders_cancelled{0}; ///< how many of the session's orders were cancelled, each with a report
     };
 
@@ -236,6 +239,7 @@ class MatchingEngineStateMachine {
     /// What a TechnicalEvent command did.
     struct TechnicalEventApplied {
         bool applied{false};         ///< false when the command was not applied: one a catch-up delivers again, out of sequence, or for an older day
+        bool finished{true};         ///< false when the close's cancels go on in pieces, by continue_cancel(); the count is then not yet final
         bool halt_changed{false};    ///< true when it halted trading that was not halted, or lifted a halt
         int64_t orders_cancelled{0}; ///< how many orders it cancelled, each with a report: only an event in the closed phase cancels any
     };
@@ -337,6 +341,46 @@ class MatchingEngineStateMachine {
         return highest_applied_seq_no_;
     }
 
+    /// The most orders a command that cancels many orders (CancelBook, CancelSessionOrders, the close) cancels before it
+    /// returns, leaving the rest to continue_cancel() (docs/availability/pacing_the_engines_reports.md, section 7).
+    static constexpr size_t orders_per_piece = 2'000;
+    /// The most messages one cancelled order causes on a connection for reports: its execution report and, for a cancel
+    /// of a session's orders, its outcome.
+    static constexpr size_t sends_per_order_cancelled = 2;
+
+    /// Sets how many orders a piece holds, in place of orders_per_piece, so that a test can cancel in pieces with few
+    /// orders. At least one.
+    void set_orders_per_piece(size_t orders);
+
+    /// Whether a command that cancels many orders has more pieces to carry out. While it has, no other command may be
+    /// applied: one would throw PreconditionAssertion.
+    [[nodiscard]] bool cancel_under_way() const {
+        return cancel_under_way_.has_value();
+    }
+
+    /// What a command that cancels many orders did, once continue_cancel() has carried out its last piece. Only the
+    /// result for the command it was is filled in.
+    struct CancelFinished {
+        enum class Command { cancel_book, cancel_session_orders, close };
+        Command command{Command::cancel_book};
+        int64_t sequence_number{0};
+        BookCancelledByCommand book;
+        SessionOrdersCancelled session;
+        TechnicalEventApplied technical_event;
+    };
+
+    /**
+     * @brief Carries out the next piece of the cancel under way, and, after its last piece, publishes the book to the
+     *        command's sequence number.
+     *
+     * Each order is cancelled, and its report sent with the same ExecID, as one call would: the place of a report among
+     * the command's reports is counted across the pieces. Nothing else may change the book between the pieces.
+     *
+     * @return What the command did, once this was its last piece; nothing while more pieces remain. Throws
+     *         PreconditionAssertion when no cancel is under way.
+     */
+    std::optional<CancelFinished> continue_cancel();
+
   private:
     // Whether a report of a cancel made by a command of the sequencer's own names that command as the one it answers.
     enum class AnswersTheCommand { no, yes };
@@ -346,6 +390,37 @@ class MatchingEngineStateMachine {
     // sequencer routes it by the session on its envelope, because no member placed the command.
     void send_cancel_by_command(const OrderEntry& entry, int64_t sequence_number, int64_t place, int64_t transact_time, ReportIsRepeat repeat,
                                 AnswersTheCommand answers = AnswersTheCommand::no);
+
+    // A command that cancels many orders, between its pieces: the orders it chose, how many it has cancelled, and what its
+    // last piece needs to publish the book and say what it did.
+    struct CancelUnderWay {
+        CancelFinished::Command command{CancelFinished::Command::cancel_book};
+        int64_t sequence_number{0};
+        int64_t transact_time{0};
+        bool live{true};
+        AnswersTheCommand answers{AnswersTheCommand::no};
+        fix_common::SessionIdentity session;
+        OrderBook::ChosenOrders chosen;
+        size_t next{0};
+        // For the last piece's log and result.
+        int64_t open_orders{0};
+        int64_t orders_placed_through{0};
+        TechnicalEventApplied technical_event;
+        pubsub_itc_fw_app::TradingPhase phase{};
+        int32_t trading_day{0};
+        bool halted{false};
+        pubsub_itc_fw_app::TechnicalEventReason reason{};
+    };
+
+    // Starts the cancel @p under_way describes and carries out its first piece. Returns what it did when that was its
+    // last; otherwise keeps it in cancel_under_way_ and returns nothing.
+    std::optional<CancelFinished> start_cancel(CancelUnderWay under_way);
+    // Cancels the next piece of @p under_way's orders.
+    void cancel_piece(CancelUnderWay& under_way);
+    // Publishes the book to the command's sequence number, says what the command did, and returns it.
+    CancelFinished finish_cancel(const CancelUnderWay& under_way);
+    // Throws PreconditionAssertion when a cancel is under way, naming the command that was to be applied.
+    void refuse_while_a_cancel_is_under_way(const char* command, int64_t sequence_number) const;
     // Answers a new order or a cancel that a void names, with a rejection saying why, in place of applying it.
     void refuse_voided_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
                              const fix_common::SessionIdentity& session, const fix_common::VoidedRange& voided, ReportIsRepeat repeat);
@@ -499,6 +574,10 @@ class MatchingEngineStateMachine {
     // The highest sequence number of any command applied, live or by a catch-up, or the position a completed catch-up
     // brought the book to, whichever is higher. See sequence_goes_backwards() and applied_before().
     int64_t highest_applied_seq_no_{0};
+
+    // The command that cancels many orders whose pieces are not all carried out, if one is; see continue_cancel().
+    std::optional<CancelUnderWay> cancel_under_way_;
+    size_t orders_per_piece_{orders_per_piece};
 
     // The voids this engine has been told of, by learn_void or by meeting a VoidCommands record.
     fix_common::VoidedCommandList voids_;

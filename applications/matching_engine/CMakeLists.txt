@@ -122,6 +122,7 @@ add_executable(matching_engine_tests
         tests/MatchingEngineStateMachineFuzzTest.cpp
         tests/ReportIdentifiersTest.cpp
         tests/EngineReportSendingTest.cpp
+        tests/CancelInPiecesTest.cpp
         tests/EngineReportPacingTest.cpp
         tests/FollowerReportComparisonTest.cpp
         tests/EngineCatchUpTest.cpp

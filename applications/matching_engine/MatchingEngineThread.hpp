@@ -31,6 +31,7 @@
 #include <matching_engine_test_events.hpp>
 #include <replication_messages.hpp>
 
+#include "CancelInPieces.hpp"
 #include "DiedApplyingCheck.hpp"
 #include "EngineCatchUp.hpp"
 #include "EngineReportPacing.hpp"
@@ -250,6 +251,29 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         MatchingEngineThread& owner_;
     };
     ReportPacingLinks report_pacing_links_{*this};
+
+    // ---- A command that cancels many orders, carried out in pieces (docs/availability/pacing_the_engines_reports.md,
+    // section 7).
+    class CancelPiecesLinks : public CancelInPiecesLinksInterface<pubsub_itc_fw::EventMessage> {
+      public:
+        explicit CancelPiecesLinks(MatchingEngineThread& owner) : owner_(owner) {}
+        void set_commands_paused(bool paused) override;
+        void post_continuation() override;
+        bool carry_out_piece() override;
+        [[nodiscard]] bool cancel_under_way() const override;
+        void act_on(pubsub_itc_fw::EventMessage&& message) override;
+
+      private:
+        MatchingEngineThread& owner_;
+    };
+    CancelPiecesLinks cancel_pieces_links_{*this};
+    CancelInPieces<pubsub_itc_fw::EventMessage> cancel_pieces_{cancel_pieces_links_};
+    // The sequence number of the CancelBook under way, if the cancel under way is one, for what is said once it finishes.
+    int64_t cancel_book_under_way_{0};
+
+    // Called after a command is applied: records that nothing is being applied, unless it left a cancel with pieces to
+    // carry out, when the command stays recorded as being applied until its last piece.
+    void after_applying_a_command();
     // Keeps the reports sent ahead of what the leading sequencer's connection has written to a fixed number, by pausing
     // the commands arriving (docs/availability/pacing_the_engines_reports.md, BUG-0234).
     EngineReportPacing report_pacing_{report_pacing_links_, get_logger()};
@@ -585,6 +609,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Applies a CancelBook command, and tells the test what it cancelled.
     void apply_cancel_book_command(const pubsub_itc_fw_app::CancelBookView& command, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
                                    CommandSource source);
+    // Says what a CancelBook did, once its last piece is done: a test event and an Error, since the members lost their orders.
+    void report_cancel_book(int64_t sequence_number, const MatchingEngineStateMachine::BookCancelledByCommand& result);
     // Applies a TechnicalEvent command, and tells the test of a halt it set.
     void apply_technical_event_command(const pubsub_itc_fw_app::TechnicalEventView& event, int64_t sequence_number, int64_t transact_time, int32_t trading_date,
                                        CommandSource source);

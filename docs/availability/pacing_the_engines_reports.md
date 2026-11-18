@@ -1,9 +1,9 @@
 # Pacing the matching engine's reports {#pacing_the_engines_reports}
 
-**Status: sections 1 to 6 built (BUG-0234 closed 9 November 2026); section 7 agreed, not yet built.** Sections 1 to 6
+**Status: built (BUG-0234 closed 9 November 2026; BUG-0255, section 7, closed 18 November 2026).** Sections 1 to 6
 are the design for [BUG-0234](../bug_list.md#bug_0234), and section 6 records the three decisions it needed, each agreed
 with Andrew on 9 November 2026. Section 7 is the design for [BUG-0255](../bug_list.md#bug_0255), agreed with Andrew on 18
-November 2026.
+November 2026, with pieces of 2,000 orders.
 
 ## 1. The problem
 
@@ -188,12 +188,19 @@ problem: a member with two million resting orders would pass either.
 
 ### 7.2 The design
 
-**A cancel of many orders is carried out in pieces of 10,000 orders.** The engine cancels up to 10,000 orders, sends
+**A cancel of many orders is carried out in pieces of 2,000 orders.** The engine cancels up to 2,000 orders, sends
 their reports, and returns to its thread's run loop. It sends itself a message that continues the cancel, so the run
 loop handles what is already waiting before the next piece: lease ticks, lease grants, the notice that a connection
-for reports has nothing waiting, queries, and role announcements. 10,000 orders take between about 20 and 50
-milliseconds on the development machine, short against the lease tick of 100 milliseconds and the lease of 3
-seconds.
+for reports has nothing waiting, queries, and role announcements. 2,000 orders take a few milliseconds on the
+development machine, short against the lease tick of 100 milliseconds and the lease of 3 seconds.
+
+**Why 2,000.** Each cancelled order causes up to two messages on a connection for reports: its execution report and,
+for a cancel of a session's orders, its outcome. A piece of 2,000 orders sends at most 4,000, no more than the 4,096
+reports at which pacing pauses. A piece is carried out only while fewer than 4,096 wait, so fewer than about 8,100 ever
+wait, below the lowest limit on waiting sends the engine accepts, 16,384, four times the pacing threshold (section 3.5).
+The code checks the relation when it is compiled. A piece of 10,000 orders, 20,000 sends, is too many: measured on 18
+November 2026 in the check that runs an engine on a copy of the WAL, which allows 16,384 waiting sends, one such piece
+filled the connection, the framework closed it, and the reports on it were lost.
 
 **Between pieces, the rule of section 3 applies as it does between commands.** When 4,096 reports are waiting
 unwritten on the connection to the leading sequencer, the next piece waits until that connection says it has nothing
@@ -209,10 +216,11 @@ consequences of a change of role.
 
 **The result is the same as one call's.** The orders are cancelled in the order one call cancels them, and each
 report's ExecID is made, as now, from the command's sequence number and the report's place among its reports, counted
-across the pieces. The book is published to the command's sequence number, and the highest command acted on moves to
-it, only once the last piece is done. So both engines, and an engine catching up on the WAL, cancel the same orders
-with the same reports, whatever ran between the pieces. A command resent while the cancel was under way, including the
-cancel itself, is then passed over as one at or below the highest acted on.
+across the pieces. The book is published to the command's sequence number only once the last piece is done. The
+highest command acted on moves to it when the command starts, as for any command, so a command resent while the cancel
+was under way, including the cancel itself, is held and then passed over as one at or below the highest acted on. So
+both engines, and an engine catching up on the WAL, cancel the same orders with the same reports, whatever ran between
+the pieces.
 
 **A restart during a cancel.** Recovering the book from the open-order region ignores every change above the published
 position, so an engine restarted part way through a cancel finds the book as it was before the cancel, and applies the
@@ -223,13 +231,14 @@ pieces make that time longer, not different.
 
 ### 7.3 Steps, and how each is known to be right
 
-1. **The pieces in the state machine**, with unit tests: a cancel of more than 10,000 orders is carried out in pieces
-   and gives the same reports, with the same ExecIDs and in the same order, as one call; the book is published and the
-   highest command acted on moves only after the last piece; a cancel of fewer orders than a piece is finished in one.
-   Each test is made to fail on purpose first.
-2. **The engine runs them**, holding commands while a cancel is unfinished, and pacing between pieces. Unit tests: a
-   command arriving during a cancel is applied after it, in order; a cancel resent during itself is passed over;
-   the pieces wait for the notice when 4,096 reports are waiting.
+1. **The pieces in the state machine**, with unit tests: a cancel of more than a piece's orders is carried out in pieces
+   and gives the same reports, with the same ExecIDs and in the same order, as one call; the book is published only
+   after the last piece; no other command may be applied before it; a cancel of fewer orders than a piece is finished
+   in one. Each test is made to fail on purpose first.
+2. **The engine runs them**, holding commands while a cancel is unfinished, and pacing between pieces, through
+   `CancelInPieces`. Unit tests: what arrives during a cancel is acted on after it, in order; a held command that starts
+   another cancel waits for it; no piece is carried out while pacing holds the commands, and the next is asked for when
+   pacing lets them go.
 3. **Scenario 115 of `ha_test.py`** checks that no matching engine loses its lease, which it now only reports, and the
    check that runs engines on a copy of the WAL is run after it again, and must receive every report. Both must fail
    without the change.

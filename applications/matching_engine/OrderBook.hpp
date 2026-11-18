@@ -322,21 +322,21 @@ class OrderBook {
         }
     }
 
+    /// Orders chosen for removal, each as the sequence number of the command that placed it and its slot, in the order
+    /// the orders were placed.
+    using ChosenOrders = std::vector<std::pair<int64_t, SlotIndex>>;
+
     /**
-     * @brief Takes off the book every order placed at or before a sequence number, calling fn(entry) for each just before
-     * it is removed, in the order the orders were placed.
+     * @brief The orders placed at or before a sequence number, in the order they were placed.
      *
-     * As for_each_in_order_placed, every engine that applied the same commands visits the same orders in the same
-     * order, and the list it sorts takes 16 bytes for each order removed for the length of the call. The orders are
-     * removed from the list it sorted, not while walking the map, so the map is never changed under a walk. fn must not
-     * change the book.
+     * As for_each_in_order_placed, every engine that applied the same commands chooses the same orders in the same
+     * order. Walks the whole map once and sorts what it chose: 16 bytes for each order chosen.
      *
-     * @param[in] placed_through The highest sequence number of a new order whose order is removed.
-     * @param[in] fn             Called with each order's record, which is valid only for the call.
-     * @return How many orders were removed.
+     * @param[in] placed_through The highest sequence number of a new order whose order is chosen.
+     * @return The orders chosen.
      */
-    template <typename Fn> size_t remove_placed_through(int64_t placed_through, Fn&& fn) {
-        std::vector<std::pair<int64_t, SlotIndex>> placed;
+    [[nodiscard]] ChosenOrders choose_placed_through(int64_t placed_through) const {
+        ChosenOrders placed;
         for (const auto& kv : index_) {
             const int64_t seq_no = entry_at(kv.second)->placed_at_seq_no;
             if (seq_no <= placed_through) {
@@ -344,30 +344,21 @@ class OrderBook {
             }
         }
         std::sort(placed.begin(), placed.end());
-        for (const auto& order : placed) {
-            const OrderEntry* entry = entry_at(order.second);
-            fn(*entry);
-            index_.erase(OrderKey::make(entry->session, entry->get_cl_ord_id()));
-            store_.release(order.second);
-        }
-        return placed.size();
+        return placed;
     }
 
     /**
-     * @brief Takes off the book every order of @p session except a GoodTillCancel or GoodTillDate order, calling fn(entry)
-     * for each just before it is removed, in the order the orders were placed.
+     * @brief Every order of @p session except a GoodTillCancel or GoodTillDate order, in the order they were placed.
      *
      * For cancel on disconnect: a member's GoodTillCancel and GoodTillDate orders were placed to outlive its connection,
-     * so they stay. As for remove_placed_through, every engine that applied the same commands visits the same orders in
-     * the same order. It walks the whole map, since the map is keyed by order and not by session, and the list it sorts
-     * takes 16 bytes for each order removed for the length of the call. fn must not change the book.
+     * so they are not chosen. As for choose_placed_through, every engine that applied the same commands chooses the same
+     * orders in the same order. It walks the whole map, since the map is keyed by order and not by session.
      *
-     * @param[in] session The session whose orders are removed.
-     * @param[in] fn      Called with each order's record, which is valid only for the call.
-     * @return How many orders were removed.
+     * @param[in] session The session whose orders are chosen.
+     * @return The orders chosen.
      */
-    template <typename Fn> size_t remove_session_orders(const fix_common::SessionIdentity& session, Fn&& fn) {
-        std::vector<std::pair<int64_t, SlotIndex>> placed;
+    [[nodiscard]] ChosenOrders choose_session_orders(const fix_common::SessionIdentity& session) const {
+        ChosenOrders placed;
         for (const auto& kv : index_) {
             if (!(kv.first.session == session)) {
                 continue;
@@ -380,13 +371,59 @@ class OrderBook {
             placed.emplace_back(entry->placed_at_seq_no, kv.second);
         }
         std::sort(placed.begin(), placed.end());
-        for (const auto& order : placed) {
-            const OrderEntry* entry = entry_at(order.second);
+        return placed;
+    }
+
+    /**
+     * @brief Takes off the book the chosen orders from @p first, at most @p count of them, calling fn(entry) for each just
+     * before it is removed, in the order chosen.
+     *
+     * The orders are removed from the list chosen, not while walking the map, so the map is never changed under a walk.
+     * Nothing else may change the book between choosing the orders and removing the last of them, or a slot chosen could
+     * hold another order by then. fn must not change the book.
+     *
+     * @param[in] chosen The orders chosen by choose_placed_through or choose_session_orders.
+     * @param[in] first  The place in @p chosen of the first order to remove.
+     * @param[in] count  The most orders to remove.
+     * @param[in] fn     Called with each order's record, which is valid only for the call.
+     * @return How many orders were removed: @p count, or fewer at the end of @p chosen.
+     */
+    template <typename Fn> size_t remove_chosen(const ChosenOrders& chosen, size_t first, size_t count, Fn&& fn) {
+        size_t removed = 0;
+        for (size_t place = first; place < chosen.size() && removed < count; ++place, ++removed) {
+            const OrderEntry* entry = entry_at(chosen[place].second);
             fn(*entry);
             index_.erase(OrderKey::make(entry->session, entry->get_cl_ord_id()));
-            store_.release(order.second);
+            store_.release(chosen[place].second);
         }
-        return placed.size();
+        return removed;
+    }
+
+    /**
+     * @brief Takes off the book every order placed at or before a sequence number, calling fn(entry) for each just before
+     * it is removed, in the order the orders were placed: choose_placed_through, then remove_chosen of them all.
+     *
+     * @param[in] placed_through The highest sequence number of a new order whose order is removed.
+     * @param[in] fn             Called with each order's record, which is valid only for the call.
+     * @return How many orders were removed.
+     */
+    template <typename Fn> size_t remove_placed_through(int64_t placed_through, Fn&& fn) {
+        const ChosenOrders chosen = choose_placed_through(placed_through);
+        return remove_chosen(chosen, 0, chosen.size(), std::forward<Fn>(fn));
+    }
+
+    /**
+     * @brief Takes off the book every order of @p session except a GoodTillCancel or GoodTillDate order, calling fn(entry)
+     * for each just before it is removed, in the order the orders were placed: choose_session_orders, then remove_chosen
+     * of them all.
+     *
+     * @param[in] session The session whose orders are removed.
+     * @param[in] fn      Called with each order's record, which is valid only for the call.
+     * @return How many orders were removed.
+     */
+    template <typename Fn> size_t remove_session_orders(const fix_common::SessionIdentity& session, Fn&& fn) {
+        const ChosenOrders chosen = choose_session_orders(session);
+        return remove_chosen(chosen, 0, chosen.size(), std::forward<Fn>(fn));
     }
 
   private:

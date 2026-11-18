@@ -1488,10 +1488,9 @@ class Scenario(NamedTuple):
     # Once each session's grace period has run out, the leading sequencer cancels its orders, and the follower sequencer
     # is stopped at once, so that the leading sequencer commits nothing until a voter confirms the follower may not lead,
     # while the matching engine cancels
-    # about 450,000 orders for each, and sends the sequencer an execution report for each. Neither sequencer may lose its
-    # lease meanwhile, and the sequencers' epoch may not change (BUG-0252). The matching engine carries out each cancel as
-    # one piece of work, which can outlast its lease (BUG-0255), so whether it lost its lease is reported and not checked.
-    # See run_scenario's "a session ending with many resting orders" block.
+    # about 450,000 orders for each, in pieces, and sends the sequencer an execution report for each. No sequencer or
+    # matching engine may lose its lease meanwhile, and no epoch may change (BUG-0252, BUG-0255). See run_scenario's "a
+    # session ending with many resting orders" block.
     assert_session_cancel_keeps_leases: bool = False
 
 
@@ -5396,23 +5395,27 @@ _SCENARIOS: list[Scenario] = [
 
     # 115 -- a session ending with several hundred thousand resting orders costs no leader its lease.
     #
-    # BUG-0252. The binary load client sends 1.8 million orders on four sessions, at a rate the venue sustains, and exits,
-    # so that every order rests and every session ends. When each session's grace period runs out, the leading sequencer
-    # writes a cancel of its orders, and the follower sequencer is then stopped at once, so that the leading sequencer
-    # commits nothing until a voter confirms that the follower may not lead, while the reports pour in. More of them are
-    # written in that time than the room for the copies kept for the publishers holds, and the first record without a
-    # copy must be read from the WAL without reading again the records sent from their copies (BUG-0252). The matching engine cancels about 450,000 orders for each, one session after another,
-    # and sends the leading sequencer an execution report for each cancelled order, faster than it can handle them. The
-    # sequencer's lease is renewed by a timer that runs between messages, so neither sequencer may lose its lease: neither
-    # Quill log may say a lease ran out, and neither epoch may change. The matching engine carries out each cancel as one
-    # piece of work, which can outlast its lease (BUG-0255); whether it lost its lease is reported, and not checked.
+    # The binary load client sends 1.8 million orders on four sessions, at a rate the venue sustains, and exits, so that
+    # every order rests and every session ends. When each session's grace period runs out, the leading sequencer writes a
+    # cancel of its orders, and the follower sequencer is stopped at once.
+    #
+    # The leading sequencer then commits nothing until a voter confirms that the follower may not lead, while the
+    # matching engine's reports pour in, more than the room for the copies kept for the publishers holds. The first
+    # record without a copy must be read from the WAL without reading again the records sent from their copies, or the
+    # sequencer's thread is held for seconds and its lease runs out (BUG-0252).
+    #
+    # The matching engine cancels about 450,000 orders for each session, in pieces, so that its lease and the pacing of
+    # its reports run between them (BUG-0255).
+    #
+    # No sequencer or matching engine may say its lease ran out, no epoch may change, and the check that runs engines on
+    # a copy of the WAL afterwards, which reads their reports slowly on purpose, must receive every report.
     Scenario(
         number=115,
         short_name="session_cancel_keeps_leases",
-        description="Cancelling 1.8 million resting orders of four ended sessions, and the reports they cause, costs no sequencer its lease",
+        description="Cancelling 1.8 million resting orders of four ended sessions, and the reports they cause, costs no sequencer or engine its lease",
         expected_outcome=(
-            "the four sessions' orders are cancelled; neither sequencer says its lease ran out, and the sequencers' epochs are "
-            "unchanged"
+            "the four sessions' orders are cancelled; no sequencer or matching engine says its lease ran out, no epoch changes, "
+            "and an engine run on a copy of the WAL sends every report"
         ),
         me_ha=True,
         binary_gateway=True,
@@ -10992,6 +10995,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
             def epochs() -> dict[str, str]:
                 return {name: path.read_text().strip() if path.is_file() else "(no file)" for name, path in epoch_files.items()}
 
+            def highest_epoch(found: dict[str, str], names: list[str]) -> int:
+                # A file reads "trading_day=<day> <epoch>". A follower that has never asked to lead may have none yet, and
+                # writes one when it first learns the epoch, so only the highest epoch of the pair is compared.
+                return max((int(found[name].split()[-1]) for name in names if found[name] != "(no file)"), default=0)
+
             def quill_log(name: str) -> Path:
                 # The Quill log is named with the trading day or without it, depending on how the component was started;
                 # a file of the other name may be left from an earlier run, so the one written most recently is read.
@@ -11059,13 +11067,18 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("many resting orders: a sequencer's lease ran out while the orders were cancelled (BUG-0252):\n  " + "\n  ".join(lost))
             log("  neither sequencer says its lease ran out -- OK")
             epochs_after = epochs()
-            if any(epochs_after[name] != epochs_before[name] for name in sequencers):
-                die(f"many resting orders: a sequencer's epoch changed while the orders were cancelled: before {epochs_before}, after "
+            if highest_epoch(epochs_after, sequencers) != highest_epoch(epochs_before, sequencers):
+                die(f"many resting orders: the sequencers' epoch changed while the orders were cancelled: before {epochs_before}, after "
                     f"{epochs_after}")
             log(f"  the sequencers' epochs are unchanged: {epochs_after} -- OK")
-            engine_lost = leases_lost(["matching_engine_primary", "matching_engine_secondary"])
-            log("  reported, not checked (BUG-0255): " + (f"a matching engine's lease ran out, epochs now {epochs_after}:\n    "
-                                                           + "\n    ".join(engine_lost) if engine_lost else "no matching engine's lease ran out"))
+            engines = ["matching_engine_primary", "matching_engine_secondary"]
+            lost = leases_lost(engines)
+            if lost:
+                die("many resting orders: a matching engine's lease ran out while it cancelled the orders (BUG-0255):\n  " + "\n  ".join(lost))
+            if highest_epoch(epochs_after, engines) != highest_epoch(epochs_before, engines):
+                die(f"many resting orders: the matching engines' epoch changed while they cancelled the orders: before {epochs_before}, after "
+                    f"{epochs_after}")
+            log("  neither matching engine says its lease ran out, and their epochs are unchanged -- OK")
 
         # ── The venue follows the day's schedule (R-0167, R-0168) ──
         if scenario.assert_trading_day_by_schedule:
@@ -14834,12 +14847,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
     if result_pass:
         try:
             replayed = run_wal_replay_check(prefix, launched_configs)
-            if replayed is not None and scenario.assert_session_cancel_keeps_leases:
-                # One cancel of a session's orders sends a report for each of 450,000 orders at once, which the engine's
-                # pacing cannot divide, and the connection read slowly on purpose is closed with the reports on it lost.
-                log("=== Engines on the WAL: not run -- a session's cancel sends more reports at once than the engine can pace "
-                    "(docs/bug_list.md, BUG-0255) ===")
-            elif replayed is not None:
+            if replayed is not None:
                 run_engines_on_the_wal(prefix, launched_configs, bin_dir, log_dir, replayed)
         except TestFailure:
             result_pass = False

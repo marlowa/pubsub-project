@@ -539,6 +539,16 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         return;
     }
 
+    // While a cancel has pieces left, nothing from a sequencer's order connection is acted on: a command would change the
+    // book between the pieces, and anything else, such as the end of a catch-up, could overtake the commands held before
+    // it. Each is held, with its payload, and acted on in order once the cancel is finished.
+    if (cancel_pieces_.holds() && sequencer_order_conn_ids_.count(message.connection_id()) != 0) {
+        // The same message, owning the same payload in the reactor's inbound slab, which is released once it is acted on.
+        cancel_pieces_.hold(pubsub_itc_fw::EventMessage::create_framework_pdu_message(message.payload(), message.payload_size(), message.slab_id(),
+                                                                                      message.connection_id(), pdu_id, message.seq_no()));
+        return;
+    }
+
     if (pdu_id == pubsub_itc_fw::WalFollowStarted::message_pdu_id) {
         handle_follow_started(message);
         release_pdu_payload(message);
@@ -780,7 +790,56 @@ void MatchingEngineThread::apply_command(const pubsub_itc_fw::EventMessage& mess
         }
     }
 
-    order_book_.set_applying(0);
+    after_applying_a_command();
+}
+
+// A piece starts with fewer than the pacing threshold's reports waiting, or it would not have been carried out, so what
+// waits on a connection for reports stays below twice that threshold, and well below the lowest limit on waiting sends
+// the engine accepts, four times it (docs/availability/pacing_the_engines_reports.md, section 7).
+static_assert(static_cast<int64_t>(MatchingEngineStateMachine::orders_per_piece * MatchingEngineStateMachine::sends_per_order_cancelled) <=
+                  EngineReportPacing::pause_at_reports,
+              "a piece of a cancel must send no more than the reports at which pacing pauses");
+
+void MatchingEngineThread::after_applying_a_command() {
+    if (!state_machine_.cancel_under_way()) {
+        order_book_.set_applying(0);
+    }
+    cancel_pieces_.after_command();
+}
+
+void MatchingEngineThread::CancelPiecesLinks::set_commands_paused(bool paused) {
+    for (const pubsub_itc_fw::ConnectionID& connection : owner_.sequencer_order_conn_ids_) {
+        if (paused) {
+            owner_.pause_reading(connection);
+        } else {
+            owner_.resume_reading(connection);
+        }
+    }
+}
+
+void MatchingEngineThread::CancelPiecesLinks::post_continuation() {
+    owner_.post_message(owner_.get_thread_id(), pubsub_itc_fw::EventMessage::create_itc_message(owner_.get_thread_id(), nullptr, 0));
+}
+
+bool MatchingEngineThread::CancelPiecesLinks::carry_out_piece() {
+    const std::optional<MatchingEngineStateMachine::CancelFinished> finished = owner_.state_machine_.continue_cancel();
+    if (!finished.has_value()) {
+        return false;
+    }
+    if (finished->command == MatchingEngineStateMachine::CancelFinished::Command::cancel_book) {
+        owner_.report_cancel_book(owner_.cancel_book_under_way_, finished->book);
+        owner_.cancel_book_under_way_ = 0;
+    }
+    owner_.order_book_.set_applying(0);
+    return true;
+}
+
+bool MatchingEngineThread::CancelPiecesLinks::cancel_under_way() const {
+    return owner_.state_machine_.cancel_under_way();
+}
+
+void MatchingEngineThread::CancelPiecesLinks::act_on(pubsub_itc_fw::EventMessage&& message) {
+    owner_.on_framework_pdu_message(message);
 }
 
 void MatchingEngineThread::die_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number) {
@@ -926,17 +985,14 @@ void MatchingEngineThread::ReportPacingLinks::pause_reading_commands() {
     PUBSUB_LOG(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "MatchingEngineThread: {} reports wait to be written to the leading sequencer -- reading the commands from the sequencers paused",
                EngineReportPacing::pause_at_reports);
-    for (const pubsub_itc_fw::ConnectionID& connection : owner_.sequencer_order_conn_ids_) {
-        owner_.pause_reading(connection);
-    }
+    owner_.cancel_pieces_.pacing_pauses();
 }
 
 void MatchingEngineThread::ReportPacingLinks::resume_reading_commands() {
     PUBSUB_LOG_STR(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "MatchingEngineThread: the leading sequencer has read the reports waiting -- reading the commands from the sequencers again");
-    for (const pubsub_itc_fw::ConnectionID& connection : owner_.sequencer_order_conn_ids_) {
-        owner_.resume_reading(connection);
-    }
+    // A cancel waiting for the reports to be written goes on with its next piece.
+    owner_.cancel_pieces_.pacing_resumes();
 }
 
 void MatchingEngineThread::ReportPacingLinks::request_written_notification(const pubsub_itc_fw::ConnectionID& connection) {
@@ -1053,7 +1109,10 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     }
 }
 
-void MatchingEngineThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
+void MatchingEngineThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {
+    // The only message this thread sends itself: carry on with the cancel under way.
+    cancel_pieces_.continuation_arrived();
+}
 
 // HA state machine (Slice C+D)
 
@@ -1943,6 +2002,14 @@ void MatchingEngineThread::apply_cancel_book_command(const pubsub_itc_fw_app::Ca
     if (!result.applied) {
         return;
     }
+    if (!result.finished) {
+        cancel_book_under_way_ = sequence_number; // said once its last piece is done
+        return;
+    }
+    report_cancel_book(sequence_number, result);
+}
+
+void MatchingEngineThread::report_cancel_book(int64_t sequence_number, const MatchingEngineStateMachine::BookCancelledByCommand& result) {
     if (test_events_.has_value()) {
         test_events_->send_event(pubsub_itc_fw_app::BookCancelled::message_pdu_id,
                                  pubsub_itc_fw_app::BookCancelled{result.open_orders, result.reports_sent, true, result.orders_kept});
