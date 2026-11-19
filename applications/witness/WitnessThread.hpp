@@ -17,9 +17,9 @@
 #include <lease_messages.hpp>
 #include <pubsub_itc_fw/LeaseVoter.hpp>
 
-#include <pubsub_itc_fw/WitnessConfiguration.hpp>
+#include "WitnessConfiguration.hpp"
 
-namespace pubsub_itc_fw {
+namespace witness {
 
 /**
  * @brief ApplicationThread subclass implementing the witness: the third voter in deciding which arbiter is active.

@@ -5,10 +5,10 @@
 
 #include <string>
 
+#include "WitnessConfiguration.hpp"
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
-#include <pubsub_itc_fw/WitnessConfiguration.hpp>
 
-namespace pubsub_itc_fw {
+namespace witness {
 
 /**
  * @brief Loads a WitnessConfiguration from a TOML file.

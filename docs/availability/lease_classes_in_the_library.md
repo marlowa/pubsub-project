@@ -5,7 +5,9 @@
 > section 9.
 >
 > **Built.** Phase 3 is finished: the lease classes, the voting service and the promise recorder are in
-> the library. Andrew reviewed it on 13 October 2026.
+> the library. Andrew reviewed it on 13 October 2026. The arbiter and witness programs themselves,
+> `Arbiter`, `ArbiterThread`, `Witness`, `WitnessThread` and their configurations, are applications built on
+> that machinery, in `applications/arbiter` and `applications/witness` ([BUG-0269](../bug_list.md#bug_0269)).
 
 ## 1. What phase 3 does
 

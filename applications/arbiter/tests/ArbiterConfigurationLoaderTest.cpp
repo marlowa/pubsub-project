@@ -5,8 +5,8 @@
 
 #include <gtest/gtest.h>
 
-#include <pubsub_itc_fw/ArbiterConfiguration.hpp>
-#include <pubsub_itc_fw/ArbiterConfigurationLoader.hpp>
+#include "ArbiterConfiguration.hpp"
+#include "ArbiterConfigurationLoader.hpp"
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
@@ -87,11 +87,11 @@ name    = "matching_engine_publisher"
 pair_id = 3
 )";
 
-pubsub_itc_fw::ArbiterConfiguration load_with_pairs(const std::string& pair_tables) {
+arbiter::ArbiterConfiguration load_with_pairs(const std::string& pair_tables) {
     pubsub_itc_fw::TomlConfiguration toml;
     const auto [ok, err] = toml.load_string(std::string(required_sections) + pair_tables);
     EXPECT_TRUE(ok) << err;
-    return pubsub_itc_fw::ArbiterConfigurationLoader::load(toml);
+    return arbiter::ArbiterConfigurationLoader::load(toml);
 }
 
 // The message of the ConfigurationException that loading @p pair_tables throws, or empty if it does not throw.
@@ -107,7 +107,7 @@ std::string refusal_for(const std::string& pair_tables) {
 } // namespaces
 
 TEST(ArbiterConfigurationLoaderTest, ReadsEveryPairInOrderAndTheArbitersOwnPair) {
-    const pubsub_itc_fw::ArbiterConfiguration config = load_with_pairs(venue_pairs);
+    const arbiter::ArbiterConfiguration config = load_with_pairs(venue_pairs);
 
     ASSERT_EQ(config.voting_pairs.size(), 3U);
     EXPECT_EQ(config.voting_pairs[0].name, "sequencer");

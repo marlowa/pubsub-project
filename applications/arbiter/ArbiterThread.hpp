@@ -28,13 +28,13 @@
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 
-#include <pubsub_itc_fw/ArbiterConfiguration.hpp>
+#include "ArbiterConfiguration.hpp"
 #include <pubsub_itc_fw/ArbiterPeerContact.hpp>
 #include <pubsub_itc_fw/ComponentLeaseVoters.hpp>
 #include <pubsub_itc_fw/ComponentStatementStore.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 
-namespace pubsub_itc_fw {
+namespace arbiter {
 
 /**
  * @brief Whether an arbiter is active (leader) or passive (follower), or has not yet been decided (unknown).
@@ -140,7 +140,7 @@ class ArbiterThread : public pubsub_itc_fw::TopicSubscriberThread {
     std::optional<pubsub_itc_fw::TestEventChannel> test_events_;
 
     // The pool's vote on which instance of each component pair leads, held while this arbiter is active.
-    ComponentLeaseVoters component_voters_;
+    pubsub_itc_fw::ComponentLeaseVoters component_voters_;
 
     // Where this arbiter's promise in deciding which arbiter is active outlives the process, until the
     // machine reboots.
@@ -152,7 +152,7 @@ class ArbiterThread : public pubsub_itc_fw::TopicSubscriberThread {
 
     // The newest statement from each component pair's leader about whether its peer may lead,
     // kept on disk beside the promise record, so that a restart does not forget it.
-    ComponentStatementStore component_statement_store_;
+    pubsub_itc_fw::ComponentStatementStore component_statement_store_;
 
     // The statements held, as handed to the writer thread: fixed in size, so that handing them over allocates nothing.
     // An arbiter votes in a few pairs, one for each kind of component that leads (docs/availability/recording_statements_in_the_background.md).

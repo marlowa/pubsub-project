@@ -15,7 +15,7 @@
 #include <pubsub_itc_fw/TestEventsConfiguration.hpp>
 #include <pubsub_itc_fw/VotingPair.hpp>
 
-namespace pubsub_itc_fw {
+namespace arbiter {
 
 /**
  * @brief Configuration for the arbiter process.
@@ -89,14 +89,14 @@ struct ArbiterConfiguration {
      *
      * A request for a lease in a pair not listed here is dropped and logged.
      */
-    std::vector<VotingPair> voting_pairs;
+    std::vector<pubsub_itc_fw::VotingPair> voting_pairs;
 
     /**
      * @brief The pair the two arbiters form, to decide which of them is active, from the `[own_pair]` table.
      *
      * The witness must be configured with the same number.
      */
-    VotingPair own_pair;
+    pubsub_itc_fw::VotingPair own_pair;
 
     /**
      * @brief The timings of the leases that decide which arbiter is active, and that the active

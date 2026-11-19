@@ -108,12 +108,6 @@ set(PUBSUB_ITC_FW_SRC
         src/TlsContext.cpp
         src/TlsState.cpp
         src/TlsRawBytesProtocolHandler.cpp
-        src/Arbiter.cpp
-        src/ArbiterConfigurationLoader.cpp
-        src/ArbiterThread.cpp
-        src/Witness.cpp
-        src/WitnessConfigurationLoader.cpp
-        src/WitnessThread.cpp
 )
 
 # ------------------------------------------------------------

@@ -5,10 +5,10 @@
 
 #include <string>
 
-#include <pubsub_itc_fw/ArbiterConfiguration.hpp>
+#include "ArbiterConfiguration.hpp"
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
-namespace pubsub_itc_fw {
+namespace arbiter {
 
 /**
  * @brief Loads ArbiterConfiguration from a TOML file.

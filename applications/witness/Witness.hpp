@@ -10,39 +10,39 @@
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 
-#include <pubsub_itc_fw/ArbiterConfiguration.hpp>
-#include <pubsub_itc_fw/ArbiterThread.hpp>
+#include "WitnessConfiguration.hpp"
+#include "WitnessThread.hpp"
 
-namespace pubsub_itc_fw {
+namespace witness {
 
 /**
- * @brief Top-level application class for the arbiter process.
+ * @brief Top-level application class for the witness process.
  *
- * The arbiter is the third voter in deciding which instance of each configured pair leads. Two
- * arbiters run as a pair of their own, and the pool votes through whichever is active; the witness
- * is the third voter in deciding which arbiter that is. See ArbiterThread.
+ * The witness has no involvement in the order flow. It listens for inbound
+ * PDU connections from the two arbiters and implements the witness side
+ * of the leader-follower protocol only.
  */
-class Arbiter {
+class Witness {
   public:
     /**
-     * @param[in] config Arbiter configuration.
+     * @param[in] config Witness configuration.
      * @param[in] logger Logger. Ownership transferred.
      */
-    explicit Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
+    explicit Witness(const WitnessConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger);
 
     /**
      * @brief Starts the reactor event loop. Blocks until shutdown.
      * @return 0 on normal shutdown, non-zero on error.
      */
-    int run() const;
+    int run();
 
   private:
-    ArbiterConfiguration config_;
+    WitnessConfiguration config_;
     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
     pubsub_itc_fw::ServiceRegistry service_registry_;
     pubsub_itc_fw::ReactorConfiguration reactor_configuration_;
     std::unique_ptr<pubsub_itc_fw::Reactor> reactor_;
-    std::shared_ptr<ArbiterThread> arbiter_thread_;
+    std::shared_ptr<WitnessThread> witness_thread_;
 };
 
 } // namespaces

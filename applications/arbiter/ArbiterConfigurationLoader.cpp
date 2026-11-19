@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <pubsub_itc_fw/ArbiterConfigurationLoader.hpp>
+#include "ArbiterConfigurationLoader.hpp"
 
 #include <string>
 
@@ -12,7 +12,7 @@
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 #include <pubsub_itc_fw/VotingPair.hpp>
 
-namespace pubsub_itc_fw {
+namespace arbiter {
 
 ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_path) {
     pubsub_itc_fw::TomlConfiguration toml;

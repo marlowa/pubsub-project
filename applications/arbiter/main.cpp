@@ -10,10 +10,10 @@
 #include <string>
 #include <utility>
 
+#include "Arbiter.hpp"
+#include "ArbiterConfiguration.hpp"
+#include "ArbiterConfigurationLoader.hpp"
 #include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
-#include <pubsub_itc_fw/Arbiter.hpp>
-#include <pubsub_itc_fw/ArbiterConfiguration.hpp>
-#include <pubsub_itc_fw/ArbiterConfigurationLoader.hpp>
 #include <pubsub_itc_fw/ComponentArguments.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
@@ -45,9 +45,9 @@ int main(int argc, char* argv[]) {
                                                                pubsub_itc_fw::FwLogLevel::Info, pubsub_itc_fw::FwLogLevel::Info);
     pubsub_itc_fw::ApplicationAnnouncer::announce(*logger, "arbiter");
 
-    pubsub_itc_fw::ArbiterConfiguration config;
+    arbiter::ArbiterConfiguration config;
     try {
-        config = pubsub_itc_fw::ArbiterConfigurationLoader::load(config_file);
+        config = arbiter::ArbiterConfigurationLoader::load(config_file);
     } catch (const pubsub_itc_fw::ConfigurationException& ex) {
         PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Error, "Arbiter: configuration error: {}", ex.what());
         return 1;
@@ -107,7 +107,7 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        const pubsub_itc_fw::Arbiter app{config, std::move(logger)};
+        const arbiter::Arbiter app{config, std::move(logger)};
         return app.run();
     } catch (const std::exception& ex) {
         std::cerr << "Arbiter: fatal exception: " << ex.what() << "\n";

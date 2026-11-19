@@ -5,10 +5,10 @@
 
 #include <gtest/gtest.h>
 
+#include "WitnessConfiguration.hpp"
+#include "WitnessConfigurationLoader.hpp"
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
-#include <pubsub_itc_fw/WitnessConfiguration.hpp>
-#include <pubsub_itc_fw/WitnessConfigurationLoader.hpp>
 
 namespace {
 
@@ -54,11 +54,11 @@ secondary_port = 0
 last_state_file = "/run/venue/witness.last_state"
 )";
 
-pubsub_itc_fw::WitnessConfiguration load_with_pair(const std::string& pair_table) {
+witness::WitnessConfiguration load_with_pair(const std::string& pair_table) {
     pubsub_itc_fw::TomlConfiguration toml;
     const auto [ok, err] = toml.load_string(std::string(required_sections) + pair_table);
     EXPECT_TRUE(ok) << err;
-    return pubsub_itc_fw::WitnessConfigurationLoader::load(toml);
+    return witness::WitnessConfigurationLoader::load(toml);
 }
 
 // The message of the ConfigurationException that loading @p pair_table throws, or empty if it does not throw.
@@ -74,7 +74,7 @@ std::string refusal_for(const std::string& pair_table) {
 } // namespaces
 
 TEST(WitnessConfigurationLoaderTest, ReadsThePairItVotesIn) {
-    const pubsub_itc_fw::WitnessConfiguration config = load_with_pair(R"(
+    const witness::WitnessConfiguration config = load_with_pair(R"(
 [voting_pair]
 name    = "arbiter"
 pair_id = 4

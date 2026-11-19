@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Bugs recorded | 269 |
-| Open | 52 (28 defects, 24 tasks) |
-| Closed | 217 |
+| Open | 51 (28 defects, 23 tasks) |
+| Closed | 218 |
 | Next id | BUG-0270 |
 
 ## Open bugs by severity
@@ -64,7 +64,6 @@
 | [BUG-0265](#bug_0265) | low | task | The Java test client's blotter does not show the trading-session status its member is told |
 | [BUG-0266](#bug_0266) | low | task | The administration service's desktop does not show the venue's trading phase |
 | [BUG-0267](#bug_0267) | low | task | `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines |
-| [BUG-0269](#bug_0269) | low | task | The arbiter and witness programs are in the framework library, not with the applications built on it |
 
 ---
 
@@ -337,32 +336,6 @@ equivalent, and show the state prominently.
 included, which members are not told (BUG-0265). Item 3 of BUG-0137 gives the administration service a subscription to
 the `technical_events` topic, which carries every phase; once it has that, the desktop shows the latest phase and the
 trading day. Best done straight after item 3.
-
-### BUG-0269: The arbiter and witness programs are in the framework library, not with the applications built on it {#bug_0269}
-
-| | |
-|---|---|
-| Severity | low |
-| Kind | task |
-| Found | 2026-11-19 |
-| Recorded | 2026-11-19 |
-| How | Andrew's observation, while the end of day ([BUG-0137](#bug_0137)) was being built; agreed that day to be done after BUG-0137 is closed |
-| Impact | The library holds two programs as well as the machinery they are built on, so the line between the framework and the applications built on it is not where it should be |
-
-**What happens.** Phase 3 of [recovery_plan.md](recovery_plan.md) moved the lease classes and the voting service into the
-library ([lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md)). With the voting logic it
-moved the arbiter and witness programs themselves: `Arbiter`, `ArbiterThread`, `ArbiterConfiguration`,
-`ArbiterConfigurationLoader`, `ArbiterPeerContact`, `Witness`, `WitnessThread`, `WitnessConfiguration` and
-`WitnessConfigurationLoader` are in `libraries/pubsub_itc_fw`, and `applications/arbiter` and `applications/witness` hold
-only a `main.cpp` and their configuration files. Since step 3 of the end of day, `ArbiterThread` and `WitnessThread` also
-subscribe to the `technical_events` topic and stop at the end of a trading day, which puts the venue's trading day into
-the library.
-
-**What is wanted.** Those classes move to `applications/arbiter` and `applications/witness`, with their unit tests and
-their own build targets. The lease machinery that every component pair uses to decide which instance leads (the lease
-rules, the voter's logic and the promise records) stays in the library. Nothing changes in behaviour or on the wire.
-Every high availability scenario is run before and after, and must give the same results, and the documents that
-describe where the arbiter and the witness live are updated.
 
 ### BUG-0267: `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines {#bug_0267}
 
@@ -2480,6 +2453,42 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0269: The arbiter and witness programs are in the framework library, not with the applications built on it {#bug_0269}
+
+| | |
+|---|---|
+| Severity | low |
+| Kind | task |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| Fixed | 2026-11-19 -- `Arbiter`, `ArbiterThread`, `ArbiterConfiguration`, `ArbiterConfigurationLoader`, `Witness`, `WitnessThread`, `WitnessConfiguration` and `WitnessConfigurationLoader` moved to `applications/arbiter` and `applications/witness`, in the namespaces `arbiter` and `witness`, with their tests |
+| How | Andrew's observation, while the end of day ([BUG-0137](#bug_0137)) was being built; agreed that day to be done after BUG-0137 is closed |
+| Impact | The library holds two programs as well as the machinery they are built on, so the line between the framework and the applications built on it is not where it should be |
+
+**What happens.** Phase 3 of [recovery_plan.md](recovery_plan.md) moved the lease classes and the voting service into the
+library ([lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md)). With the voting logic it
+moved the arbiter and witness programs themselves: `Arbiter`, `ArbiterThread`, `ArbiterConfiguration`,
+`ArbiterConfigurationLoader`, `ArbiterPeerContact`, `Witness`, `WitnessThread`, `WitnessConfiguration` and
+`WitnessConfigurationLoader` are in `libraries/pubsub_itc_fw`, and `applications/arbiter` and `applications/witness` hold
+only a `main.cpp` and their configuration files. Since step 3 of the end of day, `ArbiterThread` and `WitnessThread` also
+subscribe to the `technical_events` topic and stop at the end of a trading day, which puts the venue's trading day into
+the library.
+
+**What is wanted.** Those classes move to `applications/arbiter` and `applications/witness`, with their unit tests and
+their own build targets. The lease machinery that every component pair uses to decide which instance leads (the lease
+rules, the voter's logic and the promise records) stays in the library. Nothing changes in behaviour or on the wire.
+Every high availability scenario is run before and after, and must give the same results, and the documents that
+describe where the arbiter and the witness live are updated.
+
+**What was done.** The eight classes and their two configuration loaders' tests moved, with `git mv`, to
+`applications/arbiter` and `applications/witness`; each program builds them, and a test program of its own,
+`arbiter_tests` and `witness_tests`, which the build runs with the other applications' tests. The library keeps
+`ComponentLeaseVoters`, `ComponentStatementStore` and `ArbiterPeerContact`, which the library's own lease rules and
+`TradingDayOfFile` use, and `TechnicalEventsSubscription`, which any component may use. The moved code names the
+library's types with `pubsub_itc_fw::`. The 7 arbiter and 4 witness tests pass where they now are, the library's 1359
+pass, the whole build and its tests pass, and scenarios 1 and 111, which run both arbiters and the witness through a
+trading day to its end, pass.
 
 ### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
 

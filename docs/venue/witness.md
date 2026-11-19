@@ -71,9 +71,10 @@ must use the same values.
 
 ## Code
 
-The witness is part of the voting service in the library: `Witness`, `WitnessThread` and
-`WitnessConfigurationLoader`, in `libraries/pubsub_itc_fw`. The venue's `witness` program,
-`applications/witness/main.cpp`, reads its configuration file and runs the library's `Witness`.
+The witness is a program in `applications/witness`: `Witness`, `WitnessThread`, `WitnessConfiguration` and
+`WitnessConfigurationLoader`, in the namespace `witness`, with `main.cpp` reading the configuration file and
+running `Witness`, and their tests in `applications/witness/tests`. It is built on the lease classes in the
+library, `libraries/pubsub_itc_fw`, which decide each vote it gives.
 
 ---
 

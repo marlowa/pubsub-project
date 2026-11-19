@@ -10,6 +10,9 @@
 #include <string>
 #include <utility>
 
+#include "Witness.hpp"
+#include "WitnessConfiguration.hpp"
+#include "WitnessConfigurationLoader.hpp"
 #include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
 #include <pubsub_itc_fw/ComponentArguments.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
@@ -20,9 +23,6 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/TechnicalEventsSubscription.hpp>
-#include <pubsub_itc_fw/Witness.hpp>
-#include <pubsub_itc_fw/WitnessConfiguration.hpp>
-#include <pubsub_itc_fw/WitnessConfigurationLoader.hpp>
 
 int main(int argc, char* argv[]) {
     const std::optional<pubsub_itc_fw::ComponentArguments> arguments = pubsub_itc_fw::parse_component_arguments(argc, argv, "witness", std::cerr);
@@ -44,9 +44,9 @@ int main(int argc, char* argv[]) {
                                                                pubsub_itc_fw::FwLogLevel::Info, pubsub_itc_fw::FwLogLevel::Info);
     pubsub_itc_fw::ApplicationAnnouncer::announce(*logger, "witness");
 
-    pubsub_itc_fw::WitnessConfiguration config;
+    witness::WitnessConfiguration config;
     try {
-        config = pubsub_itc_fw::WitnessConfigurationLoader::load(config_file);
+        config = witness::WitnessConfigurationLoader::load(config_file);
     } catch (const pubsub_itc_fw::ConfigurationException& ex) {
         PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Error, "Witness: configuration error: {}", ex.what());
         return 1;
@@ -92,7 +92,7 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        pubsub_itc_fw::Witness app{config, std::move(logger)};
+        witness::Witness app{config, std::move(logger)};
         return app.run();
     } catch (const std::exception& ex) {
         std::cerr << "Witness: fatal exception: " << ex.what() << "\n";

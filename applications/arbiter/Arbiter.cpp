@@ -1,15 +1,15 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <pubsub_itc_fw/Arbiter.hpp>
+#include "Arbiter.hpp"
 
 #include <chrono>
 #include <utility>
 
+#include "ArbiterConfiguration.hpp"
+#include "ArbiterConfigurationLoader.hpp"
+#include "ArbiterThread.hpp"
 #include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
-#include <pubsub_itc_fw/ArbiterConfiguration.hpp>
-#include <pubsub_itc_fw/ArbiterConfigurationLoader.hpp>
-#include <pubsub_itc_fw/ArbiterThread.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
@@ -21,7 +21,7 @@
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
-namespace pubsub_itc_fw {
+namespace arbiter {
 
 Arbiter::Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger) : config_(config), logger_(std::move(logger)) {
     reactor_configuration_.connect_timeout = std::chrono::seconds{5};

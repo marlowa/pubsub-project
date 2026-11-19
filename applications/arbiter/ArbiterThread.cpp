@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <pubsub_itc_fw/ArbiterThread.hpp>
+#include "ArbiterThread.hpp"
 
 #include <chrono>
 #include <map>
@@ -23,7 +23,7 @@
 #include <pubsub_itc_fw/TechnicalEventsSubscription.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
-namespace pubsub_itc_fw {
+namespace arbiter {
 
 namespace {
 
@@ -148,7 +148,7 @@ void ArbiterThread::on_started() {
                 // A test setting that makes the disk as slow as one that stalled.
                 std::this_thread::sleep_for(write_delay);
             }
-            ComponentStatementStore::Statements statements;
+            pubsub_itc_fw::ComponentStatementStore::Statements statements;
             for (size_t index = 0; index < record.count; ++index) {
                 statements.emplace(record.entries[index].first, record.entries[index].second);
             }
@@ -264,7 +264,7 @@ void ArbiterThread::on_timer_event(pubsub_itc_fw::TimerID id) {
 void ArbiterThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 
 bool ArbiterThread::votes_in(int32_t pair_id) const {
-    for (const VotingPair& pair : config_.voting_pairs) {
+    for (const pubsub_itc_fw::VotingPair& pair : config_.voting_pairs) {
         if (pair.pair_id == pair_id) {
             return true;
         }
@@ -273,7 +273,7 @@ bool ArbiterThread::votes_in(int32_t pair_id) const {
 }
 
 std::string ArbiterThread::pair_name(int32_t pair_id) const {
-    for (const VotingPair& pair : config_.voting_pairs) {
+    for (const pubsub_itc_fw::VotingPair& pair : config_.voting_pairs) {
         if (pair.pair_id == pair_id) {
             return pair.name;
         }

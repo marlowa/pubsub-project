@@ -13,7 +13,7 @@
 #include <pubsub_itc_fw/TechnicalEventsSubscription.hpp>
 #include <pubsub_itc_fw/VotingPair.hpp>
 
-namespace pubsub_itc_fw {
+namespace witness {
 
 /**
  * @brief Configuration for the witness process.
@@ -45,7 +45,7 @@ struct WitnessConfiguration {
      *
      * The arbiters must be configured with the same number, as their `[own_pair]`.
      */
-    VotingPair voting_pair;
+    pubsub_itc_fw::VotingPair voting_pair;
 
     /**
      * @brief The timings of the leases the witness grants when the arbiters decide which of them is active.

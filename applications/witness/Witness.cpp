@@ -1,11 +1,13 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <pubsub_itc_fw/Witness.hpp>
+#include "Witness.hpp"
 
 #include <chrono>
 #include <memory>
 
+#include "WitnessConfiguration.hpp"
+#include "WitnessConfigurationLoader.hpp"
 #include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
@@ -16,10 +18,8 @@
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
-#include <pubsub_itc_fw/WitnessConfiguration.hpp>
-#include <pubsub_itc_fw/WitnessConfigurationLoader.hpp>
 
-namespace pubsub_itc_fw {
+namespace witness {
 
 Witness::Witness(const WitnessConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger) : config_(config), logger_(std::move(logger)) {
     reactor_configuration_.connect_timeout = std::chrono::seconds{5};

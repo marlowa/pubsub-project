@@ -178,10 +178,12 @@ vote in.
 
 ## Code
 
-The arbiter is part of the voting service in the library: `Arbiter`, `ArbiterThread`,
-`ArbiterConfigurationLoader`, `ComponentLeaseVoters` and `ComponentStatementStore`, in
-`libraries/pubsub_itc_fw`. The venue's `arbiter` program, `applications/arbiter/main.cpp`, reads its
-configuration file and runs the library's `Arbiter`.
+The arbiter is a program in `applications/arbiter`: `Arbiter`, `ArbiterThread`, `ArbiterConfiguration`
+and `ArbiterConfigurationLoader`, in the namespace `arbiter`, with `main.cpp` reading the configuration file and
+running `Arbiter`, and their tests in `applications/arbiter/tests`. It is built on the voting machinery in the
+library, `libraries/pubsub_itc_fw`: `ComponentLeaseVoters`, which decides the pool's vote on which instance of
+each component pair leads; `ComponentStatementStore`, its record of the leaders' statements; `ArbiterPeerContact`,
+the rule for what an arbiter knows of the other; and the lease classes.
 
 ---
 

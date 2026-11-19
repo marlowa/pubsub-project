@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <pubsub_itc_fw/WitnessThread.hpp>
+#include "WitnessThread.hpp"
 
 #include <chrono>
 
@@ -15,7 +15,7 @@
 #include <pubsub_itc_fw/TechnicalEventsSubscription.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
-namespace pubsub_itc_fw {
+namespace witness {
 
 namespace {
 
