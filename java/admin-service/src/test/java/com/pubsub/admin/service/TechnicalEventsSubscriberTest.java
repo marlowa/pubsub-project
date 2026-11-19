@@ -18,10 +18,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TechnicalEventsSubscriberTest {
 
@@ -56,17 +56,23 @@ class TechnicalEventsSubscriberTest {
     }
 
     /**
-     * A publisher of the topic, on a port of its own, that answers one subscription: either it does not lead, and says
-     * so, or it accepts and sends one page.
+     * A publisher of the topic, on a port of its own, that answers one subscription as the real one does: if it leads it
+     * accepts and sends one page; if not, it says so and keeps the connection and the request, and, when it is told to
+     * come to lead after a delay, it then answers the request on that same connection.
      */
     private static final class FakePublisher implements AutoCloseable {
         final ServerSocket server = new ServerSocket(0);
         final CompletableFuture<Topics.TopicSubscribeRequest> request = new CompletableFuture<>();
         final CompletableFuture<Long> acknowledged = new CompletableFuture<>();
+        final AtomicInteger connections = new AtomicInteger();
         private final Thread thread;
 
         FakePublisher(boolean leads, List<Topics.TopicRecord> page) throws IOException {
-            thread = new Thread(() -> serve(leads, page), "fake-publisher");
+            this(leads, page, -1);
+        }
+
+        FakePublisher(boolean leads, List<Topics.TopicRecord> page, long comesToLeadAfterMilliseconds) throws IOException {
+            thread = new Thread(() -> serve(leads, page, comesToLeadAfterMilliseconds), "fake-publisher");
             thread.setDaemon(true);
             thread.start();
         }
@@ -75,17 +81,23 @@ class TechnicalEventsSubscriberTest {
             return new TechnicalEventsSubscriber.Endpoint("127.0.0.1", server.getLocalPort());
         }
 
-        private void serve(boolean leads, List<Topics.TopicRecord> page) {
+        private void serve(boolean leads, List<Topics.TopicRecord> page, long comesToLeadAfterMilliseconds) {
             try (Socket connection = server.accept()) {
+                connections.incrementAndGet();
                 DataInputStream in = new DataInputStream(new BufferedInputStream(connection.getInputStream()));
                 OutputStream out = connection.getOutputStream();
                 request.complete(Topics.TopicSubscribeRequest.decode(ByteBuffer.wrap(receive(in, Topics.TopicSubscribeRequest.PDU_ID))));
                 if (!leads) {
                     Topics.TopicNotLeader notLeader = new Topics.TopicNotLeader();
+                    notLeader.publisher_role = Topics.TopicPublisherRole.Follower;
                     ByteBuffer bytes = ByteBuffer.allocate(Topics.TopicNotLeader.encodedSize(notLeader));
                     Topics.TopicNotLeader.encode(notLeader, bytes);
                     send(out, Topics.TopicNotLeader.PDU_ID, bytes.array());
-                    return;
+                    if (comesToLeadAfterMilliseconds < 0) {
+                        in.read(); // keeps the connection and the request, as a publisher that does not lead does
+                        return;
+                    }
+                    Thread.sleep(comesToLeadAfterMilliseconds);
                 }
                 Topics.TopicSubscribeAck ack = new Topics.TopicSubscribeAck();
                 ByteBuffer ackBytes = ByteBuffer.allocate(Topics.TopicSubscribeAck.encodedSize(ack));
@@ -104,6 +116,8 @@ class TechnicalEventsSubscriberTest {
             } catch (IOException e) {
                 request.completeExceptionally(e);
                 acknowledged.completeExceptionally(e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         }
 
@@ -134,7 +148,11 @@ class TechnicalEventsSubscriberTest {
     }
 
     private FakePublisher publisher(boolean leads, List<Topics.TopicRecord> page) throws IOException {
-        FakePublisher publisher = new FakePublisher(leads, page);
+        return publisher(leads, page, -1);
+    }
+
+    private FakePublisher publisher(boolean leads, List<Topics.TopicRecord> page, long comesToLeadAfterMilliseconds) throws IOException {
+        FakePublisher publisher = new FakePublisher(leads, page, comesToLeadAfterMilliseconds);
         publishers.add(publisher);
         return publisher;
     }
@@ -167,9 +185,12 @@ class TechnicalEventsSubscriberTest {
         assertFalse(ended.isDone());
     }
 
-    /** A publisher that does not lead is left for the other, which is asked from the same point. */
+    /**
+     * Both publishers are asked at once; the one that leads serves, and the one that does not is waited on, over the one
+     * connection it was asked on, never connected to again (docs/bug_list.md, BUG-0268).
+     */
     @Test
-    void aPublisherThatDoesNotLeadIsLeftForTheOther() throws Exception {
+    void theSubscriberIsServedByWhicheverPublisherLeads() throws Exception {
         FakePublisher follower = publisher(false, List.of());
         FakePublisher leader = publisher(true, List.of(technicalEvent(5, LeaderFollower.TradingPhase.EndOfDayEnd, DAY)));
         CompletableFuture<Long> ended = new CompletableFuture<>();
@@ -177,8 +198,22 @@ class TechnicalEventsSubscriberTest {
                 Duration.ofMillis(50), (day, seqNo) -> ended.complete(seqNo));
         subscriber.start();
         assertEquals(5L, ended.get(5, TimeUnit.SECONDS));
-        assertTrue(follower.request.isDone());
+        assertEquals(0L, follower.request.get(5, TimeUnit.SECONDS).from_seq_no);
         assertEquals(0L, leader.request.get(5, TimeUnit.SECONDS).from_seq_no);
+        Thread.sleep(300);
+        assertEquals(1, follower.connections.get());
+    }
+
+    /** A subscriber waiting on a publisher that did not lead is served on that connection when it comes to lead. */
+    @Test
+    void aPublisherThatComesToLeadServesTheSubscriberWaitingOnIt() throws Exception {
+        FakePublisher comesToLead = publisher(false, List.of(technicalEvent(3, LeaderFollower.TradingPhase.EndOfDayEnd, DAY)), 300);
+        CompletableFuture<Long> ended = new CompletableFuture<>();
+        subscriber = new TechnicalEventsSubscriber(List.of(comesToLead.endpoint()), DAY, "admin_service", Duration.ofMillis(50),
+                (day, seqNo) -> ended.complete(seqNo));
+        subscriber.start();
+        assertEquals(3L, ended.get(5, TimeUnit.SECONDS));
+        assertEquals(1, comesToLead.connections.get());
     }
 
     @Test

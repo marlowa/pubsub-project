@@ -34,10 +34,13 @@ class Reactor;
  *        the one that leads, while doing whatever other work its derived class gives it.
  *
  * At its initial event the thread connects to each publisher's service and, as each connection is made, asks it for the
- * topic's records after the last one already applied. Only the leading publisher answers with pages; the other replies
- * TopicNotLeader and closes the connection, and the reactor connects to it again after its retry interval, so when the
- * publishers change leader the thread finds the new leader within that interval. A record already applied is discarded
- * by its sequence number, so records that arrive from both publishers around a change of leader are delivered once.
+ * topic's records after the last one already applied. Only the leading publisher answers with pages. The other replies
+ * TopicNotLeader and keeps both the connection and the request, and answers it as soon as it becomes the leader, so the
+ * thread waits on each connection and is served by whichever publisher leads, with no connection opened or closed while
+ * the publishers keep their roles (docs/bug_list.md, BUG-0268). A publisher that stops leading closes its subscribers'
+ * connections; the reactor connects to it again after its retry interval, and the thread asks again. A record already
+ * applied is discarded by its sequence number, so records that arrive from both publishers around a change of leader are
+ * delivered once.
  * Each fresh record is delivered through on_pubsub_message(), as a borrowed view valid only for that call; a subscriber
  * that keeps the bytes copies them.
  *

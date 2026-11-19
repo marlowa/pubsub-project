@@ -179,6 +179,12 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
         publisher_.set_leader(is_leader);
     }
 
+    // Has this publisher, started as a follower, become the leader @p delay after its thread starts, as a publisher does
+    // when the other of its pair stops. Called before its reactor runs.
+    void become_leader_after(std::chrono::milliseconds delay) {
+        become_leader_after_ = delay;
+    }
+
     // TopicPublisherHost
     void topic_send_subscribe_ack(ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeAck& ack) override {
         send_pdu(connection_id, pubsub_itc_fw::TopicSubscribeAck::message_pdu_id, 0, ack);
@@ -208,6 +214,9 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
 
   protected:
     void on_initial_event() override {
+        if (become_leader_after_.count() > 0) {
+            become_leader_timer_ = start_one_off_timer(become_leader_after_);
+        }
         // Any test that writes records needs an open WAL to append to.
         if (publish_after_subscribers_ > 0 || startup_records_ > 0 || records_after_both_channels_ > 0) {
             wal_.open(wal_directory_, segment_size_);
@@ -220,6 +229,13 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
 
     void on_connection_writable(ConnectionID id) override {
         publisher_.on_connection_writable(id);
+    }
+
+    void on_timer_event(TimerID id) override {
+        if (id == become_leader_timer_) {
+            const bool is_leader = true;
+            publisher_.set_leader(is_leader);
+        }
     }
 
     void on_connection_lost(const ConnectionID& id, const std::string&) override {
@@ -298,6 +314,8 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     }
 
     int publish_after_subscribers_;
+    std::chrono::milliseconds become_leader_after_{0};
+    TimerID become_leader_timer_{};
     int live_record_count_;
     LagOnControlSubscribeFlag lag_on_control_subscribe_;
     int startup_records_;
@@ -327,6 +345,7 @@ class ChannelSubscriberThread : public ApplicationThread, public TopicSubscriber
     std::atomic<int> pages_received{0}; // number of TopicPage PDUs seen (batching observable)
     std::atomic<int> not_leader_received{0};
     std::atomic<bool> not_leader_named_a_follower{false};
+    std::atomic<bool> connection_lost{false};
     std::vector<ReceivedRecord> received_records;
 
     // disconnect_when_done: tear the data connection down as soon as the expected count
@@ -377,6 +396,7 @@ class ChannelSubscriberThread : public ApplicationThread, public TopicSubscriber
     }
 
     void on_connection_lost(const ConnectionID&, const std::string&) override {
+        connection_lost.store(true, std::memory_order_release);
         shutdown("connection lost");
     }
 
@@ -740,7 +760,52 @@ TEST_F(TopicPubSubTest, AFollowerPublisherAnswersASubscriptionWithTopicNotLeader
     EXPECT_TRUE(wait_for([&]() { return subscriber_thread->not_leader_received.load(std::memory_order_acquire) > 0; }))
         << "the subscriber never received TopicNotLeader";
     EXPECT_TRUE(subscriber_thread->not_leader_named_a_follower.load(std::memory_order_acquire));
+    // The follower keeps the connection and the request, so the subscriber is neither disconnected nor refused again: no
+    // connection is opened or closed while the publishers keep their roles (docs/bug_list.md, BUG-0268). The wait is longer
+    // than the reactor's retry interval, so a closed connection would have been made again and refused a second time.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    EXPECT_FALSE(subscriber_thread->connection_lost.load(std::memory_order_acquire)) << "the follower closed the connection";
+    EXPECT_EQ(subscriber_thread->not_leader_received.load(std::memory_order_acquire), 1);
     EXPECT_EQ(subscriber_thread->records_received.load(std::memory_order_acquire), 0) << "a follower sent records";
+
+    subscriber_reactor->shutdown("test complete");
+    publisher_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    if (publisher_reactor_thread.joinable()) {
+        publisher_reactor_thread.join();
+    }
+}
+
+// A subscriber refused by a follower is served by that publisher, on the same connection, as soon as it becomes the leader:
+// the publisher kept the request (docs/bug_list.md, BUG-0268).
+TEST_F(TopicPubSubTest, ASubscriberWaitingOnAFollowerIsServedWhenItBecomesTheLeader) {
+    write_topic_wal_records(3);
+
+    const ServiceRegistry publisher_registry;
+    auto publisher_reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry, logger_->logger);
+    publisher_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto publisher_thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher_reactor, wal_dir_);
+    publisher_thread->start_as_follower();
+    publisher_thread->become_leader_after(std::chrono::milliseconds(500));
+    publisher_reactor->register_thread(publisher_thread);
+    ThreadWithJoinTimeout publisher_reactor_thread([&]() { publisher_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return publisher_reactor->is_initialized(); })) << "Publisher reactor did not initialize";
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", publisher_reactor->get_inbound_listener_port(0)},
+                            NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto subscriber_thread = ApplicationThread::create<ChannelSubscriberThread>(logger_->logger, *subscriber_reactor, 3);
+    subscriber_reactor->register_thread(subscriber_thread);
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->records_received.load(std::memory_order_acquire) == 3; }))
+        << "the waiting subscriber was not served when the publisher became the leader";
+    EXPECT_EQ(subscriber_thread->not_leader_received.load(std::memory_order_acquire), 1);
+    EXPECT_FALSE(subscriber_thread->connection_lost.load(std::memory_order_acquire) && subscriber_thread->records_received.load(std::memory_order_acquire) < 3)
+        << "the connection was lost before the records arrived";
 
     subscriber_reactor->shutdown("test complete");
     publisher_reactor->shutdown("test complete");

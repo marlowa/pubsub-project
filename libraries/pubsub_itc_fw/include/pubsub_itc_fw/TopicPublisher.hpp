@@ -101,8 +101,22 @@ class TopicPublisher {
         , max_lag_records_(max_lag_records)
         , max_records_per_page_(max_records_per_page == 0 ? 1 : max_records_per_page) {}
 
+    /**
+     * @brief Says whether this publisher leads. On becoming the leader it answers, in the order they arrived, the
+     *        subscriptions it refused while it did not lead and whose connections are still open, so that a subscriber
+     *        waiting on it is served at once, with no new connection (docs/bug_list.md, BUG-0268).
+     */
     void set_leader(bool is_leader) {
+        const bool becomes_leader = is_leader && !is_leader_;
         is_leader_ = is_leader;
+        if (!becomes_leader) {
+            return;
+        }
+        std::vector<WaitingSubscription> waiting;
+        waiting.swap(waiting_for_leadership_);
+        for (const WaitingSubscription& subscription : waiting) {
+            answer_subscription(subscription.connection_id, subscription.topic_name, subscription.subscriber_id, subscription.role, subscription.from_seq_no);
+        }
     }
 
     /// Number of logical subscribers (correlated data+control pairs, keyed by id).
@@ -133,28 +147,22 @@ class TopicPublisher {
     /**
      * @brief Handle a TopicSubscribeRequest on the data or control channel.
      *
-     * A non-leader replies TopicNotLeader and disconnects. A request for a
-     * different topic is rejected by disconnect.
+     * A publisher that does not lead replies TopicNotLeader and keeps both the connection and the request: when it becomes
+     * the leader it answers the request as if it had just arrived (set_leader()). A subscriber connected to both
+     * publishers of a pair therefore waits on each, with no connection opened or closed while the publishers keep their
+     * roles (docs/bug_list.md, BUG-0268). A request for a different topic is rejected by disconnect.
      */
     void on_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeRequestView& view) {
         if (!is_leader_) {
             pubsub_itc_fw::TopicNotLeader not_leader{};
             not_leader.publisher_role = pubsub_itc_fw::TopicPublisherRole::Follower;
             host_.topic_send_not_leader(connection_id, not_leader);
-            host_.topic_disconnect(connection_id);
+            forget_waiting(connection_id);
+            waiting_for_leadership_.push_back(
+                WaitingSubscription{connection_id, std::string(view.topic_name), std::string(view.subscriber_id), view.role, view.from_seq_no});
             return;
         }
-        if (std::string(view.topic_name) != topic_name_) {
-            host_.topic_disconnect(connection_id);
-            return;
-        }
-
-        const std::string subscriber_id(view.subscriber_id);
-        if (view.role == pubsub_itc_fw::TopicChannelRole::Control) {
-            handle_control_subscribe(connection_id, subscriber_id);
-        } else {
-            handle_data_subscribe(connection_id, subscriber_id, view.from_seq_no);
-        }
+        answer_subscription(connection_id, std::string(view.topic_name), std::string(view.subscriber_id), view.role, view.from_seq_no);
     }
 
     /// Advance a subscriber's ack cursor (for WAL truncation + lag) on TopicAck (data channel).
@@ -184,6 +192,7 @@ class TopicPublisher {
 
     /// Connection lost: tear down the whole logical subscriber (disconnect the pair).
     void on_connection_lost(ConnectionID connection_id) {
+        forget_waiting(connection_id);
         auto conn_it = connection_to_subscriber_id_.find(connection_id);
         if (conn_it == connection_to_subscriber_id_.end()) {
             return;
@@ -469,6 +478,36 @@ class TopicPublisher {
     size_t max_records_per_page_ = default_max_records_per_page; // batch cap per TopicPage
     int64_t head_seq_no_ = 0;                                    // highest seq_no appended to the WAL
     int64_t last_truncation_floor_ = 0;                          // highest safe floor already truncated to
+    // A subscription refused while this publisher did not lead, kept so that it can be answered when it leads.
+    struct WaitingSubscription {
+        ConnectionID connection_id;
+        std::string topic_name;
+        std::string subscriber_id;
+        pubsub_itc_fw::TopicChannelRole role;
+        int64_t from_seq_no;
+    };
+    std::vector<WaitingSubscription> waiting_for_leadership_;
+
+    void forget_waiting(ConnectionID connection_id) {
+        waiting_for_leadership_.erase(std::remove_if(waiting_for_leadership_.begin(), waiting_for_leadership_.end(),
+                                                     [connection_id](const WaitingSubscription& waiting) { return waiting.connection_id == connection_id; }),
+                                      waiting_for_leadership_.end());
+    }
+
+    // Answers a subscription while this publisher leads: one for another topic is rejected by disconnect.
+    void answer_subscription(ConnectionID connection_id, const std::string& topic_name, const std::string& subscriber_id, pubsub_itc_fw::TopicChannelRole role,
+                             int64_t from_seq_no) {
+        if (topic_name != topic_name_) {
+            host_.topic_disconnect(connection_id);
+            return;
+        }
+        if (role == pubsub_itc_fw::TopicChannelRole::Control) {
+            handle_control_subscribe(connection_id, subscriber_id);
+        } else {
+            handle_data_subscribe(connection_id, subscriber_id, from_seq_no);
+        }
+    }
+
     bool is_leader_ = true;
     std::vector<uint8_t> batch_scratch_;                    // reused per-page payload copy buffer
     std::vector<pubsub_itc_fw::TopicRecord> batch_records_; // reused per-page record list

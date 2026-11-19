@@ -168,9 +168,12 @@ end
 #  111 -- TopicNotLeader
 #  Sent by a passive (non-leader) publisher instance
 #  immediately after receiving a TopicSubscribeRequest.
-#  Signals to TopicSubscriberChannel to try the other
-#  endpoint. The connection is closed by the publisher
-#  after sending this PDU.
+#  The publisher keeps the connection and the request, and
+#  answers the request with TopicSubscribeAck and pages as
+#  soon as it becomes the leader. A subscriber connected to
+#  both publishers of a pair waits on each, and is served by
+#  whichever leads, with no connection opened or closed
+#  while they keep their roles (docs/bug_list.md, BUG-0268).
 #
 #  publisher_role: always Follower. The message says only that
 #  it was sent, but a message must have a field, because the

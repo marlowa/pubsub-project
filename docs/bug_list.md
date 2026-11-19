@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Bugs recorded | 269 |
-| Open | 54 (29 defects, 25 tasks) |
-| Closed | 215 |
+| Open | 53 (28 defects, 25 tasks) |
+| Closed | 216 |
 | Next id | BUG-0270 |
 
 ## Open bugs by severity
@@ -51,7 +51,6 @@
 | [BUG-0262](#bug_0262) | medium | defect | A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog |
 | [BUG-0263](#bug_0263) | medium | defect | In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
-| [BUG-0268](#bug_0268) | medium | defect | A `technical_events` subscriber reconnects to the publisher that does not lead every 2 seconds, each time with three Warnings |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -365,29 +364,6 @@ their own build targets. The lease machinery that every component pair uses to d
 rules, the voter's logic and the promise records) stays in the library. Nothing changes in behaviour or on the wire.
 Every high availability scenario is run before and after, and must give the same results, and the documents that
 describe where the arbiter and the witness live are updated.
-
-### BUG-0268: A `technical_events` subscriber reconnects to the publisher that does not lead every 2 seconds, each time with three Warnings {#bug_0268}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-19 |
-| Recorded | 2026-11-19 |
-| How | Reading every Warning logged after the end-of-day begin on a venue started with `devenv.py`, while the end of day ([BUG-0137](#bug_0137)) was being built |
-| Impact | The arbiters, the witness and the authentication services log about 1.5 Warnings a second each, all day, which buries any Warning that matters; each also opens and closes a connection every 2 seconds |
-
-**What happens.** `TopicSubscriberThread` subscribes on both matching engine publishers and keeps to the one that
-leads (docs/venue/start_and_end_of_day.md, section 4.4, decision 10a). The publisher that does not lead answers a
-`TopicSubscribeRequest` with `TopicNotLeader` and closes the connection (`TopicPublisher::on_subscribe_request`), and the
-reactor connects again after its retry interval, 2 seconds. Each round logs, in the subscriber's
-`OutboundConnectionManager`, "service 'technical_events_secondary' reconnected after 2s", "peer closed connection on
-service 'technical_events_secondary'" and "failed to connect; retrying every 2000ms", all at Warning. On 19 November
-2026 the five subscribing components logged 22 such Warnings in the three seconds after the end-of-day begin.
-
-**What is wanted.** The publisher that does not lead keeps the connection open after its `TopicNotLeader`, and the
-subscriber asks again on that connection on a timer, so that no connection is opened or closed while the publishers
-keep their roles, and nothing is logged above Debug. When the publishers change leader, the new leader answers the next
-request with pages. The administration service's Java subscriber does the same.
 
 ### BUG-0267: `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines {#bug_0267}
 
@@ -2635,6 +2611,36 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0268: A `technical_events` subscriber reconnects to the publisher that does not lead every 2 seconds, each time with three Warnings {#bug_0268}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| Fixed | 2026-11-19 -- a publisher that does not lead keeps a refused subscription and its connection, and answers it as soon as it becomes the leader; the subscribers, C++ and Java, wait on every publisher at once |
+| How | Reading every Warning logged after the end-of-day begin on a venue started with `devenv.py`, while the end of day ([BUG-0137](#bug_0137)) was being built |
+| Impact | The arbiters, the witness and the authentication services log about 1.5 Warnings a second each, all day, which buries any Warning that matters; each also opens and closes a connection every 2 seconds |
+
+**What happens.** `TopicSubscriberThread` subscribes on both matching engine publishers and keeps to the one that
+leads (docs/venue/start_and_end_of_day.md, section 4.4, decision 10a). The publisher that does not lead answers a
+`TopicSubscribeRequest` with `TopicNotLeader` and closes the connection (`TopicPublisher::on_subscribe_request`), and the
+reactor connects again after its retry interval, 2 seconds. Each round logs, in the subscriber's
+`OutboundConnectionManager`, "service 'technical_events_secondary' reconnected after 2s", "peer closed connection on
+service 'technical_events_secondary'" and "failed to connect; retrying every 2000ms", all at Warning. On 19 November
+2026 the five subscribing components logged 22 such Warnings in the three seconds after the end-of-day begin.
+
+**What was done.** `TopicPublisher::on_subscribe_request`, while the publisher does not lead, sends `TopicNotLeader`
+and keeps the request and the connection; `TopicPublisher::set_leader`, on becoming the leader, answers every request it
+kept whose connection is still open, as if each had just arrived, and a lost connection's request is forgotten. No
+subscriber has to ask again: `TopicSubscriberThread` already waits on each publisher's connection, and the
+administration service's `TechnicalEventsSubscriber` now has one thread for each publisher, each waiting on its
+connection, sharing the last record applied under one lock. No connection is opened or closed while the publishers keep
+their roles, and a refusal is logged at Debug. The integration test of a follower publisher checks that the connection
+stays open and the subscriber is refused once in 2.5 seconds, longer than the retry interval; a new integration test and
+a new Java test check that a subscriber waiting on a publisher is served on that connection when the publisher becomes
+the leader. Each fails with the publisher closing the connection again, or the subscriber giving up on a refusal.
 
 ### BUG-0251: Under a burst of orders faster than it can process, the leading sequencer loses its lease to a backlog on its own thread, and the follower matching engine is taken out of service {#bug_0251}
 

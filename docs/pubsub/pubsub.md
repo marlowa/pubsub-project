@@ -233,8 +233,9 @@ Key points a subscriber author needs:
 - **The thread follows the publisher that leads.** It is given the names of the publishers' services,
   one for each publisher of the pair, connects to each, and asks each for the topic after the last
   record it has applied. The publisher that leads answers with pages; the other replies
-  `TopicNotLeader` and closes the connection, and the reactor connects to it again after its retry
-  interval, so after a change of leader the thread finds the new leader by itself. A record that
+  `TopicNotLeader` and keeps both the connection and the request, and answers the request as soon as
+  it becomes the leader, so after a change of leader the thread is served by the new leader at once,
+  and no connection is opened or closed while the publishers keep their roles. A record that
   arrives from both publishers around the change is delivered once, because a record at or below
   the last sequence number applied is discarded. `topic_probe` is given one service per topic, the
   port named on its command line, so it is pointed at the publisher that leads.
