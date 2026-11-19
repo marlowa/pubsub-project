@@ -67,6 +67,7 @@ add_executable(pubsub_itc_fw_tests
     EpochRecordingTest.cpp
     ReplicatedWalTest.cpp
     ReplicatedWalCommandTest.cpp
+    RecentAnswersTest.cpp
     LoggedCommandIdentifiersTest.cpp
     LoggedCommandIdentifiersBuilderTest.cpp
     WalCommandSearchTest.cpp

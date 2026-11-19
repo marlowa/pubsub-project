@@ -168,9 +168,15 @@ read may hold is checked the same way, by searching the WAL, as now.
    report arrives by the ordinary path, or the original is sent from the WAL to an engine that never received it, as
    now (routes 2 and 3 of section 3.6 of [commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md)).
 
-How far forward the leader reads before deciding there is no report is bounded. It stops at the end of what is written,
-and does not read further than a fixed number of records, 4,096; a command not answered within that many records is
-waiting for its engine, which answers it by route 2.
+The leader does not normally read forward at all. As it writes each record, its WAL notes, for a report, which command
+it answers and where the report starts, keeping the first answer to each of the most recent commands, about a million
+(`RecentAnswers`). A command sent again has not been answered, so it is almost always recent: the leader then reads the
+one report where it was noted, or, when none was noted, knows there is none yet without reading anything. Only for a
+command older than the WAL remembers, or written before the WAL was opened, does it read forward, and then it stops at
+the end of what is written and reads no further than 4,096 records; a command not answered within that many records is
+waiting for its engine, which answers it by route 2. Reading forward for every command sent again took about 3.4
+milliseconds each when the reports were far behind, which held the leader's thread for seconds when a gateway sent
+thousands again ([BUG-0260](../bug_list.md#bug_0260)).
 
 **Not marked.** The member sent a command with an identity it has used today. The leader refuses it (section 4). That
 is R-0119 for an identifier whose first order has ended; it is R-0006 and R-0010 for an order resubmitted after a
@@ -411,10 +417,13 @@ first and with `--secondary-engine-first`, before the next starts.
    gateway's copy must be answered by the report from the WAL, marked as a possible repeat. Made to fail: without the
    read forward, the copy stays unanswered.
 
-   **As built.** When a command marked as sent again is already in the WAL, `SequencerThread::answer_from_wal` reads
-   forward from the record that holds it (`first_report_answering`), with a `WalCursor`, for the first report whose
-   envelope says it answers that record (`answers_seq_no`). It reads only committed records, because a report not yet
-   committed is forwarded by the ordinary path once it is, and at most 4,096 records past the command. The report is
+   **As built.** When a command marked as sent again is already in the WAL, `SequencerThread::answer_from_wal` finds
+   the first report whose envelope says it answers that record (`answers_seq_no`) with `first_report_answering`. It asks
+   the WAL where that report is (`ReplicatedWal::first_answer_to`, which `RecentAnswers` answers from what the WAL noted
+   as it wrote each record) and reads that one record (`report_at`); when the WAL says no report has been written yet, it
+   reads nothing; and only when the WAL cannot say does it read forward from the command with a `WalCursor`, at most
+   4,096 records. It uses only a committed report, because one not yet committed is forwarded by the ordinary path once
+   it is. The report is
    sent to the member's session where it is bound now, which after a change of gateway may not be where the command came
    from, marked as a possible repeat and carrying the command's `ClOrdID`, so that the gateway marks its copy answered.
    When the member's session is not bound to any gateway, the report is not sent, and the sequencer logs at Info that

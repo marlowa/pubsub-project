@@ -13,7 +13,9 @@ namespace pubsub_itc_fw {
 
 /**
  * @brief How the replicated WAL reads a command's identity from a record, so that it can tell whether
- *        the WAL already holds a command (docs/availability/one_check_against_sequencing_twice.md).
+ *        the WAL already holds a command (docs/availability/one_check_against_sequencing_twice.md), and, from a
+ *        record that answers a command, which command it answers, so that the answer to a command sent again can be
+ *        read from where it is (RecentAnswers).
  *
  * A command is placed in the WAL at most once, judged by its identity (principle V7 in
  * docs/design_principles.md). What a command's identity is belongs to the application: for the venue it is
@@ -28,6 +30,15 @@ namespace pubsub_itc_fw {
  */
 class CommandIdentityInterface {
   public:
+    /// What identity_of() finds in a record.
+    struct RecordIdentity {
+        /// How many bytes of the command's identity were written, or zero when the record is not a command that can
+        /// arrive twice, or does not say whose it is.
+        size_t size{0};
+        /// When the record answers a command, the number of the record that holds that command; zero otherwise.
+        int64_t answers{0};
+    };
+
     /// The largest identity the WAL accepts, in bytes. A longer one is treated as no identity.
     static constexpr size_t max_identity_size = 1024;
 
@@ -37,14 +48,13 @@ class CommandIdentityInterface {
     virtual ~CommandIdentityInterface() = default;
 
     /**
-     * @brief The identity of the command a WAL record holds.
+     * @brief The identity of the command a WAL record holds, or, for a record that answers a command, which command.
      * @param[in]  entry    The record, as WalEntryContents describes it.
      * @param[in]  scratch  Space the implementation may use while it decodes the record; scratch_size bytes.
      * @param[out] identity Where the identity is written; max_identity_size bytes.
-     * @return The number of bytes written to @p identity, or zero when the record is not a command that can
-     *         arrive twice, or does not say whose it is.
+     * @return How many bytes were written to @p identity, and which command the record answers, as RecordIdentity says.
      */
-    [[nodiscard]] virtual size_t identity_of(const WalEntryContents& entry, uint8_t* scratch, char* identity) const = 0;
+    [[nodiscard]] virtual RecordIdentity identity_of(const WalEntryContents& entry, uint8_t* scratch, char* identity) const = 0;
 };
 
 } // namespaces

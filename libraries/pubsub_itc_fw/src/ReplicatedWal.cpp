@@ -116,6 +116,10 @@ int64_t ReplicatedWal::open(Clock::time_point now) {
     }
     highest_replicated_seq_no_ = wal_.last_seq_no();
     next_seq_no_ = wal_.last_seq_no() + 1;
+    if (configuration_.command_identity != nullptr) {
+        // Answers are noted from the next record on; those to commands already in the WAL are found by searching it.
+        recent_answers_.emplace(configuration_.recent_answers_kept, wal_.last_seq_no() + 1);
+    }
     if (positions_ != nullptr) {
         positions_->publish_written(wal_.last_seq_no(), wal_.write_position());
     }
@@ -167,7 +171,7 @@ void ReplicatedWal::write(int64_t seq_no, int32_t leader_epoch, int16_t pdu_id, 
         // start of the next.
         const WalPosition after = wal_.write_position();
         const WalPosition start = after.segment == before.segment ? before : WalPosition{after.segment, 0};
-        note_command_written(start, WalEntryContents{wall_time_ns, leader_epoch, pdu_id, bytes, size});
+        note_command_written(seq_no, start, WalEntryContents{wall_time_ns, leader_epoch, pdu_id, bytes, size});
     }
     if (positions_ != nullptr) {
         // After the record is completely written, so that a reader that stops before this position reads
@@ -711,6 +715,10 @@ void ReplicatedWal::handle_position_reply(const LogPositionReplyView& reply, Clo
             positions_->publish_written(keep_through, wal_.write_position());
         }
         log_epochs_.truncate_after(keep_through);
+        if (recent_answers_.has_value()) {
+            // Answers among the records discarded would be read from where other records are written next.
+            recent_answers_->forget_from(keep_through + 1);
+        }
         highest_replicated_seq_no_ = keep_through;
         // A record this instance numbered itself, while it led, may be among those discarded. Its next
         // number follows the last record kept, so that if it leads again it does not number past a gap;
@@ -951,8 +959,13 @@ void ReplicatedWal::take_record_of_commands_if_built() {
     }
 }
 
-void ReplicatedWal::note_command_written(WalPosition position, const WalEntryContents& entry) {
-    const size_t identity_size = configuration_.command_identity->identity_of(entry, identity_scratch_.data(), identity_buffer_.data());
+void ReplicatedWal::note_command_written(int64_t seq_no, WalPosition position, const WalEntryContents& entry) {
+    const CommandIdentityInterface::RecordIdentity found =
+        configuration_.command_identity->identity_of(entry, identity_scratch_.data(), identity_buffer_.data());
+    if (found.answers > 0 && recent_answers_.has_value()) {
+        recent_answers_->note(found.answers, seq_no, position);
+    }
+    const size_t identity_size = found.size;
     if (identity_size == 0 || identity_size > identity_buffer_.size()) {
         return;
     }
@@ -1043,7 +1056,7 @@ std::optional<int64_t> ReplicatedWal::command_at(WalPosition position, std::stri
         if (!contents.has_value()) {
             return std::nullopt;
         }
-        const size_t identity_size = configuration_.command_identity->identity_of(*contents, identity_scratch_.data(), identity_buffer_.data());
+        const size_t identity_size = configuration_.command_identity->identity_of(*contents, identity_scratch_.data(), identity_buffer_.data()).size;
         if (identity_size == 0 || identity_size > identity_buffer_.size() || std::string_view(identity_buffer_.data(), identity_size) != identity) {
             return std::nullopt;
         }

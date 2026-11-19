@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 259 |
-| Open | 46 (26 defects, 20 tasks) |
-| Closed | 213 |
-| Next id | BUG-0260 |
+| Bugs recorded | 261 |
+| Open | 47 (27 defects, 20 tasks) |
+| Closed | 214 |
+| Next id | BUG-0262 |
 
 ## Open bugs by severity
 
-6 high, 30 medium, 10 low.
+6 high, 30 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -58,6 +58,7 @@
 | [BUG-0249](#bug_0249) | low | defect | The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it |
 | [BUG-0250](#bug_0250) | low | defect | A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member |
 | [BUG-0259](#bug_0259) | low | defect | Under a steady flood of commands, the warning that a gateway's store of unanswered commands is full is logged once for every command refused |
+| [BUG-0261](#bug_0261) | low | defect | The check that runs the matching engines on a copy of the WAL starts a sequencer that can write new commands into that copy while the engines are run on it |
 | [BUG-0253](#bug_0253) | low | defect | `binary_load_client --help` prints its help and then tries to connect to the venue |
 
 ---
@@ -202,6 +203,28 @@ warning 1,563 times.
 
 **What is wanted.** The warning said once when commands begin to be refused, and once when a whole interval has passed
 with none refused, with how many were refused, as `KeptReports` does for overwritten reports.
+
+### BUG-0261: The check that runs the matching engines on a copy of the WAL starts a sequencer that can write new commands into that copy while the engines are run on it {#bug_0261}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| How | Scenario 116 of `ha_test.py`, whose run ended before the load client's sessions' grace period had passed |
+| Impact | The check fails with differences that are not the engines'; one run reported 1,647,706 |
+
+**What happens.** After a scenario, `ha_test.py` copies the leading sequencer's WAL, starts a sequencer on the copy,
+and runs each matching engine on it in turn from an empty book, then compares their reports with a replay. The
+sequencer it starts acts as a leader would: when the grace period of a session that ended in the WAL passes, it writes
+a command cancelling that session's resting orders. In scenario 116 the four load-client sessions ended a few seconds
+before the scenario finished, so their cancels were written during the check: the first engine run ended at record
+4,288,911 holding 1.8 million orders, and the second ran on to record 9,152,306 through the cancels and held none. The
+two runs saw different WALs, and the check reported 1,647,706 differences. Scenario 116 now waits for the cancels
+before it ends, so that the WAL it leaves is complete.
+
+**What is wanted.** The sequencer the check starts writes nothing into the copy, so that every engine run sees the
+same records.
 
 ### BUG-0253: `binary_load_client --help` prints its help and then tries to connect to the venue {#bug_0253}
 
@@ -2507,6 +2530,44 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0260: The leading sequencer takes about 3.4 milliseconds over each command a gateway sends again, so a gateway sending thousands again holds its thread for seconds and costs it its lease {#bug_0260}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| Fixed | 2026-11-19 -- the WAL notes, as it writes each report, which command it answers and where it starts, keeping the first answer to each of the most recent 2^20 commands (`RecentAnswers`, filled by `ReplicatedWal::write` from the same decode that reads a command's identity). The answer to a command sent again is read from that one record (`SequencerThread::report_at`); a recent command with none noted has none yet, and nothing is read; only a command older than the table, or written before the WAL was opened, is searched for as before. Repeating the run: the gateway sent 156,387 commands again, the sequencer dealt with all of them in about 10 seconds, answered 13,450 from the WAL by reading one record each and searched for none, and its lease never ran out, where before it dealt with about 840 every 2.84 seconds and lost its lease 10 times. `ReplicatedWalCommandTest.TheFirstAnswerToACommandIsFoundWhereTheWalWroteIt` fails with the noting taken out |
+| How | Overloading the venue for [BUG-0251](#bug_0251), with the gateways' connections to the sequencer limited: the binary gateway closed its connection and, on connecting again, sent every unanswered command again |
+| Impact | After a change of leader, or a gateway's connection to the sequencer made again, the leading sequencer can be held for seconds to minutes, and loses its lease while it is |
+
+**What happened.** In the run kept in `tmp/bug0251/limit2/`, the binary gateway sent its unanswered commands again after
+its connection to the leading sequencer was closed and made again. The sequencer's summaries of its checks, logged each
+time it stopped leading, say that it dealt with 1,200, 848, 850, 844, 845 and 827 commands sent again between
+successive summaries, about 2.85 seconds apart, and lost its lease each time. That is about 3.4 milliseconds a command.
+Every one was already in the WAL, proved by reading its one record at its position, and none was answered by a report
+the WAL held.
+
+**Where the time goes, measured on 19 November 2026.** The run was repeated with the leading sequencer's thread
+profiled for 150 seconds (`perf record -g`, kept in `tmp/bug0251/resend/`); it again dealt with about 830 to 844
+commands sent again in each 2.84 seconds, and lost its lease 10 times. 77.6% of the thread's samples were in
+`Crc32::feed`, which checks a record's checksum one byte at a time; 75.4% of all the samples were that function called from
+`SequencerThread::first_report_answering`, the search for the first report answering a command sent again. Reading the
+records took another 7.0% (`WalCursor::read_next`) and decoding them 3.7%. Proving that the WAL holds the command, by
+reading its one record, does not appear.
+
+For each command sent again, the search reads every record after the command up to 4,096 records on
+(`reports_read_for_an_answer_at_most`) or the last committed, checking each one's checksum, looking for a report that
+answers it. In a flood the engine's report of a command is written more than 4,096 records after it, or not yet, so
+the search found nothing for any of them and read all 4,096 every time.
+
+**Why it matters more now.** A gateway sends again every command it holds after any change of sequencer leader. The
+limit on unanswered commands designed for BUG-0251 lets each gateway hold up to 16,384, so at this cost a change of
+leader while the venue is busy could hold the new leader for about 55 seconds for each gateway.
+
+**What is wanted.** The cost of a command sent again measured and brought down to microseconds, so that the new leader
+can deal with every command the gateways may send again within a small part of its lease.
 
 ### BUG-0256: During a flood of execution reports the follower sequencer overwrites kept reports still needed, and logs a warning for each one {#bug_0256}
 

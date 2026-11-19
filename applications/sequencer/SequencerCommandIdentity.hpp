@@ -67,24 +67,30 @@ namespace sequencer {
  * @brief How the sequencer's replicated WAL reads the identity of the command a record holds.
  *
  * Every member's command the sequencer writes is a `WalRecord` envelope carrying the comp id, the protocol and
- * the `ClOrdID`, so the identity is read from the envelope without decoding the command inside it. It uses
+ * the `ClOrdID`, so the identity is read from the envelope without decoding the command inside it. An execution
+ * report's envelope says which command it answers, by that command's record number. It uses
  * nothing but its arguments, so the WAL's own thread and the thread that builds its record of identifiers can
  * call it at the same time.
  */
 class SequencerCommandIdentity : public pubsub_itc_fw::CommandIdentityInterface {
   public:
-    [[nodiscard]] size_t identity_of(const pubsub_itc_fw::WalEntryContents& entry, uint8_t* scratch, char* identity) const override {
+    [[nodiscard]] RecordIdentity identity_of(const pubsub_itc_fw::WalEntryContents& entry, uint8_t* scratch, char* identity) const override {
         if (entry.pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id || entry.size == 0) {
-            return 0;
+            return {};
         }
         pubsub_itc_fw::BumpAllocator arena(scratch, scratch_size);
         size_t bytes_consumed = 0;
         size_t arena_bytes_needed = 0;
         pubsub_itc_fw_app::WalRecordView view{};
         if (!pubsub_itc_fw_app::decode(view, entry.bytes, entry.size, bytes_consumed, arena, arena_bytes_needed)) {
-            return 0;
+            return {};
         }
-        return write_command_identity(view, identity, max_identity_size);
+        // An execution report says which command it answers, by that command's record number; zero for one no command
+        // produced.
+        if (view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
+            return RecordIdentity{0, view.has_answers_seq_no ? view.answers_seq_no : 0};
+        }
+        return RecordIdentity{write_command_identity(view, identity, max_identity_size), 0};
     }
 };
 

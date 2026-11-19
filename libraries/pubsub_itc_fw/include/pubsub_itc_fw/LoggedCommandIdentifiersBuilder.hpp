@@ -193,7 +193,7 @@ class LoggedCommandIdentifiersBuilder {
         if (!contents.has_value() || contents->size == 0) {
             return;
         }
-        const size_t identity_size = identity_->identity_of(*contents, scratch_.data(), identity_buffer_.data());
+        const size_t identity_size = identity_->identity_of(*contents, scratch_.data(), identity_buffer_.data()).size;
         if (identity_size == 0 || identity_size > identity_buffer_.size()) {
             return;
         }

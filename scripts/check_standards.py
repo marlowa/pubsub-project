@@ -1279,13 +1279,15 @@ _WAL_READERS = [
     (r'\bhanded_over_engines_->send_to(?:_all)?\b', 'the member of ServingWalFollowers holding a WalHandedOverFollowers, sending records it reads'),
     (r'\b(?:holds|find)_command\s*\(', 'the replicated WAL\'s check of whether, and where, it holds a command, which reads one record, or searches the WAL'),
     (r'\bcommand_in_wal_at\s*\(', 'the sequencer function that reads one record back from the WAL on its own thread'),
+    (r'\breport_at\s*\(', 'the sequencer function that reads the one record where the WAL noted the answer to a command'),
 ]
 _WAL_READER_RES = [re.compile(pattern) for pattern, _what in _WAL_READERS]
 
 _RESENDS = 'a resend or a request for undelivered reports: BUG-0113, which moves them to a recovery service'
-_ANSWER_FROM_WAL = ('the answer to a command sent again whose original the WAL holds: reads forward from the original, through '
-                    'committed records only and at most 4,096 of them, for the first report answering it '
-                    '(docs/availability/one_check_against_sequencing_twice.md, section 3.3)')
+_ANSWER_FROM_WAL = ('the answer to a command sent again whose original the WAL holds: one record, read where the WAL noted the '
+                    'first report answering it, for a recent command; for one older than the WAL remembers, a read forward from '
+                    'the original, through committed records only and at most 4,096 of them '
+                    '(docs/availability/one_check_against_sequencing_twice.md, section 3.3; BUG-0260)')
 _DUPLICATE_CHECK = ('the check against sequencing a command twice: normally one record read at the position the record of '
                     'identifiers gives, and a search only in the rare cases docs/availability/one_check_against_sequencing_twice.md, '
                     'section 3.2, lists')
@@ -1314,6 +1316,8 @@ _PERMITTED_WAL_READS = [
     ('applications/sequencer/SequencerThread.cpp', 'CommandLinks::find_command', _DUPLICATE_CHECK),
     ('applications/sequencer/SequencerThread.hpp', 'find_command', _DEFINITION),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::first_report_answering', _ANSWER_FROM_WAL),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::report_at', _ANSWER_FROM_WAL),
+    ('applications/sequencer/SequencerThread.hpp', 'report_at', _DEFINITION),
     ('applications/sequencer/ServingWalFollowers.hpp', 'handed_over_publishers_', _DEFINITION),
 ]
 

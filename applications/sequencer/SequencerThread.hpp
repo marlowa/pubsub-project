@@ -61,6 +61,7 @@
 #include "VoidFromWal.hpp"
 #include "VoidedCommandList.hpp"
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
+#include <pubsub_itc_fw/WalPosition.hpp>
 
 namespace sequencer {
 
@@ -680,10 +681,16 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // about 100 microseconds, a few records later; a command not answered within this many records is waiting for
     // its engine, which answers it by the ordinary path.
     static constexpr int64_t reports_read_for_an_answer_at_most = 4096;
-    // The first report in the WAL answering the command @p command, read forward from it through the committed
-    // records, at most reports_read_for_an_answer_at_most of them. Reading starts at the command's own record when
-    // its position is known, and otherwise at the start of the segment that holds it.
+    // The first committed report in the WAL answering the command @p command. Read from where the WAL noted it when the
+    // command is recent (ReplicatedWal::first_answer_to); otherwise searched for, read forward from the command through
+    // the committed records, at most reports_read_for_an_answer_at_most of them, starting at the command's own record
+    // when its position is known, and otherwise at the start of the segment that holds it.
     [[nodiscard]] std::optional<ReportInWal> first_report_answering(const pubsub_itc_fw::CommandInWal& command);
+    // The report in record @p report_seq_no, which starts at @p position, as the answer to the command in record
+    // @p command_seq_no; nothing, with a Warning, if that record is not there or does not answer it.
+    [[nodiscard]] std::optional<ReportInWal> report_at(int64_t report_seq_no, const pubsub_itc_fw::WalPosition& position, int64_t command_seq_no);
+    // Where report_at() decodes the report, allocated once.
+    std::vector<uint8_t> report_arena_buffer_ = std::vector<uint8_t>(64 * 1024);
     // Answers a command sent again that the WAL holds as @p command with the first report of it the WAL holds,
     // forwarded to the member's session marked as a possible repeat; when the WAL holds none, or the session is bound to
     // no gateway, the matching engine answers it (docs/availability/one_check_against_sequencing_twice.md, section 3.3).

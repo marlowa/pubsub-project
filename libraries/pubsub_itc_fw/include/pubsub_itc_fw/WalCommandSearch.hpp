@@ -164,7 +164,7 @@ class WalCommandSearch {
             return;
         }
         oldest_read_ns_ = std::min(oldest_read_ns_, contents->wall_time_ns);
-        const size_t identity_size = identity_->identity_of(*contents, scratch_.data(), identity_buffer_.data());
+        const size_t identity_size = identity_->identity_of(*contents, scratch_.data(), identity_buffer_.data()).size;
         if (identity_size == 0 || identity_size > identity_buffer_.size()) {
             return;
         }

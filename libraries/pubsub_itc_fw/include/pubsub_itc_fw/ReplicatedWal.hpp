@@ -29,6 +29,7 @@
 #include <pubsub_itc_fw/LoggedCommandIdentifiersBuilder.hpp>
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/RecentAnswers.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 #include <pubsub_itc_fw/WalCommandSearch.hpp>
@@ -212,6 +213,10 @@ struct ReplicatedWalConfiguration {
     size_t identifiers_reserved{0};
     /// How an identity becomes a number in that record. Replaced only by a test, to make two identities collide.
     LoggedCommandIdentifiers::NumberFunction command_number{&LoggedCommandIdentifiers::identifier};
+    /// With a command_identity, how many of the most recent commands the WAL remembers the first answer to, so that the
+    /// answer to a command sent again is read from where it is (RecentAnswers): a power of two. 2^20, about a million
+    /// commands, 32 MiB, covers many times the commands a gateway can have unanswered.
+    size_t recent_answers_kept{size_t{1} << 20};
 };
 
 /**
@@ -487,6 +492,15 @@ class ReplicatedWal {
      */
     [[nodiscard]] std::optional<CommandInWal> find_command(std::string_view identity, int64_t not_before_ns);
 
+    /**
+     * @brief What the WAL knows of the first record answering the command in record @p command_seq_no, for the answer
+     *        to a command sent again: found, with its number and position; none yet; or not known, when only a search
+     *        of the WAL can tell (RecentAnswers). Not known, too, when no command_identity is configured.
+     */
+    [[nodiscard]] RecentAnswers::Lookup first_answer_to(int64_t command_seq_no) const {
+        return recent_answers_.has_value() ? recent_answers_->lookup(command_seq_no) : RecentAnswers::Lookup{};
+    }
+
     /// Whether a search of the WAL is being kept for holds_command(), with what it has read.
     [[nodiscard]] bool command_search_in_use() const {
         return command_search_.has_value();
@@ -539,8 +553,9 @@ class ReplicatedWal {
     void note_whether_the_follower_is_waited_for(Clock::time_point now);
     [[nodiscard]] bool may_commit_without_follower() const;
     void advance_commit();
-    // Notes the identity and position of the command a record just written holds, if it holds one.
-    void note_command_written(WalPosition position, const WalEntryContents& entry);
+    // Notes the identity and position of the command record @p seq_no, just written at @p position, holds, if it holds one;
+    // and, if it answers a command, that it is where that command's answer is.
+    void note_command_written(int64_t seq_no, WalPosition position, const WalEntryContents& entry);
     void add_command(uint64_t number, WalPosition position);
     // Whether the record at @p position holds the command with @p identity.
     [[nodiscard]] std::optional<int64_t> command_at(WalPosition position, std::string_view identity);
@@ -629,6 +644,8 @@ class ReplicatedWal {
     // The record of the commands the WAL holds, each with its position, once built and taken over
     // (docs/availability/one_check_against_sequencing_twice.md); and what builds it at startup.
     std::optional<LoggedCommandIdentifiers> commands_;
+    // Where the first answer to each recent command is, noted as each record is written. Only with a command_identity.
+    std::optional<RecentAnswers> recent_answers_;
     LoggedCommandIdentifiersBuilder commands_builder_;
     bool commands_building_{false};
     // The commands written while the record was being built: each one's number and position.

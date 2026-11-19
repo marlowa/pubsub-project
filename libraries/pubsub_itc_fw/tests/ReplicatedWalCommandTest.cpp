@@ -21,6 +21,7 @@
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/RecentAnswers.hpp>
 #include <pubsub_itc_fw/ReplicatedWal.hpp>
 #include <pubsub_itc_fw/WalCursor.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
@@ -296,6 +297,47 @@ TEST_F(ReplicatedWalCommandTest, WithoutACommandIdentityNothingIsHeld) {
     static_cast<void>(wal_->open(now_));
     write("MEMBER/order-1");
     EXPECT_FALSE(wal_->holds_command("MEMBER/order-1", the_whole_wal));
+}
+
+} // namespaces
+
+namespace pubsub_itc_fw::tests {
+
+// The WAL notes where the first answer to each command is as it writes it, so that the answer to a command sent again is
+// read from that one place (BUG-0260).
+TEST_F(ReplicatedWalCommandTest, TheFirstAnswerToACommandIsFoundWhereTheWalWroteIt) {
+    open();
+    const std::vector<uint8_t> command = test_command_bytes("MEMBER/order-1");
+    const int64_t command_seq_no = wal_->append(test_command_pdu_id, command.data(), command.size(), ++wall_time_ns_, now_);
+    write("MEMBER/order-2");
+    EXPECT_EQ(wal_->first_answer_to(command_seq_no).kind, RecentAnswers::Kind::none_yet);
+
+    const std::vector<uint8_t> answer = test_answer_bytes(command_seq_no);
+    const int64_t answer_seq_no = wal_->append(test_answer_pdu_id, answer.data(), answer.size(), ++wall_time_ns_, now_);
+    const std::vector<uint8_t> second_answer = test_answer_bytes(command_seq_no);
+    static_cast<void>(wal_->append(test_answer_pdu_id, second_answer.data(), second_answer.size(), ++wall_time_ns_, now_));
+
+    const RecentAnswers::Lookup found = wal_->first_answer_to(command_seq_no);
+    ASSERT_EQ(found.kind, RecentAnswers::Kind::found);
+    EXPECT_EQ(found.answer_seq_no, answer_seq_no) << "the first answer";
+    WalCursor cursor;
+    cursor.open(dir_, found.position, WalCursor::ReadAhead::pages_read_only);
+    int64_t record_id = 0;
+    const uint8_t* payload = nullptr;
+    size_t size = 0;
+    ASSERT_TRUE(cursor.read_next(record_id, payload, size));
+    EXPECT_EQ(record_id, answer_seq_no) << "the position noted is where the answer starts";
+}
+
+// Commands already in the WAL when it is opened were written before the WAL began noting answers, so only a search can
+// find theirs.
+TEST_F(ReplicatedWalCommandTest, TheAnswerToACommandWrittenBeforeTheWalWasOpenedIsNotKnown) {
+    open();
+    const std::vector<uint8_t> command = test_command_bytes("MEMBER/order-1");
+    const int64_t command_seq_no = wal_->append(test_command_pdu_id, command.data(), command.size(), ++wall_time_ns_, now_);
+    wal_.reset();
+    open();
+    EXPECT_EQ(wal_->first_answer_to(command_seq_no).kind, RecentAnswers::Kind::not_known);
 }
 
 } // namespaces

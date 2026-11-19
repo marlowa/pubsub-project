@@ -59,7 +59,7 @@ std::string identity_of_record(const std::vector<uint8_t>& bytes, int16_t pdu_id
     const sequencer::SequencerCommandIdentity reader;
     std::vector<uint8_t> scratch(pubsub_itc_fw::CommandIdentityInterface::scratch_size);
     Buffer buffer{};
-    const size_t size = reader.identity_of(pubsub_itc_fw::WalEntryContents{1, 0, pdu_id, bytes.data(), bytes.size()}, scratch.data(), buffer.data());
+    const size_t size = reader.identity_of(pubsub_itc_fw::WalEntryContents{1, 0, pdu_id, bytes.data(), bytes.size()}, scratch.data(), buffer.data()).size;
     return std::string(buffer.data(), size);
 }
 

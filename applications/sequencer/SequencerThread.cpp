@@ -35,6 +35,7 @@
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
+#include <pubsub_itc_fw/RecentAnswers.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TradingDayOfFile.hpp>
 #include <pubsub_itc_fw/WalCursor.hpp>
@@ -2428,6 +2429,19 @@ int32_t SequencerThread::trading_date_to_write() const {
 
 std::optional<SequencerThread::ReportInWal> SequencerThread::first_report_answering(const pubsub_itc_fw::CommandInWal& command) {
     const int64_t command_seq_no = command.record_id;
+    // The WAL remembers where the first answer to each recent command is, and a command sent again is almost always
+    // recent, so the WAL is searched only when it cannot say (docs/bug_list.md, BUG-0260).
+    const pubsub_itc_fw::RecentAnswers::Lookup known = replicated_wal_->first_answer_to(command_seq_no);
+    if (known.kind == pubsub_itc_fw::RecentAnswers::Kind::none_yet) {
+        return std::nullopt;
+    }
+    if (known.kind == pubsub_itc_fw::RecentAnswers::Kind::found) {
+        // Only a committed report: one written later is forwarded by the ordinary path once it is committed.
+        if (known.answer_seq_no > replicated_wal_->committed_through()) {
+            return std::nullopt;
+        }
+        return report_at(known.answer_seq_no, known.position, command_seq_no);
+    }
     // Only committed records: a report written later is forwarded by the ordinary path once it is committed.
     const int64_t read_through = std::min(replicated_wal_->committed_through(), command_seq_no + reports_read_for_an_answer_at_most);
     if (read_through <= command_seq_no) {
@@ -2477,6 +2491,48 @@ std::optional<SequencerThread::ReportInWal> SequencerThread::first_report_answer
                    "SequencerThread: reading the WAL forward from record {} for the report answering it failed: {} -- the command is answered by the "
                    "matching engine, as when the WAL holds no report of it",
                    command_seq_no, error.what());
+    }
+    return std::nullopt;
+}
+
+std::optional<SequencerThread::ReportInWal> SequencerThread::report_at(int64_t report_seq_no, const pubsub_itc_fw::WalPosition& position,
+                                                                       int64_t command_seq_no) {
+    try {
+        pubsub_itc_fw::WalCursor cursor;
+        cursor.open(config_.wal_directory, position, pubsub_itc_fw::WalCursor::ReadAhead::pages_read_only);
+        int64_t record_id = 0;
+        const uint8_t* payload = nullptr;
+        size_t size = 0;
+        if (!cursor.read_next(record_id, payload, size) || record_id != report_seq_no) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: record {} was noted as answering command {}, but is not where it was noted (segment {}, byte {}) -- the "
+                       "command is answered by the matching engine",
+                       report_seq_no, command_seq_no, position.segment, position.offset);
+            return std::nullopt;
+        }
+        const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
+        if (!contents.has_value() || contents->size == 0) {
+            return std::nullopt;
+        }
+        // An arena of its own: the command being answered was decoded into the thread's decode arena, and its fields may
+        // point into it.
+        pubsub_itc_fw::BumpAllocator arena(report_arena_buffer_.data(), report_arena_buffer_.size());
+        size_t consumed = 0;
+        size_t needed = 0;
+        pubsub_itc_fw_app::WalRecordView stored{};
+        if (!pubsub_itc_fw_app::decode(stored, contents->bytes, contents->size, consumed, arena, needed) ||
+            stored.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport) || !stored.has_answers_seq_no ||
+            stored.answers_seq_no != command_seq_no) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: record {} was noted as answering command {}, but does not -- the command is answered by the matching engine",
+                       report_seq_no, command_seq_no);
+            return std::nullopt;
+        }
+        return ReportInWal{record_id, std::vector<uint8_t>(stored.payload.data, stored.payload.data + stored.payload.size)};
+    } catch (const std::exception& error) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: reading record {}, the report answering command {}, failed: {} -- the command is answered by the matching engine",
+                   report_seq_no, command_seq_no, error.what());
     }
     return std::nullopt;
 }
