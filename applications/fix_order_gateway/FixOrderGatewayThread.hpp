@@ -19,6 +19,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
+#include <pubsub_itc_fw/LastStateFile.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
@@ -647,6 +648,12 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     [[nodiscard]] std::optional<pubsub_itc_fw_app::CommandRefusedReason> refusal_by_phase() const;
     // Notes what the venue is doing, from OrderAcceptance; on a change, tells every logged-on member (35=h) and the test.
     void note_trading_session(const fix_common::TradingSessionState& told);
+    // Records a new phase in the last-state file, and on the end-of-day end logs every member out, saying the trading
+    // day has ended, and stops this gateway for the end of day (docs/venue/start_and_end_of_day.md, section 4.4, decision
+    // 12).
+    void note_phase_for_the_end_of_day(const fix_common::TradingSessionState& told);
+    pubsub_itc_fw::LastStateFile last_state_{config_.last_state_file, config_.trading_day};
+    std::optional<pubsub_itc_fw_app::TradingPhase> last_phase_recorded_;
     // Sends @p session a TradingSessionStatus (35=h) saying what the venue is doing: unsolicited when @p request_id is
     // empty, otherwise in answer to the TradingSessionStatusRequest (35=g) that carried it as TradSesReqID (335).
     void send_trading_session_status(FixSession& session, std::string_view request_id);

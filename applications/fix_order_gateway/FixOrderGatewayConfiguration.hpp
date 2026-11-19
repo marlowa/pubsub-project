@@ -371,6 +371,13 @@ struct FixOrderGatewayConfiguration {
      *  gateway: the metric is read as the difference between checkpoints recorded by
      *  different processes. See OrderPathMetrics.hpp. */
     std::vector<double> order_path_elapsed_buckets;
+
+    /// The trading day the gateway was started for, as the number yyyymmdd, given on its command line, not in the file.
+    int32_t trading_day{0};
+    /// The file of this instance's last trading state, which outlives the day; read first at start-up, so that a gateway
+    /// finding the end-of-day end of its own day exits at once for the end of day. See pubsub_itc_fw::LastStateFile and
+    /// docs/venue/start_and_end_of_day.md, section 4.4. From `[end_of_day] last_state_file`.
+    std::string last_state_file;
 };
 
 } // namespaces

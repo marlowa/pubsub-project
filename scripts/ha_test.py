@@ -10829,36 +10829,28 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             enter("end-of-day")
             session_told("3", f"trading day {TRADING_DAY}: the end of day", "once the end of day is written")
-            # The leading sequencer writes the end-of-day end by itself once the follower sequencer and both publishers hold the
-            # begin (docs/venue/start_and_end_of_day.md, section 4.2). Each is up to date, so it follows within a few seconds.
-            deadline = time.monotonic() + 30.0
-            state = None
-            while time.monotonic() < deadline:
-                state = operator_requests.trading_state(prefix, "ha_test", timeout=5.0, say=lambda _line: None).answer
-                if state is not None and state.phase.name == "EndOfDayEnd":
-                    break
-                time.sleep(0.5)
-            if state is None or state.phase.name != "EndOfDayEnd":
-                member.close()
-                die(f"the trading day: the end-of-day end was not written within 30s of the begin; the leading sequencer says {state}")
-            log("  the leading sequencer writes the end-of-day end by itself once every copy of the WAL holds the begin -- OK")
-            enter("end-of-day", "AlreadyPast")
             member.new_order_single("day-ended-1")
             day_answered("day-ended-1", "an order in the end of day", "8", "trading day has ended")
+            log("  an order in the end-of-day begin is refused, saying the trading day has ended -- OK")
+            # The leading sequencer writes the end-of-day end by itself once the follower sequencer and both publishers hold the
+            # begin (docs/venue/start_and_end_of_day.md, section 4.2). Each is up to date, so it follows within a few seconds.
+            # The gateway, told of it, sends the member a Logout saying the trading day has ended, and stops for the end of
+            # day (section 4.4, decision 12). The sequencers stop too, so the end is seen through the member, not asked of them.
+            logout = member.receive_until("5", timeout=30.0)
             member.close()
-            log("  the end of day is written once the engine has acted on the close, and an order in it is refused, saying the trading day "
-                "has ended -- OK")
-
-            late = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
-            late.connect()
-            late.logon(reset_seq_num=True)
-            late_logon = late.receive_until("A", timeout=_RAW_LOGON_TIMEOUT)
-            if late_logon is None:
-                late.close()
-                die("the trading day: a member could not log on in the end of day; logging on is allowed in every phase")
-            session_told("3", f"trading day {TRADING_DAY}: the end of day", "on logging on in the end of day", client=late)
-            late.close()
-            log("  a member logs on in the end of day -- OK")
+            if logout is None or logout.get(58) != f"The trading day {TRADING_DAY} has ended":
+                die(f"the trading day: within 30s of the end-of-day begin the member was to be sent a Logout (35=5) with Text \"The trading day "
+                    f"{TRADING_DAY} has ended\"; it was sent {logout}")
+            log("  once the leading sequencer writes the end-of-day end, the FIX gateway logs the member out, saying the trading day has ended -- OK")
+            gateways = {name: process for name, process in app_procs if name in ("fix_order_gateway_a", "binary_order_gateway_a")}
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and any(process.poll() is None for process in gateways.values()):
+                time.sleep(0.1)
+            statuses = {name: process.poll() for name, process in gateways.items()}
+            if len(statuses) != 2 or any(status != 3 for status in statuses.values()):
+                die(f"the trading day: both gateways were to stop for the end of day, with status 3, within 10s of logging the member out; "
+                    f"their statuses are {statuses} (None is still running)")
+            log("  both gateways stop for the end of day, with status 3 -- OK")
 
             leader_follower, _ = operator_requests.load_messages(prefix)
             sequencer_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"

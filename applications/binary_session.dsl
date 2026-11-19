@@ -16,7 +16,9 @@
 #  answer to a request it refuses itself before the request reaches the
 #  matching engine: the counterpart of a FIX session-level Reject. And it adds
 #  TradingSessionStatus and TradingSessionStatusRequest, the counterparts of
-#  FIX 35=h and 35=g, which tell a member what the venue is doing.
+#  FIX 35=h and 35=g, which tell a member what the venue is doing. And it adds
+#  Logout, the counterpart of a FIX Logout (35=5) sent by the venue, which
+#  tells a member why its session is ending.
 #
 #  Sequence:
 #
@@ -199,4 +201,18 @@ end
 
 message TradingSessionStatusRequest (id=704, version=1)
     string request_id                # echoed in the answer
+end
+
+# ---------------------------------------------------------------------------
+# Logout (id=705)
+#
+# The gateway ends a member's session and says why: the counterpart of a FIX
+# Logout (35=5) sent by the venue. The gateway sends it to every logged-on
+# member at the end of the trading day, and then shuts down, which closes the
+# connection. A member that receives it has nothing to answer
+# (docs/venue/start_and_end_of_day.md, section 4.4, decision 13).
+# ---------------------------------------------------------------------------
+
+message Logout (id=705, version=1)
+    string text                      # why the session ends, in words, such as "The trading day 20261119 has ended"
 end

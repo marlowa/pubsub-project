@@ -277,6 +277,27 @@ CancelOutcome print_cancel_reply(int16_t pdu_id, int64_t seq_no, const std::vect
 }
 
 /**
+ * @brief Prints a Logout, which the gateway sends every logged-on member at the end of the trading day, before its
+ *        connection closes.
+ * @return Whether the PDU was one.
+ */
+bool print_if_logout(int16_t pdu_id, int64_t seq_no, const std::vector<uint8_t>& payload, std::vector<uint8_t>& arena_buffer) {
+    if (pdu_id != pubsub_itc_fw_app::Logout::message_pdu_id) {
+        return false;
+    }
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    pubsub_itc_fw_app::LogoutView logout{};
+    if (!pubsub_itc_fw_app::decode(logout, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
+        fmt::print("failed to decode Logout\n");
+        return true;
+    }
+    fmt::print("Logout seq={} Text={}\n", seq_no, logout.text);
+    return true;
+}
+
+/**
  * @brief Prints a TradingSessionStatus, which the gateway sends unasked when the member logs on and whenever what the venue
  *        is doing changes, as well as in answer to a request.
  * @return Whether the PDU was one; if it was, the request id it answers, empty when it was unasked, is put in
@@ -377,6 +398,9 @@ int main(int argc, char** argv) {
                 ::close(socket_fd);
                 return timed_out ? 3 : 1;
             }
+            if (print_if_logout(pdu_id, seq_no, payload, arena_buffer)) {
+                continue;
+            }
             if (!print_if_session_status(pdu_id, seq_no, payload, arena_buffer, session_status_request_id)) {
                 fmt::print("unexpected PDU id {}\n", pdu_id);
                 continue;
@@ -430,7 +454,8 @@ int main(int argc, char** argv) {
                 return 1;
             }
             // Sent unasked at logon and on each change: printed, and not counted as a reply.
-            if (print_if_session_status(pdu_id, seq_no, payload, arena_buffer, session_status_request_id)) {
+            if (print_if_logout(pdu_id, seq_no, payload, arena_buffer) ||
+                print_if_session_status(pdu_id, seq_no, payload, arena_buffer, session_status_request_id)) {
                 --received;
                 continue;
             }
@@ -480,7 +505,8 @@ int main(int argc, char** argv) {
             return 1;
         }
         // Sent unasked at logon and on each change: printed, and not counted as a reply.
-        if (print_if_session_status(pdu_id, seq_no, payload, arena_buffer, session_status_request_id)) {
+        if (print_if_logout(pdu_id, seq_no, payload, arena_buffer) ||
+            print_if_session_status(pdu_id, seq_no, payload, arena_buffer, session_status_request_id)) {
             --received;
             continue;
         }

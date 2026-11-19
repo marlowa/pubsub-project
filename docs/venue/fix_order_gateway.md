@@ -196,6 +196,14 @@ unknown, and nothing is sent unasked. The binary gateway sends the same informat
 `TradingSessionStatus`, worked out by the same function
 ([binary_order_gateway.md](binary_order_gateway.md)).
 
+**At the end of the trading day,** when the leading sequencer says the venue is in the end-of-day end, the
+gateway sends every logged-on member a Logout (35=5) whose Text (58) says the trading day has ended, such as
+"The trading day 20261116 has ended", and then shuts down once the messages are written, which closes the
+connections. Members already know the session is closed, from the 35=h sent at the close; the Logout tells
+them why the connection ends. The gateway records each phase in its last-state file (`[end_of_day]
+last_state_file`), and a gateway started again after the end of its day finds the end there and exits at
+once. The design is [start_and_end_of_day.md](start_and_end_of_day.md), section 4.4, decision 12.
+
 ## Authentication
 
 The member sends its password in the Logon (tag 554), which is why the member listener should use

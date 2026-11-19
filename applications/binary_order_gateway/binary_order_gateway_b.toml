@@ -152,3 +152,9 @@ limit    = 16384
 [order_limits]
 max_symbol_length = ${binary_order_gateway_b_order_limits_max_symbol_length}
 max_order_qty_length = ${binary_order_gateway_b_order_limits_max_order_qty_length}
+
+[end_of_day]
+# The file of this instance's last trading state, which outlives the day. It is read first at start-up: a
+# gateway that finds the end-of-day end of its own day in it has nothing to do, and exits at once for the
+# end of day (docs/venue/start_and_end_of_day.md, section 4.4).
+last_state_file = "${last_state_dir}/binary_order_gateway_b.last_state"

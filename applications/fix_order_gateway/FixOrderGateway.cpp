@@ -15,13 +15,17 @@
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/HotPathThreadCount.hpp>
+#include <pubsub_itc_fw/LastStateFile.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
+
+#include <leader_follower.hpp>
 
 namespace fix_order_gateway {
 
@@ -179,6 +183,16 @@ int main(int argc, char* argv[]) {
     }
 
     PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: started for trading day {}", arguments->trading_day);
+    config.trading_day = arguments->trading_day;
+    // A gateway started again after the end of its day has nothing to do: it exits at once for the end of day
+    // (docs/venue/start_and_end_of_day.md, section 4.4).
+    if (pubsub_itc_fw::LastStateFile(config.last_state_file, config.trading_day)
+            .says(pubsub_itc_fw_app::to_string(pubsub_itc_fw_app::TradingPhase::EndOfDayEnd))) {
+        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGateway: {} says the end of trading day {} has been reached -- nothing to do, exiting for the end of day", config.last_state_file,
+                   config.trading_day);
+        return pubsub_itc_fw::Reactor::stopped_for_the_end_of_day_status;
+    }
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);
 

@@ -197,3 +197,9 @@ bytes    = 67108864
 # holds only unanswered commands, so this bounds them all
 # (docs/availability/a_gateway_limits_its_unanswered_commands.md). Provisional: to be measured.
 limit    = 16384
+
+[end_of_day]
+# The file of this instance's last trading state, which outlives the day. It is read first at start-up: a
+# gateway that finds the end-of-day end of its own day in it has nothing to do, and exits at once for the
+# end of day (docs/venue/start_and_end_of_day.md, section 4.4).
+last_state_file = "${last_state_dir}/fix_order_gateway_a.last_state"

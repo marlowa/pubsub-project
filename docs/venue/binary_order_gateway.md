@@ -40,6 +40,7 @@ Five message types are specific to this gateway, defined in `applications/binary
 | `RequestRefused` | gateway → client | The gateway's answer to a request to cancel it refuses itself: the request's `cl_ord_id`, the refused message's PDU id, a `RefusalReason`, the reason in text, and the field at fault where there is one |
 | `TradingSessionStatus` | gateway → client | What the venue is doing: the state as FIX gives it in TradSesStatus (340), whether the trading day has started, the trading day, the phase, whether trading is halted, whether it was sent unasked, the same in words, and the request it answers if any. The counterpart of FIX 35=h |
 | `TradingSessionStatusRequest` | client → gateway | A member asks what the venue is doing, naming its request with `request_id`. The counterpart of FIX 35=g |
+| `Logout` | gateway → client | The gateway ends the member's session, saying why in `text`. It is sent to every logged-on member at the end of the trading day, before the gateway shuts down. The counterpart of a FIX Logout (35=5) sent by the venue |
 
 Everything else is the DD-derived order messages from `fix_orders.dsl` (ids 1000+):
 `NewOrderSingle` (1000) and `OrderCancelRequest` (1001) inbound, `ExecutionReport` (1002) and
@@ -238,6 +239,13 @@ as a number, as `TradingPhase` numbers it in `leader_follower.dsl`, and the text
 gateway gives in Text (58), such as "trading day 20261116: open". The design is
 [trading_day_plan.md](trading_day_plan.md), section 4.2.
 
+**At the end of the trading day,** when the leading sequencer says the venue is in the end-of-day end, the
+gateway sends every logged-on member a `Logout` whose text says the trading day has ended, such as "The
+trading day 20261116 has ended", and then shuts down once the messages are written, which closes the
+connections. It records each phase in its last-state file (`[end_of_day] last_state_file`), and a gateway
+started again after the end of its day finds the end there and exits at once. The design is
+[start_and_end_of_day.md](start_and_end_of_day.md), section 4.4, decision 13.
+
 ## Reference client
 
 `bin/binary_client` logs on, sends orders, and prints the ERs that come back:
@@ -248,7 +256,7 @@ binary_client --port 9890 --comp-id BINCLIENT --password stubpassword --orders 3
 
 It uses plain sockets and the generated codecs rather than the framework, which shows that a
 client needs nothing from `pubsub_itc_fw` beyond the PDU header layout. It prints every
-`TradingSessionStatus` it is sent, and does not count one as the reply to an order or a cancel.
+`TradingSessionStatus` and `Logout` it is sent, and does not count either as the reply to an order or a cancel.
 `--session-status REQUEST-ID` asks what the venue is doing instead of placing orders, prints the
 answer, and exits.
 

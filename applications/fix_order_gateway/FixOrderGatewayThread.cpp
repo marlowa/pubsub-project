@@ -1769,6 +1769,36 @@ void FixOrderGatewayThread::note_trading_session(const fix_common::TradingSessio
                refusal_by_phase().has_value() ? "refused" : "passed on, unless refused for another reason");
     report(pubsub_itc_fw_app::TradingSessionChanged{told.day_started, told.trading_day, told.day_started ? static_cast<int32_t>(told.phase) : 0, told.halted,
                                                     members_told});
+    note_phase_for_the_end_of_day(told);
+}
+
+void FixOrderGatewayThread::note_phase_for_the_end_of_day(const fix_common::TradingSessionState& told) {
+    if (!told.day_started || last_phase_recorded_ == told.phase) {
+        return;
+    }
+    last_state_.record(pubsub_itc_fw_app::to_string(told.phase));
+    last_phase_recorded_ = told.phase;
+    if (told.phase != pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
+        return;
+    }
+    // Members already know the session is closed, from the TradingSessionStatus sent at the close; the Logout tells them
+    // why their connection is about to end. The connections close when the gateway stops, once the Logouts are written.
+    const std::string text = fmt::format("The trading day {} has ended", told.trading_day);
+    int32_t members_logged_out = 0;
+    for (auto& [conn_id, session] : sessions_) {
+        if (session.session_established) {
+            FixMessage logout;
+            logout.set(Tag::MsgType, MsgType::Logout);
+            logout.set(Tag::Text, text);
+            send_fix_to_session(session, logout);
+            ++members_logged_out;
+        }
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixOrderGatewayThread: the end-of-day end of trading day {} -- {} logged-on member(s) sent Logout (35=5) saying the trading day has ended; "
+               "stopping for the end of day",
+               told.trading_day, members_logged_out);
+    stop_for_end_of_day(fmt::format("the end-of-day end of trading day {}, every member logged out", told.trading_day));
 }
 
 void FixOrderGatewayThread::send_trading_session_status(FixSession& session, std::string_view request_id) {

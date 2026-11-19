@@ -230,6 +230,7 @@ BinaryOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& 
 
     int64_t unanswered_commands = 0;
     int64_t unanswered_bytes = 0;
+    toml.get_required_except("end_of_day.last_state_file", config.last_state_file);
     toml.get_required_except("unanswered_commands.commands", unanswered_commands);
     toml.get_required_except("unanswered_commands.bytes", unanswered_bytes);
     if (unanswered_commands < 1 || unanswered_bytes < 1) {

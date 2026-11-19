@@ -1057,6 +1057,35 @@ void BinaryOrderGatewayThread::note_trading_session(const fix_common::TradingSes
                "BinaryOrderGatewayThread: the venue is now in {} -- {} logged-on member(s) sent TradingSessionStatus; orders and cancels are {}",
                fix_common::session_status_text(told), members_told,
                refusal_by_phase().has_value() ? "refused" : "passed on, unless refused for another reason");
+    note_phase_for_the_end_of_day(told);
+}
+
+void BinaryOrderGatewayThread::note_phase_for_the_end_of_day(const fix_common::TradingSessionState& told) {
+    if (!told.day_started || last_phase_recorded_ == told.phase) {
+        return;
+    }
+    last_state_.record(pubsub_itc_fw_app::to_string(told.phase));
+    last_phase_recorded_ = told.phase;
+    if (told.phase != pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
+        return;
+    }
+    // Members already know the session is closed, from the TradingSessionStatus sent at the close; the Logout tells them
+    // why their connection is about to end. The connections close when the gateway stops, once the Logouts are written.
+    pubsub_itc_fw_app::Logout logout{};
+    const std::string text = fmt::format("The trading day {} has ended", told.trading_day);
+    logout.text = text;
+    int32_t members_logged_out = 0;
+    for (const auto& [conn_id_value, session] : sessions_) {
+        if (session.logged_on) {
+            send_pdu(session.conn_id, pubsub_itc_fw_app::Logout::message_pdu_id, 0, logout);
+            ++members_logged_out;
+        }
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "BinaryOrderGatewayThread: the end-of-day end of trading day {} -- {} logged-on member(s) sent Logout saying the trading day has ended; "
+               "stopping for the end of day",
+               told.trading_day, members_logged_out);
+    stop_for_end_of_day(fmt::format("the end-of-day end of trading day {}, every member logged out", told.trading_day));
 }
 
 void BinaryOrderGatewayThread::send_trading_session_status(const pubsub_itc_fw::ConnectionID& conn_id, std::string_view request_id) {
