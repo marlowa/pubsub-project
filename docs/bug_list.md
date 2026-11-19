@@ -279,6 +279,7 @@ follower produced, and why the leading engine produced none, or one that differe
 | | |
 |---|---|
 | Severity | medium |
+| Kind | task |
 | Found | 2026-11-19 |
 | Recorded | 2026-11-19 |
 | How | Measuring the throughput of [gathering sends](framework/gathering_sends.md), for [BUG-0251](#bug_0251) |
