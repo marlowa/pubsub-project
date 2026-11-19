@@ -131,6 +131,18 @@ class Reactor : public ThreadLookupInterface {
      */
     void shutdown(const std::string& reason);
 
+    /// The status run() returns once the reactor has stopped for the end of the trading day, and which a component's
+    /// `main` returns: `scripts/launch.py` then archives the component's files instead of starting it again
+    /// (docs/venue/start_and_end_of_day.md, section 4.2, decision 5).
+    static constexpr int stopped_for_the_end_of_day_status = 3;
+
+    /**
+     * @brief As shutdown(), for the end of the trading day: run() then returns stopped_for_the_end_of_day_status.
+     *
+     * A shutdown already asked for, for any other reason, stands, and run() returns what it would have.
+     */
+    void shutdown_for_end_of_day(const std::string& reason);
+
     /**
      * @brief Handles a SIGTERM signal, broadcasting Termination to all threads
      *        and initiating a graceful reactor shutdown.
@@ -826,6 +838,11 @@ class Reactor : public ThreadLookupInterface {
     SendsToGoneConnections sends_to_gone_connections_;
 
     std::string shutdown_reason_;
+    // Set by the caller that claims the shutdown, before the request is published, when it is for the end of the day.
+    std::atomic<bool> stopped_for_the_end_of_day_{false};
+    // Claims the shutdown, if no one has, and asks the event loop to finish; @p for_end_of_day says whether it is for the
+    // end of the trading day.
+    void request_shutdown(const std::string& reason, bool for_end_of_day);
     std::atomic<bool> shutdown_claimed_{false};
 
     // Set by finalize_threads_after_shutdown() when a join times out and the thread is detached.

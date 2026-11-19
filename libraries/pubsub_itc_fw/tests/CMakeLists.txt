@@ -74,6 +74,7 @@ add_executable(pubsub_itc_fw_tests
     UnansweredCommandStoreTest.cpp
     UnansweredCommandsTest.cpp
     GatheredWritingTest.cpp
+    LastStateFileTest.cpp
     PacedResendTest.cpp
     WalFollowerClientTest.cpp
     WalFollowerServiceTest.cpp

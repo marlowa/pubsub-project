@@ -77,6 +77,7 @@ set(PUBSUB_ITC_FW_SRC
         src/QuillLogger.cpp
         src/SingleWriterHistogram.cpp
         src/SingleWriterHistogramRegistry.cpp
+        src/LastStateFile.cpp
         src/Reactor.cpp
         src/SlabAllocator.cpp
         src/StringUtils.cpp

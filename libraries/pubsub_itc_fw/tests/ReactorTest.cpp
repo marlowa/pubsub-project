@@ -590,6 +590,36 @@ TEST_F(ReactorTest, CleanShutdownAbandonsNothing) {
     SUCCEED();
 }
 
+// run() returns the status a component's main returns: 3 once the reactor stopped for the end of the trading day, so that
+// the launcher archives the component's files and does not start it again; 0 for any other orderly stop
+// (docs/venue/start_and_end_of_day.md, section 4.2, decision 5).
+TEST_F(ReactorTest, RunReturnsTheEndOfDayStatusOnlyWhenStoppedForTheEndOfDay) {
+    for (const bool for_end_of_day : {true, false}) {
+        auto reactor = std::make_unique<Reactor>(reactor_configuration_, service_registry_, logger_with_sink_.logger);
+        auto thread = ApplicationThread::create<TestApplicationThread>(logger_with_sink_.logger, *reactor, "end_of_day", ThreadID{782}, make_queue_config(),
+                                                                       make_allocator_config());
+        reactor->register_thread(thread);
+        int status = -99;
+        ThreadWithJoinTimeout runner([&reactor, &status] { status = reactor->run(); });
+        BackoffWithYield backoff;
+        const auto start = MillisecondClock::now();
+        while (!reactor->is_initialized()) {
+            ASSERT_LT(MillisecondClock::now() - start, MillisecondClock::duration{2000}) << "Reactor did not complete initialization";
+            backoff.pause();
+        }
+        if (for_end_of_day) {
+            reactor->shutdown_for_end_of_day("the end-of-day end");
+            // A later request for another reason does not change it: the first request decides.
+            reactor->shutdown("a later request");
+        } else {
+            reactor->shutdown("an ordinary stop");
+            reactor->shutdown_for_end_of_day("too late to count");
+        }
+        ASSERT_TRUE(runner.join_with_timeout(std::chrono::seconds(10)));
+        EXPECT_EQ(status, for_end_of_day ? Reactor::stopped_for_the_end_of_day_status : 0) << "for the end of day: " << for_end_of_day;
+    }
+}
+
 TEST_F(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown) {
     auto bad_thread = ApplicationThread::create<ThrowingTerminationThread>(logger_with_sink_.logger, *reactor_, "ThrowingThread", ThreadID{888},
                                                                            make_queue_config(), make_allocator_config());
