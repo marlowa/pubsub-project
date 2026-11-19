@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 264 |
-| Open | 49 (28 defects, 21 tasks) |
+| Bugs recorded | 266 |
+| Open | 51 (28 defects, 23 tasks) |
 | Closed | 215 |
-| Next id | BUG-0265 |
+| Next id | BUG-0267 |
 
 ## Open bugs by severity
 
-6 high, 32 medium, 11 low.
+6 high, 32 medium, 13 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -62,6 +62,8 @@
 | [BUG-0253](#bug_0253) | low | defect | `binary_load_client --help` prints its help and then tries to connect to the venue |
 | [BUG-0259](#bug_0259) | low | defect | Under a steady flood of commands, the warning that a gateway's store of unanswered commands is full is logged once for every command refused |
 | [BUG-0261](#bug_0261) | low | defect | The check that runs the matching engines on a copy of the WAL starts a sequencer that can write new commands into that copy while the engines are run on it |
+| [BUG-0265](#bug_0265) | low | task | The Java test client's blotter does not show the trading-session status its member is told |
+| [BUG-0266](#bug_0266) | low | task | The administration service's desktop does not show the venue's trading phase |
 
 ---
 
@@ -299,6 +301,41 @@ each record).
 **What is wanted.** The stage that now limits the follower found by profiling it in the same overload, as the leader's
 was, and the follower kept in step at the rate the leader sustains, or the rate at which it falls behind stated as the
 venue's ceiling.
+
+### BUG-0265: The Java test client's blotter does not show the trading-session status its member is told {#bug_0265}
+
+| | |
+|---|---|
+| Severity | low |
+| Kind | task |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| How | Andrew's suggestion, while the end of day ([BUG-0137](#bug_0137)) was being built |
+| Impact | Someone using the blotter cannot see whether the venue is in pre-open, open, halted or closed, and cannot see the gateways announce a change |
+
+**What is wanted.** Both gateways tell every logged-on member the state of the trading session whenever it changes,
+and answer a member who asks: FIX `TradingSessionStatus` (35=h) in answer to `TradingSessionStatusRequest` (35=g), and
+the binary protocol's equivalent. A member is told four states, pre-open, open, halted and closed; the start of day and
+the end of day are reported as closed, as real venues report their own preparation and their work after trading
+(`applications/fix_common/TradingSession.hpp`; `docs/venue/trading_day_plan.md`, section 4.2). The blotter in
+`java/fix-test-client` ignores 35=h. It should ask for the status when it logs on, act on every 35=h, or the binary
+equivalent, and show the state prominently.
+
+### BUG-0266: The administration service's desktop does not show the venue's trading phase {#bug_0266}
+
+| | |
+|---|---|
+| Severity | low |
+| Kind | task |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| How | Andrew's suggestion, while the end of day ([BUG-0137](#bug_0137)) was being built |
+| Impact | An operator cannot see from the desktop whether the venue is in its start of day, pre-open, open, closed or end of day |
+
+**What is wanted.** The operator's desktop shows the venue's full trading phase, the start of day and the end of day
+included, which members are not told (BUG-0265). Item 3 of BUG-0137 gives the administration service a subscription to
+the `technical_events` topic, which carries every phase; once it has that, the desktop shows the latest phase and the
+trading day. Best done straight after item 3.
 
 ### BUG-0253: `binary_load_client --help` prints its help and then tries to connect to the venue {#bug_0253}
 
