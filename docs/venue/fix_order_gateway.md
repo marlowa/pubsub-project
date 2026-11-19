@@ -269,13 +269,14 @@ file.
 | `[authentication_service] host/port`, `secondary_host/port` | The two authentication service instances (11070 and 11071) |
 | `[gateway] instance_id` | Which instance of the FIX gateway this is, stamped on every order |
 | `[fix_session] sender_comp_id`, `default_target_comp_id` | The gateway's SenderCompID, and the TargetCompID `FixSerialiser` writes when a message is serialised without naming a member's comp id |
-| `[fix_tls] enabled`, `cert`, `key` | The TLS listener and its certificate |
+| `[fix_tls] enabled`, `cert`, `key` | The TLS listener and its certificate. A session over TLS reaches a lower rate than one in plain: the gateway decrypts each order, and encrypts and writes each report with a system call of its own. That ceiling has not yet been measured; see [Gathering sends](../framework/gathering_sends.md), section 3.6 |
 | `[cancel_on_disconnect] enabled`, `grace_period` | The defaults, which each comp id may override; see [Gateway High Availability](../availability/gateway_ha.md) |
 | `[fix_limits] max_symbol_length`, `max_order_qty_length` | The longest `Symbol` and `OrderQty` the gateway accepts, 35 and 24 bytes in every environment, and at most `fix_order_limits::max_symbol_length` and `max_order_qty_length` |
 | `[timeouts] logon_timeout`, `scram_auth_timeout` | How long a logon, and its authentication, may take |
 | `[timeouts] authentication_heartbeat_interval` | How often a heartbeat is sent to each authentication service, 30 seconds; a connection on which nothing arrives for three intervals is closed and made again. See [Authentication Service](authentication_service.md#authentication_heartbeat) |
 | `[fix_capture] enabled`, `file`, `ring_bytes` | FIX capture, off by default |
 | `[unanswered_commands] commands`, `bytes` | The store of orders and cancels sent to the sequencers and not yet answered, kept so they can be sent again to a new sequencer leader: 262,144 commands in 64 MiB. When it is full, new commands are refused. Used only with high availability on; see [Commands during a change of leader](../availability/commands_during_a_change_of_leader.md) |
+| `[unanswered_commands] limit` | How many unanswered commands make the gateway stop reading every member's connection, 16,384, until the venue's answers bring the number down to half, so that orders offered faster than the venue answers them wait in the members' own sockets. Used only with high availability on; see [A gateway limits its unanswered commands](../availability/a_gateway_limits_its_unanswered_commands.md) |
 | `[event_queue_pool]`, `[command_queue_pool]` | The pools the reactor's queues to and from the gateway's thread take their entries from |
 | `[reactor]` | CPU pinning, and how long the reactor looks for work before it sleeps (`spin_before_block`: 50 ms for instance `a` in the development environment, none elsewhere) |
 | `[logging]` | Log levels and files |

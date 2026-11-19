@@ -1,7 +1,8 @@
 # Writing several waiting messages to a connection in one system call {#gathering_sends}
 
-**Status: proposed, not agreed.** The design for the throughput ceiling found while building the limit on unanswered
-commands ([BUG-0251](../bug_list.md#bug_0251)). Section 8 lists the decisions it needs.
+**Status: agreed, not yet built.** The design for the throughput ceiling found while building the limit on unanswered
+commands ([BUG-0251](../bug_list.md#bug_0251)). Section 8 records its four decisions, each agreed with Andrew on 19
+November 2026.
 
 ## 1. The problem
 
@@ -106,13 +107,30 @@ Not raw bytes connections either: the members' FIX sessions, with TLS or without
 Members' orders do arrive over TLS, and a gateway writes each report to its member with a call of its own; gathering
 those writes is a separate step, worth considering once this one is measured.
 
-### 3.6 The waiting queue's limits
+### 3.6 What TLS costs, and the ceiling it sets
+
+A connection over TLS keeps today's cost for every message: the handler encrypts each message into a buffer of its
+own and writes it with a call of its own, so none of the saving here reaches it, and each message also pays for its
+encryption. That cost is accepted. It sets a ceiling of its own, lower than a plain connection's, on how many messages
+a second such a connection carries:
+
+- **A member's FIX session over TLS** (`[fix_tls] enabled`): the gateway decrypts each order the member sends, and
+  encrypts and writes each report with a call of its own. A member sending over TLS reaches a lower rate than one
+  sending in plain, and a gateway whose members all use TLS a lower rate in all.
+- **A connection between the venue's components over TLS**: none is configured today. If one were, every message on
+  it would keep the per-message cost this design removes, and the leading sequencer's reactor would reach its limit
+  sooner.
+
+Neither ceiling has been measured yet; each is to be measured before a member is told what rate a TLS session
+sustains.
+
+### 3.7 The waiting queue's limits
 
 They are unchanged, and now count every message not yet written, including those gathered in this pass. A connection
 whose queue is full is closed as today. A pass adds at most 64 messages to a connection, so the change itself never
 fills a queue.
 
-### 3.7 What is measured
+### 3.8 What is measured
 
 The reactor's histograms of how long a command waited before the reactor took it are unchanged. A new histogram records
 how many messages each call wrote, so that how much gathering happens under each load can be seen in Grafana, and a
@@ -136,8 +154,9 @@ packets cost less.
 ## 6. Risks
 
 - **Latency of a lone message.** Bounded by one pass of at most 64 commands, which is microseconds. Measured with the
-  latency run (`perf_run.py`) before and after; a rise at the median or the 99th percentile beyond the run-to-run
-  spread is a reason not to go ahead.
+  latency run (`perf_run.py`) before and after; a rise at the median, the 99th or the 99.9th percentile beyond the
+  run-to-run spread is a reason not to go ahead. The 99.9th matters most here: a message that waits for a full pass
+  is an outlier, and the 99th percentile can hide it.
 - **Fairness between connections.** One connection's long queue is written 64 messages a call, and each connection noted
   in a pass is written once before any is written again, so no connection waits for another's whole queue.
 - **A defect in the partial-write bookkeeping** would corrupt the byte stream. Section 7's tests write every possible
@@ -157,18 +176,18 @@ packets cost less.
 
 ## 8. Decisions
 
-### Decision 1. Does the reactor gather the sends of each pass of control commands, writing each connection's messages at the end of the pass with one `sendmsg()` call for up to 64 of them? (Yes or no.)
+### Decision 1. Does the reactor gather the sends of each pass of control commands, writing each connection's messages at the end of the pass with one `sendmsg()` call for up to 64 of them? Agreed: yes.
 
 The alternative is to gather only messages already waiting, which leaves the common case, one message written at once,
 as it is, and so does not help.
 
-### Decision 2. Does each call write at most 64 messages, a provisional figure to be measured? (Yes or no.)
+### Decision 2. Does each call write at most 64 messages, a provisional figure to be measured? Agreed: yes.
 
-### Decision 3. Are connections carrying framework messages over TLS left as they are, and the members' FIX sessions, with TLS or without, left for a separate step? (Yes or no.)
+### Decision 3. Are connections carrying framework messages over TLS left as they are, and the members' FIX sessions, with TLS or without, left for a separate step? Agreed: yes.
 
 No connection between the venue's components uses TLS today. Members' FIX sessions may, and a gateway writes each
 report to its member with a call of its own (section 3.5).
 
-### Decision 4. Is `ENOBUFS` or `ENOMEM` from the call treated as "no room now", with a Warning, rather than closing the connection? (Yes or no.)
+### Decision 4. Is `ENOBUFS` or `ENOMEM` from the call treated as "no room now", with a Warning, rather than closing the connection? Agreed: yes.
 
 Both mean the kernel is short of memory for the moment, not that the connection has failed.
