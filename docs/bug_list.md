@@ -1676,9 +1676,13 @@ each slot; the rest is faulted in as the map fills.
 |---|---|---|---|---|
 | 100 million | 24.8 GB | 37.8 GB (2^28 slots) | 62.7 GB | 100.5 GB |
 
-The last column: erased slots count toward the map's half-full limit, so a day with many cancels copies
-the map to a fresh one of the same size to clear them, and holds both while it does. That fits the 200 GB
-machine with room to spare.
+The last column: a cancelled order's slot is marked erased rather than emptied, and erased slots count toward
+the map's half-full limit. A new order mostly lands on a slot never used before, so every order placed during
+the day uses up a slot, whether or not it is later cancelled. Once about half the slots have been used, about
+134 million orders placed in one day with 2^28 slots, the map is copied to a fresh one of the same size to
+clear the erased slots, and holds both while it does. What sets it off is the number of orders placed in the
+day, not the number cancelled; a day of 50 million orders never reaches it, however many are cancelled, and
+every trading day starts with a fresh map. The copy fits the 200 GB machine with room to spare.
 
 **What it costs to start.** Both creating the region and recovering it pass over every record, whatever is
 open, and recovery also writes the header of every record that holds no order, to rebuild the free list
@@ -1704,7 +1708,8 @@ are about, and it rules out a restarted engine keeping the lead within its 3-sec
 
 - the map's pages are not touched when it is reserved, so the memory is not proven available at the start
   of the day, as the decision in [BUG-0010](#bug_0010) requires;
-- copying the map to clear erased slots doubles it for a while;
+- copying the map to clear erased slots doubles it for a while, on a day of more than about 134 million orders
+  placed;
 - a restart costs time in proportion to the region's capacity, not to the orders open, and rewrites most of
   the region; this is for the design of phase 8 of the [recovery plan](recovery_plan.md), which changes how
   the follower builds its book;
