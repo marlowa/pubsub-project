@@ -207,6 +207,21 @@ the longest, so the hash spreads the keys well; the cost is the hashing, not lon
 each entry's hash in its slot, so that working out its home needs no hashing: 4 bytes a slot, about 1.1 GB more for
 the 2^28 slots of production's map.
 
+**With each entry's hash kept,** as Andrew decided on 19 November 2026, in an array of 4 bytes a slot beside the
+entries, working out an entry's home needs no hashing, and a search compares the four bytes before it compares
+identities. Measured the same way, alternating with today's map, twice each:
+
+| Book with its region | p50 | p90 | p99 | p99.9 |
+|---|---|---|---|---|
+| Accept, today's map | 60 | 215 | 882 | 1,987 |
+| Accept, backward shift with the hash kept | 53 | 91 | 907 | 2,005 |
+| Cancel, today's map | 140 | 182 | 295 | 375 |
+| Cancel, backward shift with the hash kept | 146 | 232 | 343 | 466 |
+
+Differences of less than 10 nanoseconds do not matter (Andrew, 19 November 2026). What is left is a cancel 50 to 90
+nanoseconds slower from the 90th percentile up, and an accept 124 nanoseconds faster at the 90th, because the search
+for a duplicate before an order is added compares hashes before identities.
+
 **Cancels against accepts.** At the median a cancel costs more than an accept, with either map, because it finds the
 order and copies its record as well as removing it. At the 90th percentile and above an accept costs more than a
 cancel, with either map: up to 880 nanoseconds at the 99th against 300 to 400, which is the cost of the first write to

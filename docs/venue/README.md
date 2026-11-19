@@ -7,6 +7,7 @@ the order flow. The clickable [architecture map](../orientation/architecture.md)
 - [binary_order_gateway.md](binary_order_gateway.md) — The binary protocol gateway
 - [gateway_throttles.md](gateway_throttles.md) — Per-session limits on placing and cancelling, configured per comp id. The amend limit is provisioned too, but neither gateway supports amends yet
 - [matching_engine.md](matching_engine.md) — The book of open orders, which survives the process; the standby applies the same commands from the WAL; leadership and catch-up. It does not match orders
+- [the_engine_holds_its_memory_from_the_start.md](the_engine_holds_its_memory_from_the_start.md) — The engine supplies and locks its order map's memory before it is ready, so that a shortage stops it at the start of the day instead of killing it during it. **Proposed for BUG-0028**
 - [sequencer.md](sequencer.md) — The sequencing design: ordering, the WAL commit, and fanout
 - [sequencer_app.md](sequencer_app.md) — The sequencer as a deployed component
 - [dividing_the_sequencer_and_matching_engine.md](dividing_the_sequencer_and_matching_engine.md) — The design for dividing the sequencer and the matching engine into parts, each with one job and its own state (built)
