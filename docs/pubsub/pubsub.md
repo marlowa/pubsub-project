@@ -24,7 +24,7 @@ The pieces:
 | Piece | Role |
 |-------|------|
 | `TopicPublisher` | Reusable publisher side, one instance per topic. Streams records from the WAL to subscribers; handles subscribe, backpressure, retention, and leadership. |
-| `TopicSubscriberThread` | Reusable subscriber base. Owns connect, the subscribe handshake, dedup, and acking; delivers each fresh record to `on_pubsub_message()`. |
+| `TopicSubscriberThread` | Reusable subscriber base. Owns connecting to both publishers of a pair, the subscribe handshake, keeping to the publisher that leads, dedup, and acking; delivers each fresh record to `on_pubsub_message()`, and passes every other connection and message to its derived thread. |
 | `TopicSubscriberChannel` | The subscriber-side protocol state machine that `TopicSubscriberThread` drives. |
 | The [WAL](../durability/wal.md) | The retained backlog. Fan-out is many cursors over one log. |
 | The topic **catalog** | The set of recognised topic names and their member message types, generated from the DSL. |
@@ -230,9 +230,22 @@ Key points a subscriber author needs:
       break;
   ```
 
-- **`TopicNotLeader` is handled for you.** If the endpoint is a follower, the base class logs that
-  it is awaiting failover; point the probe at the leader's port. A production subscriber would
-  reconnect to the other endpoint.
+- **The thread follows the publisher that leads.** It is given the names of the publishers' services,
+  one for each publisher of the pair, connects to each, and asks each for the topic after the last
+  record it has applied. The publisher that leads answers with pages; the other replies
+  `TopicNotLeader` and closes the connection, and the reactor connects to it again after its retry
+  interval, so after a change of leader the thread finds the new leader by itself. A record that
+  arrives from both publishers around the change is delivered once, because a record at or below
+  the last sequence number applied is discarded. `topic_probe` is given one service per topic, the
+  port named on its command line, so it is pointed at the publisher that leads.
+- **A thread with other work can be built on it.** The thread claims only the connections it made
+  to the publishers and the messages that arrive on them. Every other connection and message goes
+  to `on_other_connection_established()`, `on_other_connection_lost()` and
+  `on_other_framework_pdu_message()`, and its first event to `on_started()`, which a derived thread
+  implements in place of the `ApplicationThread` functions they stand for. The arbiters, the witness
+  and the authentication services are built this way, to learn of the end of the trading day from
+  the `technical_events` topic ([start_and_end_of_day.md](../venue/start_and_end_of_day.md),
+  section 4.4).
 
 To run it:
 

@@ -950,6 +950,33 @@ def publishers_started(env: dict) -> int:
                if Path(str(component.get("binary", ""))).name == "matching_engine_publisher" and (ha_enabled or not component.get("ha_only", False)))
 
 
+def technical_events_publishers(env: dict) -> dict[str, str]:
+    """Where each matching engine publisher serves the technical_events topic, for the components that subscribe to it to
+    learn of the end of the trading day (docs/venue/start_and_end_of_day.md, section 4.4, decision 10c).
+
+    Returns the values technical_events_publisher_primary_host and _port, and the same for the secondary. A publisher the
+    environment does not start, being absent or marked ha_only while high availability is off, is given an empty host
+    and port 0, and the subscribers do not connect to it. A publisher is recognised by its binary, and its environment
+    section is the one named after its configuration file, such as [matching_engine_publisher_primary].
+    """
+    ha_enabled = bool(env.get("ha", {}).get("enabled", False))
+    values = {f"technical_events_publisher_{which}_{field}": ("" if field == "host" else "0")
+              for which in ("primary", "secondary") for field in ("host", "port")}
+    for component in env.get("components", {}).values():
+        if Path(str(component.get("binary", ""))).name != "matching_engine_publisher":
+            continue
+        if component.get("ha_only", False) and not ha_enabled:
+            continue
+        section_name = Path(str(component.get("config", ""))).stem
+        which = "primary" if section_name.endswith("_primary") else "secondary" if section_name.endswith("_secondary") else None
+        section = env.get(section_name, {})
+        if which is None or "topics_technical_events_listen_port" not in section:
+            continue
+        values[f"technical_events_publisher_{which}_host"] = str(section.get("network_listen_host", "127.0.0.1"))
+        values[f"technical_events_publisher_{which}_port"] = str(section["topics_technical_events_listen_port"])
+    return values
+
+
 def refuse_a_placeholder_environment(env: dict, env_path: Path, allowed: bool) -> None:
     """Stop unless the environment is a real one, or the caller has asked for a placeholder by name.
 
@@ -1027,6 +1054,9 @@ def main() -> None:
     # starts. Counted here rather than declared, so that it cannot disagree with the components the environment lists
     # (docs/venue/start_and_end_of_day.md, section 4.2).
     namespace["end_of_day_publishers"] = str(publishers_started(env))
+    # Where the publishers serve the technical_events topic, for the arbiters, the witness and the authentication services
+    # (docs/venue/start_and_end_of_day.md, section 4.4, decision 10c).
+    namespace.update(technical_events_publishers(env))
     # Where each component keeps the file of its last trading state, which outlives the day: the environment's run directory,
     # made absolute as the install directory is, or the installation's own when one is given on the command line
     # (docs/venue/start_and_end_of_day.md, section 4.2, decision 5).

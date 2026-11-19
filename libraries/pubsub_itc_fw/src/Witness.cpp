@@ -41,6 +41,8 @@ Witness::Witness(const WitnessConfiguration& config, std::unique_ptr<pubsub_itc_
         PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning, "WitnessCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
 
+    // The matching engine publishers, for the technical_events topic (docs/venue/start_and_end_of_day.md, section 4.4).
+    static_cast<void>(config_.technical_events.register_publishers(service_registry_));
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 
     reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port}, pubsub_itc_fw::ThreadID{1},

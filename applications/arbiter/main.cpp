@@ -21,6 +21,8 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/TechnicalEventsSubscription.hpp>
 #include <pubsub_itc_fw/TradingDayOfFile.hpp>
 
 int main(int argc, char* argv[]) {
@@ -53,6 +55,14 @@ int main(int argc, char* argv[]) {
 
     config.trading_day = arguments->trading_day;
     PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "Arbiter: started for trading day {}", arguments->trading_day);
+    // A arbiter started again after the end of its day has nothing to do: it exits at once for the end of day
+    // (docs/venue/start_and_end_of_day.md, section 4.4).
+    if (pubsub_itc_fw::TechnicalEventsSubscription::already_ended(config.last_state_file, config.trading_day)) {
+        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info,
+                   "Arbiter: {} says the end of trading day {} has been reached -- nothing to do, exiting for the end of day", config.last_state_file,
+                   config.trading_day);
+        return pubsub_itc_fw::Reactor::stopped_for_the_end_of_day_status;
+    }
 
     // Every file the arbiter writes during a trading day records the day, and one left from another day is never taken for a
     // restart of this one (docs/venue/start_and_end_of_day.md, section 5; BUG-0137).

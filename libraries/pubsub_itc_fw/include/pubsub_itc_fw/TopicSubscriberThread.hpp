@@ -146,12 +146,12 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
                 channel_.on_subscribe_ack(view);
                 serving_connection_ = message.connection_id();
                 PUBSUB_LOG(get_logger(), FwLogLevel::Info, "TopicSubscriberThread: subscribed to topic '{}' on '{}', which leads, from seq={}", topic_name_,
-                           message.connection_id().service_name(), view.accepted_from_seq_no);
+                           service_name_of(message.connection_id()), view.accepted_from_seq_no);
             }
         } else if (message.pdu_id() == pubsub_itc_fw::TopicPage::message_pdu_id) {
             channel_.on_page_from(message.connection_id(), payload, size, arena);
         } else if (message.pdu_id() == pubsub_itc_fw::TopicNotLeader::message_pdu_id) {
-            PUBSUB_LOG(get_logger(), FwLogLevel::Debug, "TopicSubscriberThread: '{}' does not lead, for topic '{}'", message.connection_id().service_name(),
+            PUBSUB_LOG(get_logger(), FwLogLevel::Debug, "TopicSubscriberThread: '{}' does not lead, for topic '{}'", service_name_of(message.connection_id()),
                        topic_name_);
         }
 
@@ -171,6 +171,12 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
     }
 
   private:
+    // The name of the publisher's service that @p id connects to, from the connection as it was made.
+    [[nodiscard]] std::string service_name_of(const ConnectionID& id) const {
+        const auto found = std::find(publisher_connections_.begin(), publisher_connections_.end(), id);
+        return found == publisher_connections_.end() ? std::string{} : found->service_name();
+    }
+
     [[nodiscard]] bool is_publisher_service(const std::string& service_name) const {
         return std::find(publisher_services_.begin(), publisher_services_.end(), service_name) != publisher_services_.end();
     }

@@ -90,6 +90,9 @@ WitnessConfiguration WitnessConfigurationLoader::load(const pubsub_itc_fw::TomlC
                                                         std::to_string(config.command_queue_pool_initial_slabs));
         }
 
+        config.technical_events = pubsub_itc_fw::TechnicalEventsSubscription::load(toml, "WitnessConfigurationLoader");
+        toml.get_required_except("end_of_day.last_state_file", config.last_state_file);
+
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;
     }

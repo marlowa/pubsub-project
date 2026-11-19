@@ -11,6 +11,7 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
+#include <pubsub_itc_fw/TechnicalEventsSubscription.hpp>
 #include <pubsub_itc_fw/TestEventsConfiguration.hpp>
 #include <pubsub_itc_fw/VotingPair.hpp>
 
@@ -186,6 +187,14 @@ struct ArbiterConfiguration {
      * Only a test writes the section. Without it, no test events are sent and no connection is opened for them.
      */
     pubsub_itc_fw::TestEventsConfiguration test_events;
+
+    /// Where the matching engine publishers serve the technical_events topic, from which this component learns of the end of
+    /// the trading day (docs/venue/start_and_end_of_day.md, section 4.4, decision 10c). From `[technical_events]`.
+    pubsub_itc_fw::TechnicalEventsSubscription technical_events;
+    /// The file of this instance's last trading state, which outlives the day: it records the end of the day once seen, and
+    /// is read first at start-up, so that a component started again after the end exits at once. From `[end_of_day]
+    /// last_state_file`.
+    std::string last_state_file;
 };
 
 } // namespaces

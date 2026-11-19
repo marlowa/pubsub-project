@@ -59,6 +59,8 @@ Arbiter::Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_
     // Outbound connections: peer arbiter and witness.
     service_registry_.add("peer", pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_host, config_.peer_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
+    // The matching engine publishers, for the technical_events topic (docs/venue/start_and_end_of_day.md, section 4.4).
+    static_cast<void>(config_.technical_events.register_publishers(service_registry_));
     service_registry_.add("witness", pubsub_itc_fw::NetworkEndpointConfiguration{config_.witness_host, config_.witness_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     // Only when a test started this arbiter and gave it somewhere to send test events.

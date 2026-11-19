@@ -166,6 +166,8 @@ Key `arbiter_primary.toml` / `arbiter_secondary.toml` sections:
 | `[lease] drift_allowance_milliseconds` | How much shorter than the period an instance takes a lease it holds to be |
 | `[lease] renewal_interval_milliseconds` | How often a leader renews |
 | `[lease] promise_file` | Where this arbiter records its promise in deciding which arbiter is active; the component statements are kept beside it, in the same name with `.component_statements` added. See above |
+| `[technical_events] primary_host / primary_port / secondary_host / secondary_port` | Where each matching engine publisher serves the `technical_events` topic. The arbiter subscribes to it to learn of the end of the trading day, and stops for the end of day when the end-of-day end of its own day arrives ([start_and_end_of_day.md](start_and_end_of_day.md), section 4.4, decision 10c). `deploy.py` fills these in; a publisher the environment does not start has an empty host and is not connected to |
+| `[end_of_day] last_state_file` | The file of this instance's last trading state, which outlives the day. It records the end of the day once seen, and is read first at start-up: an arbiter that finds the end of its own day there exits at once, with status 3 |
 
 The three `[lease]` values are expanded from the environment's `[shared]` section, because every
 voter and every instance holding a lease must use the same values.

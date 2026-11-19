@@ -20,6 +20,7 @@
 #include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
+#include <pubsub_itc_fw/TechnicalEventsSubscription.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace pubsub_itc_fw {
@@ -96,15 +97,16 @@ std::string_view to_string(ArbiterRole role) {
 
 ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                              const ArbiterConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "ArbiterThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
-                        pubsub_itc_fw::ApplicationThreadConfiguration{})
+    : TopicSubscriberThread(token, logger, reactor, "ArbiterThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
+                            pubsub_itc_fw::ApplicationThreadConfiguration{}, config.technical_events.publisher_services(),
+                            "arbiter_" + std::to_string(config.instance_id), std::string(pubsub_itc_fw::TechnicalEventsSubscription::topic_name), 0)
     , config_(config)
     , peer_instance_id_{static_cast<int64_t>(config.peer_instance_id)}
     , component_voters_(config.lease.period)
     , lease_promise_store_(config.lease_promise_file, pubsub_itc_fw::LeasePromiseStore::current_boot_id(), config.trading_day)
     , component_statement_store_(config.lease_promise_file.empty() ? std::string{} : config.lease_promise_file + ".component_statements", config.trading_day) {}
 
-void ArbiterThread::on_initial_event() {
+void ArbiterThread::on_started() {
     // Only when a test started this arbiter (docs/availability/test_events.md). Made before the lease agent, which is given it.
     if (config_.test_events.enabled) {
         test_events_.emplace(test_event_links_, config_.test_events.component, static_cast<int64_t>(config_.instance_id), "ArbiterThread");
@@ -169,7 +171,7 @@ void ArbiterThread::on_app_ready_event() {
     connect_to_service("witness");
 }
 
-void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
+void ArbiterThread::on_other_connection_established(pubsub_itc_fw::ConnectionID id) {
     if (test_events_.has_value() && test_events_->on_connection_established(id)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: connection {} to the test's event listener established", id.get_value());
         // The statements read from disk at start, and a role taken, before the connection was made are reported now, so that
@@ -203,7 +205,7 @@ void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     }
 }
 
-void ArbiterThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
+void ArbiterThread::on_other_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (test_events_.has_value() && test_events_->on_connection_lost(id, reason)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "ArbiterThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
@@ -223,7 +225,7 @@ void ArbiterThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, co
     }
 }
 
-void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
+void ArbiterThread::on_other_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     if (test_events_.has_value() && test_events_->on_framework_pdu_message(message)) {
         release_pdu_payload(message);
         return;
@@ -700,6 +702,17 @@ void ArbiterThread::handle_arbiter_state_record(const pubsub_itc_fw::EventMessag
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: peer reports group={} has been granted epoch {}", pair_name(record.pair_id),
                record.epoch);
+}
+
+void ArbiterThread::on_pubsub_message(const pubsub_itc_fw::EventMessage& message) {
+    if (!pubsub_itc_fw::TechnicalEventsSubscription::is_end_of_day_end(message, config_.trading_day)) {
+        return;
+    }
+    pubsub_itc_fw::TechnicalEventsSubscription::record_the_end(config_.last_state_file, config_.trading_day);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "ArbiterThread: the end-of-day end of trading day {} at seq={} arrived on the technical_events topic -- stopping for the end of day",
+               config_.trading_day, message.seq_no());
+    stop_for_end_of_day(fmt::format("the end-of-day end of trading day {} at seq={}, from the technical_events topic", config_.trading_day, message.seq_no()));
 }
 
 } // namespaces

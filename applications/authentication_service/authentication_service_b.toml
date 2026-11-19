@@ -57,3 +57,19 @@ initial_slabs    = ${auth_service_b_event_queue_pool_initial_slabs}
 [command_queue_pool]
 objects_per_slab = ${auth_service_b_command_queue_pool_objects_per_slab}
 initial_slabs    = ${auth_service_b_command_queue_pool_initial_slabs}
+
+[technical_events]
+# Where each matching engine publisher serves the technical_events topic. This component subscribes to it to learn
+# of the end of the trading day, and then stops for the end of day (docs/venue/start_and_end_of_day.md, section
+# 4.4, decision 10c). deploy.py fills these in from the environment; a publisher the environment does not start
+# has an empty host, and is not connected to.
+primary_host   = "${technical_events_publisher_primary_host}"
+primary_port   = ${technical_events_publisher_primary_port}
+secondary_host = "${technical_events_publisher_secondary_host}"
+secondary_port = ${technical_events_publisher_secondary_port}
+
+[end_of_day]
+# The file of this instance's last trading state, which outlives the day. It records the end of the day once
+# seen, and is read first at start-up: a component that finds the end of its own day there has nothing to do,
+# and exits at once for the end of day.
+last_state_file = "${last_state_dir}/authentication_service_b.last_state"

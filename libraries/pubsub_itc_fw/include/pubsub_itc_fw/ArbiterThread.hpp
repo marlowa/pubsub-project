@@ -18,6 +18,7 @@
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/TopicSubscriberThread.hpp>
 
 #include <lease_messages.hpp>
 #include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
@@ -66,17 +67,20 @@ enum class ArbiterRole { unknown, leader, follower };
  *
  * Threading: ThreadID 1.
  */
-class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
+class ArbiterThread : public pubsub_itc_fw::TopicSubscriberThread {
   public:
     ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                   const ArbiterConfiguration& config);
 
   protected:
-    void on_initial_event() override;
+    void on_started() override;
     void on_app_ready_event() override;
-    void on_connection_established(pubsub_itc_fw::ConnectionID id) override;
-    void on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override;
-    void on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
+    void on_other_connection_established(pubsub_itc_fw::ConnectionID id) override;
+    void on_other_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) override;
+    void on_other_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) override;
+    // A record of the technical_events topic: on the end-of-day end of this component's trading day, it stops for the end of
+    // day (docs/venue/start_and_end_of_day.md, section 4.4, decision 10c).
+    void on_pubsub_message(const pubsub_itc_fw::EventMessage& message) override;
     void on_timer_event(pubsub_itc_fw::TimerID id) override;
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 

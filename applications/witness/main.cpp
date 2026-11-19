@@ -18,6 +18,8 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/TechnicalEventsSubscription.hpp>
 #include <pubsub_itc_fw/Witness.hpp>
 #include <pubsub_itc_fw/WitnessConfiguration.hpp>
 #include <pubsub_itc_fw/WitnessConfigurationLoader.hpp>
@@ -66,6 +68,15 @@ int main(int argc, char* argv[]) {
     }
 
     PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "Witness: started for trading day {}", arguments->trading_day);
+    config.trading_day = arguments->trading_day;
+    // A witness started again after the end of its day has nothing to do: it exits at once for the end of day
+    // (docs/venue/start_and_end_of_day.md, section 4.4).
+    if (pubsub_itc_fw::TechnicalEventsSubscription::already_ended(config.last_state_file, config.trading_day)) {
+        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info,
+                   "Witness: {} says the end of trading day {} has been reached -- nothing to do, exiting for the end of day", config.last_state_file,
+                   config.trading_day);
+        return pubsub_itc_fw::Reactor::stopped_for_the_end_of_day_status;
+    }
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);
 

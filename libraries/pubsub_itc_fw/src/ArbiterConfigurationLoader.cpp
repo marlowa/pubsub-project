@@ -138,6 +138,9 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const pubsub_itc_fw::TomlC
             throw pubsub_itc_fw::ConfigurationException("ArbiterConfigurationLoader: command_queue_pool.initial_slabs must be >= 1");
         }
 
+        config.technical_events = pubsub_itc_fw::TechnicalEventsSubscription::load(toml, "ArbiterConfigurationLoader");
+        toml.get_required_except("end_of_day.last_state_file", config.last_state_file);
+
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;
     }

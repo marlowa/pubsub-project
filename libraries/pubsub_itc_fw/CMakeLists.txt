@@ -85,6 +85,7 @@ set(PUBSUB_ITC_FW_SRC
         src/TcpAcceptor.cpp
         src/TcpConnector.cpp
         src/TcpSocket.cpp
+        src/TechnicalEventsSubscription.cpp
         src/TimerHandler.cpp
         src/TomlConfiguration.cpp
         src/MirroredBuffer.cpp

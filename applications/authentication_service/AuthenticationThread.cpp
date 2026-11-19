@@ -17,6 +17,7 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
+#include <pubsub_itc_fw/TechnicalEventsSubscription.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 #include <authentication.hpp>
@@ -64,17 +65,19 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const Authentication
 
 AuthenticationThread::AuthenticationThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                            pubsub_itc_fw::Reactor& reactor, const AuthenticationServiceConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "AuthenticationThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
-                        pubsub_itc_fw::ApplicationThreadConfiguration{})
+    : TopicSubscriberThread(token, logger, reactor, "AuthenticationThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(),
+                            make_allocator_config(config, logger), pubsub_itc_fw::ApplicationThreadConfiguration{},
+                            config.technical_events.publisher_services(), "authentication_service_" + std::to_string(config.listen_port),
+                            std::string(pubsub_itc_fw::TechnicalEventsSubscription::topic_name), 0)
     , config_(config)
     , credentials_(config.credentials)
     , scram_exchanges_(credentials_, config.session_policies) {}
 
-void AuthenticationThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
+void AuthenticationThread::on_other_connection_established(pubsub_itc_fw::ConnectionID id) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: connection established conn_id={}", id.get_value());
 }
 
-void AuthenticationThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
+void AuthenticationThread::on_other_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (admin_connections_.erase(id) > 0) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationThread: admin connection lost conn_id={} reason={}", id.get_value(), reason);
     } else {
@@ -83,7 +86,7 @@ void AuthenticationThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
     }
 }
 
-void AuthenticationThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& msg) {
+void AuthenticationThread::on_other_framework_pdu_message(const pubsub_itc_fw::EventMessage& msg) {
     const auto pdu_id = msg.pdu_id();
     const pubsub_itc_fw::ConnectionID& conn_id = msg.connection_id();
 
@@ -595,6 +598,17 @@ void AuthenticationThread::persist_credentials() {
     if (std::rename(tmp_path.c_str(), config_.credentials_file.c_str()) != 0) {
         throw std::runtime_error("persist_credentials: rename failed for " + config_.credentials_file);
     }
+}
+
+void AuthenticationThread::on_pubsub_message(const pubsub_itc_fw::EventMessage& message) {
+    if (!pubsub_itc_fw::TechnicalEventsSubscription::is_end_of_day_end(message, config_.trading_day)) {
+        return;
+    }
+    pubsub_itc_fw::TechnicalEventsSubscription::record_the_end(config_.last_state_file, config_.trading_day);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "AuthenticationThread: the end-of-day end of trading day {} at seq={} arrived on the technical_events topic -- stopping for the end of day",
+               config_.trading_day, message.seq_no());
+    stop_for_end_of_day(fmt::format("the end-of-day end of trading day {} at seq={}, from the technical_events topic", config_.trading_day, message.seq_no()));
 }
 
 } // namespaces

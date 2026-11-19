@@ -307,6 +307,9 @@ AuthenticationServiceConfiguration AuthenticationServiceConfigurationLoader::loa
     resolve_path_relative_to_config(config.admin_tls_private_key_path);
     resolve_path_relative_to_config(config.admin_tls_ca_path);
 
+    config.technical_events = pubsub_itc_fw::TechnicalEventsSubscription::load(toml, "AuthenticationServiceConfigurationLoader");
+    toml.get_required_except("end_of_day.last_state_file", config.last_state_file);
+
     load_credentials(config.credentials_file, config.credentials, config.session_policies);
 
     return config;

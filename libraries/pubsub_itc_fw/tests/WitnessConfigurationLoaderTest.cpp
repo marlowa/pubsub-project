@@ -44,6 +44,14 @@ initial_slabs    = 1
 [command_queue_pool]
 objects_per_slab = 64
 initial_slabs    = 1
+[technical_events]
+primary_host = "127.0.0.1"
+primary_port = 11046
+secondary_host = ""
+secondary_port = 0
+
+[end_of_day]
+last_state_file = "/run/venue/witness.last_state"
 )";
 
 pubsub_itc_fw::WitnessConfiguration load_with_pair(const std::string& pair_table) {

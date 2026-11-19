@@ -12,6 +12,7 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
+#include <pubsub_itc_fw/TechnicalEventsSubscription.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace pubsub_itc_fw {
@@ -59,11 +60,12 @@ pubsub_itc_fw::LeaseRefusalReason refusal_reason_for(pubsub_itc_fw::LeaseVoter::
 
 WitnessThread::WitnessThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                              const WitnessConfiguration& config)
-    : ApplicationThread(token, logger, reactor, "WitnessThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
-                        pubsub_itc_fw::ApplicationThreadConfiguration{})
+    : TopicSubscriberThread(token, logger, reactor, "WitnessThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
+                            pubsub_itc_fw::ApplicationThreadConfiguration{}, config.technical_events.publisher_services(), std::string("witness"),
+                            std::string(pubsub_itc_fw::TechnicalEventsSubscription::topic_name), 0)
     , config_(config) {}
 
-void WitnessThread::on_initial_event() {
+void WitnessThread::on_started() {
     voter_.emplace(config_.lease.period, std::chrono::steady_clock::now(), 0);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "WitnessThread: voting on which arbiter is active (lease period={} ms); no vote is granted during the first period",
@@ -72,15 +74,15 @@ void WitnessThread::on_initial_event() {
 
 void WitnessThread::on_app_ready_event() {}
 
-void WitnessThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
+void WitnessThread::on_other_connection_established(pubsub_itc_fw::ConnectionID id) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: arbiter connection {} established", id.get_value());
 }
 
-void WitnessThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
+void WitnessThread::on_other_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: arbiter connection {} lost: {}", id.get_value(), reason);
 }
 
-void WitnessThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
+void WitnessThread::on_other_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
     const auto pdu_id = message.pdu_id();
 
@@ -145,6 +147,17 @@ void WitnessThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn
     send_pdu(conn_id, pubsub_itc_fw::LeaseRefusal::message_pdu_id, 0, refusal);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "WitnessThread: refused arbiter {} at epoch {} ({})", request.candidate_instance_id,
                request.epoch, pubsub_itc_fw::to_string(refusal.reason));
+}
+
+void WitnessThread::on_pubsub_message(const pubsub_itc_fw::EventMessage& message) {
+    if (!pubsub_itc_fw::TechnicalEventsSubscription::is_end_of_day_end(message, config_.trading_day)) {
+        return;
+    }
+    pubsub_itc_fw::TechnicalEventsSubscription::record_the_end(config_.last_state_file, config_.trading_day);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "WitnessThread: the end-of-day end of trading day {} at seq={} arrived on the technical_events topic -- stopping for the end of day",
+               config_.trading_day, message.seq_no());
+    stop_for_end_of_day(fmt::format("the end-of-day end of trading day {} at seq={}, from the technical_events topic", config_.trading_day, message.seq_no()));
 }
 
 } // namespaces

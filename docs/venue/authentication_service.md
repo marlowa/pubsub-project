@@ -176,6 +176,8 @@ off by default). The network channel carries the SCRAM exchange only, and is not
 | `[network] connection_inactivity_limit` | How long a gateway's connection may send nothing before the service closes it; 600 seconds. Must be well above the gateways' `authentication_heartbeat_interval` |
 | `[admin] listen_port` | Admin-service credential-management listener |
 | `[admin] tls_certificate_path / tls_private_key_path / tls_ca_path` | Admin-channel TLS; `tls_require_client_certificate` gates mTLS |
+| `[technical_events] primary_host / primary_port / secondary_host / secondary_port` | Where each matching engine publisher serves the `technical_events` topic. The authentication service subscribes to it to learn of the end of the trading day, and stops for the end of day when the end-of-day end of its own day arrives ([start_and_end_of_day.md](start_and_end_of_day.md), section 4.4, decision 10c). `deploy.py` fills these in; a publisher the environment does not start has an empty host and is not connected to |
+| `[end_of_day] last_state_file` | The file of this instance's last trading state, which outlives the day. It records the end of the day once seen, and is read first at start-up: an authentication service that finds the end of its own day there exits at once, with status 3 |
 | `[logging]`, `[metrics]`, `[reactor]`, `[event_queue_pool]`, `[command_queue_pool]` | Standard framework sections |
 
 Config placeholders use the `auth_service_a_*` / `auth_service_b_*` namespace, expanded from
