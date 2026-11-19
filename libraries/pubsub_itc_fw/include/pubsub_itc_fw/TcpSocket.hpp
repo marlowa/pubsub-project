@@ -110,6 +110,13 @@ class TcpSocket : public ByteStreamInterface {
     [[nodiscard]] std::tuple<int, std::string> send(SimpleSpan<const uint8_t> data) override;
 
     /**
+     * @brief Sends the pieces with one sendmsg() call, with MSG_NOSIGNAL so that a peer that has gone gives EPIPE rather
+     *        than SIGPIPE, made again if a signal interrupts it before anything is taken (EINTR). See
+     *        ByteStreamInterface::send_gathered.
+     */
+    [[nodiscard]] std::tuple<int64_t, std::string> send_gathered(const SimpleSpan<const uint8_t>* parts, size_t count) override;
+
+    /**
      * @brief Receives binary data from the TCP socket into the provided buffer.
      *
      * This is a non-blocking operation. It attempts to read as much data as

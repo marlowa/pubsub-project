@@ -125,6 +125,7 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration, const Servic
     , outbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, service_registry_, *this, logger_)
     , metrics_endpoint_(reactor_configuration.metrics_configuration) {
     spin_before_block_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(config_.spin_before_block).count(), std::memory_order_relaxed);
+    sends_started_this_pass_.reserve(commands_per_pass);
     wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (wake_fd_ == -1) {
         throw PubSubItcException("eventfd for wake_fd failed in Reactor constructor");
@@ -1353,6 +1354,10 @@ size_t Reactor::process_control_commands(size_t max_commands) {
             }
 
             case ReactorControlCommand::Disconnect: {
+                // What was asked to be sent before the close is written before it, as when each send was written at
+                // once: the sends gathered so far in this pass go first (docs/framework/gathering_sends.md).
+                outbound_manager_.write_gathered_sends();
+                inbound_manager_.write_gathered_sends();
                 const ConnectionID cid = command.connection_id_;
                 const std::string reason = "disconnect requested by application thread";
                 if (!outbound_manager_.process_disconnect_command(cid)) {
@@ -1364,6 +1369,9 @@ size_t Reactor::process_control_commands(size_t max_commands) {
             }
 
             case ReactorControlCommand::CloseAndReconnect: {
+                // As for Disconnect: what was asked to be sent before the close is written before it.
+                outbound_manager_.write_gathered_sends();
+                inbound_manager_.write_gathered_sends();
                 const ConnectionID cid = command.connection_id_;
                 const std::string reason = "closed by the application thread, which asked for the service to be connected again";
                 if (!outbound_manager_.process_close_and_reconnect_command(cid, reason)) {
@@ -1397,8 +1405,13 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                 }
                 // Not recorded when the send waits: its bytes go out when the sends before it on the
                 // same connection are written, and the time it waits is the peer's, not the reactor's.
+                // Recorded once the pass's gathered sends are written, which is when this one's bytes go out.
                 if (disposition == SendDisposition::Started) {
-                    observe_send_path(picked_up_ns, command.latency_class_);
+                    if (sends_started_this_pass_.size() < sends_started_this_pass_.capacity()) {
+                        sends_started_this_pass_.push_back(StartedSend{picked_up_ns, command.latency_class_});
+                    } else {
+                        observe_send_path(picked_up_ns, command.latency_class_);
+                    }
                 }
                 break;
             }
@@ -1464,7 +1477,19 @@ size_t Reactor::process_control_commands(size_t max_commands) {
         }
     }
 
+    // The sends asked for on each connection in this pass are written together, with one system call for each
+    // connection where it allows (docs/framework/gathering_sends.md).
+    outbound_manager_.write_gathered_sends();
+    inbound_manager_.write_gathered_sends();
+    observe_send_paths_of_this_pass();
     return dealt_with;
+}
+
+void Reactor::observe_send_paths_of_this_pass() {
+    for (const StartedSend& started : sends_started_this_pass_) {
+        observe_send_path(started.picked_up_ns, started.latency_class);
+    }
+    sends_started_this_pass_.clear();
 }
 
 void Reactor::dispatch_events(int nfds, epoll_event* events) {
@@ -1534,7 +1559,7 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         observe_receive_path(readable_at_ns);
                     }
                 } else if (conn->is_established()) {
-                    if ((ev & EPOLLOUT) && conn->has_pending_send()) {
+                    if ((ev & EPOLLOUT) && conn->has_sends_to_write()) {
                         outbound_manager_.on_write_ready(*conn);
                         // on_write_ready() may have invoked the disconnect handler
                         // synchronously, destroying this connection. Check whether
@@ -1573,7 +1598,7 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         fmt::format("socket error on inbound connection from '{}': {}", conn->peer_description(), StringUtils::get_error_string(err));
                     inbound_manager_.teardown_connection(conn->id(), reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
                 } else {
-                    if ((ev & EPOLLOUT) && conn->handler()->has_pending_send()) {
+                    if ((ev & EPOLLOUT) && conn->has_sends_to_write()) {
                         inbound_manager_.on_write_ready(*conn);
                         // on_write_ready() may have invoked the disconnect handler
                         // synchronously, destroying this connection. Check whether

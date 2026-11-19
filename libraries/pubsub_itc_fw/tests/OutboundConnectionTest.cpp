@@ -662,6 +662,9 @@ TEST_F(OutboundConnectionManagerTest, ASendThatWaitsIsStartedWhenTheOneBeforeItI
     cmd1.pdu_chunk_ptr_ = chunk1;
     cmd1.pdu_byte_count_ = static_cast<uint32_t>(large_payload);
     ASSERT_EQ(mgr.process_send_pdu_command(cmd1), SendDisposition::Started) << "process_send_pdu_command did not start cmd1";
+    // Gathered, and written at the end of the reactor's pass of control commands, which a test driving the manager directly
+    // does itself (docs/framework/gathering_sends.md).
+    mgr.write_gathered_sends();
 
     if (!conn->has_pending_send()) {
         // Kernel absorbed the full frame -- nothing has to wait, so nothing here can be tested.
@@ -893,6 +896,9 @@ TEST_F(OutboundConnectionManagerTest, OnWriteReadySendErrorTeardownsConnection) 
     send_command.pdu_chunk_ptr_ = chunk;
     send_command.pdu_byte_count_ = static_cast<uint32_t>(large_payload);
     ASSERT_EQ(mgr.process_send_pdu_command(send_command), SendDisposition::Started) << "the send was not started";
+    // Gathered, and written at the end of the reactor's pass of control commands, which a test driving the manager directly
+    // does itself (docs/framework/gathering_sends.md).
+    mgr.write_gathered_sends();
 
     // Asserted, not skipped: if the frame went out whole there is nothing left for
     // continue_send() to fail at, and the rest of this test would pass while exercising

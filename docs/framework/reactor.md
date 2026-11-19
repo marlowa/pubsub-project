@@ -197,16 +197,18 @@ Each `OutboundConnection` has two lifecycle phases:
    `ConnectionFailed`.
 4. `EPOLLIN` fires → `on_data_ready()` → `PduParser::receive()` → zero-copy into slab →
    dispatch `FrameworkPdu` event to thread queue.
-5. `SendPdu` command → `process_send_pdu_command()` → `PduFramer::send_prebuilt()`
-   (zero-copy from slab).
-6. Partial send → store in `current_*` fields + register `EPOLLOUT` → `on_write_ready()` →
-   `continue_send()` → deallocate slab when complete.
+5. `SendPdu` command → `process_send_pdu_command()` → gathered on the connection (`GatheredSends`) → at the end of the pass of control commands, `write_gathered_sends()` → `PduFramer::send_gathered()`, one `sendmsg()` call for up to 64 of the connection's messages, zero-copy from their slab chunks ([gathering_sends.md](gathering_sends.md)). A TLS connection writes each message on its own with `PduFramer::send_prebuilt()`.
+6. Partial send → the message cut part way is held in `current_*` fields, the messages after it wait in the
+   connection's queue, and `EPOLLOUT` is registered → `on_write_ready()` → `continue_send()` → deallocate slab when
+   complete → the waiting messages are written, up to 64 a call.
 7. `Disconnect` or peer close → `teardown_connection()` → deliver `ConnectionLost`.
 
-**Sends that have to wait:** a connection writes one send at a time. If a send arrives while the
-connection is still writing an earlier one, or before an outbound connection is established, it
-waits in that connection's own queue (`WaitingSendQueue`), and is started, in order, as soon as the
-sends before it are written. The reactor goes on taking commands for every other connection, so a
+**Sends that have to wait:** the sends asked for on a connection in one pass of control commands are
+written together at the end of the pass, so that one system call carries many messages
+([gathering_sends.md](gathering_sends.md)); a close asked for in the same pass waits until they are
+written. If a send arrives while the connection is still writing an earlier one, or before an
+outbound connection is established, it waits in that connection's own queue (`WaitingSendQueue`), and
+is written, in order and up to 64 at a time, as soon as the sends before it are written. The reactor goes on taking commands for every other connection, so a
 peer that reads slowly holds up only the sends to itself.
 
 A connection's queue holds at most `connection_waiting_sends_maximum` sends (65,536 by default) and

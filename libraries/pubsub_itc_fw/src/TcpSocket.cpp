@@ -3,10 +3,12 @@
 
 #include <fcntl.h>       // For fcntl, O_NONBLOCK
 #include <netinet/tcp.h> // For TCP_NODELAY
-#include <sys/socket.h>  // For socket(), bind(), listen(), accept(), connect(), shutdown(), setsockopt(), getsockopt(), socklen_t
+#include <sys/socket.h>  // For socket(), bind(), listen(), accept(), connect(), shutdown(), setsockopt(), getsockopt(), socklen_t, sendmsg()
+#include <sys/uio.h>     // For iovec
 #include <unistd.h>      // For close()
 
 // C++ headers whose names start with 'c'
+#include <array>   // For std::array
 #include <cerrno>  // For errno
 #include <cstdint> // For int, uint16_t
 #include <cstring> // For strerror, memset
@@ -94,6 +96,9 @@ class TcpSocketImpl {
      * @return A `std::tuple` containing the number of bytes sent or a negative errno, and an error string.
      */
     [[nodiscard]] std::tuple<int, std::string> send(SimpleSpan<const uint8_t> data);
+
+    /// Sends the pieces with one sendmsg() call; see TcpSocket::send_gathered.
+    [[nodiscard]] std::tuple<int64_t, std::string> send_gathered(const SimpleSpan<const uint8_t>* parts, size_t count);
 
     /**
      * @brief Receives binary data from the TCP socket into the provided buffer.
@@ -230,6 +235,43 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socket_file_descriptor(socket_fd) 
     }
 
     return {static_cast<int>(bytes_sent), ""};
+}
+
+[[nodiscard]] std::tuple<int64_t, std::string> TcpSocketImpl::send_gathered(const SimpleSpan<const uint8_t>* parts, size_t count) {
+    if (socket_file_descriptor == -1) {
+        return {-EBADF, "Cannot send on an invalid or closed socket."};
+    }
+    if (count == 0 || count > ByteStreamInterface::max_gathered_parts) {
+        return {-EINVAL, fmt::format("send_gathered on socket {}: {} pieces, where 1 to {} are allowed", socket_file_descriptor, count,
+                                     ByteStreamInterface::max_gathered_parts)};
+    }
+    std::array<iovec, ByteStreamInterface::max_gathered_parts> pieces{};
+    for (size_t index = 0; index < count; ++index) {
+        // sendmsg() does not write through iov_base, but iovec declares it non-const.
+        pieces[index].iov_base = const_cast<uint8_t*>(parts[index].data()); // NOLINT(cppcoreguidelines-pro-type-const-cast)
+        pieces[index].iov_len = parts[index].size();
+    }
+    msghdr message{};
+    message.msg_iov = pieces.data();
+    message.msg_iovlen = count;
+    for (;;) {
+        // MSG_NOSIGNAL: a peer that has gone gives EPIPE, not SIGPIPE.
+        const ssize_t bytes_sent = ::sendmsg(socket_file_descriptor, &message, MSG_NOSIGNAL);
+        if (bytes_sent >= 0) {
+            return {static_cast<int64_t>(bytes_sent), ""};
+        }
+        if (errno == EINTR) {
+            // Interrupted before anything was taken: nothing was written, so the call is made again.
+            continue;
+        }
+        if (errno == EWOULDBLOCK || errno == EAGAIN) {
+            return {-EAGAIN, ""};
+        }
+        if (errno == EPIPE) {
+            return {-EPIPE, ""};
+        }
+        return {-errno, fmt::format("Failed to send data on socket {}: {}", socket_file_descriptor, StringUtils::get_errno_string())};
+    }
 }
 
 [[nodiscard]] std::tuple<int, std::string> TcpSocketImpl::receive(SimpleSpan<uint8_t> buffer) {
@@ -458,6 +500,10 @@ TcpSocket::TcpSocket(int socket_fd) : p_impl_(std::make_unique<TcpSocketImpl>(so
 
 [[nodiscard]] std::tuple<int, std::string> TcpSocket::send(SimpleSpan<const uint8_t> data) {
     return p_impl_->send(data);
+}
+
+[[nodiscard]] std::tuple<int64_t, std::string> TcpSocket::send_gathered(const SimpleSpan<const uint8_t>* parts, size_t count) {
+    return p_impl_->send_gathered(parts, count);
 }
 
 [[nodiscard]] std::tuple<int, std::string> TcpSocket::receive(SimpleSpan<uint8_t> buffer) {

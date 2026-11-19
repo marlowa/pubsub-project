@@ -42,4 +42,12 @@ std::tuple<bool, std::string, bool> InboundConnection::handle_read() {
     return handler_->on_data_ready();
 }
 
+PduFramer::GatheredOutcome InboundConnection::write_gathered(const WaitingSend* sends, size_t count) {
+    if (handler_ == nullptr || !handler_->writes_gathered() || handler_->has_pending_send()) {
+        throw PreconditionAssertion("InboundConnection::write_gathered: needs a handler that writes framework messages, with nothing in progress", __FILE__,
+                                    __LINE__);
+    }
+    return handler_->send_gathered(sends, count);
+}
+
 } // namespaces

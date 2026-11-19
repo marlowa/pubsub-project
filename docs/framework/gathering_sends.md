@@ -1,8 +1,8 @@
 # Writing several waiting messages to a connection in one system call {#gathering_sends}
 
-**Status: agreed, not yet built.** The design for the throughput ceiling found while building the limit on unanswered
-commands ([BUG-0251](../bug_list.md#bug_0251)). Section 8 records its four decisions, each agreed with Andrew on 19
-November 2026.
+**Status: built.** The design for the throughput ceiling found while building the limit on unanswered commands
+([BUG-0251](../bug_list.md#bug_0251)). Section 10 records its four decisions, each agreed with Andrew on 19 November
+2026; section 9 what was measured.
 
 ## 1. The problem
 
@@ -174,7 +174,56 @@ packets cost less.
 4. **Throughput.** The overload of scenario 116, before and after, with the machine in measurement mode.
 5. **Latency.** The latency run before and after, in measurement mode.
 
-## 8. Decisions
+## 8. As built
+
+- The sends of a pass are gathered in a fixed array of 64 in each connection (`GatheredSends`), not in the waiting
+  queue, which gives back its storage whenever it empties and so would allocate on every pass; the waiting queue is
+  used, as before, only when the socket cannot take everything.
+- `ByteStreamInterface::send_gathered()` writes several pieces as one stream; `TcpSocket` overrides it with one
+  `sendmsg()` call, `MSG_NOSIGNAL`, made again on `EINTR`. `PduFramer::send_gathered()` says how many frames were written
+  whole and holds the one cut part way as its frame in progress. `gathered_writing::write_gathered()` and
+  `write_waiting()` (`GatheredWriting.hpp`) are shared by both connection managers.
+- A connection is watched for room to write while sends wait with none part written, which gathering makes possible,
+  as well as while one is part written.
+- A request to close a connection, and to be told it can take more, waits for the sends gathered before it, so that
+  what was asked for before a close is still written before it.
+- `reactor_send_path_nanoseconds` records each send against the end of the write that carried it.
+
+## 9. Measured, 19 November 2026
+
+On the development machine, in measurement mode, with the VPN client's firewall rules in place (as they always are
+there).
+
+**Throughput.** 1.8 million orders offered by four sessions as fast as the sockets accept them, the gateways limiting
+their unanswered commands to 16,384:
+
+| | Before | With gathering |
+|---|---|---|
+| Orders a second, round trip | 18,275 | 68,626 |
+| Leading sequencer's reactor: in `send()` or `sendmsg()` | 82% | 15% |
+| … of which in the firewall's rules (`nf_hook_slow`) | 33% | 4.8% |
+| … idle | none | 53% |
+
+Every order was acknowledged and no lease ran out in either. The leading sequencer's reactor is no longer the limit.
+
+**Latency.** Four sessions at 1,000 orders a second each, 120,000 orders a run, the load client pinned to cores 0 and
+1, gathering turned off and on alternately by a switch present only for this measurement, so that both ran on the same
+binaries:
+
+| Gathering | p50 µs | p99 µs | p99.9 µs |
+|---|---|---|---|
+| off | 182.0, 189.5, 185.8 | 230.2, 235.9, 229.1 | 296.6, 310.2, 302.3 |
+| on | 158.3, 158.8, 158.6 | 209.7, 209.1, 209.7 | 242.3, 243.8, 236.5 |
+
+Gathering lowers latency too, at every percentile: each order's records go to several connections, and the messages
+for each are now written with one call.
+
+**Tests.** 17 new tests (`GatheredWritingTest`) cut a gathered write at every byte and at each refusal; with a part
+written frame forgotten, 5 failed, and with the sends behind a cut dropped, 3. The integration suite passed 15 times
+running, 1,260 test runs. An existing pub/sub test found that a close asked for in the same pass discarded a gathered
+message; it is the reason for the fourth point above.
+
+## 10. Decisions
 
 ### Decision 1. Does the reactor gather the sends of each pass of control commands, writing each connection's messages at the end of the pass with one `sendmsg()` call for up to 64 of them? Agreed: yes.
 

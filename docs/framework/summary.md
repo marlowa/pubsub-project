@@ -220,13 +220,15 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
    - Both fail → `teardown_connection()` → deliver `ConnectionFailed`
 3. Connect timeout → `check_for_timed_out_connections()` → `teardown_connection()` → deliver `ConnectionFailed`
 4. `EPOLLIN` fires → `on_data_ready()` → `PduParser::receive()` → zero-copy into slab → dispatch `FrameworkPdu` to thread queue
-5. `SendPdu` command → `process_send_pdu_command()` → `PduFramer::send_prebuilt()` (zero-copy)
-6. Partial send → store in `current_*` fields + register `EPOLLOUT` → `on_write_ready()` → `continue_send()` → deallocate slab when complete
+5. `SendPdu` command → `process_send_pdu_command()` → gathered on the connection (`GatheredSends`) → at the end of the pass of control commands, `write_gathered_sends()` → `PduFramer::send_gathered()`, one `sendmsg()` call for up to 64 of the connection's messages, zero-copy from their slab chunks ([gathering_sends.md](gathering_sends.md)). A TLS connection writes each message on its own with `PduFramer::send_prebuilt()`.
+6. Partial send → the message cut part way is held in `current_*` fields, the rest wait in the connection's queue, and `EPOLLOUT` is registered → `on_write_ready()` → `continue_send()` → deallocate slab when complete → the waiting messages are written, up to 64 a call
 7. `Disconnect` or peer close → `teardown_connection()` → deliver `ConnectionLost`
 
 **OutboundConnectionManager maps:**
 - `connections_` — `ConnectionID → unique_ptr<OutboundConnection>` (owns)
 - `connections_by_fd_` — `int fd → OutboundConnection*` (non-owning, for epoll dispatch)
+
+**Sends gathered in a pass:** the sends asked for on a connection in one pass of control commands are written together at the end of it, with one `sendmsg()` call for up to 64 ([gathering_sends.md](gathering_sends.md)); a close asked for in the same pass waits until they are written.
 
 **Sends that have to wait:** a send that arrives while the connection is still writing an earlier one, or before the connection is established, waits in the connection's own `WaitingSendQueue`. `on_write_ready()` starts the waiting sends, in order, once the send in progress completes, and an outbound connection starts them when it becomes established. Other connections are not held up. A connection whose queue reaches its limit is closed, the application is told the connection was lost, and a reconnection is scheduled.
 

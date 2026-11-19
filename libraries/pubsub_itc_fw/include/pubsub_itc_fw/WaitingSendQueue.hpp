@@ -123,6 +123,14 @@ class WaitingSendQueue {
         return ring_->front();
     }
 
+    /// The send @p position places behind the oldest: at(0) is front(). @p position must be less than size().
+    [[nodiscard]] const WaitingSend& at(size_t position) const {
+        if (position >= size()) {
+            throw PreconditionAssertion("WaitingSendQueue::at: no send at that position", __FILE__, __LINE__);
+        }
+        return ring_->at(position);
+    }
+
     /**
      * @brief Removes the oldest send, without touching its chunk, which passes to the caller.
      *

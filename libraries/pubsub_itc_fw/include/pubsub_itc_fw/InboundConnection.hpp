@@ -9,7 +9,9 @@
 #include <tuple>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
+#include <pubsub_itc_fw/GatheredSends.hpp>
 #include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
+#include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -182,6 +184,31 @@ class InboundConnection {
         return waiting_sends_;
     }
 
+    /// The sends asked for on this connection during the reactor's present pass of control commands, written together
+    /// at the end of it (docs/framework/gathering_sends.md).
+    [[nodiscard]] GatheredSends& gathered_sends() {
+        return gathered_sends_;
+    }
+
+    /// Whether anything is left to write: a message part written, or sends waiting, which with gathered sends can wait with
+    /// none part written. The connection is watched for room to write while this is true.
+    [[nodiscard]] bool has_sends_to_write() const {
+        return has_pending_send() || !waiting_sends_.empty();
+    }
+
+    /**
+     * @brief Writes @p count framework messages, in order, with one system call: returns the chunks of those written
+     *        whole to their allocators, and holds the one written in part, if any, as this connection's message in
+     *        progress. The sends after those are untouched and still the caller's. Nothing may be in progress, and the handler must write framework messages
+     *        (ProtocolHandlerInterface::writes_gathered).
+     */
+    [[nodiscard]] PduFramer::GatheredOutcome write_gathered(const WaitingSend* sends, size_t count);
+
+    /// Whether a message is part written.
+    [[nodiscard]] bool has_pending_send() const {
+        return handler_ != nullptr && handler_->has_pending_send();
+    }
+
     /**
      * @brief Records that the application asked to be told when this connection can take another
      * send, at a moment when it could not: it was still writing, or had sends waiting. The connection
@@ -216,6 +243,7 @@ class InboundConnection {
     IdleTimeoutFlag idle_timeout_;
     bool reading_paused_by_application_{false};
     WaitingSendQueue waiting_sends_;
+    GatheredSends gathered_sends_;
     bool writable_notification_wanted_{false};
     ThreadID writable_notification_thread_id_{};
 };

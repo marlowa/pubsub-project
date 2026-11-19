@@ -510,6 +510,16 @@ class Reactor : public ThreadLookupInterface {
      *  @param[in] started_ns When the reactor picked the command off the queue.
      *  @param[in] latency_class Whether something waits for this send to arrive. */
     void observe_send_path(int64_t started_ns, SendLatencyClass::SendLatencyClassTag latency_class);
+    // Records the send path of each send started in this pass, now that the pass's gathered sends have been written: a
+    // send is written at the end of the pass it was asked for in, so its path ends there (docs/framework/gathering_sends.md).
+    void observe_send_paths_of_this_pass();
+    // When each send started in this pass was picked up, and its kind, at most one for each command of the pass. Reserved
+    // when the reactor is made, so that it does not allocate on the order path.
+    struct StartedSend {
+        int64_t picked_up_ns{0};
+        SendLatencyClass::SendLatencyClassTag latency_class{};
+    };
+    std::vector<StartedSend> sends_started_this_pass_;
 
     /**
      * @brief Carries out commands an application thread has asked for.

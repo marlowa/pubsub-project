@@ -100,8 +100,10 @@ thread (principle F3 in [design_principles.md](../design_principles.md)).
 
 **Outbound:** `ApplicationThread::send_pdu()`, on the application thread, takes a chunk from the
 outbound slab allocator, writes the `PduHeader` and the encoded payload into it, and enqueues a
-`SendPdu` reactor control command; the reactor sends it via `send_prebuilt()` and frees the chunk
-when the send is complete.
+`SendPdu` reactor control command; the reactor gathers it with the other sends asked for on the same
+connection in that pass of control commands, writes them together at the end of the pass with one
+`sendmsg()` call, through `PduFramer::send_gathered()`, and frees each chunk when its message is
+written ([gathering_sends.md](gathering_sends.md)). A TLS connection sends each with `send_prebuilt()`.
 
 ---
 
@@ -193,7 +195,8 @@ thread that needs to slow a peer asks the reactor to stop reading that connectio
 Non-blocking `send()` may write fewer bytes than requested when the kernel TCP send buffer
 is full. `PduFramer` handles this:
 
-1. Initial `send_prebuilt()` or `send()` writes as much as the kernel accepts.
+1. Initial `send_gathered()`, `send_prebuilt()` or `send()` writes as much as the kernel accepts; for a gathered write,
+   that is some messages whole and perhaps part of the next, never a later message before an earlier one.
 2. If partial: stores `current_*` fields (pointer, remaining bytes, slab id) and registers
    `EPOLLOUT` on the fd.
 3. `EPOLLOUT` fires → `on_write_ready()` → `continue_send()` resumes writing.

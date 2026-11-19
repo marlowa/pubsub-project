@@ -1,6 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <array>
 #include <cstdint>
 
 #include <string>
@@ -64,6 +65,29 @@ std::tuple<bool, std::string> PduProtocolHandler::send_prebuilt(ExpandableSlabAl
         release_pending_send();
     }
     return {true, ""};
+}
+
+PduFramer::GatheredOutcome PduProtocolHandler::send_gathered(const WaitingSend* sends, size_t count) {
+    if (sends == nullptr || count == 0 || count > ByteStreamInterface::max_gathered_parts) {
+        throw PreconditionAssertion("PduProtocolHandler::send_gathered: between one and max_gathered_parts sends must be given", __FILE__, __LINE__);
+    }
+    std::array<SimpleSpan<const uint8_t>, ByteStreamInterface::max_gathered_parts> frames{};
+    for (size_t index = 0; index < count; ++index) {
+        frames[index] = SimpleSpan<const uint8_t>(static_cast<const uint8_t*>(sends[index].chunk), sends[index].byte_count);
+    }
+    const PduFramer::GatheredOutcome outcome = framer_->send_gathered(frames.data(), count);
+    for (size_t index = 0; index < outcome.written_whole; ++index) {
+        sends[index].allocator->deallocate(sends[index].slab_id, sends[index].chunk);
+    }
+    if (outcome.front_cut) {
+        // Held as the send in progress, exactly as send_prebuilt() holds one it could not finish.
+        const WaitingSend& cut = sends[outcome.written_whole];
+        current_allocator_ = cut.allocator;
+        current_slab_id_ = cut.slab_id;
+        current_chunk_ptr_ = cut.chunk;
+        current_total_bytes_ = cut.byte_count;
+    }
+    return outcome;
 }
 
 bool PduProtocolHandler::has_pending_send() const {

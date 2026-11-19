@@ -136,6 +136,39 @@ class PduFramer {
      */
     [[nodiscard]] std::tuple<bool, std::string> send_prebuilt(const uint8_t* frame, uint32_t total_bytes);
 
+    /// What send_gathered() did.
+    struct GatheredOutcome {
+        /// False when the stream failed, as error says: nothing more can be written on it. An empty error means the peer
+        /// closed its end, as for continue_send().
+        bool ok{true};
+        std::string error;
+        /// The frames written whole, counted from the first.
+        size_t written_whole{0};
+        /// True when the frame after those was written in part: the framer now holds it as the frame in progress
+        /// (has_pending_data() is true), and continue_send() writes the rest of it.
+        bool front_cut{false};
+        /// True when the stream said it was short of memory for the moment (ENOBUFS or ENOMEM). Nothing was written, as
+        /// when it has no room.
+        bool short_of_memory{false};
+    };
+
+    /**
+     * @brief Writes several pre-built frames, in order, with as few system calls as the stream allows: one, for a TCP
+     *        socket (docs/framework/gathering_sends.md).
+     *
+     * The stream takes a prefix of the frames joined end to end, so the outcome says exactly how far writing got: some
+     * frames written whole, then at most one written in part, which this framer then holds as its frame in progress,
+     * exactly as send_prebuilt() holds a frame it could not finish. The frames after that were not written at all, and
+     * are still the caller's. When the stream has no room, or is short of memory for the moment, nothing is written.
+     *
+     * Must not be called while has_pending_data() is true. No copy is made: each frame must stay valid until it is
+     * written, which for the one written in part is until has_pending_data() returns false.
+     *
+     * @param[in] frames The frames, each a PduHeader followed by its payload.
+     * @param[in] count  How many: at least one, and at most ByteStreamInterface::max_gathered_parts.
+     */
+    [[nodiscard]] GatheredOutcome send_gathered(const SimpleSpan<const uint8_t>* frames, size_t count);
+
     /**
      * @brief Continues sending any unsent data after a partial write.
      *

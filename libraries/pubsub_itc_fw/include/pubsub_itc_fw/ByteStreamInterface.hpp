@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // C++ headers whose names start with 'c'
+#include <cstddef>
 #include <cstdint> // IWYU pragma: keep
 
 // System C++ headers
@@ -60,6 +61,42 @@ class ByteStreamInterface {
      * It will be empty on success.
      */
     [[nodiscard]] virtual std::tuple<int, std::string> send(SimpleSpan<const uint8_t> data) = 0;
+
+    /// The most parts send_gathered() accepts in one call (docs/framework/gathering_sends.md, decision 2).
+    static constexpr size_t max_gathered_parts = 64;
+
+    /**
+     * @brief Sends several separate pieces of data as one stream, in order, in as few system calls as the stream
+     *        allows (docs/framework/gathering_sends.md).
+     *
+     * Whatever the stream takes is a prefix of the pieces joined end to end: never a later piece while an earlier one is
+     * not wholly taken. So the number returned says exactly where writing stopped.
+     *
+     * This implementation sends each piece with send() in turn and stops at the first that is not taken whole. A stream
+     * that can write several pieces in one system call overrides it.
+     *
+     * @param[in] parts The pieces, in order. Each must be non-empty.
+     * @param[in] count How many pieces: at least one, and at most max_gathered_parts.
+     * @return A `std::tuple` containing:
+     * - the number of bytes taken (>= 0), counted from the start of the first piece; or, when nothing was taken, a
+     *   negative `errno` code: -EAGAIN when the stream has no room, any other for a failure;
+     * - an error message when the call failed; empty otherwise.
+     */
+    [[nodiscard]] virtual std::tuple<int64_t, std::string> send_gathered(const SimpleSpan<const uint8_t>* parts, size_t count) {
+        int64_t taken = 0;
+        for (size_t index = 0; index < count; ++index) {
+            auto [sent, error] = send(parts[index]);
+            if (sent < 0) {
+                // Bytes already taken are reported; the failure comes back on the next call, as sendmsg() does.
+                return taken > 0 ? std::tuple<int64_t, std::string>{taken, ""} : std::tuple<int64_t, std::string>{sent, error};
+            }
+            taken += sent;
+            if (static_cast<size_t>(sent) < parts[index].size()) {
+                break;
+            }
+        }
+        return {taken, ""};
+    }
 
     /**
      * @brief Receives binary data from the stream into the provided buffer.

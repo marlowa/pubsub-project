@@ -116,6 +116,14 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      */
     [[nodiscard]] bool has_pending_send() const override;
 
+    /// True: this handler writes framework messages several at a time.
+    [[nodiscard]] bool writes_gathered() const override {
+        return true;
+    }
+
+    /// Writes the messages with PduFramer::send_gathered(); see ProtocolHandlerInterface::send_gathered.
+    [[nodiscard]] PduFramer::GatheredOutcome send_gathered(const WaitingSend* sends, size_t count) override;
+
     /// Whether reading is stopped because the limit's worth of messages are waiting in the thread's queue.
     [[nodiscard]] bool is_reads_paused() const override;
 

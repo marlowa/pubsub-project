@@ -191,6 +191,19 @@ template <typename T> class FixedCapacityRingBuffer {
         return slots_[front_];
     }
 
+    /**
+     * @brief The element @p position places after the oldest: at(0) is front().
+     *
+     * @p position must be less than size().
+     */
+    [[nodiscard]] const T& at(size_t position) const {
+        check_owning_thread();
+        if (position >= size_) {
+            throw PreconditionAssertion("FixedCapacityRingBuffer: at called with a position past the last element", __FILE__, __LINE__);
+        }
+        return slots_[index_after_front(position)];
+    }
+
     /// The number of elements held.
     [[nodiscard]] size_t size() const {
         check_owning_thread();

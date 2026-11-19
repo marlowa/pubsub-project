@@ -3,13 +3,17 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <tuple>
 
 #include <pubsub_itc_fw/MessagesWaitingLimit.hpp>
+#include <pubsub_itc_fw/PduFramer.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/SlabHandle.hpp>
+#include <pubsub_itc_fw/WaitingSendQueue.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -119,6 +123,25 @@ class ProtocolHandlerInterface {
      *         released the slab chunk in that case.
      */
     [[nodiscard]] virtual std::tuple<bool, std::string> continue_send() = 0;
+
+    /**
+     * @brief Whether this handler writes framework messages several at a time with send_gathered()
+     *        (docs/framework/gathering_sends.md). False unless a handler says otherwise.
+     */
+    [[nodiscard]] virtual bool writes_gathered() const {
+        return false;
+    }
+
+    /**
+     * @brief Writes @p count framework messages, in order, with one system call: returns the chunks of those written
+     *        whole to their allocators, and holds the one written in part, if any, as its send in progress, which
+     *        continue_send() finishes. The sends after those are untouched and still the caller's.
+     *
+     * Only for a handler whose writes_gathered() is true, and only while has_pending_send() is false.
+     */
+    [[nodiscard]] virtual PduFramer::GatheredOutcome send_gathered(const WaitingSend* /*sends*/, size_t /*count*/) {
+        throw PreconditionAssertion("ProtocolHandlerInterface::send_gathered: this handler does not write framework messages", __FILE__, __LINE__);
+    }
 
     /**
      * @brief Deallocates any in-flight outbound slab chunk.

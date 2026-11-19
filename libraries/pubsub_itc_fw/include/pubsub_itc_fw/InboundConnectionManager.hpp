@@ -14,6 +14,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/GatheredWriting.hpp>
 #include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/InboundConnection.hpp>
 #include <pubsub_itc_fw/InboundListener.hpp>
@@ -207,6 +208,13 @@ class InboundConnectionManager {
     [[nodiscard]] SendDisposition process_send_pdu_command(const ReactorControlCommand& command);
 
     /**
+     * @brief Writes the sends gathered on each connection during this pass of control commands, each connection's with
+     *        as few system calls as it allows (docs/framework/gathering_sends.md). Called by the reactor at the end of
+     *        every pass.
+     */
+    void write_gathered_sends();
+
+    /**
      * @brief Attempts to satisfy a RequestWritableNotification for an inbound connection.
      *
      * If the ConnectionID belongs to an inbound connection, enqueues a
@@ -339,6 +347,19 @@ class InboundConnectionManager {
     // Starts the waiting sends, oldest first, until one cannot be written at once or none is left.
     // Returns false if the connection was closed, in which case conn no longer exists.
     [[nodiscard]] bool start_waiting_sends(InboundConnection& conn);
+    // Gathers @p send on @p conn, which has nothing in progress or waiting, to be written at the end of the pass, or at
+    // once if the gathered sends are full.
+    void gather(InboundConnection& conn, const WaitingSend& send);
+    // Writes the sends gathered on @p conn, closing it on a failure.
+    void write_gathered_now(InboundConnection& conn);
+    // Acts on what a gathered write did: watches for room if something is left, warns once if the stream was short of
+    // memory, and closes the connection on a failure. Returns false when it closed the connection.
+    [[nodiscard]] bool after_gathered_write(InboundConnection& conn, const gathered_writing::Step& step);
+    // The ids of the connections with sends gathered in this pass, in the order their first was gathered. Reserved when
+    // the manager is made, so that it does not allocate on the order path.
+    std::vector<int> gathered_connections_;
+    // Room for that many connections with sends gathered in one pass before the list grows; a pass takes at most 64 commands.
+    static constexpr size_t gathered_connections_reserved = 64;
     // Tells the application the connection can take another send, if it asked to be told and the
     // connection now has nothing left to write.
     void deliver_owed_writable_notification(InboundConnection& conn);

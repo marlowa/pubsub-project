@@ -38,7 +38,9 @@ namespace pubsub_itc_fw {
 
 InboundConnectionManager::InboundConnectionManager(int epoll_fd, const ReactorConfiguration& config, ExpandableSlabAllocator& inbound_allocator,
                                                    ThreadLookupInterface& thread_lookup, QuillLogger& logger)
-    : epoll_fd_(epoll_fd), config_(config), inbound_allocator_(inbound_allocator), thread_lookup_(thread_lookup), logger_(logger) {}
+    : epoll_fd_(epoll_fd), config_(config), inbound_allocator_(inbound_allocator), thread_lookup_(thread_lookup), logger_(logger) {
+    gathered_connections_.reserve(gathered_connections_reserved);
+}
 
 void InboundConnectionManager::register_inbound_listener(NetworkEndpointConfiguration address, ThreadID target_thread_id, ProtocolType protocol_type,
                                                          int64_t raw_buffer_capacity, IdleTimeoutFlag idle_timeout) {
@@ -216,7 +218,7 @@ void InboundConnectionManager::on_data_ready(InboundConnection& conn) {
         const int fd = conn.get_fd();
         epoll_event ev{};
         ev.events = EPOLLERR;
-        if (conn.handler()->has_pending_send()) {
+        if (conn.has_sends_to_write()) {
             ev.events |= EPOLLOUT;
         }
         ev.data.fd = fd;
@@ -301,6 +303,7 @@ void InboundConnectionManager::teardown_connection(ConnectionID id, const std::s
 
     // Return the chunks of the sends still waiting for this connection; they will never be written.
     conn.waiting_sends().release_all();
+    conn.gathered_sends().release_all();
 
     // Deregister from epoll and fd map.
     const int fd = conn.get_fd();
@@ -375,7 +378,7 @@ bool InboundConnectionManager::process_writable_notification_command(const React
 void InboundConnectionManager::deliver_owed_writable_notification(InboundConnection& conn) {
     // Not while anything is left to write: the application asked so as to be paced by its peer, and
     // telling it now would let it build a queue the peer is not reading.
-    if (conn.handler()->has_pending_send() || !conn.waiting_sends().empty() || !conn.take_writable_notification_wanted()) {
+    if (conn.handler()->has_pending_send() || !conn.waiting_sends().empty() || !conn.gathered_sends().empty() || !conn.take_writable_notification_wanted()) {
         return;
     }
     auto* thread = thread_lookup_.get_fast_path_thread(conn.writable_notification_thread_id());
@@ -390,7 +393,66 @@ SendDisposition InboundConnectionManager::process_send_pdu_command(const Reactor
         return SendDisposition::NoSuchConnection;
     }
     const WaitingSend send{command.allocator_, command.slab_id_, command.pdu_chunk_ptr_, static_cast<uint32_t>(sizeof(PduHeader)) + command.pdu_byte_count_};
-    return send_or_wait(*it->second, send);
+    InboundConnection& conn = *it->second;
+    // Gathered, to be written with the others asked for on this connection in this pass, when nothing is in progress or
+    // waiting; otherwise it waits behind them, as before (docs/framework/gathering_sends.md).
+    if (conn.handler()->writes_gathered() && !conn.handler()->has_pending_send() && conn.waiting_sends().empty()) {
+        gather(conn, send);
+        return SendDisposition::Started;
+    }
+    return send_or_wait(conn, send);
+}
+
+void InboundConnectionManager::gather(InboundConnection& conn, const WaitingSend& send) {
+    GatheredSends& gathered = conn.gathered_sends();
+    if (gathered.empty()) {
+        gathered_connections_.push_back(conn.id().get_value());
+    }
+    gathered.add(send);
+    if (gathered.full()) {
+        write_gathered_now(conn);
+    }
+}
+
+void InboundConnectionManager::write_gathered_sends() {
+    for (const int id : gathered_connections_) {
+        auto it = connections_.find(ConnectionID{id});
+        // A connection closed during the pass has given back its gathered chunks already.
+        if (it != connections_.end() && !it->second->gathered_sends().empty()) {
+            write_gathered_now(*it->second);
+        }
+    }
+    gathered_connections_.clear();
+}
+
+void InboundConnectionManager::write_gathered_now(InboundConnection& conn) {
+    const gathered_writing::Step step =
+        gathered_writing::write_gathered(conn, config_.connection_waiting_sends_maximum, config_.connection_waiting_bytes_maximum);
+    static_cast<void>(after_gathered_write(conn, step));
+}
+
+bool InboundConnectionManager::after_gathered_write(InboundConnection& conn, const gathered_writing::Step& step) {
+    if (step.short_of_memory && conn.gathered_sends().first_shortage_of_memory()) {
+        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                   "InboundConnectionManager: the kernel is short of memory for sends on connection {} from '{}' (ENOBUFS or ENOMEM) -- nothing was "
+                   "written, and the sends wait until the socket has room; said once for the connection",
+                   conn.id().get_value(), conn.peer_description());
+    }
+    if (step.result == gathered_writing::Result::failed) {
+        const std::string reason = step.error.empty() ? fmt::format("peer '{}' closed connection", conn.peer_description())
+                                                      : fmt::format("send error on connection from '{}': {}", conn.peer_description(), step.error);
+        const FwLogLevel log_level = step.error.empty() ? FwLogLevel::Info : FwLogLevel::Error;
+        PUBSUB_LOG(logger_, log_level, "InboundConnectionManager: {}", reason);
+        teardown_connection(conn.id(), reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
+        return false;
+    }
+    if (step.result == gathered_writing::Result::must_wait) {
+        rearm(conn);
+    } else {
+        // Everything is written: an application waiting to be told it may send more is told now.
+        deliver_owed_writable_notification(conn);
+    }
+    return true;
 }
 
 SendDisposition InboundConnectionManager::process_send_raw_command(const ReactorControlCommand& command) {
@@ -444,6 +506,10 @@ bool InboundConnectionManager::start_send(InboundConnection& conn, const Waiting
 }
 
 bool InboundConnectionManager::start_waiting_sends(InboundConnection& conn) {
+    if (conn.handler()->writes_gathered()) {
+        // Several at a time, with one system call each (docs/framework/gathering_sends.md, section 3.4).
+        return after_gathered_write(conn, gathered_writing::write_waiting(conn));
+    }
     WaitingSendQueue& waiting = conn.waiting_sends();
     while (!waiting.empty() && !conn.handler()->has_pending_send()) {
         const WaitingSend next = waiting.front();
@@ -469,7 +535,7 @@ bool InboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t
         const int fd = conn.get_fd();
         epoll_event ev{};
         ev.events = EPOLLIN | EPOLLERR;
-        if (conn.handler()->has_pending_send()) {
+        if (conn.has_sends_to_write()) {
             ev.events |= EPOLLOUT;
         }
         ev.data.fd = fd;
@@ -546,7 +612,9 @@ void InboundConnectionManager::rearm(InboundConnection& conn) {
     if (wants_reads(conn)) {
         ev.events |= EPOLLIN;
     }
-    if (conn.handler()->has_pending_send()) {
+    // Watched for room while a message is part written, or while sends wait with none part written, which happens when
+    // the socket had no room for any of a gathered write.
+    if (conn.handler()->has_pending_send() || !conn.waiting_sends().empty()) {
         ev.events |= EPOLLOUT;
     }
     ev.data.fd = conn.get_fd();

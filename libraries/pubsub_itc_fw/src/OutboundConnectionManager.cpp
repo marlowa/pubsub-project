@@ -33,7 +33,9 @@ OutboundConnectionManager::OutboundConnectionManager(int epoll_fd, const Reactor
     , inbound_allocator_(inbound_allocator)
     , service_registry_(service_registry)
     , thread_lookup_(thread_lookup)
-    , logger_(logger) {}
+    , logger_(logger) {
+    gathered_connections_.reserve(gathered_connections_reserved);
+}
 
 void OutboundConnectionManager::process_connect_command(const ReactorControlCommand& command, ConnectionID id) {
     // connect_to_service resolved and validated the service id (fail-fast on an
@@ -388,24 +390,27 @@ void OutboundConnectionManager::on_write_ready(OutboundConnection& conn) {
         return;
     }
 
-    // PDU path
-    auto [ok, error] = conn.framer()->continue_send();
-    if (!ok) {
-        const std::string service_name = conn.service_name();
-        const ThreadID requesting_thread_id = conn.requesting_thread_id();
-        const ConnectionID id = conn.id();
-        const std::string reason = fmt::format("send error on service '{}': {}", service_name, error);
-        PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::on_write_ready: {}", reason);
-        teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
-        schedule_retry(service_name, requesting_thread_id);
-        return;
-    }
+    // PDU path. A message may be part written; or, since sends are gathered, nothing may be in progress while sends wait,
+    // because the socket had no room for any of them.
+    if (conn.has_pending_send()) {
+        auto [ok, error] = conn.framer()->continue_send();
+        if (!ok) {
+            const std::string service_name = conn.service_name();
+            const ThreadID requesting_thread_id = conn.requesting_thread_id();
+            const ConnectionID id = conn.id();
+            const std::string reason = fmt::format("send error on service '{}': {}", service_name, error);
+            PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::on_write_ready: {}", reason);
+            teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
+            schedule_retry(service_name, requesting_thread_id);
+            return;
+        }
 
-    if (conn.framer()->has_pending_data()) {
-        return;
+        if (conn.framer()->has_pending_data()) {
+            return;
+        }
+        conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
+        conn.clear_pending_send();
     }
-    conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
-    conn.clear_pending_send();
 
     // The send in progress is written; the sends that waited behind it are started next, in order.
     if (!start_waiting_sends(conn)) {
@@ -438,7 +443,8 @@ void OutboundConnectionManager::deliver_owed_writable_notification(OutboundConne
     // Not before the connection is established, nor while anything is left to write: the application
     // asked so as to be paced by its peer, and telling it now would let it build a queue the peer is
     // not reading.
-    if (!conn.is_established() || conn.has_pending_send() || !conn.waiting_sends().empty() || !conn.take_writable_notification_wanted()) {
+    if (!conn.is_established() || conn.has_pending_send() || !conn.waiting_sends().empty() || !conn.gathered_sends().empty() ||
+        !conn.take_writable_notification_wanted()) {
         return;
     }
     auto* thread = thread_lookup_.get_fast_path_thread(conn.writable_notification_thread_id());
@@ -453,7 +459,68 @@ SendDisposition OutboundConnectionManager::process_send_pdu_command(const Reacto
         return SendDisposition::NoSuchConnection;
     }
     const WaitingSend send{command.allocator_, command.slab_id_, command.pdu_chunk_ptr_, static_cast<uint32_t>(sizeof(PduHeader)) + command.pdu_byte_count_};
-    return send_or_wait(*it->second, send);
+    OutboundConnection& conn = *it->second;
+    // Gathered, to be written with the others asked for on this connection in this pass, when nothing is in progress or
+    // waiting; otherwise it waits behind them, as before. A TLS connection writes each message on its own
+    // (docs/framework/gathering_sends.md, section 3.5).
+    if (!conn.is_tls() && conn.is_established() && !conn.has_pending_send() && conn.waiting_sends().empty()) {
+        gather(conn, send);
+        return SendDisposition::Started;
+    }
+    return send_or_wait(conn, send);
+}
+
+void OutboundConnectionManager::gather(OutboundConnection& conn, const WaitingSend& send) {
+    GatheredSends& gathered = conn.gathered_sends();
+    if (gathered.empty()) {
+        gathered_connections_.push_back(conn.id().get_value());
+    }
+    gathered.add(send);
+    if (gathered.full()) {
+        write_gathered_now(conn);
+    }
+}
+
+void OutboundConnectionManager::write_gathered_sends() {
+    for (const int id : gathered_connections_) {
+        auto it = connections_.find(ConnectionID{id});
+        // A connection closed during the pass has given back its gathered chunks already.
+        if (it != connections_.end() && !it->second->gathered_sends().empty()) {
+            write_gathered_now(*it->second);
+        }
+    }
+    gathered_connections_.clear();
+}
+
+void OutboundConnectionManager::write_gathered_now(OutboundConnection& conn) {
+    const gathered_writing::Step step =
+        gathered_writing::write_gathered(conn, config_.connection_waiting_sends_maximum, config_.connection_waiting_bytes_maximum);
+    static_cast<void>(after_gathered_write(conn, step));
+}
+
+bool OutboundConnectionManager::after_gathered_write(OutboundConnection& conn, const gathered_writing::Step& step) {
+    if (step.short_of_memory && conn.gathered_sends().first_shortage_of_memory()) {
+        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                   "OutboundConnectionManager: the kernel is short of memory for sends on connection {} to '{}' (ENOBUFS or ENOMEM) -- nothing was "
+                   "written, and the sends wait until the socket has room; said once for the connection",
+                   conn.id().get_value(), conn.service_name());
+    }
+    if (step.result == gathered_writing::Result::failed) {
+        const std::string service_name = conn.service_name();
+        const ThreadID requesting_thread_id = conn.requesting_thread_id();
+        const std::string reason = fmt::format("send error to '{}': {}", service_name, step.error.empty() ? "the peer closed its end" : step.error);
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager: {}", reason);
+        teardown_connection(conn.id(), reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
+        schedule_retry(service_name, requesting_thread_id);
+        return false;
+    }
+    if (step.result == gathered_writing::Result::must_wait) {
+        rearm(conn);
+    } else {
+        // Everything is written: an application waiting to be told it may send more is told now.
+        deliver_owed_writable_notification(conn);
+    }
+    return true;
 }
 
 SendDisposition OutboundConnectionManager::process_send_raw_command(const ReactorControlCommand& command) {
@@ -532,6 +599,10 @@ bool OutboundConnectionManager::start_send(OutboundConnection& conn, const Waiti
 }
 
 bool OutboundConnectionManager::start_waiting_sends(OutboundConnection& conn) {
+    if (!conn.is_tls()) {
+        // Several at a time, with one system call each (docs/framework/gathering_sends.md, section 3.4).
+        return after_gathered_write(conn, gathered_writing::write_waiting(conn));
+    }
     WaitingSendQueue& waiting = conn.waiting_sends();
     while (!waiting.empty() && !conn.has_pending_send()) {
         const WaitingSend next = waiting.front();
@@ -751,6 +822,7 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
     // Return the chunks of the sends still waiting for this connection; they will never be written.
     // None of them has been handed to the framer or the TLS handler yet.
     conn.waiting_sends().release_all();
+    conn.gathered_sends().release_all();
 
     // Deregister from epoll and remove from fd map.
     const int fd = conn.get_fd();
@@ -803,7 +875,9 @@ void OutboundConnectionManager::rearm(OutboundConnection& conn) {
     if (wants_reads(conn)) {
         ev.events |= EPOLLIN;
     }
-    if (conn.has_pending_send()) {
+    // Watched for room while a message is part written, or while sends wait with none part written, which happens when
+    // the socket had no room for any of a gathered write.
+    if (conn.has_pending_send() || !conn.waiting_sends().empty()) {
         ev.events |= EPOLLOUT;
     }
     ev.data.fd = conn.get_fd();
