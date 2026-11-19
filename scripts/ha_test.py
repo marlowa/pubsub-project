@@ -1478,6 +1478,11 @@ class Scenario(NamedTuple):
     # killed before the close, which the new leader must write at its time (R-0167, R-0168). See run_scenario's "the
     # venue follows the day's schedule" block.
     assert_trading_day_by_schedule: bool = False
+    # When "between_the_events", the leading sequencer is killed after writing the end-of-day begin and before it can write
+    # the end, which a stopped publisher keeps it from writing; when "before_the_follower_acknowledges", it is killed after
+    # writing the end, while the follower sequencer, stopped, cannot acknowledge it. Either way the day must end and every
+    # other component stop by itself for the end of day (docs/venue/start_and_end_of_day.md, section 4.2, decision 4).
+    end_of_day_leader_stops: str = ""
     # When True, the primary sequencer, matching engine, arbiter and publisher are stopped once the venue is open, and each
     # is started by hand for the next trading day on the files this day left. Each must refuse to start, naming a file and
     # the day it belongs to; with its small files moved aside, the sequencer and the publisher must refuse the WAL and the
@@ -5463,6 +5468,55 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 117 -- the leading sequencer is killed between the end-of-day begin and the end.
+    #
+    # docs/venue/start_and_end_of_day.md, section 4.2, decision 4, case 1, and BUG-0137, item 9. Once the follower sequencer
+    # holds the begin, the secondary publisher is stopped with SIGSTOP, so a copy of the WAL is incomplete and the leader
+    # cannot write the end; the leader is killed, and the publisher resumed. The follower is promoted and waits for every
+    # copy of the WAL again, its new follower's included (case 4). The killed sequencer is started again, as its launcher
+    # would start it, and rejoins as the follower; the new leader then writes the end itself at a later epoch, and every
+    # component, the restarted sequencer included, stops for the end of day.
+    Scenario(
+        number=117,
+        short_name="end_of_day_leader_lost_between_the_events",
+        description="The leading sequencer is killed between the end-of-day begin and the end",
+        expected_outcome=(
+            "the new leader writes the end-of-day end at a later epoch once every copy of the WAL, the restarted sequencer's "
+            "included, holds the begin, and every component stops for the end of day with status 3"
+        ),
+        me_ha=True,
+        skip_baseline_orders=True,
+        with_publishers=True,
+        end_of_day_leader_stops="between_the_events",
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 118 -- the leading sequencer is killed between writing the end-of-day end and the follower acknowledging it.
+    #
+    # docs/venue/start_and_end_of_day.md, section 4.2, decision 4, case 2, and BUG-0137, item 9. Once the follower sequencer
+    # holds the begin it is stopped with SIGSTOP. The leader writes the end and must still be running two seconds later,
+    # waiting for the acknowledgement. It is killed and the follower resumed: the end reached the follower's connection
+    # before the leader was killed, so the follower holds it, its WAL ends with it, and it stops for the end of day, as does
+    # every other component.
+    Scenario(
+        number=118,
+        short_name="end_of_day_leader_lost_before_the_acknowledgement",
+        description="The leading sequencer is killed after writing the end-of-day end and before the follower acknowledges it",
+        expected_outcome=(
+            "the leader waits for the follower's acknowledgement; once it is killed the follower holds the end, its WAL ends with "
+            "it, and every other component stops for the end of day with status 3"
+        ),
+        me_ha=True,
+        skip_baseline_orders=True,
+        with_publishers=True,
+        end_of_day_leader_stops="before_the_follower_acknowledges",
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 92 -- orders are held while no engine leads, for as long as a change of engine leader takes, and refused after that.
     #
     # docs/availability/voided_commands.md, sections 5.1 and 5.2. Both engines are taken away. Several orders are placed
@@ -9424,7 +9478,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 and not scenario.assert_overload_keeps_leaders_and_standbys
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
-                and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained):
+                and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained
+                and not scenario.end_of_day_leader_stops):
             # The promotion has already been observed by the time this runs, so this confirms an absence: the engine is
             # asked for a checkpoint first, and a cancel it sent cannot still be on its way.
             promoted_engine = resolved(ENGINE_FOLLOWING_AT_START)
@@ -11181,6 +11236,110 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  the {_LOAD_SESSIONS} sessions' resting orders have been cancelled, so the WAL is complete -- OK")
 
         # ── The venue follows the day's schedule (R-0167, R-0168) ──
+        if scenario.end_of_day_leader_stops:
+            # docs/venue/start_and_end_of_day.md, section 4.2, decision 4, and BUG-0137, item 9. The leader is stopped either
+            # between the end-of-day begin and the end, or between writing the end and the follower sequencer acknowledging
+            # it; the day must still end, with the end in the follower's WAL, and every component must stop by itself.
+            leader_follower, _ = operator_requests.load_messages(prefix)
+            processes = dict(app_procs)
+
+            def wal_directory_of(sequencer: str) -> Path:
+                config = prefix / "etc" / "sequencer" / f"{sequencer}.toml"
+                return config.parent / installed_toml_section_value(config, "wal", "directory")
+
+            def last_technical_event(sequencer: str):
+                """The last TechnicalEvent in the sequencer's WAL, as (phase, leader epoch), or None."""
+                found = None
+                for _record_id, _wall_time, contents in wal_entries(wal_directory_of(sequencer)):
+                    record = leader_follower.WalRecord.decode(contents)[0]
+                    if record.pdu_id == leader_follower.TechnicalEvent.MESSAGE_ID:
+                        found = (leader_follower.TechnicalEvent.decode(record.payload)[0].phase, record.leader_epoch or 0)
+                return found
+
+            def wait_for(predicate, timeout: float, what: str) -> None:
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    if predicate():
+                        return
+                    time.sleep(0.2)
+                die(f"the end of day with the leader stopped: {what} did not happen within {timeout:.0f}s")
+
+            def stopped_for_the_end_of_day(names: list[str], timeout: float) -> None:
+                """Every one of names exits by itself within timeout, with status 3, which means it stopped for the end of day."""
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline and any(processes[name].poll() is None for name in names):
+                    time.sleep(0.2)
+                statuses = {name: processes[name].poll() for name in names}
+                if any(status != 3 for status in statuses.values()):
+                    die(f"the end of day with the leader stopped: every component was to stop for the end of day, with status 3, within "
+                        f"{timeout:.0f}s; their statuses are {statuses} (None is still running)")
+
+            leader = operator_requests.ask_for_phase(prefix, TRADING_DAY, "StartOfDay", "ha_test").answered_by
+            follower = "sequencer_secondary" if leader == "sequencer_primary" else "sequencer_primary"
+            if leader not in processes or follower not in processes:
+                die(f"the end of day with the leader stopped: the leading sequencer is {leader}, and both sequencers must be running")
+            frozen = "matching_engine_publisher_secondary" if scenario.end_of_day_leader_stops == "between_the_events" else follower
+            asked = operator_requests.enter_phases(prefix, TRADING_DAY, ("Closed", "EndOfDayBegin"), "ha_test", timeout=60.0, say=log)
+            if not operator_requests.entered(prefix, asked):
+                die(f"the end of day with the leader stopped: the close and the end-of-day begin were not written: {asked.lines}")
+            wait_for(lambda: last_technical_event(follower) is not None and last_technical_event(follower)[0] == leader_follower.TradingPhase.EndOfDayBegin,
+                     10.0, f"{follower} holding the end-of-day begin")
+            begin_epoch = last_technical_event(follower)[1]
+            log(f"  {leader} wrote the end-of-day begin at epoch {begin_epoch}, and {follower} holds it -- OK")
+
+            if scenario.end_of_day_leader_stops == "between_the_events":
+                # A publisher that answers nothing keeps a copy of the WAL incomplete, so the leader cannot write the end.
+                os.kill(processes[frozen].pid, signal.SIGSTOP)
+                time.sleep(3.0)
+                if last_technical_event(leader)[0] != leader_follower.TradingPhase.EndOfDayBegin:
+                    die(f"the end of day with the leader stopped: {leader} wrote past the end-of-day begin while {frozen} could not hold it")
+                log(f"  with {frozen} stopped, {leader} waits in the end-of-day begin for every copy of the WAL -- OK")
+                processes[leader].kill()
+                processes[leader].wait(timeout=10)
+                os.kill(processes[frozen].pid, signal.SIGCONT)
+                log(f"  {leader} is killed between the two events, and {frozen} is resumed")
+                # The new leader waits for every copy of the WAL, the follower sequencer's included, for up to the limit,
+                # counted afresh (decision 4, case 4): it cannot tell a follower that has gone from one that is restarting.
+                # So the killed sequencer is started again, as its launcher would start it, once the other leads.
+                wait_for(lambda: operator_requests.ask_for_phase(prefix, TRADING_DAY, "StartOfDay", "ha_test").answered_by == follower, 30.0,
+                         f"{follower} taking the lead")
+                do_restart_step(RestartStep(proc_name=leader, ready_log_name=f"{leader}.log", ready=expect_started(leader), ready_timeout=30.0,
+                                            resets_me_counter=False, settle_secs=0.0),
+                                proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
+                processes = dict(app_procs)
+                log(f"  {follower} leads, and {leader} is started again, to rejoin as the follower")
+                wait_for(lambda: last_technical_event(follower)[0] == leader_follower.TradingPhase.EndOfDayEnd, 90.0,
+                         f"{follower}, leading, writing the end-of-day end")
+                end_epoch = last_technical_event(follower)[1]
+                if end_epoch <= begin_epoch:
+                    die(f"the end of day with the leader stopped: the end-of-day end in {follower}'s WAL is at epoch {end_epoch}, not after "
+                        f"the begin's {begin_epoch}: it was not written by the new leader")
+                wait_for(lambda: last_technical_event(leader) is not None and last_technical_event(leader)[0] == leader_follower.TradingPhase.EndOfDayEnd,
+                         30.0, f"{leader}, now the follower, holding the end-of-day end")
+                log(f"  {follower} writes the end-of-day end itself at epoch {end_epoch}, once {leader}, rejoined as the follower, holds the "
+                    f"begin, and {leader} holds the end too -- OK")
+            else:
+                # A follower sequencer that answers nothing cannot acknowledge the end, so the leader must wait for it.
+                os.kill(processes[frozen].pid, signal.SIGSTOP)
+                wait_for(lambda: last_technical_event(leader)[0] == leader_follower.TradingPhase.EndOfDayEnd, 30.0,
+                         f"{leader} writing the end-of-day end")
+                time.sleep(2.0)
+                if processes[leader].poll() is not None:
+                    die(f"the end of day with the leader stopped: {leader} exited with status {processes[leader].poll()} without "
+                        f"{follower}'s acknowledgement of the end-of-day end")
+                log(f"  {leader} wrote the end-of-day end and is still up 2s later, waiting for {follower} to acknowledge it -- OK")
+                processes[leader].kill()
+                processes[leader].wait(timeout=10)
+                os.kill(processes[frozen].pid, signal.SIGCONT)
+                log(f"  {leader} is killed before {follower} acknowledged the end, and {follower} is resumed")
+                wait_for(lambda: last_technical_event(follower)[0] == leader_follower.TradingPhase.EndOfDayEnd, 30.0,
+                         f"{follower} holding the end-of-day end, which reached its connection before the leader was killed")
+                log(f"  {follower}'s WAL ends with the end-of-day end -- OK")
+            others = [name for name in processes if scenario.end_of_day_leader_stops == "between_the_events" or name != leader]
+            stopped_for_the_end_of_day(others, 60.0)
+            log(f"  every {'' if scenario.end_of_day_leader_stops == 'between_the_events' else 'other '}component, {follower} among them, "
+                f"stops for the end of day, with status 3 -- OK")
+
         if scenario.assert_trading_day_by_schedule:
             leader_follower, _ = operator_requests.load_messages(prefix)
             second = 1_000_000_000
