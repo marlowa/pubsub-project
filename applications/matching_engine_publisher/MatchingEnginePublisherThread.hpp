@@ -10,6 +10,7 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/LastStateFile.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/TopicPublisher.hpp>
@@ -125,6 +126,17 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     // a fired timer's id against these to identify it.
     pubsub_itc_fw::TimerID wal_snapshot_timer_id_{};
     pubsub_itc_fw::TimerID lease_tick_timer_id_{};
+
+    // End of day (docs/venue/start_and_end_of_day.md, section 4.4). The phase of each TechnicalEvent written to the copy
+    // of the WAL is recorded in the last-state file; once the end-of-day end has been written, the publisher stays up for
+    // the configured time, so that a subscriber reconnecting meanwhile still receives the end, and then stops.
+    pubsub_itc_fw::LastStateFile last_state_{config_.last_state_file, config_.trading_day};
+    std::optional<pubsub_itc_fw_app::TradingPhase> last_phase_recorded_;
+    pubsub_itc_fw::TimerID end_of_day_timer_id_{};
+    int64_t end_of_day_seq_no_{0};
+    // Records the phase of the TechnicalEvent at @p seq_no, just written to the copy of the WAL, and on the end-of-day end
+    // starts the wait before stopping.
+    void note_technical_event(int64_t seq_no, const uint8_t* bytes, size_t size);
 
     // How the lease rules reach the other two voters in deciding which publisher leads: the peer
     // publisher, and the arbiter pool on both arbiter connections.

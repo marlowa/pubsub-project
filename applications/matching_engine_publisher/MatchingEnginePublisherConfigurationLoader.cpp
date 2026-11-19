@@ -3,6 +3,8 @@
 
 #include "MatchingEnginePublisherConfigurationLoader.hpp"
 
+#include <string>
+
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
@@ -74,6 +76,14 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
             throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: wal.snapshot_interval_seconds must be positive");
         }
         config.snapshot_interval_seconds = snapshot_interval_seconds;
+
+        toml.get_required_except("end_of_day.last_state_file", config.last_state_file);
+        toml.get_required_except("end_of_day.stay_up_after_the_end_seconds", config.stay_up_after_the_end_seconds);
+        if (config.stay_up_after_the_end_seconds < 0) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "MatchingEnginePublisherConfigurationLoader: end_of_day.stay_up_after_the_end_seconds must not be negative, got " +
+                std::to_string(config.stay_up_after_the_end_seconds));
+        }
 
         toml.get_required_except("ha.ha_enabled", config.ha_enabled);
         toml.get_required_except("ha.instance_id", config.instance_id);

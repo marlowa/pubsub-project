@@ -4,7 +4,12 @@
 #include "MatchingEnginePublisherThread.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <string>
+#include <vector>
+
+#include <fmt/format.h>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -318,6 +323,12 @@ void MatchingEnginePublisherThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         act_on(lease_agent_->on_tick(std::chrono::steady_clock::now()));
         return;
     }
+
+    if (id == end_of_day_timer_id_) {
+        stop_for_end_of_day(fmt::format("the end-of-day end of trading day {} at seq={}, published, and the time to stay up after it passed",
+                                        config_.trading_day, end_of_day_seq_no_));
+        return;
+    }
 }
 
 void MatchingEnginePublisherThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
@@ -583,6 +594,41 @@ void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(const pubsu
     orders_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
     er_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
     technical_events_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
+
+    if (view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) {
+        note_technical_event(view.seq_no, view.payload.data, view.payload.size);
+    }
+}
+
+void MatchingEnginePublisherThread::note_technical_event(int64_t seq_no, const uint8_t* bytes, size_t size) {
+    std::vector<uint8_t> arena(size + 1024);
+    pubsub_itc_fw::BumpAllocator allocator(arena.data(), arena.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::TechnicalEventView event{};
+    if (!pubsub_itc_fw_app::decode(event, bytes, size, bytes_consumed, allocator, arena_bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: the TechnicalEvent at seq={} did not decode -- its phase is not recorded",
+                   seq_no);
+        return;
+    }
+    if (last_phase_recorded_ == event.phase) {
+        return;
+    }
+    last_state_.record(pubsub_itc_fw_app::to_string(event.phase));
+    last_phase_recorded_ = event.phase;
+    if (event.phase != pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
+        return;
+    }
+    end_of_day_seq_no_ = seq_no;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MepThread: the end-of-day end of trading day {} at seq={} is in this publisher's copy of the WAL -- staying up {} s, so that a subscriber "
+               "reconnecting meanwhile still receives it, then stopping for the end of day",
+               config_.trading_day, seq_no, config_.stay_up_after_the_end_seconds);
+    if (config_.stay_up_after_the_end_seconds == 0) {
+        stop_for_end_of_day(fmt::format("the end-of-day end of trading day {} at seq={}", config_.trading_day, seq_no));
+        return;
+    }
+    end_of_day_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.stay_up_after_the_end_seconds));
 }
 
 void MatchingEnginePublisherThread::handle_topic_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {

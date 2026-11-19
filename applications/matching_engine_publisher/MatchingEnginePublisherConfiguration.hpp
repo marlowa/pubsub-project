@@ -69,6 +69,15 @@ struct MatchingEnginePublisherConfiguration {
     size_t wal_segments_kept_ready{4};
     int32_t snapshot_interval_seconds{30};
 
+    // End of day (docs/venue/start_and_end_of_day.md, section 4.4)
+
+    /// The file of this instance's last trading state, which outlives the day; read first at start-up, so that a publisher
+    /// finding the end-of-day end of its own day exits at once for the end of day. See pubsub_itc_fw::LastStateFile.
+    std::string last_state_file;
+    /// How long the publisher stays up after the end-of-day end reaches its copy of the WAL, so that a subscriber that
+    /// reconnects in that time still receives the end on the technical_events topic.
+    int32_t stay_up_after_the_end_seconds{10};
+
     // HA -- leader-follower via arbiter pool
 
     bool ha_enabled{false};

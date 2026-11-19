@@ -28,6 +28,16 @@ segment_size              = 4194304
 segments_kept_ready       = 4
 snapshot_interval_seconds = 30
 
+[end_of_day]
+# The file of this instance's last trading state, which outlives the day. It is read first at start-up: a
+# publisher that finds the end-of-day end of its own day in it has nothing to do, and exits at once for the
+# end of day (docs/venue/start_and_end_of_day.md, section 4.4).
+last_state_file = "${last_state_dir}/matching_engine_publisher_primary.last_state"
+# How long the publisher stays up after the end-of-day end reaches its copy of the WAL, before it exits for
+# the end of day, so that a subscriber that reconnects in that time still receives the end on the
+# technical_events topic. A publisher cannot know whether a subscriber has received a message.
+stay_up_after_the_end_seconds = 10
+
 [ha]
 ha_enabled                      = ${ha_enabled}
 instance_id                     = 1
