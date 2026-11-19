@@ -324,6 +324,11 @@ void ReplicatedWal::note_whether_the_follower_is_waited_for(Clock::time_point no
     } else if (!follower_wal_matches_) {
         reason = WithoutFollowerReason{"the follower's WAL is not yet known to agree with this one", FwLogLevel::Info};
     }
+    // After the end of the trading day the follower leaving is expected, and nothing is written that it would need
+    // (docs/venue/start_and_end_of_day.md, section 4.4, item 5).
+    if (day_has_ended_) {
+        reason.level = FwLogLevel::Info;
+    }
 
     if (!committing_without_follower_) {
         committing_without_follower_ = true;

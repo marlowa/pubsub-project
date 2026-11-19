@@ -251,6 +251,14 @@ struct ReplicatedWalConfiguration {
  */
 class ReplicatedWal {
   public:
+    /**
+     * @brief The trading day has ended: from now on the follower leaving is expected, and running without it is reported
+     *        at Info, with no repeated Error (docs/venue/start_and_end_of_day.md, section 4.4, item 5).
+     */
+    void note_the_day_has_ended() {
+        day_has_ended_ = true;
+    }
+
     using Clock = std::chrono::steady_clock;
 
     /// How long the leader waits, while records wait for the follower, for any acknowledgement before it
@@ -551,6 +559,8 @@ class ReplicatedWal {
     // Sets running_alone_gauge, and logs, when this instance starts or stops committing records without waiting for
     // its follower, and logs when the reason changes. Called at the end of everything that can change the answer.
     void note_whether_the_follower_is_waited_for(Clock::time_point now);
+    // Whether the trading day has ended (note_the_day_has_ended()).
+    bool day_has_ended_{false};
     [[nodiscard]] bool may_commit_without_follower() const;
     void advance_commit();
     // Notes the identity and position of the command record @p seq_no, just written at @p position, holds, if it holds one;

@@ -230,7 +230,7 @@ void BinaryOrderGatewayThread::on_connection_established(pubsub_itc_fw::Connecti
 
 void BinaryOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (test_events_.has_value() && test_events_->on_connection_lost(id, reason)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+        PUBSUB_LOG(get_logger(), departure_level(),
                    "BinaryOrderGatewayThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
         return;
     }
@@ -245,8 +245,8 @@ void BinaryOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::Connectio
             return;
         }
         if (cause == fix_common::AuthenticationServiceLink::LossCause::ClosedByPeer) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOrderGatewayThread: {} authentication service connection {} lost: {}", which,
-                       id.get_value(), reason);
+            PUBSUB_LOG(get_logger(), departure_level(), "BinaryOrderGatewayThread: {} authentication service connection {} lost: {}", which, id.get_value(),
+                       reason);
             return;
         }
     }
@@ -255,8 +255,7 @@ void BinaryOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::Connectio
         if (unanswered_commands_.has_value()) {
             unanswered_commands_->on_connection_lost(primary_sequencer_destination);
         }
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOrderGatewayThread: primary sequencer connection {} lost: {}", id.get_value(),
-                   reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "BinaryOrderGatewayThread: primary sequencer connection {} lost: {}", id.get_value(), reason);
         return;
     }
     if (id == sequencer_secondary_conn_id_) {
@@ -264,8 +263,7 @@ void BinaryOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::Connectio
         if (unanswered_commands_.has_value()) {
             unanswered_commands_->on_connection_lost(secondary_sequencer_destination);
         }
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOrderGatewayThread: secondary sequencer connection {} lost: {}", id.get_value(),
-                   reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "BinaryOrderGatewayThread: secondary sequencer connection {} lost: {}", id.get_value(), reason);
         return;
     }
 

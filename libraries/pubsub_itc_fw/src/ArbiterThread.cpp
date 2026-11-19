@@ -207,19 +207,19 @@ void ArbiterThread::on_other_connection_established(pubsub_itc_fw::ConnectionID 
 
 void ArbiterThread::on_other_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (test_events_.has_value() && test_events_->on_connection_lost(id, reason)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "ArbiterThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "ArbiterThread: the connection to the test's event listener is lost ({}) -- no more test events are sent",
+                   reason);
         return;
     }
     if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: outbound peer connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "ArbiterThread: outbound peer connection {} lost: {}", id.get_value(), reason);
     } else if (id == peer_inbound_conn_id_) {
         peer_inbound_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: inbound peer connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "ArbiterThread: inbound peer connection {} lost: {}", id.get_value(), reason);
     } else if (id == witness_conn_id_) {
         witness_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: witness connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "ArbiterThread: witness connection {} lost: {}", id.get_value(), reason);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: component connection {} lost: {}", id.get_value(), reason);
     }

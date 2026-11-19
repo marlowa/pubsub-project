@@ -154,6 +154,14 @@ class Reactor : public ThreadLookupInterface {
     void shutdown_for_end_of_day(const std::string& reason);
 
     /**
+     * @brief Says that the trading day has ended, so that the other components leaving, and connections to them that
+     *        cannot be made again, are expected, and are logged at Info rather than Warning
+     *        (docs/venue/start_and_end_of_day.md, section 4.4, item 5). Callable from any thread; applied on the
+     *        reactor's thread at its next look for work. shutdown_for_end_of_day() implies it.
+     */
+    void note_the_day_has_ended();
+
+    /**
      * @brief Handles a SIGTERM signal, broadcasting Termination to all threads
      *        and initiating a graceful reactor shutdown.
      *
@@ -855,6 +863,10 @@ class Reactor : public ThreadLookupInterface {
     // with a release store; read by the reactor's thread after an acquire load.
     std::atomic<bool> end_of_day_stop_claimed_{false};
     std::atomic<bool> end_of_day_stop_asked_{false};
+    // Set by note_the_day_has_ended() from any thread; read by the outbound manager as it logs a departure. Declared
+    // before the managers, so that it exists when they are given it.
+    std::atomic<bool> day_has_ended_{false};
+    bool day_has_ended_passed_on_{false};
     std::string end_of_day_stop_reason_;
     std::chrono::steady_clock::time_point end_of_day_stop_asked_at_{};
     // On the reactor's thread, after each look for work: stops the reactor when a stop for the end of day is waiting and

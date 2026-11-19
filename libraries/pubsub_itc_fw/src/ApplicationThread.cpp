@@ -820,7 +820,15 @@ void ApplicationThread::process_message(const EventMessage& message) {
     set_time_event_finished(HighResolutionClock::now());
 }
 
+void ApplicationThread::note_the_day_has_ended() {
+    if (!day_has_ended_) {
+        day_has_ended_ = true;
+        reactor_.note_the_day_has_ended();
+    }
+}
+
 void ApplicationThread::stop_for_end_of_day(const std::string& reason) {
+    note_the_day_has_ended();
     if (!end_of_day_stop_reason_.has_value()) {
         end_of_day_stop_reason_ = reason;
     }

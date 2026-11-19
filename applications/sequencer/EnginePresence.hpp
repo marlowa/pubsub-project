@@ -121,6 +121,14 @@ class EnginePresence {
     // ---- Whether an engine takes orders ----------------------------------------------------------------------------
 
     /**
+     * @brief The trading day has ended: the matching engines stop, as every component does, so their absence is expected
+     *        and neither warned of nor acted on (docs/venue/start_and_end_of_day.md, section 4.4, item 5).
+     */
+    void note_the_day_has_ended() {
+        day_has_ended_ = true;
+    }
+
+    /**
      * @brief Notes whether a matching engine takes orders, and so when none has since, and says when one does again.
      *
      * Called wherever that can change: on each order held, when an engine connection is lost, on an engine's
@@ -253,6 +261,8 @@ class EnginePresence {
 
     int64_t leading_engine_instance_{0};
     pubsub_itc_fw::ConnectionID leading_engine_announced_on_{};
+    // Whether the trading day has ended (note_the_day_has_ended()).
+    bool day_has_ended_{false};
 };
 
 } // namespaces

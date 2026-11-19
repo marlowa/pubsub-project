@@ -222,7 +222,7 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
                 const auto elapsed_s =
                     std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - ctx_it->second.first_fail_time).count();
                 const bool runtime_reconnect = ever_established_services_.count(conn.service_name()) > 0;
-                PUBSUB_LOG(logger_, runtime_reconnect ? FwLogLevel::Warning : FwLogLevel::Info, "OutboundConnectionManager: service '{}' reconnected after {}s",
+                PUBSUB_LOG(logger_, runtime_reconnect ? departure_level() : FwLogLevel::Info, "OutboundConnectionManager: service '{}' reconnected after {}s",
                            conn.service_name(), elapsed_s);
                 retry_contexts_.erase(ctx_it);
             } else {
@@ -323,7 +323,7 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
         const std::string reason = error.empty() ? fmt::format("peer closed connection on service '{}'", service_name)
                                                  : fmt::format("parse error on service '{}': {}", service_name, error);
 
-        PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager::on_data_ready: {}", reason);
+        PUBSUB_LOG(logger_, error.empty() ? departure_level() : FwLogLevel::Warning, "OutboundConnectionManager::on_data_ready: {}", reason);
 
         teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         schedule_retry(service_name, requesting_thread_id);
@@ -343,7 +343,7 @@ void OutboundConnectionManager::handle_socket_error(OutboundConnection& conn) {
     const std::string reason =
         fmt::format("socket error on connection {} to service '{}': {}", id.get_value(), service_name, StringUtils::get_error_string(error));
 
-    PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager::handle_socket_error: {}", reason);
+    PUBSUB_LOG(logger_, departure_level(), "OutboundConnectionManager::handle_socket_error: {}", reason);
     teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
     schedule_retry(service_name, requesting_thread_id);
 }
@@ -683,7 +683,7 @@ void OutboundConnectionManager::schedule_retry(const std::string& service_name, 
         // First failure for this service -- log once and create context.
         retry_contexts_[service_name] = RetryContext{now, now};
         const bool runtime_failure = ever_established_services_.count(service_name) > 0;
-        const FwLogLevel level = runtime_failure ? FwLogLevel::Warning : FwLogLevel::Info;
+        const FwLogLevel level = runtime_failure ? departure_level() : FwLogLevel::Info;
         const auto warning_min = std::chrono::duration_cast<std::chrono::minutes>(config_.connect_retry_warning_interval_).count();
         if (warning_min > 0) {
             PUBSUB_LOG(logger_, level,
@@ -728,7 +728,7 @@ void OutboundConnectionManager::retry_failed_connections(const std::function<Con
         if (ctx_it != retry_contexts_.end() && config_.connect_retry_warning_interval_.count() > 0) {
             if (now - ctx_it->second.last_warning_time >= config_.connect_retry_warning_interval_) {
                 const auto total_s = std::chrono::duration_cast<std::chrono::seconds>(now - ctx_it->second.first_fail_time).count();
-                PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                PUBSUB_LOG(logger_, departure_level(),
                            "OutboundConnectionManager: service '{}' still not connected "
                            "({} seconds disconnected); still retrying every {}ms",
                            service_name, total_s, config_.connect_retry_interval_.count());

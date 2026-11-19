@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -147,6 +148,17 @@ class OutboundConnectionManager {
     /// Whether any connection has anything left to write: a message part written, sends waiting, or sends gathered in this
     /// pass. A stop for the end of day waits until none has.
     [[nodiscard]] bool has_sends_to_write() const;
+
+    /**
+     * @brief Gives the manager the reactor's record of whether the trading day has ended. Once it says so, a peer that
+     *        closes its connection and a service that cannot be reached again are expected, because the other components
+     *        are stopping (docs/venue/start_and_end_of_day.md, section 4.4, item 5), and each is logged at Info rather
+     *        than Warning. The flag is read as each departure is logged, so a departure that follows the component
+     *        learning of the end is never logged at Warning, however busy the reactor is. Called once, by the reactor.
+     */
+    void watch_whether_the_day_has_ended(const std::atomic<bool>& day_has_ended) {
+        day_has_ended_ = &day_has_ended;
+    }
 
     /**
      * @brief Attempts to satisfy a RequestWritableNotification for an outbound connection.
@@ -425,6 +437,14 @@ class OutboundConnectionManager {
     // Tells the application the connection can take another send, if it asked to be told and the
     // connection is established and now has nothing left to write.
     void deliver_owed_writable_notification(OutboundConnection& conn);
+
+    // The reactor's record of whether the trading day has ended (watch_whether_the_day_has_ended()); none in a manager
+    // built without a reactor.
+    const std::atomic<bool>* day_has_ended_{nullptr};
+    // Warning for a peer that leaves or cannot be reached, unless the day has ended, when that is expected.
+    [[nodiscard]] FwLogLevel departure_level() const {
+        return day_has_ended_ != nullptr && day_has_ended_->load(std::memory_order_acquire) ? FwLogLevel::Info : FwLogLevel::Warning;
+    }
 };
 
 } // namespaces

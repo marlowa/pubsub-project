@@ -645,6 +645,25 @@ class ApplicationThread {
      */
     void stop_for_end_of_day(const std::string& reason);
 
+    /**
+     * @brief Says that this component has learned the trading day has ended, so that other components leaving from now on
+     *        are expected (docs/venue/start_and_end_of_day.md, section 4.4, item 5): the reactor logs their connections
+     *        closing at Info, and day_has_ended() is true, for the component's own handlers to do the same. A component
+     *        that stays up after the end, as the leading sequencer and the publishers do, calls it as it learns of the
+     *        end; stop_for_end_of_day() implies it.
+     */
+    void note_the_day_has_ended();
+
+    /// Whether this component has learned the trading day has ended.
+    [[nodiscard]] bool day_has_ended() const {
+        return day_has_ended_;
+    }
+
+    /// Warning for another component leaving or being lost, unless the day has ended, when that is expected and Info.
+    [[nodiscard]] FwLogLevel departure_level() const {
+        return day_has_ended_ ? FwLogLevel::Info : FwLogLevel::Warning;
+    }
+
     bool is_running() const {
         auto tag = get_lifecycle_state().as_tag();
         return tag >= ThreadLifecycleState::Started && tag < ThreadLifecycleState::ShuttingDown;
@@ -1148,6 +1167,7 @@ class ApplicationThread {
     // A stop for the end of day asked for while a message was being handled, passed to the reactor once it has been.
     std::optional<std::string> end_of_day_stop_reason_;
     bool end_of_day_stop_passed_{false};
+    bool day_has_ended_{false};
 };
 
 } // namespaces

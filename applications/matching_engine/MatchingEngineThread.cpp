@@ -446,7 +446,7 @@ void MatchingEngineThread::sequencer_order_connection_established(const pubsub_i
 
 void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (test_events_.has_value() && test_events_->on_connection_lost(id, reason)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+        PUBSUB_LOG(get_logger(), departure_level(),
                    "MatchingEngineThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
         return;
     }
@@ -455,30 +455,27 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
         primary_sequencer_role_ = AnnouncedSequencerRole{};
         report_sending_.connection_lost(EngineReportSending::Sequencer::primary);
         pace_on_leading_sequencer();
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: primary sequencer ER connection {} lost: {}", id.get_value(),
-                   reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MatchingEngineThread: primary sequencer ER connection {} lost: {}", id.get_value(), reason);
     } else if (id == report_sending_.connection(EngineReportSending::Sequencer::secondary)) {
         report_pacing_.connection_lost(id, "secondary");
         secondary_sequencer_role_ = AnnouncedSequencerRole{};
         report_sending_.connection_lost(EngineReportSending::Sequencer::secondary);
         pace_on_leading_sequencer();
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: secondary sequencer ER connection {} lost: {}", id.get_value(),
-                   reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MatchingEngineThread: secondary sequencer ER connection {} lost: {}", id.get_value(), reason);
     } else if (id == outbound_peer_conn_id_) {
         outbound_peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: connection {} to the peer engine lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MatchingEngineThread: connection {} to the peer engine lost: {}", id.get_value(), reason);
     } else if (id == inbound_peer_conn_id_) {
         inbound_peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: connection {} from the peer engine lost: {}", id.get_value(),
-                   reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MatchingEngineThread: connection {} from the peer engine lost: {}", id.get_value(), reason);
         // Nothing is armed here. Losing the link is not how a follower decides its leader has gone:
         // the lease rules decide, when the promise this instance made to the leader runs out.
     } else if (id == arbiter_primary_conn_id_) {
         arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MatchingEngineThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
     } else if (id == arbiter_secondary_conn_id_) {
         arbiter_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MatchingEngineThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
     } else if (const auto held = std::find(held_sequencer_connections_.begin(), held_sequencer_connections_.end(), id);
                held != held_sequencer_connections_.end()) {
         held_sequencer_connections_.erase(held);
@@ -2051,6 +2048,9 @@ void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app
     if (result.applied) {
         last_state_.record(pubsub_itc_fw_app::to_string(event.phase));
         if (event.phase == pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
+            // The other components stop from now on; their leaving is expected (docs/venue/start_and_end_of_day.md,
+            // section 4.4, item 5).
+            note_the_day_has_ended();
             if (role_.catching_up()) {
                 end_of_day_met_while_catching_up_ = true;
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,

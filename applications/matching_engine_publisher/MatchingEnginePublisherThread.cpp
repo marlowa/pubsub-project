@@ -207,23 +207,23 @@ void MatchingEnginePublisherThread::on_connection_lost(const pubsub_itc_fw::Conn
     if (id == sequencer_conn_id_) {
         sequencer_conn_id_ = pubsub_itc_fw::ConnectionID{};
         follower_client_->on_disconnected(id);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: sequencer (primary) connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MepThread: sequencer (primary) connection {} lost: {}", id.get_value(), reason);
     } else if (id == sequencer_secondary_conn_id_) {
         sequencer_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         follower_client_->on_disconnected(id);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: sequencer (secondary) connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MepThread: sequencer (secondary) connection {} lost: {}", id.get_value(), reason);
     } else if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: outbound peer connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MepThread: outbound peer connection {} lost: {}", id.get_value(), reason);
     } else if (id == peer_inbound_conn_id_) {
         peer_inbound_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: inbound peer connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MepThread: inbound peer connection {} lost: {}", id.get_value(), reason);
     } else if (id == arbiter_primary_conn_id_) {
         arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MepThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
     } else if (id == arbiter_secondary_conn_id_) {
         arbiter_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "MepThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
     } else {
         // Topic subscriber connection (or already gone): the owning publisher tears down
         // its data+control pair; the others no-op on a connection they do not own.
@@ -620,6 +620,8 @@ void MatchingEnginePublisherThread::note_technical_event(int64_t seq_no, const u
         return;
     }
     end_of_day_seq_no_ = seq_no;
+    // The other components stop from now on; their leaving is expected (docs/venue/start_and_end_of_day.md, section 4.4).
+    note_the_day_has_ended();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MepThread: the end-of-day end of trading day {} at seq={} is in this publisher's copy of the WAL -- staying up {} s, so that a subscriber "
                "reconnecting meanwhile still receives it, then stopping for the end of day",

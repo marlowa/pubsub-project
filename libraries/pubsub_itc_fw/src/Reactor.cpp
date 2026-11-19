@@ -124,6 +124,7 @@ Reactor::Reactor(const ReactorConfiguration& reactor_configuration, const Servic
     , inbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, *this, logger_)
     , outbound_manager_(epoll_fd_, config_, inbound_slab_allocator_, service_registry_, *this, logger_)
     , metrics_endpoint_(reactor_configuration.metrics_configuration) {
+    outbound_manager_.watch_whether_the_day_has_ended(day_has_ended_);
     spin_before_block_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(config_.spin_before_block).count(), std::memory_order_relaxed);
     sends_started_this_pass_.reserve(commands_per_pass);
     wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -281,7 +282,12 @@ void Reactor::shutdown(const std::string& reason) {
     request_shutdown(reason, ShutdownKind::ordinary);
 }
 
+void Reactor::note_the_day_has_ended() {
+    day_has_ended_.store(true, std::memory_order_release);
+}
+
 void Reactor::shutdown_for_end_of_day(const std::string& reason) {
+    note_the_day_has_ended();
     if (end_of_day_stop_claimed_.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
@@ -293,6 +299,11 @@ void Reactor::shutdown_for_end_of_day(const std::string& reason) {
 }
 
 void Reactor::stop_for_end_of_day_when_written() {
+    if (!day_has_ended_passed_on_ && day_has_ended_.load(std::memory_order_acquire)) {
+        day_has_ended_passed_on_ = true;
+        PUBSUB_LOG_STR(logger_, FwLogLevel::Info,
+                       "Reactor: the trading day has ended -- from now on other components leaving are expected, and logged at Info");
+    }
     if (!end_of_day_stop_asked_.load(std::memory_order_acquire)) {
         return;
     }
@@ -425,7 +436,8 @@ void Reactor::finalize_threads_after_shutdown() {
             if (state == ThreadLifecycleState::ShuttingDown && !thread->is_running()) {
                 thread->set_lifecycle_state(ThreadLifecycleState::Terminated);
                 state = ThreadLifecycleState::Terminated;
-                PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {} is shutting down state, will promote to Terminated", thread->get_thread_name());
+                PUBSUB_LOG(logger_, day_has_ended_.load(std::memory_order_acquire) ? FwLogLevel::Info : FwLogLevel::Warning,
+                           "Thread {} is shutting down state, will promote to Terminated", thread->get_thread_name());
             }
 
             if (state == ThreadLifecycleState::Terminated) {

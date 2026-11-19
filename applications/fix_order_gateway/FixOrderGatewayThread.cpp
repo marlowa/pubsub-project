@@ -320,7 +320,7 @@ void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionI
 
 void FixOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (test_events_.has_value() && test_events_->on_connection_lost(id, reason)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+        PUBSUB_LOG(get_logger(), departure_level(),
                    "FixOrderGatewayThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
         return;
     }
@@ -354,24 +354,21 @@ void FixOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID
                    "FixOrderGatewayThread: {} authentication service connection {} closed because it stopped answering -- connecting again", which,
                    id.get_value());
     } else if (auth_loss == fix_common::AuthenticationServiceLink::LossCause::ClosedByPeer) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: {} authentication service connection {} lost: {}", which,
-                   id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "FixOrderGatewayThread: {} authentication service connection {} lost: {}", which, id.get_value(), reason);
     } else if (id == sequencer_primary_conn_id_) {
         sequencer_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         if (unanswered_commands_.has_value()) {
             unanswered_commands_->on_connection_lost(primary_sequencer_destination);
         }
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: primary sequencer connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "FixOrderGatewayThread: primary sequencer connection {} lost: {}", id.get_value(), reason);
     } else if (id == sequencer_secondary_conn_id_) {
         sequencer_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         if (unanswered_commands_.has_value()) {
             unanswered_commands_->on_connection_lost(secondary_sequencer_destination);
         }
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: secondary sequencer connection {} lost: {}", id.get_value(),
-                   reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "FixOrderGatewayThread: secondary sequencer connection {} lost: {}", id.get_value(), reason);
     } else if (id.service_name() == er_inbound_svc_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: sequencer ER inbound connection {} lost: {}", id.get_value(),
-                   reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "FixOrderGatewayThread: sequencer ER inbound connection {} lost: {}", id.get_value(), reason);
     } else {
         progress_metrics_.count_session_lost();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: FIX client connection {} lost: {} -- active sessions: {}",

@@ -506,8 +506,8 @@ void SequencerThread::engine_routing_changed() {
 
 void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (test_events_.has_value() && test_events_->on_connection_lost(id, reason)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "SequencerThread: the connection to the test's event listener is lost ({}) -- no more test events are sent",
+                   reason);
         return;
     }
     report_connections_.erase(std::remove(report_connections_.begin(), report_connections_.end(), id), report_connections_.end());
@@ -520,8 +520,7 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
     }
     const std::optional<ReportForwarding::GatewayKey> lost_gateway = reports_.connection_lost(id);
     if (lost_gateway.has_value()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway id {} connection {} lost: {}", *lost_gateway, id.get_value(),
-                   reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "SequencerThread: gateway id {} connection {} lost: {}", *lost_gateway, id.get_value(), reason);
         // Every session the gateway held has ended without a clean Logout: the gateway can carry out nothing for them now
         // (docs/availability/cancel_on_disconnect_where_the_orders_are.md, section 3.1). Collected first, since ending one
         // writes into the WAL.
@@ -539,7 +538,7 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
         engine_routing_.lost(id);
         note_whether_an_engine_takes_orders();
         if (carried_orders) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+            PUBSUB_LOG(get_logger(), departure_level(),
                        "SequencerThread: matching engine order connection {} lost: {} -- the other engine may promote and reconnect", id.get_value(), reason);
             if (orders_.awaiting_engine_position()) {
                 // The engine that was asked is gone. Whichever engine acts next catches up from this
@@ -548,24 +547,23 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
                 orders_.stop_awaiting_engine_position("the matching engine it asked has disconnected; whichever engine acts next catches up from this log");
             }
         } else {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: standby matching engine connection {} lost: {}", id.get_value(),
-                       reason);
+            PUBSUB_LOG(get_logger(), departure_level(), "SequencerThread: standby matching engine connection {} lost: {}", id.get_value(), reason);
         }
     } else if (id == arbiter_primary_conn_id_) {
         arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "SequencerThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
     } else if (id == arbiter_secondary_conn_id_) {
         arbiter_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "SequencerThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
     } else if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: outbound peer connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "SequencerThread: outbound peer connection {} lost: {}", id.get_value(), reason);
         if (replicated_wal_.has_value()) {
             replicated_wal_->on_peer_connection_lost(std::chrono::steady_clock::now());
         }
     } else if (id == peer_inbound_conn_id_) {
         peer_inbound_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: inbound peer connection {} lost: {}", id.get_value(), reason);
+        PUBSUB_LOG(get_logger(), departure_level(), "SequencerThread: inbound peer connection {} lost: {}", id.get_value(), reason);
         if (replicated_wal_.has_value()) {
             replicated_wal_->on_peer_connection_lost(std::chrono::steady_clock::now());
         }
@@ -1969,6 +1967,15 @@ void SequencerThread::after_noting(const VenueStateFromTheWal::Noted& noted, Ven
     }
     const pubsub_itc_fw_app::TradingPhase phase = venue_state_.trading_phase().latest()->phase;
     last_state_.record(pubsub_itc_fw_app::to_string(phase));
+    if (phase == pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
+        // From now on every other component stops, so their leaving is expected: no Warning, no halt for an absent engine,
+        // and no Error for a follower gone (docs/venue/start_and_end_of_day.md, section 4.4, item 5).
+        note_the_day_has_ended();
+        presence_.note_the_day_has_ended();
+        if (replicated_wal_.has_value()) {
+            replicated_wal_->note_the_day_has_ended();
+        }
+    }
     // Only the follower stops here. The leader stops once the follower holds the end (TradingPhaseRequests). A sequencer
     // opening a WAL that already ends the day goes on: one restarted after the end has already exited on its last-state
     // file, and one started on a copy of a day's WAL, as a check does, has to serve it.

@@ -27,6 +27,9 @@ EnginePresence::EnginePresence(std::chrono::seconds orders_held_at_most, std::ch
 // ---- Whether an engine takes orders --------------------------------------------------------------------------------
 
 void EnginePresence::note_whether_an_engine_takes_orders(Clock::time_point now) {
+    if (day_has_ended_) {
+        return;
+    }
     if (!links_.leading()) {
         return;
     }
@@ -166,6 +169,9 @@ void EnginePresence::started(const std::string& wal_directory, int32_t trading_d
 }
 
 void EnginePresence::check_absence(int64_t now_ns, Clock::time_point now) {
+    if (day_has_ended_) {
+        return;
+    }
     const bool engine_routed = links_.an_engine_is_routed_to();
     if (engine_routed) {
         static_cast<void>(engine_routed_stamp_.write(now_ns));
