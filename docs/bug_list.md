@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 266 |
-| Open | 51 (28 defects, 23 tasks) |
+| Bugs recorded | 267 |
+| Open | 52 (28 defects, 24 tasks) |
 | Closed | 215 |
-| Next id | BUG-0267 |
+| Next id | BUG-0268 |
 
 ## Open bugs by severity
 
-6 high, 32 medium, 13 low.
+6 high, 32 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -64,6 +64,7 @@
 | [BUG-0261](#bug_0261) | low | defect | The check that runs the matching engines on a copy of the WAL starts a sequencer that can write new commands into that copy while the engines are run on it |
 | [BUG-0265](#bug_0265) | low | task | The Java test client's blotter does not show the trading-session status its member is told |
 | [BUG-0266](#bug_0266) | low | task | The administration service's desktop does not show the venue's trading phase |
+| [BUG-0267](#bug_0267) | low | task | `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines |
 
 ---
 
@@ -336,6 +337,29 @@ equivalent, and show the state prominently.
 included, which members are not told (BUG-0265). Item 3 of BUG-0137 gives the administration service a subscription to
 the `technical_events` topic, which carries every phase; once it has that, the desktop shows the latest phase and the
 trading day. Best done straight after item 3.
+
+### BUG-0267: `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines {#bug_0267}
+
+| | |
+|---|---|
+| Severity | low |
+| Kind | task |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| How | Andrew's observation, while the end of day ([BUG-0137](#bug_0137)) was being built |
+| Impact | The script is hard to read and to change: a scenario's definition and its checks are far apart, and every scenario's checks share one function |
+
+**What happens.** On 19 November 2026 `scripts/ha_test.py` has 15,144 lines and 116 scenarios. Each scenario turns
+on one or two of the 58 switches on its `Scenario` record, and `run_scenario`, 6,562 lines, runs each of 65 blocks whose
+switch is on. The scenarios fall into a few groups: failover and restart; the WAL and catch-up; the order path
+(gateways, throttles, identifiers, reports); the trading day (phases, schedules, halts, start and end of day); and
+load.
+
+**What is wanted.** A package, `scripts/ha_test/`, with one module of the machinery every scenario shares (starting
+and stopping components, the test-event listener, the WAL checks) and one module for each group, holding each
+scenario's definition beside its checks; `ha_test.py` becomes the coordinator that parses the options, chooses the
+scenarios and runs them, with the same command line and the same results. All 116 scenarios are run before and after,
+and must give the same results.
 
 ### BUG-0253: `binary_load_client --help` prints its help and then tries to connect to the venue {#bug_0253}
 
