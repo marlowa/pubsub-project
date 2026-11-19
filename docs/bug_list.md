@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 263 |
-| Open | 48 (28 defects, 20 tasks) |
+| Bugs recorded | 264 |
+| Open | 49 (28 defects, 21 tasks) |
 | Closed | 215 |
-| Next id | BUG-0264 |
+| Next id | BUG-0265 |
 
 ## Open bugs by severity
 
-6 high, 31 medium, 11 low.
+6 high, 32 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -50,6 +50,7 @@
 | [BUG-0258](#bug_0258) | medium | defect | While a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere, so a flood of them is dropped, and the follower cannot discard its copies |
 | [BUG-0262](#bug_0262) | medium | defect | A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog |
 | [BUG-0263](#bug_0263) | medium | defect | In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service |
+| [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -272,6 +273,31 @@ standby there only because its store of reports to compare filled, which the lim
 
 **What is wanted.** The cause found from the logs of 16 November, or the case reproduced: which report of command 0 the
 follower produced, and why the leading engine produced none, or one that differed; and a test of it.
+
+### BUG-0264: Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time {#bug_0264}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| How | Measuring the throughput of [gathering sends](framework/gathering_sends.md), for [BUG-0251](#bug_0251) |
+| Impact | While the leader runs alone, a record it holds and the follower does not is on one machine only, so resilience is reduced; and each time it begins, the leader commits nothing until a voter confirms that the follower may not lead |
+
+**What happens.** In the overload of 19 November 2026 with gathering sends built (1.8 million orders offered on four
+sessions as fast as the sockets accept them, the gateways' limit at 16,384, 68,626 orders a second; logs in
+`tmp/bug0251/reactors_gathered/`), the leader logged nine times that the follower was too far behind, each time because
+its storage for orders waiting on the follower was full, and ran as if alone for 3,963 ms of the 26.2-second run in all,
+the longest period 461 ms. Every order was acknowledged and no lease ran out.
+
+Before gathering sends, the leading sequencer's reactor was the limit, and the follower's reactor and thread were idle
+much of the time; with it, the leader's reactor is idle about half the time, so what now holds the follower back is not
+known: its reactor, its thread, its writes to the disk, or how its acknowledgements reach the leader (one message for
+each record).
+
+**What is wanted.** The stage that now limits the follower found by profiling it in the same overload, as the leader's
+was, and the follower kept in step at the rate the leader sustains, or the rate at which it falls behind stated as the
+venue's ceiling.
 
 ### BUG-0253: `binary_load_client --help` prints its help and then tries to connect to the venue {#bug_0253}
 
