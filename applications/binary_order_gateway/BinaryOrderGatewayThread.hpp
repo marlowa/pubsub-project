@@ -241,11 +241,22 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         explicit ResendLinks(BinaryOrderGatewayThread& owner) : owner_(owner) {}
         void send_again(const pubsub_itc_fw::ConnectionID& connection, const uint8_t* kept, size_t size) override;
         void request_writable_notification(const pubsub_itc_fw::ConnectionID& connection) override;
+        void stop_reading_commands() override;
+        void read_commands_again() override;
 
       private:
         BinaryOrderGatewayThread& owner_;
     };
     ResendLinks resend_links_{*this};
+
+    // Whether every member's connection is paused because as many commands are unanswered as the limit allows
+    // (docs/availability/a_gateway_limits_its_unanswered_commands.md). A member connection accepted meanwhile is paused
+    // too.
+    bool members_paused_{false};
+    // Whether the members' connections are read.
+    enum class MemberReading { stopped, reading };
+    // Pauses, or resumes, reading every member's connection, and tells the test.
+    void set_member_reading(MemberReading reading);
     // The sequencers, in the order they are named to the store of unanswered commands.
     static constexpr size_t primary_sequencer_destination = 0;
     static constexpr size_t secondary_sequencer_destination = 1;

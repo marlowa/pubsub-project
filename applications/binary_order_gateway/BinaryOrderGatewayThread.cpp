@@ -116,7 +116,7 @@ void BinaryOrderGatewayThread::on_app_ready_event() {
     // path allocates nothing. Only with high availability on: without it there is one sequencer and
     // no change of leader, so nothing is ever sent again.
     if (config_.ha_enabled) {
-        unanswered_commands_.emplace(config_.unanswered_commands_bytes, config_.unanswered_commands_capacity,
+        unanswered_commands_.emplace(config_.unanswered_commands_bytes, config_.unanswered_commands_capacity, config_.unanswered_commands_limit,
                                      std::vector<std::string>{"primary sequencer", "secondary sequencer"}, resend_links_, get_logger(),
                                      "BinaryOrderGatewayThread");
     }
@@ -202,6 +202,11 @@ void BinaryOrderGatewayThread::on_connection_established(pubsub_itc_fw::Connecti
     }
     if (service == er_inbound_service_) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: sequencer ER connection {} established", id.get_value());
+        // A sequencer's connection for reports, made again: reports dropped while it was down are answered from the WAL
+        // once their commands are sent again.
+        if (unanswered_commands_.has_value()) {
+            unanswered_commands_->on_answer_connection_established();
+        }
         return;
     }
     if (service == client_inbound_service_) {
@@ -211,7 +216,11 @@ void BinaryOrderGatewayThread::on_connection_established(pubsub_itc_fw::Connecti
         sessions_owner_.check();
 #endif
         sessions_.emplace(id.get_value(), std::move(session));
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: client connection {} accepted, awaiting Logon", id.get_value());
+        if (members_paused_) {
+            pause_reading(id);
+        }
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: client connection {} accepted, awaiting Logon{}", id.get_value(),
+                   members_paused_ ? " -- not read until the venue has answered more of the commands sent to it" : "");
         return;
     }
 
@@ -1639,6 +1648,30 @@ void BinaryOrderGatewayThread::ResendLinks::send_again(const pubsub_itc_fw::Conn
 
 void BinaryOrderGatewayThread::ResendLinks::request_writable_notification(const pubsub_itc_fw::ConnectionID& connection) {
     owner_.request_writable_notification(connection);
+}
+
+void BinaryOrderGatewayThread::ResendLinks::stop_reading_commands() {
+    owner_.set_member_reading(MemberReading::stopped);
+}
+
+void BinaryOrderGatewayThread::ResendLinks::read_commands_again() {
+    owner_.set_member_reading(MemberReading::reading);
+}
+
+void BinaryOrderGatewayThread::set_member_reading(MemberReading reading) {
+    const bool paused = reading == MemberReading::stopped;
+    members_paused_ = paused;
+    for (const auto& [conn_id_value, session] : sessions_) {
+        if (paused) {
+            pause_reading(session.conn_id);
+        } else {
+            resume_reading(session.conn_id);
+        }
+    }
+    if (test_events_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw::CommandReadingChanged::message_pdu_id,
+                                 pubsub_itc_fw::CommandReadingChanged{paused, static_cast<int64_t>(unanswered_commands_->unanswered())});
+    }
 }
 
 void BinaryOrderGatewayThread::on_connection_writable(pubsub_itc_fw::ConnectionID id) {

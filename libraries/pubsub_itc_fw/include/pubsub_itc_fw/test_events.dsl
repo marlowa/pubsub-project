@@ -219,3 +219,15 @@ message FollowerHandedOver (id=152, version=1)
     i64    instance   # the leader's id
     i64    through    # the last record the reading thread sent
 end
+
+# ------------------------------------------------------------
+#  153 -- CommandReadingChanged
+#  A client of a replicated service, such as an order gateway, stopped
+#  reading new commands because as many were unanswered as its limit
+#  allows, or read them again once answers brought the number down to
+#  half (pubsub_itc_fw::UnansweredCommands).
+# ------------------------------------------------------------
+message CommandReadingChanged (id=153, version=1)
+    bool stopped      # true when reading stopped, false when it started again
+    i64  unanswered   # how many commands were unanswered at that moment
+end

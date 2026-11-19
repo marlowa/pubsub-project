@@ -237,6 +237,11 @@ struct BinaryOrderGatewayConfiguration {
     size_t unanswered_commands_capacity{262144};
     size_t unanswered_commands_bytes{64 * 1024 * 1024};
 
+    // How many unanswered commands make this gateway stop reading its members' connections, until answers bring the
+    // number down to half; no more than unanswered_commands_capacity. Used only with high availability on
+    // (docs/availability/a_gateway_limits_its_unanswered_commands.md).
+    size_t unanswered_commands_limit{16384};
+
     /**
      * @brief The longest Symbol and OrderQty a member's command may carry, in bytes.
      *

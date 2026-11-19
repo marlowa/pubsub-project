@@ -1492,6 +1492,13 @@ class Scenario(NamedTuple):
     # and none may stop leading (BUG-0252, BUG-0255). Decided from test events. See run_scenario's "a session ending with
     # many resting orders" block.
     assert_session_cancel_keeps_leases: bool = False
+    # When True, the binary load client offers 1.8 million orders on four sessions as fast as the sockets accept them,
+    # faster than the venue processes them. Each gateway stops reading its members while 16,384 of its commands are
+    # unanswered, so no queue in the order path grows without limit. No sequencer or matching engine may lose its lease
+    # or stop leading, no gateway may lose its connection to a sequencer, and the follower matching engine must remain a
+    # standby (BUG-0251; docs/availability/a_gateway_limits_its_unanswered_commands.md). Decided from test events. See
+    # run_scenario's "orders offered faster than the venue answers them" block.
+    assert_overload_keeps_leaders_and_standbys: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -5422,6 +5429,35 @@ _SCENARIOS: list[Scenario] = [
         binary_gateway=True,
         skip_baseline_orders=True,
         assert_session_cancel_keeps_leases=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 116 -- orders offered faster than the venue answers them cost no leader its lease and no engine its place as standby.
+    #
+    # The binary load client sends 1.8 million orders on four sessions with no limit on its rate, as fast as the sockets
+    # accept them, which is faster than the venue processes them. Without a limit the orders queue inside the venue: the
+    # follower matching engine's store of reports to compare fills and it stops being a standby, and a gateway whose
+    # sends to the sequencer back up closes its connection. With the gateways' limit on unanswered commands they wait in
+    # the members' own sockets instead (BUG-0251; docs/availability/a_gateway_limits_its_unanswered_commands.md).
+    #
+    # Decided from test events: no LeaseChanged saying a lease ran out, no RoleChanged from leader, no ConnectionChanged
+    # saying a gateway lost its connection to a sequencer, no FollowerCannotLead; and the binary gateway's
+    # CommandReadingChanged shows that the limit was reached, so that the scenario tested it.
+    Scenario(
+        number=116,
+        short_name="overload_keeps_leaders_and_standbys",
+        description="Orders offered faster than the venue answers them cost no leader its lease and no engine its place as standby",
+        expected_outcome=(
+            "every order is acknowledged; the binary gateway stops reading its members at its limit; no sequencer or matching "
+            "engine loses its lease or stops leading, no gateway loses its connection to a sequencer, and the follower "
+            "matching engine remains a standby"
+        ),
+        me_ha=True,
+        binary_gateway=True,
+        skip_baseline_orders=True,
+        assert_overload_keeps_leaders_and_standbys=True,
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -9363,6 +9399,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 and not scenario.assert_operator_lift and not scenario.assert_operator_halt and not scenario.assert_trading_day_start
                 and not scenario.assert_operator_listener_refuses_strangers and not scenario.assert_trading_day_by_schedule
                 and not scenario.assert_files_of_another_day_refused and not scenario.assert_session_cancel_keeps_leases
+                and not scenario.assert_overload_keeps_leaders_and_standbys
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
                 and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained):
@@ -11052,6 +11089,82 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if stopped:
                 die(f"many resting orders: a leader stopped leading while the orders were cancelled: {', '.join(stopped)}")
             log("  no sequencer or matching engine stopped leading -- OK")
+
+        # ── Orders offered faster than the venue answers them (BUG-0251) ──
+        if scenario.assert_overload_keeps_leaders_and_standbys:
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            sequencers = ["sequencer_primary", "sequencer_secondary"]
+            engines = ["matching_engine_primary", "matching_engine_secondary"]
+            gateways = ["fix_order_gateway_a", "binary_order_gateway_a"]
+            events_from = _TEST_EVENTS.mark()
+
+            port = binary_gateway_listen_port(prefix)
+            orders = _LOAD_SESSIONS * _LOAD_BURSTS * _LOAD_ORDERS_PER_BURST
+            log(f"  the binary load client offers {orders:,} orders on {_LOAD_SESSIONS} sessions as fast as the sockets accept them")
+            load = subprocess.run(
+                [str(bin_dir / "binary_load_client"), "--host", "127.0.0.1", "--port", str(port), "--comp-id-prefix", _LOAD_COMP_ID_PREFIX,
+                 "--password", _LOAD_PASSWORD, "--sessions", str(_LOAD_SESSIONS), "--orders-per-burst", str(_LOAD_ORDERS_PER_BURST),
+                 "--bursts", str(_LOAD_BURSTS), "--first-cl-ord-id", "2000000"],
+                capture_output=True, text=True, check=False, timeout=900)
+            if load.returncode != 0 or "RESULT         PASS" not in load.stdout:
+                die(f"overload: the binary load client did not have every order acknowledged (exit {load.returncode}):\n"
+                    f"{load.stdout[-3000:]}\n{load.stderr[-2000:]}")
+            throughput = next((line.strip() for line in load.stdout.splitlines() if line.strip().startswith("throughput")), "throughput not given")
+            log(f"  every one of the {orders:,} orders was acknowledged -- OK ({throughput})")
+
+            # An absence is confirmed only once each component has answered a checkpoint, so that no event it sent before
+            # now is still on its way. The sessions' grace period has not yet ended, so their cancels have not begun.
+            for component in sequencers + engines + gateways:
+                if not _TEST_EVENTS.settle(component):
+                    die(f"overload: {component} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]})")
+            seen = _TEST_EVENTS.events[events_from:]
+
+            refused = [f"{event.component} at command {event.message.command}" for event in seen
+                       if isinstance(event.message, engine_events.FollowerCannotLead)]
+            if refused:
+                die(f"overload: a matching engine stopped being a standby (BUG-0251): {', '.join(refused)}")
+            log("  no matching engine stopped being a standby -- OK")
+            ran_out = [f"{event.component} at epoch {event.message.epoch}" for event in seen
+                       if event.component in sequencers + engines
+                       and lease_changed(_TEST_EVENTS.messages, event.component, _TEST_EVENTS.messages.LeaseChange.RanOut)(event)]
+            if ran_out:
+                die(f"overload: a lease ran out (BUG-0251): {', '.join(ran_out)}")
+            log("  no sequencer or matching engine reported its lease running out -- OK")
+            leader = _TEST_EVENTS.messages.LeadershipRole.Leader
+            stopped = [f"{event.component} at epoch {event.message.epoch}" for event in seen
+                       if event.component in sequencers + engines and role_changed(_TEST_EVENTS.messages, event.component)(event)
+                       and event.message.from_role == leader]
+            if stopped:
+                die(f"overload: a leader stopped leading (BUG-0251): {', '.join(stopped)}")
+            log("  no sequencer or matching engine stopped leading -- OK")
+            lost = [f"{event.component} to {event.message.service} ({event.message.reason})" for event in seen
+                    if event.component in gateways and isinstance(event.message, _TEST_EVENTS.messages.ConnectionChanged)
+                    and not event.message.made and event.message.service in sequencers]
+            if lost:
+                die(f"overload: a gateway lost its connection to a sequencer (BUG-0251): {', '.join(lost)}")
+            log("  no gateway lost its connection to a sequencer -- OK")
+
+            # Without the limit being reached the scenario would test nothing.
+            stops = [event for event in seen
+                     if message_of(_TEST_EVENTS.messages.CommandReadingChanged, "binary_order_gateway_a", stopped=True)(event)]
+            if not stops:
+                die("overload: binary_order_gateway_a never stopped reading its members, so its limit on unanswered commands was not tested")
+            log(f"  binary_order_gateway_a stopped reading its members {len(stops)} time(s), at its limit of unanswered commands -- OK")
+
+            # The sessions ended when the load client exited, and once their grace period passes the leading sequencer cancels
+            # their resting orders. The scenario waits for those cancels, so that the WAL the engines are run on afterwards
+            # is complete: a sequencer started on a copy of it would otherwise write them during that check.
+            sequencer_events = _TEST_EVENTS.modules["sequencer_test_events"]
+            cancel_written = message_of(sequencer_events.SessionCancelWritten, "sequencer_primary")
+            engine_finished = message_of(engine_events.SessionOrdersCancelled, "matching_engine_primary")
+            for what, predicate, timeout in [("written", cancel_written, _LOAD_CANCELS_TIMEOUT),
+                                             ("carried out", engine_finished, _LOAD_CANCELS_TIMEOUT + _LOAD_CANCELS_SETTLE)]:
+                deadline = time.monotonic() + timeout
+                while len([event for event in _TEST_EVENTS.events[events_from:] if predicate(event)]) < _LOAD_SESSIONS:
+                    if time.monotonic() > deadline:
+                        die(f"overload: the cancels of the {_LOAD_SESSIONS} sessions' resting orders were not all {what} within {timeout:.0f}s")
+                    _TEST_EVENTS.wait_for(predicate, timeout=0.5, since=len(_TEST_EVENTS.events))
+            log(f"  the {_LOAD_SESSIONS} sessions' resting orders have been cancelled, so the WAL is complete -- OK")
 
         # ── The venue follows the day's schedule (R-0167, R-0168) ──
         if scenario.assert_trading_day_by_schedule:

@@ -249,7 +249,7 @@ void FixOrderGatewayThread::on_app_ready_event() {
     // path allocates nothing. Only with high availability on: without it there is one sequencer and
     // no change of leader, so nothing is ever sent again.
     if (config_.ha_enabled) {
-        unanswered_commands_.emplace(config_.unanswered_commands_bytes, config_.unanswered_commands_capacity,
+        unanswered_commands_.emplace(config_.unanswered_commands_bytes, config_.unanswered_commands_capacity, config_.unanswered_commands_limit,
                                      std::vector<std::string>{"primary sequencer", "secondary sequencer"}, resend_links_, get_logger(),
                                      "FixOrderGatewayThread");
     }
@@ -302,10 +302,19 @@ void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionI
     } else if (id.service_name() == er_inbound_svc_) {
         // Inbound FrameworkPdu connection from a sequencer on the ER listener.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: sequencer ER inbound connection {} established", id.get_value());
+        // Made again: reports dropped while it was down are answered from the WAL once their commands are sent again.
+        if (unanswered_commands_.has_value()) {
+            unanswered_commands_->on_answer_connection_established();
+        }
     } else {
         // Inbound RawBytes connection -- FIX client on port 9879.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: FIX client connection {} ({}) established -- active sessions: {}",
-                   id.get_value(), id.service_name(), sessions_.size() + 1);
+        member_connections_.push_back(id);
+        if (members_paused_) {
+            pause_reading(id);
+        }
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: FIX client connection {} ({}) established -- active sessions: {}{}",
+                   id.get_value(), id.service_name(), sessions_.size() + 1,
+                   members_paused_ ? " -- not read until the venue has answered more of the commands sent to it" : "");
     }
 }
 
@@ -315,6 +324,7 @@ void FixOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID
                    "FixOrderGatewayThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
         return;
     }
+    member_connections_.erase(std::remove(member_connections_.begin(), member_connections_.end(), id), member_connections_.end());
     auto it = sessions_.find(id);
     if (it != sessions_.end()) {
         FixSession& session = it->second;
@@ -2842,6 +2852,27 @@ void FixOrderGatewayThread::ResendLinks::send_again(const pubsub_itc_fw::Connect
 
 void FixOrderGatewayThread::ResendLinks::request_writable_notification(const pubsub_itc_fw::ConnectionID& connection) {
     owner_.request_writable_notification(connection);
+}
+
+void FixOrderGatewayThread::ResendLinks::stop_reading_commands() {
+    owner_.set_member_reading(MemberReading::stopped);
+}
+
+void FixOrderGatewayThread::ResendLinks::read_commands_again() {
+    owner_.set_member_reading(MemberReading::reading);
+}
+
+void FixOrderGatewayThread::set_member_reading(MemberReading reading) {
+    const bool paused = reading == MemberReading::stopped;
+    members_paused_ = paused;
+    for (const pubsub_itc_fw::ConnectionID& connection : member_connections_) {
+        if (paused) {
+            pause_reading(connection);
+        } else {
+            resume_reading(connection);
+        }
+    }
+    report(pubsub_itc_fw::CommandReadingChanged{paused, static_cast<int64_t>(unanswered_commands_->unanswered())});
 }
 
 void FixOrderGatewayThread::on_connection_writable(pubsub_itc_fw::ConnectionID id) {

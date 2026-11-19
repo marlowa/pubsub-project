@@ -422,6 +422,7 @@ were missed by it:
 | `ProgressReported` | M | the FIX gateway |
 | `KeptReportsForwarded` | D | the sequencer, when it takes the lead and forwards the reports it kept |
 | `FollowerHandedOver` | unit tests | the library's ReplicatedWal, when its reading thread has sent a rejoining follower every record it lacked |
+| `CommandReadingChanged` | D | each order gateway, when it stops reading its members because as many commands are unanswered as its limit allows, and when it reads them again |
 
-That is 47 events. Several may merge when they are defined, for instance the session events into one
+That is 48 events. Several may merge when they are defined, for instance the session events into one
 event with a field saying what happened; step 3 settles that.

@@ -12,6 +12,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/PacedResend.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/UnansweredCommands.hpp>
 
@@ -34,6 +35,14 @@ struct RecordingLinks : public UnansweredCommandLinksInterface {
     void request_writable_notification(const ConnectionID& connection) override {
         writable_requested.push_back(connection.get_value());
     }
+    void stop_reading_commands() override {
+        ++stopped;
+        reading = false;
+    }
+    void read_commands_again() override {
+        ++read_again;
+        reading = true;
+    }
     // The commands sent again on @p connection, in the order sent.
     [[nodiscard]] std::vector<std::string> sent_on(int connection) const {
         std::vector<std::string> commands;
@@ -46,12 +55,19 @@ struct RecordingLinks : public UnansweredCommandLinksInterface {
     }
     std::vector<Sent> sent;
     std::vector<int> writable_requested;
+    int stopped{0};
+    int read_again{0};
+    bool reading{true};
 };
 
 class UnansweredCommandsTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        commands_ = std::make_unique<UnansweredCommands>(1024 * 1024, 4096, std::vector<std::string>{"primary sequencer", "secondary sequencer"}, links_,
+        make_with_limit(4096);
+    }
+
+    void make_with_limit(size_t limit) {
+        commands_ = std::make_unique<UnansweredCommands>(1024 * 1024, 4096, limit, std::vector<std::string>{"primary sequencer", "secondary sequencer"}, links_,
                                                          logger_, "UnansweredCommandsTest");
     }
 
@@ -189,7 +205,7 @@ TEST_F(UnansweredCommandsTest, ACommandHeldUnansweredIsNotKeptASecondTime) {
 }
 
 TEST_F(UnansweredCommandsTest, AFullStoreRefusesCommandsAndCountsThem) {
-    commands_ = std::make_unique<UnansweredCommands>(1024, 2, std::vector<std::string>{"sequencer"}, links_, logger_, "UnansweredCommandsTest");
+    commands_ = std::make_unique<UnansweredCommands>(1024, 2, 2, std::vector<std::string>{"sequencer"}, links_, logger_, "UnansweredCommandsTest");
     ASSERT_EQ(keep("order-1"), UnansweredCommands::Kept::kept);
     ASSERT_EQ(keep("order-2"), UnansweredCommands::Kept::kept);
     EXPECT_EQ(keep("order-3"), UnansweredCommands::Kept::full);
@@ -197,6 +213,77 @@ TEST_F(UnansweredCommandsTest, AFullStoreRefusesCommandsAndCountsThem) {
     EXPECT_EQ(commands_->refused_because_full(), 2);
     EXPECT_TRUE(commands_->answered("MEMBER", "order-1"));
     EXPECT_EQ(keep("order-5"), UnansweredCommands::Kept::kept) << "room again once a command is answered";
+}
+
+// The client is told to stop reading new commands when as many are unanswered as the limit, and to read them again only
+// once answers have brought the number down to half (docs/availability/a_gateway_limits_its_unanswered_commands.md).
+TEST_F(UnansweredCommandsTest, ReadingStopsAtTheLimitAndStartsAgainAtHalfOfIt) {
+    make_with_limit(10);
+    for (int index = 1; index <= 9; ++index) {
+        ASSERT_EQ(keep("order-" + std::to_string(index)), UnansweredCommands::Kept::kept);
+    }
+    EXPECT_EQ(links_.stopped, 0) << "nine unanswered, below the limit";
+    ASSERT_EQ(keep("order-10"), UnansweredCommands::Kept::kept);
+    EXPECT_EQ(links_.stopped, 1);
+    EXPECT_TRUE(commands_->reading_stopped());
+
+    for (int index = 1; index <= 4; ++index) {
+        commands_->answered("MEMBER", "order-" + std::to_string(index));
+    }
+    EXPECT_EQ(links_.read_again, 0) << "six unanswered, above half the limit";
+    commands_->answered("MEMBER", "order-5");
+    EXPECT_EQ(links_.read_again, 1) << "five unanswered, half the limit";
+    EXPECT_FALSE(commands_->reading_stopped());
+    EXPECT_EQ(links_.stopped, 1) << "told once, not for every command";
+    EXPECT_EQ(commands_->times_reading_stopped(), 1);
+}
+
+TEST_F(UnansweredCommandsTest, ASessionDroppedCountsAtOnce) {
+    make_with_limit(4);
+    ASSERT_EQ(keep("order-1", "OTHER"), UnansweredCommands::Kept::kept);
+    for (int index = 2; index <= 4; ++index) {
+        ASSERT_EQ(keep("order-" + std::to_string(index)), UnansweredCommands::Kept::kept);
+    }
+    ASSERT_EQ(links_.stopped, 1);
+    EXPECT_EQ(commands_->drop_session("MEMBER"), 3U);
+    EXPECT_EQ(links_.read_again, 1);
+    EXPECT_TRUE(links_.reading);
+}
+
+// Sending the copies again after a change of leader neither adds to the number unanswered nor tells the client anything.
+TEST_F(UnansweredCommandsTest, CommandsSentAgainDoNotChangeTheNumberUnanswered) {
+    make_with_limit(4);
+    connect_both();
+    for (int index = 1; index <= 3; ++index) {
+        ASSERT_EQ(keep("order-" + std::to_string(index)), UnansweredCommands::Kept::kept);
+    }
+    commands_->on_new_leader(2, false);
+    ASSERT_FALSE(links_.sent.empty());
+    EXPECT_EQ(commands_->unanswered(), 3U);
+    EXPECT_EQ(links_.stopped, 0);
+}
+
+TEST_F(UnansweredCommandsTest, ALimitBelowTwoOrAboveTheStoreIsRefused) {
+    EXPECT_THROW(make_with_limit(1), PreconditionAssertion);
+    EXPECT_THROW(make_with_limit(4097), PreconditionAssertion);
+}
+
+// A connection for answers made again sends every copy still held to every connected destination, so that a command whose
+// answer was dropped while it was down is answered from the leader's WAL (docs/availability/
+// a_gateway_limits_its_unanswered_commands.md, decision 4).
+TEST_F(UnansweredCommandsTest, AConnectionForAnswersMadeSendsEveryCopyAgainEverywhere) {
+    connect_both();
+    ASSERT_EQ(keep("order-1"), UnansweredCommands::Kept::kept);
+    ASSERT_EQ(keep("order-2"), UnansweredCommands::Kept::kept);
+    commands_->on_answer_connection_established();
+    EXPECT_EQ(links_.sent_on(primary_connection_.get_value()), (std::vector<std::string>{"order-1", "order-2"}));
+    EXPECT_EQ(links_.sent_on(secondary_connection_.get_value()), (std::vector<std::string>{"order-1", "order-2"}));
+}
+
+TEST_F(UnansweredCommandsTest, AConnectionForAnswersMadeWithNothingUnansweredSendsNothing) {
+    connect_both();
+    commands_->on_answer_connection_established();
+    EXPECT_TRUE(links_.sent.empty());
 }
 
 } // namespaces

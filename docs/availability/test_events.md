@@ -390,8 +390,9 @@ identifier is longer than the book holds; a cancel done; a cancel refused becaus
 identifier too long), whether the engine was catching up, and the sequence number. It is sent through the engine's
 `TestEventChannel` with `send_event`, which applications use for events they define themselves; message ids 170 to
 229 are theirs, and the listener refuses two event modules that define one id.
-Within that range the matching engine has 170 to 179 and 216 to 218, and also 169, lent from the library's range,
-whose own events use 140 to 152; the sequencer has 180 to 189, 210 to 215 and 219; and the FIX gateway 190 to 209.
+Within that range the matching engine has 170 to 179, 216 to 218 and 223, and also 163 and 169, lent from the
+library's range, whose own events use 140 to 153; the sequencer has 180 to 189, 210 to 215 and 219 to 222; and the FIX
+gateway 190 to 209.
 
 The engine sends `OrderOutcome` only for the comp ids its `[test_events]` section lists in `report_orders_of`. The
 test always lists `INJECT-TEST`, the comp id of `inject_order`, whose orders reach no member. It adds the member's

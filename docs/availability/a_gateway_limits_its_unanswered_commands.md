@@ -1,7 +1,7 @@
 # A gateway limits the commands it has sent and not yet had answered {#a_gateway_limits_its_unanswered_commands}
 
-**Status: agreed, being built.** The design for [BUG-0251](../bug_list.md#bug_0251). Section 7 records its
-decisions: the first three agreed with Andrew on 19 November 2026; the fourth is asked.
+**Status: built.** The design for [BUG-0251](../bug_list.md#bug_0251). Section 7 records its four decisions, each
+agreed with Andrew on 19 November 2026; section 8 what was measured.
 
 ## 1. The problem
 
@@ -142,8 +142,8 @@ connection (fault 2). So it is not added (decision 2).
 1. **List every way a command can go unanswered**, and what removes its copy (section 3.4). Record any that removes it
    never.
 2. **The rule in `UnansweredCommands`**, with unit tests: reading stops at the limit and starts again at half; a
-   command answered or dropped counts at once; a store filled to the limit by commands sent again after a change of
-   leader stops reading too. Each test is made to fail on purpose before it is trusted.
+   command answered or dropped counts at once; commands sent again after a change of leader do not change the
+   number unanswered. Each test is made to fail on purpose before it is trusted.
 3. **Both gateways pause and resume their member connections**, and a member connection made while reading is stopped
    is paused. A test event in each gateway says when reading stops and starts, for the scenario.
 4. **A scenario in `ha_test.py`** that offers 1.8 million orders on four sessions as fast as the sockets accept them,
@@ -180,7 +180,26 @@ leaves it out.
 
 It sends 1.8 million orders and takes about two minutes, as scenario 115 does.
 
-### Decision 4. When a gateway's connection for reports from the leading sequencer is made, does it send again every command it still holds, so that a command whose report the sequencer dropped is answered from the WAL? (Yes or no.)
+### Decision 4. When a gateway's connection for reports from the leading sequencer is made, does it send again every command it still holds, so that a command whose report the sequencer dropped is answered from the WAL? Agreed: yes.
 
 Section 3.4 gives the reason. Without it, the reports dropped while a gateway had no connection for reports would leave
 their commands counted against the limit until their sessions end.
+
+The sequencer's own record of which reports it dropped was considered instead, and rejected: it lives in the memory of
+whichever sequencer led, and is lost with it, and the member must be sent the report, not only the gateway told to
+forget the command. The gateway's store of unanswered commands survives a change of leader, and sending its commands
+again has the sequencer answer each from its WAL.
+
+## 8. Measured, 19 November 2026
+
+On the development machine, in measurement mode, with [gathering sends](../framework/gathering_sends.md) built: scenario
+116, 1.8 million orders offered on four sessions as fast as the sockets accept them, the limit 16,384. Every order was
+acknowledged at 110,086 orders a second; no lease ran out, no leader changed, no gateway lost its connection to a
+sequencer, and the follower matching engine remained a standby; the binary gateway stopped reading its members 55
+times. With the limit and without gathering sends, the venue reached about 35,000 orders a second, held there by the
+leading sequencer's reactor making one system call for each message. Without the limit, the leader ran alone for most of
+an overload, the follower matching engine stopped being a standby, and a gateway could close its own connection to the
+sequencer.
+
+With the limit raised to the store's capacity, 262,144, which no gateway reaches, scenario 116 failed: the binary gateway
+closed its connection to the sequencer at 65,536 waiting sends.

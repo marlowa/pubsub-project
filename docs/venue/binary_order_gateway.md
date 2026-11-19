@@ -203,7 +203,10 @@ authentication_heartbeat_interval` (30 seconds) is how often a heartbeat is sent
 authentication service; a connection on which nothing arrives for three intervals is closed and
 made again, as described in
 [Authentication Service](authentication_service.md#authentication_heartbeat). `[unanswered_commands]`
-sizes the store described under check 6: 262,144 commands in 64 MiB.
+sizes the store described under check 6: 262,144 commands in 64 MiB. Its `limit`, 16,384, is how many unanswered
+commands make the gateway stop reading every member's connection, until the venue's answers bring the number down to
+half; orders offered faster than the venue answers them then wait in the members' own sockets
+([A gateway limits its unanswered commands](../availability/a_gateway_limits_its_unanswered_commands.md)).
 
 `[binary_session] sender_comp_id` is this gateway's own name (`BINARY-GATEWAY`), checked
 against each client's `target_comp_id`. It names the venue, not the process, so both

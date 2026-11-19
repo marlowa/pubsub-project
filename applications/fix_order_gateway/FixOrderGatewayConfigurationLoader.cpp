@@ -307,6 +307,14 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
         }
         config.unanswered_commands_capacity = static_cast<size_t>(unanswered_commands);
         config.unanswered_commands_bytes = static_cast<size_t>(unanswered_bytes);
+        int64_t unanswered_limit = 0;
+        toml.get_required_except("unanswered_commands.limit", unanswered_limit);
+        if (unanswered_limit < 2 || unanswered_limit > unanswered_commands) {
+            throw pubsub_itc_fw::ConfigurationException(fmt::format(
+                "FixOrderGatewayConfigurationLoader: unanswered_commands.limit must be at least 2 and no more than unanswered_commands.commands ({}), got {}",
+                unanswered_commands, unanswered_limit));
+        }
+        config.unanswered_commands_limit = static_cast<size_t>(unanswered_limit);
 
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;

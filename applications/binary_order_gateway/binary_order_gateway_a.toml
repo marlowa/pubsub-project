@@ -138,6 +138,12 @@ initial_slabs    = ${binary_order_gateway_a_command_queue_pool_initial_slabs}
 [unanswered_commands]
 commands = 262144
 bytes    = 67108864
+# While this many are unanswered, the gateway stops reading its members' connections, so that orders
+# offered faster than the venue answers them wait in the members' own sockets, and reads them again
+# once answers bring the number down to half. Every queue between the gateway and the matching engine
+# holds only unanswered commands, so this bounds them all
+# (docs/availability/a_gateway_limits_its_unanswered_commands.md). Provisional: to be measured.
+limit    = 16384
 
 # The longest Symbol and OrderQty a member's command may carry, in bytes. A command with a longer
 # value is refused with the limit in its text. The same limits as the FIX gateway's [fix_limits],

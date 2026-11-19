@@ -39,6 +39,13 @@ class UnansweredCommandLinksInterface {
     /// Asks to be told, by a call of UnansweredCommands::on_connection_writable(), when @p connection has written
     /// everything waiting on it.
     virtual void request_writable_notification(const ConnectionID& connection) = 0;
+
+    /// As many commands are unanswered as the limit allows: the client stops reading new commands from its own users,
+    /// for example by pausing every member's connection, until read_commands_again() is called.
+    virtual void stop_reading_commands() = 0;
+
+    /// Enough commands have been answered since stop_reading_commands(): the client reads new commands again.
+    virtual void read_commands_again() = 0;
 };
 
 /**
@@ -63,6 +70,13 @@ class UnansweredCommandLinksInterface {
  * connection, each batch after the connection has said that everything before it is written. A command answered after
  * the copy was taken is still sent again; the leader finds it in its WAL and does not sequence it twice.
  *
+ * **The limit on unanswered commands.** Every queue between the client and the leader holds only commands this
+ * object holds, so limiting how many it holds limits them all. When the number unanswered reaches the limit, the client
+ * is told to stop reading new commands (UnansweredCommandLinksInterface::stop_reading_commands), and when answers have
+ * brought it down to half the limit, to read them again (docs/availability/a_gateway_limits_its_unanswered_commands.md).
+ * Half, rather than one below, so that reading is not stopped and started for every command when commands are offered
+ * at almost the speed they are answered. Commands sent again are not new, and do not change the number held.
+ *
  * **The instances are destinations**, named when this object is created, such as the primary and the secondary
  * sequencer, and referred to afterwards by their place in that list.
  *
@@ -75,14 +89,16 @@ class UnansweredCommands {
     /**
      * @param[in] capacity_bytes    The size of the block the copies are written into.
      * @param[in] capacity_commands The most copies held at once.
+     * @param[in] limit             How many unanswered commands make the client stop reading new ones: at least 2, and no
+     *                              more than @p capacity_commands.
      * @param[in] destination_names The instances the commands are sent to, each named for the Quill log, for example
      *                              "primary sequencer".
      * @param[in] links             How a copy is sent again.
      * @param[in] logger            Where what happens is logged.
      * @param[in] owner_name        The name each log line starts with, for example the client's thread.
      */
-    UnansweredCommands(size_t capacity_bytes, size_t capacity_commands, std::vector<std::string> destination_names, UnansweredCommandLinksInterface& links,
-                       QuillLogger& logger, std::string owner_name);
+    UnansweredCommands(size_t capacity_bytes, size_t capacity_commands, size_t limit, std::vector<std::string> destination_names,
+                       UnansweredCommandLinksInterface& links, QuillLogger& logger, std::string owner_name);
 
     /**
      * @brief Keeps a copy of a command about to be sent, until it is answered.
@@ -126,6 +142,18 @@ class UnansweredCommands {
     void on_new_leader(int32_t epoch, bool first_leader_seen);
 
     /**
+     * @brief A connection on which an instance sends this client its answers has been made: every copy still held is
+     *        sent again to every destination connected, when there are any
+     *        (docs/availability/a_gateway_limits_its_unanswered_commands.md, section 3.4, decision 4).
+     *
+     * While such a connection is down, the leader holds this client's answers in a room of limited size, and drops the
+     * oldest when it is full; the commands they answered would stay here, counted against the limit, until their
+     * sessions end. Sent again, each is found in the leader's WAL and answered from there, or, with no answer yet,
+     * answered by the ordinary path; none is sequenced twice.
+     */
+    void on_answer_connection_established();
+
+    /**
      * @brief The connection to destination @p destination is established, as @p connection.
      *
      * The first time, nothing is sent: the commands were sent on the connections that existed when they were kept.
@@ -149,6 +177,16 @@ class UnansweredCommands {
      */
     bool on_connection_writable(const ConnectionID& connection);
 
+    /// Whether the client has been told to stop reading new commands, and not yet to read them again.
+    [[nodiscard]] bool reading_stopped() const {
+        return reading_stopped_;
+    }
+
+    /// How many times the client has been told to stop reading new commands, since this object was created.
+    [[nodiscard]] int64_t times_reading_stopped() const {
+        return times_reading_stopped_;
+    }
+
     /// How many commands keep() has refused because the store was full, since this object was created.
     [[nodiscard]] int64_t refused_because_full() const {
         return refused_because_full_;
@@ -167,6 +205,9 @@ class UnansweredCommands {
     void start_resends(const std::vector<bool>& wanted);
     // Sends the next batch on @p destination, and asks to be told when it is written, if more remain.
     void continue_resend(Destination& destination);
+    // Tells the client to stop reading new commands when the number unanswered has reached the limit, and to read them
+    // again when it has fallen to half the limit.
+    void stop_or_read_again();
 
     UnansweredCommandStore store_;
     UnansweredSnapshot snapshot_;
@@ -178,6 +219,9 @@ class UnansweredCommands {
     // again, not at every command refused.
     bool full_{false};
     int64_t refused_because_full_{0};
+    const size_t limit_;
+    bool reading_stopped_{false};
+    int64_t times_reading_stopped_{0};
 };
 
 } // namespaces

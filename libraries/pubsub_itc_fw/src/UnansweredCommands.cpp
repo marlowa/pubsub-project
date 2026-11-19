@@ -11,9 +11,13 @@
 
 namespace pubsub_itc_fw {
 
-UnansweredCommands::UnansweredCommands(size_t capacity_bytes, size_t capacity_commands, std::vector<std::string> destination_names,
+UnansweredCommands::UnansweredCommands(size_t capacity_bytes, size_t capacity_commands, size_t limit, std::vector<std::string> destination_names,
                                        UnansweredCommandLinksInterface& links, QuillLogger& logger, std::string owner_name)
-    : store_(capacity_bytes, capacity_commands), links_(links), logger_(logger), owner_name_(std::move(owner_name)) {
+    : store_(capacity_bytes, capacity_commands), links_(links), logger_(logger), owner_name_(std::move(owner_name)), limit_(limit) {
+    if (limit < 2 || limit > capacity_commands) {
+        throw PreconditionAssertion("UnansweredCommands: the limit on unanswered commands must be at least 2 and no more than the store holds", __FILE__,
+                                    __LINE__);
+    }
     if (destination_names.empty()) {
         throw PreconditionAssertion("UnansweredCommands: at least one destination must be named", __FILE__, __LINE__);
     }
@@ -22,8 +26,10 @@ UnansweredCommands::UnansweredCommands(size_t capacity_bytes, size_t capacity_co
         destination.name = std::move(name);
         destinations_.push_back(std::move(destination));
     }
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: keeping up to {} unanswered command(s) in {} MiB, to send again after a change of leader", owner_name_,
-               capacity_commands, capacity_bytes / (1024 * 1024));
+    PUBSUB_LOG(logger_, FwLogLevel::Info,
+               "{}: keeping up to {} unanswered command(s) in {} MiB, to send again after a change of leader; new commands are not read while {} are "
+               "unanswered",
+               owner_name_, capacity_commands, capacity_bytes / (1024 * 1024), limit_);
 }
 
 UnansweredCommands::Kept UnansweredCommands::keep(std::string_view comp_id, std::string_view cl_ord_id, const uint8_t* envelope, size_t size) {
@@ -47,15 +53,35 @@ UnansweredCommands::Kept UnansweredCommands::keep(std::string_view comp_id, std:
         PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: the store of unanswered commands has room again -- {} command(s) were refused while it was full",
                    owner_name_, refused_because_full_);
     }
+    stop_or_read_again();
     return kept;
 }
 
 bool UnansweredCommands::answered(std::string_view comp_id, std::string_view cl_ord_id) {
-    return store_.answered(comp_id, cl_ord_id);
+    const bool held = store_.answered(comp_id, cl_ord_id);
+    stop_or_read_again();
+    return held;
 }
 
 size_t UnansweredCommands::drop_session(std::string_view comp_id) {
-    return store_.drop_session(comp_id);
+    const size_t dropped = store_.drop_session(comp_id);
+    stop_or_read_again();
+    return dropped;
+}
+
+void UnansweredCommands::stop_or_read_again() {
+    const size_t unanswered = store_.unanswered();
+    if (!reading_stopped_ && unanswered >= limit_) {
+        reading_stopped_ = true;
+        ++times_reading_stopped_;
+        // At Debug: under a flood of commands this happens many times a second, and the client says so in its own way.
+        PUBSUB_LOG(logger_, FwLogLevel::Debug, "{}: {} command(s) unanswered -- new commands are not read until half that many are", owner_name_, unanswered);
+        links_.stop_reading_commands();
+    } else if (reading_stopped_ && unanswered <= limit_ / 2) {
+        reading_stopped_ = false;
+        PUBSUB_LOG(logger_, FwLogLevel::Debug, "{}: {} command(s) unanswered -- new commands are read again", owner_name_, unanswered);
+        links_.read_commands_again();
+    }
 }
 
 void UnansweredCommands::on_new_leader(int32_t epoch, bool first_leader_seen) {
@@ -67,6 +93,17 @@ void UnansweredCommands::on_new_leader(int32_t epoch, bool first_leader_seen) {
     PUBSUB_LOG(logger_, FwLogLevel::Info,
                "{}: a new leader at epoch {} -- sending again {} command(s) still unanswered, each marked as sent again, {} at a time", owner_name_, epoch,
                snapshot_.count(), PacedResend::batch_size);
+}
+
+void UnansweredCommands::on_answer_connection_established() {
+    if (store_.unanswered() == 0) {
+        return;
+    }
+    start_resends(std::vector<bool>(destinations_.size(), true));
+    PUBSUB_LOG(logger_, FwLogLevel::Info,
+               "{}: a connection for answers is made -- sending again {} command(s) still unanswered, each marked as sent again, {} at a time, so that "
+               "any whose answer was dropped while it was down is answered from the WAL",
+               owner_name_, snapshot_.count(), PacedResend::batch_size);
 }
 
 void UnansweredCommands::on_connection_established(size_t destination, const ConnectionID& connection) {
