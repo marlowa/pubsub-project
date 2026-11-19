@@ -299,6 +299,8 @@ clock acts on nothing until it has renewed it; and the cause of the differing re
 scenario in `ha_test.py` that offers orders faster than the venue can process them would show each, and would have
 to fail before the change.
 
+**The design.** [A gateway limits the commands it has sent and not yet had answered](availability/a_gateway_limits_its_unanswered_commands.md).
+
 **Principles.** V11 of [design_principles.md](design_principles.md): a fault in the standby is a loss of resilience,
 not a loss of service. The follower engine was correctly taken out of service as a standby, and the venue went on
 trading throughout. The change of sequencer leader itself had no fault behind it.
