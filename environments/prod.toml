@@ -296,6 +296,8 @@ hot_path_rank = 1
 
 [components.admin_service]
 jar     = "lib/admin-service.jar"
+# Given --trading-day, so that it stops for the end of that day (docs/venue/start_and_end_of_day.md, section 4.4).
+takes_trading_day = true
 config  = "etc/admin_service/application.properties"
 workdir = "etc/admin_service"
 ha_only = false

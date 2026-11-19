@@ -349,6 +349,8 @@ workdir = "etc/binary_order_gateway"
 # application.properties from the JAR classpath; no config arg is needed.
 [components.admin_service]
 jar     = "lib/admin-service.jar"
+# Given --trading-day, so that it stops for the end of that day (docs/venue/start_and_end_of_day.md, section 4.4).
+takes_trading_day = true
 workdir = "etc/admin_service"
 ha_only = false
 

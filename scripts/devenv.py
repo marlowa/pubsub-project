@@ -209,9 +209,10 @@ def build_command(
     """Return (command_list, working_dir) for a component.
 
     For C++ binaries the command is: <binary> <log_file> <config>.
-    For JAR components the command is: java [-Djavax.net.debug=...] -jar <jar> [<config>],
+    For JAR components the command is: java [-Djavax.net.debug=...] -jar <jar> [<config>] [--trading-day <day>],
     where the resolved config path is appended as the first positional argument only when
-    the component defines a 'config' key in the env TOML.  When debug=True, the JVM
+    the component defines a 'config' key in the env TOML, and the trading day only when it sets
+    takes_trading_day = true.  When debug=True, the JVM
     flag -Djavax.net.debug=ssl:handshake:data is added to expose MINA/SSL details.
     For 'command' components the tool is taken from PATH and its args used verbatim.
     """
@@ -233,6 +234,11 @@ def build_command(
         command.extend(["-jar", str(jar_path)])
         if "config" in comp:
             command.append(str((install_dir / comp["config"]).resolve()))
+        # A JAR component that takes part in the trading day, the administration service, is given the day as every
+        # C++ component is, so that it stops at the end of that day (docs/venue/start_and_end_of_day.md, section 4.4,
+        # decision 11). The environment marks it; the others take only their own arguments.
+        if comp.get("takes_trading_day", False):
+            command.extend(["--trading-day", str(recorded_trading_day(run_dir))])
     else:
         binary_path = (install_dir / comp["binary"]).resolve()
         day         = recorded_trading_day(run_dir)

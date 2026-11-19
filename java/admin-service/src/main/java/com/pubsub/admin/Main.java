@@ -10,7 +10,9 @@ import com.pubsub.admin.exception.NotFoundException;
 import com.pubsub.admin.service.AdminUserStore;
 import com.pubsub.admin.service.AuthServiceClient;
 import com.pubsub.admin.service.FirstAdministratorSetup;
+import com.pubsub.admin.service.LastStateFile;
 import com.pubsub.admin.service.SetupSecret;
+import com.pubsub.admin.service.TechnicalEventsSubscriber;
 import com.pubsub.admin.web.AuthFilter;
 import com.pubsub.admin.web.ChangePasswordHandler;
 import com.pubsub.admin.web.CompIdHandler;
@@ -27,15 +29,28 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
+import java.io.IOException;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 public class Main {
     private static final Logger log = LoggerFactory.getLogger(Main.class);
+    /** The exit status of a component that stopped for the end of the trading day, as the C++ components use it. */
+    private static final int STOPPED_FOR_THE_END_OF_DAY_STATUS = 3;
+
     public static void main(String[] args) {
         Config config = Config.load();
+        // The trading day the service was started for, given on its command line as every component's is; 0 when absent,
+        // and the service then never stops for an end of day (docs/venue/start_and_end_of_day.md, section 4.4).
+        int tradingDay = tradingDayFrom(args);
+        if (tradingDay != 0 && LastStateFile.says(config.lastStateFile(), tradingDay, LastStateFile.END_OF_DAY_END)) {
+            log.info("{} says the end of trading day {} has been reached -- nothing to do, exiting for the end of day",
+                    config.lastStateFile(), tradingDay);
+            System.exit(STOPPED_FOR_THE_END_OF_DAY_STATUS);
+        }
         DataSource dataSource = Database.createDataSource(config);
 
         FirmDao firmDao = new FirmDao(dataSource, config.tablePrefix());
@@ -150,5 +165,38 @@ public class Main {
         });
 
         app.start(config.serverPort());
+
+        // The end of the trading day arrives on the technical_events topic; the service then records it and exits for
+        // the end of day (decision 11).
+        if (tradingDay != 0) {
+            List<TechnicalEventsSubscriber.Endpoint> publishers = new ArrayList<>();
+            if (!config.technicalEventsPrimaryHost().isBlank()) {
+                publishers.add(new TechnicalEventsSubscriber.Endpoint(config.technicalEventsPrimaryHost(), config.technicalEventsPrimaryPort()));
+            }
+            if (!config.technicalEventsSecondaryHost().isBlank()) {
+                publishers.add(new TechnicalEventsSubscriber.Endpoint(config.technicalEventsSecondaryHost(), config.technicalEventsSecondaryPort()));
+            }
+            new TechnicalEventsSubscriber(publishers, tradingDay, "admin_service", Duration.ofSeconds(1), (day, seqNo) -> {
+                log.info("the end-of-day end of trading day {} at seq={} arrived on the technical_events topic -- stopping for the end of day",
+                        day, seqNo);
+                try {
+                    LastStateFile.record(config.lastStateFile(), day, LastStateFile.END_OF_DAY_END);
+                } catch (IOException e) {
+                    log.error("could not record the end of the day in {}: {}", config.lastStateFile(), e.getMessage());
+                }
+                app.stop();
+                System.exit(STOPPED_FOR_THE_END_OF_DAY_STATUS);
+            }).start();
+        }
+    }
+
+    /** The value of {@code --trading-day YYYYMMDD} among {@code args}, or 0 when it is not given. */
+    static int tradingDayFrom(String[] args) {
+        for (int index = 0; index + 1 < args.length; ++index) {
+            if ("--trading-day".equals(args[index])) {
+                return Integer.parseInt(args[index + 1]);
+            }
+        }
+        return 0;
     }
 }

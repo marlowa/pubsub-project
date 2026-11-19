@@ -100,6 +100,40 @@
                             </arguments>
                         </configuration>
                     </execution>
+                    <!-- The topic protocol, for the subscription to technical_events (docs/venue/start_and_end_of_day.md, section 4.4, decision 11) -->
+                    <execution>
+                        <id>generate-topics-protocol</id>
+                        <phase>generate-sources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <executable>python3</executable>
+                            <arguments>
+                                <argument>${project.basedir}/../../python/tools/generate_cpp_from_dsl.py</argument>
+                                <argument>${project.basedir}/../../libraries/pubsub_itc_fw/include/pubsub_itc_fw/topics.dsl</argument>
+                                <argument>--java</argument>
+                                <argument>${project.build.directory}/generated-sources/dsl/com/pubsub/admin/protocol/Topics.java</argument>
+                                <argument>--package</argument>
+                                <argument>com.pubsub.admin.protocol</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <!-- TechnicalEvent and TradingPhase, carried on the technical_events topic -->
+                    <execution>
+                        <id>generate-leader-follower-protocol</id>
+                        <phase>generate-sources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <executable>python3</executable>
+                            <arguments>
+                                <argument>${project.basedir}/../../python/tools/generate_cpp_from_dsl.py</argument>
+                                <argument>${project.basedir}/../../libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl</argument>
+                                <argument>--java</argument>
+                                <argument>${project.build.directory}/generated-sources/dsl/com/pubsub/admin/protocol/LeaderFollower.java</argument>
+                                <argument>--package</argument>
+                                <argument>com.pubsub.admin.protocol</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
 

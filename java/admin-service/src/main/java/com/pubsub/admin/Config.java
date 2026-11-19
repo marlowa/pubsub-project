@@ -18,7 +18,12 @@ public record Config(
         String adminUsersFile,
         String brandName,
         String brandLogoUrl,
-        String brandCssFile
+        String brandCssFile,
+        String technicalEventsPrimaryHost,
+        int technicalEventsPrimaryPort,
+        String technicalEventsSecondaryHost,
+        int technicalEventsSecondaryPort,
+        String lastStateFile
 ) {
     public static Config load() {
         Properties props = new Properties();
@@ -45,7 +50,12 @@ public record Config(
                 props.getProperty("admin.users-file", "admin_users.toml"),
                 props.getProperty("brand.name", "PubSub Admin"),
                 props.getProperty("brand.logo-url", ""),
-                props.getProperty("brand.css-file", "")
+                props.getProperty("brand.css-file", ""),
+                props.getProperty("technical-events.primary-host", ""),
+                Integer.parseInt(props.getProperty("technical-events.primary-port", "0")),
+                props.getProperty("technical-events.secondary-host", ""),
+                Integer.parseInt(props.getProperty("technical-events.secondary-port", "0")),
+                props.getProperty("end-of-day.last-state-file", "")
         );
     }
 

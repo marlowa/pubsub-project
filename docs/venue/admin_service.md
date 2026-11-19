@@ -111,11 +111,22 @@ from `[admin_service] server_port` (8082 in every environment file; 8082 is also
 noise to WARN. Logback 1.5.x is incompatible with Javalin 6.3.0's SLF4J 1.x dependency;
 1.2.13 is the correct version.
 
+## The end of the trading day
+
+The service is started with `--trading-day YYYYMMDD`, as every component is (`devenv.py` gives it to a JAR component
+whose environment entry says `takes_trading_day = true`). It subscribes to the `technical_events` topic on both matching
+engine publishers, with `TechnicalEventsSubscriber`: it connects to one, and if that one does not lead, or the connection
+ends, to the other, so that it keeps to the publisher that leads; it acknowledges each page, and asks again from the
+last record it applied. When the end-of-day end of its own trading day arrives, it records it in its last-state file
+and exits with status 3, as the C++ components do. Started again after the end of its day, it finds the end in that
+file and exits at once with status 3. The design is [start_and_end_of_day.md](start_and_end_of_day.md), section 4.4,
+decision 11.
+
 ## Configuration
 
 | File | Purpose |
 |------|---------|
-| `application.properties` | DB URL, JDBC credentials, auth service endpoints, branding |
+| `application.properties` | DB URL, JDBC credentials, auth service endpoints, branding, the publishers' `technical_events` listeners (`technical-events.*`) and the last-state file (`end-of-day.last-state-file`) |
 | `admin_users.toml` | Admin UI user accounts (BCrypt passwords, roles) — gitignored |
 
 See `java/admin-service/README.md` for full deployment and branding instructions.
