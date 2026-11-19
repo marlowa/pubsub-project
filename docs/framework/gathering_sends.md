@@ -99,8 +99,12 @@ then each waiting message with a call of its own.
 Every connection carrying framework messages over TCP without TLS, in both directions: outbound connections
 (`OutboundConnectionManager`) and inbound ones (`InboundConnectionManager`, through the framework's protocol handler).
 
-Not TLS connections, whose handler encrypts each message into its own buffer and writes that (decision 3), and not raw
-bytes connections, such as the members' FIX sessions, which the gateways write themselves.
+Not a connection carrying framework messages over TLS, whose handler encrypts each message into its own buffer and writes
+that (decision 3). The framework can make such connections, but no component is configured to.
+
+Not raw bytes connections either: the members' FIX sessions, with TLS or without, which the gateways write themselves.
+Members' orders do arrive over TLS, and a gateway writes each report to its member with a call of its own; gathering
+those writes is a separate step, worth considering once this one is measured.
 
 ### 3.6 The waiting queue's limits
 
@@ -116,8 +120,9 @@ counter how many calls returned a partial write.
 
 ## 4. The firewall
 
-The firewall's share is a property of this machine: `ufw` and Docker are both active here, and their rules are applied
-to loopback traffic. How much of the ceiling it accounts for is measured separately, by the same overload run with the
+The firewall's share is a property of this machine: a VPN client and Docker have both added rules here, and the VPN
+client's are applied to every packet, loopback included: an outgoing packet passes through fourteen chains of rules,
+each counting it, before it is accepted. How much of the ceiling it accounts for is measured separately, by the same overload run with the
 firewall's rules and without them. The design does not depend on the answer: whatever a packet costs, fewer, larger
 packets cost less.
 
@@ -159,9 +164,10 @@ as it is, and so does not help.
 
 ### Decision 2. Does each call write at most 64 messages, a provisional figure to be measured? (Yes or no.)
 
-### Decision 3. Are TLS connections left as they are? (Yes or no.)
+### Decision 3. Are connections carrying framework messages over TLS left as they are, and the members' FIX sessions, with TLS or without, left for a separate step? (Yes or no.)
 
-No TLS connection carries the order path.
+No connection between the venue's components uses TLS today. Members' FIX sessions may, and a gateway writes each
+report to its member with a call of its own (section 3.5).
 
 ### Decision 4. Is `ENOBUFS` or `ENOMEM` from the call treated as "no room now", with a Warning, rather than closing the connection? (Yes or no.)
 
