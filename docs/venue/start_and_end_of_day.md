@@ -417,6 +417,14 @@ and apply each record as it arrives.
      phase, or an older day, shows it missed the end of day, which is decision 6 found without being looked for. The
      start-of-day check of section 3, step 2 needs one exception for this file, since it is meant to come from the
      day before.
+   - **where a component finds it.** The file's path is a setting of each component's configuration, which the
+     deployment fills in from `[paths] run_dir`. A component started by a test on a copy of a day's files, such as the
+     check in `ha_test.py` that runs the matching engines on a copy of the WAL, is given a path of its own, so that it
+     neither reads nor overwrites the venue's file. A copy of a WAL that already holds the end-of-day end makes such a
+     component shut down once it has caught up, as decision 8 requires of any component, and the check takes its exit
+     with status 3 at that point as a normal finish. Agreed with Andrew on 19 November 2026, in preference to a
+     setting under which a component ignores the end of day, which would put a mode used only by tests into the
+     components;
 
 6. **A component that misses the end of day keeps its files.** A component that was not running when the end of day
    was entered, or whose machine could not be reached, never receives it, and its files stay where they are. Its

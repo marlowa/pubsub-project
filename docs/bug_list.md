@@ -754,9 +754,11 @@ of the day. To be designed and agreed before code.
    uses today, moved into code the two share. **Built** in the launcher, for exit status 3, and checked by
    `scripts/tests/test_launch.py`; it takes effect once components exit with that status (item 4).
 6. **The last-state file.** Each component keeps a file of its last trading state, in the venue's run directory,
-   that outlives the day, and the start-of-day check accepts that file from the day before. Still to be settled
-   before it is built: how `ha_test.py`, which starts components again on a day's files to check them, keeps a
-   component from finding the end-of-day end in that file and exiting at once.
+   that outlives the day, and the start-of-day check accepts that file from the day before. Its path is a setting of
+   each component's configuration, filled in from `[paths] run_dir`; `ha_test.py`, which starts components again on a
+   copy of a day's files to check them, gives them a path of their own, and takes an exit with status 3 once they
+   have caught up as a normal finish (`docs/venue/start_and_end_of_day.md`, section 4.2, decision 5; agreed 19
+   November 2026).
 7. **The next day's start** archives the run manifest and `credentials.toml` of the day before, which belong to no
    single component, once it has found no other file of that day. **Built** (`trading_day.py start`, checked by
    `trading_day_test.py`).
