@@ -9,7 +9,7 @@
 
 ## Open bugs by severity
 
-6 high, 32 medium, 14 low.
+5 high, 32 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|

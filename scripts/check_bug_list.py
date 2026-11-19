@@ -26,6 +26,8 @@ Checks implemented:
   13. Every entry declares {#bug_nnnn} matching its own id, and the index links to it, so the
       summary is clickable in Doxygen -- which needs an explicit label, autotoc ids being
       positional
+  14. The line under 'Open bugs by severity', 'N high, N medium, N low.', gives the open
+      entries' counts of each severity
 """
 
 from __future__ import annotations
@@ -200,6 +202,18 @@ def check_index(entries: list[Entry], index: list[tuple[str, str, str, str]], co
     return faults
 
 
+def check_severity_counts(entries: list[Entry], lines: list[str]) -> list[str]:
+    """Check 14: the line giving the open entries' counts by severity agrees with the entries."""
+    open_entries = [e for e in entries if e.section == 'Open']
+    wanted = ', '.join(f'{sum(1 for e in open_entries if e.severity == severity)} {severity}' for severity in _SEVERITY_RANK) + '.'
+    stated = [line for line in lines if re.match(r'^\d+ high, \d+ medium, \d+ low\.$', line)]
+    if not stated:
+        return [f"bug_list.md: no line giving the open entries' counts by severity, such as {wanted!r}"]
+    if stated[0] != wanted:
+        return [f"bug_list.md: the open entries' counts by severity say {stated[0]!r}, entries say {wanted!r}"]
+    return []
+
+
 def check_citations(entries: list[Entry]) -> list[str]:
     """Every BUG-nnnn cited anywhere in the repository must resolve to an entry."""
     known = {e.bug_id for e in entries}
@@ -229,6 +243,7 @@ def main() -> int:
     entries, index, counts, faults = parse(lines)
     faults += check_entries(entries, counts)
     faults += check_index(entries, index, counts)
+    faults += check_severity_counts(entries, lines)
     if not args.skip_citations:
         faults += check_citations(entries)
 
