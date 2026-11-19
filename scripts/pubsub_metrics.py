@@ -896,7 +896,8 @@ def buckets_to_bounds_counts(per_bucket):
 # drawn from bucket data would be the last bound -- a number that says more about the
 # configuration than about the traffic. Orders above the ceiling are counted exactly
 # instead, which is the question a max was being asked to answer.
-BAND_QUANTILES = [(0.50, "p50"), (0.90, "p90"), (0.99, "p99")]
+# The 99.9th as well as the 99th: outliers one order in a thousand meets are hidden by the 99th.
+BAND_QUANTILES = [(0.50, "p50"), (0.90, "p90"), (0.99, "p99"), (0.999, "p99.9")]
 
 
 def fetch_band_series(spec, labels, prom_url, band_options, hist_filter, data):
@@ -1595,7 +1596,7 @@ def format_clock_time(epoch_seconds):
 
 # Lowest percentile palest: the tracks are then read as one distribution widening and
 # narrowing rather than as three unrelated lines that happen to share an axis.
-BAND_TRACK_COLOURS = ["#8FBCE6", "#4C72B0", "#1F3D63"]
+BAND_TRACK_COLOURS = ["#8FBCE6", "#4C72B0", "#1F3D63", "#7B2D8E"]
 BAND_CEILING_COLOUR = "#C0392B"
 
 

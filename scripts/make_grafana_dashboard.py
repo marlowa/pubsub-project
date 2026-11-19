@@ -157,7 +157,9 @@ panels.append(ts(
     [tgt(f'histogram_quantile(0.90, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{{{ONE}}}[{RATE}])))',
          "{{component}}/{{scope}} p90", "A"),
      tgt(f'histogram_quantile(0.99, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{{{ONE}}}[{RATE}])))',
-         "{{component}}/{{scope}} p99", "B")],
+         "{{component}}/{{scope}} p99", "B"),
+     tgt(f'histogram_quantile(0.999, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{{{ONE}}}[{RATE}])))',
+         "{{component}}/{{scope}} p99.9", "C")],
     w=24,
     many_series=True,
     desc="Watch this across the quiet phases of a trading-day run. A thread that sleeps "
@@ -197,9 +199,18 @@ panels.append(ts(
          + ROUND_TRIP_ESTIMATE_NOTE))
 
 panels.append(ts(
+    "Order round trip — p99.9, all gateways compared",
+    [tgt(f'histogram_quantile(0.999, sum by (le, component) (rate(order_round_trip_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}}", "A")],
+    desc="The same gateways at the 99.9th percentile, on its own scale: one order in a thousand is slower than this. "
+         "Outliers that the ninety-ninth percentile averages away show here. It needs at least a few thousand orders in "
+         "each rate window to mean anything, and like every line here it can be no more exact than the bucket it falls in. "
+         + ROUND_TRIP_ESTIMATE_NOTE))
+
+panels.append(ts(
     "WAL append — percentiles, by sequencer",
     [tgt(f'histogram_quantile(0.90, sum by (le, component) (rate(wal_append_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p90", "A"),
-     tgt(f'histogram_quantile(0.99, sum by (le, component) (rate(wal_append_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p99", "B")],
+     tgt(f'histogram_quantile(0.99, sum by (le, component) (rate(wal_append_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p99", "B"),
+     tgt(f'histogram_quantile(0.999, sum by (le, component) (rate(wal_append_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p99.9", "C")],
     w=24,
     desc="Committing one record to the write-ahead log. The metric on which the lazytime "
                  "mount option showed up. Two percentiles share this chart because only one "
@@ -217,11 +228,13 @@ FIX = 'application="pubsub", component=~"fix_order_gateway.*"'
 BIN = 'application="pubsub", component=~"binary_order_gateway.*"'
 
 panels.append(ts(
-    "Protocol comparison — round trip p90/p99, with the rate each was measured at",
+    "Protocol comparison — round trip p90/p99/p99.9, with the rate each was measured at",
     [tgt(f'histogram_quantile(0.90, sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{FIX}}}[{RATE}])))', "FIX p90", "A"),
      tgt(f'histogram_quantile(0.99, sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{FIX}}}[{RATE}])))', "FIX p99", "B"),
      tgt(f'histogram_quantile(0.90, sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{BIN}}}[{RATE}])))', "binary p90", "C"),
      tgt(f'histogram_quantile(0.99, sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{BIN}}}[{RATE}])))', "binary p99", "D"),
+     tgt(f'histogram_quantile(0.999, sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{FIX}}}[{RATE}])))', "FIX p99.9", "G"),
+     tgt(f'histogram_quantile(0.999, sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{BIN}}}[{RATE}])))', "binary p99.9", "H"),
      # The rates share this panel deliberately. A latency compared against a latency measured
      # at a different offered rate says nothing about the protocols: the busier one carries
      # more queueing and looks worse for reasons that have nothing to do with its encoding.
@@ -242,11 +255,13 @@ panels.append(ts(
 # Measured 2026-09-19: the round trips differed by 57us inside 900us and the inter-thread
 # queue latencies by 1us, because everything after the gateway is the same code for both.
 panels.append(ts(
-    "Protocol comparison — gateway decode and forward p90/p99 (the part that differs)",
+    "Protocol comparison — gateway decode and forward p90/p99/p99.9 (the part that differs)",
     [tgt(f'histogram_quantile(0.90, sum by (le) (rate(order_ingress_to_forward_nanoseconds_bucket{{{FIX}}}[{RATE}])))', "FIX p90", "A"),
      tgt(f'histogram_quantile(0.99, sum by (le) (rate(order_ingress_to_forward_nanoseconds_bucket{{{FIX}}}[{RATE}])))', "FIX p99", "B"),
      tgt(f'histogram_quantile(0.90, sum by (le) (rate(order_ingress_to_forward_nanoseconds_bucket{{{BIN}}}[{RATE}])))', "binary p90", "C"),
      tgt(f'histogram_quantile(0.99, sum by (le) (rate(order_ingress_to_forward_nanoseconds_bucket{{{BIN}}}[{RATE}])))', "binary p99", "D"),
+     tgt(f'histogram_quantile(0.999, sum by (le) (rate(order_ingress_to_forward_nanoseconds_bucket{{{FIX}}}[{RATE}])))', "FIX p99.9", "G"),
+     tgt(f'histogram_quantile(0.999, sum by (le) (rate(order_ingress_to_forward_nanoseconds_bucket{{{BIN}}}[{RATE}])))', "binary p99.9", "H"),
      # Carried for the same reason as on the round-trip panel: a decode time is still a
      # latency, and a gateway being given more orders per second can queue behind itself.
      tgt(f'sum(rate(order_ingress_to_forward_nanoseconds_count{{{FIX}}}[{RATE}]))', "FIX rate (right axis)", "E"),
@@ -302,6 +317,8 @@ panels.append(ts(
          '{application="pubsub", component="$component"}[' + RATE + '])))', "wait p90", "A"),
      tgt('histogram_quantile(0.99, sum by (le) (rate(itc_queue_latency_nanoseconds_bucket'
          '{application="pubsub", component="$component"}[' + RATE + '])))', "wait p99", "B"),
+     tgt('histogram_quantile(0.999, sum by (le) (rate(itc_queue_latency_nanoseconds_bucket'
+         '{application="pubsub", component="$component"}[' + RATE + '])))', "wait p99.9", "D"),
      tgt('histogram_quantile(0.90, sum by (le) (rate(itc_queue_depth_bucket'
          '{application="pubsub", component="$component"}[' + RATE + '])))', "messages behind it, p90 (right axis)", "C")],
     w=24,
@@ -313,7 +330,8 @@ panels.append(ts(
 panels.append(ts(
     "Gateway decode and forward — percentiles by gateway instance",
     [tgt(f'histogram_quantile(0.90, sum by (le, component) (rate(order_ingress_to_forward_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p90", "A"),
-     tgt(f'histogram_quantile(0.99, sum by (le, component) (rate(order_ingress_to_forward_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p99", "B")],
+     tgt(f'histogram_quantile(0.99, sum by (le, component) (rate(order_ingress_to_forward_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p99", "B"),
+     tgt(f'histogram_quantile(0.999, sum by (le, component) (rate(order_ingress_to_forward_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p99.9", "C")],
     w=24, many_series=True,
     desc="The same measurement per process rather than pooled by protocol. Two instances of "
          "one protocol disagreeing is a property of those processes -- what they are pinned "
