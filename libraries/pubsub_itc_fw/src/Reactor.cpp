@@ -278,14 +278,14 @@ int Reactor::run() {
 }
 
 void Reactor::shutdown(const std::string& reason) {
-    request_shutdown(reason, false);
+    request_shutdown(reason, ShutdownKind::ordinary);
 }
 
 void Reactor::shutdown_for_end_of_day(const std::string& reason) {
-    request_shutdown(reason, true);
+    request_shutdown(reason, ShutdownKind::end_of_day);
 }
 
-void Reactor::request_shutdown(const std::string& reason, bool for_end_of_day) {
+void Reactor::request_shutdown(const std::string& reason, ShutdownKind kind) {
     // Any thread may call this, and the reactor's thread reads the reason once it sees the request.
     // So the one caller that claims the shutdown writes the reason first and only then publishes the
     // request, with a release store: a thread that sees the request with an acquire load also sees the
@@ -296,7 +296,7 @@ void Reactor::request_shutdown(const std::string& reason, bool for_end_of_day) {
     }
     shutdown_reason_ = reason;
     // Published with the request below, by the same release store, so that run() sees it once it sees the request.
-    stopped_for_the_end_of_day_.store(for_end_of_day, std::memory_order_relaxed);
+    stopped_for_the_end_of_day_.store(kind == ShutdownKind::end_of_day, std::memory_order_relaxed);
 
     // Only from not started or running: a reactor already finalizing or finished stays so.
     ReactorLifecycleState::Tag current = lifecycle_.load(std::memory_order_acquire);

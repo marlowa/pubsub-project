@@ -840,9 +840,10 @@ class Reactor : public ThreadLookupInterface {
     std::string shutdown_reason_;
     // Set by the caller that claims the shutdown, before the request is published, when it is for the end of the day.
     std::atomic<bool> stopped_for_the_end_of_day_{false};
-    // Claims the shutdown, if no one has, and asks the event loop to finish; @p for_end_of_day says whether it is for the
-    // end of the trading day.
-    void request_shutdown(const std::string& reason, bool for_end_of_day);
+    // Why the reactor is asked to stop: for the end of the trading day, or for anything else.
+    enum class ShutdownKind { ordinary, end_of_day };
+    // Claims the shutdown, if no one has, and asks the event loop to finish.
+    void request_shutdown(const std::string& reason, ShutdownKind kind);
     std::atomic<bool> shutdown_claimed_{false};
 
     // Set by finalize_threads_after_shutdown() when a join times out and the thread is detached.
