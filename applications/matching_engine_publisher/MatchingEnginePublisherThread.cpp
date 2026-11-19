@@ -591,13 +591,14 @@ void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(const pubsu
 
     // The record is now in the WAL; wake each publisher so it streams the new record to any
     // caught-up subscriber. Each filters by topic membership and only publishes while leader.
-    orders_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
-    er_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
-    technical_events_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
-
+    // A TechnicalEvent is noted before it is published: a subscriber that receives the end of the day stops at once, and
+    // this publisher must already know the day has ended when it sees that subscriber leave.
     if (view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id)) {
         note_technical_event(view.seq_no, view.payload.data, view.payload.size);
     }
+    orders_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
+    er_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
+    technical_events_publisher_.notify_record_appended(view.seq_no, view.pdu_id);
 }
 
 void MatchingEnginePublisherThread::note_technical_event(int64_t seq_no, const uint8_t* bytes, size_t size) {
@@ -614,14 +615,17 @@ void MatchingEnginePublisherThread::note_technical_event(int64_t seq_no, const u
     if (last_phase_recorded_ == event.phase) {
         return;
     }
+    if (event.phase == pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
+        // The other components stop from now on; their leaving is expected (docs/venue/start_and_end_of_day.md, section
+        // 4.4). Noted first, because writing the last-state file takes some milliseconds.
+        note_the_day_has_ended();
+    }
     last_state_.record(pubsub_itc_fw_app::to_string(event.phase));
     last_phase_recorded_ = event.phase;
     if (event.phase != pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
         return;
     }
     end_of_day_seq_no_ = seq_no;
-    // The other components stop from now on; their leaving is expected (docs/venue/start_and_end_of_day.md, section 4.4).
-    note_the_day_has_ended();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MepThread: the end-of-day end of trading day {} at seq={} is in this publisher's copy of the WAL -- staying up {} s, so that a subscriber "
                "reconnecting meanwhile still receives it, then stopping for the end of day",

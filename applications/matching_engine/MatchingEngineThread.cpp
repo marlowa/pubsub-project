@@ -2046,11 +2046,13 @@ void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app
     const MatchingEngineStateMachine::TechnicalEventApplied result =
         state_machine_.apply_technical_event(event, sequence_number, transact_time, trading_date, source);
     if (result.applied) {
-        last_state_.record(pubsub_itc_fw_app::to_string(event.phase));
         if (event.phase == pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
             // The other components stop from now on; their leaving is expected (docs/venue/start_and_end_of_day.md,
-            // section 4.4, item 5).
+            // section 4.4, item 5). Noted before the last-state file is written, which takes some milliseconds.
             note_the_day_has_ended();
+        }
+        last_state_.record(pubsub_itc_fw_app::to_string(event.phase));
+        if (event.phase == pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
             if (role_.catching_up()) {
                 end_of_day_met_while_catching_up_ = true;
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,

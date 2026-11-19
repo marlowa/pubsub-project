@@ -1966,16 +1966,17 @@ void SequencerThread::after_noting(const VenueStateFromTheWal::Noted& noted, Ven
         return;
     }
     const pubsub_itc_fw_app::TradingPhase phase = venue_state_.trading_phase().latest()->phase;
-    last_state_.record(pubsub_itc_fw_app::to_string(phase));
     if (phase == pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
         // From now on every other component stops, so their leaving is expected: no Warning, no halt for an absent engine,
-        // and no Error for a follower gone (docs/venue/start_and_end_of_day.md, section 4.4, item 5).
+        // and no Error for a follower gone (docs/venue/start_and_end_of_day.md, section 4.4, item 5). Noted before the
+        // last-state file is written, which takes some milliseconds.
         note_the_day_has_ended();
         presence_.note_the_day_has_ended();
         if (replicated_wal_.has_value()) {
             replicated_wal_->note_the_day_has_ended();
         }
     }
+    last_state_.record(pubsub_itc_fw_app::to_string(phase));
     // Only the follower stops here. The leader stops once the follower holds the end (TradingPhaseRequests). A sequencer
     // opening a WAL that already ends the day goes on: one restarted after the end has already exited on its last-state
     // file, and one started on a copy of a day's WAL, as a check does, has to serve it.
