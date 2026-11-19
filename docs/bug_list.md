@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 267 |
-| Open | 52 (28 defects, 24 tasks) |
+| Bugs recorded | 268 |
+| Open | 53 (29 defects, 24 tasks) |
 | Closed | 215 |
-| Next id | BUG-0268 |
+| Next id | BUG-0269 |
 
 ## Open bugs by severity
 
@@ -51,6 +51,7 @@
 | [BUG-0262](#bug_0262) | medium | defect | A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog |
 | [BUG-0263](#bug_0263) | medium | defect | In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
+| [BUG-0268](#bug_0268) | medium | defect | A `technical_events` subscriber reconnects to the publisher that does not lead every 2 seconds, each time with three Warnings |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -337,6 +338,29 @@ equivalent, and show the state prominently.
 included, which members are not told (BUG-0265). Item 3 of BUG-0137 gives the administration service a subscription to
 the `technical_events` topic, which carries every phase; once it has that, the desktop shows the latest phase and the
 trading day. Best done straight after item 3.
+
+### BUG-0268: A `technical_events` subscriber reconnects to the publisher that does not lead every 2 seconds, each time with three Warnings {#bug_0268}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| How | Reading every Warning logged after the end-of-day begin on a venue started with `devenv.py`, while the end of day ([BUG-0137](#bug_0137)) was being built |
+| Impact | The arbiters, the witness and the authentication services log about 1.5 Warnings a second each, all day, which buries any Warning that matters; each also opens and closes a connection every 2 seconds |
+
+**What happens.** `TopicSubscriberThread` subscribes on both matching engine publishers and keeps to the one that
+leads (docs/venue/start_and_end_of_day.md, section 4.4, decision 10a). The publisher that does not lead answers a
+`TopicSubscribeRequest` with `TopicNotLeader` and closes the connection (`TopicPublisher::on_subscribe_request`), and the
+reactor connects again after its retry interval, 2 seconds. Each round logs, in the subscriber's
+`OutboundConnectionManager`, "service 'technical_events_secondary' reconnected after 2s", "peer closed connection on
+service 'technical_events_secondary'" and "failed to connect; retrying every 2000ms", all at Warning. On 19 November
+2026 the five subscribing components logged 22 such Warnings in the three seconds after the end-of-day begin.
+
+**What is wanted.** The publisher that does not lead keeps the connection open after its `TopicNotLeader`, and the
+subscriber asks again on that connection on a timer, so that no connection is opened or closed while the publishers
+keep their roles, and nothing is logged above Debug. When the publishers change leader, the new leader answers the next
+request with pages. The administration service's Java subscriber does the same.
 
 ### BUG-0267: `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines {#bug_0267}
 
