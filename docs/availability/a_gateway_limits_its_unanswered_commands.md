@@ -1,7 +1,7 @@
 # A gateway limits the commands it has sent and not yet had answered {#a_gateway_limits_its_unanswered_commands}
 
-**Status: designed, not built.** The design for [BUG-0251](../bug_list.md#bug_0251). Section 7 lists the decisions it
-needs.
+**Status: agreed, being built.** The design for [BUG-0251](../bug_list.md#bug_0251). Section 7 records its
+decisions: the first three agreed with Andrew on 19 November 2026; the fourth is asked.
 
 ## 1. The problem
 
@@ -101,9 +101,28 @@ ends for good (`drop_session`). A command is also unanswered, for a time, while 
 the refusals or the new engine's reports arrive. That is intended: nothing it read in that time could be acted on
 sooner.
 
-Before the rule is built, every way a command can go unanswered is to be listed from
-the code, with what removes its copy. A way that leaves a copy for ever is a defect, recorded and fixed before this
-change, or in it.
+Every way a command the gateway kept can fail to be answered, and what removes its copy:
+
+| What happens to the command | What removes the copy |
+|---|---|
+| No sequencer leads, or the one it reached does not lead and discards it | sent again when an instance announces that it leads, and answered then |
+| The leading sequencer refuses it: the phase accepts no command, or its ClOrdID was used before | the `CommandRefused` the sequencer sends on the connection it came by |
+| The leading sequencer holds it because no matching engine leads | the new engine's report, or the refusal once `orders_held_at_most_seconds` has passed |
+| It was sent again and the WAL already holds it | the report the WAL holds, forwarded from the WAL; or, with none there, the engine's report by the ordinary path |
+| The member's session ends, or moves to another gateway, before the answer arrives | the session ends for good on this gateway when its grace period, 30 seconds, passes after it disconnected (`drop_session`) |
+| The leading sequencer cannot decode the envelope | nothing until a change of leader sends it again; this happens only through a defect, and the sequencer logs a Warning |
+| Its report was held by the leading sequencer for this gateway while the gateway had no connection for reports, and dropped because the room for such reports was full | **nothing until the session ends**, which may be the end of the day |
+
+The last row is the one that matters. While a gateway has no connection for reports from the leading sequencer, the
+sequencer holds the reports for it, in a room of limited size, and sends them when the connection is made; when the
+room is full it drops the oldest, and logs an Error ("report(s) held for gateway ... were dropped to make room while it
+had no connection for reports"). The commands those reports answered stay in the gateway's store. With the limit,
+enough of them would stop the gateway reading its members for the rest of the day.
+
+So, when a gateway's connection for reports from the leading sequencer is made, it sends again every command it still
+holds (decision 4). The sequencer finds each in its WAL and forwards the first report the WAL holds of it, or, if the
+WAL holds none, leaves it to the engine's ordinary report. A copy whose report was dropped is then answered. The number
+sent again is the store's count, which the limit keeps to 16,384 or a little over.
 
 ### 3.5 The limit
 
@@ -146,17 +165,22 @@ connection (fault 2). So it is not added (decision 2).
 
 ## 7. Decisions
 
-### Decision 1. Does a gateway stop reading all its members' connections while it has 16,384 unanswered commands, until the number falls to half, with 16,384 as a provisional default to be measured in step 5? (Yes or no.)
+### Decision 1. Does a gateway stop reading all its members' connections while it has 16,384 unanswered commands, until the number falls to half, with 16,384 as a provisional default to be measured in step 5? Agreed: yes.
 
 The alternative is to stop reading only the connections of the members with the most commands unanswered. That is
 fairer to a member sending slowly, but it needs a count for each member, and the throttles already stop one member
 taking the whole of the venue's capacity.
 
-### Decision 2. Is the sequencer's reading of the gateways left unlimited, since the gateways' own limit bounds it? (Yes or no.)
+### Decision 2. Is the sequencer's reading of the gateways left unlimited, since the gateways' own limit bounds it? Agreed: yes.
 
 Section 4 gives the reason. A limit on the sequencer's side was part of the option chosen for BUG-0251; this design
 leaves it out.
 
-### Decision 3. Is the scenario in step 4, which offers orders as fast as the sockets accept them, added to the suites that run on every change? (Yes or no.)
+### Decision 3. Is the scenario in step 4, which offers orders as fast as the sockets accept them, added to the suites that run on every change? Agreed: yes.
 
 It sends 1.8 million orders and takes about two minutes, as scenario 115 does.
+
+### Decision 4. When a gateway's connection for reports from the leading sequencer is made, does it send again every command it still holds, so that a command whose report the sequencer dropped is answered from the WAL? (Yes or no.)
+
+Section 3.4 gives the reason. Without it, the reports dropped while a gateway had no connection for reports would leave
+their commands counted against the limit until their sessions end.
