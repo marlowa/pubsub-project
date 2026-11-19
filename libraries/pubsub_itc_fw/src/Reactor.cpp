@@ -282,7 +282,33 @@ void Reactor::shutdown(const std::string& reason) {
 }
 
 void Reactor::shutdown_for_end_of_day(const std::string& reason) {
-    request_shutdown(reason, ShutdownKind::end_of_day);
+    if (end_of_day_stop_claimed_.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    end_of_day_stop_reason_ = reason;
+    end_of_day_stop_asked_at_ = std::chrono::steady_clock::now();
+    end_of_day_stop_asked_.store(true, std::memory_order_release);
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor: stopping for the end of day once everything asked to be sent is written -- {}", reason);
+    wake_reactor_thread("a stop for the end of day");
+}
+
+void Reactor::stop_for_end_of_day_when_written() {
+    if (!end_of_day_stop_asked_.load(std::memory_order_acquire)) {
+        return;
+    }
+    const bool written = command_queue_.empty() && !outbound_manager_.has_sends_to_write() && !inbound_manager_.has_sends_to_write();
+    if (written) {
+        request_shutdown(end_of_day_stop_reason_, ShutdownKind::end_of_day);
+        return;
+    }
+    if (std::chrono::steady_clock::now() - end_of_day_stop_asked_at_ >= end_of_day_stop_limit) {
+        PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                   "Reactor: stopping for the end of day with something still unwritten after {} ms -- commands waiting: {}; outbound connections "
+                   "with sends left: {}; inbound connections with sends left: {}",
+                   end_of_day_stop_limit.count(), command_queue_.empty() ? "no" : "yes", outbound_manager_.has_sends_to_write() ? "yes" : "no",
+                   inbound_manager_.has_sends_to_write() ? "yes" : "no");
+        request_shutdown(end_of_day_stop_reason_, ShutdownKind::end_of_day);
+    }
 }
 
 void Reactor::request_shutdown(const std::string& reason, ShutdownKind kind) {
@@ -295,8 +321,9 @@ void Reactor::request_shutdown(const std::string& reason, ShutdownKind kind) {
         return;
     }
     shutdown_reason_ = reason;
-    // Published with the request below, by the same release store, so that run() sees it once it sees the request.
-    stopped_for_the_end_of_day_.store(kind == ShutdownKind::end_of_day, std::memory_order_relaxed);
+    // Published with the request below, by the same release store, so that run() sees it once it sees the request. A stop
+    // asked for while one for the end of day waits still ends the day.
+    stopped_for_the_end_of_day_.store(kind == ShutdownKind::end_of_day || end_of_day_stop_asked_.load(std::memory_order_acquire), std::memory_order_relaxed);
 
     // Only from not started or running: a reactor already finalizing or finished stays so.
     ReactorLifecycleState::Tag current = lifecycle_.load(std::memory_order_acquire);
@@ -312,18 +339,20 @@ void Reactor::request_shutdown(const std::string& reason, ShutdownKind kind) {
     PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor::shutdown entered. Reason: {}", reason);
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Reactor::shutdown is requested, event_loop will finish");
 
+    wake_reactor_thread("a shutdown");
+}
+
+void Reactor::wake_reactor_thread(const char* why) {
     if (wake_fd_ == -1) {
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Reactor::shutdown wake_fd == -1");
-    } else {
-        uint64_t one = 1;
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "in Reactor::shutdown, writing wake_fd");
-        const ssize_t n = write(wake_fd_, &one, sizeof(one));
-        if (n == sizeof(one)) {
-            PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "in Reactor::shutdown, wrote wake_fd");
-        } else {
-            [[maybe_unused]] auto err = errno;
-            PUBSUB_LOG(logger_, FwLogLevel::Error, "in Reactor::shutdown, failed to write wake_fd, errno {} [{}]", err, StringUtils::get_error_string(err));
-        }
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor: cannot wake the reactor's thread for {}: wake_fd == -1", why);
+        return;
+    }
+    uint64_t one = 1;
+    const ssize_t n = write(wake_fd_, &one, sizeof(one));
+    if (n != sizeof(one)) {
+        [[maybe_unused]] auto err = errno;
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "Reactor: failed to wake the reactor's thread for {}, errno {} [{}]", why, err,
+                   StringUtils::get_error_string(err));
     }
 }
 
@@ -1234,6 +1263,10 @@ void Reactor::event_loop() {
     }
 
     while (lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running) {
+        stop_for_end_of_day_when_written();
+        if (lifecycle_.load(std::memory_order_acquire) != ReactorLifecycleState::Running) {
+            break;
+        }
         // Read at every look, because set_spin_before_block can change it while the loop runs.
         const int64_t spin_ns = spin_before_block_ns_.load(std::memory_order_relaxed);
         int nfds = 0;
@@ -1247,7 +1280,10 @@ void Reactor::event_loop() {
             // reactor: the wakeup that announced them has already been read.
             const bool commands_left = !command_queue_.empty();
             record_look_for_work();
-            nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), (spin_ns > 0 || commands_left) ? 0 : -1);
+            // While a stop for the end of day waits, the loop looks again every few milliseconds, so that it notices
+            // everything has been written even when nothing else wakes it.
+            const int wait_ms = (spin_ns > 0 || commands_left) ? 0 : (end_of_day_stop_asked_.load(std::memory_order_acquire) ? 10 : -1);
+            nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), wait_ms);
             if (nfds == 0 && commands_left) {
                 static_cast<void>(process_control_commands(commands_per_pass));
                 continue;

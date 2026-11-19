@@ -18,6 +18,7 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/HotPathThreadCount.hpp>
 #include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
+#include <pubsub_itc_fw/LastStateFile.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
@@ -25,6 +26,8 @@
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TradingDayOfFile.hpp>
+
+#include <leader_follower.hpp>
 
 namespace matching_engine {
 
@@ -195,6 +198,16 @@ int main(int argc, char* argv[]) {
                    "MatchingEngine: refusing to start for trading day {} -- {}. The matching engine leaves them as they are: {}", config.trading_day,
                    another_day, pubsub_itc_fw::another_days_files_remedy);
         return 1;
+    }
+    // An engine started again after the end of its day has nothing to do: it exits at once for the end of day, and its
+    // launcher archives what of its files is still present (docs/venue/start_and_end_of_day.md, section 4.2, decisions 5
+    // and 8).
+    if (pubsub_itc_fw::LastStateFile(config.last_state_file, config.trading_day)
+            .says(pubsub_itc_fw_app::to_string(pubsub_itc_fw_app::TradingPhase::EndOfDayEnd))) {
+        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngine: {} says the end of trading day {} has been reached -- nothing to do, exiting for the end of day", config.last_state_file,
+                   config.trading_day);
+        return pubsub_itc_fw::Reactor::stopped_for_the_end_of_day_status;
     }
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);

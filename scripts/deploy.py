@@ -1027,6 +1027,10 @@ def main() -> None:
     # starts. Counted here rather than declared, so that it cannot disagree with the components the environment lists
     # (docs/venue/start_and_end_of_day.md, section 4.2).
     namespace["end_of_day_publishers"] = str(publishers_started(env))
+    # Where each component keeps the file of its last trading state, which outlives the day: the environment's run directory,
+    # made absolute as the install directory is, or the installation's own when one is given on the command line
+    # (docs/venue/start_and_end_of_day.md, section 4.2, decision 5).
+    namespace["last_state_dir"] = str(install_dir / "run" if args.install_dir else (_PROJECT_ROOT / env["paths"]["run_dir"]).resolve())
 
     # Nothing else clears these -- they are ordinary files, not tmpfs entries that
     # a reboot would remove -- so a fresh install starts from an empty registry

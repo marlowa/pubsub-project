@@ -6536,7 +6536,12 @@ def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_
             # lose reports (docs/bug_list.md, BUG-0234).
             config = config_with_values(config_without_report_relay(launched_configs[engine]),
                                         {("ha", "enabled"): "false", ("ha", "role"): '"primary"', ("order_book", "region_path"): f'"{region}"',
-                                         ("network", "listen_port"): engine_port}, work / f"run_{run}_{engine}.toml",
+                                         ("network", "listen_port"): engine_port,
+                                         # Its own last-state file, so that it neither reads nor overwrites the venue's; a
+                                         # copy of a WAL holding the end-of-day end has it stop for the end of day once
+                                         # caught up, with status 3 (start_and_end_of_day.md, section 4.2, decision 5).
+                                         ("end_of_day", "last_state_file"): f'"{work / f"run_{run}_{engine}.last_state"}"'},
+                                        work / f"run_{run}_{engine}.toml",
                                         added={("reactor", "connection_waiting_sends_maximum"): "16384"})
             since = _TEST_EVENTS.mark()
             process = launch_app(engine, "matching_engine", config, bin_dir, log_dir)
@@ -7978,6 +7983,14 @@ def clear_lease_promise_records(prefix: Path) -> None:
             path.unlink(missing_ok=True)
         except OSError as error:
             die(f"could not clear the lease promise record at {path}: {error}")
+    # Each component's last-state file, too: a scenario that ends the day leaves it saying the end of today, and the next
+    # scenario, run for the same day, would have every component exit at once (docs/venue/start_and_end_of_day.md,
+    # section 4.2, decision 5).
+    for path in sorted((prefix / "run").glob("*.last_state")):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            die(f"could not clear the last-state file at {path}: {error}")
 
 
 def write_no_reset_fix8_config() -> None:

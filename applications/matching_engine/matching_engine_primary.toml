@@ -157,6 +157,12 @@ region_capacity = ${matching_engine_order_book_region_capacity}
 # See docs/availability/deterministic_matching_engine.md, section 3.3.
 secret_file = "${matching_engine_identifier_secret_file}"
 
+[end_of_day]
+# The file of this instance's last trading state, which outlives the day. It is read first at start-up: an engine
+# that finds the end-of-day end of its own day in it has nothing to do, and exits at once for the end of day
+# (docs/venue/start_and_end_of_day.md, section 4.2, decision 5).
+last_state_file = "${last_state_dir}/matching_engine_primary.last_state"
+
 [command_queue_pool]
 objects_per_slab = ${matching_engine_command_queue_pool_objects_per_slab}
 initial_slabs    = ${matching_engine_command_queue_pool_initial_slabs}

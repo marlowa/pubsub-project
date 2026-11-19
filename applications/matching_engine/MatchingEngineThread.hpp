@@ -22,6 +22,7 @@
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/IncrementalRehashMap.hpp>
+#include <pubsub_itc_fw/LastStateFile.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
@@ -395,6 +396,15 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // halted, once it is. Kept for the test, which may connect after either happened (report_present_state).
     std::string region_unusable_reason_;
     std::optional<pubsub_itc_fw_app::HaltReason> halt_reason_;
+
+    // The file of this instance's last trading state, written as each phase is applied (docs/venue/start_and_end_of_day.md,
+    // section 4.2, decision 5).
+    pubsub_itc_fw::LastStateFile last_state_{config_.last_state_file, config_.trading_day};
+    // The end-of-day end was applied while this instance was catching up: it stops for the end of day once caught up, not
+    // part of the way through (decision 8).
+    bool end_of_day_met_while_catching_up_{false};
+    // Stops this instance for the end of day, the end-of-day end having been applied at @p sequence_number.
+    void stop_for_end_of_day(int64_t sequence_number);
 
     // While this instance waits for the TechnicalEvent halting trading that it asked for (EngineCatchUp::halt_awaited),
     // the timer that asks again.

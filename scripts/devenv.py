@@ -848,6 +848,17 @@ def clear_durable_state(env: dict, install_dir: Path, *, fresh_book: bool, fresh
                 print(f"  removed {path}")
             else:
                 print(f"  {path} (absent already)")
+        # Each component's file of its last trading state outlives a day, to show the next day's start that the day ended
+        # in good order; but a development run started again on the same day with a fresh WAL is a new day, and a file
+        # saying that day's end would have every component exit at once (docs/venue/start_and_end_of_day.md, section
+        # 4.2, decision 5).
+        print("=== clearing components' last-state files ===")
+        last_states = sorted(resolve_paths(env)[2].glob("*.last_state"))
+        if not last_states:
+            print("  none present")
+        for path in last_states:
+            path.unlink()
+            print(f"  removed {path}")
 
 
 def clear_state_for_a_run(install_dir: Path) -> None:

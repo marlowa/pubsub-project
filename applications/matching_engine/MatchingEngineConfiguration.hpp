@@ -170,6 +170,11 @@ struct MatchingEngineConfiguration {
     /// File holding the leadership epoch across restarts. See pubsub_itc_fw::EpochStore.
     std::string epoch_state_file;
 
+    /// The file of this instance's last trading state, which outlives the day; read first at start-up, so that an engine
+    /// finding the end-of-day end of its own day exits at once for the end of day. See pubsub_itc_fw::LastStateFile and
+    /// docs/venue/start_and_end_of_day.md, section 4.2, decision 5.
+    std::string last_state_file;
+
     /// The trading day the component was started for, as the number yyyymmdd, given on its command line, not in this file.
     /// Every file it writes during the day records it, and a file from another day is refused at start-up
     /// (docs/venue/start_and_end_of_day.md, section 5).

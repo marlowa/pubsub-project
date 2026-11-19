@@ -136,10 +136,20 @@ class Reactor : public ThreadLookupInterface {
     /// (docs/venue/start_and_end_of_day.md, section 4.2, decision 5).
     static constexpr int stopped_for_the_end_of_day_status = 3;
 
+    /// How long a stop for the end of day waits for what is already asked to be sent to be written.
+    static constexpr std::chrono::milliseconds end_of_day_stop_limit{2000};
+
     /**
-     * @brief As shutdown(), for the end of the trading day: run() then returns stopped_for_the_end_of_day_status.
+     * @brief Stops the reactor for the end of the trading day, once it has written what it has already been asked to
+     *        send; run() then returns stopped_for_the_end_of_day_status.
      *
-     * A shutdown already asked for, for any other reason, stands, and run() returns what it would have.
+     * The reactor goes on until no command is waiting for it and no connection has anything left to write, so that a
+     * component's last messages, such as its report that it has stopped or a member's logout, are not lost; or until
+     * end_of_day_stop_limit has passed, when it stops with a Warning saying what was left. Any thread may call it.
+     *
+     * A shutdown already asked for, for any other reason, stands, and run() returns what it would have. One asked for
+     * while this one waits stops the reactor at once, and run() still returns stopped_for_the_end_of_day_status: the day
+     * has ended either way.
      */
     void shutdown_for_end_of_day(const std::string& reason);
 
@@ -840,6 +850,18 @@ class Reactor : public ThreadLookupInterface {
     std::string shutdown_reason_;
     // Set by the caller that claims the shutdown, before the request is published, when it is for the end of the day.
     std::atomic<bool> stopped_for_the_end_of_day_{false};
+    // A stop for the end of day that is waiting for what has been asked to be sent to be written: claimed by the one
+    // caller of shutdown_for_end_of_day() that counts, which writes the reason and the time and then publishes the request
+    // with a release store; read by the reactor's thread after an acquire load.
+    std::atomic<bool> end_of_day_stop_claimed_{false};
+    std::atomic<bool> end_of_day_stop_asked_{false};
+    std::string end_of_day_stop_reason_;
+    std::chrono::steady_clock::time_point end_of_day_stop_asked_at_{};
+    // On the reactor's thread, after each look for work: stops the reactor when a stop for the end of day is waiting and
+    // everything asked to be sent is written, or its time has run out.
+    void stop_for_end_of_day_when_written();
+    // Wakes the reactor's thread if it is waiting for work.
+    void wake_reactor_thread(const char* why);
     // Why the reactor is asked to stop: for the end of the trading day, or for anything else.
     enum class ShutdownKind { ordinary, end_of_day };
     // Claims the shutdown, if no one has, and asks the event loop to finish.

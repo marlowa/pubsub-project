@@ -118,6 +118,7 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
 
         std::string applog_level_str;
         std::string syslog_level_str;
+        toml.get_required_except("end_of_day.last_state_file", config.last_state_file);
         toml.get_required_except("logging.applog_level", applog_level_str);
         toml.get_required_except("logging.syslog_level", syslog_level_str);
 

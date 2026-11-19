@@ -414,6 +414,15 @@ void InboundConnectionManager::gather(InboundConnection& conn, const WaitingSend
     }
 }
 
+bool InboundConnectionManager::has_sends_to_write() const {
+    for (const auto& [id, conn] : connections_) {
+        if (conn->has_sends_to_write() || !conn->gathered_sends().empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void InboundConnectionManager::write_gathered_sends() {
     for (const int id : gathered_connections_) {
         auto it = connections_.find(ConnectionID{id});

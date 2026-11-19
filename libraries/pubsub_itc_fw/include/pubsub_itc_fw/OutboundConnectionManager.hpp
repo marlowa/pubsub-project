@@ -144,6 +144,10 @@ class OutboundConnectionManager {
      */
     void write_gathered_sends();
 
+    /// Whether any connection has anything left to write: a message part written, sends waiting, or sends gathered in this
+    /// pass. A stop for the end of day waits until none has.
+    [[nodiscard]] bool has_sends_to_write() const;
+
     /**
      * @brief Attempts to satisfy a RequestWritableNotification for an outbound connection.
      *
