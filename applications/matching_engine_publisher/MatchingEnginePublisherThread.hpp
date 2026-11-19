@@ -66,10 +66,10 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
 
     // TopicPublisherHost -- each publisher decides what to send and to
     // whom; this thread performs the send/disconnect/pace on the reactor.
-    void topic_send_subscribe_ack(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) override;
-    void topic_send_page(pubsub_itc_fw::ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw_app::TopicPage& page) override;
-    void topic_send_not_leader(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicNotLeader& not_leader) override;
-    void topic_send_lagged(pubsub_itc_fw::ConnectionID control_connection_id, const pubsub_itc_fw_app::TopicLagged& lagged) override;
+    void topic_send_subscribe_ack(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeAck& ack) override;
+    void topic_send_page(pubsub_itc_fw::ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw::TopicPage& page) override;
+    void topic_send_not_leader(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw::TopicNotLeader& not_leader) override;
+    void topic_send_lagged(pubsub_itc_fw::ConnectionID control_connection_id, const pubsub_itc_fw::TopicLagged& lagged) override;
     void topic_disconnect(pubsub_itc_fw::ConnectionID connection_id) override;
     void topic_request_writable_notification(pubsub_itc_fw::ConnectionID connection_id) override;
     void topic_truncate_wal(int64_t safe_seq_no) override;

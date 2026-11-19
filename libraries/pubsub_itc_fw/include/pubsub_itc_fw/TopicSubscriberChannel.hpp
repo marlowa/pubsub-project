@@ -26,8 +26,8 @@ class TopicSubscriberChannelHost {
   public:
     virtual ~TopicSubscriberChannelHost() = default;
 
-    virtual void topic_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) = 0;
-    virtual void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAck& ack) = 0;
+    virtual void topic_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeRequest& request) = 0;
+    virtual void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw::TopicAck& ack) = 0;
 };
 
 /**
@@ -57,7 +57,6 @@ class TopicSubscriberChannel {
         : host_(host)
         , subscriber_id_(std::move(subscriber_id))
         , topic_name_(std::move(topic_name))
-        , from_seq_no_(from_seq_no)
         , last_applied_seq_no_(from_seq_no)
         , sink_(std::move(sink))
         , ack_interval_(ack_interval) {}
@@ -72,20 +71,36 @@ class TopicSubscriberChannel {
         return last_applied_seq_no_;
     }
 
-    /// Send the TopicSubscribeRequest once the connection is up.
+    /// Send the TopicSubscribeRequest once the connection is up. It asks for the records after the last one already
+    /// applied, so a subscriber that connects again, to the same publisher or to the other one of the pair, carries on
+    /// from where it was; on the first connection that is the from_seq_no it was constructed with.
     void on_connected(ConnectionID connection_id) {
         connection_id_ = connection_id;
-        pubsub_itc_fw_app::TopicSubscribeRequest request{};
+        pubsub_itc_fw::TopicSubscribeRequest request{};
         request.subscriber_id = subscriber_id_;
         request.topic_name = topic_name_;
-        request.from_seq_no = from_seq_no_;
-        request.role = pubsub_itc_fw_app::TopicChannelRole::Data; // control channel arrives in a later step
+        request.from_seq_no = last_applied_seq_no_;
+        request.role = pubsub_itc_fw::TopicChannelRole::Data; // control channel arrives in a later step
         host_.topic_send_subscribe_request(connection_id, request);
     }
 
-    void on_subscribe_ack(const pubsub_itc_fw_app::TopicSubscribeAckView& view) {
+    void on_subscribe_ack(const pubsub_itc_fw::TopicSubscribeAckView& view) {
         accepted_from_seq_no_ = view.accepted_from_seq_no;
         subscribe_ack_received_ = true;
+    }
+
+    /**
+     * @brief As on_page(), for a subscriber connected to more than one publisher: the acknowledgement goes
+     *        back on the connection the page arrived on.
+     *
+     * @param connection_id  the connection the TopicPage arrived on.
+     * @param payload        the TopicPage PDU payload bytes.
+     * @param size           length of @p payload.
+     * @param arena          decode arena for the page's record list.
+     */
+    void on_page_from(ConnectionID connection_id, const uint8_t* payload, size_t size, BumpAllocator& arena) {
+        connection_id_ = connection_id;
+        on_page(payload, size, arena);
     }
 
     /**
@@ -99,10 +114,10 @@ class TopicSubscriberChannel {
      * @param arena    decode arena for the page's record list.
      */
     void on_page(const uint8_t* payload, size_t size, BumpAllocator& arena) {
-        pubsub_itc_fw_app::TopicPageView page{};
+        pubsub_itc_fw::TopicPageView page{};
         size_t consumed = 0;
         size_t arena_needed = 0;
-        if (!pubsub_itc_fw_app::decode(page, payload, size, consumed, arena, arena_needed)) {
+        if (!pubsub_itc_fw::decode(page, payload, size, consumed, arena, arena_needed)) {
             return;
         }
 
@@ -117,7 +132,7 @@ class TopicSubscriberChannel {
         }
 
         if (records_since_ack_ >= ack_interval_) {
-            pubsub_itc_fw_app::TopicAck ack{};
+            pubsub_itc_fw::TopicAck ack{};
             ack.last_seq_no = last_applied_seq_no_;
             host_.topic_send_ack(connection_id_, ack);
             records_since_ack_ = 0;
@@ -128,7 +143,6 @@ class TopicSubscriberChannel {
     TopicSubscriberChannelHost& host_;
     std::string subscriber_id_;
     std::string topic_name_;
-    int64_t from_seq_no_;
     int64_t last_applied_seq_no_;
     int64_t accepted_from_seq_no_ = -1;
     bool subscribe_ack_received_ = false;

@@ -173,7 +173,7 @@ class ProbeThread : public pubsub_itc_fw::TopicSubscriberThread {
     ProbeThread(ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor, std::string topic_name,
                 pubsub_itc_fw::ThreadID thread_id, int64_t from_seq_no)
         : TopicSubscriberThread(token, logger, reactor, "ProbeThread-" + topic_name, thread_id, make_queue_config(), make_allocator_config(),
-                                pubsub_itc_fw::ApplicationThreadConfiguration{}, topic_name /* service name = topic name */,
+                                pubsub_itc_fw::ApplicationThreadConfiguration{}, {topic_name} /* service name = topic name */,
                                 "probe-" + topic_name + "-" + std::to_string(::getpid()), topic_name, from_seq_no) {}
 
   protected:

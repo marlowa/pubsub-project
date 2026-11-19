@@ -664,25 +664,6 @@ add_custom_target(fix_order_gateway_test_events_generated ALL
 )
 install(FILES "${GW_TEST_EVENTS_DSL_GENERATED_PY}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/python")
 
-# Topic pub/sub protocol PDU header (plain integer IDs 107-111; no --pdu-id-enum).
-set(TOPICS_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/topics.dsl")
-set(TOPICS_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/topics.hpp")
-
-add_custom_command(
-    OUTPUT "${TOPICS_DSL_GENERATED_HPP}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
-    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
-            --namespace pubsub_itc_fw_app
-            "${TOPICS_DSL_SOURCE}"
-            --cpp "${TOPICS_DSL_GENERATED_HPP}"
-    DEPENDS "${TOPICS_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
-    COMMENT "Generating topics.hpp from topics.dsl"
-    VERBATIM
-)
-add_custom_target(topics_generated ALL
-    DEPENDS "${TOPICS_DSL_GENERATED_HPP}"
-)
-
 # Pub/sub topic catalog: the generated Topic enum + pdu-id/topic membership table
 # (topics_registry.hpp) and the human-readable catalog (topics_catalog.md). Both
 # are generated from the index applications/pubsub.dsl, which `include`s

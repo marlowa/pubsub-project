@@ -16,7 +16,7 @@ target_link_libraries(matching_engine_publisher PRIVATE
 
 add_dependencies(matching_engine_publisher
         leader_follower_generated
-        topics_generated
+        pubsub_itc_fw_dsl
         topics_registry_generated
 )
 

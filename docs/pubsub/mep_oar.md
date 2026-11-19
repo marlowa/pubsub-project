@@ -94,9 +94,9 @@ OAR and should be scheduled as a standalone DSL improvement session when time pe
 > `topics.dsl` wire protocol below (the PDUs) is unaffected; only how topic *names* are
 > defined and validated changes.
 
-Location: `applications/topics.dsl`
-Namespace: `pubsub_itc_fw_app`
-Generated header: `build/generated_dsl/topics.hpp`
+Location: `libraries/pubsub_itc_fw/include/pubsub_itc_fw/topics.dsl`
+Namespace: `pubsub_itc_fw`
+Generated header: `build/libraries/pubsub_itc_fw/dsl/topics.hpp`, by the framework library's build
 
 This file defines the framework topic pub/sub protocol. It is independent of any specific
 application topic (orders, execution reports, etc.) and is reusable for any future topic.

@@ -36,10 +36,10 @@ class TopicPublisherHost {
   public:
     virtual ~TopicPublisherHost() = default;
 
-    virtual void topic_send_subscribe_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) = 0;
-    virtual void topic_send_page(ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw_app::TopicPage& page) = 0;
-    virtual void topic_send_not_leader(ConnectionID connection_id, const pubsub_itc_fw_app::TopicNotLeader& not_leader) = 0;
-    virtual void topic_send_lagged(ConnectionID control_connection_id, const pubsub_itc_fw_app::TopicLagged& lagged) = 0;
+    virtual void topic_send_subscribe_ack(ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeAck& ack) = 0;
+    virtual void topic_send_page(ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw::TopicPage& page) = 0;
+    virtual void topic_send_not_leader(ConnectionID connection_id, const pubsub_itc_fw::TopicNotLeader& not_leader) = 0;
+    virtual void topic_send_lagged(ConnectionID control_connection_id, const pubsub_itc_fw::TopicLagged& lagged) = 0;
     virtual void topic_disconnect(ConnectionID connection_id) = 0;
 
     /// Arm a one-shot on_connection_writable() for this connection (send pacing).
@@ -136,10 +136,10 @@ class TopicPublisher {
      * A non-leader replies TopicNotLeader and disconnects. A request for a
      * different topic is rejected by disconnect.
      */
-    void on_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequestView& view) {
+    void on_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeRequestView& view) {
         if (!is_leader_) {
-            pubsub_itc_fw_app::TopicNotLeader not_leader{};
-            not_leader.publisher_role = pubsub_itc_fw_app::TopicPublisherRole::Follower;
+            pubsub_itc_fw::TopicNotLeader not_leader{};
+            not_leader.publisher_role = pubsub_itc_fw::TopicPublisherRole::Follower;
             host_.topic_send_not_leader(connection_id, not_leader);
             host_.topic_disconnect(connection_id);
             return;
@@ -150,7 +150,7 @@ class TopicPublisher {
         }
 
         const std::string subscriber_id(view.subscriber_id);
-        if (view.role == pubsub_itc_fw_app::TopicChannelRole::Control) {
+        if (view.role == pubsub_itc_fw::TopicChannelRole::Control) {
             handle_control_subscribe(connection_id, subscriber_id);
         } else {
             handle_data_subscribe(connection_id, subscriber_id, view.from_seq_no);
@@ -161,7 +161,7 @@ class TopicPublisher {
     /// A no-op for a connection this publisher does not own, so a host serving several
     /// publishers (e.g. the MEP, one publisher per topic over a shared WAL) may fan an ack
     /// to all of them and let the owning one act.
-    void on_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAckView& view) {
+    void on_ack(ConnectionID connection_id, const pubsub_itc_fw::TopicAckView& view) {
         auto conn_it = connection_to_subscriber_id_.find(connection_id);
         if (conn_it == connection_to_subscriber_id_.end()) {
             return;
@@ -277,7 +277,7 @@ class TopicPublisher {
         if (sub_it == subscribers_.end() || !sub_it->second.control_connection_id.is_valid()) {
             return;
         }
-        pubsub_itc_fw_app::TopicLagged lagged{};
+        pubsub_itc_fw::TopicLagged lagged{};
         lagged.reason = reason;
         lagged.oldest_retained_seq_no = oldest_retained_seq_no;
         host_.topic_send_lagged(sub_it->second.control_connection_id, lagged);
@@ -323,7 +323,7 @@ class TopicPublisher {
         subscriber.stream->cursor.open(wal_directory_, WalPosition{0, 0});
 
         // NB: the "-1 == from head" convention is deferred; the tests use a concrete cursor.
-        pubsub_itc_fw_app::TopicSubscribeAck ack{};
+        pubsub_itc_fw::TopicSubscribeAck ack{};
         ack.accepted_from_seq_no = effective_from;
         host_.topic_send_subscribe_ack(connection_id, ack);
 
@@ -423,7 +423,7 @@ class TopicPublisher {
             batch_scratch_.insert(batch_scratch_.end(), pdu_payload, pdu_payload + pdu_payload_size);
             batch_offsets_.push_back(offset);
 
-            pubsub_itc_fw_app::TopicRecord record{};
+            pubsub_itc_fw::TopicRecord record{};
             record.seq_no = record_id;
             record.pdu_id = pdu_id;
             record.wall_time_ns = wall_time_ns;
@@ -449,7 +449,7 @@ class TopicPublisher {
             batch_records_[i].payload.data = batch_scratch_.data() + batch_offsets_[i];
         }
 
-        pubsub_itc_fw_app::TopicPage page{};
+        pubsub_itc_fw::TopicPage page{};
         page.record_count = static_cast<int16_t>(batch_records_.size());
         page.page_number = 1;
         page.total_pages = 1;
@@ -470,9 +470,9 @@ class TopicPublisher {
     int64_t head_seq_no_ = 0;                                    // highest seq_no appended to the WAL
     int64_t last_truncation_floor_ = 0;                          // highest safe floor already truncated to
     bool is_leader_ = true;
-    std::vector<uint8_t> batch_scratch_;                        // reused per-page payload copy buffer
-    std::vector<pubsub_itc_fw_app::TopicRecord> batch_records_; // reused per-page record list
-    std::vector<size_t> batch_offsets_;                         // payload offsets into batch_scratch_
+    std::vector<uint8_t> batch_scratch_;                    // reused per-page payload copy buffer
+    std::vector<pubsub_itc_fw::TopicRecord> batch_records_; // reused per-page record list
+    std::vector<size_t> batch_offsets_;                     // payload offsets into batch_scratch_
     ExternalWalSubscriberRegistry registry_;
     std::unordered_map<std::string, LogicalSubscriber> subscribers_;            // subscriber_id -> pair + stream
     std::unordered_map<ConnectionID, std::string> connection_to_subscriber_id_; // either connection -> subscriber_id

@@ -73,7 +73,7 @@ add_executable(topic_pubsub_bench
 )
 
 add_dependencies(topic_pubsub_bench
-    topics_generated
+    pubsub_itc_fw_dsl
     fix_orders_generated  # TopicPubSubBench.cpp includes fix_orders.hpp
 )
 

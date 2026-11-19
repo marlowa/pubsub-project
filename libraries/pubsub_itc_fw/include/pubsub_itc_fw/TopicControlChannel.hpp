@@ -20,7 +20,7 @@ class TopicControlChannelHost {
   public:
     virtual ~TopicControlChannelHost() = default;
 
-    virtual void topic_control_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) = 0;
+    virtual void topic_control_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeRequest& request) = 0;
 };
 
 /**
@@ -47,15 +47,15 @@ class TopicControlChannel {
     /// Register the control channel once its connection is up.
     void on_connected(ConnectionID connection_id) {
         connection_id_ = connection_id;
-        pubsub_itc_fw_app::TopicSubscribeRequest request{};
+        pubsub_itc_fw::TopicSubscribeRequest request{};
         request.subscriber_id = subscriber_id_;
         request.topic_name = topic_name_;
         request.from_seq_no = 0; // ignored on the control channel
-        request.role = pubsub_itc_fw_app::TopicChannelRole::Control;
+        request.role = pubsub_itc_fw::TopicChannelRole::Control;
         host_.topic_control_send_subscribe_request(connection_id, request);
     }
 
-    void on_lagged(const pubsub_itc_fw_app::TopicLaggedView& view) {
+    void on_lagged(const pubsub_itc_fw::TopicLaggedView& view) {
         lagged_sink_(std::string(view.reason), view.oldest_retained_seq_no);
     }
 

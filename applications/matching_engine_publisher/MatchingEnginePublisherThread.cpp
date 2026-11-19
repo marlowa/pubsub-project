@@ -291,9 +291,9 @@ void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw
 
     // Topic subscriber PDUs.
     if (svc == orders_inbound_svc_ || svc == er_inbound_svc_ || svc == technical_events_inbound_svc_) {
-        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id) {
+        if (message.pdu_id() == pubsub_itc_fw::TopicSubscribeRequest::message_pdu_id) {
             handle_topic_subscribe_request(conn_id, message);
-        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicAck::message_pdu_id) {
+        } else if (message.pdu_id() == pubsub_itc_fw::TopicAck::message_pdu_id) {
             handle_topic_ack(conn_id, message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: unexpected PDU {} from topic subscriber {} -- dropping", message.pdu_id(),
@@ -637,8 +637,8 @@ void MatchingEnginePublisherThread::handle_topic_subscribe_request(const pubsub_
     arena.reset();
     size_t arena_needed = 0;
     size_t consumed = 0;
-    pubsub_itc_fw_app::TopicSubscribeRequestView view{};
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+    pubsub_itc_fw::TopicSubscribeRequestView view{};
+    if (!pubsub_itc_fw::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode TopicSubscribeRequest -- dropping");
         return;
     }
@@ -679,8 +679,8 @@ void MatchingEnginePublisherThread::handle_topic_ack(const pubsub_itc_fw::Connec
     arena.reset();
     size_t arena_needed = 0;
     size_t consumed = 0;
-    pubsub_itc_fw_app::TopicAckView view{};
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+    pubsub_itc_fw::TopicAckView view{};
+    if (!pubsub_itc_fw::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode TopicAck -- dropping");
         return;
     }
@@ -703,20 +703,20 @@ void MatchingEnginePublisherThread::set_publisher_role(pubsub_itc_fw_app::Role r
 
 // TopicPublisherHost -- each publisher decides what to send; this thread does it
 
-void MatchingEnginePublisherThread::topic_send_subscribe_ack(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) {
-    send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id, 0, ack);
+void MatchingEnginePublisherThread::topic_send_subscribe_ack(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeAck& ack) {
+    send_pdu(connection_id, pubsub_itc_fw::TopicSubscribeAck::message_pdu_id, 0, ack);
 }
 
-void MatchingEnginePublisherThread::topic_send_page(pubsub_itc_fw::ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw_app::TopicPage& page) {
-    send_pdu(connection_id, pubsub_itc_fw_app::TopicPage::message_pdu_id, seq_no, page);
+void MatchingEnginePublisherThread::topic_send_page(pubsub_itc_fw::ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw::TopicPage& page) {
+    send_pdu(connection_id, pubsub_itc_fw::TopicPage::message_pdu_id, seq_no, page);
 }
 
-void MatchingEnginePublisherThread::topic_send_not_leader(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw_app::TopicNotLeader& not_leader) {
-    send_pdu(connection_id, pubsub_itc_fw_app::TopicNotLeader::message_pdu_id, 0, not_leader);
+void MatchingEnginePublisherThread::topic_send_not_leader(pubsub_itc_fw::ConnectionID connection_id, const pubsub_itc_fw::TopicNotLeader& not_leader) {
+    send_pdu(connection_id, pubsub_itc_fw::TopicNotLeader::message_pdu_id, 0, not_leader);
 }
 
-void MatchingEnginePublisherThread::topic_send_lagged(pubsub_itc_fw::ConnectionID control_connection_id, const pubsub_itc_fw_app::TopicLagged& lagged) {
-    send_pdu(control_connection_id, pubsub_itc_fw_app::TopicLagged::message_pdu_id, 0, lagged);
+void MatchingEnginePublisherThread::topic_send_lagged(pubsub_itc_fw::ConnectionID control_connection_id, const pubsub_itc_fw::TopicLagged& lagged) {
+    send_pdu(control_connection_id, pubsub_itc_fw::TopicLagged::message_pdu_id, 0, lagged);
 }
 
 void MatchingEnginePublisherThread::topic_disconnect(pubsub_itc_fw::ConnectionID connection_id) {

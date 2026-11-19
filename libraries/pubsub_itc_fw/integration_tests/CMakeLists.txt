@@ -31,7 +31,7 @@ add_dependencies(pubsub_itc_fw_integration_tests
     pubsub_itc_fw_dsl
     fix_orders_generated
     leader_follower_generated
-    topics_generated
+    pubsub_itc_fw_dsl
 )
 
 target_link_libraries(pubsub_itc_fw_integration_tests PRIVATE

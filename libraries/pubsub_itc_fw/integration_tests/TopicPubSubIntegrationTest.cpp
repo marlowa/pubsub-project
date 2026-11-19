@@ -180,17 +180,17 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
     }
 
     // TopicPublisherHost
-    void topic_send_subscribe_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeAck& ack) override {
-        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id, 0, ack);
+    void topic_send_subscribe_ack(ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeAck& ack) override {
+        send_pdu(connection_id, pubsub_itc_fw::TopicSubscribeAck::message_pdu_id, 0, ack);
     }
-    void topic_send_page(ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw_app::TopicPage& page) override {
-        send_pdu(connection_id, pubsub_itc_fw_app::TopicPage::message_pdu_id, seq_no, page);
+    void topic_send_page(ConnectionID connection_id, int64_t seq_no, const pubsub_itc_fw::TopicPage& page) override {
+        send_pdu(connection_id, pubsub_itc_fw::TopicPage::message_pdu_id, seq_no, page);
     }
-    void topic_send_not_leader(ConnectionID connection_id, const pubsub_itc_fw_app::TopicNotLeader& not_leader) override {
-        send_pdu(connection_id, pubsub_itc_fw_app::TopicNotLeader::message_pdu_id, 0, not_leader);
+    void topic_send_not_leader(ConnectionID connection_id, const pubsub_itc_fw::TopicNotLeader& not_leader) override {
+        send_pdu(connection_id, pubsub_itc_fw::TopicNotLeader::message_pdu_id, 0, not_leader);
     }
-    void topic_send_lagged(ConnectionID control_connection_id, const pubsub_itc_fw_app::TopicLagged& lagged) override {
-        send_pdu(control_connection_id, pubsub_itc_fw_app::TopicLagged::message_pdu_id, 0, lagged);
+    void topic_send_lagged(ConnectionID control_connection_id, const pubsub_itc_fw::TopicLagged& lagged) override {
+        send_pdu(control_connection_id, pubsub_itc_fw::TopicLagged::message_pdu_id, 0, lagged);
     }
     void topic_disconnect(ConnectionID connection_id) override {
         ReactorControlCommand cmd(ReactorControlCommand::CommandTag::Disconnect);
@@ -234,21 +234,21 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
         size_t consumed = 0;
         size_t arena_needed = 0;
 
-        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id) {
-            pubsub_itc_fw_app::TopicSubscribeRequestView view{};
-            if (!pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
+        if (message.pdu_id() == pubsub_itc_fw::TopicSubscribeRequest::message_pdu_id) {
+            pubsub_itc_fw::TopicSubscribeRequestView view{};
+            if (!pubsub_itc_fw::decode(view, payload, size, consumed, arena, arena_needed)) {
                 return;
             }
             publisher_.on_subscribe_request(connection_id, view);
             maybe_publish_live_batch();
             // Demonstrate the control channel: once the control channel is up, send a
             // TopicLagged on it (step 4 decides *when* from the lag policy; this is a demo).
-            if (lag_on_control_subscribe_ == LagOnControlSubscribeFlag::DoLagOnControlSubscribe && view.role == pubsub_itc_fw_app::TopicChannelRole::Control) {
+            if (lag_on_control_subscribe_ == LagOnControlSubscribeFlag::DoLagOnControlSubscribe && view.role == pubsub_itc_fw::TopicChannelRole::Control) {
                 publisher_.notify_lagged(std::string(view.subscriber_id), "too far behind", 42);
             }
             // Once BOTH channels are up, append a batch (drives the lag-out policy while
             // the control channel is available to carry the TopicLagged).
-            if (view.role == pubsub_itc_fw_app::TopicChannelRole::Control) {
+            if (view.role == pubsub_itc_fw::TopicChannelRole::Control) {
                 control_subscribed_ = true;
             } else {
                 data_subscribed_ = true;
@@ -259,9 +259,9 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
                     append_and_notify(i);
                 }
             }
-        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicAck::message_pdu_id) {
-            pubsub_itc_fw_app::TopicAckView view{};
-            if (!pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
+        } else if (message.pdu_id() == pubsub_itc_fw::TopicAck::message_pdu_id) {
+            pubsub_itc_fw::TopicAckView view{};
+            if (!pubsub_itc_fw::decode(view, payload, size, consumed, arena, arena_needed)) {
                 return;
             }
             publisher_.on_ack(connection_id, view);
@@ -355,11 +355,11 @@ class ChannelSubscriberThread : public ApplicationThread, public TopicSubscriber
         }) {}
 
     // TopicSubscriberChannelHost
-    void topic_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
-        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id, 0, request);
+    void topic_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeRequest& request) override {
+        send_pdu(connection_id, pubsub_itc_fw::TopicSubscribeRequest::message_pdu_id, 0, request);
     }
-    void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAck& ack) override {
-        send_pdu(connection_id, pubsub_itc_fw_app::TopicAck::message_pdu_id, 0, ack);
+    void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw::TopicAck& ack) override {
+        send_pdu(connection_id, pubsub_itc_fw::TopicAck::message_pdu_id, 0, ack);
     }
 
   protected:
@@ -387,19 +387,19 @@ class ChannelSubscriberThread : public ApplicationThread, public TopicSubscriber
         size_t consumed = 0;
         size_t arena_needed = 0;
 
-        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id) {
-            pubsub_itc_fw_app::TopicSubscribeAckView view{};
-            if (!pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
+        if (message.pdu_id() == pubsub_itc_fw::TopicSubscribeAck::message_pdu_id) {
+            pubsub_itc_fw::TopicSubscribeAckView view{};
+            if (!pubsub_itc_fw::decode(view, payload, size, consumed, arena, arena_needed)) {
                 return;
             }
             channel_.on_subscribe_ack(view);
-        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicPage::message_pdu_id) {
+        } else if (message.pdu_id() == pubsub_itc_fw::TopicPage::message_pdu_id) {
             pages_received.fetch_add(1, std::memory_order_acq_rel);
             channel_.on_page(payload, size, arena);
-        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicNotLeader::message_pdu_id) {
-            pubsub_itc_fw_app::TopicNotLeaderView view{};
-            if (pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
-                not_leader_named_a_follower.store(view.publisher_role == pubsub_itc_fw_app::TopicPublisherRole::Follower, std::memory_order_release);
+        } else if (message.pdu_id() == pubsub_itc_fw::TopicNotLeader::message_pdu_id) {
+            pubsub_itc_fw::TopicNotLeaderView view{};
+            if (pubsub_itc_fw::decode(view, payload, size, consumed, arena, arena_needed)) {
+                not_leader_named_a_follower.store(view.publisher_role == pubsub_itc_fw::TopicPublisherRole::Follower, std::memory_order_release);
             }
             not_leader_received.fetch_add(1, std::memory_order_acq_rel);
         }
@@ -465,18 +465,18 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
         }) {}
 
     // TopicSubscriberChannelHost (data)
-    void topic_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
-        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id, 0, request);
+    void topic_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeRequest& request) override {
+        send_pdu(connection_id, pubsub_itc_fw::TopicSubscribeRequest::message_pdu_id, 0, request);
     }
-    void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw_app::TopicAck& ack) override {
+    void topic_send_ack(ConnectionID connection_id, const pubsub_itc_fw::TopicAck& ack) override {
         if (suppress_ack_ == SuppressAckFlag::DoSuppressAck) {
             return; // simulate a stalled consumer that never advances its ack cursor
         }
-        send_pdu(connection_id, pubsub_itc_fw_app::TopicAck::message_pdu_id, 0, ack);
+        send_pdu(connection_id, pubsub_itc_fw::TopicAck::message_pdu_id, 0, ack);
     }
     // TopicControlChannelHost (control)
-    void topic_control_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw_app::TopicSubscribeRequest& request) override {
-        send_pdu(connection_id, pubsub_itc_fw_app::TopicSubscribeRequest::message_pdu_id, 0, request);
+    void topic_control_send_subscribe_request(ConnectionID connection_id, const pubsub_itc_fw::TopicSubscribeRequest& request) override {
+        send_pdu(connection_id, pubsub_itc_fw::TopicSubscribeRequest::message_pdu_id, 0, request);
     }
 
     /// The accepted_from_seq_no the data channel received (for gap-on-resubscribe assertions).
@@ -521,21 +521,21 @@ class DualChannelSubscriberThread : public ApplicationThread, public TopicSubscr
         size_t arena_needed = 0;
 
         if (connection_id == control_connection_id_) {
-            if (message.pdu_id() == pubsub_itc_fw_app::TopicLagged::message_pdu_id) {
-                pubsub_itc_fw_app::TopicLaggedView view{};
-                if (pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
+            if (message.pdu_id() == pubsub_itc_fw::TopicLagged::message_pdu_id) {
+                pubsub_itc_fw::TopicLaggedView view{};
+                if (pubsub_itc_fw::decode(view, payload, size, consumed, arena, arena_needed)) {
                     control_channel_.on_lagged(view);
                 }
             }
             return;
         }
 
-        if (message.pdu_id() == pubsub_itc_fw_app::TopicSubscribeAck::message_pdu_id) {
-            pubsub_itc_fw_app::TopicSubscribeAckView view{};
-            if (pubsub_itc_fw_app::decode(view, payload, size, consumed, arena, arena_needed)) {
+        if (message.pdu_id() == pubsub_itc_fw::TopicSubscribeAck::message_pdu_id) {
+            pubsub_itc_fw::TopicSubscribeAckView view{};
+            if (pubsub_itc_fw::decode(view, payload, size, consumed, arena, arena_needed)) {
                 data_channel_.on_subscribe_ack(view);
             }
-        } else if (message.pdu_id() == pubsub_itc_fw_app::TopicPage::message_pdu_id) {
+        } else if (message.pdu_id() == pubsub_itc_fw::TopicPage::message_pdu_id) {
             data_channel_.on_page(payload, size, arena);
         }
     }
@@ -570,7 +570,7 @@ class CapturingSubscriberThread : public TopicSubscriberThread {
     CapturingSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_record_count, std::string subscriber_id = "capturing",
                               int64_t from_seq_no = 0)
         : TopicSubscriberThread(token, logger, reactor, "CapturingSubscriberThread", ThreadID{1}, make_queue_config(), make_allocator_config("CapSubPool"),
-                                ApplicationThreadConfiguration{}, "publisher", std::move(subscriber_id), "orders", from_seq_no)
+                                ApplicationThreadConfiguration{}, {"publisher"}, std::move(subscriber_id), "orders", from_seq_no)
         , expected_record_count_(expected_record_count) {}
 
   protected:
