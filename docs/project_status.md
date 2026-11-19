@@ -22,7 +22,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 - **A trading day under load.** `perf_run.py --profile profiles/trading_day.toml` runs a shaped day
   of several million orders with cancels.
-- **Failover and restart of each pair.** `ha_test.py` has 116 scenarios: killing each component,
+- **Failover and restart of each pair.** `ha_test.py` has 118 scenarios: killing each component,
   restarting each in each role, stopping a whole machine, a member's open orders surviving a restart
   of the matching engine and a change of engine leader, a command that crashes both engines being
   voided, orders held while no engine leads, reports held for a gateway surviving the death of
@@ -37,7 +37,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 53 open entries, 6 of them high severity. Each one is judged,
+The [bug list](bug_list.md) holds 52 open entries, 5 of them high severity. Each one is judged,
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
@@ -57,11 +57,12 @@ they are being fixed. The ones most likely to matter first, by design area:
   and a venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).
 - **The trading day is built, and only lightly tried.** Every phase is entered on request or at the time in
   the day's schedule, the close cancels every open order, every member is told of each change, each
-  component refuses a file left from another day, and `scripts/trading_day.py` starts a day and ends it by
-  archiving every file the day wrote ([BUG-0137](bug_list.md#bug_0137)). The procedures are checked by
-  `scripts/trading_day_test.py`, and the end works only where every component runs on one machine. Its
-  replacement, in which every component shuts itself down at the end of the day and its launcher archives its
-  files, is agreed and not built. A trading halt cannot be applied to one instrument
+  component refuses a file left from another day, and `scripts/trading_day.py` starts a day. At the end of
+  the day every component shuts itself down, keeping a file of its last trading state, and its launcher
+  archives its files; `trading_day.py end` archives, on an operator's word, the files of a component that
+  missed the end ([BUG-0137](bug_list.md#bug_0137), closed). This is checked by `scripts/trading_day_test.py`
+  and by `ha_test.py` scenarios that lose the leading sequencer during the end of day. A trading halt cannot be
+  applied to one instrument
   ([BUG-0065](bug_list.md#bug_0065)).
 - **The write-ahead log is never reclaimed during the day** ([BUG-0048](bug_list.md#bug_0048)).
   Whether it may be waits on a decision about how long history must be kept.

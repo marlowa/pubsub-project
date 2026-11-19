@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Bugs recorded | 269 |
-| Open | 53 (28 defects, 25 tasks) |
-| Closed | 216 |
+| Open | 52 (28 defects, 24 tasks) |
+| Closed | 217 |
 | Next id | BUG-0270 |
 
 ## Open bugs by severity
@@ -17,7 +17,6 @@
 | [BUG-0065](#bug_0065) | high | task | A trading halt cannot be applied to one instrument |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
-| [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0041](#bug_0041) | medium | defect | Five ways the venue will not start on a RHEL8 target host |
@@ -726,136 +725,6 @@ halted. That build is not the venue's, and the check is not repeated.
 **What is wanted.** A scenario in which the WAL begins after the first command of the day and an engine with a damaged
 region takes the lead: trading halts by the command, nothing is cancelled, and an order sent afterwards is refused.
 It becomes possible once the WAL is reclaimed ([BUG-0048](#bug_0048)).
-
-### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
-
-| | |
-|---|---|
-| Severity | high |
-| Kind | task |
-| Found | 2026-10-11 |
-| Recorded | 2026-10-11 |
-| How | Reviewing principle V12 (every trading day starts fresh) in `docs/design_principles.md`, which said it held "by procedure" when no procedure exists |
-| Impact | The whole design assumes each trading day starts with none of the previous day's files, and nothing makes that so. A file left behind is silently taken as a restart of the earlier day. For example, yesterday's open-order region would make the matching engine judge itself absent for hours, cancel yesterday's orders, send the cancels to members, and halt the new day before it opens |
-
-**What is assumed.** At the end of each trading day every component is stopped and every file the
-venue wrote that day is archived, and the next day starts with none of them (V12). Several principles
-rest on this, V2 among them: the log is the record of one trading day.
-
-**What exists.** Nothing that carries this out or describes it: no start-of-day procedure, no
-end-of-day procedure, and no list of the files the venue writes during a day. A component tells a
-restart from a fresh start only by whether its files are present; for example, a sequencer that finds
-a non-empty log at start-up treats it as a restart. Nothing checks which trading day a file belongs to.
-
-**What is wanted.** Agreed with Andrew, 11 October 2026:
-
-1. **One list of every file the venue writes during a trading day,** kept in one place: at least the
-   sequencers' logs, the matching engine's open-order region, the epoch files (`EpochStore`), the lease
-   promise records (`LeasePromiseStore`), the arbiter's component statements
-   (`ComponentStatementStore`) and the application logs. Building the list means checking every
-   component for files it writes, not only these.
-2. **An end-of-day procedure** that stops every component and archives every file on the list.
-3. **A start-of-day procedure** that loads the reference data and starts the components, with none of
-   the previous day's files present.
-4. **A refusal at start-up.** Each file records the trading day it was written on, and a component that
-   finds a file from a different trading day refuses to start, saying which file and which day, rather
-   than treating it as a restart. This is the same idea as the trading phases design, in which a
-   component refuses a phase event older than the trading day it holds
-   (`docs/venue/trading_phases.md`).
-
-The procedures go with the trading phases (`sod`, `pre_open`, `open`, `closed`, `eod`), which are
-designed and not built, and with [BUG-0132](#bug_0132), cancelling the orders still open at the end
-of the day. To be designed and agreed before code.
-
-**Principle.** V12 in `docs/design_principles.md`.
-
-**Where it stands, 15 November 2026.** All four items are built.
-
-- **Item 1, the list of files,** is section 2 of `docs/venue/start_and_end_of_day.md`.
-- **Item 4, the refusal at start-up,** is built:
-  - Every component is given `--trading-day D` on its command line and logs it.
-  - Every file in that list which a component reads when it starts records the day it was written on, and the
-    component refuses to start on one from another day, or one that records none. It names each such file and the day
-    it belongs to, and leaves it as it was.
-  - The files covered are: the sequencer's WAL, epoch, lease promise and record of the last engine routed to; the
-    publisher's WAL; the matching engine's open-order region, epoch and lease promise; and the arbiter's lease promise
-    and record of statements.
-  - Scenario 114 of `ha_test.py` starts each of the four components for the next day on the files the day left, and
-    each refuses. With the small files moved aside, the sequencer must refuse the WAL and the matching engine the
-    region, which must be left unchanged.
-  - `devenv.py start --fresh-wal` now also removes the matching engines' epoch files, which a fresh run otherwise kept.
-- **Items 2 and 3, the end-of-day and start-of-day procedures,** are built, as `scripts/trading_day.py end` and
-  `start`, following sections 3 and 4 of `docs/venue/start_and_end_of_day.md`:
-  - `start` refuses while any process of the installation runs, or while a file of another day that a component reads
-    when it starts is present, naming each. It writes the run manifest (`var/run_manifest.toml`), exports the members'
-    credentials and checks the file holds as many as the database query found, starts every component for the day,
-    and asks for the start of day with the schedule. Run again on the same day, it restarts the venue on the day's
-    files.
-  - `end` asks the leading sequencer for the state with `TradingStateQuery` (234), which writes nothing, and refuses
-    unless the venue is in the end of day of the manifest's day. It stops every component, checks each has exited,
-    and moves every file of the day into `<archive_dir>/<day>/<machine>/`, with a listing of each file's size and
-    SHA-256 checksum against which every archived copy is checked.
-  - The Quill logs and captured output of the components `devenv.py` and `trading_day.py` start are named by day,
-    such as `sequencer_primary.20261116.log`, and each environment file sets `archive_dir`.
-  - `scripts/trading_day_test.py` runs two trading days through both procedures on the deployed venue: a refusal for a
-    file of another day, a start, a restart, a refusal to end before the end of day, an end, and a second day that runs
-    by its schedule from start to end.
-  - The start-of-day procedure has no reference data to load, because the venue has none yet
-    (`docs/venue/trading_day_and_reference_data.md`); its inputs are the members' credentials.
-  - **`end` works only where every component runs on one machine,** as in the development environment. It asks the
-    leading sequencer whether the venue is in the end of day before it stops anything, so run on each of several
-    machines in turn, it finds no sequencer to answer once the sequencers' machines have been ended, and refuses.
-- **How the day ends is redesigned and agreed, and the new design is not built.** Section 4 of
-  `docs/venue/start_and_end_of_day.md` replaces `end` with two events in the WAL. The end-of-day begin
-  (`EndOfDayBegin`, the phase called `EndOfDay` today) ends trading, and nothing shuts down on it. The end-of-day end
-  (`EndOfDayEnd`, a new phase) is written by the leading sequencer once the follower sequencer and both publishers hold
-  every record up to the begin, or once a limit of time has passed. Every component subscribes to both. On the
-  end-of-day end each component shuts itself down, in no order relative to the others, and exits with a status that
-  tells its launcher, `scripts/launch.py`, not to restart it; the launcher then archives the component's files on the
-  machine they run on. No component asks another whether the day ended, and no machine depends on another, however
-  many machines there are. A component leaving is expected only from the end-of-day end onwards; before it, a
-  departure is a failure, handled as during the day. No execution report the WAL does not already hold can reach the
-  sequencer after the begin; repeats can, which is [BUG-0250](#bug_0250). `end` is kept as the manual way to archive
-  the files of a component that missed the end of day.
-
-**What remains before this entry can be closed.** The end of day as section 4 of
-`docs/venue/start_and_end_of_day.md` designs it. Every decision in section 4.2 is agreed.
-
-1. **Measure how long a follower sequencer takes to catch up a day's WAL** in the development environment, and choose
-   from it the limit of time the leading sequencer waits for the copies of the WAL. **Done** (section 4.2,
-   decision 4): 176,000 to 316,000 records a second. The limit is a setting of the sequencer's configuration, 600
-   seconds in every environment, and provisional in all but the development environment.
-2. **The two events. Built** (`EndOfDayCopies`, `TradingPhaseRequests`, and scenarios 111 and 113 of `ha_test.py`).
-   Rename the phase `EndOfDay` to `EndOfDayBegin`, add `EndOfDayEnd`, and have the leading
-   sequencer write the end only once the follower sequencer and both publishers have confirmed every record up to the
-   begin, or once the limit of time has passed, and log when the follower sequencer has confirmed it holds the end.
-3. **Every component subscribes to both events.** The arbiters, the witness, the authentication services and the
-   administration service receive no phase today, and subscribe to the `technical_events` topic. From the end-of-day
-   end onwards, and not before, every component treats another component leaving as expected, logged at Info, with no
-   promotion, halt or alarm.
-4. **Each component, on the end-of-day end, shuts itself down** and exits with the status that means it stopped for
-   the end of day. The leading sequencer does not shut down until the follower sequencer has confirmed it holds the
-   end itself. Each publisher, after publishing the end, stays up for a fixed time set in its configuration,
-   10 seconds.
-5. **The launcher archives.** `scripts/launch.py`, seeing that status, does not restart its component, and archives
-   the component's files, its captured console output among them, with the listing and checksums `trading_day.py end`
-   uses today, moved into code the two share. **Built** in the launcher, for exit status 3, and checked by
-   `scripts/tests/test_launch.py`; it takes effect once components exit with that status (item 4).
-6. **The last-state file.** Each component keeps a file of its last trading state, in the venue's run directory,
-   that outlives the day, and the start-of-day check accepts that file from the day before. Its path is a setting of
-   each component's configuration, filled in from `[paths] run_dir`; `ha_test.py`, which starts components again on a
-   copy of a day's files to check them, gives them a path of their own, and takes an exit with status 3 once they
-   have caught up as a normal finish (`docs/venue/start_and_end_of_day.md`, section 4.2, decision 5; agreed 19
-   November 2026).
-7. **The next day's start** archives the run manifest and `credentials.toml` of the day before, which belong to no
-   single component, once it has found no other file of that day. **Built** (`trading_day.py start`, checked by
-   `trading_day_test.py`).
-8. **`trading_day.py end` becomes the manual fallback:** it archives the files of a component that missed the end of
-   day, on the operator's word given on its command line and recorded in the listing, instead of asking the leading
-   sequencer. **Built** (`--operator-says-the-day-ended`, checked by `trading_day_test.py`).
-9. **Tests.** `scripts/trading_day_test.py` checks the day ending by itself, with no `end`; and scenarios in
-   `ha_test.py` stop the leader between the two events, and between writing the end and the follower sequencer
-   confirming it.
 
 ### BUG-0136: Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known {#bug_0136}
 
@@ -2611,6 +2480,143 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
+
+| | |
+|---|---|
+| Severity | high |
+| Kind | task |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| Fixed | 2026-11-19 -- every component stops by itself on the end-of-day end, keeping a last-state file, and its launcher archives its files; the next day's start archives the run manifest and the credentials; `trading_day.py end` is the manual way for a component that missed the end |
+| How | Reviewing principle V12 (every trading day starts fresh) in `docs/design_principles.md`, which said it held "by procedure" when no procedure exists |
+| Impact | The whole design assumes each trading day starts with none of the previous day's files, and nothing makes that so. A file left behind is silently taken as a restart of the earlier day. For example, yesterday's open-order region would make the matching engine judge itself absent for hours, cancel yesterday's orders, send the cancels to members, and halt the new day before it opens |
+
+**What is assumed.** At the end of each trading day every component is stopped and every file the
+venue wrote that day is archived, and the next day starts with none of them (V12). Several principles
+rest on this, V2 among them: the log is the record of one trading day.
+
+**What exists.** Nothing that carries this out or describes it: no start-of-day procedure, no
+end-of-day procedure, and no list of the files the venue writes during a day. A component tells a
+restart from a fresh start only by whether its files are present; for example, a sequencer that finds
+a non-empty log at start-up treats it as a restart. Nothing checks which trading day a file belongs to.
+
+**What is wanted.** Agreed with Andrew, 11 October 2026:
+
+1. **One list of every file the venue writes during a trading day,** kept in one place: at least the
+   sequencers' logs, the matching engine's open-order region, the epoch files (`EpochStore`), the lease
+   promise records (`LeasePromiseStore`), the arbiter's component statements
+   (`ComponentStatementStore`) and the application logs. Building the list means checking every
+   component for files it writes, not only these.
+2. **An end-of-day procedure** that stops every component and archives every file on the list.
+3. **A start-of-day procedure** that loads the reference data and starts the components, with none of
+   the previous day's files present.
+4. **A refusal at start-up.** Each file records the trading day it was written on, and a component that
+   finds a file from a different trading day refuses to start, saying which file and which day, rather
+   than treating it as a restart. This is the same idea as the trading phases design, in which a
+   component refuses a phase event older than the trading day it holds
+   (`docs/venue/trading_phases.md`).
+
+The procedures go with the trading phases (`sod`, `pre_open`, `open`, `closed`, `eod`), which are
+designed and not built, and with [BUG-0132](#bug_0132), cancelling the orders still open at the end
+of the day. To be designed and agreed before code.
+
+**Principle.** V12 in `docs/design_principles.md`.
+
+**Where it stands, 15 November 2026.** All four items are built.
+
+- **Item 1, the list of files,** is section 2 of `docs/venue/start_and_end_of_day.md`.
+- **Item 4, the refusal at start-up,** is built:
+  - Every component is given `--trading-day D` on its command line and logs it.
+  - Every file in that list which a component reads when it starts records the day it was written on, and the
+    component refuses to start on one from another day, or one that records none. It names each such file and the day
+    it belongs to, and leaves it as it was.
+  - The files covered are: the sequencer's WAL, epoch, lease promise and record of the last engine routed to; the
+    publisher's WAL; the matching engine's open-order region, epoch and lease promise; and the arbiter's lease promise
+    and record of statements.
+  - Scenario 114 of `ha_test.py` starts each of the four components for the next day on the files the day left, and
+    each refuses. With the small files moved aside, the sequencer must refuse the WAL and the matching engine the
+    region, which must be left unchanged.
+  - `devenv.py start --fresh-wal` now also removes the matching engines' epoch files, which a fresh run otherwise kept.
+- **Items 2 and 3, the end-of-day and start-of-day procedures,** are built, as `scripts/trading_day.py end` and
+  `start`, following sections 3 and 4 of `docs/venue/start_and_end_of_day.md`:
+  - `start` refuses while any process of the installation runs, or while a file of another day that a component reads
+    when it starts is present, naming each. It writes the run manifest (`var/run_manifest.toml`), exports the members'
+    credentials and checks the file holds as many as the database query found, starts every component for the day,
+    and asks for the start of day with the schedule. Run again on the same day, it restarts the venue on the day's
+    files.
+  - `end` asks the leading sequencer for the state with `TradingStateQuery` (234), which writes nothing, and refuses
+    unless the venue is in the end of day of the manifest's day. It stops every component, checks each has exited,
+    and moves every file of the day into `<archive_dir>/<day>/<machine>/`, with a listing of each file's size and
+    SHA-256 checksum against which every archived copy is checked.
+  - The Quill logs and captured output of the components `devenv.py` and `trading_day.py` start are named by day,
+    such as `sequencer_primary.20261116.log`, and each environment file sets `archive_dir`.
+  - `scripts/trading_day_test.py` runs two trading days through both procedures on the deployed venue: a refusal for a
+    file of another day, a start, a restart, a refusal to end before the end of day, an end, and a second day that runs
+    by its schedule from start to end.
+  - The start-of-day procedure has no reference data to load, because the venue has none yet
+    (`docs/venue/trading_day_and_reference_data.md`); its inputs are the members' credentials.
+  - **`end` works only where every component runs on one machine,** as in the development environment. It asks the
+    leading sequencer whether the venue is in the end of day before it stops anything, so run on each of several
+    machines in turn, it finds no sequencer to answer once the sequencers' machines have been ended, and refuses.
+- **How the day ends is redesigned and agreed, and the new design is not built.** Section 4 of
+  `docs/venue/start_and_end_of_day.md` replaces `end` with two events in the WAL. The end-of-day begin
+  (`EndOfDayBegin`, the phase called `EndOfDay` today) ends trading, and nothing shuts down on it. The end-of-day end
+  (`EndOfDayEnd`, a new phase) is written by the leading sequencer once the follower sequencer and both publishers hold
+  every record up to the begin, or once a limit of time has passed. Every component subscribes to both. On the
+  end-of-day end each component shuts itself down, in no order relative to the others, and exits with a status that
+  tells its launcher, `scripts/launch.py`, not to restart it; the launcher then archives the component's files on the
+  machine they run on. No component asks another whether the day ended, and no machine depends on another, however
+  many machines there are. A component leaving is expected only from the end-of-day end onwards; before it, a
+  departure is a failure, handled as during the day. No execution report the WAL does not already hold can reach the
+  sequencer after the begin; repeats can, which is [BUG-0250](#bug_0250). `end` is kept as the manual way to archive
+  the files of a component that missed the end of day.
+
+**What remains before this entry can be closed.** The end of day as section 4 of
+`docs/venue/start_and_end_of_day.md` designs it. Every decision in section 4.2 is agreed.
+
+1. **Measure how long a follower sequencer takes to catch up a day's WAL** in the development environment, and choose
+   from it the limit of time the leading sequencer waits for the copies of the WAL. **Done** (section 4.2,
+   decision 4): 176,000 to 316,000 records a second. The limit is a setting of the sequencer's configuration, 600
+   seconds in every environment, and provisional in all but the development environment.
+2. **The two events. Built** (`EndOfDayCopies`, `TradingPhaseRequests`, and scenarios 111 and 113 of `ha_test.py`).
+   Rename the phase `EndOfDay` to `EndOfDayBegin`, add `EndOfDayEnd`, and have the leading
+   sequencer write the end only once the follower sequencer and both publishers have confirmed every record up to the
+   begin, or once the limit of time has passed, and log when the follower sequencer has confirmed it holds the end.
+3. **Every component subscribes to both events.** The arbiters, the witness, the authentication services and the
+   administration service receive no phase today, and subscribe to the `technical_events` topic. From the end-of-day
+   end onwards, and not before, every component treats another component leaving as expected, logged at Info, with no
+   promotion, halt or alarm. **Built** (`TopicSubscriberThread`, `TechnicalEventsSubscription`, the admin service's
+   `TechnicalEventsSubscriber`, and `ApplicationThread::note_the_day_has_ended()`).
+4. **Each component, on the end-of-day end, shuts itself down** and exits with the status that means it stopped for
+   the end of day. The leading sequencer does not shut down until the follower sequencer has confirmed it holds the
+   end itself. Each publisher, after publishing the end, stays up for a fixed time set in its configuration,
+   10 seconds. **Built** (`Reactor::shutdown_for_end_of_day`, and every component's handling of the end).
+5. **The launcher archives.** `scripts/launch.py`, seeing that status, does not restart its component, and archives
+   the component's files, its captured console output among them, with the listing and checksums `trading_day.py end`
+   uses today, moved into code the two share. **Built** in the launcher, for exit status 3, and checked by
+   `scripts/tests/test_launch.py`; it takes effect once components exit with that status (item 4).
+6. **The last-state file.** Each component keeps a file of its last trading state, in the venue's run directory,
+   that outlives the day, and the start-of-day check accepts that file from the day before. Its path is a setting of
+   each component's configuration, filled in from `[paths] run_dir`; `ha_test.py`, which starts components again on a
+   copy of a day's files to check them, gives them a path of their own, and takes an exit with status 3 once they
+   have caught up as a normal finish (`docs/venue/start_and_end_of_day.md`, section 4.2, decision 5; agreed 19
+   November 2026).
+7. **The next day's start** archives the run manifest and `credentials.toml` of the day before, which belong to no
+   single component, once it has found no other file of that day. **Built** (`trading_day.py start`, checked by
+   `trading_day_test.py`).
+8. **`trading_day.py end` becomes the manual fallback:** it archives the files of a component that missed the end of
+   day, on the operator's word given on its command line and recorded in the listing, instead of asking the leading
+   sequencer. **Built** (`--operator-says-the-day-ended`, checked by `trading_day_test.py`).
+9. **Tests.** `scripts/trading_day_test.py` checks the day ending by itself, with no `end`; and scenarios in
+   `ha_test.py` stop the leader between the two events, and between writing the end and the follower sequencer
+   confirming it. **Built** (`trading_day_test.py` checks 6 and 7, and scenarios 117 and 118).
+
+**Closed, 19 November 2026.** Every item above is built. On the development venue taken to the end of day, every
+component stops by itself within 20 seconds of the end-of-day begin, all 16 last-state files say the end, and nothing is
+logged at Warning after the end but the sequencers' own records of writing it. Moving the arbiter and the witness
+programs out of the library, found while this was built, is [BUG-0269](#bug_0269).
 
 ### BUG-0268: A `technical_events` subscriber reconnects to the publisher that does not lead every 2 seconds, each time with three Warnings {#bug_0268}
 

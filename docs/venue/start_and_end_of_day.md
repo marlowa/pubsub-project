@@ -495,7 +495,8 @@ outside the venue.
 
 ### 4.4 Building the rest: items 3, 4 and 6 of BUG-0137
 
-**Status: agreed, 19 November 2026, being built.** Decisions 9 to 14 below were each agreed with Andrew that day.
+**Status: built, 19 November 2026.** Decisions 9 to 14 below were each agreed with Andrew that day, and every step of the order
+below is built and checked by `trading_day_test.py` and scenarios 111, 113, 117 and 118 of `ha_test.py`.
 
 **What every component does on the end-of-day end.** Each is told by a route it already has, or by the one this
 section adds, and shuts itself down in an orderly way, writing its last-state file (decision 5) and exiting with
