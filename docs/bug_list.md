@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 258 |
-| Open | 45 (25 defects, 20 tasks) |
+| Bugs recorded | 259 |
+| Open | 46 (26 defects, 20 tasks) |
 | Closed | 213 |
-| Next id | BUG-0259 |
+| Next id | BUG-0260 |
 
 ## Open bugs by severity
 
-6 high, 30 medium, 9 low.
+6 high, 30 medium, 10 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -57,6 +57,7 @@
 | [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
 | [BUG-0249](#bug_0249) | low | defect | The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it |
 | [BUG-0250](#bug_0250) | low | defect | A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member |
+| [BUG-0259](#bug_0259) | low | defect | Under a steady flood of commands, the warning that a gateway's store of unanswered commands is full is logged once for every command refused |
 | [BUG-0253](#bug_0253) | low | defect | `binary_load_client --help` prints its help and then tries to connect to the venue |
 
 ---
@@ -184,6 +185,24 @@ is stopped, which is the usual state of a standby gateway that has failed or not
 **What is wanted.** A decision on how long a report for a session connected nowhere is held when a configured gateway
 instance stays unannounced, and whether a session known to have ended needs holding at all.
 
+### BUG-0259: Under a steady flood of commands, the warning that a gateway's store of unanswered commands is full is logged once for every command refused {#bug_0259}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| How | Overloading the venue for [BUG-0251](#bug_0251), with the gateways' connections to the sequencer limited |
+| Impact | A gateway's Quill log fills with the same warning; one run wrote it 1,563 times |
+
+**What happens.** `UnansweredCommands::keep` logs a Warning when the store becomes full and an Info when it has room
+again. Under a steady flood, one answer makes room for one command, which fills the store again, so the two lines
+alternate, once for each command. In one run of the overload in `tmp/bug0251/limit2/` the binary gateway logged the
+warning 1,563 times.
+
+**What is wanted.** The warning said once when commands begin to be refused, and once when a whole interval has passed
+with none refused, with how many were refused, as `KeptReports` does for overwritten reports.
+
 ### BUG-0253: `binary_load_client --help` prints its help and then tries to connect to the venue {#bug_0253}
 
 | | |
@@ -237,6 +256,36 @@ configuration.
    the leader did not send, and so took itself out of service as a standby, as V11 requires, until restarted. At
    22:56:15 it received record 174,247 from the old leader where record 590,967 was due, applied nothing from that
    answer, and asked to be caught up again.
+
+**Measured on 19 November 2026.** The same overload was run twice on the development venue, from a fresh WAL, with
+`binary_load_client` sending 1.8 million orders on 4 sessions with no `--rate`. The script and the Quill logs are kept
+in `tmp/bug0251/` in the development checkout.
+
+| Run | Orders a second, round trip | Leases that ran out | Times the leader ran as if alone | Follower engine |
+|---|---|---|---|---|
+| 1 | 110,102 | none | 2 | stopped being a standby |
+| 2 | 107,415 | none | 6 | stopped being a standby |
+
+- No sequencer or matching engine lost its lease, and the leader did not change. The backlog no longer sits in the
+  leading sequencer's queue: when 16,384 orders wait for a voter to confirm that the follower may not lead, it stops
+  reading the gateways, so the orders wait in the gateways and in the members' sockets. The queueing showed in the
+  load client's latencies, up to 14 seconds.
+- In each run the follower matching engine stopped being a standby, for a reason other than the one in step 5 above:
+  it kept 100,000 reports of commands for which the WAL did not yet hold the leading engine's reports, which is all
+  its store holds (`FollowerReportComparison::max_kept_reports`). Why the leading engine's reports fell that far behind
+  is not known.
+
+**An experiment that made it worse.** Each gateway's connection for orders to the sequencer was limited to 1,024
+messages waiting in the sequencer's queue (`limit_messages_waiting`), as the engines' connections for reports already
+are, so that orders could not queue ahead of the lease grants. The leader's lease then ran out 38 times in one run and
+7 in another, and throughput fell to 11,751 and 34,683 orders a second. The binary gateway, whose sends to the
+sequencer then waited, reached its limit of 65,536 waiting sends (27.5 MB), closed its connection to the sequencer, and
+connected again; the sequencer logged that commands sent again were arriving, and logged nothing more for 7 seconds,
+until its lease ran out. What it was doing in those 7 seconds is not known. The limit was taken out again.
+
+The same close can happen without the limit. The leader stops reading the gateways while orders wait for a voter, and
+a gateway offered 110,000 orders a second reaches 65,536 waiting sends in about 0.6 seconds. Each of the four pauses in the two runs
+lasted between 0.35 and 0.43 seconds.
 
 **What is not known.** Why the follower engine's reports of command 0 differed: command 0 is the number carried by
 reports no member's command produced, such as cancels on a change of leader. Whether a leader whose lease has run out
