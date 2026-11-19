@@ -42,7 +42,7 @@ std::string_view what_members_may_do(pubsub_itc_fw_app::TradingPhase phase) {
 
 TradingPhaseRequests::TradingPhaseRequests(TradingPhaseRequestsLinksInterface& links, pubsub_itc_fw::QuillLogger& logger, int32_t end_of_day_publishers,
                                            int64_t longest_wait_for_copies_ns)
-    : links_(links), logger_(logger), copies_(end_of_day_publishers, longest_wait_for_copies_ns) {}
+    : links_(links), logger_(logger), copies_(end_of_day_publishers, longest_wait_for_copies_ns), longest_wait_ns_(longest_wait_for_copies_ns) {}
 
 void TradingPhaseRequests::request(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, int32_t trading_day,
                                    pubsub_itc_fw_app::TradingPhase phase, const std::vector<ScheduledPhase>& schedule) {
@@ -263,7 +263,11 @@ void TradingPhaseRequests::scheduled_check(int64_t now_utc_ns, int64_t check_int
     }
     const pubsub_itc_fw_app::TradingPhase current = state.latest()->phase;
     if (current == pubsub_itc_fw_app::TradingPhase::EndOfDayEnd) {
-        note_the_follower_holds_the_end();
+        // Only for an end this instance wrote: one that started on a WAL already ending the day, as a check does on a copy
+        // of a day's WAL, goes on serving it. A leader restarted after the end has already exited on its last-state file.
+        if (end_written_here_) {
+            stop_once_the_follower_holds_the_end(now_utc_ns);
+        }
         return;
     }
     if (current == pubsub_itc_fw_app::TradingPhase::EndOfDayBegin) {
@@ -442,6 +446,7 @@ void TradingPhaseRequests::end_of_day_end_check(int64_t now_utc_ns) {
     const pubsub_itc_fw_app::TechnicalEventReason reason =
         complete ? pubsub_itc_fw_app::TechnicalEventReason::EveryCopyComplete : pubsub_itc_fw_app::TechnicalEventReason::CopiesNotCompleteInTime;
     const int64_t seq_no = write_phase(pubsub_itc_fw_app::TradingPhase::EndOfDayEnd, state.trading_day(), reason);
+    end_written_here_ = seq_no != 0;
     if (seq_no == 0) {
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
                    "TradingPhaseRequests: the TechnicalEvent entering the end-of-day end was not written; the next check tries again -- {}",
@@ -462,22 +467,35 @@ void TradingPhaseRequests::end_of_day_end_check(int64_t now_utc_ns) {
                seq_no, state.trading_day(), assessment.explanation);
 }
 
-void TradingPhaseRequests::note_the_follower_holds_the_end() {
+void TradingPhaseRequests::stop_once_the_follower_holds_the_end(int64_t now_utc_ns) {
+    if (stop_asked_) {
+        return;
+    }
     const TradingPhaseState& state = links_.trading_phase();
     const int64_t end_seq_no = state.entered_at(pubsub_itc_fw_app::TradingPhase::EndOfDayEnd).value_or(state.latest()->seq_no);
-    if (end_acknowledgement_logged_for_ == end_seq_no) {
-        return;
+    if (!end_seen_at_ns_.has_value()) {
+        end_seen_at_ns_ = now_utc_ns;
     }
     const std::optional<int64_t> follower = links_.follower_sequencer_holds_through();
     if (follower.has_value() && *follower < end_seq_no) {
-        return;
+        if (now_utc_ns - *end_seen_at_ns_ < longest_wait_ns_) {
+            return;
+        }
+        // The follower may hold the end and its acknowledgement have been lost with the connection, or it may not: this
+        // instance cannot know, and goes on without it (decision 4, case 5).
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                   "TradingPhaseRequests: the follower sequencer has not acknowledged the end-of-day end at seq={} within {} s -- it holds records through "
+                   "{}; stopping for the end of day without its acknowledgement, so its WAL may lack the end",
+                   end_seq_no, longest_wait_ns_ / 1'000'000'000, *follower);
+    } else {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "TradingPhaseRequests: {} -- stopping for the end of day",
+                   follower.has_value()
+                       ? fmt::format("the follower sequencer has acknowledged the end-of-day end at seq={}, so both sequencers' WALs end with it", end_seq_no)
+                       : fmt::format("the end-of-day end is at seq={}, and there is no follower sequencer to acknowledge it, because high availability is off",
+                                     end_seq_no));
     }
-    end_acknowledgement_logged_for_ = end_seq_no;
-    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "TradingPhaseRequests: {}",
-               follower.has_value()
-                   ? fmt::format("the follower sequencer has acknowledged the end-of-day end at seq={}, so both sequencers' WALs end with it", end_seq_no)
-                   : fmt::format("the end-of-day end is at seq={}, and there is no follower sequencer to acknowledge it, because high availability is off",
-                                 end_seq_no));
+    stop_asked_ = true;
+    links_.stop_for_end_of_day(end_seq_no);
 }
 
 void TradingPhaseRequests::answer(const pubsub_itc_fw::ConnectionID& connection, std::string_view operator_name, const Attempt& attempt,

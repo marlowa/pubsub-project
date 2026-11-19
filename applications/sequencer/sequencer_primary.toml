@@ -86,6 +86,10 @@ publishers = ${end_of_day_publishers}
 # The longest the leading sequencer waits for the follower sequencer and the publishers to hold every
 # record up to the end-of-day begin, before it writes the end-of-day end with a copy still incomplete.
 longest_wait_for_copies_seconds = ${shared_end_of_day_longest_wait_for_copies_seconds}
+# The file of this instance's last trading state, which outlives the day. It is read first at start-up: a
+# sequencer that finds the end-of-day end of its own day in it has nothing to do, and exits at once for the
+# end of day (docs/venue/start_and_end_of_day.md, section 4.2, decision 5).
+last_state_file = "${last_state_dir}/sequencer_primary.last_state"
 
 [ha]
 ha_enabled                  = ${ha_enabled}

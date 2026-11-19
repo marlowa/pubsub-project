@@ -88,6 +88,7 @@ orders_held_at_most_seconds = 4
 [end_of_day]
 publishers = 2
 longest_wait_for_copies_seconds = 45
+last_state_file = "/run/venue/sequencer_primary.last_state"
 
 [logging]
 applog_level = "info"
@@ -393,6 +394,7 @@ TEST(SequencerConfigurationLoaderTest, ReadsWhatTheEndOfDayWaitsFor) {
     const auto config = load_with_gateways(one_gateway);
     EXPECT_EQ(config.end_of_day_publishers, 2);
     EXPECT_EQ(config.end_of_day_longest_wait_for_copies_seconds, 45);
+    EXPECT_EQ(config.last_state_file, "/run/venue/sequencer_primary.last_state");
 }
 
 TEST(SequencerConfigurationLoaderTest, RejectsAnEndOfDayWaitBelowOneSecond) {

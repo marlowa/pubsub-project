@@ -1891,7 +1891,7 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
                    "MatchingEngineThread: caught up again at seq_no={} with {} order(s) on the book -- following the WAL from record {}, as {}",
                    ack.last_seq_no, order_book_.size(), catch_up_.next_followed(), me_role_name(role_.role()));
         if (end_of_day_met_while_catching_up_) {
-            stop_for_end_of_day(ack.last_seq_no);
+            stop_for_end_of_day_at(ack.last_seq_no);
         }
         return;
     }
@@ -1916,7 +1916,7 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     // of day now, once caught up, and not part of the way through (docs/venue/start_and_end_of_day.md, section 4.2,
     // decision 8).
     if (end_of_day_met_while_catching_up_) {
-        stop_for_end_of_day(ack.last_seq_no);
+        stop_for_end_of_day_at(ack.last_seq_no);
         return;
     }
 
@@ -2057,7 +2057,7 @@ void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app
                            "MatchingEngineThread: the end-of-day end applied at seq={} while catching up -- stopping for the end of day once caught up",
                            sequence_number);
             } else {
-                stop_for_end_of_day(sequence_number);
+                stop_for_end_of_day_at(sequence_number);
             }
         }
     }
@@ -2098,13 +2098,13 @@ void MatchingEngineThread::apply_technical_event_command(const pubsub_itc_fw_app
     }
 }
 
-void MatchingEngineThread::stop_for_end_of_day(int64_t sequence_number) {
+void MatchingEngineThread::stop_for_end_of_day_at(int64_t sequence_number) {
     // Every copy of the WAL is complete and trading is over, so nothing more is needed from this instance: it stops in an
     // orderly way, closing its region and its files, and its launcher archives them (docs/venue/start_and_end_of_day.md,
     // section 4.1).
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: the end-of-day end of trading day {} at seq={} -- stopping for the end of day", config_.trading_day, sequence_number);
-    get_reactor().shutdown_for_end_of_day(fmt::format("the end-of-day end of trading day {}, at seq={}", config_.trading_day, sequence_number));
+    ApplicationThread::stop_for_end_of_day(fmt::format("the end-of-day end of trading day {}, at seq={}", config_.trading_day, sequence_number));
 }
 
 void MatchingEngineThread::handle_voided_commands(const pubsub_itc_fw::EventMessage& message) {

@@ -6513,7 +6513,16 @@ def run_engines_on_the_wal(prefix: Path, launched_configs: dict[str, Path], bin_
         # with high availability off a secondary refuses to start (R-0163).
         config = config_with_values(sequencer_config, {("ha", "ha_enabled"): "false", ("ha", "role"): '"primary"', ("wal", "directory"): f'"{wal_copy}"',
                                                        ("recovery", "automatic_recovery_limit_seconds"): "86400",
-                                                       ("catch_up", "send_every_report"): "true", **certificates}, work / f"{sequencer}.toml")
+                                                       ("catch_up", "send_every_report"): "true",
+                                                       # Its own last-state file, so that it does not overwrite the venue's.
+                                                       ("end_of_day", "last_state_file"): f'"{work / f"{sequencer}.last_state"}"',
+                                                       # It waits a day for a publisher that never comes, so that, leading
+                                                       # alone on a WAL that stops at the end-of-day begin, it does not write
+                                                       # the end itself and stop for it, which would leave the later runs
+                                                       # with no sequencer and a different WAL (docs/bug_list.md, BUG-0261).
+                                                       ("end_of_day", "publishers"): "1",
+                                                       ("end_of_day", "longest_wait_for_copies_seconds"): "86400",
+                                                       **certificates}, work / f"{sequencer}.toml")
         since = _TEST_EVENTS.mark()
         # The sequencer reads the engines' reports slowly, so that each engine catching up sends its reports faster than
         # they are read, as one did when it lost them (docs/bug_list.md, BUG-0234): the engine's pacing must keep every

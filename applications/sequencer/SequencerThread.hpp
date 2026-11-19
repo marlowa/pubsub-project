@@ -22,6 +22,7 @@
 #include <pubsub_itc_fw/FixedCapacityRingBuffer.hpp>
 #include <pubsub_itc_fw/GaugeHandle.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
+#include <pubsub_itc_fw/LastStateFile.hpp>
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
@@ -427,6 +428,14 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         SequencerThread& owner_;
     };
     OrderLinks order_links_{*this};
+
+    // The file of this instance's last trading state, written as each phase is noted (docs/venue/start_and_end_of_day.md,
+    // section 4.2, decision 5).
+    pubsub_itc_fw::LastStateFile last_state_{config_.last_state_file, config_.trading_day};
+    // After a record has been noted in the venue's state: records a change of phase in the last-state file, and, for the
+    // end-of-day end held as a follower, stops this instance for the end of day. A leader stops
+    // once its follower holds the end (TradingPhaseRequests).
+    void after_noting(const VenueStateFromTheWal::Noted& noted, VenueStateFromTheWal::How how, int64_t seq_no);
     // Holding each order until it may be sent to the leading matching engine, and sending it; reading from the gateways,
     // paused while too many orders wait or while a follower is handed over; and the wait after taking the lead for the
     // engine's position (section 6.8 of docs/venue/dividing_the_sequencer_and_matching_engine.md). The storage for the
@@ -637,6 +646,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         bool write_trading_schedule(const pubsub_itc_fw_app::TradingSchedule& schedule) override;
         void answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingPhaseAnswer& answer) override;
         void answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingScheduleAnswer& answer) override;
+        void stop_for_end_of_day(int64_t end_seq_no) override;
 
       private:
         SequencerThread& owner_;

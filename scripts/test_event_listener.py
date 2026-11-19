@@ -302,7 +302,7 @@ class TestEventListener:  # pylint: disable=too-many-instance-attributes
     def checkpoint(self, component: str, timeout: float = 10.0) -> bool:
         """Ask every open connection from component for a checkpoint, and wait until each has answered.
 
-        Once this returns True, every event those connections sent before answering has been read.
+        Once this returns True, every event those connections sent before answering, or before closing, has been read.
         """
         targets = [c for c in self._connections.values() if c.open and c.component == component]
         if not targets:
@@ -320,7 +320,10 @@ class TestEventListener:  # pylint: disable=too-many-instance-attributes
             connection.sock.sendall(frame)
             connection.sock.setblocking(False)
         deadline = time.monotonic() + timeout
-        while not all(c.checkpoints.get(number) for c in targets):
+        # A connection that closes while waiting has been read to the end before its close was seen, so everything the
+        # component sent on it has arrived: it counts as answered, as settle() counts a connection already closed. A
+        # component that stops for the end of day while a test asks it does exactly that.
+        while not all(c.checkpoints.get(number) or not c.open for c in targets):
             self.check()
             if time.monotonic() >= deadline:
                 self.failures.append(f"checkpoint: {component} did not answer within {timeout:.0f}s")

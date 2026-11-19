@@ -811,7 +811,19 @@ void ApplicationThread::process_message(const EventMessage& message) {
             break;
         }
     }
+    // A stop for the end of day asked for while handling this message goes to the reactor now, after everything the
+    // handler asked to be sent has been queued.
+    if (end_of_day_stop_reason_.has_value() && !end_of_day_stop_passed_) {
+        end_of_day_stop_passed_ = true;
+        reactor_.shutdown_for_end_of_day(*end_of_day_stop_reason_);
+    }
     set_time_event_finished(HighResolutionClock::now());
+}
+
+void ApplicationThread::stop_for_end_of_day(const std::string& reason) {
+    if (!end_of_day_stop_reason_.has_value()) {
+        end_of_day_stop_reason_ = reason;
+    }
 }
 
 void ApplicationThread::on_timer_id_event(TimerID id) {

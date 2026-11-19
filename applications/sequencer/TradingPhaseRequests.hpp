@@ -67,6 +67,11 @@ class TradingPhaseRequestsLinksInterface {
     virtual void answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingPhaseAnswer& answer) = 0;
     /// Sends the one on @p connection @p answer.
     virtual void answer(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::TradingScheduleAnswer& answer) = 0;
+
+    /// The end-of-day end at @p end_seq_no is held by the follower sequencer, or there is none, or the limit of time for
+    /// its acknowledgement has passed: this instance stops for the end of day (docs/venue/start_and_end_of_day.md, section
+    /// 4.2, decision 4).
+    virtual void stop_for_end_of_day(int64_t end_seq_no) = 0;
 };
 
 /**
@@ -217,7 +222,9 @@ class TradingPhaseRequests {
     // has passed, and asks the publishers how far their copies go until then.
     void end_of_day_end_check(int64_t now_utc_ns);
     // In the end-of-day end: logs, once, that the follower sequencer has acknowledged the end-of-day end.
-    void note_the_follower_holds_the_end();
+    // While leading in the end-of-day end: stops this instance once the follower sequencer has acknowledged the end, or at
+    // once when there is none, or, with a Warning, once the limit of time has passed without the acknowledgement.
+    void stop_once_the_follower_holds_the_end(int64_t now_utc_ns);
     // Writes the TechnicalEvent entering @p phase, carrying whether trading is halted. @return its position, or zero if it
     // was not written.
     int64_t write_phase(pubsub_itc_fw_app::TradingPhase phase, int32_t trading_day, pubsub_itc_fw_app::TechnicalEventReason reason);
@@ -233,7 +240,13 @@ class TradingPhaseRequests {
     // The state of the copies as last logged at Info while waiting, so that each change is logged once.
     std::string copies_last_logged_;
     // The end-of-day end whose acknowledgement by the follower sequencer has been logged; zero while none has.
-    int64_t end_acknowledgement_logged_for_{0};
+    // The longest the leader waits for the copies of the WAL, and then for the follower to acknowledge the end.
+    int64_t longest_wait_ns_;
+    // When this instance, leading, first found the venue in the end-of-day end; the wait for the acknowledgement runs from it.
+    std::optional<int64_t> end_seen_at_ns_;
+    bool stop_asked_{false};
+    // Whether this instance wrote the end-of-day end: only then does it stop for it.
+    bool end_written_here_{false};
 };
 
 } // namespaces

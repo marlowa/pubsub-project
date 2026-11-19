@@ -404,7 +404,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // part of the way through (decision 8).
     bool end_of_day_met_while_catching_up_{false};
     // Stops this instance for the end of day, the end-of-day end having been applied at @p sequence_number.
-    void stop_for_end_of_day(int64_t sequence_number);
+    void stop_for_end_of_day_at(int64_t sequence_number);
 
     // While this instance waits for the TechnicalEvent halting trading that it asked for (EngineCatchUp::halt_awaited),
     // the timer that asks again.

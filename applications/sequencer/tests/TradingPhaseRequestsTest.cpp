@@ -94,6 +94,10 @@ struct RecordingLinks : public TradingPhaseRequestsLinksInterface {
         answers.push_back(reply.outcome);
         last_answer = reply;
     }
+    void stop_for_end_of_day(int64_t end_seq_no) override {
+        stopped_at.push_back(end_seq_no);
+    }
+    std::vector<int64_t> stopped_at;
     void answer(const pubsub_itc_fw::ConnectionID&, const pubsub_itc_fw_app::TradingScheduleAnswer& reply) override {
         schedule_answers.push_back(reply.outcome);
         last_schedule_answer = reply;
@@ -798,6 +802,62 @@ TEST_F(TradingPhaseRequestsTest, TheFollowerSequencerAcknowledgingTheEndIsLogged
     requests_->scheduled_check(3);
     requests_->scheduled_check(4);
     EXPECT_EQ(lines_saying("has acknowledged the end-of-day end"), 1U);
+}
+
+// The leading sequencer stops for the end of day only once the follower sequencer has acknowledged the end, so that both
+// WALs end with it (docs/venue/start_and_end_of_day.md, section 4.2, decision 4), and asks to stop once.
+TEST_F(TradingPhaseRequestsTest, TheLeaderStopsOnceTheFollowerSequencerHoldsTheEnd) {
+    const int64_t begin_seq_no = in_the_end_of_day_begin();
+    links_.follower_holds = begin_seq_no;
+    requests_->scheduled_check(1);
+    ASSERT_EQ(links_.written.back().phase, Phase::EndOfDayEnd);
+    const int64_t end_seq_no = links_.last_seq_no();
+    links_.follower_holds = end_seq_no - 1;
+    requests_->scheduled_check(2);
+    EXPECT_TRUE(links_.stopped_at.empty()) << "the follower does not yet hold the end";
+    links_.follower_holds = end_seq_no;
+    requests_->scheduled_check(3);
+    requests_->scheduled_check(4);
+    EXPECT_EQ(links_.stopped_at, (std::vector<int64_t>{end_seq_no}));
+}
+
+TEST_F(TradingPhaseRequestsTest, WithNoFollowerSequencerTheLeaderStopsOnceTheEndIsWritten) {
+    links_.follower_holds.reset();
+    in_the_end_of_day_begin();
+    requests_->scheduled_check(1);
+    ASSERT_EQ(links_.written.back().phase, Phase::EndOfDayEnd);
+    requests_->scheduled_check(2);
+    EXPECT_EQ(links_.stopped_at.size(), 1U);
+}
+
+// A follower that never acknowledges the end, because it has gone or its acknowledgement was lost, keeps the leader up only
+// for the limit of time, and the leader says so (decision 4, case 5).
+TEST_F(TradingPhaseRequestsTest, TheLeaderStopsWithoutTheAcknowledgementOnceTheLimitPasses) {
+    const int64_t begin_seq_no = in_the_end_of_day_begin();
+    links_.follower_holds = begin_seq_no;
+    requests_->scheduled_check(1000);
+    ASSERT_EQ(links_.written.back().phase, Phase::EndOfDayEnd);
+    requests_->scheduled_check(2000);
+    requests_->scheduled_check(2000 + longest_wait_ns - 1);
+    EXPECT_TRUE(links_.stopped_at.empty());
+    requests_->scheduled_check(2000 + longest_wait_ns);
+    EXPECT_EQ(links_.stopped_at.size(), 1U);
+    EXPECT_EQ(lines_saying("has not acknowledged the end-of-day end"), 1U);
+}
+
+// A leader that finds the venue already in the end-of-day end, which it did not write, goes on: it may be serving a copy of
+// a day's WAL to a check, and one restarted after the end has exited on its last-state file.
+TEST_F(TradingPhaseRequestsTest, ALeaderThatDidNotWriteTheEndDoesNotStopForIt) {
+    links_.follower_holds.reset();
+    in_the_end_of_day_begin();
+    // Written as if by an earlier leader: the request object that writes it is not the one checked afterwards.
+    requests_->scheduled_check(1);
+    ASSERT_EQ(links_.written.back().phase, Phase::EndOfDayEnd);
+    links_.stopped_at.clear();
+    requests_ = std::make_unique<TradingPhaseRequests>(links_, logger_, 0, longest_wait_ns);
+    requests_->scheduled_check(2);
+    requests_->scheduled_check(2 + longest_wait_ns);
+    EXPECT_TRUE(links_.stopped_at.empty());
 }
 
 } // namespaces

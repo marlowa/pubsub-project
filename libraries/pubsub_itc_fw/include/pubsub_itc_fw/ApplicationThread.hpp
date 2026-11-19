@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -634,6 +635,16 @@ class ApplicationThread {
      */
     void shutdown(const std::string& reason);
 
+    /**
+     * @brief Stops the component for the end of the trading day, once this thread has finished handling the message it is
+     *        handling now (docs/venue/start_and_end_of_day.md, section 4.1).
+     *
+     * The request reaches the reactor only when the present message has been dealt with, so that everything the handler
+     * asks to be sent after calling this, such as an acknowledgement, is queued before the reactor looks; the reactor then
+     * writes it before it stops (Reactor::shutdown_for_end_of_day). Only the first call counts.
+     */
+    void stop_for_end_of_day(const std::string& reason);
+
     bool is_running() const {
         auto tag = get_lifecycle_state().as_tag();
         return tag >= ThreadLifecycleState::Started && tag < ThreadLifecycleState::ShuttingDown;
@@ -1132,6 +1143,11 @@ class ApplicationThread {
     /// A message from @p conn_id has been taken off the queue: count it, and have the reactor read the connection
     /// again if the count says so.
     void message_taken_from(const ConnectionID& conn_id);
+
+  private:
+    // A stop for the end of day asked for while a message was being handled, passed to the reactor once it has been.
+    std::optional<std::string> end_of_day_stop_reason_;
+    bool end_of_day_stop_passed_{false};
 };
 
 } // namespaces

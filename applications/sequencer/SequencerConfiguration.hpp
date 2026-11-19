@@ -300,6 +300,11 @@ struct SequencerConfiguration {
      */
     int32_t end_of_day_longest_wait_for_copies_seconds{600};
 
+    /// The file of this instance's last trading state, which outlives the day; read first at start-up, so that a sequencer
+    /// finding the end-of-day end of its own day exits at once for the end of day. See pubsub_itc_fw::LastStateFile and
+    /// docs/venue/start_and_end_of_day.md, section 4.2, decision 5.
+    std::string last_state_file;
+
     // External WAL subscriber listener (MEP primary and secondary connect here)
 
     /** @brief Host address on which the external WAL subscriber listener binds. */

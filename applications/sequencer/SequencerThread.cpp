@@ -1587,7 +1587,8 @@ void SequencerThread::SequencerReplicatedWalEvents::written_as_follower(int64_t 
                                                                        : std::nullopt);
     // A follower tells the gateways nothing, so a change in whether trading is halted is only kept, for when this
     // instance leads.
-    static_cast<void>(owner_.venue_state_.note_record(seq_no, record_of(view), VenueStateFromTheWal::How::written_as_follower));
+    owner_.after_noting(owner_.venue_state_.note_record(seq_no, record_of(view), VenueStateFromTheWal::How::written_as_follower),
+                        VenueStateFromTheWal::How::written_as_follower, seq_no);
 }
 
 void SequencerThread::SequencerReplicatedWalEvents::discarded_after(int64_t seq_no) {
@@ -1621,7 +1622,8 @@ void SequencerThread::SequencerReplicatedWalEvents::read_at_open(int64_t seq_no,
         owner_.venue_state_.record_did_not_decode(seq_no, VenueStateFromTheWal::How::read_at_open);
         return;
     }
-    static_cast<void>(owner_.venue_state_.note_record(seq_no, record_of(view), VenueStateFromTheWal::How::read_at_open));
+    owner_.after_noting(owner_.venue_state_.note_record(seq_no, record_of(view), VenueStateFromTheWal::How::read_at_open),
+                        VenueStateFromTheWal::How::read_at_open, seq_no);
 }
 
 void SequencerThread::send_voided_commands(const pubsub_itc_fw::ConnectionID& engine) {
@@ -1713,6 +1715,7 @@ void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord&
     // the phase and tells its members (docs/venue/trading_day_plan.md, section 4.1). A change of halt can change whether
     // the venue accepts orders, which tells the gateways itself; otherwise they are told here.
     const VenueStateFromTheWal::Noted noted = venue_state_.note_record(written_as, record_of(envelope), VenueStateFromTheWal::How::written_by_this_leader);
+    after_noting(noted, VenueStateFromTheWal::How::written_by_this_leader, written_as);
     if (noted.halt_changed || noted.phase_changed) {
         if (!presence_.refresh_order_acceptance(std::chrono::steady_clock::now())) {
             broadcast_order_acceptance();
@@ -1953,6 +1956,31 @@ bool SequencerThread::PhaseLinks::leading() const {
 
 int32_t SequencerThread::PhaseLinks::trading_day_started_for() const {
     return owner_.config_.trading_day;
+}
+
+void SequencerThread::PhaseLinks::stop_for_end_of_day(int64_t end_seq_no) {
+    owner_.ApplicationThread::stop_for_end_of_day(fmt::format(
+        "the end-of-day end of trading day {} at seq={}, held by both sequencers or waited for as long as allowed", owner_.config_.trading_day, end_seq_no));
+}
+
+void SequencerThread::after_noting(const VenueStateFromTheWal::Noted& noted, VenueStateFromTheWal::How how, int64_t seq_no) {
+    if (!noted.phase_changed || !venue_state_.trading_phase().started()) {
+        return;
+    }
+    const pubsub_itc_fw_app::TradingPhase phase = venue_state_.trading_phase().latest()->phase;
+    last_state_.record(pubsub_itc_fw_app::to_string(phase));
+    // Only the follower stops here. The leader stops once the follower holds the end (TradingPhaseRequests). A sequencer
+    // opening a WAL that already ends the day goes on: one restarted after the end has already exited on its last-state
+    // file, and one started on a copy of a day's WAL, as a check does, has to serve it.
+    if (phase != pubsub_itc_fw_app::TradingPhase::EndOfDayEnd || how != VenueStateFromTheWal::How::written_as_follower) {
+        return;
+    }
+    // A follower that holds the end has acknowledged it, as it does every record, and has no more to do
+    // (docs/venue/start_and_end_of_day.md, section 4.2, decision 4). The acknowledgement is sent before the stop takes effect.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: the end-of-day end of trading day {} at seq={} is held, as the follower -- stopping for the end of day", config_.trading_day,
+               seq_no);
+    ApplicationThread::stop_for_end_of_day(fmt::format("the end-of-day end of trading day {} at seq={}", config_.trading_day, seq_no));
 }
 
 const TradingPhaseState& SequencerThread::PhaseLinks::trading_phase() const {
