@@ -70,14 +70,14 @@ Arbiter::Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_
                               pubsub_itc_fw::NetworkEndpointConfiguration{});
     }
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Arbiter: component listener on {}:{} peer listener on {}:{} instance_id={}", config_.listen_host,
+    PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "Arbiter: component listener on {}:{} peer listener on {}:{} instance_id={}", config_.listen_host,
                config_.listen_port, config_.peer_listen_host, config_.peer_listen_port, config_.instance_id);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Arbiter: peer={}:{} witness={}:{}", config_.peer_host, config_.peer_port, config_.witness_host,
+    PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "Arbiter: peer={}:{} witness={}:{}", config_.peer_host, config_.peer_port, config_.witness_host,
                config_.witness_port);
 }
 
 int Arbiter::run() const {
-    PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Arbiter: starting reactor");
+    PUBSUB_LOG_STR(*logger_, pubsub_itc_fw::FwLogLevel::Info, "Arbiter: starting reactor");
     const int status = reactor_->run();
     // Does not return if shutdown had to abandon a thread that would not stop: returning
     // would run the exit handlers and destroy state that thread is still using, which is

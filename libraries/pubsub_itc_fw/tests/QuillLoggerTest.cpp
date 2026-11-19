@@ -295,7 +295,7 @@ TEST(QuillLoggerIsolationTest, LevelChangeOnOneLoggerDoesNotAffectOther) {
 TEST_F(QuillLoggerTest, DISABLED_FormatMismatchIsReportedAsLogRecord) {
 #if 0
     // NOLINTNEXTLINE -- deliberate format string mismatch for testing
-    PUBSUB_LOG((*logger_), FwLogLevel::Info, "{}:{} intentional mismatch", "only_one_arg");
+    PUBSUB_LOG(*logger_, FwLogLevel::Info, "{}:{} intentional mismatch", "only_one_arg");
 
     // Wait for the backend to process and emit the error record.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);

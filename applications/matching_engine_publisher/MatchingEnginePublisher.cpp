@@ -145,12 +145,12 @@ int main(int argc, char* argv[]) {
     }
 
     config.trading_day = arguments->trading_day;
-    PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "MatchingEnginePublisher: started for trading day {}", arguments->trading_day);
+    PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Info, "MatchingEnginePublisher: started for trading day {}", arguments->trading_day);
     // A publisher started again after the end of its day has nothing to do: it exits at once for the end of day
     // (docs/venue/start_and_end_of_day.md, section 4.4).
     if (pubsub_itc_fw::LastStateFile(config.last_state_file, config.trading_day)
             .says(pubsub_itc_fw_app::to_string(pubsub_itc_fw_app::TradingPhase::EndOfDayEnd))) {
-        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info,
+        PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEnginePublisher: {} says the end of trading day {} has been reached -- nothing to do, exiting for the end of day",
                    config.last_state_file, config.trading_day);
         return pubsub_itc_fw::Reactor::stopped_for_the_end_of_day_status;
@@ -176,7 +176,7 @@ int main(int argc, char* argv[]) {
     if (config.cpu_pinning_enabled) {
         const auto [masked, mask_error] = pubsub_itc_fw::apply_background_affinity(config.cpu_layout_file, config.cpu_layout_component);
         if (!masked) {
-            PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
+            PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
             return 1;
         }
     }

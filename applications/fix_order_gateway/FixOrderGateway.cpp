@@ -116,30 +116,30 @@ FixOrderGateway::FixOrderGateway(const FixOrderGatewayConfiguration& config, std
                               pubsub_itc_fw::NetworkEndpointConfiguration{});
     }
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: FIX plain listener on {}:{}", config_.listen_host, config_.listen_port);
+    PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: FIX plain listener on {}:{}", config_.listen_host, config_.listen_port);
     if (config_.fix_tls_enabled) {
-        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: FIX TLS listener on {}:{}", config_.listen_host, config_.tls_listen_port);
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: FIX TLS listener on {}:{}", config_.listen_host, config_.tls_listen_port);
     }
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: ER listener on {}:{}", config_.er_listen_host, config_.er_listen_port);
+    PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: ER listener on {}:{}", config_.er_listen_host, config_.er_listen_port);
     if (config_.ha_enabled) {
-        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: authentication service primary={}:{} secondary={}:{} (HA enabled)",
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: authentication service primary={}:{} secondary={}:{} (HA enabled)",
                    config_.authentication_service_host, config_.authentication_service_port, config_.authentication_service_secondary_host,
                    config_.authentication_service_secondary_port);
     } else {
-        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: authentication service primary={}:{}", config_.authentication_service_host,
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: authentication service primary={}:{}", config_.authentication_service_host,
                    config_.authentication_service_port);
     }
     if (config_.ha_enabled) {
-        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: sequencer primary={}:{} secondary={}:{} (HA enabled)",
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: sequencer primary={}:{} secondary={}:{} (HA enabled)",
                    config_.sequencer_primary_host, config_.sequencer_primary_port, config_.sequencer_secondary_host, config_.sequencer_secondary_port);
     } else {
-        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: sequencer primary={}:{} (HA disabled)", config_.sequencer_primary_host,
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: sequencer primary={}:{} (HA disabled)", config_.sequencer_primary_host,
                    config_.sequencer_primary_port);
     }
 }
 
 int FixOrderGateway::run() {
-    PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: starting reactor");
+    PUBSUB_LOG_STR(*logger_, pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: starting reactor");
     const int status = reactor_->run();
     // Does not return if shutdown had to abandon a thread that would not stop: returning
     // would run the exit handlers and destroy state that thread is still using, which is
@@ -182,13 +182,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: started for trading day {}", arguments->trading_day);
+    PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Info, "FixOrderGateway: started for trading day {}", arguments->trading_day);
     config.trading_day = arguments->trading_day;
     // A gateway started again after the end of its day has nothing to do: it exits at once for the end of day
     // (docs/venue/start_and_end_of_day.md, section 4.4).
     if (pubsub_itc_fw::LastStateFile(config.last_state_file, config.trading_day)
             .says(pubsub_itc_fw_app::to_string(pubsub_itc_fw_app::TradingPhase::EndOfDayEnd))) {
-        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info,
+        PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGateway: {} says the end of trading day {} has been reached -- nothing to do, exiting for the end of day", config.last_state_file,
                    config.trading_day);
         return pubsub_itc_fw::Reactor::stopped_for_the_end_of_day_status;
@@ -202,7 +202,7 @@ int main(int argc, char* argv[]) {
     if (config.cpu_pinning_enabled) {
         const auto [masked, mask_error] = pubsub_itc_fw::apply_background_affinity(config.cpu_layout_file, config.cpu_layout_component);
         if (!masked) {
-            PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
+            PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
             return 1;
         }
     }

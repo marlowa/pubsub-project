@@ -125,23 +125,23 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
                               pubsub_itc_fw::NetworkEndpointConfiguration{});
     }
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: listening for sequenced PDUs on {}:{}", config_.listen_host, config_.listen_port);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: primary ER connection to sequencer at {}:{}", config_.sequencer_er_host,
+    PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: listening for sequenced PDUs on {}:{}", config_.listen_host, config_.listen_port);
+    PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: primary ER connection to sequencer at {}:{}", config_.sequencer_er_host,
                config_.sequencer_er_port);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: secondary ER connection to sequencer at {}:{}",
-               config_.sequencer_er_secondary_host, config_.sequencer_er_secondary_port);
+    PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: secondary ER connection to sequencer at {}:{}", config_.sequencer_er_secondary_host,
+               config_.sequencer_er_secondary_port);
     if (config_.ha_enabled) {
-        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngine: HA link to the peer engine -- listening on {}:{} and dialling the peer at {}:{} (both held)", config_.peer_listen_host,
                    config_.peer_listen_port, config_.peer_host, config_.peer_port);
-        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: HA arbiter pool at {}:{} and {}:{} (instance_id={})",
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: HA arbiter pool at {}:{} and {}:{} (instance_id={})",
                    config_.arbiter_primary_host, config_.arbiter_primary_port, config_.arbiter_secondary_host, config_.arbiter_secondary_port,
                    config_.instance_id);
     }
 }
 
 int MatchingEngine::run() {
-    PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: starting reactor");
+    PUBSUB_LOG_STR(*logger_, pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: starting reactor");
     const int status = reactor_->run();
     // Does not return if shutdown had to abandon a thread that would not stop: returning
     // would run the exit handlers and destroy state that thread is still using, which is
@@ -180,12 +180,12 @@ int main(int argc, char* argv[]) {
     try {
         config = matching_engine::MatchingEngineConfigurationLoader::load(config_file);
     } catch (const pubsub_itc_fw::ConfigurationException& ex) {
-        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngine: configuration error: {}", ex.what());
+        PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Error, "MatchingEngine: configuration error: {}", ex.what());
         return 1;
     }
 
     config.trading_day = arguments->trading_day;
-    PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: started for trading day {}", arguments->trading_day);
+    PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: started for trading day {}", arguments->trading_day);
 
     // Every file the matching engine writes during a trading day records the day, and one left from another day is never taken for a
     // restart of this one (docs/venue/start_and_end_of_day.md, section 5; BUG-0137).
@@ -194,7 +194,7 @@ int main(int argc, char* argv[]) {
         config.trading_day, {{config.epoch_state_file, pubsub_itc_fw::recorded_trading_day(config.epoch_state_file)},
                              {config.epoch_state_file + ".lease_promise", pubsub_itc_fw::recorded_trading_day(config.epoch_state_file + ".lease_promise")}});
     if (!another_day.empty()) {
-        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error,
+        PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Error,
                    "MatchingEngine: refusing to start for trading day {} -- {}. The matching engine leaves them as they are: {}", config.trading_day,
                    another_day, pubsub_itc_fw::another_days_files_remedy);
         return 1;
@@ -204,7 +204,7 @@ int main(int argc, char* argv[]) {
     // and 8).
     if (pubsub_itc_fw::LastStateFile(config.last_state_file, config.trading_day)
             .says(pubsub_itc_fw_app::to_string(pubsub_itc_fw_app::TradingPhase::EndOfDayEnd))) {
-        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info,
+        PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngine: {} says the end of trading day {} has been reached -- nothing to do, exiting for the end of day", config.last_state_file,
                    config.trading_day);
         return pubsub_itc_fw::Reactor::stopped_for_the_end_of_day_status;
@@ -217,7 +217,7 @@ int main(int argc, char* argv[]) {
     // arbiter and the witness do, and says why (R-0163; docs/bug_list.md, BUG-0061).
     if (!config.ha_enabled && config.ha_role == "secondary") {
         // TEST CONTRACT -- ha_test.py matches "refusing to start" and "[ha] enabled = false" (scenarios 46 and 47).
-        PUBSUB_LOG_STR((*logger), pubsub_itc_fw::FwLogLevel::Error,
+        PUBSUB_LOG_STR(*logger, pubsub_itc_fw::FwLogLevel::Error,
                        "MatchingEngine: refusing to start -- this venue has [ha] enabled = false in its environment, and this is the secondary instance: with "
                        "high availability off only the primary of each pair runs. Start the primary, or set [ha] enabled = true and redeploy.");
         return 1;
@@ -229,7 +229,7 @@ int main(int argc, char* argv[]) {
     if (config.cpu_pinning_enabled) {
         const auto [masked, mask_error] = pubsub_itc_fw::apply_background_affinity(config.cpu_layout_file, config.cpu_layout_component);
         if (!masked) {
-            PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
+            PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
             return 1;
         }
     }

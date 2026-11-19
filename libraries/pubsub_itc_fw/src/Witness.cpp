@@ -52,11 +52,11 @@ Witness::Witness(const WitnessConfiguration& config, std::unique_ptr<pubsub_itc_
 
     reactor_->register_thread(witness_thread_);
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Witness: listening for arbiter connections on {}:{}", config_.listen_host, config_.listen_port);
+    PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "Witness: listening for arbiter connections on {}:{}", config_.listen_host, config_.listen_port);
 }
 
 int Witness::run() {
-    PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Witness: starting reactor");
+    PUBSUB_LOG_STR(*logger_, pubsub_itc_fw::FwLogLevel::Info, "Witness: starting reactor");
     const int status = reactor_->run();
     // Does not return if shutdown had to abandon a thread that would not stop: returning
     // would run the exit handlers and destroy state that thread is still using, which is

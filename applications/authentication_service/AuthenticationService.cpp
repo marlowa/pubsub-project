@@ -60,13 +60,12 @@ AuthenticationService::AuthenticationService(const AuthenticationServiceConfigur
 
     reactor_->register_thread(authentication_thread_);
 
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationService: PDU listener on {}:{}", config_.listen_host, config_.listen_port);
-    PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationService: TLS admin listener on {}:{}", config_.listen_host,
-               config_.admin_listen_port);
+    PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "AuthenticationService: PDU listener on {}:{}", config_.listen_host, config_.listen_port);
+    PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Info, "AuthenticationService: TLS admin listener on {}:{}", config_.listen_host, config_.admin_listen_port);
 }
 
 int AuthenticationService::run() {
-    PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationService: starting reactor");
+    PUBSUB_LOG_STR(*logger_, pubsub_itc_fw::FwLogLevel::Info, "AuthenticationService: starting reactor");
     const int status = reactor_->run();
     // Does not return if shutdown had to abandon a thread that would not stop: returning
     // would run the exit handlers and destroy state that thread is still using, which is
@@ -107,12 +106,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "AuthenticationService: started for trading day {}", arguments->trading_day);
+    PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Info, "AuthenticationService: started for trading day {}", arguments->trading_day);
     config.trading_day = arguments->trading_day;
     // A authentication service started again after the end of its day has nothing to do: it exits at once for the end of day
     // (docs/venue/start_and_end_of_day.md, section 4.4).
     if (pubsub_itc_fw::TechnicalEventsSubscription::already_ended(config.last_state_file, config.trading_day)) {
-        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info,
+        PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Info,
                    "AuthenticationService: {} says the end of trading day {} has been reached -- nothing to do, exiting for the end of day",
                    config.last_state_file, config.trading_day);
         return pubsub_itc_fw::Reactor::stopped_for_the_end_of_day_status;
@@ -126,7 +125,7 @@ int main(int argc, char* argv[]) {
     if (config.cpu_pinning_enabled) {
         const auto [masked, mask_error] = pubsub_itc_fw::apply_background_affinity(config.cpu_layout_file, config.cpu_layout_component);
         if (!masked) {
-            PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
+            PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
             return 1;
         }
     }

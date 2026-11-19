@@ -48,7 +48,7 @@ int main(int argc, char* argv[]) {
     try {
         config = pubsub_itc_fw::WitnessConfigurationLoader::load(config_file);
     } catch (const pubsub_itc_fw::ConfigurationException& ex) {
-        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "Witness: configuration error: {}", ex.what());
+        PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Error, "Witness: configuration error: {}", ex.what());
         return 1;
     }
 
@@ -61,18 +61,18 @@ int main(int argc, char* argv[]) {
     // See docs/bug_list.md, BUG-0061.
     if (!config.ha_enabled) {
         // TEST CONTRACT -- ha_test.py matches this text (scenarios 44 and 45), because what it checks is that an operator is told why.
-        PUBSUB_LOG_STR((*logger), pubsub_itc_fw::FwLogLevel::Error,
+        PUBSUB_LOG_STR(*logger, pubsub_itc_fw::FwLogLevel::Error,
                        "Witness: refusing to start -- this venue has [ha] enabled = false in its environment, so there is nothing to "
                        "witness. Set [ha] enabled = true and redeploy, or do not start this component.");
         return 1;
     }
 
-    PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info, "Witness: started for trading day {}", arguments->trading_day);
+    PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Info, "Witness: started for trading day {}", arguments->trading_day);
     config.trading_day = arguments->trading_day;
     // A witness started again after the end of its day has nothing to do: it exits at once for the end of day
     // (docs/venue/start_and_end_of_day.md, section 4.4).
     if (pubsub_itc_fw::TechnicalEventsSubscription::already_ended(config.last_state_file, config.trading_day)) {
-        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Info,
+        PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Info,
                    "Witness: {} says the end of trading day {} has been reached -- nothing to do, exiting for the end of day", config.last_state_file,
                    config.trading_day);
         return pubsub_itc_fw::Reactor::stopped_for_the_end_of_day_status;
@@ -86,7 +86,7 @@ int main(int argc, char* argv[]) {
     if (config.cpu_pinning_enabled) {
         const auto [masked, mask_error] = pubsub_itc_fw::apply_background_affinity(config.cpu_layout_file, config.cpu_layout_component);
         if (!masked) {
-            PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
+            PUBSUB_LOG(*logger, pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
             return 1;
         }
     }
