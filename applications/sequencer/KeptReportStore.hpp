@@ -138,6 +138,22 @@ class KeptReportStore {
         }
     }
 
+    /// Whether a copy of @p size bytes can be kept without overwriting any copy held.
+    [[nodiscard]] bool has_room_for(size_t size) const {
+        if (entries_.empty()) {
+            return size <= bytes_.size();
+        }
+        if (entries_.full()) {
+            return false;
+        }
+        // The same tests as make_room, which says where the copy goes.
+        const size_t oldest_offset = entries_.front().offset;
+        if (!wrapped_) {
+            return bytes_.size() - next_offset_ >= size || oldest_offset >= size;
+        }
+        return oldest_offset - next_offset_ >= size;
+    }
+
     /// The number of copies held.
     [[nodiscard]] size_t count() const {
         return entries_.size();

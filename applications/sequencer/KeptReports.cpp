@@ -25,6 +25,12 @@ KeptReports::Clock::time_point KeptReports::needed_from() const {
 void KeptReports::keep(int64_t er_seq_no, const uint8_t* bytes, size_t size, const std::optional<EngineReportPosition>& position, Clock::time_point now) {
     const Clock::time_point from = needed_from();
     store_.discard_without_position_received_before(from);
+    // The timer discards the reports the leader forwarded once a second, and during a flood more than the store holds can
+    // arrive in that time. Discarding them now, before any copy is overwritten, means a copy is overwritten, and counted as
+    // lost, only when the leader's records do not yet say it was forwarded.
+    if (!store_.has_room_for(size)) {
+        discard_those_the_leader_forwarded();
+    }
     store_.keep(er_seq_no, bytes, size, now, from, position);
     const auto lost_now = static_cast<int64_t>(store_.lost());
     if (lost_now == lost_reported_) {

@@ -165,6 +165,31 @@ TEST_F(KeptReportsTest, ARunOfReportsLostIsSaidWhenItBeginsAndWhenItEndsNotForEa
     EXPECT_EQ(says("no kept report has been overwritten for a second"), 1) << "said once";
 }
 
+// A full store first discards the reports the leader's records say it forwarded, and overwrites, and counts as lost, only
+// those still needed, without waiting for the timer: in a flood, more reports than the store holds arrive between two
+// ticks (BUG-0256).
+TEST_F(KeptReportsTest, AFullStoreDiscardsWhatTheLeaderForwardedBeforeOverwritingAnything) {
+    const auto capacity = static_cast<int64_t>(KeptReports::capacity_reports);
+    for (int64_t index = 0; index < capacity; ++index) {
+        keep(index, start_, EngineReportPosition{1, index});
+    }
+    // The leader says it forwarded the first half, in a record written more than the delay before its latest.
+    kept_->leader_record_written(ns(milliseconds{1000}), EngineReportPosition{1, capacity / 2 - 1});
+    kept_->leader_record_written(ns(milliseconds{1200}), std::nullopt);
+    for (int64_t index = capacity; index < capacity + 1000; ++index) {
+        keep(index, start_, EngineReportPosition{1, index});
+    }
+    EXPECT_EQ(links_.lost, 0) << "every report overwritten would have been one the leader forwarded";
+    EXPECT_EQ(kept_->lost(), 0U);
+    EXPECT_EQ(kept_->count(), static_cast<size_t>(capacity / 2 + 1000));
+
+    // Once those are gone, a report still needed is overwritten, and counted.
+    for (int64_t index = capacity + 1000; index < capacity + capacity / 2 + 1; ++index) {
+        keep(index, start_, EngineReportPosition{1, index});
+    }
+    EXPECT_EQ(kept_->lost(), 1U);
+}
+
 TEST_F(KeptReportsTest, AReportLostToAFullStoreIsCounted) {
     for (size_t index = 0; index <= KeptReports::capacity_reports; ++index) {
         keep(static_cast<int64_t>(index), start_);

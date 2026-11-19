@@ -66,8 +66,14 @@ class KeptReportsLinksInterface {
  * rate measured on this venue, and one and a half reports an order, that is about 212,000 reports. The store holds up to
  * 262,144, and 128 MiB of their bytes, allocated once.
  *
+ * The timer discards the reports the leader forwarded once a discard_interval, and in a flood more reports than the store
+ * holds can arrive in that time, so a full store first discards them without waiting for the timer. A copy is overwritten,
+ * and counted as lost, only when the leader's records do not yet say it was forwarded.
+ *
  * A report the leader is holding back is kept for as long as the leader holds it, so a gateway without a connection for
- * reports for a long time can fill the store; the oldest copies are then overwritten, and counted as lost.
+ * reports for a long time can fill the store; the oldest copies are then overwritten, and counted as lost. So can a flood
+ * of reports for sessions connected nowhere while a configured gateway instance has not announced its sessions
+ * (docs/bug_list.md, BUG-0258).
  *
  * One thread, the sequencer's, calls every member function.
  */

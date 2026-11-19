@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 257 |
+| Bugs recorded | 258 |
 | Open | 45 (25 defects, 20 tasks) |
-| Closed | 212 |
-| Next id | BUG-0258 |
+| Closed | 213 |
+| Next id | BUG-0259 |
 
 ## Open bugs by severity
 
@@ -48,7 +48,7 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0251](#bug_0251) | medium | defect | Under a burst of orders faster than it can process, the leading sequencer loses its lease to a backlog on its own thread, and the follower matching engine is taken out of service |
-| [BUG-0256](#bug_0256) | medium | defect | During a flood of execution reports the follower sequencer overwrites kept reports still needed, and logs a warning for each one |
+| [BUG-0258](#bug_0258) | medium | defect | While a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere, so a flood of them is dropped, and the follower cannot discard its copies |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -154,40 +154,35 @@ went looking.
 
 ## Open
 
-### BUG-0256: During a flood of execution reports the follower sequencer overwrites kept reports still needed, and logs a warning for each one {#bug_0256}
+### BUG-0258: While a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere, so a flood of them is dropped, and the follower cannot discard its copies {#bug_0258}
 
 | | |
 |---|---|
 | Severity | medium |
-| Found | 2026-11-16 |
-| Recorded | 2026-11-18 |
-| How | Measuring how long a follower sequencer takes to catch up a day's WAL, while investigating [BUG-0252](#bug_0252) |
-| Impact | A follower sequencer promoted at such a moment cannot send members the reports it lost, unless the old leader had forwarded them; and its Quill log fills with one warning per report |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| How | Measuring, for [BUG-0256](#bug_0256), whether a follower sequencer in step loses kept reports during the cancel of 1.8 million orders |
+| Impact | Reports for a member's ended session are dropped once more than 32,768 are held; and the follower sequencer, unable to discard any of them, overwrites its kept reports, so neither instance holds them |
 
-**What happens.** The follower sequencer keeps every execution report it receives, in case it takes the lead and has
-to send the reports its leader had not yet forwarded (`KeptReports`). During the flood of reports caused by cancelling
-sessions' resting orders, on 16 November 2026, its store filled, and reports still needed were overwritten: the
-follower logged "the store of reports kept in case this instance takes the lead is full, and 1 report(s) still needed
-have been overwritten. If this instance takes the lead now, those reports reach their members only if the leader
-forwarded them before it stopped". It logged that warning 24,098 times in a few seconds, one for each report lost,
-because `KeptReports::keep` logs whenever the number lost changes. The Quill log is kept in `tmp/catch_up_measurement/`
-in the development checkout.
+**What happens.** `ReportForwarding` holds a report for a session connected to no gateway while any configured gateway
+instance has not announced its sessions on its present link, because the session may be connected there; it sends the
+report if the session is announced, and drops it once every gateway instance has announced. The position the leader
+writes on every record, saying how far it has forwarded the engine's reports, stays just before the oldest report so
+held. In scenario 115 of `ha_test.py`, which starts only the primary FIX and binary gateways, the four load-client
+sessions end with 1.8 million resting orders and the matching engine cancels them. Every cancel report is for a session
+connected nowhere, and the two secondary gateway instances never announce, so:
 
-**The warning: fixed, 18 November 2026.** `KeptReports` now says once that reports are being overwritten, and once
-more when a whole discard interval, a second, has passed with none overwritten, with how many were lost in the run and
-in all. `KeptReportsTest.ARunOfReportsLostIsSaidWhenItBeginsAndWhenItEndsNotForEachReport` checks it, and with the old
-behaviour restored finds 1,000 Warnings where one is wanted.
+- the leader's room for held reports, 32,768 reports, fills within a quarter of a second, and it drops the oldest,
+  logging "the room for reports held until their sessions are announced is full, and the oldest held reports are being
+  dropped to make room; their members are not told of them";
+- the position it says it has forwarded through does not move for the whole flood, so the follower sequencer discards
+  none of its kept copies, and overwrites 1,537,856 of them.
 
-**Whether the loss matters.** The store holds 262,144 reports, sized for what a follower must hold when its leader dies
-at the highest rate measured: about 4.25 seconds at 34,000 orders a second. A cancel of 1.8 million resting orders is
-far beyond that. In the run on 16 November the 24,098 reports were overwritten in 45 ms at 23:00:52.85, while the
-follower was being caught up, from 23:00:38.8 to 23:01:09.9, after its leader had said at 23:00:39.6 that it may not
-lead. A follower that may not lead cannot need its kept reports, so that loss could not have reached a member. A
-follower that may lead loses a kept report only when the leader's records do not yet say the report was forwarded,
-which the follower learns within a fraction of a second when it is in step.
+With all four gateway instances running, neither happens. A venue runs this way whenever a configured gateway instance
+is stopped, which is the usual state of a standby gateway that has failed or not yet been started.
 
-**What is wanted.** A decision on whether losing kept reports is acceptable in these cases, or whether the store must
-hold every report of such a flood, with the size that would need.
+**What is wanted.** A decision on how long a report for a session connected nowhere is held when a configured gateway
+instance stays unannounced, and whether a session known to have ended needs holding at all.
 
 ### BUG-0253: `binary_load_client --help` prints its help and then tries to connect to the venue {#bug_0253}
 
@@ -2461,6 +2456,46 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0256: During a flood of execution reports the follower sequencer overwrites kept reports still needed, and logs a warning for each one {#bug_0256}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-16 |
+| Recorded | 2026-11-18 |
+| Fixed | 2026-11-19 -- three parts. The warning is said twice for a run of reports overwritten, not once for each. A full store first discards the reports the leader's records say it forwarded, and overwrites only those still needed (`KeptReportStore::has_room_for`, called from `KeptReports::keep`); `KeptReportsTest.AFullStoreDiscardsWhatTheLeaderForwardedBeforeOverwritingAnything` checks it, and without the change counts 1,000 lost where none are wanted. And a loss that remains is accepted: measured with every gateway running, an in-step follower overwrites none of the reports of a cancel of 1.8 million orders; the loss happens only while a configured gateway instance has not announced its sessions, which is [BUG-0258](#bug_0258) |
+| How | Measuring how long a follower sequencer takes to catch up a day's WAL, while investigating [BUG-0252](#bug_0252) |
+| Impact | A follower sequencer promoted at such a moment cannot send members the reports it lost, unless the old leader had forwarded them; and its Quill log filled with one warning per report |
+
+**What happened.** The follower sequencer keeps every execution report it receives, in case it takes the lead and has
+to send the reports its leader had not yet forwarded (`KeptReports`). During the flood of reports caused by cancelling
+sessions' resting orders, on 16 November 2026, its store filled, and reports were overwritten: the follower logged a
+warning 24,098 times in a few seconds, one for each report lost.
+
+**Measurements, 19 November 2026.** Scenario 115 of `ha_test.py` was run with the follower sequencer left running,
+instead of stopped, so that it stays in step and may lead throughout. The four load-client sessions end with 1.8
+million resting orders, which the matching engine cancels. The follower's Quill log, copied five seconds after the
+cancels finished, gives the count.
+
+| Run | Gateways running | Follower's reports overwritten |
+|---|---|---|
+| 1 | the primary FIX and binary gateways | 1,537,856 |
+| 2 | the same, with the store discarding forwarded reports before overwriting | 1,537,856 |
+| 3 | all four configured gateway instances | none |
+
+1,537,856 is 1,800,000 less the 262,144 the store holds: in runs 1 and 2 not one cancel report was discarded as
+forwarded. The sessions had ended, so their reports go to sessions connected nowhere; while two configured gateway
+instances had not announced their sessions, the leader held every one of them, in case one of those gateways has the
+session, and the position it says it has forwarded through stayed at the oldest it held. The follower therefore had to
+keep them all. The leader's own room for such reports, 32,768, filled as well, and it dropped them. With every gateway
+running, the leader drops a report for a session connected nowhere at once, its records go on saying how far it has
+forwarded, and the follower discards in step.
+
+**Why the remaining loss is accepted.** It arises only while the leader itself is holding the same reports and dropping
+them for want of room, so the follower's loss adds nothing a member would otherwise have received; that holding is
+[BUG-0258](#bug_0258). Making the store hold a whole flood would take about 900 MB on each sequencer machine, and a
+larger member would still overflow it.
 
 ### BUG-0257: Scenario 115 reads the Quill logs of running components to find a lease that ran out, and a record not yet written would be missed {#bug_0257}
 
