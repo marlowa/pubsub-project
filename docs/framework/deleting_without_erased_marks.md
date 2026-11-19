@@ -173,6 +173,46 @@ On the development machine, with the order book's own benchmark (`order_book_siz
 - the map's resident memory over a long run of orders and cancels with the map reserved, recorded with `vmstat` and
   the engine's own figures, which should be flat from the start.
 
+### 8.1 Measured, 19 November 2026
+
+Built, and measured with `order_book_bench`: 1,000,000 orders added to a book reserved for 1,000,000, so a table of
+2^21 slots, then each cancelled, in the order they were added, each operation timed. Pinned to one core of the
+development machine, with its measurement settings on; the binary with today's map and the one with backward shift
+were run alternately, twice each, and the two runs of each agreed to within a few nanoseconds. Nanoseconds per
+operation:
+
+| Book with its region | p50 | p90 | p99 | p99.9 | worst |
+|---|---|---|---|---|---|
+| Accept, today's map | 60 | 215 | 886 | 1,987 | 100,000 to 175,000 |
+| Accept, backward shift | 57 | 207 | 879 | 1,980 | 100,000 to 119,000 |
+| Cancel, today's map | 140 | 183 | 296 | 378 | 24,000 to 33,000 |
+| Cancel, backward shift | 149 | 256 | 387 | 528 | 32,000 |
+
+A cancel here is the whole of the book's work: finding the order, copying its record, removing it, and publishing the
+region's position; an accept is adding the order and publishing.
+
+**The first build had a cancel of 312,000 nanoseconds,** the same in every run. It was one of the last dozen cancels,
+when the table was nearly empty, and it was not the shift: `erase` by iterator, which the order book called, works out
+where a walk of the map would go on from, by scanning for the next entry, and in a table of 2 million slots holding a
+handful of entries that scan crosses most of it. Today's map has the same scan, but its table is never empty of marks
+at that point, and the scan stops sooner. The order book has no use for the answer. The map now has `remove(iterator)`,
+which removes without working it out, and `erase(key)` no longer goes through it; the order book uses `remove`. That
+took the worst cancel back to what today's map gives, which looks like an interruption of the thread rather than work
+in the map.
+
+**What the shift costs:** 9 nanoseconds at the median, and 70 to 150 at the 90th to 99.9th percentiles. The cost is
+looking at the orders after the gap and working out each one's home slot, which means hashing its identity again,
+until an empty slot. A simulation of these keys' hash in the same table found runs of 2 slots at the median and 44 at
+the longest, so the hash spreads the keys well; the cost is the hashing, not long runs. It could be cut by keeping
+each entry's hash in its slot, so that working out its home needs no hashing: 4 bytes a slot, about 1.1 GB more for
+the 2^28 slots of production's map.
+
+**Cancels against accepts.** At the median a cancel costs more than an accept, with either map, because it finds the
+order and copies its record as well as removing it. At the 90th percentile and above an accept costs more than a
+cancel, with either map: up to 880 nanoseconds at the 99th against 300 to 400, which is the cost of the first write to
+a page of the map or the region that the kernel has not yet supplied, the subject of item 1 of BUG-0028. Supplying
+every page at the start of the day would take that tail away from accepts.
+
 ## 9. Decisions
 
 Each is a separate yes-or-no question.
