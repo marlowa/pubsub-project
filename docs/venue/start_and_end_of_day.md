@@ -493,6 +493,84 @@ the end of day (section 4.2, decision 6).
 The archive is the day's record. How long archives are kept, and where they are sent, is an operational matter
 outside the venue.
 
+### 4.4 Building the rest: items 3, 4 and 6 of BUG-0137
+
+**Status: proposed, 19 November 2026.** Decisions 9 to 14 below are asked.
+
+**What every component does on the end-of-day end.** Each is told by a route it already has, or by the one this
+section adds, and shuts itself down in an orderly way, writing its last-state file (decision 5) and exiting with
+status 3:
+
+| Component | Told by | Before it exits |
+|---|---|---|
+| Matching engines | the record in the WAL | apply it, close the open-order region |
+| Follower sequencer | the record, copied from its leader | hold it in its own WAL and acknowledge it, as for any record |
+| Leading sequencer | writing the record itself | wait until the follower sequencer has acknowledged it, or the limit of time has passed (decision 4) |
+| Publishers | the record in their copy of the WAL | publish it on `technical_events`, then stay up for the time set in their configuration, 10 seconds |
+| Gateways | `OrderAcceptance` from the leading sequencer | log each member out, saying the trading day has ended (decisions 12 and 13) |
+| Arbiters, witness, authentication services | the `technical_events` topic, which they subscribe to (decision 10) | nothing more |
+| Administration service | the `technical_events` topic, from Java (decision 11) | nothing more |
+
+A component that meets the end-of-day end in records it receives while being caught up acts on it once it has caught
+up (decision 8).
+
+**Departures from the end on are expected (item 3).** A component that has received the end-of-day end, and is still
+running because it is waiting as the table says, treats the loss of any other component as expected: it logs the loss
+at Info, saying the trading day has ended, and does nothing else. So the leading sequencer does not step down when its
+peer or the arbiters leave and its lease runs out, the follower sequencer does not ask to lead when its leader leaves,
+a matching engine does not wait for a sequencer, a gateway does not connect to its sequencer again or tell members
+trading is unavailable, and an arbiter makes no statement about a pair whose instances have left. Before the end, a
+loss is treated as it is during the day.
+
+**What the framework gives every C++ component (decision 9).**
+
+- `LastStateFile`: the file of decision 5, at the path in the component's configuration; it writes the trading day and
+  the phase under a temporary name and renames it into place, and reads it at start-up, so that a component finding
+  the end-of-day end of its own day exits at once with status 3.
+- A way for a component to stop the reactor for the end of day, after which its `main` returns status 3
+  (`STOPPED_FOR_THE_END_OF_DAY`, the status `scripts/launch.py` already acts on).
+
+**Order of building (decision 14).**
+
+1. The framework pieces, with unit tests.
+2. The components that already receive every phase: the matching engines, both sequencers, the publishers and the
+   gateways, each shutting down as the table says and keeping its last-state file; `ha_test.py`'s check that runs the
+   engines on a copy of the WAL gives them a last-state path of their own (decision 5).
+3. The arbiters, the witness and the authentication services subscribe, and shut down.
+4. The administration service subscribes, and shuts down.
+5. Expected departures in every component.
+6. The tests of item 9: `trading_day_test.py` checks a day ending by itself, and scenarios in `ha_test.py` stop the
+   leader between the two events, and between writing the end and the follower sequencer acknowledging it.
+
+#### Decision 9. Does the framework provide `LastStateFile`, and a way to stop the reactor for the end of day after which `main` returns status 3, used by every C++ component? (Yes or no.)
+
+#### Decision 10. Do the arbiters, the witness and the authentication services each run one more thread, a subscriber to `technical_events` built on the framework's `TopicSubscriberThread`, shared by all three, which on the end-of-day end of their trading day stops the component for the end of day? (Yes or no.)
+
+The alternative is to build the subscription into each component's own thread; a thread of its own keeps the end of
+day apart from what each component does, and is written once.
+
+#### Decision 11. Does the administration service subscribe to `technical_events` from Java, with a subscriber of its own that connects to both publishers, keeps to the one that leads, and on the end-of-day end makes the service exit with status 3? (Yes or no.)
+
+The service already speaks framework messages from Java (`PduChannel`), but only one request and one reply at a time
+over TLS; the subscriber is new work: the subscription, receiving pages, acknowledging them, and connecting again. The
+alternative, asking the leading sequencer for the phase every few seconds with `TradingStateQuery`, is simpler, but
+the leading sequencer exits soon after writing the end, and a question asked after that is answered by nobody, so the
+service could miss the end; the publishers stay up after publishing it for exactly this. The subscription also gives
+the operator's desktop the phase ([BUG-0266](../bug_list.md#bug_0266)).
+
+#### Decision 12. Does the FIX gateway, on the end-of-day end, send every logged-on member a `Logout` (35=5) whose `Text` (58) says the trading day has ended, before it shuts down? (Yes or no.)
+
+A member's connection would otherwise simply close. Members already know the session is closed, from the
+`TradingSessionStatus` (35=h) sent at the close; the `Logout` tells them why the connection ends.
+
+#### Decision 13. Is a logout message, carrying its reason as text, added to the binary protocol, and sent by the binary gateway to every logged-on member on the end-of-day end, before it shuts down? (Yes or no.)
+
+The binary protocol has no logout message today: a member's session ends only by the connection closing. Without one,
+a binary member is told nothing at the end of day beyond the session's status. With it, the binary gateway does what
+the FIX gateway does under decision 12.
+
+#### Decision 14. Is the work built in the order above? (Yes or no.)
+
 ## 5. What has to be built
 
 This is the work for step 9 of [trading_day_plan.md](trading_day_plan.md), listed here so that the procedures can be
