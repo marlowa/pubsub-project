@@ -886,6 +886,12 @@ for each. Three unit tests in `ReportForwardingTest`, each made to fail on purpo
 released by their own record rather than from the front, and a full ring that drops. The pause is not shown by any test
 or scenario. Left before this entry closes: the latency run compared with the last, and the allocation-counting test,
 which waits for [BUG-0087](#bug_0087)'s tool.
+
+**The leading sequencer's memory grows during the day,** measured on 20 November 2026: from 7.0 GB to 11.0 GB at most
+over 83 minutes, while the follower stayed flat. The session map explains at most 0.78 GB of it. What else grows, and
+how the sequencer is to hold its memory from the start as the matching engine does, is proposed in
+[the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md), whose four
+decisions are Andrew's.
 ### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
 
 | | |
