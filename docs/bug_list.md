@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 269 |
-| Open | 50 (27 defects, 23 tasks) |
-| Closed | 219 |
-| Next id | BUG-0270 |
+| Bugs recorded | 271 |
+| Open | 51 (29 defects, 22 tasks) |
+| Closed | 220 |
+| Next id | BUG-0272 |
 
 ## Open bugs by severity
 
-4 high, 32 medium, 14 low.
+4 high, 33 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -26,7 +26,6 @@
 | [BUG-0059](#bug_0059) | medium | task | No defence against a member reconnecting in a loop with the wrong protocol |
 | [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
-| [BUG-0087](#bug_0087) | medium | task | Whether the hot path allocates cannot be established on demand |
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
 | [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
 | [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
@@ -49,6 +48,8 @@
 | [BUG-0262](#bug_0262) | medium | defect | A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog |
 | [BUG-0263](#bug_0263) | medium | defect | In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
+| [BUG-0270](#bug_0270) | medium | defect | Every message an application thread sends allocates twice from the heap, copying the connection's service name |
+| [BUG-0271](#bug_0271) | medium | defect | The following matching engine allocates from the heap for every report it keeps to compare with the leader's |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -885,7 +886,9 @@ fixed array, and each chunk is released once its report is sent. Each engine's c
 for each. Three unit tests in `ReportForwardingTest`, each made to fail on purpose: a chunk never released, reports
 released by their own record rather than from the front, and a full ring that drops. The pause is not shown by any test
 or scenario. Left before this entry closes: the latency run compared with the last, and the allocation-counting test,
-which waits for [BUG-0087](#bug_0087)'s tool.
+which waited for [BUG-0087](#bug_0087)'s tool. The tool's first run, on 20 November 2026, found 291 heap calls on the
+leading sequencer's thread in 60 seconds, from the copied service name of [BUG-0270](#bug_0270), its lease requests and
+its logging, and none from the session map or the waiting reports.
 
 **The leading sequencer's memory grows during the day,** measured on 20 November 2026: from 7.0 GB to 11.0 GB at most
 over 83 minutes, while the follower stayed flat. The session map explains at most 0.78 GB of it. What else grows, and
@@ -2127,51 +2130,6 @@ setting should do the same.
 asserting it is worse than one that names none, because the count then reports coverage that does
 not exist.
 
-### BUG-0087: Whether the hot path allocates cannot be established on demand {#bug_0087}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task |
-| Found | 2026-09-10 |
-| Recorded | 2026-09-10 |
-| How | Reviewing a June profile that put `malloc` and `_int_malloc` at about 1.5% of the matching engine thread. The obvious causes were eliminated by reading the code, which is not the same as measuring |
-| Impact | The framework's central claim -- no heap allocation on any hot path -- is not checkable. It is believed on the strength of the allocators existing, and a regression would be found by a profile taken for some other reason, or not at all |
-
-**What is being asked for is a tool, not a fix.** This entry closes when the assessment can be
-run on demand. The property it measures is permanent, so a run that finds allocation on the hot
-path is a defect of its own and gets its own entry.
-
-**A profile is the wrong instrument.** `perf` samples, so it reports roughly how much *time*
-went to allocation. That is not the question. A path allocating once every ten thousand orders
-contributes nothing a profile would show and still breaks the rule. What is wanted is a count:
-how many times was the allocator called, on which thread, during a window when the venue was
-trading.
-
-**A counting interposer answers it and needs no rebuild.** `LD_PRELOAD` over `malloc`, `calloc`,
-`realloc` and `free`, counting per thread and reporting at exit.
-[trading_day_load.md](operations/trading_day_load.md) already names this approach among the
-things worth measuring, and the wrapper `deploy.py` generates is the interposition point that
-exists for it. Unlike `valgrind` it does not change timing enough to alter what the venue does.
-
-**The window is the hard part.** Every component allocates freely while it starts -- that is
-where the pools are filled from -- so a count over a whole process says nothing. The interposer
-has to be told when to begin counting, after the venue reports ready and while orders are
-flowing, and told again when to stop.
-
-**The threshold is measured, not chosen.** Whether the right answer is zero, or a small stated
-number per thread, is what the first run establishes. Threads do work besides the order path,
-and logging and the codec may allocate legitimately. Picking a number in advance would either
-pass everything or fail on things nobody intended to forbid.
-
-**What closing this needs.** The interposer, a script that places the window and drives orders
-through it, and a stated per-thread expectation the script asserts against. It belongs with the
-other assessment scripts rather than in the test suite, because it answers a question on demand
-rather than gating a build.
-
-Related: [BUG-0048](#bug_0048) for the memory figures that came out of the same profiling work,
-and BUG-0030 for the precedent of a tracked task rather than a defect.
-
 ### BUG-0089: A member cannot ask the venue what it is holding {#bug_0089}
 
 | | |
@@ -2377,7 +2335,107 @@ logs on many sessions together, repeated, which fails now some of the time.
 
 **Principles.** None of the venue's guarantees about orders; members' access.
 
+### BUG-0270: Every message an application thread sends allocates twice from the heap, copying the connection's service name {#bug_0270}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| How | The first run of BUG-0087's counting of heap calls, `scripts/heap_allocation_count.py`, under about 1,000 orders a second with half of them cancelled, on the development machine |
+| Impact | Every message any application thread sends -- an order from a gateway to the sequencers, a report from the leading engine -- makes two calls to the heap allocator on that thread, and two frees on the reactor's thread. Principle F5 says nothing on the order path allocates from the heap |
+
+**What was measured.** In a 60-second window: 378,188 calls on binary gateway A's thread, 189,413 on the leading
+matching engine's, and 291 on the leading sequencer's, which sends few messages of its own on this path. About two calls
+for every message sent, every one from `ApplicationThread::send_pdu` and `enqueue_send_pdu_command`
+(`libraries/pubsub_itc_fw/src/ApplicationThread.cpp`).
+
+**Why.** `ConnectionID` holds the service's name in a `std::string` (`ConnectionID.hpp`). `enqueue_send_pdu_command`
+copies the connection's `ConnectionID` into the `ReactorControlCommand` it builds, which allocates when the name is
+longer than the 15 characters a `std::string` holds without the heap, as names like `sequencer_primary_orders` are.
+The command is then copied once more into the reactor's queue, and the name with it. The reactor frees both. `ServiceID`
+was changed to a number for the same reason (its header says so), and `ConnectionID` was not.
+
+**What is wanted.** A `ConnectionID` that carries no `std::string`: the number alone, with the service's name found from
+it where a name is wanted, as `ServiceID` does. 62 places read `service_name()`, most to log it. The run of
+`heap_allocation_count.py` then shows no call from `send_pdu` on any thread.
+
+### BUG-0271: The following matching engine allocates from the heap for every report it keeps to compare with the leader's {#bug_0271}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| How | The first run of BUG-0087's counting of heap calls, `scripts/heap_allocation_count.py`, as for [BUG-0270](#bug_0270) |
+| Impact | The following engine makes about one call to the heap allocator for each report it keeps, 118,170 calls and 36 MB in 60 seconds, on the thread that applies every command. A follower that must keep pace with the leader to take over from it pays the allocator's varying cost on every command (principle F5) |
+
+**Where.** `MatchingEngineStateMachine::send_report` (`MatchingEngineStateMachine.cpp`, line 185) hands each report to
+the follower's outputs, which keep it until the WAL holds the leader's report, to compare the two
+([both_engines_apply_the_wal.md](availability/both_engines_apply_the_wal.md), decision 3). Each kept report is a
+`HeldEngineReport`, whose bytes are a `std::vector<uint8_t>` (`HeldEngineReport.hpp`): one allocation to size it and,
+often, a second when it is moved.
+
+**What is wanted.** Kept reports in storage allocated once, as the leading sequencer's waiting reports now are
+([BUG-0131](#bug_0131)): fixed-size records in a ring sized at start, with a stated limit on how many may wait.
+
 ## Closed
+
+### BUG-0087: Whether the hot path allocates cannot be established on demand {#bug_0087}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-09-10 |
+| Recorded | 2026-09-10 |
+| Fixed | 2026-11-20 -- `scripts/heap_allocation_count.py` loads the counting library `libraries/heap_allocation_count` into the venue's programs with LD_PRELOAD, drives orders and cancels through perf_run.py, counts each thread's heap calls in a window opened once the load has settled, names each call's stack, and compares each order-path thread with `scripts/heap_allocation_expectations.toml`, which allows none. Its first run found [BUG-0270](#bug_0270) and [BUG-0271](#bug_0271) |
+| How | Reviewing a June profile that put `malloc` and `_int_malloc` at about 1.5% of the matching engine thread. The obvious causes were eliminated by reading the code, which is not the same as measuring |
+| Impact | The framework's central claim -- no heap allocation on any hot path -- is not checkable. It is believed on the strength of the allocators existing, and a regression would be found by a profile taken for some other reason, or not at all |
+
+**What is being asked for is a tool, not a fix.** This entry closes when the assessment can be
+run on demand. The property it measures is permanent, so a run that finds allocation on the hot
+path is a defect of its own and gets its own entry.
+
+**A profile is the wrong instrument.** `perf` samples, so it reports roughly how much *time*
+went to allocation. That is not the question. A path allocating once every ten thousand orders
+contributes nothing a profile would show and still breaks the rule. What is wanted is a count:
+how many times was the allocator called, on which thread, during a window when the venue was
+trading.
+
+**A counting interposer answers it and needs no rebuild.** `LD_PRELOAD` over `malloc`, `calloc`,
+`realloc` and `free`, counting per thread and reporting at exit.
+[trading_day_load.md](operations/trading_day_load.md) already names this approach among the
+things worth measuring, and the wrapper `deploy.py` generates is the interposition point that
+exists for it. Unlike `valgrind` it does not change timing enough to alter what the venue does.
+
+**The window is the hard part.** Every component allocates freely while it starts -- that is
+where the pools are filled from -- so a count over a whole process says nothing. The interposer
+has to be told when to begin counting, after the venue reports ready and while orders are
+flowing, and told again when to stop.
+
+**The threshold is measured, not chosen.** Whether the right answer is zero, or a small stated
+number per thread, is what the first run establishes. Threads do work besides the order path,
+and logging and the codec may allocate legitimately. Picking a number in advance would either
+pass everything or fail on things nobody intended to forbid.
+
+**What closing this needs.** The interposer, a script that places the window and drives orders
+through it, and a stated per-thread expectation the script asserts against. It belongs with the
+other assessment scripts rather than in the test suite, because it answers a question on demand
+rather than gating a build.
+
+Related: [BUG-0048](#bug_0048) for the memory figures that came out of the same profiling work,
+and BUG-0030 for the precedent of a tracked task rather than a defect.
+
+**What was built.** The counting library is C, loaded with LD_PRELOAD, and passes every call on to the C library's
+own allocator. It counts only in the programs named to it, and only while the window file exists, which each program
+looks for at most every 100 milliseconds. For each thread it keeps the calls of each kind, the bytes, and up to 64
+call stacks. The script clears earlier runs, runs a steady phase of orders and cancels through `perf_run.py`, opens the
+window after the load has settled and closes it after its length, turns each stack into functions and lines with
+`addr2line`, and fails if any thread in the expectations file made more calls than it allows. `--reports` summarises
+an earlier run again. The counting was checked on a small program before the venue: two threads' calls counted, and
+none with the window shut. The comparison was made to fail and to pass on the same run's reports, with the figures
+of the expectations file and with figures too high to reach.
 
 ### BUG-0028: Growing the order book by doubling needs more memory than the machine has {#bug_0028}
 

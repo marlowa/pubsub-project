@@ -232,15 +232,18 @@ general heap. Memory comes from pools, bump allocators, slabs and fixed buffers 
 **Where it is meant to hold.** The framework's allocators ([allocators.md](framework/allocators.md)),
 slab-backed message payloads, and fixed-capacity structures such as `FixedCapacityRingBuffer`.
 
-**What checks it.** Nothing, on demand. Recorded as [BUG-0087](bug_list.md#bug_0087).
+**What checks it.** `scripts/heap_allocation_count.py`, run on demand ([BUG-0087](bug_list.md#bug_0087)). It loads a
+library that counts every call to the heap allocator into each venue program, drives orders and cancels through the
+venue, counts for a window opened once the load has settled, and names the call stack of each call. It compares each
+order-path thread with `scripts/heap_allocation_expectations.toml`, which allows each of them none.
 
-**Today: broken on every order in the leading sequencer.** It records which session each order came
-from in `seq_no_to_session_`, a `std::unordered_map`, adding an entry for every order; adding a new
-key to a `std::unordered_map` allocates a node from the heap. An execution report that arrives before
-the follower has acknowledged the order it answers is copied into `pending_er_`, a `std::multimap`,
-with its payload in a `std::vector` and its `ClOrdID` in a `std::string`, which is up to three
-allocations for each such report. Both are recorded as [BUG-0131](bug_list.md#bug_0131). Other standard
-containers on the order path have not been checked.
+**Today: broken.** Measured on 20 November 2026, under about 1,000 orders a second with half of them cancelled, in 60
+seconds: every message an application thread sends allocates twice, copying the connection's service name
+([BUG-0270](bug_list.md#bug_0270)), which is 378,188 calls on binary gateway A's thread and 189,413 on the leading
+matching engine's; and the following engine allocates for every report it keeps to compare with the leader's,
+118,170 calls ([BUG-0271](bug_list.md#bug_0271)). The leading sequencer's thread made 291 calls, from the same copied
+service name, its lease requests and its logging. The leading sequencer's own containers no longer allocate for each
+order ([BUG-0131](bug_list.md#bug_0131)).
 
 ### F6. Messages are not copied
 

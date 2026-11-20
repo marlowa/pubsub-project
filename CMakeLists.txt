@@ -752,6 +752,7 @@ add_dependencies(fix_dictionary_generated check_standards)
 add_subdirectory(libraries/pubsub_itc_fw)
 add_subdirectory(libraries/scram_crypto)
 add_subdirectory(libraries/fix_codec)
+add_subdirectory(libraries/heap_allocation_count)
 
 # ------------------------------------------------------------
 # Tests and performance harnesses

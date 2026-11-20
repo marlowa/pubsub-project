@@ -1,0 +1,28 @@
+# The most calls to the heap allocator each thread on the order path may make while scripts/heap_allocation_count.py's
+# window is open. Principle F5 in docs/design_principles.md: nothing on the order path allocates from the heap, so each
+# is zero. Each [[thread]] names a program, a thread by the name the kernel gives it (at most 15 characters), and why it
+# is held to its figure. The calls of a program's two instances are added together.
+
+[[thread]]
+program    = "binary_order_gateway"
+thread     = "BinaryOrderGate"
+most_calls = 0
+why        = "the binary gateway's thread decodes every member's order and sends every report on (F5)"
+
+[[thread]]
+program    = "fix_order_gateway"
+thread     = "FixOrderGateway"
+most_calls = 0
+why        = "the FIX gateway's thread decodes every member's order and sends every report on (F5)"
+
+[[thread]]
+program    = "sequencer"
+thread     = "SequencerThread"
+most_calls = 0
+why        = "the sequencer's thread sequences every command (F5)"
+
+[[thread]]
+program    = "matching_engine"
+thread     = "MatchingEngineT"
+most_calls = 0
+why        = "the matching engine's thread applies every command (F5)"
