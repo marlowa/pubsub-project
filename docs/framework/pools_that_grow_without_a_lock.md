@@ -1,7 +1,9 @@
 # Pools that grow without a lock {#pools_that_grow_without_a_lock}
 
-**Status: proposed for [BUG-0127](../bug_list.md#bug_0127), for agreement with Andrew before any code.** Section 8 lists
-the decisions, each a separate yes-or-no question.
+**Status: agreed with Andrew, 20 November 2026, for [BUG-0127](../bug_list.md#bug_0127); not yet built.** Two pieces
+of work, neither a substitute for the other: the queues' pools are sized so that they do not grow during the day, and
+any growth is reported as an error (section 4); and the lock is removed from growing, if and only if a TLA+ model
+checked with TLC proves the lock-free version safe (sections 5 and 6). Section 8 lists the decisions.
 
 ## 1. The problem
 
@@ -10,127 +12,121 @@ carry its messages from an `ExpandablePoolAllocator`. The allocator hands out no
 While the pool in use has a free node, taking one is a compare-and-swap on that pool's free list, with no lock. When it
 has none, the allocator takes a mutex, `expansion_mutex_`, looks through every pool in the chain for a free node, and,
 if there is none, maps a new pool from the operating system, writes its free list, links it into the chain, and calls
-the component's handler for an exhausted pool, which logs a Warning; all while holding the mutex.
+the component's handler for an exhausted pool, which logs a Warning; all while holding the mutex. Every other thread
+that wants a node from the same queue waits for it.
 
-So when a pool runs out, the thread that wanted a node waits for the operating system and for the log call, and every
-other thread that wants a node from the same queue waits for it on the mutex. A queue's producers are the threads that
-send to it: for the reactor's command queue, every application thread that asks the reactor to send something; for an
-application thread's queue, the reactor and any thread that sends to it. Principle F2 says nothing on the order path
-takes a lock, and F5 that nothing on it allocates from the operating system during the day.
-
-It happens. In the run of `ha_test.py` on 20 November 2026, scenario 116, in which orders are offered faster than the
-venue answers them, the binary order gateway's command queue ran out of nodes 15 times in 118 milliseconds, from
-19:48:07.394 to 19:48:07.512, each time adding a pool of 4,096 nodes:
+Growing is meant as a safeguard that is never needed: a pool sized for its queue does not run out. It does. In the run
+of `ha_test.py` on 20 November 2026, scenario 116, in which a load client offers 1,800,000 orders on four sessions as
+fast as the sockets accept them, the binary order gateway's command queue ran out of nodes 15 times in 118
+milliseconds, from 19:48:07.394 to 19:48:07.512, each time adding a pool of 4,096 nodes:
 
 ```
 BinaryOrderGatewayCommandPool exhausted: chaining new pool slab (4096 objects)
 ```
 
-That is about 61,000 commands waiting at once for the reactor to act on them, against a queue sized at start for 4,096.
-The time each addition took is not measured on its own: the 15 came about 8 milliseconds apart, which is an upper bound
-on each, and every producer of that queue waited for each one.
+That is about 61,000 commands waiting at once for the reactor, in a queue sized for 4,096.
 
-## 2. Which queues use the allocator, and what bounds them
+## 2. Why the pool was too small
 
-`ExpandablePoolAllocator` has one user in the venue, `LockFreeMessageQueue`, for its nodes. Its other former user, the
-gateways' pool of open orders, was removed with [BUG-0072](../bug_list.md#bug_0072). Each component has two kinds of
-queue:
+The command queue holds what the gateway's thread asks the reactor to send, one node for each send
+(`ApplicationThread::send_pdu`). For each order, with high availability on, the binary gateway sends twice: the order
+to each sequencer (`BinaryOrderGatewayThread::forward_envelope_to_sequencers`). For each answered order it sends a
+third time: the execution report to the member.
 
-- **Each application thread's queue**, which the reactor fills with what arrives on the thread's connections. Since
-  [BUG-0234](../bug_list.md#bug_0234) the reactor stops reading a connection while too many of its messages wait
+The gateway stops reading its members once 16,384 of its commands are unanswered (`[unanswered_commands] limit`,
+[a_gateway_limits_its_unanswered_commands.md](../availability/a_gateway_limits_its_unanswered_commands.md)); in
+scenario 116 it reached that limit 56 times. 16,384 unanswered orders can be 32,768 sends to the sequencers waiting for
+the reactor, eight times the pool, before any execution report is counted. The reports to the members, answered at the
+rate orders arrive, about 100,000 a second in that scenario, are the likely remainder of the 61,000. The pool's size,
+4,096, predates the limit on unanswered commands, and was not changed when the limit was set.
+
+The first two steps are arithmetic from the code and the configuration. How the 61,000 divide between sends to the
+sequencers and reports is not yet measured; section 4 says how it is to be.
+
+## 3. Which queues use the allocator
+
+`ExpandablePoolAllocator` has one user, `LockFreeMessageQueue`, for its nodes. Each component has two kinds of queue:
+
+- **Each application thread's queue**, which the reactor fills with what arrives on the thread's connections. The
+  reactor stops reading a connection while too many of its messages wait
   ([bounding_messages_waiting.md](bounding_messages_waiting.md)), so these are bounded by connection.
-- **The reactor's command queue**, which every application thread fills with what it asks the reactor to do, sending
-  above all. Nothing bounds it: `enqueue` never fails, and the queue's watermarks only call a handler. It is the one that
-  ran out in scenario 116.
+- **The reactor's command queue**, which the component's threads fill with what they ask the reactor to do, sending
+  above all. The queue itself has no bound, but in a gateway the limit on unanswered commands bounds the sends to the
+  sequencers, as section 2 describes.
 
-Because the command queue has no bound, no initial size can promise that it never runs out. A pool that runs out must
-therefore be able to grow without the lock.
+## 4. Sizing, and growth as an error
 
-## 3. What must hold
+1. **Measure what the queue holds at its peak.** A short run of scenario 116 with the binary gateway counting, at the
+   command queue's deepest, how many of its commands are sends to the sequencers and how many are reports to members,
+   and the same for the FIX order gateway, which sends each order to both sequencers in the same way.
+2. **Size each gateway's command queue from its limit on unanswered commands:** at least two sends for each
+   unanswered command, plus the reports measured in step 1, with the figure and how it was reached in the
+   configuration's comment, so that the two settings cannot drift apart again. Each other component's queues are
+   checked against what bounds them in the same way.
+3. **Growth is an error.** The handlers for an exhausted pool log at Error rather than Warning, and each allocator's
+   count of pools added, which it already keeps (`expansion_events_`), is published as a metric, so that a queue that
+   grows during the day is seen at once.
 
-1. **No lock on the allocation path**, fast or slow.
-2. **No thread waits for another.** A thread that wants a node never waits for a thread that is adding a pool.
-3. **The operating system is asked for memory off the order path whenever it can be.** When it cannot, only the thread
-   that needs the pool pays for it.
-4. **Pools are never removed** while the allocator lives, as now, so that a thread walking the chain never reads a pool
-   that has gone.
-5. **Every node is still found by `deallocate`**, which walks the chain to find the pool a node belongs to.
+## 5. Growing without the lock
 
-## 4. The proposal
+The mutex in the slow path guards four things. Each can be done safely without it:
 
-### 4.1 Looking through the chain without the lock
+1. **Looking through the chain for a pool with a free node.** Each pool's free list is already lock-free, a
+   compare-and-swap stack checked by the TLA+ model `PoolFreeList` ([tla/findings.md](tla/findings.md)). Walking the
+   chain reads each pool's link to the next, and a link changes once, from null to a new pool, because pools are never
+   removed. `deallocate` already walks the chain without the lock, at the same time as pools are added.
+2. **Making a pool the current one.** The current pool is only where to look first. Two threads that set it at once
+   each set a pool that had a free node; either is correct.
+3. **Adding a pool.** A thread that finds every pool full maps a pool and writes its free list, and only then links
+   it, by a compare-and-swap on the last pool's link from null to its own pool. If two threads try at once, exactly one
+   compare-and-swap succeeds; the other learns the winner's pool from its failed compare-and-swap, looks there for a
+   node, and links its own pool after the winner's in the same way. Each pool is linked at most once, because only the
+   thread that made it links it and a link from null succeeds once; the chain cannot form a cycle, because a link only
+   ever points to a pool in no chain before; and the hazard known as ABA, a compare-and-swap fooled by a value that
+   went and came back, cannot arise, because no link returns to null and no pool is freed or reused while the
+   allocator lives.
+4. **Handing out a node only from a pool in the chain.** A node handed out from a pool not yet linked could be freed by
+   the consumer, whose `deallocate` would not find its pool. So a thread never takes a node from its own new pool before
+   that pool is linked.
 
-Pools are only ever added to the end of the chain, each pool's link to the next is read with an acquire load, and the
-pool that is current is published with a release store. Looking through the chain for a pool with a free node is
-therefore already safe without the lock, and so is making the pool found the current one: two threads that do it at
-once both publish a pool that has free nodes, and either will do.
+The slow path uses sequentially consistent atomic operations (`memory_order_seq_cst`) throughout. It is rare, so the
+cost does not matter, and with them the C++ guarantees the single order of events that a TLA+ model assumes. The fast
+path is unchanged.
 
-### 4.2 Adding a pool without the lock
+The handler for an exhausted pool is called by the thread that added the pool, after adding it, holding no lock. Two
+threads adding pools at once may call it at once; every handler in the venue only logs, which the logger allows.
 
-The chain gets an atomic pointer to its last pool. A thread that has found every pool full adds one by a
-compare-and-swap on the last pool's link to the next, from null to the new pool, and then moves the pointer to the last
-pool on. If another thread added a pool first, the compare-and-swap fails; the thread then looks through the new pool
-for a free node, and keeps its own pool as the spare of section 4.3, or links it after the other, so that nothing is
-mapped for nothing.
+## 6. Proving it: TLA+ first
 
-### 4.3 A spare pool, ready in advance
+Tests cannot show that code shared between threads has no race: they pass while a race remains. ThreadSanitizer cannot
+check this code either, because the builds for Valgrind and ThreadSanitizer (`USING_VALGRIND`) replace the pool's
+lock-free free list with a mutex, so that those tools can follow it, and so test different code.
 
-Each allocator keeps one spare pool, mapped and with its free list written, held in an atomic pointer. A thread that
-must add a pool takes the spare with one atomic exchange and links it in as in section 4.2, so that adding a pool costs
-it a few atomic operations and no call to the operating system.
+So the lock-free slow path is modelled in TLA+ before any C++ is written, and checked with TLC, beside the existing
+models in [tla/](tla/findings.md). The model has several threads allocating and freeing at once, pools of one or two
+nodes so that every allocation can fill a pool, and the steps of section 5 as separate atomic actions. TLC checks every
+interleaving of them within its bounds, at least three threads and four pools, not a sample of them. It checks these
+invariants:
 
-The spare is mapped again, off the order path, once it has been taken. Which thread does that is decision 3.
+- the chain from its head is acyclic, and holds each pool at most once;
+- every node handed out belongs to a pool in the chain, so that `deallocate` finds it;
+- no node is handed out to two threads at once;
+- every allocation either returns a node or adds a pool, so that no thread waits for another.
 
-If the spare has been taken and not yet replaced, as when 15 pools are needed in 118 milliseconds, the thread that needs
-a pool maps one itself, without the lock. It pays for the mapping; no other thread waits for it.
-
-### 4.4 The handler for an exhausted pool
-
-The handler is called by the thread that added the pool, after it has added it, and holds no lock. Two threads adding
-pools at once may call it at once, so a handler must allow that. Every handler in the venue only logs, which the logger
-allows.
-
-### 4.5 The lock table
-
-`expansion_mutex_` is removed, and with it its entry in the table of permitted locks in `scripts/check_standards.py`.
-
-## 5. Sizing
-
-The command queue's pools are sized by each component's configuration, `command_queue_pool_objects_per_slab` and
-`command_queue_pool_initial_slabs`. With growth costing a few atomic operations, sizing is about memory, not about
-pauses: a queue that grows during the day takes memory the day did not plan for, which
-[BUG-0010](../bug_list.md#bug_0010) rules out. So each component's pools are to be sized for the commands it can have
-waiting under the load it is tested with, and a growth during the day is to stay a Warning in the log and be counted, so
-that it is seen.
-
-The size needed is not yet known: scenario 116 needed about 61,000 for the binary order gateway. Whether the command
-queue should have a bound of its own, as the inbound queues do, is a separate question, decision 5.
-
-## 6. What it costs
-
-- **Memory:** one spare pool for each queue, 4,096 nodes for the command queues as now configured.
-- **Time on the order path:** none while the pool in use has nodes, as now. When it runs out, a few atomic operations
-  where there is a spare, and the mapping, paid by one thread only, where there is not.
-- **Code:** the chain's append, which is the delicate part. It is to be tested by many producers on pools of a few nodes,
-  so that pools are added constantly, under ThreadSanitizer as well as in the ordinary build.
+The model is also checked with a deliberate fault, a node handed out before its pool is linked, to show that TLC finds
+it. If the model holds, the C++ follows it step for step, which is checked by reading it against the model. If it does
+not hold, the lock stays.
 
 ## 7. What is not changed
 
-`FixedSizeMemoryPool`, the pool itself, is unchanged: its free list is lock-free already, except in builds for Valgrind
-and ThreadSanitizer, which use a mutex so that those tools can follow it. `deallocate` is unchanged. The allocators for
-variable-sized blocks, `ExpandableSlabAllocator`, are not part of this.
+`FixedSizeMemoryPool` is unchanged, and so is `deallocate`. The allocators for variable-sized blocks,
+`ExpandableSlabAllocator`, are not part of this. No spare pool is kept: with the queues sized correctly, growing should
+not happen, and the thread that grows a pool maps it itself, holding no lock.
 
 ## 8. Decisions
 
-Each a separate yes-or-no question:
+Agreed with Andrew, 20 November 2026:
 
-1. Make adding a pool lock-free, as section 4.2 describes, removing `expansion_mutex_`?
-2. Keep one spare pool ready in each allocator, as section 4.3 describes, so that adding a pool usually costs no call to
-   the operating system?
-3. Map the replacement spare on the reactor's thread, at its housekeeping tick, rather than on a new helper thread? The
-   reactor's thread is on the order path, but it would map a pool only after one has been used, which in a day sized
-   correctly is never; a new thread for something that should never happen goes against preferring an existing thread.
-4. Model the append and the spare in TLA+ before the code, beside the models of the pools' free list and the slab
-   allocators ([tla/findings.md](tla/findings.md)), since a lock-free append is where such code goes wrong?
-5. Record the reactor's command queue having no bound as a bug of its own, to be designed separately, rather than
-   bounding it here?
+1. Chaining pools during the day is wrong whether or not it takes a lock: the right size is to be found and set, and
+   chaining that still happens is logged at Error and counted as a metric.
+2. The lock is removed from growing only if a TLA+ model, checked with TLC, proves the lock-free version safe.

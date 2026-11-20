@@ -988,8 +988,13 @@ reactor go through it. It has no other user.
 **Seen.** In the run of `ha_test.py` on 20 November 2026, scenario 116 made the binary order gateway's command queue
 run out 15 times in 118 milliseconds, adding a pool of 4,096 nodes each time, with the mutex held.
 
-**Design.** Proposed in [pools_that_grow_without_a_lock.md](framework/pools_that_grow_without_a_lock.md), for
-agreement before any code.
+**Why it ran out.** The binary gateway's command queue has 4,096 nodes, and the gateway allows 16,384 unanswered
+commands before it stops reading its members; each order is two sends with high availability on, one to each
+sequencer, and each answered order a third, its execution report.
+
+**Design.** Agreed in [pools_that_grow_without_a_lock.md](framework/pools_that_grow_without_a_lock.md): the pools sized
+so that they do not grow during the day, growth logged at Error and counted, and the lock removed from growing only if a
+TLA+ model checked with TLC proves it safe.
 
 **How often.** With one pool that never fills, never. But pools have run out during load runs, which
 is why the queue pools in `fix_order_gateway_a.toml` have been enlarged more than once. And once a
