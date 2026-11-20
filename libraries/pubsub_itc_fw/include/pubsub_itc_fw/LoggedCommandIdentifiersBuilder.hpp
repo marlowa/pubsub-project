@@ -54,6 +54,11 @@ namespace pubsub_itc_fw {
  * it runs. The destructor stops the thread and waits for it, so that it never outlives the object it writes
  * into; it checks for a stop between segments, so the wait is at most the time to read one segment, or to
  * reserve the table if that is still going on.
+ *
+ * **Locking.** Asked to, the building thread locks the table into memory as it reserves it
+ * (LoggedCommandIdentifiers), and the owner reads whether it could, with locking_error(), once the record
+ * is finished. The record the owner takes keeps writing to this object when it frees its table, so this
+ * object must outlive it.
  */
 class LoggedCommandIdentifiersBuilder {
   public:
@@ -81,10 +86,13 @@ class LoggedCommandIdentifiersBuilder {
      * @param[in] identity         How a command's identity is read from a record. Must outlive the build.
      * @param[in] number_of        How an identity becomes a number.
      * @param[in] background_cores The processors the building thread may run on; empty to leave it where it lands.
+     * @param[in] hold_in_memory   Whether to lock the record's table into memory as it is reserved.
      */
     void start(size_t capacity, std::vector<Segment> segments, const CommandIdentityInterface& identity,
-               LoggedCommandIdentifiers::NumberFunction number_of = &LoggedCommandIdentifiers::identifier, std::vector<CpuId> background_cores = {}) {
+               LoggedCommandIdentifiers::NumberFunction number_of = &LoggedCommandIdentifiers::identifier, std::vector<CpuId> background_cores = {},
+               bool hold_in_memory = false) {
         capacity_ = capacity;
+        hold_in_memory_ = hold_in_memory;
         segments_ = std::move(segments);
         identity_ = &identity;
         number_of_ = number_of;
@@ -144,6 +152,17 @@ class LoggedCommandIdentifiersBuilder {
         return table_bytes_;
     }
 
+    /// The errno of the failure to lock the table into memory, or 0 when it was locked or was not to be. Valid once
+    /// finished.
+    [[nodiscard]] int locking_error() const {
+        return lock_record_.error;
+    }
+
+    /// The bytes of the table locked into memory. Valid once finished.
+    [[nodiscard]] size_t locked_bytes() const {
+        return lock_record_.locked_bytes;
+    }
+
   private:
     void build() {
         // It puts itself where it belongs. A new thread inherits the processor mask of the thread that
@@ -158,7 +177,7 @@ class LoggedCommandIdentifiersBuilder {
         growth_reporter_.report_threshold_bytes = 1;
         growth_reporter_.on_large_allocation = [this](size_t bytes, size_t /*largest*/) { table_bytes_ = bytes; };
         const auto reserve_started = std::chrono::steady_clock::now();
-        built_.emplace(capacity_, &growth_reporter_, number_of_);
+        built_.emplace(capacity_, &growth_reporter_, number_of_, hold_in_memory_ ? &lock_record_ : nullptr);
         const auto read_started = std::chrono::steady_clock::now();
         reserve_time_ = std::chrono::duration_cast<std::chrono::milliseconds>(read_started - reserve_started);
 
@@ -206,6 +225,9 @@ class LoggedCommandIdentifiersBuilder {
     const CommandIdentityInterface* identity_{nullptr};
     LoggedCommandIdentifiers::NumberFunction number_of_{&LoggedCommandIdentifiers::identifier};
     std::vector<CpuId> background_cores_;
+    bool hold_in_memory_{false};
+    // Before the record, which writes to it when it frees its table, so that it is destroyed after the record.
+    MemoryLockRecord lock_record_;
     std::optional<LoggedCommandIdentifiers> built_;
     AllocationGrowthReporter growth_reporter_;
     size_t table_bytes_{0};

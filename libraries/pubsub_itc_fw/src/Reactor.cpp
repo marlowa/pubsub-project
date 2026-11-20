@@ -275,11 +275,18 @@ int Reactor::run() {
     if (exception_caught) {
         return -1;
     }
+    if (stopped_for_a_failure_.load(std::memory_order_acquire)) {
+        return stopped_for_a_failure_status;
+    }
     return stopped_for_the_end_of_day_.load(std::memory_order_acquire) ? stopped_for_the_end_of_day_status : 0;
 }
 
 void Reactor::shutdown(const std::string& reason) {
     request_shutdown(reason, ShutdownKind::ordinary);
+}
+
+void Reactor::shutdown_for_a_failure(const std::string& reason) {
+    request_shutdown(reason, ShutdownKind::failure);
 }
 
 void Reactor::note_the_day_has_ended() {
@@ -335,6 +342,7 @@ void Reactor::request_shutdown(const std::string& reason, ShutdownKind kind) {
     // Published with the request below, by the same release store, so that run() sees it once it sees the request. A stop
     // asked for while one for the end of day waits still ends the day.
     stopped_for_the_end_of_day_.store(kind == ShutdownKind::end_of_day || end_of_day_stop_asked_.load(std::memory_order_acquire), std::memory_order_relaxed);
+    stopped_for_a_failure_.store(kind == ShutdownKind::failure, std::memory_order_relaxed);
 
     // Only from not started or running: a reactor already finalizing or finished stays so.
     ReactorLifecycleState::Tag current = lifecycle_.load(std::memory_order_acquire);

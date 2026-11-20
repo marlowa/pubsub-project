@@ -620,6 +620,34 @@ TEST_F(ReactorTest, RunReturnsTheEndOfDayStatusOnlyWhenStoppedForTheEndOfDay) {
     }
 }
 
+// run() returns 1 once the reactor stopped for a failure, as a component's refusal to start does, so that whatever started
+// the component sees that it failed; the first request decides, as for the end of day.
+TEST_F(ReactorTest, RunReturnsTheFailureStatusOnlyWhenStoppedForAFailure) {
+    for (const bool for_a_failure : {true, false}) {
+        auto reactor = std::make_unique<Reactor>(reactor_configuration_, service_registry_, logger_with_sink_.logger);
+        auto thread = ApplicationThread::create<TestApplicationThread>(logger_with_sink_.logger, *reactor, "failure", ThreadID{783}, make_queue_config(),
+                                                                       make_allocator_config());
+        reactor->register_thread(thread);
+        int status = -99;
+        ThreadWithJoinTimeout runner([&reactor, &status] { status = reactor->run(); });
+        BackoffWithYield backoff;
+        const auto start = MillisecondClock::now();
+        while (!reactor->is_initialized()) {
+            ASSERT_LT(MillisecondClock::now() - start, MillisecondClock::duration{2000}) << "Reactor did not complete initialization";
+            backoff.pause();
+        }
+        if (for_a_failure) {
+            reactor->shutdown_for_a_failure("a table could not be locked into memory");
+            reactor->shutdown("a later request");
+        } else {
+            reactor->shutdown("an ordinary stop");
+            reactor->shutdown_for_a_failure("too late to count");
+        }
+        ASSERT_TRUE(runner.join_with_timeout(std::chrono::seconds(10)));
+        EXPECT_EQ(status, for_a_failure ? Reactor::stopped_for_a_failure_status : 0) << "for a failure: " << for_a_failure;
+    }
+}
+
 TEST_F(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown) {
     auto bad_thread = ApplicationThread::create<ThrowingTerminationThread>(logger_with_sink_.logger, *reactor_, "ThrowingThread", ThreadID{888},
                                                                            make_queue_config(), make_allocator_config());

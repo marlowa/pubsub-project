@@ -162,6 +162,7 @@ struct Events : public ReplicatedWalEventsInterface {
         read_at_open_bytes.emplace_back(entry.bytes, entry.bytes + entry.size);
     }
     void checking_for_commands_already_held(int64_t /*last_seq_no*/) override {}
+    void identifiers_not_held_in_memory(int /*error*/, size_t /*bytes*/) override {}
 
     // Each record open() read, and its bytes.
     std::vector<int64_t> read_at_open_seq_nos;

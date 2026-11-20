@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -12,7 +13,7 @@
 #include <tsl/robin_map.h>
 
 #include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
-#include <pubsub_itc_fw/GrowthReportingAllocator.hpp>
+#include <pubsub_itc_fw/MemoryLockingAllocator.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
 
@@ -40,6 +41,12 @@ namespace pubsub_itc_fw {
  * insert during the day waits for the kernel to supply a page. A slot is 24 bytes: with the capacity the
  * venue uses, 200 million, the table is 2^28 slots, 6 GiB.
  *
+ * **The table may be locked into memory**, so that the kernel never swaps it out and a lookup on the thread that
+ * sequences orders never waits for a page to be read back from disk. Given a MemoryLockRecord, the record's allocator
+ * locks the table as it allocates it, and records there whether it could; table_bytes_for() says beforehand how much
+ * that is, so that the owner can compare it with the process's limit on locked memory before building the record
+ * (docs/venue/the_sequencer_holds_its_memory_from_the_start.md).
+ *
  * Every trading day starts with an empty WAL, so the record holds one day at most.
  *
  * One thread calls every member function.
@@ -55,8 +62,10 @@ class LoggedCommandIdentifiers {
             return static_cast<size_t>(value);
         }
     };
-    using Allocator = GrowthReportingAllocator<std::pair<uint64_t, uint64_t>>;
+    using Allocator = MemoryLockingAllocator<std::pair<uint64_t, uint64_t>>;
     using Map = tsl::robin_map<uint64_t, uint64_t, UseAsHash, std::equal_to<uint64_t>, Allocator>;
+    /// One slot of the table, as `tsl::robin_map` lays it out: the entry and the distance it lies from its ideal slot.
+    using Slot = tsl::detail_robin_hash::bucket_entry<std::pair<uint64_t, uint64_t>, false>;
 
     // Robin Hood hashing stays fast close to full, which is what lets 200 million identities fit in 2^28
     // slots rather than 2^29.
@@ -73,9 +82,27 @@ class LoggedCommandIdentifiers {
      * @param[in] growth_reporter Told of the table's allocation, so that its size appears with the process's
      *                            other large allocations. May be null.
      * @param[in] number_of       How an identity becomes a number.
+     * @param[in] lock_record     Where the locking of the table into memory is recorded; null to leave it unlocked.
+     *                            Not owned; it must outlive the record.
      */
-    LoggedCommandIdentifiers(size_t capacity, AllocationGrowthReporter* growth_reporter, NumberFunction number_of = &identifier)
-        : capacity_(capacity), number_of_(number_of), map_(make_map(capacity, growth_reporter)) {}
+    LoggedCommandIdentifiers(size_t capacity, AllocationGrowthReporter* growth_reporter, NumberFunction number_of = &identifier,
+                             MemoryLockRecord* lock_record = nullptr)
+        : capacity_(capacity), number_of_(number_of), map_(make_map(capacity, growth_reporter, lock_record)) {}
+
+    /**
+     * @brief The bytes of the table a record of @p capacity identities reserves, worked out without reserving it.
+     *
+     * As `tsl::robin_map::reserve` sizes it: room for @p capacity entries at the maximum load factor, rounded up to a
+     * power of two slots, in one allocation.
+     */
+    [[nodiscard]] static size_t table_bytes_for(size_t capacity) {
+        const auto slots_needed = static_cast<size_t>(std::ceil(static_cast<float>(capacity) / max_load_factor));
+        size_t slots = 1;
+        while (slots < slots_needed) {
+            slots <<= 1U;
+        }
+        return slots * sizeof(Slot);
+    }
 
     /// The 64-bit number that stands for @p identity.
     [[nodiscard]] static uint64_t identifier(std::string_view identity) {
@@ -162,11 +189,11 @@ class LoggedCommandIdentifiers {
         return value;
     }
 
-    [[nodiscard]] static Map make_map(size_t capacity, AllocationGrowthReporter* growth_reporter) {
+    [[nodiscard]] static Map make_map(size_t capacity, AllocationGrowthReporter* growth_reporter, MemoryLockRecord* lock_record) {
         if (capacity == 0) {
             throw PreconditionAssertion("LoggedCommandIdentifiers: the capacity must be at least one", __FILE__, __LINE__);
         }
-        Map map(0, UseAsHash{}, std::equal_to<uint64_t>{}, Allocator{growth_reporter});
+        Map map(0, UseAsHash{}, std::equal_to<uint64_t>{}, Allocator{growth_reporter, lock_record});
         map.max_load_factor(max_load_factor);
         map.reserve(capacity);
         return map;

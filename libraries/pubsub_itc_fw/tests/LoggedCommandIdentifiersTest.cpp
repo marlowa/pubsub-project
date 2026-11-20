@@ -10,8 +10,10 @@
 
 #include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
 #include <pubsub_itc_fw/LoggedCommandIdentifiers.hpp>
+#include <pubsub_itc_fw/MemoryLockingAllocator.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
+#include <pubsub_itc_fw/tests_common/LockedMemoryForTests.hpp>
 
 using pubsub_itc_fw::LoggedCommandIdentifiers;
 using pubsub_itc_fw::WalPosition;
@@ -101,6 +103,32 @@ TEST(LoggedCommandIdentifiersTest, TheTableIsReportedToTheGrowthReporter) {
     const LoggedCommandIdentifiers record(900000, &reporter);
     EXPECT_EQ(reported, (size_t{1} << 20U) * 24U);
     EXPECT_EQ(record.capacity(), 900000U);
+}
+
+TEST(LoggedCommandIdentifiersTest, TheTableSizeWorkedOutBeforehandIsTheSizeReserved) {
+    for (const size_t capacity : {size_t{1}, size_t{2}, size_t{9}, size_t{10}, size_t{100}, size_t{943'718}, size_t{943'719}, size_t{900'000}}) {
+        pubsub_itc_fw::AllocationGrowthReporter reporter;
+        reporter.report_threshold_bytes = 1;
+        size_t reported = 0;
+        reporter.on_large_allocation = [&reported](size_t bytes, size_t /*largest*/) { reported = bytes; };
+        const LoggedCommandIdentifiers record(capacity, &reporter);
+        EXPECT_EQ(LoggedCommandIdentifiers::table_bytes_for(capacity), reported) << "capacity " << capacity;
+        EXPECT_EQ(LoggedCommandIdentifiers::table_bytes_for(capacity), record.slot_count() * sizeof(LoggedCommandIdentifiers::Slot)) << capacity;
+    }
+    // The venue's capacity, worked out without reserving 6 GiB.
+    EXPECT_EQ(LoggedCommandIdentifiers::table_bytes_for(200'000'000), (size_t{1} << 28U) * 24U);
+}
+
+TEST(LoggedCommandIdentifiersTest, GivenARecordOfLockingTheTableIsLockedIntoMemory) {
+    pubsub_itc_fw::MemoryLockRecord lock_record;
+    const size_t before = pubsub_itc_fw::tests_common::locked_kilobytes();
+    {
+        const LoggedCommandIdentifiers record(100'000, nullptr, &LoggedCommandIdentifiers::identifier, &lock_record);
+        EXPECT_EQ(lock_record.error, 0);
+        EXPECT_EQ(lock_record.locked_bytes, LoggedCommandIdentifiers::table_bytes_for(100'000));
+        EXPECT_GE(pubsub_itc_fw::tests_common::locked_kilobytes() - before, lock_record.locked_bytes / 1024);
+    }
+    EXPECT_EQ(pubsub_itc_fw::tests_common::locked_kilobytes(), before) << "freeing the record must unlock its table";
 }
 
 TEST(LoggedCommandIdentifiersTest, ACapacityOfZeroIsRefused) {

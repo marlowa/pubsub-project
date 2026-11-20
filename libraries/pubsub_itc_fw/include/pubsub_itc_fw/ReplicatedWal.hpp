@@ -145,6 +145,11 @@ class ReplicatedWalEventsInterface {
     /// WAL holds a command, because the record of identifiers said that it may. @p last_seq_no is the last
     /// record the WAL holds. Called once in each leadership, not for each command.
     virtual void checking_for_commands_already_held(int64_t last_seq_no) = 0;
+
+    /// The record of command identifiers was to be locked into memory and could not be: @p error is mlock's errno and
+    /// @p bytes the size of its table. Called once, on the WAL's owner's thread, when the WAL takes the record over, a
+    /// few seconds after it opens. The WAL has already logged it at Critical; the owner decides what follows.
+    virtual void identifiers_not_held_in_memory(int error, size_t bytes) = 0;
 };
 
 /**
@@ -211,6 +216,11 @@ struct ReplicatedWalConfiguration {
     const CommandIdentityInterface* command_identity{nullptr};
     /// How many identities that record has room for. It is reserved in full when it is built.
     size_t identifiers_reserved{0};
+    /// Whether that record's table is locked into memory as it is reserved, so that it is never swapped out. Its size is
+    /// LoggedCommandIdentifiers::table_bytes_for(identifiers_reserved), which the owner compares with its limit on locked
+    /// memory before it opens the WAL. If it cannot be locked, the WAL logs that at Critical and calls
+    /// ReplicatedWalEventsInterface::identifiers_not_held_in_memory().
+    bool hold_identifiers_in_memory{false};
     /// How an identity becomes a number in that record. Replaced only by a test, to make two identities collide.
     LoggedCommandIdentifiers::NumberFunction command_number{&LoggedCommandIdentifiers::identifier};
     /// With a command_identity, how many of the most recent commands the WAL remembers the first answer to, so that the
@@ -651,12 +661,14 @@ class ReplicatedWal {
     // As the leader: the last record committed. Only ever advances within one leadership.
     int64_t committed_through_{0};
 
+    // What builds the record of commands at startup. Before the record, because the record writes to it when it frees its
+    // table (LoggedCommandIdentifiersBuilder), so it must be destroyed after the record.
+    LoggedCommandIdentifiersBuilder commands_builder_;
     // The record of the commands the WAL holds, each with its position, once built and taken over
-    // (docs/availability/one_check_against_sequencing_twice.md); and what builds it at startup.
+    // (docs/availability/one_check_against_sequencing_twice.md).
     std::optional<LoggedCommandIdentifiers> commands_;
     // Where the first answer to each recent command is, noted as each record is written. Only with a command_identity.
     std::optional<RecentAnswers> recent_answers_;
-    LoggedCommandIdentifiersBuilder commands_builder_;
     bool commands_building_{false};
     // The commands written while the record was being built: each one's number and position.
     std::vector<std::pair<uint64_t, WalPosition>> commands_noted_while_building_;

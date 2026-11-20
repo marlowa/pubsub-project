@@ -676,6 +676,8 @@ peer_listen_port           = 11003
 peer_host                  = "sequencer-secondary.preprod.exchange.internal"     # REPLACE
 peer_port                  = 11004
 wal_directory              = "/opt/pubsub/var/sequencer_wal"
+# How many commands the record of commands in the WAL reserves room for: a table of 6 GiB, locked into memory.
+identifiers_reserved       = 200000000
 wal_subscriber_listen_host = "0.0.0.0"
 wal_subscriber_listen_port = 11030
 # The listener for operators, who halt trading or lift a halt over it with scripts/operator_halt.py. TLS only,
@@ -724,6 +726,8 @@ peer_listen_port           = 11004
 peer_host                  = "sequencer-primary.preprod.exchange.internal"       # REPLACE
 peer_port                  = 11003
 wal_directory              = "/opt/pubsub/var/sequencer_secondary_wal"
+# How many commands the record of commands in the WAL reserves room for: a table of 6 GiB, locked into memory.
+identifiers_reserved       = 200000000
 wal_subscriber_listen_host = "0.0.0.0"
 wal_subscriber_listen_port = 11031
 # The listener for operators, who halt trading or lift a halt over it with scripts/operator_halt.py. TLS only,

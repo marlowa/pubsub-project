@@ -131,6 +131,23 @@ class Reactor : public ThreadLookupInterface {
      */
     void shutdown(const std::string& reason);
 
+    /// The status run() returns once the reactor has stopped for a failure (shutdown_for_a_failure()), and which a
+    /// component's `main` returns, as for a refusal to start.
+    static constexpr int stopped_for_a_failure_status = 1;
+
+    /**
+     * @brief Stops the reactor and all threads because the component cannot go on, as shutdown() does, except that
+     *        run() then returns stopped_for_a_failure_status, so that whatever started the component sees it failed.
+     *
+     * For a fault found while the component runs that it must not run with, such as a table it needs locked into memory
+     * that could not be (docs/venue/the_sequencer_holds_its_memory_from_the_start.md). The caller logs the fault first.
+     * A shutdown already asked for, for any other reason, stands, and run() returns what it would have. Any thread may
+     * call it.
+     *
+     * @param[in] reason The reason for the shutdown.
+     */
+    void shutdown_for_a_failure(const std::string& reason);
+
     /// The status run() returns once the reactor has stopped for the end of the trading day, and which a component's
     /// `main` returns: `scripts/launch.py` then archives the component's files instead of starting it again
     /// (docs/venue/start_and_end_of_day.md, section 4.2, decision 5).
@@ -858,6 +875,8 @@ class Reactor : public ThreadLookupInterface {
     std::string shutdown_reason_;
     // Set by the caller that claims the shutdown, before the request is published, when it is for the end of the day.
     std::atomic<bool> stopped_for_the_end_of_day_{false};
+    // Whether the shutdown claimed was one for a failure; published as stopped_for_the_end_of_day_ is.
+    std::atomic<bool> stopped_for_a_failure_{false};
     // A stop for the end of day that is waiting for what has been asked to be sent to be written: claimed by the one
     // caller of shutdown_for_end_of_day() that counts, which writes the reason and the time and then publishes the request
     // with a release store; read by the reactor's thread after an acquire load.
@@ -875,7 +894,7 @@ class Reactor : public ThreadLookupInterface {
     // Wakes the reactor's thread if it is waiting for work.
     void wake_reactor_thread(const char* why);
     // Why the reactor is asked to stop: for the end of the trading day, or for anything else.
-    enum class ShutdownKind { ordinary, end_of_day };
+    enum class ShutdownKind { ordinary, end_of_day, failure };
     // Claims the shutdown, if no one has, and asks the event loop to finish.
     void request_shutdown(const std::string& reason, ShutdownKind kind);
     std::atomic<bool> shutdown_claimed_{false};

@@ -1,9 +1,10 @@
-# The matching engine's limit on locked memory {#locked_memory_requirement}
+# The limit on locked memory {#locked_memory_requirement}
 
-> **One rule.** The user the venue runs as must be allowed to lock at least as much memory as each matching engine
-> locks: its order book's map, its open-order region and, with high availability on, the store of reports it keeps
-> while following the WAL, about 65 GB in production. Each process has its own
-> limit, so the figure is per engine, not for the pair. Without it, the engine refuses to start.
+> **One rule.** The user the venue runs as must be allowed to lock at least as much memory as the matching engine or
+> the sequencer locks, whichever is more. Each matching engine locks its order book's map, its open-order region and,
+> with high availability on, the store of reports it keeps while following the WAL, about 65 GB in production. Each
+> sequencer locks its record of command identifiers, 6 GiB in production. Each process has its own limit, so the
+> figure is per process, not for a pair. Without it, the process refuses to start.
 
 ## Why the engine locks its memory
 
@@ -69,4 +70,45 @@ a session that began before the change keeps the old limit. Whatever starts the 
 the limit itself, for example with `ulimit -l` in the script that starts it. A process running as root may lock memory
 whatever its limit, and the engine does not compare the figure with the limit then.
 
-The machine must also have the memory to spare: two engines on one machine lock twice the figure between them.
+The machine must also have the memory to spare: two engines on one machine lock twice the figure between them, and a
+sequencer on the same machine adds its own.
+
+## Why the sequencer locks its memory
+
+The leading sequencer checks every command against its record of command identifiers, a table of each command's
+identifier and its position in the WAL, so that it writes a command into the WAL at most once
+([one_check_against_sequencing_twice.md](../availability/one_check_against_sequencing_twice.md)). The table is reserved
+in full when the sequencer starts, and every page is written as it is reserved, so the memory is there; but unlocked,
+the kernel may swap pages of it out under memory pressure, and the thread that sequences orders would wait for one to
+be read back from disk. So the table is locked as it is reserved. The design is in
+[the_sequencer_holds_its_memory_from_the_start.md](../venue/the_sequencer_holds_its_memory_from_the_start.md).
+
+Its size is set by `identifiers_reserved` in each environment file: 200 million identifiers in test-1, pre-production
+and production, a table of 6,144 MB, and 20 million in development, 768 MB.
+
+## What the sequencer logs
+
+The table is built on a helper thread after the sequencer is ready, so that a restarted sequencer starts at once, and
+it takes about two seconds at production's size. So the sequencer compares the figure with its limit first, as it
+starts, at Info:
+
+```
+SequencerThread: it will lock 768 MB of memory, for the record of command identifiers, against a limit on locked memory of 3980 MB
+```
+
+and once the table is built and locked, about half a second later in development:
+
+```
+SequencerThread: the record of command identifiers is locked into memory, 768 MiB
+```
+
+If the limit is lower than the figure, the sequencer logs at
+Critical and exits with status 1, without reserving anything:
+
+```
+SequencerThread: refusing to start -- it needs 768 MB of locked memory, and this process's limit on locked memory (RLIMIT_MEMLOCK) is 100 MB. ...
+```
+
+If the limit is high enough but locking still fails, because the machine does not have the memory free, the sequencer
+logs at Critical that the record could not be locked and why, and stops with status 1 although it is already running.
+If it leads, its peer takes over, as when a leader dies.

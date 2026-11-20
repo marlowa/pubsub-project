@@ -14,6 +14,7 @@
 
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/LeaderEpoch.hpp>
+#include <pubsub_itc_fw/LockedMemory.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/WalCursor.hpp>
@@ -806,6 +807,9 @@ void ReplicatedWal::on_peer_connection_lost(Clock::time_point now) {
 }
 
 void ReplicatedWal::on_lease_tick(Clock::time_point now) {
+    // Taken over as soon as it is built, rather than only when a command must first be checked, so that a failure to lock
+    // it into memory is known within a tick of its happening.
+    take_record_of_commands_if_built();
     if (!lease_agent_.has_value()) {
         return;
     }
@@ -936,7 +940,7 @@ void ReplicatedWal::start_building_record_of_commands() {
                "complete, a command that must be checked is looked for in the WAL itself",
                configuration_.owner_name, configuration_.identifiers_reserved, segments.size());
     commands_builder_.start(configuration_.identifiers_reserved, std::move(segments), *configuration_.command_identity, configuration_.command_number,
-                            configuration_.helper_cores);
+                            configuration_.helper_cores, configuration_.hold_identifiers_in_memory);
 }
 
 void ReplicatedWal::take_record_of_commands_if_built() {
@@ -945,6 +949,17 @@ void ReplicatedWal::take_record_of_commands_if_built() {
     }
     commands_.emplace(commands_builder_.take());
     commands_building_ = false;
+    if (configuration_.hold_identifiers_in_memory) {
+        const int locking_error = commands_builder_.locking_error();
+        if (locking_error != 0) {
+            PUBSUB_LOG(logger_, FwLogLevel::Critical, "{}: the record of command identifiers, {} MiB, could not be locked into memory: {}. {}",
+                       configuration_.owner_name, commands_builder_.table_bytes() / (1024 * 1024), why_locking_failed(locking_error), locked_memory_remedy);
+            events_.identifiers_not_held_in_memory(locking_error, commands_builder_.table_bytes());
+        } else {
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: the record of command identifiers is locked into memory, {} MiB", configuration_.owner_name,
+                       commands_builder_.locked_bytes() / (1024 * 1024));
+        }
+    }
     const size_t noted = commands_noted_while_building_.size();
     for (const auto& [number, position] : commands_noted_while_building_) {
         add_command(number, position);

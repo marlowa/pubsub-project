@@ -7,6 +7,8 @@
  *        (docs/availability/one_check_against_sequencing_twice.md, section 3.2), with one instance running alone.
  */
 
+#include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -17,6 +19,8 @@
 #include <thread>
 #include <vector>
 
+#include <unistd.h>
+
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
@@ -25,6 +29,7 @@
 #include <pubsub_itc_fw/ReplicatedWal.hpp>
 #include <pubsub_itc_fw/WalCursor.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
+#include <pubsub_itc_fw/tests_common/LockedMemoryForTests.hpp>
 #include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 
 #include <lease_messages.hpp>
@@ -85,6 +90,12 @@ struct CheckEvents : public ReplicatedWalEventsInterface {
     void checking_for_commands_already_held(int64_t /*last_seq_no*/) override {
         ++checking_reports;
     }
+    int not_held_reports{0};
+    int not_held_error{0};
+    void identifiers_not_held_in_memory(int error, size_t /*bytes*/) override {
+        ++not_held_reports;
+        not_held_error = error;
+    }
 };
 
 class ReplicatedWalCommandTest : public ::testing::Test {
@@ -100,7 +111,7 @@ class ReplicatedWalCommandTest : public ::testing::Test {
 
     // Opens an instance running alone, which leads at once, keeping a record of commands with room for
     // @p capacity, its numbers made by @p number_of.
-    void open(size_t capacity = 1000, LoggedCommandIdentifiers::NumberFunction number_of = &LoggedCommandIdentifiers::identifier) {
+    void open(size_t capacity = 1000, LoggedCommandIdentifiers::NumberFunction number_of = &LoggedCommandIdentifiers::identifier, bool hold_in_memory = false) {
         ReplicatedWalConfiguration configuration;
         configuration.owner_name = "TestReplica";
         configuration.wal_directory = dir_;
@@ -110,6 +121,7 @@ class ReplicatedWalCommandTest : public ::testing::Test {
         configuration.command_identity = &identity_;
         configuration.identifiers_reserved = capacity;
         configuration.command_number = number_of;
+        configuration.hold_identifiers_in_memory = hold_in_memory;
         wal_ = std::make_unique<ReplicatedWal>(configuration, logger_, peer_, voters_, events_);
         static_cast<void>(wal_->open(now_));
         ASSERT_EQ(wal_->role(), ReplicaRole::leader);
@@ -144,6 +156,56 @@ class ReplicatedWalCommandTest : public ::testing::Test {
 };
 
 } // namespaces
+
+TEST_F(ReplicatedWalCommandTest, ARecordToBeHeldInMemoryIsLockedAndTheOwnerIsToldNothing) {
+    const size_t before = tests_common::locked_kilobytes();
+    open(100'000, &LoggedCommandIdentifiers::identifier, true);
+    build_record();
+    EXPECT_EQ(events_.not_held_reports, 0);
+    EXPECT_GE(tests_common::locked_kilobytes() - before, LoggedCommandIdentifiers::table_bytes_for(100'000) / 1024);
+    logger_.flush();
+    EXPECT_TRUE(std::any_of(log_.begin(), log_.end(), [](const std::string& line) { return line.find("is locked into memory") != std::string::npos; }));
+    wal_.reset();
+    EXPECT_EQ(tests_common::locked_kilobytes(), before) << "closing the WAL must unlock the record's table";
+}
+
+TEST_F(ReplicatedWalCommandTest, ARecordThatCannotBeLockedIsLoggedAtCriticalAndTheOwnerIsToldOnce) {
+    if (::geteuid() == 0) {
+        GTEST_SKIP() << "root may lock memory whatever its limit, so a lowered limit cannot make locking fail";
+    }
+    const tests_common::LockedMemoryLimitLowered limit(64 * 1024);
+    open(100'000, &LoggedCommandIdentifiers::identifier, true);
+    build_record();
+    EXPECT_EQ(events_.not_held_reports, 1);
+    EXPECT_EQ(events_.not_held_error, ENOMEM);
+    logger_.flush();
+    EXPECT_TRUE(
+        std::any_of(log_.begin(), log_.end(), [](const std::string& line) { return line.find("could not be locked into memory") != std::string::npos; }));
+    // The record still works, unlocked: a command written is still proved.
+    write("MEMBER/order-1");
+    EXPECT_TRUE(wal_->holds_command("MEMBER/order-1", the_whole_wal));
+    wal_->on_lease_tick(now_);
+    EXPECT_EQ(events_.not_held_reports, 1) << "told once, not on every tick";
+}
+
+TEST_F(ReplicatedWalCommandTest, ARecordNotToBeHeldInMemoryIsNotLocked) {
+    const size_t before = tests_common::locked_kilobytes();
+    open(100'000);
+    build_record();
+    EXPECT_EQ(tests_common::locked_kilobytes(), before);
+    EXPECT_EQ(events_.not_held_reports, 0);
+}
+
+TEST_F(ReplicatedWalCommandTest, ALeaseTickTakesOverARecordOnceItIsBuilt) {
+    open();
+    wal_->start_building_record_of_commands();
+    const auto deadline = Clock::now() + std::chrono::seconds{10};
+    while (wal_->record_of_commands() == nullptr) {
+        ASSERT_LT(Clock::now(), deadline) << "a lease tick never took the record over";
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        wal_->on_lease_tick(now_);
+    }
+}
 
 TEST_F(ReplicatedWalCommandTest, ACommandWrittenIsProvedByReadingItsOneRecordAndOneNeverWrittenIsNotHeld) {
     open();

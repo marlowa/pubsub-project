@@ -116,13 +116,16 @@ drift_allowance_milliseconds = ${shared_lease_drift_allowance_milliseconds}
 renewal_interval_milliseconds = ${shared_lease_renewal_interval_milliseconds}
 
 # How many commands the record of the commands in the WAL reserves room for: the most orders and
-# cancels in one trading day. 200 million is the figure a MiFID test uses, twice the 100 million the
-# venue is tested with. The table holds each command's identifier and its position in the WAL, 6 GiB at
-# this size; it is reserved and filled from the WAL in the background when the sequencer starts, and
-# never grows. This setting is read whether high availability is on or off, because the leading
-# sequencer checks every command against the table in both cases.
+# cancels in one trading day. Set by each environment in environments/*.toml: 200 million in the
+# environments that stand for production, the figure a MiFID test uses, twice the 100 million the venue
+# is tested with; less in development. The table holds each command's identifier and its position in
+# the WAL, 6 GiB at 200 million; it is reserved and filled from the WAL in the background when the
+# sequencer starts, never grows, and is locked into memory, so the limit on locked memory of the user the
+# venue runs as must cover it (docs/operations/locked_memory_requirement.md). This setting is read
+# whether high availability is on or off, because the leading sequencer checks every command against the
+# table in both cases.
 [commands]
-identifiers_reserved = 200000000
+identifiers_reserved = ${sequencer_secondary_identifiers_reserved}
 
 # How many orders the leader holds at most while it waits for the follower's acknowledgement or a voter's
 # confirmation. Orders that arrive with this storage full wait in the write-ahead log instead, and are sent

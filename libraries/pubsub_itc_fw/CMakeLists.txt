@@ -89,6 +89,7 @@ set(PUBSUB_ITC_FW_SRC
         src/TimerHandler.cpp
         src/TomlConfiguration.cpp
         src/MirroredBuffer.cpp
+        src/LockedMemory.cpp
         src/MappedSlotStore.cpp
         src/PduProtocolHandler.cpp
         src/InboundConnectionManager.cpp

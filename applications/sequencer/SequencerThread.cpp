@@ -30,9 +30,12 @@
 #include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FileSystemUtils.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/LockedMemory.hpp>
+#include <pubsub_itc_fw/LoggedCommandIdentifiers.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/RecentAnswers.hpp>
@@ -128,6 +131,11 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , arbiter_primary_conn_id_{}
     , arbiter_secondary_conn_id_{}
     , wal_positions_(wal_positions) {
+    // The record of command identifiers is locked into memory as it is reserved, on a helper thread after this instance is
+    // ready (docs/venue/the_sequencer_holds_its_memory_from_the_start.md). The limit on locked memory, the usual reason
+    // locking fails, is checked here, before the reactor runs, so that a limit too low is a refusal to start: the
+    // exception leaves the sequencer's main, which returns 1, as the matching engine's refusal does.
+    check_limit_on_locked_memory();
     if (config_.ha_enabled) {
         lease_promise_store_.emplace(config_.wal_directory + "/lease_promise.state", pubsub_itc_fw::LeasePromiseStore::current_boot_id(), config_.trading_day);
         background_promise_recorder_.emplace(*lease_promise_store_, promise_recorder_thread_name);
@@ -212,6 +220,9 @@ void SequencerThread::on_initial_event() {
     // (docs/availability/one_check_against_sequencing_twice.md).
     wal_configuration.command_identity = &command_identity_;
     wal_configuration.identifiers_reserved = config_.identifiers_reserved;
+    // Locked into memory as it is reserved, so that a lookup on this thread never waits for a page to be read back from
+    // disk; the limit on locked memory has been checked in the constructor.
+    wal_configuration.hold_identifiers_in_memory = true;
     std::optional<pubsub_itc_fw::PromisesKeptElsewhere> promises_elsewhere;
     if (background_promise_recorder_.has_value()) {
         promises_elsewhere.emplace(
@@ -1544,6 +1555,29 @@ void SequencerThread::SequencerReplicatedWalEvents::discarded_after(int64_t seq_
     // A void whose record is discarded is no longer in the WAL. Its record was never committed, so no engine was told
     // of it.
     static_cast<void>(owner_.venue_state_.discard_after(seq_no));
+}
+
+void SequencerThread::check_limit_on_locked_memory() {
+    const size_t wanted = pubsub_itc_fw::LoggedCommandIdentifiers::table_bytes_for(config_.identifiers_reserved);
+    const pubsub_itc_fw::LockedMemoryLimit limit = pubsub_itc_fw::LockedMemoryLimit::current();
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: it will lock {} MB of memory, for the record of command identifiers, against a limit on locked memory of {}",
+               wanted / pubsub_itc_fw::bytes_in_a_megabyte, limit.text());
+    if (!limit.allows(wanted)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Critical,
+                   "SequencerThread: refusing to start -- it needs {} MB of locked memory, and this process's limit on locked memory "
+                   "(RLIMIT_MEMLOCK) is {}. {}",
+                   wanted / pubsub_itc_fw::bytes_in_a_megabyte, limit.text(), pubsub_itc_fw::locked_memory_remedy);
+        throw pubsub_itc_fw::PubSubItcException("the sequencer needs " + std::to_string(wanted / pubsub_itc_fw::bytes_in_a_megabyte) +
+                                                " MB of locked memory, and the limit on locked memory is " + limit.text());
+    }
+}
+
+void SequencerThread::SequencerReplicatedWalEvents::identifiers_not_held_in_memory(int error, size_t bytes) {
+    // The WAL has logged why at Critical. This instance stops with status 1, as it would have refused to start; if it
+    // leads, its peer takes over.
+    owner_.get_reactor().shutdown_for_a_failure("the record of command identifiers, " + std::to_string(bytes / pubsub_itc_fw::bytes_in_a_megabyte) +
+                                                " MB, could not be locked into memory: " + pubsub_itc_fw::why_locking_failed(error));
 }
 
 void SequencerThread::SequencerReplicatedWalEvents::checking_for_commands_already_held(int64_t last_seq_no) {

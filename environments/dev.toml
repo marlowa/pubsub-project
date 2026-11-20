@@ -1009,6 +1009,10 @@ peer_port                  = 11004
 # So the device is named by PUBSUB_WAL_ROOT in the environment instead, and this stays portable.
 # See docs/operations/filesystem_requirements.md.
 wal_directory              = "var/sequencer_wal"
+# How many commands the record of commands in the WAL reserves room for. 20 million here, a table of
+# 768 MB locked into memory, inside this machine's limit on locked memory and far more than any
+# development run places; 200 million in the environments that stand for production.
+identifiers_reserved       = 20000000
 wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11030
 # The listener for operators, who halt trading or lift a halt over it with scripts/operator_halt.py. TLS only,
@@ -1060,6 +1064,10 @@ peer_listen_port           = 11004
 peer_host                  = "127.0.0.1"
 peer_port                  = 11003
 wal_directory              = "var/sequencer_secondary_wal"
+# How many commands the record of commands in the WAL reserves room for. 20 million here, a table of
+# 768 MB locked into memory, inside this machine's limit on locked memory and far more than any
+# development run places; 200 million in the environments that stand for production.
+identifiers_reserved       = 20000000
 wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11031
 # The listener for operators, who halt trading or lift a halt over it with scripts/operator_halt.py. TLS only,

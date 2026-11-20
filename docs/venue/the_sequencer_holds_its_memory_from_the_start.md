@@ -1,9 +1,9 @@
 # The sequencer holds its memory from the start of the day {#the_sequencer_holds_its_memory_from_the_start}
 
 **Status: agreed with Andrew, 20 November 2026, for [BUG-0131](../bug_list.md#bug_0131) and
-[BUG-0121](../bug_list.md#bug_0121).** The growth measured in section 1 is explained in section 3 and removed
-([BUG-0274](../bug_list.md#bug_0274)); locking the record of command identifiers, section 4, is not yet built. Section 6
-lists the decisions.
+[BUG-0121](../bug_list.md#bug_0121), and built.** The growth measured in section 1 is explained in section 3 and removed
+([BUG-0274](../bug_list.md#bug_0274)); the record of command identifiers is locked into memory as section 4 describes.
+Section 6 lists the decisions.
 
 ## 1. The problem
 
@@ -30,9 +30,10 @@ One large structure, on the leading sequencer and on its follower: **the record 
 (`LoggedCommandIdentifiers`, [BUG-0121](../bug_list.md#bug_0121) and
 [one_check_against_sequencing_twice.md](../availability/one_check_against_sequencing_twice.md)), which holds the
 identifier and WAL position of every command, so that a command is never sequenced twice. It is a `tsl::robin_map`
-reserved for `[commands] identifiers_reserved`, 200 million in every environment: 6 GiB. Reserving it constructs every
-bucket, which writes to every page, so the kernel supplies all 6 GiB at start; the log says it took 2.1 seconds. This is
-most of the 7 GB each sequencer holds at its start. It is not locked, so the kernel may swap its pages out later.
+reserved for `[commands] identifiers_reserved`, which each environment file sets: 200 million in test-1, pre-production
+and production, 6 GiB, and 20 million in development, 768 MiB. Reserving it constructs every bucket, which writes to
+every page, so the kernel supplies all of it at start; at 200 million the log says it took 2.1 seconds. At that size it
+is most of the 7 GB each sequencer holds at its start.
 
 The sequencer keeps nothing for each order. A report from the matching engine names the session whose command it
 answers, which the engine took from the command, and carries the time that session's gateway read the command, so the
@@ -69,26 +70,39 @@ fresh WAL and order book, processed all 3,152,000 orders. The leading sequencer'
 `/proc/<pid>/status`, sampled every 10 seconds) went from 7,014 MB to 7,021 MB and never higher, where with the map it
 went from 7,018 MB to 7,814 MB; the follower's went from 6,793 MB to 6,807 MB, as before.
 
-## 4. The proposal
+## 4. What the sequencer does
 
-The sequencer is to do what the engine does:
+The sequencer does what the engine does, with one difference that follows from building the record after it is ready:
 
-1. **Before it reports itself ready,** work out how much it will lock, log it with its limit on locked memory, and
-   refuse to start at Critical if the limit is too low.
-2. **Lock the record of identifiers.** Its pages are already supplied at start, but not locked, so they may be swapped
-   out under memory pressure and read back on the thread that sequences orders. `tsl::robin_map` keeps its buckets in a
-   vector it allocates itself, and gives no access to their address. It does take an allocator as a template argument,
-   so the record would pass one that locks each block it is given and unlocks it when the block is freed.
-3. **A refusal** is logged at Critical and the sequencer exits with status 1, as the engine does.
+1. **Before it is ready,** in the constructor of `SequencerThread`, it works out the size of the table,
+   `LoggedCommandIdentifiers::table_bytes_for(identifiers_reserved)`, logs it with its limit on locked memory
+   (`LockedMemoryLimit`), and refuses to start at Critical if the limit is too low. The exception leaves the
+   sequencer's `main`, which returns 1, as the engine's refusal does.
+2. **It locks the record of identifiers as it is reserved.** Unlocked, its pages may be swapped out under memory
+   pressure and read back on the thread that sequences orders. `tsl::robin_map` keeps its buckets in a vector it
+   allocates itself, and gives no access to their address, but it takes an allocator as a template argument. The record
+   gives it a `MemoryLockingAllocator`, which locks each block it allocates and unlocks it when the block is freed, and
+   records in a `MemoryLockRecord` whether it could. The helper thread that builds the record
+   (`LoggedCommandIdentifiersBuilder`) owns that record of locking.
+3. **A failure to lock after it has started** is found when the WAL takes the finished record over, which it does at
+   its next lease tick, within a second of the record being built. The WAL logs it at Critical and tells the sequencer
+   (`ReplicatedWalEventsInterface::identifiers_not_held_in_memory`), which stops its reactor for a failure
+   (`Reactor::shutdown_for_a_failure`), so that the process exits with status 1 although it was running. If it leads,
+   its peer takes over, as when a leader dies. With the limit checked first, this happens only when the machine does
+   not have the memory free.
+
+The limit, what is logged, and how to set the limit are in
+[locked_memory_requirement.md](../operations/locked_memory_requirement.md).
 
 ## 5. What it costs
 
-- **Time at the start.** Locking adds little to the 2.1 seconds the record of identifiers already takes to reserve,
-  because reserving it has already supplied every page; locking only marks them. It adds to
-  [BUG-0121](../bug_list.md#bug_0121), a restarted sequencer taking longer to start than its peer's lease, which is
-  already the case.
-- **The machine's limit on locked memory** for the user the venue runs as must cover the sequencer, 6.4 GB, as well as
-  the engine ([locked_memory_requirement.md](../operations/locked_memory_requirement.md)).
+- **Time at the start.** None before the sequencer is ready: the table is reserved and locked on the helper thread.
+  In development, the 768 MiB table of each sequencer was reserved, locked and filled from an empty WAL 0.36 and 0.38
+  seconds after the sequencer logged its figure. At production's size reserving alone takes 2.1 seconds; locking at
+  production's size has not been measured.
+- **The machine's limit on locked memory** for the user the venue runs as must cover the sequencer, 6,144 MB in
+  production and 768 MB in development, as well as the engine
+  ([locked_memory_requirement.md](../operations/locked_memory_requirement.md)).
 
 ## 6. Decisions
 
@@ -100,3 +114,8 @@ Agreed with Andrew, 20 November 2026, each yes:
 2. The sequencer locks the record of command identifiers, by giving its `tsl::robin_map` an allocator that locks what it
    allocates, checks its limit on locked memory first, and refuses to start at Critical with status 1 if it cannot, as
    the engine does.
+3. The limit is checked before the sequencer is ready; the table is locked on the helper thread that builds it, after;
+   and if locking still fails then, the sequencer logs it at Critical and stops with status 1 even if it leads, so that
+   its peer takes over.
+4. `identifiers_reserved` is set by each environment: 20 million in development, inside the development machine's limit
+   on locked memory of 3,980 MB, and 200 million in test-1, pre-production and production.

@@ -10,9 +10,6 @@
 #include <cstdlib>
 #include <cstring>
 
-#include <sys/resource.h>
-#include <unistd.h>
-
 #include <fmt/format.h>
 
 #include <LeasePairNumbers.hpp>
@@ -25,6 +22,7 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LeaderEpoch.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
+#include <pubsub_itc_fw/LockedMemory.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
@@ -1599,46 +1597,23 @@ void MatchingEngineThread::announce_role() {
                pubsub_itc_fw_app::to_string(announcement.current_role), epoch_);
 }
 
-namespace {
-
-constexpr size_t bytes_in_a_megabyte = 1024UL * 1024UL;
-
-/// What mlock's errno means for the order book, in words an operator can act on.
-std::string why_locking_failed(int error) {
-    switch (error) {
-        case ENOMEM:
-            return "the process's limit on locked memory is too low, or the machine does not have the memory (ENOMEM)";
-        case EAGAIN:
-            return "some of the memory could not be locked, because the machine does not have it free (EAGAIN)";
-        case EPERM:
-            return "the process may not lock memory: its limit on locked memory is zero (EPERM)";
-        default:
-            return std::string(std::strerror(error));
-    }
-}
-
-} // un-named namespace
-
 void MatchingEngineThread::hold_memory_from_the_start() {
     const size_t map_bytes = order_book_.map_bytes_to_hold();
     const size_t region_bytes = order_book_.region_bytes_to_hold();
     const size_t kept_report_bytes = report_comparison_.bytes_to_hold_in_memory();
     const size_t wanted = map_bytes + region_bytes + kept_report_bytes;
-    rlimit limit{};
-    const bool limit_known = ::getrlimit(RLIMIT_MEMLOCK, &limit) == 0;
-    const bool unlimited = limit_known && limit.rlim_cur == RLIM_INFINITY;
-    const std::string limit_text = !limit_known ? "unknown" : unlimited ? "unlimited" : std::to_string(limit.rlim_cur / bytes_in_a_megabyte) + " MB";
+    using pubsub_itc_fw::bytes_in_a_megabyte;
+    const pubsub_itc_fw::LockedMemoryLimit limit = pubsub_itc_fw::LockedMemoryLimit::current();
+    const std::string limit_text = limit.text();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: locking its memory -- {} MB for the order book's map, {} MB for its region and {} MB for the reports kept while "
                "following, {} MB in all, against a limit on locked memory of {}",
                map_bytes / bytes_in_a_megabyte, region_bytes / bytes_in_a_megabyte, kept_report_bytes / bytes_in_a_megabyte, wanted / bytes_in_a_megabyte,
                limit_text);
 
-    // The remedy, in every refusal below. A process running as root has the capability to lock memory whatever its limit, so
-    // the limit is compared only for any other user.
-    const std::string remedy = "The limit for the user the venue runs as is set in /etc/security/limits.d (memlock, in kB) or by whatever starts the "
-                               "launcher (ulimit -l); it must be at least the figure above, and the machine must have that much memory to spare.";
-    if (limit_known && !unlimited && ::geteuid() != 0 && wanted > limit.rlim_cur) {
+    // The remedy, in every refusal below.
+    const std::string remedy = pubsub_itc_fw::locked_memory_remedy;
+    if (!limit.allows(wanted)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Critical,
                    "MatchingEngineThread: refusing to start -- it needs {} MB of locked memory, and this process's limit on locked memory "
                    "(RLIMIT_MEMLOCK) is {}. {}",
@@ -1652,8 +1627,8 @@ void MatchingEngineThread::hold_memory_from_the_start() {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Critical,
                    "MatchingEngineThread: refusing to start -- {} could not be locked into memory: {}. It needs {} MB of locked memory in all, against a "
                    "limit of {}. {}",
-                   part, why_locking_failed(error), wanted / bytes_in_a_megabyte, limit_text, remedy);
-        throw pubsub_itc_fw::PubSubItcException(std::string(part) + " could not be locked into memory: " + why_locking_failed(error));
+                   part, pubsub_itc_fw::why_locking_failed(error), wanted / bytes_in_a_megabyte, limit_text, remedy);
+        throw pubsub_itc_fw::PubSubItcException(std::string(part) + " could not be locked into memory: " + pubsub_itc_fw::why_locking_failed(error));
     };
     const int map_error = order_book_.hold_map_in_memory();
     if (map_error != 0) {

@@ -894,9 +894,14 @@ its logging, and none from the session map or the waiting reports.
 **The leading sequencer's memory grew during the day,** measured on 20 November 2026: from 7.0 GB to 11.0 GB at most
 over 83 minutes, while the follower stayed flat. All of it was the session map, which kept every order placed rather than
 only the open ones, and doubled when half full; the map is removed, and reports are routed by the session they carry
-([BUG-0274](#bug_0274)). How the sequencer is to hold the rest of its memory from the start, as the matching engine does,
-is agreed in [the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md):
-it is to lock its record of command identifiers, which is not yet built.
+([BUG-0274](#bug_0274)). The rest of its memory is held from the start, as the matching engine's is
+([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)): its record
+of command identifiers is locked into memory as it is reserved, after the sequencer checks its limit on locked memory
+before it is ready and refuses to start at Critical, with status 1, if the limit is too low. Its size is set by each
+environment, 20 million identifiers in development and 200 million elsewhere. Shown by unit tests of the allocator, the
+record, the WAL and the reactor, each reading the kernel's count of locked memory (VmLck) where locking is the point,
+and by the development venue: both sequencers lock 768 MiB, and one started by hand with a limit of 100 MB refuses and
+exits with status 1.
 ### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
 
 | | |

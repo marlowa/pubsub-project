@@ -29,6 +29,7 @@ add_executable(pubsub_itc_fw_tests
     LockFreeMessageQueueTest.cpp
     LoggingConfigurationLoaderTest.cpp
     MappedSlotStoreTest.cpp
+    MemoryLockingAllocatorTest.cpp
     MillisecondClockTest.cpp
     MirroredBufferTest.cpp
     NumaAwarePoolAllocatorTest.cpp

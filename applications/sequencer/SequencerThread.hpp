@@ -124,6 +124,10 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     }
 
   private:
+    /// Logs how much memory this instance will lock, for the record of command identifiers, against its limit on locked
+    /// memory, and refuses to start at Critical, by throwing, if the limit is too low.
+    void check_limit_on_locked_memory();
+
     const SequencerConfiguration& config_;
 
     // Precomputed inbound service name strings derived from config ports.
@@ -299,6 +303,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         void granted_lease_to_peer(std::chrono::steady_clock::time_point at) override;
         void read_at_open(int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry) override;
         void checking_for_commands_already_held(int64_t last_seq_no) override;
+        void identifiers_not_held_in_memory(int error, size_t bytes) override;
 
       private:
         SequencerThread& owner_;
