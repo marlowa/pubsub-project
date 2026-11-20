@@ -37,7 +37,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 51 open entries, 5 of them high severity. Each one is judged,
+The [bug list](bug_list.md) holds 50 open entries, 4 of them high severity. Each one is judged,
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
@@ -53,8 +53,8 @@ they are being fixed. The ones most likely to matter first, by design area:
   [ha_in_the_library.md](availability/ha_in_the_library.md) and
   [ha_library_boundary.md](availability/ha_library_boundary.md). Open defects include a matching engine
   that is connected but has stopped working looking healthy ([BUG-0194](bug_list.md#bug_0194)), a
-  growing the order book needing more memory than the machine has ([BUG-0028](bug_list.md#bug_0028)),
-  and a venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).
+  restarted sequencer or matching engine taking longer to start than its peer's lease
+  ([BUG-0121](bug_list.md#bug_0121)), and a venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).
 - **The trading day is built, and only lightly tried.** Every phase is entered on request or at the time in
   the day's schedule, the close cancels every open order, every member is told of each change, each
   component refuses a file left from another day, and `scripts/trading_day.py` starts a day. At the end of

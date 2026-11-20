@@ -3,17 +3,16 @@
 | | |
 |---|---|
 | Bugs recorded | 269 |
-| Open | 51 (28 defects, 23 tasks) |
-| Closed | 218 |
+| Open | 50 (27 defects, 23 tasks) |
+| Closed | 219 |
 | Next id | BUG-0270 |
 
 ## Open bugs by severity
 
-5 high, 32 medium, 14 low.
+4 high, 32 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
-| [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
 | [BUG-0065](#bug_0065) | high | task | A trading halt cannot be applied to one instrument |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
@@ -1022,6 +1021,34 @@ hour or so of a real trading day. The decision is to keep the table of epochs in
 when the epoch changes, and to check for gaps only after the last snapshot of the log, so that startup
 no longer reads every record. A design is to be written for review before any code changes.
 
+
+#### The matching engine has the same problem
+
+A restarted matching engine also takes longer to start than its lease when it holds a large book, for a
+different reason: it reads and rewrites its whole open-order region, whatever is open. Moved here from
+[BUG-0028](#bug_0028) on 20 November 2026, as the same problem as the sequencer's: a restart that takes longer
+than the peer's lease.
+
+**What it costs the engine to start.** Both creating the region and recovering it pass over every record, whatever is
+open, and recovery also writes the header of every record that holds no order, to rebuild the free list
+(`MappedSlotStore::rebuild_free_list`), so every restart rewrites most of the region. Measured with the
+engine's `OrderBook`, by `order_book_size_bench`
+(`applications/matching_engine/performance/src/OrderBookSizeBench.cpp`):
+
+| | 20 million records, held in memory | 100 million, scaled from it | 100 million, measured on this 31 GB machine |
+|---|---|---|---|
+| Create | 1.65 s | about 8 s | 85 s |
+| Recover, nothing open | 1.54 to 1.63 s | about 8 s | 96 s and 164 s |
+| Recover, 10 million open | 2.47 to 2.49 s | | |
+| Recover, all 100 million open | | about 17 s | |
+
+Putting an open order back into the map costs about 90 nanoseconds. On this machine the 100-million region
+cannot stay in memory, and `vm.dirty_ratio` is 20, so once about 6 GB is written and not yet on disk the
+writer waits for the disk: the creation ran at 292 MB/s. On a 200 GB machine the same limit is about 40 GB,
+more than the region, so the scaled figures are the ones to expect there; they have not been measured on
+such a machine. A restart of 8 to 17 seconds is the window [BUG-0197](#bug_0197) and [BUG-0198](#bug_0198)
+are about, and it rules out a restarted engine keeping the lead within its 3-second lease.
+
 ### BUG-0119: An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor {#bug_0119}
 
 | | |
@@ -1601,126 +1628,6 @@ handling and process failures:
 
 Not urgent, but it should not sit indefinitely: the gate as it stands protects against the
 class of defect that stops a script dead, and nothing else.
-
-### BUG-0028: Growing the order book by doubling needs more memory than the machine has {#bug_0028}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-21 |
-| Recorded | 2026-08-21 (875259f) |
-| How | The trading-day run that proved the stall cured -- it reached a table size no earlier run survived to |
-| Impact | `matching_engine_primary` OOM-killed at 19:08:41 with 10.3 GB resident; 280,901 of 13,016,000 orders lost across the outage |
-
-With latency no longer the limit, memory is. At 18:54:17 both engines allocated 2^25-bucket
-tables of 9760 MB. At 19:08:41 the kernel took the primary: `anon-rss 10340720 kB`, zero memory
-available on a 31 GB machine.
-
-**The arithmetic was always going to end here, and two things had been left out of it.**
-
-First, **the venue runs two order books, not one.** The secondary maintains a full replica via
-BookUpdate PDUs, so every figure in this entry -- and every figure in the memory reasoning that
-preceded it -- doubles. Growing into a 2^25 table by doubling costs 14.6 GB transient per engine
-while both tables are held: 29.2 GB for the pair.
-
-Second, **the binary gateway reserves 4.3 GB before the first order arrives.** `[open_order_pool]`
-is `initial_pools = 21` of `objects_per_pool = 1048576` at `sizeof(OpenOrderEntry)` = 168 bytes =
-3.45 GB, and it is resident immediately because building the pool's free list writes a next
-pointer into every slot. It reads like a leak in `htop` and is not one, but it is 4.3 GB the
-engines cannot have.
-
-**The fix is to reserve rather than to grow.** `[order_book] initial_capacity` already exists and
-is set to 262144 -- about four minutes of this profile. Sized to the expected book it removes the
-growth steps altogether, and it *lowers* peak memory rather than raising it:
-
-| | peak per engine |
-|---|---|
-| grow into a 2^25 table by doubling | 14.6 GB transient |
-| reserve 2^25 at startup | 9760 MB steady |
-
-That is the difference between 29.2 GB for the pair and 19.5 GB, which is the difference between
-being killed and not. `allocate_table()` memsets only the state array -- one byte per slot -- and
-leaves entry storage to be faulted in as the book fills, so the reservation costs address space
-and one allocation at startup rather than resident memory up front.
-
-This does not make `IncrementalRehashMap` redundant. Sized right, the map never migrates; sized
-wrong, it is what makes the mistake survivable instead of a second-long stall. Reservation handles
-the expected case, the container handles being wrong about it.
-
-**Not yet changed.** The number to use should come from the book size the venue is meant to
-support, not from this profile.
-
-#### Sized for production, 24 October 2026
-
-**Decided with Andrew:** the most orders that may be open at once is 100 million, and the map is reserved
-for that number when the engine starts. `environments/prod.toml` sets both `order_book_region_capacity` and
-`order_book_initial_capacity` to 100,000,000; `initial_capacity` was a fixed 262,144 in the engine's own
-configuration and is now an environment setting. The other environments keep their sizes, since the
-development machine has 31 GB. The engine never fills an order, so an order stays open until it is
-cancelled: a day of 100 million orders with none cancelled must still be accepted.
-
-**What an open order costs, in each engine.** The figures above are from a map that held the whole order.
-The map now holds only the order's identity and the number of its record in the open-order region:
-
-| | Bytes | How it was established |
-|---|---|---|
-| A slot in the region | 264: the 248-byte order and a 16-byte header | `sizeof`, and the fix of [BUG-0101](#bug_0101), which grew the order from 232 bytes |
-| A slot in the map | 145: the 134-byte identity, the 4-byte record number and 2 of padding, 4 for the entry's hash, kept in an array of its own, and 1 for the slot's state | `sizeof` |
-| Map slots per open order | at least 2: the map is never more than half used, and its size is a power of two | `IncrementalRehashMap::capacity_for` |
-
-The map's resident memory was measured filled, before each entry's hash was kept: 1,000,000 orders took
-288,836 kB, against 295.7 MB predicted, and 10,000,000 took 4,619,832 kB, against 4,731 MB. Reserving touches
-only the state byte of each slot; the rest is faulted in as the map fills.
-
-| Most orders open at once | Region | Map, reserved | Total |
-|---|---|---|---|
-| 100 million | 26.4 GB | 38.9 GB (2^28 slots) | 65.3 GB |
-
-**The map is never copied during the day.** Removing an order empties its slot and moves later entries back
-to close the gap ([deleting_without_erased_marks.md](framework/deleting_without_erased_marks.md)), so the
-slots in use are exactly the orders open, however many are placed and cancelled in the day. The map is copied
-only when more than half its slots are in use, and with 2^28 slots that is about 134 million open at once,
-more than the region's 100 million allows. The one exception is a table being copied out of, which still marks
-a removed slot erased; that happens only when the map was reserved too small, as in the development
-environment.
-
-**What it costs to start.** Both creating the region and recovering it pass over every record, whatever is
-open, and recovery also writes the header of every record that holds no order, to rebuild the free list
-(`MappedSlotStore::rebuild_free_list`), so every restart rewrites most of the region. Measured with the
-engine's `OrderBook`, by `order_book_size_bench`
-(`applications/matching_engine/performance/src/OrderBookSizeBench.cpp`):
-
-| | 20 million records, held in memory | 100 million, scaled from it | 100 million, measured on this 31 GB machine |
-|---|---|---|---|
-| Create | 1.65 s | about 8 s | 85 s |
-| Recover, nothing open | 1.54 to 1.63 s | about 8 s | 96 s and 164 s |
-| Recover, 10 million open | 2.47 to 2.49 s | | |
-| Recover, all 100 million open | | about 17 s | |
-
-Putting an open order back into the map costs about 90 nanoseconds. On this machine the 100-million region
-cannot stay in memory, and `vm.dirty_ratio` is 20, so once about 6 GB is written and not yet on disk the
-writer waits for the disk: the creation ran at 292 MB/s. On a 200 GB machine the same limit is about 40 GB,
-more than the region, so the scaled figures are the ones to expect there; they have not been measured on
-such a machine. A restart of 8 to 17 seconds is the window [BUG-0197](#bug_0197) and [BUG-0198](#bug_0198)
-are about, and it rules out a restarted engine keeping the lead within its 3-second lease.
-
-**The engine holds its memory from the start of the day.** Before it recovers any order, the engine locks the
-map and the region into memory, so that the kernel supplies every page then, and a shortage is an error the engine
-reports at Critical before refusing to start, rather than the out-of-memory killer during the day, as
-[BUG-0010](#bug_0010) decided. It first compares what it will lock with its limit on locked memory, which must be
-raised in production ([locked_memory_requirement.md](operations/locked_memory_requirement.md)). Design and
-measurements: [the_engine_holds_its_memory_from_the_start.md](venue/the_engine_holds_its_memory_from_the_start.md).
-The engine's memory is flat through the day: measured on 20 November 2026 on the development machine, with the region for 4 million orders and the map reserved
-for 4 million, 2^23 slots: 80 minutes of 9.2 million orders, 80% of them cancelled, then 3 minutes of 632,000
-orders at 3,500 a second, 95% of them cancelled. Each engine locked 2,167 MB at its start, in about 0.3 seconds, and its resident
-memory was 2,408 MB at every 10-second sample from start to end. More orders were placed than half the map's slots, the
-point at which a map with erased marks would have been copied, and the map was never copied.
-
-**Still open in this entry:**
-
-- a restart costs time in proportion to the region's capacity, not to the orders open, and rewrites most of
-  the region; this is for the design of phase 8 of the [recovery plan](recovery_plan.md), which changes how
-  the follower builds its book.
 
 ### BUG-0041: Five ways the venue will not start on a RHEL8 target host {#bug_0041}
 
@@ -2465,6 +2372,125 @@ logs on many sessions together, repeated, which fails now some of the time.
 **Principles.** None of the venue's guarantees about orders; members' access.
 
 ## Closed
+
+### BUG-0028: Growing the order book by doubling needs more memory than the machine has {#bug_0028}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-21 |
+| Recorded | 2026-08-21 (875259f) |
+| Fixed | 2026-11-20 -- the map is reserved at start for the most orders that may be open, 100 million in production, pre-production and test-1; removing an order leaves no erased mark, so the map is never copied during the day; and the engine locks the map and the region into memory before it is ready, or refuses to start at Critical. Its memory was measured flat over 9.9 million orders. The restart cost is carried in [BUG-0121](#bug_0121) |
+| How | The trading-day run that proved the stall cured -- it reached a table size no earlier run survived to |
+| Impact | `matching_engine_primary` OOM-killed at 19:08:41 with 10.3 GB resident; 280,901 of 13,016,000 orders lost across the outage |
+
+With latency no longer the limit, memory is. At 18:54:17 both engines allocated 2^25-bucket
+tables of 9760 MB. At 19:08:41 the kernel took the primary: `anon-rss 10340720 kB`, zero memory
+available on a 31 GB machine.
+
+**The arithmetic was always going to end here, and two things had been left out of it.**
+
+First, **the venue runs two order books, not one.** The secondary maintains a full replica via
+BookUpdate PDUs, so every figure in this entry -- and every figure in the memory reasoning that
+preceded it -- doubles. Growing into a 2^25 table by doubling costs 14.6 GB transient per engine
+while both tables are held: 29.2 GB for the pair.
+
+Second, **the binary gateway reserves 4.3 GB before the first order arrives.** `[open_order_pool]`
+is `initial_pools = 21` of `objects_per_pool = 1048576` at `sizeof(OpenOrderEntry)` = 168 bytes =
+3.45 GB, and it is resident immediately because building the pool's free list writes a next
+pointer into every slot. It reads like a leak in `htop` and is not one, but it is 4.3 GB the
+engines cannot have.
+
+**The fix is to reserve rather than to grow.** `[order_book] initial_capacity` already exists and
+is set to 262144 -- about four minutes of this profile. Sized to the expected book it removes the
+growth steps altogether, and it *lowers* peak memory rather than raising it:
+
+| | peak per engine |
+|---|---|
+| grow into a 2^25 table by doubling | 14.6 GB transient |
+| reserve 2^25 at startup | 9760 MB steady |
+
+That is the difference between 29.2 GB for the pair and 19.5 GB, which is the difference between
+being killed and not. `allocate_table()` memsets only the state array -- one byte per slot -- and
+leaves entry storage to be faulted in as the book fills, so the reservation costs address space
+and one allocation at startup rather than resident memory up front.
+
+This does not make `IncrementalRehashMap` redundant. Sized right, the map never migrates; sized
+wrong, it is what makes the mistake survivable instead of a second-long stall. Reservation handles
+the expected case, the container handles being wrong about it.
+
+**Not yet changed.** The number to use should come from the book size the venue is meant to
+support, not from this profile.
+
+#### Sized for production, 24 October 2026
+
+**Decided with Andrew:** the most orders that may be open at once is 100 million, and the map is reserved
+for that number when the engine starts. `environments/prod.toml` sets both `order_book_region_capacity` and
+`order_book_initial_capacity` to 100,000,000; `initial_capacity` was a fixed 262,144 in the engine's own
+configuration and is now an environment setting. The other environments keep their sizes, since the
+development machine has 31 GB. The engine never fills an order, so an order stays open until it is
+cancelled: a day of 100 million orders with none cancelled must still be accepted.
+
+**What an open order costs, in each engine.** The figures above are from a map that held the whole order.
+The map now holds only the order's identity and the number of its record in the open-order region:
+
+| | Bytes | How it was established |
+|---|---|---|
+| A slot in the region | 264: the 248-byte order and a 16-byte header | `sizeof`, and the fix of [BUG-0101](#bug_0101), which grew the order from 232 bytes |
+| A slot in the map | 145: the 134-byte identity, the 4-byte record number and 2 of padding, 4 for the entry's hash, kept in an array of its own, and 1 for the slot's state | `sizeof` |
+| Map slots per open order | at least 2: the map is never more than half used, and its size is a power of two | `IncrementalRehashMap::capacity_for` |
+
+The map's resident memory was measured filled, before each entry's hash was kept: 1,000,000 orders took
+288,836 kB, against 295.7 MB predicted, and 10,000,000 took 4,619,832 kB, against 4,731 MB. Reserving touches
+only the state byte of each slot; the rest is faulted in as the map fills.
+
+| Most orders open at once | Region | Map, reserved | Total |
+|---|---|---|---|
+| 100 million | 26.4 GB | 38.9 GB (2^28 slots) | 65.3 GB |
+
+**The map is never copied during the day.** Removing an order empties its slot and moves later entries back
+to close the gap ([deleting_without_erased_marks.md](framework/deleting_without_erased_marks.md)), so the
+slots in use are exactly the orders open, however many are placed and cancelled in the day. The map is copied
+only when more than half its slots are in use, and with 2^28 slots that is about 134 million open at once,
+more than the region's 100 million allows. The one exception is a table being copied out of, which still marks
+a removed slot erased; that happens only when the map was reserved too small, as in the development
+environment.
+
+**What it costs to start.** Both creating the region and recovering it pass over every record, whatever is
+open, and recovery also writes the header of every record that holds no order, to rebuild the free list
+(`MappedSlotStore::rebuild_free_list`), so every restart rewrites most of the region. Measured with the
+engine's `OrderBook`, by `order_book_size_bench`
+(`applications/matching_engine/performance/src/OrderBookSizeBench.cpp`):
+
+| | 20 million records, held in memory | 100 million, scaled from it | 100 million, measured on this 31 GB machine |
+|---|---|---|---|
+| Create | 1.65 s | about 8 s | 85 s |
+| Recover, nothing open | 1.54 to 1.63 s | about 8 s | 96 s and 164 s |
+| Recover, 10 million open | 2.47 to 2.49 s | | |
+| Recover, all 100 million open | | about 17 s | |
+
+Putting an open order back into the map costs about 90 nanoseconds. On this machine the 100-million region
+cannot stay in memory, and `vm.dirty_ratio` is 20, so once about 6 GB is written and not yet on disk the
+writer waits for the disk: the creation ran at 292 MB/s. On a 200 GB machine the same limit is about 40 GB,
+more than the region, so the scaled figures are the ones to expect there; they have not been measured on
+such a machine. A restart of 8 to 17 seconds is the window [BUG-0197](#bug_0197) and [BUG-0198](#bug_0198)
+are about, and it rules out a restarted engine keeping the lead within its 3-second lease.
+
+**The engine holds its memory from the start of the day.** Before it recovers any order, the engine locks the
+map and the region into memory, so that the kernel supplies every page then, and a shortage is an error the engine
+reports at Critical before refusing to start, rather than the out-of-memory killer during the day, as
+[BUG-0010](#bug_0010) decided. It first compares what it will lock with its limit on locked memory, which must be
+raised in production ([locked_memory_requirement.md](operations/locked_memory_requirement.md)). Design and
+measurements: [the_engine_holds_its_memory_from_the_start.md](venue/the_engine_holds_its_memory_from_the_start.md).
+The engine's memory is flat through the day: measured on 20 November 2026 on the development machine, with the region for 4 million orders and the map reserved
+for 4 million, 2^23 slots: 80 minutes of 9.2 million orders, 80% of them cancelled, then 3 minutes of 632,000
+orders at 3,500 a second, 95% of them cancelled. Each engine locked 2,167 MB at its start, in about 0.3 seconds, and its resident
+memory was 2,408 MB at every 10-second sample from start to end. More orders were placed than half the map's slots, the
+point at which a map with erased marks would have been copied, and the map was never copied.
+
+**Nothing in this entry is left open.** A restart of the engine costs time in proportion to the region's
+capacity, not to the orders open, and rewrites most of the region, as the table above shows. That is the problem of
+[BUG-0121](#bug_0121), a restart taking longer than the peer's lease, and is carried there.
 
 ### BUG-0269: The arbiter and witness programs are in the framework library, not with the applications built on it {#bug_0269}
 
