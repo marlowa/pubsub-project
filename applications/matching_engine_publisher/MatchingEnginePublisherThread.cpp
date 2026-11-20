@@ -174,7 +174,7 @@ void MatchingEnginePublisherThread::on_app_ready_event() {
 }
 
 void MatchingEnginePublisherThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
-    const std::string& svc = id.service_name();
+    const std::string_view svc = id.service_name();
 
     if (svc == "sequencer" || svc == "sequencer_secondary") {
         if (svc == "sequencer") {
@@ -243,7 +243,7 @@ void MatchingEnginePublisherThread::on_connection_writable(pubsub_itc_fw::Connec
 
 void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
-    const std::string& svc = conn_id.service_name();
+    const std::string_view svc = conn_id.service_name();
 
     // Peer PDUs.
     if (conn_id == peer_conn_id_ || conn_id == peer_inbound_conn_id_) {

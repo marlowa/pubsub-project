@@ -1,6 +1,8 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <string>
+
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -12,6 +14,14 @@ class ServiceRegistryTest : public ::testing::Test {
   protected:
     ServiceRegistry registry_;
 };
+
+TEST_F(ServiceRegistryTest, RefusesANameLongerThanAConnectionCanCarry) {
+    const std::string too_long(max_service_name_length + 1, 's');
+    EXPECT_THROW(registry_.add(too_long, NetworkEndpointConfiguration{"127.0.0.1", 5000}, NetworkEndpointConfiguration{}), PreconditionAssertion);
+    const std::string longest(max_service_name_length, 's');
+    registry_.add(longest, NetworkEndpointConfiguration{"127.0.0.1", 5000}, NetworkEndpointConfiguration{});
+    EXPECT_EQ(registry_.size(), 1);
+}
 
 TEST_F(ServiceRegistryTest, EmptyOnConstruction) {
     EXPECT_TRUE(registry_.empty());

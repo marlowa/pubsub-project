@@ -40,6 +40,7 @@ add_executable(pubsub_itc_fw_tests
     QuillLoggerTest.cpp
     ReactorTest.cpp
     ServiceRegistryTest.cpp
+    ConnectionIDTest.cpp
     SlabAllocatorTest.cpp
     StringUtilsTest.cpp
     TcpAcceptorTest.cpp

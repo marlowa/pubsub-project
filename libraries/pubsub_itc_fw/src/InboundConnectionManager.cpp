@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 #include <cstddef>
@@ -135,6 +136,8 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
     // connection (handler, InboundConnection, map key, ConnectionEstablished
     // event, FrameworkPdu events stamped by PduParser) must use this object so
     // that service_name is consistently visible.
+    // The longest name this can make, "inbound:" and a port of five digits, must fit in a ConnectionID (BUG-0270).
+    static_assert(std::string_view("inbound:").size() + 5 <= max_service_name_length, "the longest inbound service name must fit in a ConnectionID");
     const ConnectionID populated_id{id.get_value(), fmt::format("inbound:{}", listener.configuration.address.port)};
 
     const int fd = socket->get_file_descriptor();

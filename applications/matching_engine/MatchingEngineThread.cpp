@@ -321,7 +321,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         }
         return;
     }
-    const std::string& svc = id.service_name();
+    const std::string_view svc = id.service_name();
     const std::string order_inbound_svc = "inbound:" + std::to_string(config_.listen_port);
     const std::string peer_inbound_svc = "inbound:" + std::to_string(config_.peer_listen_port);
 

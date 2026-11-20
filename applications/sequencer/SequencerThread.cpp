@@ -383,7 +383,7 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         replicated_wal_->report_role_to_test_events();
         return;
     }
-    const std::string& svc = id.service_name();
+    const std::string_view svc = id.service_name();
     const std::string peer_inbound_svc = "inbound:" + std::to_string(config_.peer_listen_port);
 
     const auto endpoint = std::find_if(config_.gateway_endpoints.begin(), config_.gateway_endpoints.end(),
@@ -581,7 +581,7 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
 
 void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
-    const std::string& svc = conn_id.service_name();
+    const std::string_view svc = conn_id.service_name();
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "TRACE on_framework_pdu_message: msg.connection_id value={} service_name=[{}]",
                conn_id.get_value(), svc);

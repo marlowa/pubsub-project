@@ -169,7 +169,7 @@ void BinaryOrderGatewayThread::on_connection_established(pubsub_itc_fw::Connecti
                    id.get_value());
         return;
     }
-    const std::string& service = id.service_name();
+    const std::string_view service = id.service_name();
 
     if (service == "authentication_service_primary" || service == "authentication_service_secondary") {
         const bool primary = service == "authentication_service_primary";

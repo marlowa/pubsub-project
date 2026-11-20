@@ -51,6 +51,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/ServiceEndpoints.hpp>
@@ -86,6 +87,18 @@ class ServiceRegistry {
      */
     void add(const std::string& name, NetworkEndpointConfiguration primary, NetworkEndpointConfiguration secondary) {
         register_service(name, ServiceEndpoints{std::move(primary), std::move(secondary), std::nullopt}, "add");
+    }
+
+    /**
+     * @brief Registers a service named by a string literal, whose length is checked when the code is compiled.
+     *
+     * Every connection to the service carries its name in a ConnectionID, which holds at most
+     * max_service_name_length characters (docs/bug_list.md, BUG-0270).
+     */
+    template <size_t length_with_terminator>
+    void add(const char (&name)[length_with_terminator], NetworkEndpointConfiguration primary, NetworkEndpointConfiguration secondary) {
+        static_assert(length_with_terminator - 1 <= max_service_name_length, "a service name may have at most max_service_name_length characters");
+        add(std::string(name), std::move(primary), std::move(secondary));
     }
 
     /**
@@ -194,6 +207,12 @@ class ServiceRegistry {
         }
         if (name_to_id_.count(name) != 0) {
             throw PreconditionAssertion(std::string("ServiceRegistry::") + who + ": duplicate service name: " + name, __FILE__, __LINE__);
+        }
+        // The last guard; every name the venue uses is checked when the code is compiled (ConnectionID.hpp).
+        if (name.size() > max_service_name_length) {
+            throw PreconditionAssertion(std::string("ServiceRegistry::") + who + ": the service name '" + name + "' has " + std::to_string(name.size()) +
+                                            " characters, more than the " + std::to_string(max_service_name_length) + " a connection can carry",
+                                        __FILE__, __LINE__);
         }
         const ServiceID id{static_cast<int>(services_.size()) + 1};
         services_.push_back(ServiceEntry{name, std::move(endpoints)});

@@ -237,13 +237,12 @@ library that counts every call to the heap allocator into each venue program, dr
 venue, counts for a window opened once the load has settled, and names the call stack of each call. It compares each
 order-path thread with `scripts/heap_allocation_expectations.toml`, which allows each of them none.
 
-**Today: broken.** Measured on 20 November 2026, under about 1,000 orders a second with half of them cancelled, in 60
-seconds: every message an application thread sends allocates twice, copying the connection's service name
-([BUG-0270](bug_list.md#bug_0270)), which is 378,188 calls on binary gateway A's thread and 189,413 on the leading
-matching engine's; and the following engine allocates for every report it keeps to compare with the leader's,
-118,170 calls ([BUG-0271](bug_list.md#bug_0271)). The leading sequencer's thread made 291 calls, from the same copied
-service name, its lease requests and its logging. The leading sequencer's own containers no longer allocate for each
-order ([BUG-0131](bug_list.md#bug_0131)).
+**Today: broken, in two places.** Measured on 20 November 2026, under about 1,000 orders a second with half of them
+cancelled, in 60 seconds: the following matching engine allocates for every report it keeps to compare with the
+leader's, 117,970 calls ([BUG-0271](bug_list.md#bug_0271)); and each lease request allocates on the requesting
+instance's own thread, about one a second on the leading engine's and the leading sequencer's
+([BUG-0272](bug_list.md#bug_0272)). The gateways' threads made none. Every message sent allocated twice until
+[BUG-0270](bug_list.md#bug_0270) was fixed the same day.
 
 ### F6. Messages are not copied
 

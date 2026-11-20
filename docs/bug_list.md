@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 271 |
+| Bugs recorded | 272 |
 | Open | 51 (29 defects, 22 tasks) |
-| Closed | 220 |
-| Next id | BUG-0272 |
+| Closed | 221 |
+| Next id | BUG-0273 |
 
 ## Open bugs by severity
 
-4 high, 33 medium, 14 low.
+4 high, 32 medium, 15 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,7 +48,6 @@
 | [BUG-0262](#bug_0262) | medium | defect | A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog |
 | [BUG-0263](#bug_0263) | medium | defect | In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
-| [BUG-0270](#bug_0270) | medium | defect | Every message an application thread sends allocates twice from the heap, copying the connection's service name |
 | [BUG-0271](#bug_0271) | medium | defect | The following matching engine allocates from the heap for every report it keeps to compare with the leader's |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -64,6 +63,7 @@
 | [BUG-0265](#bug_0265) | low | task | The Java test client's blotter does not show the trading-session status its member is told |
 | [BUG-0266](#bug_0266) | low | task | The administration service's desktop does not show the venue's trading phase |
 | [BUG-0267](#bug_0267) | low | task | `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines |
+| [BUG-0272](#bug_0272) | low | defect | Each lease request allocates from the heap on the requesting instance's own thread, which is the thread that handles orders |
 
 ---
 
@@ -2335,31 +2335,6 @@ logs on many sessions together, repeated, which fails now some of the time.
 
 **Principles.** None of the venue's guarantees about orders; members' access.
 
-### BUG-0270: Every message an application thread sends allocates twice from the heap, copying the connection's service name {#bug_0270}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-20 |
-| Recorded | 2026-11-20 |
-| How | The first run of BUG-0087's counting of heap calls, `scripts/heap_allocation_count.py`, under about 1,000 orders a second with half of them cancelled, on the development machine |
-| Impact | Every message any application thread sends -- an order from a gateway to the sequencers, a report from the leading engine -- makes two calls to the heap allocator on that thread, and two frees on the reactor's thread. Principle F5 says nothing on the order path allocates from the heap |
-
-**What was measured.** In a 60-second window: 378,188 calls on binary gateway A's thread, 189,413 on the leading
-matching engine's, and 291 on the leading sequencer's, which sends few messages of its own on this path. About two calls
-for every message sent, every one from `ApplicationThread::send_pdu` and `enqueue_send_pdu_command`
-(`libraries/pubsub_itc_fw/src/ApplicationThread.cpp`).
-
-**Why.** `ConnectionID` holds the service's name in a `std::string` (`ConnectionID.hpp`). `enqueue_send_pdu_command`
-copies the connection's `ConnectionID` into the `ReactorControlCommand` it builds, which allocates when the name is
-longer than the 15 characters a `std::string` holds without the heap, as names like `sequencer_primary_orders` are.
-The command is then copied once more into the reactor's queue, and the name with it. The reactor frees both. `ServiceID`
-was changed to a number for the same reason (its header says so), and `ConnectionID` was not.
-
-**What is wanted.** A `ConnectionID` that carries no `std::string`: the number alone, with the service's name found from
-it where a name is wanted, as `ServiceID` does. 62 places read `service_name()`, most to log it. The run of
-`heap_allocation_count.py` then shows no call from `send_pdu` on any thread.
-
 ### BUG-0271: The following matching engine allocates from the heap for every report it keeps to compare with the leader's {#bug_0271}
 
 | | |
@@ -2379,7 +2354,61 @@ often, a second when it is moved.
 **What is wanted.** Kept reports in storage allocated once, as the leading sequencer's waiting reports now are
 ([BUG-0131](#bug_0131)): fixed-size records in a ring sized at start, with a stated limit on how many may wait.
 
+### BUG-0272: Each lease request allocates from the heap on the requesting instance's own thread, which is the thread that handles orders {#bug_0272}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| How | The second run of `scripts/heap_allocation_count.py`, after [BUG-0270](#bug_0270) was fixed |
+| Impact | About one heap call a second on the leading matching engine's thread and on the leading sequencer's, 114 and 118 in 60 seconds: few, and not one for each order, but on the threads that handle every order (principle F5) |
+
+**Where.** `LeaseHolder` (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeaseHolder.hpp`) keeps the lease requests it
+has sent and not yet had answered in a `std::map<int64_t, Outstanding>`, `outstanding_`, adding a node for each request
+(`record_request`) and removing it when the grant arrives or the request is too old. `expiries_` is a second
+`std::map` of the same kind. Each instance renews its lease on its own thread, so each renewal allocates there.
+
+**What is wanted.** The outstanding requests in storage of a fixed size: a request older than a lease period is
+forgotten, and an instance asks only its few voters, so a small ring or array sized at start holds every request that
+can be outstanding. Then `heap_allocation_count.py` finds no call from `LeaseHolder`.
+
 ## Closed
+
+### BUG-0270: Every message an application thread sends allocates twice from the heap, copying the connection's service name {#bug_0270}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| Fixed | 2026-11-20 -- `ConnectionID` holds its service name in a fixed array of `max_service_name_length` (64) characters, not a `std::string`, so copying it never allocates, which a `static_assert` that it is trivially copyable holds. A name too long is refused at compile time for a string literal, given to `ConnectionID` or to `ServiceRegistry::add`, and for the longest name of each kind the venue builds (the sequencer's gateway names, the reactor's inbound names and the topic names); and at run time, for any name, with a `PreconditionAssertion` from both. `heap_allocation_count.py` then finds no call from sending on any thread |
+| How | The first run of BUG-0087's counting of heap calls, `scripts/heap_allocation_count.py`, under about 1,000 orders a second with half of them cancelled, on the development machine |
+| Impact | Every message any application thread sends -- an order from a gateway to the sequencers, a report from the leading engine -- makes two calls to the heap allocator on that thread, and two frees on the reactor's thread. Principle F5 says nothing on the order path allocates from the heap |
+
+**What was measured.** In a 60-second window: 378,188 calls on binary gateway A's thread, 189,413 on the leading
+matching engine's, and 291 on the leading sequencer's, which sends few messages of its own on this path. About two calls
+for every message sent, every one from `ApplicationThread::send_pdu` and `enqueue_send_pdu_command`
+(`libraries/pubsub_itc_fw/src/ApplicationThread.cpp`).
+
+**Why.** `ConnectionID` holds the service's name in a `std::string` (`ConnectionID.hpp`). `enqueue_send_pdu_command`
+copies the connection's `ConnectionID` into the `ReactorControlCommand` it builds, which allocates when the name is
+longer than the 15 characters a `std::string` holds without the heap, as names like `sequencer_primary_orders` are.
+The command is then copied once more into the reactor's queue, and the name with it. The reactor frees both. `ServiceID`
+was changed to a number for the same reason (its header says so), and `ConnectionID` was not.
+
+**What is wanted.** A `ConnectionID` that carries no `std::string`: the number alone, with the service's name found from
+it where a name is wanted, as `ServiceID` does. 62 places read `service_name()`, most to log it. The run of
+`heap_allocation_count.py` then shows no call from `send_pdu` on any thread.
+
+**What was done.** `service_name()` returns a `std::string_view`; the few places that held it as a `const std::string&`
+hold a `std::string_view`. Each guard was made to fail on purpose: a literal of 65 characters fails to compile for
+`ConnectionID` and for `ServiceRegistry::add`, and one of 64 compiles; with the limit lowered to 20 only the gateway
+names' assertion fires, and with it lowered to 12 the inbound and topic names' fire too; removing either run-time check
+fails its unit test (`ConnectionIDTest.RefusesANameLongerThanAllowed`,
+`ServiceRegistryTest.RefusesANameLongerThanAConnectionCanCarry`). The whole build and its tests pass. Counted again under
+the same load: binary gateway A's thread from 378,188 calls to none, the leading engine's from 189,413 to 114, the
+leading sequencer's from 291 to 118. What is left on those two is [BUG-0272](#bug_0272).
 
 ### BUG-0087: Whether the hot path allocates cannot be established on demand {#bug_0087}
 

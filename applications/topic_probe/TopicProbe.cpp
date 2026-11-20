@@ -27,7 +27,9 @@ Ports are the MEP primary's deployed defaults (orders -> 11040, execution_report
 TopicNotLeader; point the probe at the leader instance's port instead.
 */
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -306,6 +308,17 @@ int main(int argc, char** argv) {
 
     // One service registry entry and one ProbeThread per topic. The service is keyed by the
     // topic name (each ProbeThread connects to its own), pointing at that topic's port.
+    // Each topic's name becomes a service name, which a ConnectionID holds in at most max_service_name_length characters
+    // (BUG-0270); the longest topic name is checked here when the code is compiled.
+    static_assert(
+        [] {
+            size_t longest = 0;
+            for (const app::Topic topic : app::all_topics) {
+                longest = std::max(longest, app::to_string(topic).size());
+            }
+            return longest;
+        }() <= pubsub_itc_fw::max_service_name_length,
+        "every topic name must fit in a ConnectionID");
     pubsub_itc_fw::ServiceRegistry registry;
     for (const std::string& topic_name : topics) {
         registry.add(topic_name, pubsub_itc_fw::NetworkEndpointConfiguration{host, static_cast<uint16_t>(port_for_topic(topic_name))},

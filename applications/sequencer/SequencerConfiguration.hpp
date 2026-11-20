@@ -5,10 +5,13 @@
 
 #include <chrono>
 #include <cstdint> // IWYU pragma: keep
+#include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
@@ -88,6 +91,11 @@ struct SequencerConfiguration {
         [[nodiscard]] std::string service_name() const {
             return "gateway_" + std::to_string(protocol) + "_" + std::to_string(instance);
         }
+        // The longest name this can make, with both numbers at their longest, must fit in a ConnectionID (BUG-0270).
+        static_assert(std::string_view("gateway_").size() + std::numeric_limits<decltype(protocol)>::digits10 + 2 + 1 +
+                              std::numeric_limits<decltype(instance)>::digits10 + 2 <=
+                          pubsub_itc_fw::max_service_name_length,
+                      "the longest gateway service name must fit in a ConnectionID");
     };
 
     /**

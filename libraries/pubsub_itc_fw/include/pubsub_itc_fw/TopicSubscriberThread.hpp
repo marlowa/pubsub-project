@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -177,10 +178,10 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
     // The name of the publisher's service that @p id connects to, from the connection as it was made.
     [[nodiscard]] std::string service_name_of(const ConnectionID& id) const {
         const auto found = std::find(publisher_connections_.begin(), publisher_connections_.end(), id);
-        return found == publisher_connections_.end() ? std::string{} : found->service_name();
+        return found == publisher_connections_.end() ? std::string{} : std::string(found->service_name());
     }
 
-    [[nodiscard]] bool is_publisher_service(const std::string& service_name) const {
+    [[nodiscard]] bool is_publisher_service(std::string_view service_name) const {
         return std::find(publisher_services_.begin(), publisher_services_.end(), service_name) != publisher_services_.end();
     }
 

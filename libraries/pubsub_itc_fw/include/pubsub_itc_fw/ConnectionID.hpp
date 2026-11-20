@@ -3,10 +3,21 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
+#include <type_traits>
+
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace pubsub_itc_fw {
+
+/// The most characters a connection's service name may have. Every name the venue uses is far shorter.
+inline constexpr size_t max_service_name_length = 64;
 
 /**
  * @brief A strongly typed identifier for a TCP connection managed by the Reactor.
@@ -31,6 +42,15 @@ namespace pubsub_itc_fw {
  *
  *   Applications can use service_name().rfind("inbound:", 0) == 0 to
  *   distinguish inbound from outbound connections in on_connection_established().
+ *
+ * The service name is held in the object, in a fixed array of max_service_name_length characters, and not in a
+ * std::string. A ConnectionID is copied into every command an application thread sends the reactor, and again onto the
+ * reactor's queue, so a name that lived on the heap made two heap allocations for every message sent
+ * (docs/bug_list.md, BUG-0270). Copying this object never allocates. A name built from a string literal is checked
+ * against the limit when the code is compiled; any other name is checked when it is given, and one over the limit is
+ * refused with a PreconditionAssertion. Every name the venue uses is made in its code, and each kind's longest form is
+ * checked at compile time where it is made: ServiceRegistry::add for literals, the sequencer's gateway names, the
+ * reactor's inbound names and the topic names.
  *
  * Backward compatibility:
  *   All existing construction sites using ConnectionID{} and ConnectionID{n}
@@ -65,7 +85,28 @@ class ConnectionID {
      * @param[in] value        The integer value of the ID.
      * @param[in] service_name The name of the outbound service.
      */
-    ConnectionID(int value, std::string service_name) : value_(value), service_name_(std::move(service_name)) {}
+    ConnectionID(int value, std::string_view service_name) : value_(value) {
+        if (service_name.size() > max_service_name_length) {
+            throw PreconditionAssertion("ConnectionID: the service name '" + std::string(service_name) + "' has " + std::to_string(service_name.size()) +
+                                            " characters, more than the " + std::to_string(max_service_name_length) + " allowed",
+                                        __FILE__, __LINE__);
+        }
+        std::copy(service_name.begin(), service_name.end(), service_name_.begin());
+        service_name_length_ = static_cast<uint8_t>(service_name.size());
+    }
+
+    /**
+     * @brief Constructs a ConnectionID whose service name is a string literal, checked against the limit when the code
+     *        is compiled.
+     *
+     * @param[in] value        The integer value of the ID.
+     * @param[in] service_name The name of the service, a string literal of at most max_service_name_length characters.
+     */
+    template <size_t length_with_terminator>
+    ConnectionID(int value, const char (&service_name)[length_with_terminator])
+        : ConnectionID(value, std::string_view(service_name, length_with_terminator - 1)) {
+        static_assert(length_with_terminator - 1 <= max_service_name_length, "a service name may have at most max_service_name_length characters");
+    }
 
     /**
      * @brief Checks if the ID is valid (non-zero).
@@ -95,8 +136,8 @@ class ConnectionID {
      * bookkeeping that are never delivered as part of a
      * ConnectionEstablished event.
      */
-    [[nodiscard]] const std::string& service_name() const {
-        return service_name_;
+    [[nodiscard]] std::string_view service_name() const {
+        return std::string_view(service_name_.data(), service_name_length_);
     }
 
     [[nodiscard]] bool operator==(const ConnectionID& other) const {
@@ -124,8 +165,12 @@ class ConnectionID {
 
   private:
     int value_;
-    std::string service_name_;
+    uint8_t service_name_length_{0};
+    std::array<char, max_service_name_length> service_name_{};
 };
+
+// Copying a ConnectionID must never allocate: it is copied into every command sent to the reactor (BUG-0270).
+static_assert(std::is_trivially_copyable_v<ConnectionID>, "a ConnectionID must be copied with no allocation");
 
 } // namespaces
 
