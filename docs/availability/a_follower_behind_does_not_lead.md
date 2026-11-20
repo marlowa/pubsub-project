@@ -120,7 +120,7 @@ arbiter would become active without it and could grant the follower the lead.
 One machine runs an arbiter, a sequencer and a matching engine, so the death of one machine can take
 the follower and an arbiter at once. The active arbiter's confirmation is therefore enough on its own
 once it has heard nothing from the other arbiter for long enough, and `StatementHeld` then says it
-confirms alone. The two arbiters make this safe between them (`ArbiterPeerContact`):
+confirms alone. The two arbiters make this safe between them (`VoterPeerContact`):
 
 - They send each other a heartbeat every tick, carrying the moment it was sent on the sender's clock
   and echoing the newest such moment received from the other.

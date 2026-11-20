@@ -54,7 +54,7 @@ namespace pubsub_itc_fw {
  *     alone. One arbiter is not normally enough: if it stops and the other becomes active without the
  *     statement, the peer could be granted the lead while lacking commands this instance acted on
  *     (docs/bug_list.md, BUG-0230). The active arbiter confirms alone only once the other arbiter
- *     would know it may lack the statement if it became active (ArbiterPeerContact.hpp).
+ *     would know it may lack the statement if it became active (VoterPeerContact.hpp).
  *   - An instance whose voter holds a statement that it may not lead does not ask to lead.
  *
  * In the matching engine pair, constructed with PeerStatementsFlag::SayWhenPeerMayNotLead, every leadership

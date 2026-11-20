@@ -157,7 +157,7 @@ end
 #  acted on. The active arbiter confirms alone only once it has heard
 #  nothing from the other arbiter for long enough that the other, if
 #  it becomes active, knows it may lack statements and grants nothing
-#  until it has this one's state (ArbiterPeerContact.hpp).
+#  until it has this one's state (VoterPeerContact.hpp).
 # ------------------------------------------------------------
 message StatementHeld (id=401, version=1)
     i64 arbiter_instance_id # the arbiter confirming: its own instance id within the arbiter pool, 1 or 2
@@ -177,7 +177,7 @@ end
 #  heard from the other to decide whether to confirm statements alone;
 #  an arbiter becoming active uses the echo of its own heartbeats to
 #  decide whether it may lack a statement the other confirmed alone
-#  (ArbiterPeerContact.hpp). An arbiter that has confirmed a statement
+#  (VoterPeerContact.hpp). An arbiter that has confirmed a statement
 #  alone sends its whole state on a connection before the next
 #  heartbeat that echoes anything on it.
 # ------------------------------------------------------------

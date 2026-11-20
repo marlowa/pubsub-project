@@ -511,13 +511,13 @@ the voters. This is rule 11 in [majority_leases.md](availability/majority_leases
 lease requests and is recorded by the voters), and in the leading sequencer, which acts on a command
 its follower does not hold only once the statement is held in one of the three ways above: the library's
 replicated WAL commits such a record only then (`ReplicatedWal`). Each arbiter records and confirms the
-statement in `ArbiterThread`, and `ArbiterPeerContact` decides when the active arbiter may confirm on its
+statement in `ArbiterThread`, and `VoterPeerContact` decides when the active arbiter may confirm on its
 own and when an arbiter becoming active may lack a statement. Design:
 [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md).
 
 **What checks it.** `ha_test.py` scenarios 61, 63 and 64, and scenarios 7 and 48, in which one machine
 death takes an arbiter, a sequencer and a matching engine together; `LeaseRulesTest`, `PairLeaseAgentTest`
-and `ArbiterPeerContactTest`; the simulation; the model `FollowerBehindHA.tla`, with two arbiters
+and `VoterPeerContactTest`; the simulation; the model `FollowerBehindHA.tla`, with two arbiters
 ([tla/findings.md](availability/tla/findings.md), section 3).
 
 **Today: holds.**

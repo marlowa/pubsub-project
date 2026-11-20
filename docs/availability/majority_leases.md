@@ -340,7 +340,7 @@ nothing has failed.
   matching engine publishers, and the two arbiters in deciding which of them is active, make none. Each arbiter keeps
   the newest statement from each pair's leader on disk in `ComponentStatementStore.hpp`, and decides from its contact
   with the other arbiter whether it may confirm a statement alone, and whether, on becoming active, it may lack one,
-  in `ArbiterPeerContact.hpp`.
+  in `VoterPeerContact.hpp`.
 - The witness is a `LeaseVoter`.
 - A component instance keeps its promises in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeasePromiseStore.hpp`. The sequencer's file is
   `lease_promise.state` in its write-ahead log directory; the matching engine's is its epoch file's name with
@@ -362,7 +362,7 @@ nothing has failed.
   The agent tests restart a leader after its process has been down for 1.5 seconds, with and without its record, and
   show that it keeps the lead only with the record.
 - `libraries/pubsub_itc_fw/tests/ComponentStatementStoreTest.cpp` and
-  `libraries/pubsub_itc_fw/tests/ArbiterPeerContactTest.cpp`, for the arbiters' part in rule 11.
+  `libraries/pubsub_itc_fw/tests/VoterPeerContactTest.cpp`, for the arbiters' part in rule 11.
 - `libraries/pubsub_itc_fw/tests/LeasePromiseStoreTest.cpp`: the record is read back during the same boot, and ignored
   when it comes from another boot, is missing, or is damaged.
 - `scripts/ha_test.py`, which runs the whole venue. Scenario 8 checks that an arbiter left with only its own vote does

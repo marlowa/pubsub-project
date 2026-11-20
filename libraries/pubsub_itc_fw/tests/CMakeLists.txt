@@ -64,7 +64,7 @@ add_executable(pubsub_itc_fw_tests
     EpochStoreTest.cpp
     TradingDayOfFileTest.cpp
     LogEpochTableTest.cpp
-    ArbiterPeerContactTest.cpp
+    VoterPeerContactTest.cpp
     EpochRecordingTest.cpp
     ReplicatedWalTest.cpp
     ReplicatedWalCommandTest.cpp

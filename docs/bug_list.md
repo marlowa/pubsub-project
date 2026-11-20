@@ -2528,7 +2528,7 @@ describe where the arbiter and the witness live are updated.
 **What was done.** The eight classes and their two configuration loaders' tests moved, with `git mv`, to
 `applications/arbiter` and `applications/witness`; each program builds them, and a test program of its own,
 `arbiter_tests` and `witness_tests`, which the build runs with the other applications' tests. The library keeps
-`ComponentLeaseVoters`, `ComponentStatementStore` and `ArbiterPeerContact`, which the library's own lease rules and
+`ComponentLeaseVoters`, `ComponentStatementStore` and `ArbiterPeerContact` (since renamed `VoterPeerContact`), which the library's own lease rules and
 `TradingDayOfFile` use, and `TechnicalEventsSubscription`, which any component may use. The moved code names the
 library's types with `pubsub_itc_fw::`. The 7 arbiter and 4 witness tests pass where they now are, the library's 1359
 pass, the whole build and its tests pass, and scenarios 1 and 111, which run both arbiters and the witness through a
@@ -5702,7 +5702,7 @@ more lease period, 10 seconds with the default timings, and `StatementHeld` then
 exchange `ArbiterHeartbeat` (402) every tick, each echoing the other's send time. An arbiter that has confirmed alone sends
 the other its whole state before its next echo, on the same connection. An arbiter that becomes active when no heartbeat
 it sent in the last two lease periods and one renewal interval has been echoed may lack a statement confirmed alone, and
-answers no component until a fresh echo arrives (`ArbiterPeerContact`). When the active arbiter's machine dies, the other
+answers no component until a fresh echo arrives (`VoterPeerContact`). When the active arbiter's machine dies, the other
 becomes active within that time and grants as usual; a leader that has also lost its follower acts on the remaining
 arbiter's confirmation alone 10 seconds after the death.
 
@@ -5718,7 +5718,7 @@ at budgets smaller than those of section 3.3, which section 3.6 states; the budg
 `LeaseRulesTest.LeaderMayActWithoutItsPeerOnceTheActiveArbiterConfirmsTheStatementAlone`,
 `PairLeaseAgentTest.WithItsPeerDownALeaderActsWithoutItOnlyOnceBothArbitersHoldItsStatement`,
 `PairLeaseAgentTest.WithItsPeerAndOneArbiterDownALeaderActsWithoutItsPeerOnceTheActiveArbiterConfirmsAlone`, and
-`ArbiterPeerContactTest`. Each fails when the rule it checks is broken.
+`VoterPeerContactTest`. Each fails when the rule it checks is broken.
 
 **Principles.** The same one-way copy, made safe by numbering and repetition, is how the statement travels everywhere
 else; here a lost copy is not noticed.

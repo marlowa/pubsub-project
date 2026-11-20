@@ -48,7 +48,7 @@ In memory it holds:
   other one;
 - the newest leader statement for each group, as above;
 - when it last heard from the other arbiter, and when it sent the heartbeat whose echo it last
-  received (`ArbiterPeerContact.hpp`).
+  received (`VoterPeerContact.hpp`).
 
 An arbiter that becomes active does not know what the previously active arbiter promised, so it
 grants no component a lease for one lease period. During that period each component leader renews
@@ -182,7 +182,7 @@ The arbiter is a program in `applications/arbiter`: `Arbiter`, `ArbiterThread`, 
 and `ArbiterConfigurationLoader`, in the namespace `arbiter`, with `main.cpp` reading the configuration file and
 running `Arbiter`, and their tests in `applications/arbiter/tests`. It is built on the voting machinery in the
 library, `libraries/pubsub_itc_fw`: `ComponentLeaseVoters`, which decides the pool's vote on which instance of
-each component pair leads; `ComponentStatementStore`, its record of the leaders' statements; `ArbiterPeerContact`,
+each component pair leads; `ComponentStatementStore`, its record of the leaders' statements; `VoterPeerContact`,
 the rule for what an arbiter knows of the other; and the lease classes.
 
 ---

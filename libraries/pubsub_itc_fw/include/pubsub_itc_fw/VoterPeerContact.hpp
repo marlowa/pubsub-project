@@ -38,7 +38,7 @@ namespace pubsub_itc_fw {
  * period and one renewal interval. confirms_alone_after() is one lease period longer still, which covers the
  * difference between the two machines' clocks over that time, and the time a heartbeat takes to travel.
  */
-class ArbiterPeerContact {
+class VoterPeerContact {
   public:
     using Clock = std::chrono::steady_clock;
 
@@ -47,7 +47,7 @@ class ArbiterPeerContact {
      * @param[in] started_at When this arbiter started. Until it first hears from the other arbiter, it counts that as
      *            the last time it did.
      */
-    ArbiterPeerContact(const LeaseTiming& timing, Clock::time_point started_at)
+    VoterPeerContact(const LeaseTiming& timing, Clock::time_point started_at)
         : may_be_behind_after_(2 * timing.period + timing.renewal_interval)
         , confirms_alone_after_(may_be_behind_after_ + timing.period)
         , last_heard_(started_at) {}

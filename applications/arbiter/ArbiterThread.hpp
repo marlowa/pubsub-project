@@ -29,10 +29,10 @@
 #include <pubsub_itc_fw/TestEventChannel.hpp>
 
 #include "ArbiterConfiguration.hpp"
-#include <pubsub_itc_fw/ArbiterPeerContact.hpp>
 #include <pubsub_itc_fw/ComponentLeaseVoters.hpp>
 #include <pubsub_itc_fw/ComponentStatementStore.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
+#include <pubsub_itc_fw/VoterPeerContact.hpp>
 
 namespace arbiter {
 
@@ -175,7 +175,7 @@ class ArbiterThread : public pubsub_itc_fw::TopicSubscriberThread {
 
     // When this arbiter last heard from the other, and the echoes of its heartbeats: whether it may confirm statements alone,
     // and whether, on becoming active, it may lack a statement the other confirmed alone. Constructed at the initial event.
-    std::optional<pubsub_itc_fw::ArbiterPeerContact> peer_contact_;
+    std::optional<pubsub_itc_fw::VoterPeerContact> peer_contact_;
     // Whether this arbiter must send the other its whole state on each peer connection before the next heartbeat on it, because
     // it has confirmed a statement alone since it last did, or has started. A connection delivers in order, so the other
     // arbiter receives every such statement before an echo that shows it is not behind.

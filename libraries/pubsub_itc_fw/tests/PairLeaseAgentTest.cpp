@@ -372,7 +372,7 @@ class PairLeaseAgentTest : public ::testing::Test {
     // Whether the passive arbiter is up and confirms statements. The active arbiter grants and confirms while arbiter_up_.
     bool second_arbiter_up_{true};
     // Whether the active arbiter, arbiter 1 here, says it confirms statements alone, as it does once it has heard nothing from the
-    // other arbiter for long enough (ArbiterPeerContact).
+    // other arbiter for long enough (VoterPeerContact).
     bool active_arbiter_confirms_alone_{false};
     std::vector<pubsub_itc_fw::PairLeaseAgent::Change> changes_[2];
     KeptPromises kept_[2];

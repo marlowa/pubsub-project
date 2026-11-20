@@ -621,7 +621,7 @@ void ArbiterThread::send_whole_state_to_peer(const pubsub_itc_fw::ConnectionID& 
 
 void ArbiterThread::send_heartbeats_to_peer(std::chrono::steady_clock::time_point now) {
     pubsub_itc_fw::ArbiterHeartbeat heartbeat{};
-    heartbeat.sent_at_nanoseconds = pubsub_itc_fw::ArbiterPeerContact::sent_at(now);
+    heartbeat.sent_at_nanoseconds = pubsub_itc_fw::VoterPeerContact::sent_at(now);
     heartbeat.echoed_nanoseconds = peer_contact_->echo();
     for (const pubsub_itc_fw::ConnectionID& conn : {peer_conn_id_, peer_inbound_conn_id_}) {
         if (!conn.is_valid()) {
