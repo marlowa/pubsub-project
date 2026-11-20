@@ -538,6 +538,18 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      */
     void recover_open_orders(bool region_existed);
 
+    /**
+     * @brief Locks the order book's memory, the map and the region, before the engine reports itself ready, or refuses to
+     *        start.
+     *
+     * Works out first how much it will lock, logs it, and compares it with the process's limit on locked memory
+     * (RLIMIT_MEMLOCK), so that a limit too low is reported with the figure needed before any time is spent. Then locks
+     * the map, which makes the kernel supply every page of it now, and the region. Either failing is logged at Critical
+     * and ends construction with an exception, so the process exits with status 1, as for the engine's other refusals to
+     * start. See docs/venue/the_engine_holds_its_memory_from_the_start.md.
+     */
+    void hold_book_in_memory();
+
     void begin_reconciliation();
 
     /// Asks to be caught up again and to go on following the WAL, keeping the role this instance has once the catch-up

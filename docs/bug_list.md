@@ -1704,13 +1704,20 @@ more than the region, so the scaled figures are the ones to expect there; they h
 such a machine. A restart of 8 to 17 seconds is the window [BUG-0197](#bug_0197) and [BUG-0198](#bug_0198)
 are about, and it rules out a restarted engine keeping the lead within its 3-second lease.
 
+**The engine holds its memory from the start of the day.** Before it recovers any order, the engine locks the
+map and the region into memory, so that the kernel supplies every page then, and a shortage is an error the engine
+reports at Critical before refusing to start, rather than the out-of-memory killer during the day, as
+[BUG-0010](#bug_0010) decided. It first compares what it will lock with its limit on locked memory, which must be
+raised in production ([locked_memory_requirement.md](operations/locked_memory_requirement.md)). Design and
+measurements: [the_engine_holds_its_memory_from_the_start.md](venue/the_engine_holds_its_memory_from_the_start.md).
+
 **Still open in this entry:**
 
-- the map's pages are not touched when it is reserved, so the memory is not proven available at the start
-  of the day, as the decision in [BUG-0010](#bug_0010) requires;
 - a restart costs time in proportion to the region's capacity, not to the orders open, and rewrites most of
   the region; this is for the design of phase 8 of the [recovery plan](recovery_plan.md), which changes how
-  the follower builds its book.
+  the follower builds its book;
+- the engine's resident memory has not yet been recorded with `vmstat` over a long run of orders and cancels with the
+  map reserved for a large book, to show it flat from the start of the day.
 
 ### BUG-0041: Five ways the venue will not start on a RHEL8 target host {#bug_0041}
 

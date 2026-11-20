@@ -22,7 +22,9 @@
 #include <string>
 #include <vector>
 
+#include <cerrno>
 #include <cstdlib>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -77,6 +79,44 @@ std::vector<uint8_t> pattern(uint8_t seed, uint32_t size = record_size) {
 }
 
 } // namespaces
+
+namespace {
+
+/// The memory this process has locked, in kB, as the kernel reports it (VmLck in /proc/self/status).
+size_t locked_kilobytes() {
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    while (std::getline(status, line)) {
+        if (line.rfind("VmLck:", 0) == 0) {
+            return static_cast<size_t>(std::stoul(line.substr(6)));
+        }
+    }
+    return 0;
+}
+
+/// Lowers this process's limit on locked memory for as long as it lives, and puts it back after. Lowering the soft limit
+/// needs no privilege, and it can always be raised again as far as the hard limit.
+class LockedMemoryLimitLowered {
+  public:
+    ~LockedMemoryLimitLowered() {
+        ::setrlimit(RLIMIT_MEMLOCK, &saved_);
+    }
+    explicit LockedMemoryLimitLowered(rlim_t bytes) {
+        ::getrlimit(RLIMIT_MEMLOCK, &saved_);
+        rlimit lowered = saved_;
+        lowered.rlim_cur = bytes;
+        ::setrlimit(RLIMIT_MEMLOCK, &lowered);
+    }
+    LockedMemoryLimitLowered(const LockedMemoryLimitLowered&) = delete;
+    LockedMemoryLimitLowered& operator=(const LockedMemoryLimitLowered&) = delete;
+    LockedMemoryLimitLowered(LockedMemoryLimitLowered&&) = delete;
+    LockedMemoryLimitLowered& operator=(LockedMemoryLimitLowered&&) = delete;
+
+  private:
+    rlimit saved_{};
+};
+
+} // un-named namespace
 
 class MappedSlotStoreTest : public ::testing::Test {
   protected:
@@ -868,6 +908,31 @@ TEST_F(MappedSlotStoreTest, LayoutStillAgreesWithTheStore) {
     in.seekg(static_cast<std::streamoff>(slot_offset(1) + slot_header_size));
     in.read(reinterpret_cast<char*>(held.data()), record_size);
     EXPECT_EQ(std::memcmp(held.data(), expected.data(), record_size), 0);
+}
+
+TEST_F(MappedSlotStoreTest, LockingInMemoryLocksEveryPageAndClosingUnlocksThem) {
+    const size_t before = locked_kilobytes();
+    {
+        MappedSlotStore store;
+        ASSERT_FALSE(store.open(path_, 1024, 4096));
+        ASSERT_EQ(store.lock_in_memory(), 0);
+        EXPECT_EQ(locked_kilobytes() - before, store.mapped_bytes() / 1024);
+    }
+    EXPECT_EQ(locked_kilobytes(), before) << "closing a locked store must unlock it";
+}
+
+TEST_F(MappedSlotStoreTest, LockingInMemoryFailsWithAnErrorWhenTheLimitIsTooLow) {
+    if (::geteuid() == 0) {
+        GTEST_SKIP() << "run as root, the process may lock memory whatever its limit";
+    }
+    MappedSlotStore store;
+    ASSERT_FALSE(store.open(path_, 1024, 4096));
+    int error = 0;
+    {
+        const LockedMemoryLimitLowered limit(64 * 1024);
+        error = store.lock_in_memory();
+    }
+    EXPECT_EQ(error, ENOMEM);
 }
 
 } // namespaces

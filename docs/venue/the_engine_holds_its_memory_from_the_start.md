@@ -1,7 +1,8 @@
 # The matching engine holds its memory from the start of the day {#the_engine_holds_its_memory_from_the_start}
 
-**Status: proposed, 19 November 2026, for item 1 of [BUG-0028](../bug_list.md#bug_0028).** Section 7 lists the
-decisions, none of them yet agreed.
+**Status: agreed with Andrew, 20 November 2026, for item 1 of [BUG-0028](../bug_list.md#bug_0028), and built.**
+Section 7 lists the decisions. What a machine must allow is in
+[locked_memory_requirement.md](../operations/locked_memory_requirement.md).
 
 ## 1. The problem
 
@@ -62,17 +63,17 @@ killed. The engine can then log at Critical what it asked for and why it failed,
 BUG-0010 asks for. Locking also does the touching of section 2: a locked page has been supplied.
 
 What it needs: a process may lock only as much as its limit on locked memory (`RLIMIT_MEMLOCK`) allows, and the
-default is small. On this machine it is about 4 GB. In production the limit for the user the venue runs as would have
+default is small. On this machine it is about 4 GB. In production the limit for the user the venue runs as has
 to be raised above what the engine locks, a setting of the machine made once when it is deployed (in
-`/etc/security/limits.d`, or in whatever starts the launcher). The engine would say, in its refusal, which limit
-stopped it and what it would need.
+`/etc/security/limits.d`, or in whatever starts the launcher). The engine says, in its refusal, which limit
+stopped it and what it needs.
 
 ## 4. The region
 
 The region's pages can be locked the same way. They cannot get the engine killed, so locking them is not needed for
-this bug; what locking them would add is that none is ever written back and dropped during the day, so that no order
-waits for a page to be read from the disk. Today `warm()` writes every page at the start, but the kernel may still drop
-clean pages later under memory pressure. Locking them would add 26.4 GB to what is locked in production, about 65 GB
+this bug; what locking them adds is that none is dropped during the day, so that no order
+waits for a page to be read from the disk. `warm()` alone writes every page at the start, but the kernel may still drop
+clean pages later under memory pressure. Locking them adds 26.4 GB to what is locked in production, about 65 GB
 in all on a machine of 200 GB.
 
 ## 5. What it costs
@@ -88,31 +89,34 @@ in all on a machine of 200 GB.
   ([deleting_without_erased_marks.md](../framework/deleting_without_erased_marks.md), section 8.1) put an accept at up
   to 900 nanoseconds at the 99th percentile, against about 60 at the median; part of that tail is likely to be this.
 
-## 6. What will be built and checked
+## 6. What is built and checked
 
-- **The map** gains a way to lock its tables and touch every page, called by the order book where the region is warmed
-  today, which reports how much it locked and how long it took.
-- **The engine** refuses to start, at Critical, when locking fails, naming the limit or the shortage, and its exit
-  status says it refused rather than failed.
-- **A test** makes the lock fail on purpose, by lowering the limit on locked memory for a test process, and checks the
-  refusal and its message.
-- **A measurement** of the start's time before and after, in the development environment, and of the accept times with
-  the order book's benchmark; and, with the map reserved for a large book, the engine's resident memory over a long run
-  of orders and cancels, recorded with `vmstat`, which should be flat from the start.
+- **The map** can lock its tables (`IncrementalRehashMap::hold_in_memory`) and say beforehand how much that is
+  (`bytes_to_hold_in_memory`). A table it releases is unlocked. A table allocated later, by growth, is not locked; a map
+  reserved for what it will hold never grows. **The region** can lock its mapping (`MappedSlotStore::lock_in_memory`).
+- **The engine** (`MatchingEngineThread::hold_book_in_memory`), after opening the region and before recovering any
+  order, logs how much it will lock and its limit, and refuses to start if the limit is too low; then locks the map and
+  the region. A refusal is logged at Critical, and the engine exits with status 1, as for its other refusals to start.
+- **Tests**, in the map's and the store's unit tests: locking locks every page of every array, and releasing unlocks
+  them, for a table large enough to be mapped on its own and for one small enough to come from the heap; and locking
+  fails with ENOMEM when the test lowers its own limit. Each test was made to fail on purpose by five breaks of the code:
+  locking nothing, locking only some arrays, not unlocking, and the store locking nothing.
+- **Measured** on the development machine, with the region for 2 million orders and the map reserved for 262,144: the
+  engine locks 576 MB in 31 to 45 milliseconds, at its start in high-availability scenarios 1 and 111, both of which
+  pass. Started by hand with a limit of 1 MB, it logs the refusal at Critical and exits with status 1 at once.
+- **Still to measure:** the engine's resident memory over a long run of orders and cancels with the map reserved for a
+  large book, recorded with `vmstat`, which should be flat from the start; and the accept times with every page of the
+  map supplied first.
 
 ## 7. Decisions
 
-Each is a separate yes-or-no question.
+Agreed with Andrew, 20 November 2026:
 
-1. **Does the engine write to every page of the map's tables before it reports itself ready, as it does for the
-   region?** Recommended: yes. It is what BUG-0010 decided.
-2. **Does it also lock the map's tables into memory with `mlock`, so that a shortage is an error the engine reports at
-   Critical before refusing to start, rather than the out-of-memory killer, at the cost of raising the venue user's
-   limit on locked memory in production?** Recommended: yes. It is the only way of the three in which the engine finds
-   out for itself, and can say why.
-3. **Does it lock the region's pages too, so that none is dropped and read back from the disk during the day, at 26.4
-   GB more locked in production?** Recommended: yes, but it is a matter of latency, not of the engine dying, and could
-   wait.
-4. **Before it locks anything, does the engine work out from its capacities how much it will lock, log it, and compare
-   it with its limit on locked memory, so that a limit too low is reported with the figure it needs before any time is
-   spent?** Recommended: yes.
+1. The engine has every page of the map supplied before it reports itself ready. Locking does this.
+2. It locks the map's tables into memory, so that a shortage is an error the engine reports at Critical before refusing
+   to start, and the venue user's limit on locked memory is raised in production.
+3. It locks the region's pages too, 26.4 GB more locked in production, so that none is dropped and read back from the
+   disk during the day.
+4. Before it locks anything, it works out how much it will lock, logs it, and compares it with its limit, so that a limit
+   too low is reported with the figure needed before any time is spent.
+5. A refusal for lack of memory exits with status 1, as the engine's other refusals to start do.

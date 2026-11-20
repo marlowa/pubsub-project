@@ -3,12 +3,16 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <new>
 #include <utility>
+
+#include <sys/mman.h>
+#include <unistd.h>
 
 // Thread-confinement checking is a debug, ASan and coverage build facility: it costs a
 // thread-local read on every operation, which a hot path should not pay to verify something
@@ -164,6 +168,8 @@ class IncrementalRehashMap {
         size_t mask{0};
         size_t live{0};
         size_t used{0};
+        // Set when hold_in_memory() has asked for the table's pages to be locked, so that releasing it unlocks them.
+        bool locked{false};
     };
 
   public:
@@ -361,6 +367,43 @@ class IncrementalRehashMap {
         if (wanted > current_.capacity && !is_migrating()) {
             begin_migration(wanted);
         }
+    }
+
+    /**
+     * @brief How many bytes hold_in_memory() locks, at most.
+     *
+     * Every array of every table the map holds, each counted as one page more than its size, because mlock locks whole
+     * pages and an array need not start or end on a page boundary.
+     */
+    [[nodiscard]] size_t bytes_to_hold_in_memory() const {
+        return bytes_to_hold(current_) + bytes_to_hold(next_);
+    }
+
+    /**
+     * @brief Locks every page of the map's tables into memory with mlock.
+     * @return Zero, or the errno that mlock failed with: ENOMEM when the process's limit on locked memory
+     *         (RLIMIT_MEMLOCK) is too low or the memory is not there, EAGAIN when some of it could not be locked, and
+     *         EPERM when the limit is zero.
+     *
+     * For a map whose size is known at the start, called after reserve(). Allocating a table gives it addresses, and the
+     * kernel supplies a page of memory only when it is first written, without checking at the time of the allocation that
+     * the memory will be there. Locking makes the kernel supply every page now, before any entry is inserted, and keep
+     * each one from then on: it is never swapped out. So a shortage of memory is found here, as an error the caller can
+     * report, and not later, as the kernel's out-of-memory killer ending the process in the middle of an insert. Writing
+     * to every page would also make the kernel supply it, but a shortage would still end in the out-of-memory killer, and
+     * the pages could still be swapped out later.
+     *
+     * A table allocated afterwards, by a migration to a larger table, is not locked; a map reserved for what it will hold
+     * never migrates. A locked table is unlocked when it is released. Nothing is changed on failure that matters to a
+     * caller: what was locked stays locked until its table is released.
+     */
+    [[nodiscard]] int hold_in_memory() {
+        check_thread_confinement();
+        const int error = lock_table(current_);
+        if (error != 0) {
+            return error;
+        }
+        return lock_table(next_);
     }
 
     [[nodiscard]] size_t count(const Key& key) const {
@@ -620,11 +663,43 @@ class IncrementalRehashMap {
         table.used = 0;
     }
 
+    [[nodiscard]] static size_t page_bytes() {
+        return static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+    }
+
+    [[nodiscard]] static size_t bytes_to_hold(const Table& table) {
+        if (table.states == nullptr) {
+            return 0;
+        }
+        return table.capacity * (sizeof(SlotState) + sizeof(EntryStorage) + sizeof(uint32_t)) + 3 * page_bytes();
+    }
+
+    /// Locks the table's three arrays. Zero, or the errno of the first lock that failed.
+    [[nodiscard]] static int lock_table(Table& table) {
+        if (table.states == nullptr) {
+            return 0;
+        }
+        table.locked = true;
+        if (::mlock(table.states, table.capacity * sizeof(SlotState)) != 0 || ::mlock(table.entries, table.capacity * sizeof(EntryStorage)) != 0 ||
+            ::mlock(table.hashes, table.capacity * sizeof(uint32_t)) != 0) {
+            return errno;
+        }
+        return 0;
+    }
+
     void release_table(Table& table) {
         if (table.states == nullptr) {
             return;
         }
         destroy_entries(table);
+        if (table.locked) {
+            // Unlocking whole pages. Where an array shares its first or last page with another allocation that is also locked,
+            // that page is unlocked as well; it stays in memory, and only a small table, far below what is worth locking, can
+            // share a page.
+            ::munlock(table.states, table.capacity * sizeof(SlotState));
+            ::munlock(table.entries, table.capacity * sizeof(EntryStorage));
+            ::munlock(table.hashes, table.capacity * sizeof(uint32_t));
+        }
         ::operator delete(table.states);
         ::operator delete(table.entries, std::align_val_t{alignof(EntryStorage)});
         ::operator delete(table.hashes);

@@ -116,6 +116,33 @@ class OrderBook {
         store_.warm();
     }
 
+    /// How many bytes hold_map_in_memory() locks, at most. See IncrementalRehashMap::bytes_to_hold_in_memory.
+    [[nodiscard]] size_t map_bytes_to_hold() const {
+        return index_.bytes_to_hold_in_memory();
+    }
+
+    /// How many bytes hold_region_in_memory() locks: the whole region.
+    [[nodiscard]] size_t region_bytes_to_hold() const {
+        return store_.mapped_bytes();
+    }
+
+    /**
+     * @brief Locks every page of the map from an order's identity to its record into memory, so that the kernel supplies
+     *        them all now and a shortage is an error here, not the out-of-memory killer during the day.
+     * @return Zero, or the errno that mlock failed with. See IncrementalRehashMap::hold_in_memory.
+     */
+    [[nodiscard]] int hold_map_in_memory() {
+        return index_.hold_in_memory();
+    }
+
+    /**
+     * @brief Locks every page of the region into memory, so that none is dropped and read back from the disk during the day.
+     * @return Zero, or the errno that mlock failed with. See MappedSlotStore::lock_in_memory.
+     */
+    [[nodiscard]] int hold_region_in_memory() const {
+        return store_.lock_in_memory();
+    }
+
     /** @brief True when an order with this identity is already open. */
     [[nodiscard]] bool contains(const OrderKey& key) const;
 

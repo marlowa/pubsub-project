@@ -3,6 +3,7 @@
 Running the venue, watching it, and securing it.
 
 - **[filesystem_requirements.md](filesystem_requirements.md) — the filesystem holding the write-ahead logs and the small synced state files must be mounted `lazytime`, and the matching engines' open-order regions must be on a different filesystem. Without the first, the sequencer stalls for hundreds of milliseconds; without the second, leases run out at startup. Read this before deploying to a new machine.**
+- **[locked_memory_requirement.md](locked_memory_requirement.md) — the user the venue runs as must be allowed to lock as much memory as each matching engine's order book needs, about 65 GB in production, or the engine refuses to start. Read this before deploying to a new machine.**
 - [metrics.md](metrics.md) — The Prometheus endpoint, what is exported, and why metrics stay out of the control plane
 - [secure_comms.md](secure_comms.md) — TLS and SCRAM
 - [trading_day_load.md](trading_day_load.md) — The compressed trading-day profile, and what a passing run does and does not prove

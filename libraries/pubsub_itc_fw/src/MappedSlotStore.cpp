@@ -249,6 +249,17 @@ void MappedSlotStore::warm() const {
     }
 }
 
+size_t MappedSlotStore::mapped_bytes() const {
+    return mapped_size_;
+}
+
+int MappedSlotStore::lock_in_memory() const {
+    if (::mlock(base_, mapped_size_) != 0) {
+        return errno;
+    }
+    return 0;
+}
+
 MappedSlotStore::SlotIndex MappedSlotStore::acquire() {
     Header* hdr = header();
     const SlotIndex head = hdr->free_head.load(std::memory_order_relaxed);

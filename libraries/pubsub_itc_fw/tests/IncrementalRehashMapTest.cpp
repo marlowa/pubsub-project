@@ -1,13 +1,18 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <random>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include <sys/resource.h>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
@@ -105,6 +110,40 @@ struct KeyIsItsHome {
 };
 
 using IntMap = IncrementalRehashMap<int, int>;
+
+/// The memory this process has locked, in kB, as the kernel reports it (VmLck in /proc/self/status).
+size_t locked_kilobytes() {
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    while (std::getline(status, line)) {
+        if (line.rfind("VmLck:", 0) == 0) {
+            return static_cast<size_t>(std::stoul(line.substr(6)));
+        }
+    }
+    return 0;
+}
+
+/// Lowers this process's limit on locked memory for as long as it lives, and puts it back after. Lowering the soft limit
+/// needs no privilege, and it can always be raised again as far as the hard limit.
+class LockedMemoryLimitLowered {
+  public:
+    ~LockedMemoryLimitLowered() {
+        ::setrlimit(RLIMIT_MEMLOCK, &saved_);
+    }
+    explicit LockedMemoryLimitLowered(rlim_t bytes) {
+        ::getrlimit(RLIMIT_MEMLOCK, &saved_);
+        rlimit lowered = saved_;
+        lowered.rlim_cur = bytes;
+        ::setrlimit(RLIMIT_MEMLOCK, &lowered);
+    }
+    LockedMemoryLimitLowered(const LockedMemoryLimitLowered&) = delete;
+    LockedMemoryLimitLowered& operator=(const LockedMemoryLimitLowered&) = delete;
+    LockedMemoryLimitLowered(LockedMemoryLimitLowered&&) = delete;
+    LockedMemoryLimitLowered& operator=(LockedMemoryLimitLowered&&) = delete;
+
+  private:
+    rlimit saved_{};
+};
 using HomeMap = IncrementalRehashMap<int, int, KeyIsItsHome>;
 
 /// The keys of a map in slot order, which is the order a walk from begin() visits them in.
@@ -1019,6 +1058,54 @@ TEST_F(IncrementalRehashMapTest, EntriesMovedByAMigrationAreFoundAndErasedByThei
     for (int key = 1; key <= 20000; ++key) {
         EXPECT_EQ(map.find(key * 7919) != map.end(), reference.count(key * 7919) == 1) << key;
     }
+}
+
+TEST_F(IncrementalRehashMapTest, HoldingInMemoryLocksEveryPageOfTheTablesAndReleasingUnlocksThem) {
+    const size_t before = locked_kilobytes();
+    {
+        IntMap map;
+        map.reserve(1 << 20);
+        ASSERT_EQ(map.hold_in_memory(), 0);
+        const size_t table_kilobytes = map.capacity() * (1 + 8 + 4) / 1024;
+        EXPECT_GE(locked_kilobytes() - before, table_kilobytes) << "every page of the three arrays must be locked";
+        EXPECT_LE(locked_kilobytes() - before, map.bytes_to_hold_in_memory() / 1024) << "no more than the map said it would lock";
+        for (int key = 0; key < 1000; ++key) {
+            map.emplace(key, key * 2);
+        }
+        for (int key = 0; key < 1000; ++key) {
+            ASSERT_EQ(map.find(key)->second, key * 2);
+        }
+    }
+    EXPECT_EQ(locked_kilobytes(), before) << "releasing a locked table must unlock it";
+}
+
+// A small table's arrays come from the heap, which keeps the memory when it is freed, so only unlocking it gives the
+// lock back; a large table's arrays are mapped on their own and freeing them unmaps them, which unlocks them anyway.
+TEST_F(IncrementalRehashMapTest, ReleasingASmallLockedTableUnlocksIt) {
+    const size_t before = locked_kilobytes();
+    {
+        IntMap map;
+        map.reserve(1000);
+        ASSERT_EQ(map.hold_in_memory(), 0);
+        ASSERT_GT(locked_kilobytes(), before);
+    }
+    EXPECT_EQ(locked_kilobytes(), before) << "releasing a locked table must unlock it";
+}
+
+TEST_F(IncrementalRehashMapTest, HoldingInMemoryFailsWithAnErrorWhenTheLimitIsTooLow) {
+    if (::geteuid() == 0) {
+        GTEST_SKIP() << "run as root, the process may lock memory whatever its limit";
+    }
+    IntMap map;
+    map.reserve(1 << 20);
+    int error = 0;
+    {
+        const LockedMemoryLimitLowered limit(64 * 1024);
+        error = map.hold_in_memory();
+    }
+    EXPECT_EQ(error, ENOMEM);
+    map.emplace(1, 2);
+    EXPECT_EQ(map.find(1)->second, 2) << "a map that could not be locked is still usable";
 }
 
 } // namespaces

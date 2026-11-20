@@ -10,6 +10,9 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <sys/resource.h>
+#include <unistd.h>
+
 #include <fmt/format.h>
 
 #include <LeasePairNumbers.hpp>
@@ -165,6 +168,7 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     }
     order_book_.set_trading_day(config_.trading_day);
 
+    hold_book_in_memory();
     recover_open_orders(region_existed);
 
     // Registered unconditionally: this component has exactly one application thread and
@@ -1599,6 +1603,73 @@ void MatchingEngineThread::announce_role() {
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: announced role {} at epoch {} to the sequencers",
                pubsub_itc_fw_app::to_string(announcement.current_role), epoch_);
+}
+
+namespace {
+
+constexpr size_t bytes_in_a_megabyte = 1024UL * 1024UL;
+
+/// What mlock's errno means for the order book, in words an operator can act on.
+std::string why_locking_failed(int error) {
+    switch (error) {
+        case ENOMEM:
+            return "the process's limit on locked memory is too low, or the machine does not have the memory (ENOMEM)";
+        case EAGAIN:
+            return "some of the memory could not be locked, because the machine does not have it free (EAGAIN)";
+        case EPERM:
+            return "the process may not lock memory: its limit on locked memory is zero (EPERM)";
+        default:
+            return std::string(std::strerror(error));
+    }
+}
+
+} // un-named namespace
+
+void MatchingEngineThread::hold_book_in_memory() {
+    const size_t map_bytes = order_book_.map_bytes_to_hold();
+    const size_t region_bytes = order_book_.region_bytes_to_hold();
+    const size_t wanted = map_bytes + region_bytes;
+    rlimit limit{};
+    const bool limit_known = ::getrlimit(RLIMIT_MEMLOCK, &limit) == 0;
+    const bool unlimited = limit_known && limit.rlim_cur == RLIM_INFINITY;
+    const std::string limit_text = !limit_known ? "unknown" : unlimited ? "unlimited" : std::to_string(limit.rlim_cur / bytes_in_a_megabyte) + " MB";
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: locking the order book into memory -- {} MB for the map and {} MB for the region, {} MB in all, against a limit on "
+               "locked memory of {}",
+               map_bytes / bytes_in_a_megabyte, region_bytes / bytes_in_a_megabyte, wanted / bytes_in_a_megabyte, limit_text);
+
+    // The remedy, in every refusal below. A process running as root has the capability to lock memory whatever its limit, so
+    // the limit is compared only for any other user.
+    const std::string remedy = "The limit for the user the venue runs as is set in /etc/security/limits.d (memlock, in kB) or by whatever starts the "
+                               "launcher (ulimit -l); it must be at least the figure above, and the machine must have that much memory to spare.";
+    if (limit_known && !unlimited && ::geteuid() != 0 && wanted > limit.rlim_cur) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Critical,
+                   "MatchingEngineThread: refusing to start -- the order book needs {} MB of locked memory, and this process's limit on locked memory "
+                   "(RLIMIT_MEMLOCK) is {}. {}",
+                   wanted / bytes_in_a_megabyte, limit_text, remedy);
+        throw pubsub_itc_fw::PubSubItcException("the order book needs " + std::to_string(wanted / bytes_in_a_megabyte) +
+                                                " MB of locked memory, and the limit on locked memory is " + limit_text);
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    const auto refuse = [&](const char* part, int error) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Critical,
+                   "MatchingEngineThread: refusing to start -- the order book's {} could not be locked into memory: {}. It needs {} MB of locked memory in "
+                   "all, against a limit of {}. {}",
+                   part, why_locking_failed(error), wanted / bytes_in_a_megabyte, limit_text, remedy);
+        throw pubsub_itc_fw::PubSubItcException(std::string("the order book's ") + part + " could not be locked into memory: " + why_locking_failed(error));
+    };
+    const int map_error = order_book_.hold_map_in_memory();
+    if (map_error != 0) {
+        refuse("map", map_error);
+    }
+    const int region_error = order_book_.hold_region_in_memory();
+    if (region_error != 0) {
+        refuse("region", region_error);
+    }
+    const int64_t elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: the order book is locked into memory, {} MB, in {} ms",
+               wanted / bytes_in_a_megabyte, elapsed_ms);
 }
 
 // WAL reconciliation (Slice D)

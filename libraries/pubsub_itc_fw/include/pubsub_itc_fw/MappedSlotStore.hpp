@@ -119,6 +119,21 @@ class MappedSlotStore {
     /// it assumes nothing else is writing to it, and it dirties the whole mapping.
     void warm() const;
 
+    /// How many bytes the store maps: a whole number of pages, the records and the header. What lock_in_memory() locks.
+    [[nodiscard]] size_t mapped_bytes() const;
+
+    /**
+     * @brief Locks every page of the mapping into memory with mlock, so that the kernel never drops one and reads it back
+     *        from the file later.
+     * @return Zero, or the errno that mlock failed with, which is ENOMEM when the process's limit on locked memory
+     *         (RLIMIT_MEMLOCK) is too low or the memory is not there, and EPERM when the limit is zero.
+     *
+     * Locking reads in each page the kernel does not already hold. It does not take the fault of the first write to a
+     * page of a shared file mapping, so call warm() as well. Pages stay locked until the store is closed. Nothing is
+     * changed on failure that matters to a caller: any pages that were locked stay locked until close().
+     */
+    [[nodiscard]] int lock_in_memory() const;
+
     // ---- writing -----------------------------------------------------------------
 
     /// Take a free slot, or no_slot when the store is full. The slot is not live until
