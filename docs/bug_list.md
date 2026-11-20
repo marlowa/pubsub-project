@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 276 |
-| Open | 51 (29 defects, 22 tasks) |
-| Closed | 225 |
-| Next id | BUG-0277 |
+| Bugs recorded | 278 |
+| Open | 52 (30 defects, 22 tasks) |
+| Closed | 226 |
+| Next id | BUG-0279 |
 
 ## Open bugs by severity
 
-4 high, 31 medium, 16 low.
+4 high, 32 medium, 16 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,6 +48,7 @@
 | [BUG-0262](#bug_0262) | medium | defect | A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog |
 | [BUG-0263](#bug_0263) | medium | defect | In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
+| [BUG-0278](#bug_0278) | medium | defect | An exception that ends an application thread stops the process with exit status 0, as if it had stopped normally |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -2375,7 +2376,41 @@ ring of entries, allocated at start, with the limit stated in bytes as well as i
 always released oldest first, because a report is kept until it has been sent on every connection there is, so the
 design must say what happens to a report sent on one connection and waiting for the other.
 
+### BUG-0278: An exception that ends an application thread stops the process with exit status 0, as if it had stopped normally {#bug_0278}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| How | Reading how the sequencer would stop with status 1 when its record of command identifiers cannot be locked into memory ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)) |
+| Impact | A component whose thread dies of an exception exits with status 0, the status of a normal stop. `scripts/launch.py` and anything else that starts the component cannot tell a failure from a requested stop, so the failure is noticed only from the Quill log |
+
+**Where.** `ApplicationThread::run` (`libraries/pubsub_itc_fw/src/ApplicationThread.cpp`) catches an exception that
+escapes the thread, logs it at Error and calls `Reactor::shutdown`, an ordinary shutdown. `Reactor::run` then returns 0,
+and the component's `main` returns what it returns. Only an exception that escapes the reactor's own event loop makes
+`run` return a failure, -1, which the process reports as status 255.
+
+**What is wanted.** A thread that dies of an exception stops the reactor with `Reactor::shutdown_for_a_failure`, so that
+`run` returns `stopped_for_a_failure_status`, 1, as a refusal to start does. Whether anything relies on today's 0, such
+as a scenario of `ha_test.py` that expects a clean exit from a component that has failed, is to be checked first.
+
 ## Closed
+
+### BUG-0277: Plain "make" in docs/book no longer built the book, only checked that the PDF's tools are installed {#bug_0277}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| Fixed | 2026-11-20 -- the Makefile names its default goal, `.DEFAULT_GOAL := all`, so that plain `make` builds the PDF and the EPUB however the targets are ordered. `make -n` and `make -n all` print the same commands |
+| How | Andrew, running `make` in `docs/book` |
+| Impact | `make` with no target ran only the check of the PDF's tools and stopped; the book was built only by `make all` |
+
+**What happened.** `make` with no target builds the first target in the Makefile. The checks of each output's tools,
+`tools-for-the-pdf`, `tools-for-the-epub` and `tools-for-the-text`, were added above `all` when the book was made to say
+what a machine lacks before LaTeX runs ([BUG-0254](#bug_0254)), so the first of them became what `make` built.
 
 ### BUG-0276: Scenario 81 counted a report marked as a possible repeat as the same order reported twice {#bug_0276}
 

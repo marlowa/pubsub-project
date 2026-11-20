@@ -7,6 +7,10 @@ CHECK_EPUB := ../../scripts/check_epub.py
 
 .PHONY: all check clean text epub tools-for-the-pdf tools-for-the-epub tools-for-the-text
 
+# Plain "make" builds the book. Named here because make otherwise builds the first target in the file, and the
+# checks of the tools below come before "all".
+.DEFAULT_GOAL := all
+
 # What each output needs from TeX Live and from the system. The book is built on a machine with a current TeX Live,
 # such as TeX Live 2023: RHEL 8 and Rocky 8 provide no package holding glossaries, makeglossaries, cleveref, tex4ebook
 # or make4ht, so the book cannot be built there from the distribution's own packages. Each check below names
