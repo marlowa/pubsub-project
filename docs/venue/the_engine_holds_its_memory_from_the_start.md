@@ -6,7 +6,7 @@ Section 7 lists the decisions. What a machine must allow is in
 
 ## 1. The problem
 
-A matching engine must never die during the trading day for lack of memory. Today it can.
+A matching engine must never die during the trading day for lack of memory. This section is how an engine that only reserves its memory can.
 
 The engine keeps its open orders in two places:
 
@@ -25,7 +25,7 @@ default, and that this machine and, as far as is known, production use (`vm.over
 not check at the time of the request that the memory will be there when it is needed. So the request succeeding at the
 start of the day proves nothing.
 
-Reserving the map today writes only the state byte of each slot, about 268 MB. The rest is supplied page by page as
+Reserving the map writes only the state byte of each slot, about 268 MB. The rest is supplied page by page as
 orders arrive and land in slots. An order's slot is chosen by a hash of its identity, so orders are spread over the
 whole table and not filled in from the front: by calculation, about two thirds of the map's pages are first written by
 the time 10 million orders have arrived, and nearly all of them by 30 million. The map's demand for real memory
@@ -84,7 +84,7 @@ in all on a machine of 200 GB.
   take some seconds. It will be measured.
 - **Memory held from the start rather than during the day.** The same memory, held earlier. Nothing more is used: the
   map is already reserved for that size.
-- **A faster order path.** An order that is the first to write to a page of the map today pays for the kernel supplying
+- **A faster order path.** An order that is the first to write to a page of a map that has only been reserved pays for the kernel supplying
   the page. With every page supplied at the start, no order pays it. The measurements of backward-shift deletion
   ([deleting_without_erased_marks.md](../framework/deleting_without_erased_marks.md), section 8.1) put an accept at up
   to 900 nanoseconds at the 99th percentile, against about 60 at the median; part of that tail is likely to be this.
