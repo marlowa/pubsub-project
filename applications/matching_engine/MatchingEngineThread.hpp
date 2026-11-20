@@ -305,7 +305,9 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     ReportComparisonLinks report_comparison_links_{*this};
     // The reports of the commands this instance applies while following the WAL, kept and compared with the leader's, and
     // whether this instance has refused to lead (section 6.3 of docs/venue/dividing_the_sequencer_and_matching_engine.md).
-    FollowerReportComparison report_comparison_{report_comparison_links_, get_logger()};
+    // Only an engine with high availability on follows the WAL, so only that one has room to keep reports.
+    FollowerReportComparison report_comparison_{report_comparison_links_, get_logger(), config_.ha_enabled ? FollowerReportComparison::max_kept_reports : 0,
+                                                config_.ha_enabled ? FollowerReportComparison::max_kept_report_bytes : 0};
     // How many reports this instance produced while following that differ from the leader's of the same command.
     pubsub_itc_fw::CounterHandle follower_report_differences_counter_;
 
@@ -539,16 +541,17 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void recover_open_orders(bool region_existed);
 
     /**
-     * @brief Locks the order book's memory, the map and the region, before the engine reports itself ready, or refuses to
-     *        start.
+     * @brief Locks the engine's memory, the order book's map and region and, with high availability on, the store of
+     *        reports kept while following, before the engine reports itself ready, or refuses to start.
      *
      * Works out first how much it will lock, logs it, and compares it with the process's limit on locked memory
      * (RLIMIT_MEMLOCK), so that a limit too low is reported with the figure needed before any time is spent. Then locks
-     * the map, which makes the kernel supply every page of it now, and the region. Either failing is logged at Critical
+     * the map, which makes the kernel supply every page of it now, the region, and the store of kept reports. Any of them
+     * failing is logged at Critical
      * and ends construction with an exception, so the process exits with status 1, as for the engine's other refusals to
      * start. See docs/venue/the_engine_holds_its_memory_from_the_start.md.
      */
-    void hold_book_in_memory();
+    void hold_memory_from_the_start();
 
     void begin_reconciliation();
 

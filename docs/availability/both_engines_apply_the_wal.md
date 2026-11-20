@@ -128,8 +128,13 @@ already holds (`fully_reported_through`, section 2 of [far_back_catch_up.md](far
 
 The kept reports are therefore those of the commands applied since the last report record arrived, which in ordinary
 running is the few commands the leader is still answering. They are held in memory, up to a limit of
-100,000 reports (`max_kept_reports_` in `MatchingEngineThread`). Passing it means the leading engine has not had a report written
-for that many commands, and section 4 says what the follower does then.
+100,000 reports and 64 MiB of encoded reports (`FollowerReportComparison::max_kept_reports` and
+`FollowerReportComparison::max_kept_report_bytes`). Both are allocated, and every page written, when an engine with high
+availability on starts, so keeping a report never calls the heap allocator: the encoded reports lie one after another
+in one block of bytes, and a ring of fixed-size entries beside it says which command each answers and where its bytes
+are. A report's size is not fixed, because the engine echoes groups from the order whose number has no limit, so either
+limit can be reached first. Reaching either means the leading engine's reports are that far behind its commands in the
+WAL, and section 4 says what the follower does then.
 
 ### 3.3 On taking the lead, it sends what the WAL lacks
 

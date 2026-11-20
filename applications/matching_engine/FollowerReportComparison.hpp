@@ -5,8 +5,9 @@
 
 #include <cstddef>
 #include <cstdint> // IWYU pragma: keep
-#include <deque>
+#include <optional>
 #include <utility>
+#include <vector>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
@@ -15,6 +16,7 @@
 #include <matching_engine_test_events.hpp>
 
 #include "HeldEngineReport.hpp"
+#include "SessionIdentity.hpp"
 
 namespace matching_engine {
 
@@ -67,30 +69,87 @@ class FollowerReportComparisonLinksInterface {
  * **Taking the lead.** The kept reports of commands after the last the WAL holds every report of are handed on to be
  * sent, marked as possible repeats, and the rest dropped (take_reports_after).
  *
+ * **Where the reports are kept.** Everything is allocated, and written once, when this object is made, so that keeping
+ * a report never calls the heap allocator on the thread that applies every command (principle F5). The encoded bytes
+ * of the reports lie one after another in a single block of bytes, and beside it a ring of fixed-size entries, one per
+ * report, says which command each answers, which session it is for, and where its bytes are. Reports are kept in the
+ * order of their commands and leave in the same order, oldest first, so the bytes they occupy are freed in order too.
+ * A report's bytes are never split: when there is not room for them between the newest report and the end of the
+ * block, they are placed at the start of the block if there is room there before the oldest report, and the space left
+ * at the end is not used until the reports before it have left. The size of a report is not fixed, because the engine
+ * echoes groups from the order whose number has no limit, so the store can be full for want of entries or for want of
+ * bytes, and the two are treated alike.
+ *
  * One thread, the engine's, calls every member function.
  */
 class FollowerReportComparison {
   public:
     /// The most reports kept. Reaching it means the leading engine has had no report written for that many commands.
     static constexpr size_t max_kept_reports = 100000;
+    /// The most bytes of encoded reports kept: 100,000 reports of 671 bytes on average.
+    static constexpr size_t max_kept_report_bytes = 64 * 1024 * 1024;
+
+    /// Unlocks the store, if hold_in_memory locked it.
+    ~FollowerReportComparison();
 
     /**
-     * @param[in] links  How what is found is acted on.
-     * @param[in] logger Where what happens is logged.
+     * @param[in] links       How what is found is acted on.
+     * @param[in] logger      Where what happens is logged.
+     * @param[in] most_reports The most reports kept at once. Zero for an engine that never follows the WAL, which is
+     *                        one with high availability off: nothing is then allocated.
+     * @param[in] most_bytes  The most bytes of encoded reports kept at once, zero likewise.
      */
-    FollowerReportComparison(FollowerReportComparisonLinksInterface& links, pubsub_itc_fw::QuillLogger& logger);
+    FollowerReportComparison(FollowerReportComparisonLinksInterface& links, pubsub_itc_fw::QuillLogger& logger, size_t most_reports, size_t most_bytes);
 
-    /// Whether there is room for another report. When there is not, keep() refuses this instance the lead.
-    [[nodiscard]] bool has_room() const {
-        return kept_.size() < max_kept_reports;
+    FollowerReportComparison(const FollowerReportComparison&) = delete;
+    FollowerReportComparison& operator=(const FollowerReportComparison&) = delete;
+    FollowerReportComparison(FollowerReportComparison&&) = delete;
+    FollowerReportComparison& operator=(FollowerReportComparison&&) = delete;
+
+    /// How many bytes hold_in_memory locks: the block of encoded reports and the ring of entries. Zero for an engine
+    /// that never follows the WAL.
+    [[nodiscard]] size_t bytes_to_hold_in_memory() const {
+        return bytes_.size() + entries_.size() * sizeof(KeptReport);
     }
 
     /**
-     * @brief Keeps @p report, of a command this instance applied while following, until the WAL holds the leader's
-     *        reports of that command. When the store is full it is not kept, and the first time that happens, which is
-     *        said at Error, this instance refuses to lead.
+     * @brief Locks the store into memory (`mlock`), so that the kernel supplies every page now and never takes one away,
+     *        and the machine being short of memory is found at the start of the day rather than in the middle of it.
+     * @return 0 when both parts are locked, or nothing needs locking; otherwise the error `mlock` gave, with neither part
+     *         left locked.
      */
-    void keep(HeldEngineReport report);
+    [[nodiscard]] int hold_in_memory();
+
+    /**
+     * @brief Keeps a report of command @p seq_no, for @p session, until the WAL holds the leader's reports of that
+     *        command. When the store is full it is not kept, and the first time that happens, which is said at Error,
+     *        this instance refuses to lead.
+     * @param[in] seq_no  The command the report answers.
+     * @param[in] session The member's session the report is for.
+     * @param[in] size    How many bytes the encoded report needs.
+     * @param[in] write   Called as `size_t write(uint8_t* destination, size_t room)` when there is room, to write the
+     *                    encoded report at @p destination, which has @p room bytes, @p size of them. It returns how many
+     *                    bytes it wrote, or zero when it could not write the report, which is then not kept.
+     */
+    template <typename Write> void keep(int64_t seq_no, const fix_common::SessionIdentity& session, size_t size, Write&& write) {
+        const std::optional<size_t> offset = place_for(size);
+        if (!offset.has_value()) {
+            store_full(seq_no, size);
+            return;
+        }
+        const size_t written = write(bytes_.data() + *offset, size);
+        if (written == 0) {
+            return;
+        }
+        KeptReport& entry = entries_[(oldest_ + count_) % entries_.size()];
+        entry.seq_no = seq_no;
+        entry.session = session;
+        entry.offset = *offset;
+        entry.size = written;
+        entry.compared = false;
+        ++count_;
+        kept_bytes_ += written;
+    }
 
     /**
      * @brief The catch-up answering a request to follow has started, after command @p after_seq_no: reports are kept
@@ -127,41 +186,86 @@ class FollowerReportComparison {
 
     /// How many reports are kept.
     [[nodiscard]] size_t kept() const {
-        return kept_.size();
+        return count_;
+    }
+
+    /// How many bytes of encoded reports are kept.
+    [[nodiscard]] size_t kept_bytes() const {
+        return kept_bytes_;
     }
 
     /**
      * @brief Taking the lead: each kept report of a command after @p reported_through, the last command the WAL holds
-     *        every report of, is given to @p take, oldest first, and every kept report is then dropped.
+     *        every report of, is given to @p take as a HeldEngineReport marked as a possible repeat, oldest first, and
+     *        every kept report is then dropped.
      * @return How many were given to @p take.
      */
     template <typename Take> int64_t take_reports_after(int64_t reported_through, Take&& take) {
         int64_t sent = 0;
-        for (HeldEngineReport& kept : kept_) {
+        for (size_t position = 0; position < count_; ++position) {
+            const KeptReport& kept = entry_at(position);
             if (kept.seq_no > reported_through) {
-                take(std::move(kept));
+                HeldEngineReport report;
+                report.payload.assign(bytes_.data() + kept.offset, bytes_.data() + kept.offset + kept.size);
+                report.seq_no = kept.seq_no;
+                report.session = kept.session;
+                // Sent by an instance taking the lead after the leader that may have sent it already.
+                report.poss_resend = true;
+                take(std::move(report));
                 ++sent;
             }
         }
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
                    "FollowerReportComparison: taking the lead -- sending {} report(s) kept while following, of commands after {}, the last the WAL holds "
                    "every report of, and dropping {} the WAL holds",
-                   sent, reported_through, static_cast<int64_t>(kept_.size()) - sent);
+                   sent, reported_through, static_cast<int64_t>(count_) - sent);
         links_.kept_reports_sent(sent, reported_through);
-        kept_.clear();
+        oldest_ = 0;
+        count_ = 0;
+        kept_bytes_ = 0;
         overflowed_ = false;
         return sent;
     }
 
   private:
+    // One kept report: what it answers, and where its encoded bytes lie in bytes_.
+    struct KeptReport {
+        int64_t seq_no{0};
+        fix_common::SessionIdentity session;
+        size_t offset{0};
+        size_t size{0};
+        // Whether the leader's report of the same command has been compared with it.
+        bool compared{false};
+    };
+
+    // The kept report @p position places after the oldest, which is at position 0.
+    [[nodiscard]] KeptReport& entry_at(size_t position) {
+        return entries_[(oldest_ + position) % entries_.size()];
+    }
+    // Where in bytes_ a report of @p size bytes can be put, or nothing when there is no room for it.
+    [[nodiscard]] std::optional<size_t> place_for(size_t size) const;
+    // Drops the oldest kept report.
+    void drop_oldest();
+    // Unlocks both parts of the store, if they are locked.
+    void release_from_memory();
+    // There is no room for a report of command @p seq_no, of @p size bytes: said once, and the lead refused.
+    void store_full(int64_t seq_no, size_t size);
     // Says that this instance's report of @p command and the leader's differ, as @p reason says.
     void report_difference(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason);
 
     FollowerReportComparisonLinksInterface& links_;
     pubsub_itc_fw::QuillLogger& logger_;
 
-    // In the order of their commands, which is the order they were applied in.
-    std::deque<HeldEngineReport> kept_;
+    // The encoded reports, one after another, allocated and written once when this object is made.
+    std::vector<uint8_t> bytes_;
+    // A ring of the kept reports, in the order of their commands, which is the order they were applied in: count_ of
+    // them, starting at oldest_.
+    std::vector<KeptReport> entries_;
+    size_t oldest_{0};
+    size_t count_{0};
+    size_t kept_bytes_{0};
+    // Whether hold_in_memory locked the store.
+    bool locked_{false};
     // Whether the store has been full, which is said once, until the reports kept are next handed on.
     bool overflowed_{false};
     // The first command whose reports are kept: the one after the position the request to follow named. A leader's

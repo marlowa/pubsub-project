@@ -1,7 +1,8 @@
 # The matching engine's limit on locked memory {#locked_memory_requirement}
 
 > **One rule.** The user the venue runs as must be allowed to lock at least as much memory as each matching engine
-> locks: its order book's map and its open-order region together, about 65 GB in production. Each process has its own
+> locks: its order book's map, its open-order region and, with high availability on, the store of reports it keeps
+> while following the WAL, about 65 GB in production. Each process has its own
 > limit, so the figure is per engine, not for the pair. Without it, the engine refuses to start.
 
 ## Why the engine locks its memory
@@ -12,7 +13,11 @@ is asked for, and supplies real memory only when each page is first written, wit
 An engine that only reserved its map would find out that the machine was short of memory in the middle of the day,
 when the kernel's out-of-memory killer ended it in the middle of an order.
 
-So before it reports itself ready, the engine locks both into memory (`mlock`). The kernel supplies every page at once
+An engine with high availability on also keeps, while it follows the WAL, its own reports of the commands it applies,
+until it can compare them with the leading engine's. They are kept in a store allocated at start: 64 MiB of encoded
+reports and a ring of 100,000 entries saying where each lies, 73 MB in all.
+
+So before it reports itself ready, the engine locks all of these into memory (`mlock`). The kernel supplies every page at once
 and keeps each one in memory from then on, never swapping it out or dropping it. If the memory is not there, or the
 engine is not allowed to lock that much, locking fails with an error, and the engine refuses to start, at the start of
 the day, before any trading. The design is in
@@ -23,25 +28,26 @@ the day, before any trading. The design is in
 At start, before it locks anything, at Info:
 
 ```
-MatchingEngineThread: locking the order book into memory -- 72 MB for the map and 503 MB for the region, 576 MB in all, against a limit on locked memory of 3980 MB
+MatchingEngineThread: locking its memory -- 72 MB for the order book's map, 503 MB for its region and 73 MB for the reports kept while following, 649 MB in all, against a limit on locked memory of 3980 MB
 ```
 
 and once it has locked them:
 
 ```
-MatchingEngineThread: the order book is locked into memory, 576 MB, in 39 ms
+MatchingEngineThread: its memory is locked, 649 MB, in 41 ms
 ```
 
 The figures above are from the development environment, which allows 2 million open orders and reserves the map for
-262,144. In production, with both sized for 100 million, the map is 38.9 GB and the region 26.4 GB, 65.3 GB in all.
-Locking took 39 milliseconds for 576 MB on the development machine; at the same rate production's 65 GB takes about 4
-seconds, which has not been measured on a production machine.
+262,144. In production, with both sized for 100 million, the map is 38.9 GB, the region 26.4 GB and the kept reports
+73 MB, 65.4 GB in all. An engine with high availability off locks no store of kept reports, and logs 0 MB for it.
+Locking took 39 to 43 milliseconds for 649 MB on the development machine; at the same rate production's 65 GB takes
+about 4 seconds, which has not been measured on a production machine.
 
 If the limit is lower than the figure, the engine logs at Critical and exits with status 1, as it does for its other
 refusals to start, without spending any time locking:
 
 ```
-MatchingEngineThread: refusing to start -- the order book needs 576 MB of locked memory, and this process's limit on locked memory (RLIMIT_MEMLOCK) is 1 MB. ...
+MatchingEngineThread: refusing to start -- it needs 649 MB of locked memory, and this process's limit on locked memory (RLIMIT_MEMLOCK) is 1 MB. ...
 ```
 
 If the limit is high enough but locking still fails, because the machine does not have the memory free, the engine

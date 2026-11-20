@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 272 |
+| Bugs recorded | 273 |
 | Open | 51 (29 defects, 22 tasks) |
-| Closed | 221 |
-| Next id | BUG-0273 |
+| Closed | 222 |
+| Next id | BUG-0274 |
 
 ## Open bugs by severity
 
-4 high, 32 medium, 15 low.
+4 high, 31 medium, 16 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,7 +48,6 @@
 | [BUG-0262](#bug_0262) | medium | defect | A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog |
 | [BUG-0263](#bug_0263) | medium | defect | In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
-| [BUG-0271](#bug_0271) | medium | defect | The following matching engine allocates from the heap for every report it keeps to compare with the leader's |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -64,6 +63,7 @@
 | [BUG-0266](#bug_0266) | low | task | The administration service's desktop does not show the venue's trading phase |
 | [BUG-0267](#bug_0267) | low | task | `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines |
 | [BUG-0272](#bug_0272) | low | defect | Each lease request allocates from the heap on the requesting instance's own thread, which is the thread that handles orders |
+| [BUG-0273](#bug_0273) | low | defect | A matching engine holding reports for want of a connection, or until it knows whether it serves, allocates from the heap for each |
 
 ---
 
@@ -2335,25 +2335,6 @@ logs on many sessions together, repeated, which fails now some of the time.
 
 **Principles.** None of the venue's guarantees about orders; members' access.
 
-### BUG-0271: The following matching engine allocates from the heap for every report it keeps to compare with the leader's {#bug_0271}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-20 |
-| Recorded | 2026-11-20 |
-| How | The first run of BUG-0087's counting of heap calls, `scripts/heap_allocation_count.py`, as for [BUG-0270](#bug_0270) |
-| Impact | The following engine makes about one call to the heap allocator for each report it keeps, 118,170 calls and 36 MB in 60 seconds, on the thread that applies every command. A follower that must keep pace with the leader to take over from it pays the allocator's varying cost on every command (principle F5) |
-
-**Where.** `MatchingEngineStateMachine::send_report` (`MatchingEngineStateMachine.cpp`, line 185) hands each report to
-the follower's outputs, which keep it until the WAL holds the leader's report, to compare the two
-([both_engines_apply_the_wal.md](availability/both_engines_apply_the_wal.md), decision 3). Each kept report is a
-`HeldEngineReport`, whose bytes are a `std::vector<uint8_t>` (`HeldEngineReport.hpp`): one allocation to size it and,
-often, a second when it is moved.
-
-**What is wanted.** Kept reports in storage allocated once, as the leading sequencer's waiting reports now are
-([BUG-0131](#bug_0131)): fixed-size records in a ring sized at start, with a stated limit on how many may wait.
-
 ### BUG-0272: Each lease request allocates from the heap on the requesting instance's own thread, which is the thread that handles orders {#bug_0272}
 
 | | |
@@ -2373,7 +2354,70 @@ has sent and not yet had answered in a `std::map<int64_t, Outstanding>`, `outsta
 forgotten, and an instance asks only its few voters, so a small ring or array sized at start holds every request that
 can be outstanding. Then `heap_allocation_count.py` finds no call from `LeaseHolder`.
 
+### BUG-0273: A matching engine holding reports for want of a connection, or until it knows whether it serves, allocates from the heap for each {#bug_0273}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| How | Reading `EngineReportSending` while fixing [BUG-0271](#bug_0271) |
+| Impact | While it holds reports, the matching engine's thread makes a heap call for each report it produces (principle F5). It holds them only in situations outside ordinary running: with no connection to either sequencer, while catching up before it knows whether it serves, and on taking the lead, for the reports it kept while following |
+
+**Where.** `EngineReportSending` (`applications/matching_engine/EngineReportSending.hpp`) keeps held reports in a
+`std::vector<HeldEngineReport>`, `held_`, up to `max_held_reports` (50,000), and each `HeldEngineReport` holds its
+encoded bytes in a `std::vector<uint8_t>`: one allocation for each report held, and the vector of them grows as it
+fills. `discard` gives the memory back (`shrink_to_fit`), so the next time reports are held it is allocated again.
+
+**What is wanted.** The same storage as the reports kept while following ([BUG-0271](#bug_0271)): a block of bytes and a
+ring of entries, allocated at start, with the limit stated in bytes as well as in reports. Held reports are not
+always released oldest first, because a report is kept until it has been sent on every connection there is, so the
+design must say what happens to a report sent on one connection and waiting for the other.
+
 ## Closed
+
+### BUG-0271: The following matching engine allocates from the heap for every report it keeps to compare with the leader's {#bug_0271}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| Fixed | 2026-11-20 -- `FollowerReportComparison` keeps the reports in storage allocated, written and locked into memory when an engine with high availability on starts: the encoded reports one after another in a block of 64 MiB (`max_kept_report_bytes`), and a ring of 100,000 fixed-size entries (`max_kept_reports`) saying which command each answers, which session it is for and where its bytes lie. The thread encodes each report straight into the block. Running out of either is the store being full, which refuses this instance the lead as before. `heap_allocation_count.py` then finds no heap call on the following engine's thread |
+| How | The first run of BUG-0087's counting of heap calls, `scripts/heap_allocation_count.py`, as for [BUG-0270](#bug_0270) |
+| Impact | The following engine makes about one call to the heap allocator for each report it keeps, 118,170 calls and 36 MB in 60 seconds, on the thread that applies every command. A follower that must keep pace with the leader to take over from it pays the allocator's varying cost on every command (principle F5) |
+
+**Where.** `MatchingEngineStateMachine::send_report` (`MatchingEngineStateMachine.cpp`, line 185) hands each report to
+the follower's outputs, which keep it until the WAL holds the leader's report, to compare the two
+([both_engines_apply_the_wal.md](availability/both_engines_apply_the_wal.md), decision 3). Each kept report is a
+`HeldEngineReport`, whose bytes are a `std::vector<uint8_t>` (`HeldEngineReport.hpp`): one allocation to size it and,
+often, a second when it is moved.
+
+**What is wanted.** Kept reports in storage allocated once, as the leading sequencer's waiting reports now are
+([BUG-0131](#bug_0131)), with a stated limit on how many may wait.
+
+**Why fixed-size records alone would not do.** The size of an encoded execution report has no limit: the engine echoes
+the order's party and underlying groups, whose number the message definition does not limit, through a scratch area that
+may grow to 1 MiB. A fixed record would have to be very large, or have a cap that one member's orders could exceed, and a
+report over the cap would take away the venue's standby.
+
+**What was done.** Reports are kept and released in the order of their commands, oldest first, so their bytes can lie
+one after another in one block and be freed in the same order. A report's bytes are never split: when there is not room
+between the newest report and the end of the block, they go at the start if there is room there before the oldest. The
+block and the ring are allocated, written and locked into memory (`mlock`) at start, with the order book, so the
+engine's start refuses, at Critical and with status 1, when the limit on locked memory cannot cover them too
+([locked_memory_requirement.md](operations/locked_memory_requirement.md)). On taking the lead the kept reports are
+copied out to `EngineReportSending` as before; that copy happens once, when the engine takes the lead, and what it holds
+is [BUG-0273](#bug_0273). An engine with high availability off allocates nothing for this.
+
+Seven tests were added to `FollowerReportComparisonTest`: bytes freed at the start of the block are used again; the
+bytes of a report still kept are never overwritten; a report larger than the whole store, and a report that could not be
+encoded, are not kept; the store locks; a store larger than a lowered limit on locked memory is not locked; and an
+engine that never follows has nothing to lock. Each was made to fail on purpose: refusing to place a report at the start
+of the block, letting a report overwrite the oldest, and reporting a failed lock as success, with the test program
+exiting with status 1 each time. The whole build and its tests pass. Counted again under the same load as before: the
+following engine's thread from 117,970 heap calls in 60 seconds to none. Both engines lock 649 MB at start in the
+development environment, 73 MB of it for the kept reports, in 39 to 43 milliseconds.
 
 ### BUG-0270: Every message an application thread sends allocates twice from the heap, copying the connection's service name {#bug_0270}
 

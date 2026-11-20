@@ -2,10 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <sys/resource.h>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
@@ -37,19 +41,53 @@ struct RecordingLinks : public FollowerReportComparisonLinksInterface {
     std::vector<std::pair<int64_t, int64_t>> sent_events;
 };
 
+// Lowers this process's limit on locked memory to @p bytes for as long as it exists, and restores it after.
+class LockedMemoryLimitLowered {
+  public:
+    ~LockedMemoryLimitLowered() {
+        ::setrlimit(RLIMIT_MEMLOCK, &saved_);
+    }
+    explicit LockedMemoryLimitLowered(rlim_t bytes) {
+        ::getrlimit(RLIMIT_MEMLOCK, &saved_);
+        rlimit lowered = saved_;
+        lowered.rlim_cur = bytes;
+        ::setrlimit(RLIMIT_MEMLOCK, &lowered);
+    }
+    LockedMemoryLimitLowered(const LockedMemoryLimitLowered&) = delete;
+    LockedMemoryLimitLowered& operator=(const LockedMemoryLimitLowered&) = delete;
+    LockedMemoryLimitLowered(LockedMemoryLimitLowered&&) = delete;
+    LockedMemoryLimitLowered& operator=(LockedMemoryLimitLowered&&) = delete;
+
+  private:
+    rlimit saved_{};
+};
+
 class FollowerReportComparisonTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        comparison_ = std::make_unique<FollowerReportComparison>(links_, logger_);
+        comparison_ = std::make_unique<FollowerReportComparison>(links_, logger_, FollowerReportComparison::max_kept_reports, 1024 * 1024);
+    }
+
+    // Replaces the store with one holding at most @p most_reports reports and @p most_bytes bytes of them.
+    void use_a_store_of(size_t most_reports, size_t most_bytes) {
+        comparison_ = std::make_unique<FollowerReportComparison>(links_, logger_, most_reports, most_bytes);
     }
 
     // Keeps a report of command @p command whose bytes are @p text.
     void keep(int64_t command, const std::string& text) {
-        HeldEngineReport report;
-        report.seq_no = command;
-        report.payload.assign(text.begin(), text.end());
-        report.poss_resend = true;
-        comparison_->keep(std::move(report));
+        comparison_->keep(command, fix_common::SessionIdentity{}, text.size(), [&text](uint8_t* destination, size_t room) -> size_t {
+            EXPECT_GE(room, text.size());
+            std::memcpy(destination, text.data(), text.size());
+            return text.size();
+        });
+    }
+
+    // The bytes of the reports of commands after @p reported_through, handed on as if this instance took the lead.
+    std::vector<std::string> take_after(int64_t reported_through) {
+        std::vector<std::string> taken;
+        static_cast<void>(comparison_->take_reports_after(
+            reported_through, [&taken](HeldEngineReport&& report) { taken.emplace_back(report.payload.begin(), report.payload.end()); }));
+        return taken;
     }
 
     // The leader's report record @p record, answering @p command, whose bytes are @p text.
@@ -165,7 +203,7 @@ TEST_F(FollowerReportComparisonTest, AFullStoreRefusesTheLeadAndAMissingReportIs
     for (size_t command = 1; command <= FollowerReportComparison::max_kept_reports; ++command) {
         keep(static_cast<int64_t>(command), "r");
     }
-    EXPECT_FALSE(comparison_->has_room());
+    EXPECT_FALSE(comparison_->refused_to_lead()) << "the store is full, but nothing has yet been refused room";
     keep(static_cast<int64_t>(FollowerReportComparison::max_kept_reports) + 1, "not kept");
     ASSERT_EQ(links_.stopped.size(), 1U);
     EXPECT_EQ(links_.stopped[0].second, Reason::KeptReportsFull);
@@ -194,6 +232,83 @@ TEST_F(FollowerReportComparisonTest, TakingTheLeadHandsOnTheReportsTheWalLacksAn
     EXPECT_EQ(comparison_->kept(), 0U);
     ASSERT_EQ(links_.sent_events.size(), 1U);
     EXPECT_EQ(links_.sent_events[0], (std::pair<int64_t, int64_t>{2, 1}));
+}
+
+TEST_F(FollowerReportComparisonTest, BytesFreedAtTheStartOfTheStoreAreUsedAgain) {
+    use_a_store_of(10, 16);
+    comparison_->start_keeping_after(0);
+    keep(1, "aaaaaa");
+    keep(2, "bbbbbb");
+    leader(10, 1, "aaaaaa");
+    leader(11, 2, "bbbbbb") /* the report of 1 leaves, freeing the first six bytes */;
+    keep(3, "cccccc") /* four bytes are left at the end, too few, so it goes at the start */;
+    leader(12, 3, "cccccc");
+    keep(4, "dddddddddd") /* the report of 2 has left: the ten bytes after the report of 3 are free */;
+    leader(13, 4, "dddddddddd");
+    EXPECT_EQ(comparison_->differences(), 0);
+    EXPECT_FALSE(comparison_->refused_to_lead());
+    EXPECT_EQ(comparison_->kept(), 1U);
+    EXPECT_EQ(comparison_->kept_bytes(), 10U);
+    EXPECT_EQ(take_after(3), (std::vector<std::string>{"dddddddddd"}));
+}
+
+TEST_F(FollowerReportComparisonTest, TheBytesOfAReportStillKeptAreNeverOverwritten) {
+    use_a_store_of(10, 16);
+    comparison_->start_keeping_after(0);
+    keep(1, "aaaaaa");
+    keep(2, "bbbbbb");
+    leader(10, 1, "aaaaaa");
+    leader(11, 2, "bbbbbb");
+    keep(3, "cccccc") /* placed at the start, up to the report of 2 */;
+    keep(4, "d") /* no room between the report of 3 and the report of 2 */;
+    ASSERT_EQ(links_.stopped.size(), 1U);
+    EXPECT_EQ(links_.stopped[0].first, 4);
+    EXPECT_EQ(links_.stopped[0].second, Reason::KeptReportsFull);
+    EXPECT_EQ(comparison_->kept(), 2U);
+    EXPECT_EQ(take_after(1), (std::vector<std::string>{"bbbbbb", "cccccc"}));
+}
+
+TEST_F(FollowerReportComparisonTest, AReportLargerThanTheWholeStoreRefusesTheLead) {
+    use_a_store_of(10, 16);
+    comparison_->start_keeping_after(0);
+    keep(1, "seventeen bytes!!");
+    ASSERT_EQ(links_.stopped.size(), 1U);
+    EXPECT_EQ(links_.stopped[0].second, Reason::KeptReportsFull);
+    EXPECT_EQ(comparison_->kept(), 0U);
+    leader(10, 1, "seventeen bytes!!");
+    EXPECT_EQ(comparison_->differences(), 0) << "a report not kept for want of room is no difference";
+}
+
+TEST_F(FollowerReportComparisonTest, AReportThatCouldNotBeWrittenIsNotKept) {
+    comparison_->start_keeping_after(0);
+    comparison_->keep(1, fix_common::SessionIdentity{}, 8, [](uint8_t*, size_t) -> size_t { return 0; });
+    EXPECT_EQ(comparison_->kept(), 0U);
+    EXPECT_FALSE(comparison_->refused_to_lead());
+}
+
+TEST_F(FollowerReportComparisonTest, TheStoreIsLockedIntoMemoryAndStillKeepsReports) {
+    use_a_store_of(1000, 64 * 1024);
+    EXPECT_GE(comparison_->bytes_to_hold_in_memory(), 64U * 1024U + 1000U);
+    ASSERT_EQ(comparison_->hold_in_memory(), 0);
+    comparison_->start_keeping_after(0);
+    keep(1, "accepted");
+    leader(10, 1, "accepted");
+    EXPECT_EQ(comparison_->differences(), 0);
+}
+
+TEST_F(FollowerReportComparisonTest, AStoreLargerThanTheLimitOnLockedMemoryIsNotLocked) {
+    if (::geteuid() == 0) {
+        GTEST_SKIP() << "a process running as root may lock memory whatever its limit";
+    }
+    use_a_store_of(1000, 4 * 1024 * 1024);
+    const LockedMemoryLimitLowered lowered(64 * 1024);
+    EXPECT_NE(comparison_->hold_in_memory(), 0);
+}
+
+TEST_F(FollowerReportComparisonTest, AStoreForAnEngineThatNeverFollowsHasNothingToLock) {
+    use_a_store_of(0, 0);
+    EXPECT_EQ(comparison_->bytes_to_hold_in_memory(), 0U);
+    EXPECT_EQ(comparison_->hold_in_memory(), 0);
 }
 
 } // namespaces

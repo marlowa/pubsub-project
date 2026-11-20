@@ -15,8 +15,9 @@ The queues cause three faults, each measured on 19 November 2026 (BUG-0251, "Mea
 
 1. **The follower matching engine stops being a standby.** It applies each command as soon as the WAL commits it, and
    keeps its own reports of every command until the WAL holds the leading engine's reports of the same commands, to
-   compare them. Its store holds 100,000 reports (`FollowerReportComparison::max_kept_reports`). When more than that many
-   commands are between being committed and having the leading engine's reports written, the store fills, and the
+   compare them. Its store holds 100,000 reports and 64 MiB of them (`FollowerReportComparison::max_kept_reports` and
+   `max_kept_report_bytes`). When more than that many commands, or that many bytes of their reports, are between being
+   committed and having the leading engine's reports written, the store fills, and the
    follower refuses to lead until it is restarted. This happened in both runs.
 2. **A gateway can close its own connection to the sequencer.** A connection on which 65,536 sends are waiting to be
    written is closed (`ReactorConfiguration::connection_waiting_sends_maximum`). The leading sequencer stops reading

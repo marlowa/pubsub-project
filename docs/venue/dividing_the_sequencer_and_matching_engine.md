@@ -664,7 +664,7 @@ engine first (decision 2, option A).
    the acknowledgement of a new order when the part says it was sent. It implements
    `EngineReportSendingLinksInterface`, which sends a report on a connection and raises the test events `ReportsHeld`,
    `ReportsReleased` and `ReportsDiscarded`. The held report is `HeldEngineReport`, in a header of its own, because the
-   reports kept while following (step 3) are the same. The one overflow flag became two, one for each kind of holding,
+   reports kept while following (step 3) are handed over in that form when the engine takes the lead. The one overflow flag became two, one for each kind of holding,
    so that reaching both limits says both. The part's Quill log lines begin with its name. `EngineReportSendingTest`
    has twelve tests, and six faults put in on purpose were each caught. Both full suites pass: 99 of 99 with the
    primary engine first, and 38 of 38 with the secondary engine first.
@@ -673,11 +673,13 @@ engine first (decision 2, option A).
    **As built.** `FollowerReportComparison` (`applications/matching_engine/FollowerReportComparison.hpp`) holds the
    reports kept while following, the comparison with the leader's, the count of differences, and whether the instance
    has refused to lead; every cause of refusing goes through it, including a void learned too late, which the thread
-   reports. The thread encodes each report to keep, unless there is no room, and implements
+   reports. The kept reports are in storage allocated when the engine starts: the encoded reports one after another
+   in a block of 64 MiB, and a ring of 100,000 fixed-size entries saying which command each answers and where its bytes
+   are. The thread asks how many bytes a report needs and has it encoded straight into that block, and implements
    `FollowerReportComparisonLinksInterface`, which stops the instance asking for a lease, marks its region unusable,
    counts a difference, and raises the test events `FollowerCannotLead` and `KeptReportsSent`. On taking the lead,
    the kept reports the WAL lacks are handed to `EngineReportSending`. The part's Quill log lines begin with its name.
-   `FollowerReportComparisonTest` has eleven tests, and seven faults put in on purpose were each caught. Both full
+   `FollowerReportComparisonTest` has fifteen tests. Both full
    suites pass: 99 of 99 with the primary engine first, and 38 of 38 with the secondary engine first.
 4. `EngineCatchUp`.
 

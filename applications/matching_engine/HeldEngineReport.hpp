@@ -11,9 +11,9 @@
 namespace matching_engine {
 
 /**
- * @brief A report from the matching engine that is not sent at once: held by EngineReportSending until it can be sent,
- *        or kept, while the engine follows the WAL, until the leader's report of the same command has been compared
- *        with it.
+ * @brief A report from the matching engine that is not sent at once, held by EngineReportSending until it can be sent.
+ *        The reports an engine kept while it followed the WAL are handed to EngineReportSending in this form when it
+ *        takes the lead.
  *
  * The encoded bytes are held rather than the ExecutionReport, whose string fields point into the decode arena and do
  * not outlive the record that produced them.
@@ -35,8 +35,6 @@ struct HeldEngineReport {
     /// Which connections for reports it has been sent on; a held report is kept until it has been sent on each.
     bool sent_to_primary{false};
     bool sent_to_secondary{false};
-    /// For a report kept while following: whether the leader's report of the same command has been compared with it.
-    bool compared{false};
 };
 
 } // namespaces

@@ -94,9 +94,11 @@ in all on a machine of 200 GB.
 - **The map** can lock its tables (`IncrementalRehashMap::hold_in_memory`) and say beforehand how much that is
   (`bytes_to_hold_in_memory`). A table it releases is unlocked. A table allocated later, by growth, is not locked; a map
   reserved for what it will hold never grows. **The region** can lock its mapping (`MappedSlotStore::lock_in_memory`).
-- **The engine** (`MatchingEngineThread::hold_book_in_memory`), after opening the region and before recovering any
-  order, logs how much it will lock and its limit, and refuses to start if the limit is too low; then locks the map and
-  the region. A refusal is logged at Critical, and the engine exits with status 1, as for its other refusals to start.
+- **The engine** (`MatchingEngineThread::hold_memory_from_the_start`), after opening the region and before recovering
+  any order, logs how much it will lock and its limit, and refuses to start if the limit is too low; then locks the map,
+  the region and, with high availability on, the store of reports it keeps while following the WAL
+  (`FollowerReportComparison::hold_in_memory`, 73 MB: 64 MiB of encoded reports and a ring of 100,000 entries saying
+  where each lies). A refusal is logged at Critical, and the engine exits with status 1, as for its other refusals to start.
 - **Tests**, in the map's and the store's unit tests: locking locks every page of every array, and releasing unlocks
   them, for a table large enough to be mapped on its own and for one small enough to come from the heap; and locking
   fails with ENOMEM when the test lowers its own limit. Each test was made to fail on purpose by five breaks of the code:

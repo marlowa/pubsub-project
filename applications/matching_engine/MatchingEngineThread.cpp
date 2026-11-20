@@ -168,7 +168,7 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     }
     order_book_.set_trading_day(config_.trading_day);
 
-    hold_book_in_memory();
+    hold_memory_from_the_start();
     recover_open_orders(region_existed);
 
     // Registered unconditionally: this component has exactly one application thread and
@@ -1475,25 +1475,19 @@ bool MatchingEngineThread::keeps_its_reports() const {
 }
 
 void MatchingEngineThread::keep_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t seq_no, const fix_common::SessionIdentity& session) {
-    HeldEngineReport kept;
-    kept.seq_no = seq_no;
-    kept.session = session;
-    // Sent, if ever, by an instance taking the lead after the leader that may have sent it already.
-    kept.poss_resend = true;
-    // Not encoded when there is no room for it: the part then only says that the store is full.
-    if (report_comparison_.has_room()) {
-        size_t bytes_written = 0;
-        size_t bytes_needed = 0;
-        static_cast<void>(pubsub_itc_fw_app::encode(report, nullptr, 0, bytes_written, bytes_needed));
-        kept.payload.resize(bytes_needed);
-        if (!pubsub_itc_fw_app::encode(report, kept.payload.data(), kept.payload.size(), bytes_written, bytes_needed)) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: failed to encode a report to keep ({} bytes needed)",
-                       bytes_needed);
-            return;
+    size_t bytes_written = 0;
+    size_t bytes_needed = 0;
+    static_cast<void>(pubsub_itc_fw_app::encode(report, nullptr, 0, bytes_written, bytes_needed));
+    // Encoded straight into the store of kept reports, so that keeping it calls no allocator.
+    report_comparison_.keep(seq_no, session, bytes_needed, [this, &report](uint8_t* destination, size_t room) -> size_t {
+        size_t written = 0;
+        size_t needed = 0;
+        if (!pubsub_itc_fw_app::encode(report, destination, room, written, needed)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: failed to encode a report to keep ({} bytes needed)", needed);
+            return 0;
         }
-        kept.payload.resize(bytes_written);
-    }
-    report_comparison_.keep(std::move(kept));
+        return written;
+    });
 }
 
 void MatchingEngineThread::send_kept_reports_after(int64_t reported_through) {
@@ -1625,18 +1619,20 @@ std::string why_locking_failed(int error) {
 
 } // un-named namespace
 
-void MatchingEngineThread::hold_book_in_memory() {
+void MatchingEngineThread::hold_memory_from_the_start() {
     const size_t map_bytes = order_book_.map_bytes_to_hold();
     const size_t region_bytes = order_book_.region_bytes_to_hold();
-    const size_t wanted = map_bytes + region_bytes;
+    const size_t kept_report_bytes = report_comparison_.bytes_to_hold_in_memory();
+    const size_t wanted = map_bytes + region_bytes + kept_report_bytes;
     rlimit limit{};
     const bool limit_known = ::getrlimit(RLIMIT_MEMLOCK, &limit) == 0;
     const bool unlimited = limit_known && limit.rlim_cur == RLIM_INFINITY;
     const std::string limit_text = !limit_known ? "unknown" : unlimited ? "unlimited" : std::to_string(limit.rlim_cur / bytes_in_a_megabyte) + " MB";
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: locking the order book into memory -- {} MB for the map and {} MB for the region, {} MB in all, against a limit on "
-               "locked memory of {}",
-               map_bytes / bytes_in_a_megabyte, region_bytes / bytes_in_a_megabyte, wanted / bytes_in_a_megabyte, limit_text);
+               "MatchingEngineThread: locking its memory -- {} MB for the order book's map, {} MB for its region and {} MB for the reports kept while "
+               "following, {} MB in all, against a limit on locked memory of {}",
+               map_bytes / bytes_in_a_megabyte, region_bytes / bytes_in_a_megabyte, kept_report_bytes / bytes_in_a_megabyte, wanted / bytes_in_a_megabyte,
+               limit_text);
 
     // The remedy, in every refusal below. A process running as root has the capability to lock memory whatever its limit, so
     // the limit is compared only for any other user.
@@ -1644,32 +1640,36 @@ void MatchingEngineThread::hold_book_in_memory() {
                                "launcher (ulimit -l); it must be at least the figure above, and the machine must have that much memory to spare.";
     if (limit_known && !unlimited && ::geteuid() != 0 && wanted > limit.rlim_cur) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Critical,
-                   "MatchingEngineThread: refusing to start -- the order book needs {} MB of locked memory, and this process's limit on locked memory "
+                   "MatchingEngineThread: refusing to start -- it needs {} MB of locked memory, and this process's limit on locked memory "
                    "(RLIMIT_MEMLOCK) is {}. {}",
                    wanted / bytes_in_a_megabyte, limit_text, remedy);
-        throw pubsub_itc_fw::PubSubItcException("the order book needs " + std::to_string(wanted / bytes_in_a_megabyte) +
+        throw pubsub_itc_fw::PubSubItcException("the matching engine needs " + std::to_string(wanted / bytes_in_a_megabyte) +
                                                 " MB of locked memory, and the limit on locked memory is " + limit_text);
     }
 
     const auto start = std::chrono::steady_clock::now();
     const auto refuse = [&](const char* part, int error) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Critical,
-                   "MatchingEngineThread: refusing to start -- the order book's {} could not be locked into memory: {}. It needs {} MB of locked memory in "
-                   "all, against a limit of {}. {}",
+                   "MatchingEngineThread: refusing to start -- {} could not be locked into memory: {}. It needs {} MB of locked memory in all, against a "
+                   "limit of {}. {}",
                    part, why_locking_failed(error), wanted / bytes_in_a_megabyte, limit_text, remedy);
-        throw pubsub_itc_fw::PubSubItcException(std::string("the order book's ") + part + " could not be locked into memory: " + why_locking_failed(error));
+        throw pubsub_itc_fw::PubSubItcException(std::string(part) + " could not be locked into memory: " + why_locking_failed(error));
     };
     const int map_error = order_book_.hold_map_in_memory();
     if (map_error != 0) {
-        refuse("map", map_error);
+        refuse("the order book's map", map_error);
     }
     const int region_error = order_book_.hold_region_in_memory();
     if (region_error != 0) {
-        refuse("region", region_error);
+        refuse("the order book's region", region_error);
+    }
+    const int kept_reports_error = report_comparison_.hold_in_memory();
+    if (kept_reports_error != 0) {
+        refuse("the store of reports kept while following", kept_reports_error);
     }
     const int64_t elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: the order book is locked into memory, {} MB, in {} ms",
-               wanted / bytes_in_a_megabyte, elapsed_ms);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: its memory is locked, {} MB, in {} ms", wanted / bytes_in_a_megabyte,
+               elapsed_ms);
 }
 
 // WAL reconciliation (Slice D)
