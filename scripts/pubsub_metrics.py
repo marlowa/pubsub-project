@@ -65,6 +65,7 @@ Prometheus is started with the venue by devenv.py; see docs/operations/metrics.m
 # would make every environment need what every other environment uses.
 # pylint: disable=import-outside-toplevel
 
+import math
 import argparse
 import sys
 
@@ -1582,8 +1583,8 @@ def draw_histogram(axis, histogram):
         )
 
 
-def format_clock_time(epoch_seconds):
-    """Render an epoch second as local wall-clock HH:MM.
+def format_clock_time(epoch_seconds, with_seconds=False):
+    """Render an epoch second as local wall-clock HH:MM, or HH:MM:SS for a window of a few minutes.
 
     Wall clock rather than time elapsed, because the question this chart gets asked is
     "what was happening at 13:00" -- and an axis counting minutes from an arbitrary window
@@ -1591,7 +1592,7 @@ def format_clock_time(epoch_seconds):
     """
     import time
 
-    return time.strftime("%H:%M", time.localtime(epoch_seconds))
+    return time.strftime("%H:%M:%S" if with_seconds else "%H:%M", time.localtime(epoch_seconds))
 
 
 # Lowest percentile palest: the tracks are then read as one distribution widening and
@@ -1752,6 +1753,24 @@ def draw_latency_bands(axis, breach_axis, band):
     axis.yaxis.set_major_formatter(
         mticker.FuncFormatter(lambda value, _: format_latency_ns(value)))
     axis.yaxis.set_minor_formatter(mticker.NullFormatter())
+    # A log axis is labelled only at powers of ten. When the values span fewer than three of them, as a run whose round
+    # trips all fall between 100us and 1ms does, few labels or none fall where the tracks are, and the lowest tracks are
+    # read against nothing; so the steps in between are labelled too, more of them the narrower the range.
+    measured = [value for _, values in tracks for value in values if value is not None and value > 0]
+    if measured:
+        lowest_power, highest_power = math.ceil(math.log10(min(measured))), math.floor(math.log10(max(measured)))
+        powers_inside = max(0, highest_power - lowest_power + 1)
+        if powers_inside < 3:
+            steps = (2.0, 3.0, 5.0) if powers_inside == 0 else (2.0, 5.0)
+            axis.yaxis.set_minor_locator(mticker.LogLocator(base=10, subs=steps))
+            axis.yaxis.set_minor_formatter(mticker.FuncFormatter(lambda value, _: format_latency_ns(value)))
+    # A chart of a load that lasted only an interval or two has no shape to show, and says so rather than leaving a
+    # reader to wonder why it is nearly all grey.
+    intervals_measured = sum(1 for index in range(len(times)) if any(values[index] is not None for _, values in tracks))
+    if intervals_measured < 5:
+        axis.text(0.5, 0.5, f"the load filled only {intervals_measured} interval(s) of the chart: too short to show how latency moved",
+                  transform=axis.transAxes, ha="center", va="center", color="0.35", fontsize=8,
+                  bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.8})
 
     # The gap marker goes in the legend with the tracks. An unexplained black rule across
     # someone else's chart invites a guess, and the likeliest guess -- an annotation of some
@@ -1788,8 +1807,10 @@ def draw_breach_counts(axis, times, breaches, ceiling_ns, observations, gaps=Non
 
     axis.set_xlim(times[0], times[-1])
     axis.set_xlabel("time")
+    # Seconds on the clock for a window of a few minutes, or every label reads the same minute.
+    with_seconds = len(times) > 1 and times[-1] - times[0] < 600
     axis.xaxis.set_major_formatter(
-        mticker.FuncFormatter(lambda value, _: format_clock_time(value)))
+        mticker.FuncFormatter(lambda value, _: format_clock_time(value, with_seconds)))
     axis.tick_params(axis="y", labelsize=8)
 
     if ceiling_ns is not None and breaches:
