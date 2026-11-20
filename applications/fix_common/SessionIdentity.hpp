@@ -82,15 +82,15 @@ struct SessionIdentity {
 /** @brief FNV-1a over the protocol then the comp id bytes. */
 struct SessionIdentityHash {
     size_t operator()(const SessionIdentity& identity) const {
-        size_t hash = 14695981039346656037ULL;
+        size_t hash = 14'695'981'039'346'656'037ULL;
         const auto* protocol_bytes = reinterpret_cast<const uint8_t*>(&identity.protocol);
         for (size_t index = 0; index < sizeof(identity.protocol); ++index) {
             hash ^= protocol_bytes[index];
-            hash *= 1099511628211ULL;
+            hash *= 1'099'511'628'211ULL;
         }
         for (uint8_t index = 0; index < identity.comp_id_len; ++index) {
             hash ^= static_cast<uint8_t>(identity.comp_id[index]);
-            hash *= 1099511628211ULL;
+            hash *= 1'099'511'628'211ULL;
         }
         return hash;
     }

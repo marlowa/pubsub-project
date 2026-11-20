@@ -28,13 +28,13 @@ using Clock = EpochRecording::Clock;
 
 // A lease so short that any record of the epoch takes more than a quarter of it, and one so long that none does.
 constexpr milliseconds lease_every_record_is_slow_for{0};
-constexpr milliseconds lease_no_record_is_slow_for{1000000};
+constexpr milliseconds lease_no_record_is_slow_for{1'000'000};
 
 class EpochRecordingTest : public ::testing::Test {
   protected:
     void SetUp() override {
         directory_ = tests_common::make_scratch_directory("epoch_recording");
-        recording_ = std::make_unique<EpochRecording>(directory_ + "/epoch.state", 20261116, "TestOwner", logger_);
+        recording_ = std::make_unique<EpochRecording>(directory_ + "/epoch.state", 20'261'116, "TestOwner", logger_);
         recording_->measure_into(HistogramHandle{&record_milliseconds_}, HistogramHandle{&lease_left_milliseconds_});
     }
     void TearDown() override {
@@ -55,7 +55,7 @@ class EpochRecordingTest : public ::testing::Test {
     QuillLogger logger_{FwLogLevel::Info, [this](const std::string& line) { log_.push_back(line); }};
     std::string directory_;
     SingleWriterHistogram record_milliseconds_{std::vector<double>{1, 10, 100, 1000}};
-    SingleWriterHistogram lease_left_milliseconds_{std::vector<double>{1, 10, 100, 1000, 10000}};
+    SingleWriterHistogram lease_left_milliseconds_{std::vector<double>{1, 10, 100, 1000, 10'000}};
     std::unique_ptr<EpochRecording> recording_;
 };
 
@@ -114,7 +114,7 @@ TEST_F(EpochRecordingTest, ASlowRecordMadeBeforeAskingToLeadIsNotPutForwardAsThe
 TEST_F(EpochRecordingTest, AnEpochNoHigherThanOneAlreadyWrittenIsNotWrittenAgain) {
     ASSERT_TRUE(recording_->record(9, lease_no_record_is_slow_for));
     // Changed behind the recording's back, so that a second write of epoch 9 or 7 would show.
-    ASSERT_TRUE(EpochStore(directory_ + "/epoch.state", 20261116).store(3));
+    ASSERT_TRUE(EpochStore(directory_ + "/epoch.state", 20'261'116).store(3));
     EXPECT_TRUE(recording_->record(9, lease_no_record_is_slow_for));
     EXPECT_TRUE(recording_->record(7, lease_no_record_is_slow_for));
     EXPECT_EQ(recording_->load(), 3) << "neither epoch was written again";
@@ -125,7 +125,7 @@ TEST_F(EpochRecordingTest, AnEpochNoHigherThanOneAlreadyWrittenIsNotWrittenAgain
 }
 
 TEST_F(EpochRecordingTest, AnEpochThatCouldNotBeWrittenIsTriedAgain) {
-    EpochRecording unwritable(directory_ + "/no_such_directory/epoch.state", 20261116, "TestOwner", logger_);
+    EpochRecording unwritable(directory_ + "/no_such_directory/epoch.state", 20'261'116, "TestOwner", logger_);
     EXPECT_FALSE(unwritable.record(9, lease_no_record_is_slow_for));
     EXPECT_FALSE(unwritable.record(9, lease_no_record_is_slow_for)) << "a failed write is not taken as written";
 }
@@ -139,7 +139,7 @@ TEST_F(EpochRecordingTest, BeforeAskingToLeadTheEpochIsWrittenAndTheTimeItTookRe
 }
 
 TEST_F(EpochRecordingTest, AnEpochThatCannotBeWrittenBeforeAskingToLeadIsSaidAtError) {
-    EpochRecording unwritable(directory_ + "/no_such_directory/epoch.state", 20261116, "TestOwner", logger_);
+    EpochRecording unwritable(directory_ + "/no_such_directory/epoch.state", 20'261'116, "TestOwner", logger_);
     EpochRecordedBeforeAsking before_asking(unwritable, lease_no_record_is_slow_for, "TestOwner", logger_);
     static_cast<void>(before_asking.record_before_asking(13));
     EXPECT_EQ(lines_containing("could not write epoch 13 to " + directory_ + "/no_such_directory/epoch.state before asking to lead in it"), 1);
@@ -174,7 +174,7 @@ TEST_F(EpochRecordingTest, TheDiskCheckWarnsWhenTheLongestTrialIsMoreThanAQuarte
 TEST_F(EpochRecordingTest, WithNoFileForTheEpochTheDiskCheckWritesAndSaysNothing) {
     const std::filesystem::path before = std::filesystem::current_path();
     std::filesystem::current_path(directory_);
-    EpochRecording without_a_file("", 20261116, "TestOwner", logger_);
+    EpochRecording without_a_file("", 20'261'116, "TestOwner", logger_);
     prometheus::Gauge worst;
     const EpochRecording::DiskCheck found = without_a_file.check_disk(lease_every_record_is_slow_for, GaugeHandle{&worst});
     const bool trial_left = std::filesystem::exists(directory_ + "/.disk_check") || std::filesystem::exists(directory_ + "/.disk_check.tmp");

@@ -112,7 +112,7 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     // bytes reach SequencerThread::on_raw_socket_message, which reads each request whole. A request is a few dozen bytes,
     // so a small buffer is ample.
     reactor_->register_inbound_tls_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.operator_listen_host, config_.operator_listen_port},
-                                            pubsub_itc_fw::ThreadID{1}, 65536,
+                                            pubsub_itc_fw::ThreadID{1}, 65'536,
                                             pubsub_itc_fw::TlsListenerConfiguration{config_.operator_tls_certificate_path,
                                                                                     config_.operator_tls_private_key_path, config_.operator_tls_ca_path, true});
 

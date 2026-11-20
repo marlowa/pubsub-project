@@ -26,12 +26,12 @@ ReportIdentifiers::Secret secret_of(uint8_t first) {
     return secret;
 }
 
-constexpr int32_t trading_day = 20261025;
+constexpr int32_t trading_day = 20'261'025;
 
 TEST(TradingDateTest, ADateGivenAsEightDigitsIsTheNumberYyyymmdd) {
-    EXPECT_EQ(fix_common::parse_trading_date("20261025"), 20261025);
-    EXPECT_EQ(fix_common::parse_trading_date("20240229"), 20240229) << "a leap day";
-    EXPECT_EQ(fix_common::trading_date_text(20240229), "2024-02-29");
+    EXPECT_EQ(fix_common::parse_trading_date("20261025"), 20'261'025);
+    EXPECT_EQ(fix_common::parse_trading_date("20240229"), 20'240'229) << "a leap day";
+    EXPECT_EQ(fix_common::trading_date_text(20'240'229), "2024-02-29");
 }
 
 TEST(TradingDateTest, TextThatIsNotADayOfTheCalendarIsRefused) {
@@ -43,7 +43,7 @@ TEST(TradingDateTest, TextThatIsNotADayOfTheCalendarIsRefused) {
     EXPECT_FALSE(fix_common::parse_trading_date("20261131").has_value()) << "30 days in November";
     EXPECT_FALSE(fix_common::parse_trading_date("20230229").has_value()) << "2023 is not a leap year";
     EXPECT_FALSE(fix_common::parse_trading_date("21000229").has_value()) << "2100 is not a leap year";
-    EXPECT_EQ(fix_common::parse_trading_date("20000229"), 20000229) << "2000 is a leap year";
+    EXPECT_EQ(fix_common::parse_trading_date("20000229"), 20'000'229) << "2000 is a leap year";
 }
 
 TEST(ReportIdentifiersTest, AnIdentifierIsALetterAndSixteenHexadecimalDigits) {

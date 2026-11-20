@@ -107,7 +107,7 @@ class ReportForwarding {
 
     /// The room for reports held for unannounced sessions, and for each gateway's held reports, allocated once.
     static constexpr size_t held_report_capacity_bytes = 16U * 1024U * 1024U;
-    static constexpr size_t held_report_capacity_reports = 32768;
+    static constexpr size_t held_report_capacity_reports = 32'768;
 
     /// A report from the engine waiting to be sent: for its record to be committed, or for its session to be announced.
     struct Pending {
@@ -222,7 +222,7 @@ class ReportForwarding {
     bool hold_for_unannounced_session(const Pending& pending);
 
     /// How many reports may wait for their record to be committed, in storage allocated once.
-    static constexpr size_t waiting_capacity = 32768;
+    static constexpr size_t waiting_capacity = 32'768;
 
     /// @p pending waits for record @p gate to be committed, at the back of the reports waiting.
     void wait_for_commit(int64_t gate, Pending&& pending);

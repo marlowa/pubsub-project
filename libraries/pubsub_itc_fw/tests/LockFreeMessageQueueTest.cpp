@@ -756,7 +756,7 @@ TEST(LockFreeMessageQueueTest, ShutdownRaceTest) {
     LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
 
     constexpr int initial_messages = 1000;
-    constexpr int racing_messages = 200000;
+    constexpr int racing_messages = 200'000;
 
     // Fill the queue with some initial messages
     for (int i = 0; i < initial_messages; ++i) {
@@ -775,7 +775,7 @@ TEST(LockFreeMessageQueueTest, ShutdownRaceTest) {
         for (int i = 0; i < racing_messages; ++i) {
             if (shutdown_now.load(std::memory_order_relaxed)) {
                 // After shutdown, enqueue() should silently drop
-                queue.enqueue(TestMessage{999999});
+                queue.enqueue(TestMessage{999'999});
             } else {
                 queue.enqueue(TestMessage{i});
             }

@@ -238,7 +238,7 @@ TEST(TestEventsConfigurationTest, AFullSectionGivesTheListenerAndTheNameTheTestK
     const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"matching_engine\"\n");
     EXPECT_TRUE(configuration.enabled);
     EXPECT_EQ(configuration.host, "127.0.0.1");
-    EXPECT_EQ(configuration.port, 45123);
+    EXPECT_EQ(configuration.port, 45'123);
     EXPECT_EQ(configuration.component, "matching_engine");
 }
 

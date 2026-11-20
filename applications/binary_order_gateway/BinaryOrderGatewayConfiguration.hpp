@@ -223,7 +223,7 @@ struct BinaryOrderGatewayConfiguration {
     int32_t command_queue_pool_initial_slabs{1};
 
     /** @brief Objects per slab in the event queue pool. */
-    int32_t event_queue_pool_objects_per_slab{80000};
+    int32_t event_queue_pool_objects_per_slab{80'000};
 
     /** @brief Initial number of slabs in the event queue pool. */
     int32_t event_queue_pool_initial_slabs{1};
@@ -234,13 +234,13 @@ struct BinaryOrderGatewayConfiguration {
      * Used only with high availability on. See pubsub_itc_fw::UnansweredCommands and
      * docs/availability/commands_during_a_change_of_leader.md, section 7, decision 4.
      */
-    size_t unanswered_commands_capacity{262144};
+    size_t unanswered_commands_capacity{262'144};
     size_t unanswered_commands_bytes{64 * 1024 * 1024};
 
     // How many unanswered commands make this gateway stop reading its members' connections, until answers bring the
     // number down to half; no more than unanswered_commands_capacity. Used only with high availability on
     // (docs/availability/a_gateway_limits_its_unanswered_commands.md).
-    size_t unanswered_commands_limit{16384};
+    size_t unanswered_commands_limit{16'384};
 
     /**
      * @brief The longest Symbol and OrderQty a member's command may carry, in bytes.

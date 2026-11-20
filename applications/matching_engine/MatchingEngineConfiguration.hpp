@@ -243,7 +243,7 @@ struct MatchingEngineConfiguration {
      *  volume -- an order that has been cancelled or filled releases its record.
      *
      *  A million costs roughly 320 MB of address space, which is not resident until touched. */
-    int32_t order_book_region_capacity{1000000};
+    int32_t order_book_region_capacity{1'000'000};
 
     /** @brief The file holding the secret the engine's OrderID and ExecID keys are derived from, as 64 hexadecimal digits.
      *

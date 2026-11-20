@@ -34,7 +34,7 @@ template <typename F> long long measure_avg_ns(F&& fn, int iterations, long long
 
 // Benchmark runner for a single encode/decode pair
 template <typename OwningMsg, typename ViewMsg> void benchmark_message(const char* name, OwningMsg& msg, int iterations) {
-    uint8_t buffer[65536];
+    uint8_t buffer[65'536];
     size_t written = 0;
     size_t consumed = 0;
     size_t bytes_needed = 0;
@@ -70,7 +70,7 @@ int main() {
     // SmallMessage
     SmallMessage small{};
     small.name = "example-name";
-    small.value = 12345;
+    small.value = 12'345;
 
     benchmark_message<SmallMessage, SmallMessageView>("SmallMessage", small, iterations);
 
@@ -81,7 +81,7 @@ int main() {
 
     medium.tags.data = tags;
     medium.tags.size = 10;
-    medium.sequence = 987654321;
+    medium.sequence = 987'654'321;
 
     benchmark_message<MediumMessage, MediumMessageView>("MediumMessage", medium, iterations);
 
@@ -96,7 +96,7 @@ int main() {
 
     large.groups.data = groups;
     large.groups.size = 3;
-    large.sequence = 123456789;
+    large.sequence = 123'456'789;
 
     benchmark_message<LargeMessage, LargeMessageView>("LargeMessage", large, iterations);
 

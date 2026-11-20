@@ -398,7 +398,7 @@ class Pair {
     void deliver() {
         // Ordinarily a few rounds settle everything. One that never settles, such as a follower and a
         // leader asking and answering for ever, is a fault, and fails here rather than hanging the test.
-        constexpr int round_limit = 10000;
+        constexpr int round_limit = 10'000;
         bool delivered = true;
         for (int round = 0; delivered; ++round) {
             if (round == round_limit) {
@@ -833,7 +833,7 @@ namespace {
 // Appends records on instance @p i until its WAL has records beyond its first segment: the writer is
 // then in the second segment or a later one.
 void append_beyond_the_first_segment(Pair& pair, int i) {
-    for (int count = 0; count < 100000 && pair.wals_[i]->wal().write_position().segment < 1; ++count) {
+    for (int count = 0; count < 100'000 && pair.wals_[i]->wal().write_position().segment < 1; ++count) {
         static_cast<void>(pair.append(i, 60));
     }
     ASSERT_GE(pair.wals_[i]->wal().write_position().segment, 1U);

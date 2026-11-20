@@ -22,7 +22,7 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
     MatchingEnginePublisherConfiguration config;
 
     auto validate_port = [&](int32_t port, const std::string& name) {
-        if (port < 1 || port > 65535) {
+        if (port < 1 || port > 65'535) {
             throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: " + name + " must be in range [1, 65535], got " +
                                                         std::to_string(port));
         }

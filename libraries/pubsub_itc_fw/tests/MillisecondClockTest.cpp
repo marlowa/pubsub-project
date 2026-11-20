@@ -37,7 +37,7 @@ TEST(MillisecondClockTest, MillisecondResolutionIsReasonable) {
 TEST(MillisecondClockTest, ManySequentialCallsAreMonotonic) {
     auto prev = MillisecondClock::now();
 
-    for (int i = 0; i < 10000; ++i) {
+    for (int i = 0; i < 10'000; ++i) {
         auto now = MillisecondClock::now();
         EXPECT_LE(prev, now);
         prev = now;

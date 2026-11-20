@@ -85,7 +85,7 @@ class FollowerReportComparisonLinksInterface {
 class FollowerReportComparison {
   public:
     /// The most reports kept. Reaching it means the leading engine has had no report written for that many commands.
-    static constexpr size_t max_kept_reports = 100000;
+    static constexpr size_t max_kept_reports = 100'000;
     /// The most bytes of encoded reports kept: 100,000 reports of 671 bytes on average.
     static constexpr size_t max_kept_report_bytes = 64 * 1024 * 1024;
 

@@ -54,7 +54,7 @@ primary_port = 11046
 secondary_host = "127.0.0.2"
 secondary_port = 11047
 )");
-    EXPECT_EQ(subscription.primary_port, 11046);
+    EXPECT_EQ(subscription.primary_port, 11'046);
     EXPECT_EQ(subscription.secondary_host, "127.0.0.2");
     ServiceRegistry registry;
     const std::vector<std::string> services = subscription.register_publishers(registry);
@@ -91,21 +91,21 @@ secondary_port = 0
 }
 
 TEST(TechnicalEventsSubscriptionTest, RecognisesTheEndOfDayEndOfItsOwnTradingDay) {
-    const std::vector<uint8_t> end = technical_event(TradingPhase::EndOfDayEnd, 20261119);
-    EXPECT_TRUE(TechnicalEventsSubscription::is_end_of_day_end(delivered(end), 20261119));
+    const std::vector<uint8_t> end = technical_event(TradingPhase::EndOfDayEnd, 20'261'119);
+    EXPECT_TRUE(TechnicalEventsSubscription::is_end_of_day_end(delivered(end), 20'261'119));
 }
 
 // A component started for one day stops only for that day's end.
 TEST(TechnicalEventsSubscriptionTest, TheEndOfAnotherDayIsNotItsOwn) {
-    const std::vector<uint8_t> end = technical_event(TradingPhase::EndOfDayEnd, 20261118);
-    EXPECT_FALSE(TechnicalEventsSubscription::is_end_of_day_end(delivered(end), 20261119));
+    const std::vector<uint8_t> end = technical_event(TradingPhase::EndOfDayEnd, 20'261'118);
+    EXPECT_FALSE(TechnicalEventsSubscription::is_end_of_day_end(delivered(end), 20'261'119));
 }
 
 TEST(TechnicalEventsSubscriptionTest, AnotherPhaseOrAnotherMessageIsNotTheEnd) {
-    const std::vector<uint8_t> begin = technical_event(TradingPhase::EndOfDayBegin, 20261119);
-    EXPECT_FALSE(TechnicalEventsSubscription::is_end_of_day_end(delivered(begin), 20261119));
-    const std::vector<uint8_t> end = technical_event(TradingPhase::EndOfDayEnd, 20261119);
-    EXPECT_FALSE(TechnicalEventsSubscription::is_end_of_day_end(delivered(end, 1000), 20261119));
+    const std::vector<uint8_t> begin = technical_event(TradingPhase::EndOfDayBegin, 20'261'119);
+    EXPECT_FALSE(TechnicalEventsSubscription::is_end_of_day_end(delivered(begin), 20'261'119));
+    const std::vector<uint8_t> end = technical_event(TradingPhase::EndOfDayEnd, 20'261'119);
+    EXPECT_FALSE(TechnicalEventsSubscription::is_end_of_day_end(delivered(end, 1000), 20'261'119));
 }
 
 } // namespaces

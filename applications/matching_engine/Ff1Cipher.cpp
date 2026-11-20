@@ -68,7 +68,7 @@ size_t bits_for(uint32_t radix, size_t count) {
 } // un-named namespace
 
 Ff1Cipher::Ff1Cipher(const uint8_t* key, size_t key_size, uint32_t radix) : radix_(radix) {
-    if (radix < 2 || radix > 65536) {
+    if (radix < 2 || radix > 65'536) {
         throw pubsub_itc_fw::PreconditionAssertion("Ff1Cipher: the radix must be from 2 to 65536", __FILE__, __LINE__);
     }
     const EVP_CIPHER* cipher = nullptr;

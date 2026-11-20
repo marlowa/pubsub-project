@@ -36,6 +36,7 @@ Checks implemented:
   28. A lock in venue code that is not in the table of permitted locks (principle F2)
   29. A raw std::thread in venue code; threads are created through ThreadWithJoinTimeout (principle F8)
   30. A read of the WAL in the sequencer that is not in the table of permitted WAL reads (principle F4)
+  31. A decimal integer literal of five or more digits without digit separators (123'456'789), or with them misplaced
 """
 
 from __future__ import annotations
@@ -66,15 +67,46 @@ class Violation:
 
 # ── Comment and string stripping ──────────────────────────────────────────────
 
+_RAW_STRING_PREFIX_RE = re.compile(r'(?:^|[^\w])(?:u8|u|U|L)?R$')
+
+
+def _token_start(text: str, index: int) -> int:
+    """Where the token that ends just before @p index begins: the letters, digits, underscores, dots and quote marks
+    before it, which is what a number with digit separators, or a literal's prefix, is made of."""
+    start = index
+    while start > 0 and (text[start - 1].isalnum() or text[start - 1] in "_.'"):
+        start -= 1
+    return start
+
+
 def strip_comments_and_strings(text: str) -> str:
     """
     Replace the interior of C++ comments and string/char literals with spaces,
-    preserving newlines so that line numbers remain correct.
+    preserving newlines so that line numbers remain correct. A raw string literal, R"delimiter( ... )delimiter",
+    which may span lines, is blanked to its end. A quote mark inside a number, a digit separator as in 123'456,
+    is kept as it is and does not start a character literal.
     """
     result = []
     i = 0
     n = len(text)
     while i < n:
+        if text[i] == '"' and _RAW_STRING_PREFIX_RE.search(text[max(0, i - 4):i]):
+            # A raw string: R"delimiter( ... )delimiter". Nothing inside is escaped, and it may span lines.
+            open_paren = text.find('(', i + 1)
+            delimiter = text[i + 1:open_paren] if open_paren != -1 else ''
+            closing = ')' + delimiter + '"'
+            end = text.find(closing, open_paren + 1) if open_paren != -1 else -1
+            end = n if end == -1 else end + len(closing)
+            result.append('"')
+            result.extend('\n' if c == '\n' else ' ' for c in text[i + 1:end - 1])
+            result.append('"' if end <= n and text[end - 1:end] == '"' else ' ')
+            i = end
+            continue
+        if text[i] == "'" and i > 0 and text[_token_start(text, i)].isdigit():
+            # A digit separator, inside a number such as 123'456: kept, not a character literal.
+            result.append("'")
+            i += 1
+            continue
         if text[i:i+2] == '/*':
             result.append('/*')
             i += 2
@@ -1365,6 +1397,55 @@ def report_unused_permitted_wal_reads() -> list[str]:
             for entry_path, where, why in _PERMITTED_WAL_READS if (entry_path, where) not in _USED_PERMITTED_WAL_READS]
 
 
+# ── Check 31: digit separators in large decimal integer literals ─────────────────
+# A decimal integer literal of five digits or more is written with digit separators, a quote mark between each group
+# of three digits counted from the right: 123'456'789, 65'536, 10'000. Four digits or fewer, as in 1024 or 4096, are
+# written without. Hexadecimal, binary and octal literals, and floating-point numbers, are left as they are. Read from
+# the comment- and string-stripped text, so that a number in a comment or a string is never counted.
+
+_NUMBER_TOKEN_RE = re.compile(r"(?<![\w.'])[0-9][0-9A-Za-z_'.]*")
+_DECIMAL_INTEGER_RE = re.compile(r"([1-9][0-9']*)([A-Za-z_]\w*)?")
+
+
+def large_decimal_literals(stripped_line: str) -> list[tuple[int, str, str]]:
+    """Each decimal integer literal on a stripped line that breaks check 31, as (column, digits as written, digits as
+    they should be). The column is where the digits start; the digits exclude any suffix such as u, ULL or _ms."""
+    found = []
+    for match in _NUMBER_TOKEN_RE.finditer(stripped_line):
+        token = match.group(0)
+        if token[:2] in ('0x', '0X', '0b', '0B') or token.startswith('0') or '.' in token:
+            continue
+        decimal = _DECIMAL_INTEGER_RE.fullmatch(token)
+        if decimal is None:
+            continue
+        written = decimal.group(1)
+        suffix = decimal.group(2) or ''
+        if suffix[:1] in ('e', 'E') and suffix[1:2].isdigit():
+            continue  # an exponent: a floating-point number
+        digits = written.replace("'", '')
+        if written.endswith("'"):
+            continue
+        groups = []
+        remaining = digits
+        while len(remaining) > 3:
+            groups.insert(0, remaining[-3:])
+            remaining = remaining[:-3]
+        groups.insert(0, remaining)
+        wanted = "'".join(groups) if len(digits) >= 5 else digits
+        if written != wanted:
+            found.append((match.start(), written, wanted))
+    return found
+
+
+def check_digit_separators(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    violations = []
+    for i, line in enumerate(stripped, 1):
+        for _column, written, wanted in large_decimal_literals(line):
+            violations.append(Violation(path, i, f"decimal literal {written} is written {wanted}: a literal of five digits or more is "
+                                                 "grouped in threes with digit separators, and one of four or fewer is not"))
+    return violations
+
+
 _CHECKS = [
     check_defines,
     check_screaming_snake_case,
@@ -1399,6 +1480,7 @@ _CHECKS = [
     check_locks,
     check_raw_thread,
     check_wal_reads,
+    check_digit_separators,
 ]
 
 

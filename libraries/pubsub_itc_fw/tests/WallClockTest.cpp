@@ -45,7 +45,7 @@ TEST(WallClockTest, ReplayClockDefaultsToZero) {
 }
 
 TEST(WallClockTest, ReplayClockReturnsInitialValue) {
-    const int64_t initial = 1234567890123456789;
+    const int64_t initial = 1'234'567'890'123'456'789;
     ReplayClock clock(initial);
 
     EXPECT_EQ(clock.now_ns(), initial);

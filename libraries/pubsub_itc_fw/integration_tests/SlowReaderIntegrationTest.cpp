@@ -423,7 +423,7 @@ class Receiver : public ApplicationThread {
 }
 
 // Never resumes within the life of a test.
-const ReadingPlan stops_for_good{1, std::chrono::milliseconds{600000}, std::chrono::milliseconds{0}};
+const ReadingPlan stops_for_good{1, std::chrono::milliseconds{600'000}, std::chrono::milliseconds{0}};
 const ReadingPlan keeps_reading{};
 
 } // un-named namespace
@@ -449,7 +449,7 @@ class SlowReaderIntegrationTest : public ::testing::Test {
         logger_.reset();
     }
 
-    bool wait_for(const std::function<bool()>& predicate, int timeout_ms = 10000) {
+    bool wait_for(const std::function<bool()>& predicate, int timeout_ms = 10'000) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (!predicate()) {
             if (std::chrono::steady_clock::now() > deadline) {
@@ -531,7 +531,7 @@ class SlowReaderIntegrationTest : public ::testing::Test {
 // Integration: a receiver that stops reading holds up only the sends to itself. The other receives
 // everything while the first is still stopped, and the first receives everything once it reads again.
 TEST_F(SlowReaderIntegrationTest, AReaderThatStopsHoldsUpOnlyItsOwnConnection) {
-    constexpr int count = 20000;
+    constexpr int count = 20'000;
     const ReadingPlan stops_for_three_seconds{1, std::chrono::milliseconds{3000}, std::chrono::milliseconds{0}};
     make_listening_sender({stops_for_three_seconds, keeps_reading}, count, 200, make_reactor_config());
     Receiver& stopped = *receivers_[0];
@@ -543,7 +543,7 @@ TEST_F(SlowReaderIntegrationTest, AReaderThatStopsHoldsUpOnlyItsOwnConnection) {
     EXPECT_LT(stopped.count(), static_cast<size_t>(count)) << "receiver 0 received everything despite having stopped reading";
     EXPECT_TRUE(exactly_once_in_order(reading.received(), count));
 
-    ASSERT_TRUE(wait_for([&]() { return stopped.count() == static_cast<size_t>(count); }, 10000))
+    ASSERT_TRUE(wait_for([&]() { return stopped.count() == static_cast<size_t>(count); }, 10'000))
         << "after reading again, receiver 0 received " << stopped.count() << " of " << count << " PDUs";
     EXPECT_TRUE(exactly_once_in_order(stopped.received(), count));
     EXPECT_EQ(sender_->connections_lost.load(), 0) << "a connection was closed although its queue never reached the limit";
@@ -551,7 +551,7 @@ TEST_F(SlowReaderIntegrationTest, AReaderThatStopsHoldsUpOnlyItsOwnConnection) {
 
 // Integration: the same for connections the sender opened itself.
 TEST_F(SlowReaderIntegrationTest, AReaderThatStopsHoldsUpOnlyItsOwnOutboundConnection) {
-    constexpr int count = 20000;
+    constexpr int count = 20'000;
     const ReadingPlan stops_for_three_seconds{1, std::chrono::milliseconds{3000}, std::chrono::milliseconds{0}};
     make_connecting_sender({stops_for_three_seconds, keeps_reading}, count, 200);
     Receiver& stopped = *receivers_[0];
@@ -561,14 +561,14 @@ TEST_F(SlowReaderIntegrationTest, AReaderThatStopsHoldsUpOnlyItsOwnOutboundConne
         << "while receiver 0 had stopped reading, receiver 1 received only " << reading.count() << " of " << count << " PDUs";
     ASSERT_TRUE(stopped.stopped_now.load()) << "receiver 0 read again before receiver 1 finished, so this shows nothing";
     EXPECT_TRUE(exactly_once_in_order(reading.received(), count));
-    ASSERT_TRUE(wait_for([&]() { return stopped.count() == static_cast<size_t>(count); }, 10000));
+    ASSERT_TRUE(wait_for([&]() { return stopped.count() == static_cast<size_t>(count); }, 10'000));
     EXPECT_TRUE(exactly_once_in_order(stopped.received(), count));
 }
 
 // Integration: a connection whose queue of waiting sends reaches the limit is closed, the sender is told
 // it was lost, and the receiver still reading receives everything.
 TEST_F(SlowReaderIntegrationTest, AConnectionWhoseQueueFillsIsClosedAndTheOthersCarryOn) {
-    constexpr int count = 20000;
+    constexpr int count = 20'000;
     ReactorConfiguration sender_config = make_reactor_config();
     sender_config.connection_waiting_sends_maximum = 1000;
     make_listening_sender({stops_for_good, keeps_reading}, count, 200, sender_config);
@@ -587,7 +587,7 @@ TEST_F(SlowReaderIntegrationTest, AConnectionWhoseQueueFillsIsClosedAndTheOthers
 // three that read are served alike: each receives everything, and the last finishes soon after the
 // first. A timer on the sender's reactor goes on firing throughout.
 TEST_F(SlowReaderIntegrationTest, ReadersThatKeepUpAreServedAlikeWhileOneHasStopped) {
-    constexpr int count = 20000;
+    constexpr int count = 20'000;
     make_listening_sender({stops_for_good, keeps_reading, keeps_reading, keeps_reading}, count, 100, make_reactor_config());
 
     tick_counter_->restart_gap();
@@ -624,7 +624,7 @@ TEST_F(SlowReaderIntegrationTest, ReadersThatKeepUpAreServedAlikeWhileOneHasStop
 // kernel compacts a receive queue made of many small packets and opens the window a little, so a
 // receiver that has stopped reading still accepts a trickle of bytes.
 TEST_F(SlowReaderIntegrationTest, ASenderPacedByWritableNotificationsWaitsForAReaderThatHasStopped) {
-    constexpr int count = 50000;
+    constexpr int count = 50'000;
     ReactorConfiguration sender_config = make_reactor_config();
     sender_config.connection_waiting_sends_maximum = 2;
     static const ServiceRegistry empty_registry;
@@ -648,7 +648,7 @@ TEST_F(SlowReaderIntegrationTest, ASenderPacedByWritableNotificationsWaitsForARe
     EXPECT_LT(sender.sent.load(), count) << "everything was sent before the receiver stopped, so this shows nothing";
     EXPECT_EQ(sender.connections_lost.load(), 0) << "the connection was closed: the sender was told it could send while its sends were waiting";
 
-    ASSERT_TRUE(wait_for([&]() { return receiver.count() == static_cast<size_t>(count); }, 30000))
+    ASSERT_TRUE(wait_for([&]() { return receiver.count() == static_cast<size_t>(count); }, 30'000))
         << "after reading again, the receiver received " << receiver.count() << " of " << count << " PDUs";
     EXPECT_TRUE(exactly_once_in_order(receiver.received(), count));
 }
@@ -661,7 +661,7 @@ TEST_F(SlowReaderIntegrationTest, ASenderPacedByWritableNotificationsWaitsForARe
 // sends to it wait. The receivers spend about half their time reading, and read far faster than the
 // PDUs are sent, so none that keeps coming back falls behind for good.
 TEST_F(SlowReaderIntegrationTest, ManyReadersStoppingAndStartingLoseDuplicateAndReorderNothing) {
-    constexpr int count = 20000;
+    constexpr int count = 20'000;
     constexpr size_t padding = 1000;
     ReactorConfiguration sender_config = make_reactor_config();
     sender_config.connection_waiting_sends_maximum = 5000;
@@ -674,10 +674,10 @@ TEST_F(SlowReaderIntegrationTest, ManyReadersStoppingAndStartingLoseDuplicateAnd
     plans.push_back(stops_for_good);
     make_listening_sender(plans, count, 2, sender_config, padding, receiver_config);
 
-    ASSERT_TRUE(wait_for([&]() { return sender_->connections_lost.load() == 1; }, 30000))
+    ASSERT_TRUE(wait_for([&]() { return sender_->connections_lost.load() == 1; }, 30'000))
         << "the connection to the receiver that stopped for good was not closed when its queue reached 5000 sends";
     for (size_t index = 0; index < 5; ++index) {
-        ASSERT_TRUE(wait_for([&]() { return receivers_[index]->count() == static_cast<size_t>(count); }, 60000))
+        ASSERT_TRUE(wait_for([&]() { return receivers_[index]->count() == static_cast<size_t>(count); }, 60'000))
             << "receiver " << index << " received " << receivers_[index]->count() << " of " << count << " PDUs";
         EXPECT_TRUE(exactly_once_in_order(receivers_[index]->received(), count)) << "receiver " << index;
         EXPECT_GT(receivers_[index]->stops.load(), 10) << "receiver " << index << " stopped too few times for this to be a soak";

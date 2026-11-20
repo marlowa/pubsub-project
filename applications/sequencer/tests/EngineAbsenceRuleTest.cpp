@@ -111,19 +111,19 @@ class EngineRoutedStampTest : public ::testing::Test {
 TEST_F(EngineRoutedStampTest, ANewStampHoldsNothingAndAWrittenOneIsReadBack) {
     {
         EngineRoutedStamp stamp;
-        ASSERT_TRUE(stamp.open(dir_, 20261116));
+        ASSERT_TRUE(stamp.open(dir_, 20'261'116));
         EXPECT_EQ(stamp.stamped_at_ns(), 0);
         EXPECT_TRUE(stamp.write(start));
         EXPECT_TRUE(stamp.write(start + second));
     }
     EngineRoutedStamp reopened;
-    ASSERT_TRUE(reopened.open(dir_, 20261116));
+    ASSERT_TRUE(reopened.open(dir_, 20'261'116));
     EXPECT_EQ(reopened.stamped_at_ns(), start + second);
 }
 
 TEST_F(EngineRoutedStampTest, AStampThatCannotBeOpenedHoldsNothingAndWritesNothing) {
     EngineRoutedStamp stamp;
-    EXPECT_FALSE(stamp.open(dir_ + "/no_such_directory", 20261116));
+    EXPECT_FALSE(stamp.open(dir_ + "/no_such_directory", 20'261'116));
     EXPECT_EQ(stamp.stamped_at_ns(), 0);
     EXPECT_FALSE(stamp.write(start));
 }

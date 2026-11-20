@@ -56,7 +56,7 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
             toml.get_required_except("sequencer_er_secondary.port", sequencer_er_secondary_port);
 
             auto validate_port = [&](int32_t port, const std::string& name) {
-                if (port < 1 || port > 65535) {
+                if (port < 1 || port > 65'535) {
                     throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: " + name + " must be in range [1, 65535], got " +
                                                                 std::to_string(port));
                 }
@@ -74,7 +74,7 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
         // The link to the peer engine, [peer] (required when ha_enabled).
         if (config.ha_enabled) {
             auto validate_port = [&](int32_t port, const std::string& name) {
-                if (port < 1 || port > 65535) {
+                if (port < 1 || port > 65'535) {
                     throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: " + name + " must be in range [1, 65535], got " +
                                                                 std::to_string(port));
                 }

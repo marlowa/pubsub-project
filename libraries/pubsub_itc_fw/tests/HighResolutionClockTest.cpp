@@ -37,7 +37,7 @@ TEST(HighResolutionClockTest, NanosecondResolutionIsReasonable) {
 TEST(HighResolutionClockTest, ManySequentialCallsAreMonotonic) {
     auto prev = HighResolutionClock::now();
 
-    for (int i = 0; i < 10000; ++i) {
+    for (int i = 0; i < 10'000; ++i) {
         auto now = HighResolutionClock::now();
         EXPECT_LE(prev, now);
         prev = now;

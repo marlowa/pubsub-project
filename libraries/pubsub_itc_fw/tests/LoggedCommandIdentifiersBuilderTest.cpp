@@ -95,7 +95,7 @@ TEST_F(LoggedCommandIdentifiersBuilderTest, TheBuiltRecordHoldsEveryCommandInThe
     ASSERT_GT(wal_->segments_on_disk().size(), 3U) << "the WAL should span several segments for this to test anything";
 
     LoggedCommandIdentifiersBuilder builder;
-    builder.start(10000, segments(), identity_);
+    builder.start(10'000, segments(), identity_);
     ASSERT_TRUE(wait_until_finished(builder));
     LoggedCommandIdentifiers record = builder.take();
 
@@ -113,7 +113,7 @@ TEST_F(LoggedCommandIdentifiersBuilderTest, ThePositionRecordedForEachCommandIsW
         append("order-" + std::to_string(number));
     }
     LoggedCommandIdentifiersBuilder builder;
-    builder.start(10000, segments(), identity_);
+    builder.start(10'000, segments(), identity_);
     ASSERT_TRUE(wait_until_finished(builder));
     const LoggedCommandIdentifiers record = builder.take();
     for (int number = 1; number <= 300; ++number) {
@@ -161,7 +161,7 @@ TEST_F(LoggedCommandIdentifiersBuilderTest, StoppingABuildThatHasNotFinishedEnds
         many.insert(many.end(), listed.begin(), listed.end());
     }
     LoggedCommandIdentifiersBuilder builder;
-    builder.start(100000, std::move(many), identity_);
+    builder.start(100'000, std::move(many), identity_);
     builder.stop();
     EXPECT_FALSE(builder.finished()) << "a build that was stopped reported itself finished";
 }
@@ -184,7 +184,7 @@ TEST_F(LoggedCommandIdentifiersBuilderTest, SegmentsDeletedByCuttingTheWalBackAr
     ASSERT_GT(deleted, 0) << "cutting the WAL back should have deleted at least one listed segment";
 
     LoggedCommandIdentifiersBuilder builder;
-    builder.start(10000, listed, identity_);
+    builder.start(10'000, listed, identity_);
     ASSERT_TRUE(wait_until_finished(builder)) << "the build did not finish";
     const LoggedCommandIdentifiers record = builder.take();
 

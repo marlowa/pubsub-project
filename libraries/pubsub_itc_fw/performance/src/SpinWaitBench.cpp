@@ -103,7 +103,7 @@ void neighbouring_thread(int cpu) {
     while (!start_now.load(std::memory_order_acquire)) {}
     std::vector<uint64_t> block(4096);
     for (size_t i = 0; i < block.size(); ++i) {
-        block[i] = i * 2654435761ULL;
+        block[i] = i * 2'654'435'761ULL;
     }
     uint64_t value = 1;
     uint64_t rounds = 0;
@@ -168,10 +168,10 @@ int main(int argc, char** argv) {
     fmt::print("Spin-wait harness: waiting thread on cpu{}, neighbour on cpu{}\n\n", waiter_cpu, neighbour_cpu);
 
     pin_to(waiter_cpu);
-    average_iteration_ns(1000000, false); // warm up, and let the core reach full speed
-    average_iteration_ns(1000000, true);
-    const double without = average_iteration_ns(20000000, false);
-    const double with = average_iteration_ns(20000000, true);
+    average_iteration_ns(1'000'000, false); // warm up, and let the core reach full speed
+    average_iteration_ns(1'000'000, true);
+    const double without = average_iteration_ns(20'000'000, false);
+    const double with = average_iteration_ns(20'000'000, true);
 
     fmt::print("What one PAUSE costs\n");
     fmt::print("  loop iteration without it : {:6.2f} ns\n", without);

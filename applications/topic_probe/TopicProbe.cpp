@@ -198,13 +198,13 @@ class ProbeThread : public pubsub_itc_fw::TopicSubscriberThread {
 
 int default_port_for_topic(const std::string& topic_name) {
     if (topic_name == "orders") {
-        return 11040;
+        return 11'040;
     }
     if (topic_name == "execution_reports") {
-        return 11041;
+        return 11'041;
     }
     if (topic_name == "technical_events") {
-        return 11046;
+        return 11'046;
     }
     return 0;
 }
@@ -283,7 +283,7 @@ int main(int argc, char** argv) {
     if (topics.empty()) {
         return 1; // resolve_topics printed the reason
     }
-    if (port != 0 && (topics.size() != 1 || port < 0 || port > 65535)) {
+    if (port != 0 && (topics.size() != 1 || port < 0 || port > 65'535)) {
         std::cerr << "topic_probe: --port names the port of one topic, so give exactly one topic with --topics, and a port from 1 to 65535\n";
         return 1;
     }

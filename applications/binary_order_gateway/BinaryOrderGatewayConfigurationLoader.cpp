@@ -43,7 +43,7 @@ BinaryOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& 
                                                      pubsub_itc_fw::FwLogLevel::Info, pubsub_itc_fw::FwLogLevel::Info, config.rolling_logfile_configuration);
 
     auto validate_port = [](int32_t port, const std::string& name) {
-        if (port < 1 || port > 65535) {
+        if (port < 1 || port > 65'535) {
             throw pubsub_itc_fw::ConfigurationException("BinaryOrderGatewayConfigurationLoader: " + name + " must be in range [1, 65535], got " +
                                                         std::to_string(port));
         }

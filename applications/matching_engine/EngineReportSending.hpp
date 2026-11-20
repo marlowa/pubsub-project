@@ -79,7 +79,7 @@ class EngineReportSending {
     enum class Sequencer { primary, secondary };
 
     /// The most reports held at once.
-    static constexpr size_t max_held_reports = 50000;
+    static constexpr size_t max_held_reports = 50'000;
 
     /**
      * @param[in] secondary_expected Whether there is a secondary sequencer to send to, which is whether high

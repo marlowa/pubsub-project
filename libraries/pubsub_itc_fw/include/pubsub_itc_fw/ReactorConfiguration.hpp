@@ -208,7 +208,7 @@ struct ReactorConfiguration {
      *
      * Default: 262144 bytes (256 KB).
      */
-    size_t inbound_slab_size{262144};
+    size_t inbound_slab_size{262'144};
 
     /**
      * @brief Size in bytes of the SO_SNDBUF socket option applied to each
@@ -249,7 +249,7 @@ struct ReactorConfiguration {
      *
      * Default: 65,536 sends.
      */
-    size_t connection_waiting_sends_maximum{65536};
+    size_t connection_waiting_sends_maximum{65'536};
 
     /**
      * @brief The most bytes the sends waiting for one connection may add up to. See

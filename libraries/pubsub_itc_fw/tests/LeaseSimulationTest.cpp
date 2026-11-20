@@ -550,7 +550,7 @@ class PairSimulation {
 };
 
 constexpr int simulation_runs = 400;
-constexpr int steps_per_run = 20000;
+constexpr int steps_per_run = 20'000;
 
 // With one part of rule 11 removed, some run must find an instance acting as leader without a command
 // the engine acted on, and not some other violation.

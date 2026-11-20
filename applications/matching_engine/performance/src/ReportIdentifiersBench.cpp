@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
         secret[index] = static_cast<uint8_t>(index * 13 + 1);
     }
     matching_engine::ReportIdentifiers identifiers(secret);
-    identifiers.use_trading_date(20261025);
+    identifiers.use_trading_date(20'261'025);
 
     using Clock = std::chrono::steady_clock;
     std::vector<int64_t> each(static_cast<size_t>(count));

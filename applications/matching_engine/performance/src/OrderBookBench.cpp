@@ -51,7 +51,7 @@ using matching_engine::OrderKey;
 using matching_engine::OrderKeyHash;
 using Clock = std::chrono::steady_clock;
 
-constexpr size_t order_count = 1000000;
+constexpr size_t order_count = 1'000'000;
 
 struct Percentiles {
     double mean_ns{};
@@ -96,8 +96,8 @@ void report(const char* what, Percentiles p) {
 // per-operation figures can be read for what they are.
 int64_t measure_clock_overhead() {
     std::vector<int64_t> samples;
-    samples.reserve(100000);
-    for (size_t i = 0; i < 100000; ++i) {
+    samples.reserve(100'000);
+    for (size_t i = 0; i < 100'000; ++i) {
         const auto start = Clock::now();
         const auto end = Clock::now();
         samples.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());

@@ -106,7 +106,7 @@ namespace pubsub_itc_fw::tests {
 static const std::string outbound_request_payload = "HELLO_OUTBOUND_SERVER";
 static const std::string outbound_response_payload = "HELLO_OUTBOUND_CLIENT";
 
-static constexpr int64_t outbound_tls_buffer_capacity = 65536;
+static constexpr int64_t outbound_tls_buffer_capacity = 65'536;
 static constexpr size_t outbound_length_prefix_size = sizeof(uint32_t);
 
 static const std::string outbound_service_name = "auth_service";
@@ -122,7 +122,7 @@ to go partial, EPOLLOUT to be registered, and the send to be resumed.
 blocking on the plain-PDU path, so the mechanism is already proven on this platform.
 */
 static constexpr size_t outbound_large_payload_bytes = 2 * 1024 * 1024;
-static constexpr int outbound_small_send_buffer_bytes = 16384;
+static constexpr int outbound_small_send_buffer_bytes = 16'384;
 // The whole frame must fit one outbound slab chunk: payload plus length prefix.
 static constexpr size_t outbound_large_slab_bytes = 4 * 1024 * 1024;
 
@@ -192,7 +192,7 @@ X509* create_outbound_self_signed_cert(EVP_PKEY* key, const char* cn, long seria
     X509_set_version(x509, 2);
     ASN1_INTEGER_set(X509_get_serialNumber(x509), serial);
     X509_gmtime_adj(X509_get_notBefore(x509), 0);
-    X509_gmtime_adj(X509_get_notAfter(x509), 86400L);
+    X509_gmtime_adj(X509_get_notAfter(x509), 86'400L);
     X509_set_pubkey(x509, key);
     X509_NAME* name = X509_get_subject_name(x509);
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
@@ -213,7 +213,7 @@ X509* create_outbound_signed_cert(EVP_PKEY* subject_key, const char* cn, long se
     X509_set_version(x509, 2);
     ASN1_INTEGER_set(X509_get_serialNumber(x509), serial);
     X509_gmtime_adj(X509_get_notBefore(x509), 0);
-    X509_gmtime_adj(X509_get_notAfter(x509), 86400L);
+    X509_gmtime_adj(X509_get_notAfter(x509), 86'400L);
     X509_set_pubkey(x509, subject_key);
     X509_NAME* subject_name = X509_get_subject_name(x509);
     X509_NAME_add_entry_by_txt(subject_name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
@@ -1061,7 +1061,7 @@ TEST_F(TlsOutboundIntegrationTest, OutboundTlsLargeSendCompletesAcrossWriteReady
     EXPECT_TRUE(wait_for([&]() { return connector->connection_established.load(std::memory_order_acquire); }))
         << "Connector: ConnectionEstablished not received: " << last_wait_failure_description();
 
-    EXPECT_TRUE(wait_for([&]() { return connector->message_received.load(std::memory_order_acquire); }, 20000))
+    EXPECT_TRUE(wait_for([&]() { return connector->message_received.load(std::memory_order_acquire); }, 20'000))
         << "Connector: reply not received after large send: " << last_wait_failure_description();
 
     EXPECT_EQ(connector->received_payload, outbound_response_payload);
@@ -1127,7 +1127,7 @@ TEST_F(TlsOutboundIntegrationTest, TlsTeardownDuringUnfinishedSendReleasesPendin
     EXPECT_TRUE(wait_for([&]() { return connector->connection_established.load(std::memory_order_acquire); }))
         << "Connector: ConnectionEstablished not received: " << last_wait_failure_description();
 
-    EXPECT_TRUE(wait_for([&]() { return connector->connection_lost.load(std::memory_order_acquire); }, 20000))
+    EXPECT_TRUE(wait_for([&]() { return connector->connection_lost.load(std::memory_order_acquire); }, 20'000))
         << "Connector: ConnectionLost not received after the server reset the connection: " << last_wait_failure_description();
 
     // The reply never comes: the server read nothing and answered nothing.

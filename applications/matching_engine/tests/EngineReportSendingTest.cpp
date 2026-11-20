@@ -119,11 +119,11 @@ TEST_F(EngineReportSendingTest, ANewEpochNumbersFromOneAgain) {
 TEST_F(EngineReportSendingTest, TheMarkOfAPossibleRepeatAndTheGatewaysTimeAreCarried) {
     connect_both();
     const std::string text = "report";
-    const EngineReportSending::Report report{reinterpret_cast<const uint8_t*>(text.data()), text.size(), 5, &session_, true, true, 123456789};
+    const EngineReportSending::Report report{reinterpret_cast<const uint8_t*>(text.data()), text.size(), 5, &session_, true, true, 123'456'789};
     ASSERT_TRUE(sending_->send(report, 7, false));
     EXPECT_TRUE(links_.sent[0].poss_resend);
     EXPECT_TRUE(links_.sent[0].has_gateway_ingress_ns);
-    EXPECT_EQ(links_.sent[0].gateway_ingress_ns, 123456789);
+    EXPECT_EQ(links_.sent[0].gateway_ingress_ns, 123'456'789);
     EXPECT_EQ(links_.sent[0].seq_no, 5);
 }
 

@@ -284,7 +284,7 @@ TEST_F(MappedSlotStoreTest, CreatingARegionAllocatesItRatherThanLeavingItSparse)
     //
     // st_blocks is what tells the two apart; st_size cannot, because a sparse file and a filled
     // one report the same size.
-    constexpr SlotIndex many_slots = 200000;
+    constexpr SlotIndex many_slots = 200'000;
     MappedSlotStore store;
     ASSERT_FALSE(store.open(path_, record_size, many_slots));
 
@@ -446,7 +446,7 @@ TEST_F(MappedSlotStoreTest, ARecordStampedInTheFutureIsNotRecovered) {
         ASSERT_FALSE(store.open(path_, record_size, slot_count));
         store_one(store, 1, 10);
     }
-    write_at<int64_t>(slot_offset(0) + offset_slot_seq_no, 999999);
+    write_at<int64_t>(slot_offset(0) + offset_slot_seq_no, 999'999);
 
     MappedSlotStore store;
     ASSERT_TRUE(store.open(path_, record_size, slot_count));
@@ -852,7 +852,7 @@ TEST_F(MappedSlotStoreTest, LayoutStillAgreesWithTheStore) {
         ASSERT_FALSE(store.open(path_, record_size, slot_count, 7));
         store_one(store, 1, 10);
         store_one(store, 2, 4242);
-        store.set_owner_value(0, 1234567890123456789LL);
+        store.set_owner_value(0, 1'234'567'890'123'456'789LL);
         store.set_owner_value(3, -42);
     }
 
@@ -865,7 +865,7 @@ TEST_F(MappedSlotStoreTest, LayoutStillAgreesWithTheStore) {
     EXPECT_EQ(read_at<uint32_t>(slot_offset(1) + offset_slot_state), 1u);
     EXPECT_EQ(read_at<int64_t>(slot_offset(1) + offset_slot_seq_no), 4242);
 
-    EXPECT_EQ(read_at<int64_t>(offset_owner_values), 1234567890123456789LL);
+    EXPECT_EQ(read_at<int64_t>(offset_owner_values), 1'234'567'890'123'456'789LL);
     EXPECT_EQ(read_at<int64_t>(offset_owner_values + 3 * sizeof(int64_t)), -42);
 
     const std::vector<uint8_t> expected = pattern(2);

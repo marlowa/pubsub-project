@@ -116,7 +116,7 @@ class ReactorTest : public ::testing::Test {
         // TSan (and Valgrind) add significant instrumentation overhead which
         // can delay thread startup. Use a longer timeout to avoid intermittent
         // failures caused by scheduling delays under instrumentation.
-        reactor_configuration_.init_phase_timeout_ = MillisecondClock::duration{10000};
+        reactor_configuration_.init_phase_timeout_ = MillisecondClock::duration{10'000};
 #else
         reactor_configuration_.init_phase_timeout_ = MillisecondClock::duration{2000};
 #endif
@@ -319,8 +319,8 @@ class PlacedThread : public ApplicationThread {
 
 TEST_F(ReactorTest, TheTimeSpentLookingForWorkCanBeChangedWhileTheReactorRuns) {
     EXPECT_EQ(reactor_->spin_before_block(), std::chrono::microseconds{0}) << "the configured time, which is none";
-    reactor_->set_spin_before_block(std::chrono::microseconds{50000});
-    EXPECT_EQ(reactor_->spin_before_block(), std::chrono::microseconds{50000});
+    reactor_->set_spin_before_block(std::chrono::microseconds{50'000});
+    EXPECT_EQ(reactor_->spin_before_block(), std::chrono::microseconds{50'000});
     EXPECT_TRUE(logger_with_sink_.contains_message("now looking for work for up to 50000us"));
     reactor_->set_spin_before_block(std::chrono::microseconds{0});
     EXPECT_EQ(reactor_->spin_before_block(), std::chrono::microseconds{0});
@@ -1024,7 +1024,7 @@ TEST_F(ReactorTest, PollingReactorFindsACommandWithoutBeingWoken) {
     // timer can be created is the polling loop noticing the command by itself. A reactor that
     // only looked at the queue on the way out of the loop would be caught here, where a longer
     // deadline than the spin window would have let it pass as merely slow.
-    cfg.spin_before_block = std::chrono::microseconds{5000000};
+    cfg.spin_before_block = std::chrono::microseconds{5'000'000};
 
     // The reactor's own housekeeping timer is an epoll event like any other, and any epoll event
     // takes the reactor out of its polling loop, which drains the command queue on the way past.
@@ -1148,7 +1148,7 @@ double mean_lap_with_quiet_spins(LoggerWithSink& logger_with_sink, const Service
     cfg.init_phase_timeout_ = std::chrono::milliseconds(2000);
     cfg.shutdown_timeout_ = std::chrono::milliseconds(200);
     cfg.inactivity_check_interval_ = std::chrono::seconds{60};
-    cfg.spin_before_block = std::chrono::microseconds{5000000};
+    cfg.spin_before_block = std::chrono::microseconds{5'000'000};
     cfg.quiet_spins_between_polls = quiet_spins;
     cfg.metrics_configuration.enabled = true;
     // Port 0 lets the operating system choose, so parallel test binaries do not collide. The

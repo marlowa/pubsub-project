@@ -17,7 +17,7 @@ struct ThrottleLimits {
     /// of microseconds to process an order from start to end, so one command every 10 microseconds
     /// is the fastest any member could usefully send. The database, the admin service and the
     /// gateways all refuse a larger value.
-    static constexpr int max_permitted_per_second = 100000;
+    static constexpr int max_permitted_per_second = 100'000;
 
     int max_place_per_second{0};
     int max_amend_per_second{0};

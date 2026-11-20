@@ -82,7 +82,7 @@ class KeptReports {
     using Clock = std::chrono::steady_clock;
 
     static constexpr size_t capacity_bytes = 128U * 1024U * 1024U;
-    static constexpr size_t capacity_reports = 262144;
+    static constexpr size_t capacity_reports = 262'144;
     /// How long before the latest record a record saying how far the leader had forwarded must have been written.
     static constexpr std::chrono::milliseconds reports_forwarded_delay{100};
     /// How often, while not leading, the reports the leader forwarded are discarded.

@@ -43,12 +43,12 @@ constexpr int64_t days_from_civil(int64_t year, int64_t month, int64_t day) {
     const int64_t year_of_era = year - era * 400;
     const int64_t day_of_year = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
     const int64_t day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    return era * 146097 + day_of_era - 719468;
+    return era * 146'097 + day_of_era - 719'468;
 }
 
 constexpr int64_t utc_nanos(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second) {
     const int64_t seconds = (((days_from_civil(year, month, day) * 24 + hour) * 60 + minute) * 60) + second;
-    return seconds * 1000000000LL;
+    return seconds * 1'000'000'000LL;
 }
 
 /** @return 0 = Sunday .. 6 = Saturday. 1970-01-01 was a Thursday. */
@@ -77,7 +77,7 @@ TEST(FixErEncoderTest, EncodesAValidExecutionReport) {
     view.has_order_qty = true;
     view.order_qty = "100";
 
-    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    pubsub_itc_fw::ReplayClock clock(1'700'000'000'000'000'000LL);
     char buffer[fix_order_gateway::execution_report_initial_buffer_size];
     const std::string_view wire = encode_execution_report(view, "GATEWAY", "CLIENT", 5, clock, buffer, sizeof(buffer));
 
@@ -123,7 +123,7 @@ TEST(FixErEncoderTest, EchoesTimeInForceAndExpiryForAGoodTillDateOrder) {
     // A Monday: an ordinary expiry with nothing a venue might want to "correct".
     view.expire_time = utc_nanos(2026, 8, 10, 17, 0, 0);
 
-    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    pubsub_itc_fw::ReplayClock clock(1'700'000'000'000'000'000LL);
     char buffer[fix_order_gateway::execution_report_initial_buffer_size];
     const std::string_view wire = encode_execution_report(view, "GATEWAY", "CLIENT", 5, clock, buffer, sizeof(buffer));
 
@@ -155,7 +155,7 @@ TEST(FixErEncoderTest, ExpiryOnANonTradingDayIsEmittedUnchanged) {
     // 2026-08-15 12:00:00 UTC -- a Saturday.
     view.expire_time = utc_nanos(2026, 8, 15, 12, 0, 0); // a Saturday -- see the static_assert
 
-    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    pubsub_itc_fw::ReplayClock clock(1'700'000'000'000'000'000LL);
     char buffer[fix_order_gateway::execution_report_initial_buffer_size];
     const std::string_view wire = encode_execution_report(view, "GATEWAY", "CLIENT", 5, clock, buffer, sizeof(buffer));
 
@@ -178,7 +178,7 @@ TEST(FixErEncoderTest, AnOrderWithNoExpiryEmitsNoExpiryField) {
     view.leaves_qty = "100";
     view.cum_qty = "0";
 
-    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    pubsub_itc_fw::ReplayClock clock(1'700'000'000'000'000'000LL);
     char buffer[fix_order_gateway::execution_report_initial_buffer_size];
     const std::string_view wire = encode_execution_report(view, "GATEWAY", "CLIENT", 5, clock, buffer, sizeof(buffer));
 
@@ -208,7 +208,7 @@ TEST(FixErEncoderTest, ARejectedOrderCarriesTheEnginesText) {
     view.has_text = true;
     view.text = "Venue could not process the order";
 
-    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    pubsub_itc_fw::ReplayClock clock(1'700'000'000'000'000'000LL);
     char buffer[fix_order_gateway::execution_report_initial_buffer_size];
     const std::string_view wire = encode_execution_report(view, "GATEWAY", "CLIENT", 5, clock, buffer, sizeof(buffer));
     ASSERT_FALSE(wire.empty());
@@ -270,7 +270,7 @@ TEST(FixErEncoderTest, ACancelledOrderIsNotTakenForARefusedCancel) {
 }
 
 TEST(FixErEncoderTest, TheEnginesRefusalOfACancelIsEncodedAsAnOrderCancelReject) {
-    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    pubsub_itc_fw::ReplayClock clock(1'700'000'000'000'000'000LL);
     char buffer[fix_order_gateway::execution_report_initial_buffer_size];
     const std::string_view wire = encode_order_cancel_reject(engine_refusal_of_a_cancel(), "GATEWAY", "CLIENT", 9, clock, buffer, sizeof(buffer));
 
@@ -296,7 +296,7 @@ TEST(FixErEncoderTest, ARefusalForAnyOtherReasonIsReportedAsOtherWithTheEnginesT
     view.has_text = true;
     view.text = "a reason of the engine's";
 
-    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    pubsub_itc_fw::ReplayClock clock(1'700'000'000'000'000'000LL);
     char buffer[fix_order_gateway::execution_report_initial_buffer_size];
     const std::string_view wire = encode_order_cancel_reject(view, "GATEWAY", "CLIENT", 9, clock, buffer, sizeof(buffer));
 
@@ -308,7 +308,7 @@ TEST(FixErEncoderTest, ARefusalForAnyOtherReasonIsReportedAsOtherWithTheEnginesT
 }
 
 TEST(FixErEncoderTest, ARefusedCancelThatIsResentCarriesTheResendFlags) {
-    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    pubsub_itc_fw::ReplayClock clock(1'700'000'000'000'000'000LL);
     char buffer[fix_order_gateway::execution_report_initial_buffer_size];
     const std::string_view wire = encode_order_cancel_reject(engine_refusal_of_a_cancel(), "GATEWAY", "CLIENT", 9, clock, buffer, sizeof(buffer),
                                                              /*poss_dup=*/true, utc_nanos(2026, 8, 10, 9, 30, 0), /*poss_resend=*/true);

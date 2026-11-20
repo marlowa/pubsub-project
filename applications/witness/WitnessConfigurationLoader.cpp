@@ -34,7 +34,7 @@ WitnessConfiguration WitnessConfigurationLoader::load(const pubsub_itc_fw::TomlC
         int32_t listen_port = 0;
         toml.get_required_except("network.listen_port", listen_port);
 
-        if (listen_port < 1 || listen_port > 65535) {
+        if (listen_port < 1 || listen_port > 65'535) {
             throw pubsub_itc_fw::ConfigurationException("WitnessConfigurationLoader: network.listen_port must be in range [1, 65535], got " +
                                                         std::to_string(listen_port));
         }

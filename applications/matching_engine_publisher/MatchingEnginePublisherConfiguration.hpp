@@ -108,7 +108,7 @@ struct MatchingEnginePublisherConfiguration {
 
     // Subscriber flow control
 
-    int64_t max_lag_records{100000};
+    int64_t max_lag_records{100'000};
 
     // Logging
 

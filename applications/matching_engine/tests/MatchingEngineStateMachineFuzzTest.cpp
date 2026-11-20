@@ -98,7 +98,7 @@ ReportIdentifiers::Secret fuzz_secret() {
 }
 
 constexpr OrderBook::SlotIndex region_capacity = 32;
-constexpr int32_t trading_day = 20261025;
+constexpr int32_t trading_day = 20'261'025;
 constexpr int64_t first_time = 1'792'900'000'000'000'000;
 
 int64_t setting_from_environment(const char* name, int64_t fallback) {
@@ -136,7 +136,7 @@ class MatchingEngineStateMachineFuzzTest : public ::testing::Test {
 
 TEST_F(MatchingEngineStateMachineFuzzTest, RandomCommandsKeepTheBookConsistentAndTwoEnginesAgree) {
     const int64_t commands = setting_from_environment("MATCHING_ENGINE_FUZZ_COMMANDS", 200'000);
-    const auto seed = static_cast<uint64_t>(setting_from_environment("MATCHING_ENGINE_FUZZ_SEED", 20261025));
+    const auto seed = static_cast<uint64_t>(setting_from_environment("MATCHING_ENGINE_FUZZ_SEED", 20'261'025));
     std::mt19937_64 random(seed);
 
     Engine engine(dir_ + "/first.region");

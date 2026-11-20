@@ -42,7 +42,7 @@ inline int64_t days_from_civil(int year, unsigned month, unsigned day) {
     const unsigned year_of_era = static_cast<unsigned>(year - era * 400);
     const unsigned day_of_year = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
     const unsigned day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    return static_cast<int64_t>(era) * 146097 + static_cast<int>(day_of_era) - 719468;
+    return static_cast<int64_t>(era) * 146'097 + static_cast<int>(day_of_era) - 719'468;
 }
 
 } // namespaces
@@ -141,8 +141,8 @@ struct FixField {
             return fallback;
         }
         const int64_t days = detail::days_from_civil(year, static_cast<unsigned>(month), static_cast<unsigned>(day));
-        const int64_t seconds = days * 86400 + hour * 3600 + minute * 60 + second;
-        return seconds * 1000000000LL + fractional_nanoseconds();
+        const int64_t seconds = days * 86'400 + hour * 3600 + minute * 60 + second;
+        return seconds * 1'000'000'000LL + fractional_nanoseconds();
     }
 
   private:

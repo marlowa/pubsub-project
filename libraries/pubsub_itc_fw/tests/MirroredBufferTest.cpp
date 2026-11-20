@@ -26,7 +26,7 @@ namespace {
 
 class MirroredBufferTest : public ::testing::Test {
   protected:
-    const int64_t test_capacity = 65536; // 64KB (multiple of most page sizes)
+    const int64_t test_capacity = 65'536; // 64KB (multiple of most page sizes)
 };
 
 } // namespaces
@@ -363,7 +363,7 @@ TEST_F(MirroredBufferTest, VigorouslyAdversarialRace) {
 
             // Occasionally sleep to force the consumer to "catch up"
             // right at the moment the producer is about to write again.
-            if (i % 10000 == 0) {
+            if (i % 10'000 == 0) {
                 std::this_thread::sleep_for(std::chrono::microseconds(1));
             }
         }

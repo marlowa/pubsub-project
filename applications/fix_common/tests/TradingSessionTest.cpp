@@ -16,7 +16,7 @@ namespace {
 using Phase = pubsub_itc_fw_app::TradingPhase;
 using Reason = pubsub_itc_fw_app::CommandRefusedReason;
 
-constexpr int32_t today = 20261116;
+constexpr int32_t today = 20'261'116;
 
 TradingSessionState in(Phase phase, bool halted = false) {
     return TradingSessionState{true, today, phase, halted};

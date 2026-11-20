@@ -343,7 +343,7 @@ class MatchingEngineStateMachine {
 
     /// The most orders a command that cancels many orders (CancelBook, CancelSessionOrders, the close) cancels before it
     /// returns, leaving the rest to continue_cancel() (docs/availability/pacing_the_engines_reports.md, section 7).
-    static constexpr size_t orders_per_piece = 2'000;
+    static constexpr size_t orders_per_piece = 2000;
     /// The most messages one cancelled order causes on a connection for reports: its execution report and, for a cancel
     /// of a session's orders, its outcome.
     static constexpr size_t sends_per_order_cancelled = 2;

@@ -70,12 +70,12 @@ TEST_F(EventMessageTest, ItcMessageZeroLengthPayload) {
 
 // TEST 4: Timer event creation
 TEST_F(EventMessageTest, TimerEventCreation) {
-    const TimerID tid(12345);
+    const TimerID tid(12'345);
 
     const EventMessage msg = EventMessage::create_timer_event(tid);
 
     EXPECT_EQ(msg.type().as_tag(), EventType::Timer);
-    EXPECT_EQ(msg.timer_id().get_value(), 12345);
+    EXPECT_EQ(msg.timer_id().get_value(), 12'345);
 
     EXPECT_EQ(msg.payload_size(), 0U);
     EXPECT_EQ(msg.payload(), nullptr);

@@ -112,7 +112,7 @@ namespace pubsub_itc_fw::tests {
 // Test constants
 
 static constexpr int burst_size = 100;
-static constexpr int64_t raw_buffer_capacity = 65536;
+static constexpr int64_t raw_buffer_capacity = 65'536;
 static const std::string receiver_service = "receiver";
 static constexpr uint16_t any_os_assigned_port = 0;
 
@@ -176,11 +176,11 @@ int64_t observation_count(const std::string& exposition, const std::string& fami
 // How long a polling reactor keeps looking before it would give up and sleep. Long enough that
 // it never does so during a test, which is what makes the polling path the one under test rather
 // than a mixture of the two.
-constexpr std::chrono::microseconds keep_polling_throughout{30000000};
+constexpr std::chrono::microseconds keep_polling_throughout{30'000'000};
 
 // A housekeeping interval longer than any test here, so that a polling reactor gets no epoll
 // event it did not earn and cannot be carried by one.
-constexpr std::chrono::milliseconds no_housekeeping_during_the_test{60000};
+constexpr std::chrono::milliseconds no_housekeeping_during_the_test{60'000};
 
 } // un-named namespace
 
@@ -522,7 +522,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesEndToEnd) {
     EXPECT_TRUE(wait_for([&]() { return sender_thread->burst_sent.load(std::memory_order_acquire); }))
         << "Sender: burst of " << burst_size << " send_pdu calls did not complete: " << last_wait_failure_description();
 
-    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= burst_size; }, 10000))
+    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= burst_size; }, 10'000))
         << "Receiver: did not receive all " << burst_size << " PDUs (got " << receiver_thread->received_count.load(std::memory_order_acquire)
         << "): " << last_wait_failure_description();
 
@@ -690,7 +690,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
     EXPECT_TRUE(wait_for([&]() { return sender_thread->burst_sent.load(std::memory_order_acquire); }))
         << "Sender: burst of " << burst_size << " send_pdu calls did not complete: " << last_wait_failure_description();
 
-    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= burst_size; }, 10000))
+    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= burst_size; }, 10'000))
         << "Receiver: did not receive all " << burst_size << " PDUs (got " << receiver_thread->received_count.load(std::memory_order_acquire)
         << "): " << last_wait_failure_description();
 
@@ -940,7 +940,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesAPollingRea
     EXPECT_TRUE(wait_for([&]() { return sender_thread->burst_sent.load(std::memory_order_acquire); }))
         << "Sender: burst of " << burst_size << " send_pdu calls did not complete: " << last_wait_failure_description();
 
-    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= burst_size; }, 10000))
+    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= burst_size; }, 10'000))
         << "Receiver: did not receive all " << burst_size << " PDUs through a polling reactor (got "
         << receiver_thread->received_count.load(std::memory_order_acquire) << "). A send that a polling reactor never picked up looks "
         << "exactly like this: " << last_wait_failure_description();
@@ -1030,12 +1030,12 @@ TEST_F(FrameworkPduBurstIntegrationTest, PollingReactorLosesNothingOverAHundredT
     // 200 bursts a millisecond apart is a little under a second of sending, but the machine this
     // runs on may be loaded and the receiver has to keep up as well, so the wait is generous.
     // A timeout here is a genuine failure, not impatience: it means sends stopped happening.
-    EXPECT_TRUE(wait_for([&]() { return sender_thread->all_bursts_sent.load(std::memory_order_acquire); }, 60000))
+    EXPECT_TRUE(wait_for([&]() { return sender_thread->all_bursts_sent.load(std::memory_order_acquire); }, 60'000))
         << "Sender: only " << sender_thread->sent_count.load(std::memory_order_acquire) << " of " << soak_total
         << " sends were made. The burst timer stopped firing, which means a command asking for it never reached the reactor: "
         << last_wait_failure_description();
 
-    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= soak_total; }, 60000))
+    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= soak_total; }, 60'000))
         << "Receiver: " << receiver_thread->received_count.load(std::memory_order_acquire) << " of " << soak_total
         << " PDUs arrived. Every send that a polling reactor failed to pick up is one of the missing: " << last_wait_failure_description();
 
@@ -1091,7 +1091,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, PollingReactorLosesNothingOverAHundredT
 namespace {
 
 constexpr auto fairness_run_time = std::chrono::milliseconds{2000};
-constexpr auto heartbeat_interval = std::chrono::microseconds{10000};
+constexpr auto heartbeat_interval = std::chrono::microseconds{10'000};
 
 // Ten milliseconds apart over two seconds is about two hundred beats. Half of that is the floor
 // for calling the reactor fair: it leaves room for an ordinary loaded build machine, while a
@@ -1135,7 +1135,7 @@ class AllSourcesThread : public ApplicationThread {
         // Answering with a request to the reactor is what puts this test's load on the command
         // queue. Single-shot, so each one is asked for and then goes away by itself.
         if (timers_asked_for.fetch_add(1, std::memory_order_release) % 100 == 0) {
-            schedule_timer(std::chrono::microseconds(50000), TimerType(TimerType::SingleShot));
+            schedule_timer(std::chrono::microseconds(50'000), TimerType(TimerType::SingleShot));
         }
     }
 
@@ -1325,7 +1325,7 @@ constexpr int64_t bytes_each_client_sends = 200 * 1024 * 1024;
 
 // Generous against that: this deadline is not measuring speed, it is there so that a connection
 // the reactor has effectively stopped serving produces a failure rather than a hung test.
-constexpr auto client_fairness_deadline = std::chrono::milliseconds{20000};
+constexpr auto client_fairness_deadline = std::chrono::milliseconds{20'000};
 
 // Five clients sending equally hard should be served equally. Half is a generous floor -- it
 // allows for a loaded build machine and for the ordinary unevenness of five sockets -- while
@@ -1543,7 +1543,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, PollingReactorServesSeveralClientsEvenl
 // connection is accepted, before its application thread could ask it to pause, and would take the whole
 // burst into its own buffers so that the sender's socket never fills.
 TEST_F(FrameworkPduBurstIntegrationTest, ABurstToAPeerThatIsNotReadingIsDeliveredWhole) {
-    constexpr int paused_burst_size = 20000;
+    constexpr int paused_burst_size = 20'000;
 
     // The peer: a listening socket with a small receive buffer, set before listening so that the
     // accepted connection has it too.
@@ -1585,7 +1585,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, ABurstToAPeerThatIsNotReadingIsDelivere
 
     // Read everything, until nothing more arrives for two seconds, then split it into frames.
     std::vector<uint8_t> received;
-    std::vector<uint8_t> chunk(65536);
+    std::vector<uint8_t> chunk(65'536);
     for (;;) {
         pollfd reading{peer_fd, POLLIN, 0};
         if (::poll(&reading, 1, 2000) <= 0) {

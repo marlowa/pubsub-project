@@ -26,8 +26,8 @@
 
 namespace {
 
-constexpr int32_t today = 20261116;
-constexpr int32_t yesterday = 20261113;
+constexpr int32_t today = 20'261'116;
+constexpr int32_t yesterday = 20'261'113;
 
 class TradingDayOfFileTest : public ::testing::Test {
   protected:

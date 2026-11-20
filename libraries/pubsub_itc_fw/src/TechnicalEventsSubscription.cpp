@@ -25,7 +25,7 @@ uint16_t port_of(const TomlConfiguration& toml, const std::string& key, const st
     if (host.empty()) {
         return 0;
     }
-    if (port < 1 || port > 65535) {
+    if (port < 1 || port > 65'535) {
         throw ConfigurationException(component + ": " + key + " must be in range [1, 65535] when its host is given, got " + std::to_string(port));
     }
     return static_cast<uint16_t>(port);

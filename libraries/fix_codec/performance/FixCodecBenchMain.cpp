@@ -167,7 +167,7 @@ int main(int argc, char** argv) {
     };
 
     if (per_iteration_mode) {
-        const int iterations = 2000000;
+        const int iterations = 2'000'000;
         long long min_ns = 0;
         long long max_ns = 0;
         const long long parse_avg = measure_avg_ns(parse, iterations, min_ns, max_ns);
@@ -175,7 +175,7 @@ int main(int argc, char** argv) {
         const long long validate_avg = measure_avg_ns(parse_and_validate, iterations, min_ns, max_ns);
         report("parse+validate", validate_avg, min_ns, max_ns);
     } else {
-        const int batch_size = 20000;
+        const int batch_size = 20'000;
         const int batch_count = 200;
         fmt::print("message {} bytes, fastest of {} batches of {}\n", wire.size(), batch_count, batch_size);
         report_batched("frame only", measure_batched_ns(frame_only, batch_size, batch_count));

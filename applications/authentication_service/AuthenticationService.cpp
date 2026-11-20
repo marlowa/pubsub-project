@@ -52,7 +52,7 @@ AuthenticationService::AuthenticationService(const AuthenticationServiceConfigur
     reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port}, pubsub_itc_fw::ThreadID{1});
 
     reactor_->register_inbound_tls_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.admin_listen_port},
-                                            pubsub_itc_fw::ThreadID{1}, 65536,
+                                            pubsub_itc_fw::ThreadID{1}, 65'536,
                                             pubsub_itc_fw::TlsListenerConfiguration{config_.admin_tls_certificate_path, config_.admin_tls_private_key_path,
                                                                                     config_.admin_tls_ca_path, config_.admin_tls_require_client_certificate});
 

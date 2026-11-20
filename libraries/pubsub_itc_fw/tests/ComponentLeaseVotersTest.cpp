@@ -31,7 +31,7 @@ TEST(ComponentLeaseVotersTest, APassiveArbiterMayNotAnswer) {
 
 TEST(ComponentLeaseVotersTest, ANewlyActiveArbiterGrantsNothingForOneLeasePeriod) {
     pubsub_itc_fw::ComponentLeaseVoters voters(lease_period);
-    const Clock::time_point active_at = start + milliseconds{60000};
+    const Clock::time_point active_at = start + milliseconds{60'000};
     voters.became_active(active_at);
     EXPECT_EQ(voters.consider(first_pair, 1, 1, active_at + milliseconds{2999}).verdict, pubsub_itc_fw::LeaseVoter::Verdict::RefusedWhileRestarting);
     EXPECT_EQ(voters.consider(first_pair, 1, 1, active_at + lease_period).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
@@ -82,7 +82,7 @@ TEST(ComponentLeaseVotersTest, AStatementThatAnInstanceMayNotLeadSurvivesAChange
     EXPECT_EQ(voters.record_statement(first_pair, pubsub_itc_fw::LeaderStatement{1, 1, 1, false}), 1);
     // Unlike its promises, the statement must not be forgotten when this arbiter becomes active again.
     voters.became_passive();
-    const Clock::time_point active_again = granted_at + milliseconds{60000};
+    const Clock::time_point active_again = granted_at + milliseconds{60'000};
     voters.became_active(active_again);
     EXPECT_EQ(voters.consider(first_pair, 2, 2, active_again + lease_period).verdict, pubsub_itc_fw::LeaseVoter::Verdict::RefusedMayNotLead);
     EXPECT_EQ(voters.consider(first_pair, 1, 5, active_again + lease_period).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);

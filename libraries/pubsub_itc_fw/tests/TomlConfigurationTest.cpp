@@ -283,7 +283,7 @@ TEST_F(TomlConfigurationTest, MillisecondsConvertedToMicroseconds) {
     std::chrono::microseconds value{0};
     auto [ok, err] = config.get_required("interval", value);
     EXPECT_TRUE(ok);
-    EXPECT_EQ(value, std::chrono::microseconds{5'000});
+    EXPECT_EQ(value, std::chrono::microseconds{5000});
 }
 
 // Duration: lossless conversion (fine to coarse, exact)

@@ -3244,7 +3244,7 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
     const int64_t elapsed_ns = config_.wall_clock->now_ns() - started_ns;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: SessionReplayComplete id={} comp_id='{}' records={} last_seq_no={} truncated={} scanned_in_ms={} segments_read={} of {}",
-               view.request_id, identity.comp_id_view(), record_count, last_seq_no, truncated, elapsed_ns / 1000000, segments_read, segments.size());
+               view.request_id, identity.comp_id_view(), record_count, last_seq_no, truncated, elapsed_ns / 1'000'000, segments_read, segments.size());
     report(pubsub_itc_fw_app::ReplayAnswered{static_cast<int64_t>(view.request_id), identity.comp_id_view(), static_cast<int64_t>(record_count), truncated});
 }
 

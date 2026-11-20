@@ -62,9 +62,9 @@ class VenueStateFromTheWalTest : public ::testing::Test {
   protected:
     void SetUp() override {
         state_ = std::make_unique<VenueStateFromTheWal>(logger_);
-        halt_ = encoded(pubsub_itc_fw_app::TechnicalEvent{pubsub_itc_fw_app::TradingPhase::Open, true, 20261103,
+        halt_ = encoded(pubsub_itc_fw_app::TechnicalEvent{pubsub_itc_fw_app::TradingPhase::Open, true, 20'261'103,
                                                           pubsub_itc_fw_app::TechnicalEventReason::DeclaredByOperator});
-        lift_ = encoded(pubsub_itc_fw_app::TechnicalEvent{pubsub_itc_fw_app::TradingPhase::Open, false, 20261103,
+        lift_ = encoded(pubsub_itc_fw_app::TechnicalEvent{pubsub_itc_fw_app::TradingPhase::Open, false, 20'261'103,
                                                           pubsub_itc_fw_app::TechnicalEventReason::LiftedByOperator});
         void_of_5_ = encoded(pubsub_itc_fw_app::VoidCommands{5, 5, false, pubsub_itc_fw_app::VoidReason::EngineDiedApplying});
     }
@@ -106,26 +106,26 @@ TEST_F(VenueStateFromTheWalTest, TheTradingDayHasNotStartedUntilTheWalHoldsAStar
     EXPECT_EQ(state_->trading_day(), 0);
     Record dated = members_order();
     dated.has_trading_date = true;
-    dated.trading_date = 20261103;
+    dated.trading_date = 20'261'103;
     static_cast<void>(state_->note_record(1, dated, How::written_as_follower));
     EXPECT_FALSE(state_->trading_day_started()) << "the date written on a command is not a start of day";
 }
 
 TEST_F(VenueStateFromTheWalTest, TheStartOfDayFixesTheTradingDayHoweverTheRecordIsHeld) {
-    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20261116);
+    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20'261'116);
     for (const How how : {How::read_at_open, How::written_as_follower, How::written_by_this_leader}) {
         VenueStateFromTheWal state(logger_);
         EXPECT_TRUE(state.note_record(1, phase_change(start), how).phase_changed);
         EXPECT_TRUE(state.trading_day_started());
-        EXPECT_EQ(state.trading_day(), 20261116);
+        EXPECT_EQ(state.trading_day(), 20'261'116);
         EXPECT_EQ(state.trading_phase().latest()->phase, pubsub_itc_fw_app::TradingPhase::StartOfDay);
     }
 }
 
 TEST_F(VenueStateFromTheWalTest, EachTechnicalEventGivesThePhaseAndDiscardingOneGoesBack) {
-    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20261116);
-    const std::vector<uint8_t> pre_open = entering(pubsub_itc_fw_app::TradingPhase::PreOpen, 20261116);
-    const std::vector<uint8_t> open = entering(pubsub_itc_fw_app::TradingPhase::Open, 20261116);
+    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20'261'116);
+    const std::vector<uint8_t> pre_open = entering(pubsub_itc_fw_app::TradingPhase::PreOpen, 20'261'116);
+    const std::vector<uint8_t> open = entering(pubsub_itc_fw_app::TradingPhase::Open, 20'261'116);
     static_cast<void>(state_->note_record(1, phase_change(start), How::written_as_follower));
     static_cast<void>(state_->note_record(2, phase_change(pre_open), How::written_as_follower));
     static_cast<void>(state_->note_record(3, phase_change(open), How::written_as_follower));
@@ -138,10 +138,10 @@ TEST_F(VenueStateFromTheWalTest, EachTechnicalEventGivesThePhaseAndDiscardingOne
 }
 
 TEST_F(VenueStateFromTheWalTest, AChangeOfPhaseWhileHaltedCarriesTheHaltOn) {
-    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20261116);
-    const std::vector<uint8_t> halt_in_start = encoded(pubsub_itc_fw_app::TechnicalEvent{pubsub_itc_fw_app::TradingPhase::StartOfDay, true, 20261116,
+    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20'261'116);
+    const std::vector<uint8_t> halt_in_start = encoded(pubsub_itc_fw_app::TechnicalEvent{pubsub_itc_fw_app::TradingPhase::StartOfDay, true, 20'261'116,
                                                                                          pubsub_itc_fw_app::TechnicalEventReason::DeclaredByOperator});
-    const std::vector<uint8_t> pre_open_halted = entering(pubsub_itc_fw_app::TradingPhase::PreOpen, 20261116, true);
+    const std::vector<uint8_t> pre_open_halted = entering(pubsub_itc_fw_app::TradingPhase::PreOpen, 20'261'116, true);
     static_cast<void>(state_->note_record(1, phase_change(start), How::written_by_this_leader));
     static_cast<void>(state_->note_record(2, phase_change(halt_in_start), How::written_by_this_leader));
     const VenueStateFromTheWal::Noted noted = state_->note_record(3, phase_change(pre_open_halted), How::written_by_this_leader);
@@ -244,18 +244,18 @@ TEST_F(VenueStateFromTheWalTest, CancelsOnDisconnectAreKeptFromTheWal) {
 }
 
 TEST_F(VenueStateFromTheWalTest, TheLatestTradingScheduleIsTheScheduleAndDiscardingOneGoesBack) {
-    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20261116);
+    const std::vector<uint8_t> start = entering(pubsub_itc_fw_app::TradingPhase::StartOfDay, 20'261'116);
     static_cast<void>(state_->note_record(1, phase_change(start), How::read_at_open));
     std::vector<pubsub_itc_fw_app::TradingScheduleEntry> first_entries{{pubsub_itc_fw_app::TradingPhase::PreOpen, 1000},
                                                                        {pubsub_itc_fw_app::TradingPhase::Open, 2000}};
     pubsub_itc_fw_app::TradingSchedule first{};
-    first.trading_day = 20261116;
+    first.trading_day = 20'261'116;
     first.entries = pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::TradingScheduleEntry>{first_entries.data(), first_entries.size()};
     first.operator_name = "alice";
     const std::vector<uint8_t> first_bytes = encoded(first);
     std::vector<pubsub_itc_fw_app::TradingScheduleEntry> second_entries{{pubsub_itc_fw_app::TradingPhase::PreOpen, 500}};
     pubsub_itc_fw_app::TradingSchedule second{};
-    second.trading_day = 20261116;
+    second.trading_day = 20'261'116;
     second.entries = pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::TradingScheduleEntry>{second_entries.data(), second_entries.size()};
     second.operator_name = "bob";
     const std::vector<uint8_t> second_bytes = encoded(second);

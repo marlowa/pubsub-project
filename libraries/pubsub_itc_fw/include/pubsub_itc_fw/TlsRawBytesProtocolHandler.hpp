@@ -195,7 +195,7 @@ class TlsRawBytesProtocolHandler : public ProtocolHandlerInterface {
 
     // Maximum bytes to read from the socket in one recv() call.
     // A TLS record carries at most 16 384 bytes of payload plus a 5-byte header.
-    static constexpr int encrypted_read_buffer_size = 16384 + 5;
+    static constexpr int encrypted_read_buffer_size = 16'384 + 5;
 
     static constexpr int64_t water_denominator = 4;
     static constexpr int64_t high_water_numerator = 3; // 75%

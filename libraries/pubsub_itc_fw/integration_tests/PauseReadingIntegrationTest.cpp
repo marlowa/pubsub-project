@@ -68,7 +68,7 @@ enum class Opener { ThisThread, ThePeer };
 
 // Large enough that the kernel's buffers and the reactor's reads cannot take it all before the pause
 // takes effect, so a pause that works must hold some of it back.
-constexpr int large_burst = 200000;
+constexpr int large_burst = 200'000;
 
 ReactorConfiguration make_reactor_config() {
     ReactorConfiguration cfg{};
@@ -302,7 +302,7 @@ class PauseReadingIntegrationTest : public ::testing::Test {
         logger_.reset();
     }
 
-    bool wait_for(const std::function<bool()>& predicate, int timeout_ms = 10000) {
+    bool wait_for(const std::function<bool()>& predicate, int timeout_ms = 10'000) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (!predicate()) {
             for (auto& entry : running_) {
@@ -391,7 +391,7 @@ TEST_F(PauseReadingIntegrationTest, APausedInboundConnectionDeliversNothingUntil
     ASSERT_TRUE(receiver.paused_now.load()) << "the pause ended before it was measured";
     EXPECT_EQ(later, early) << "PDUs kept arriving on a connection whose reading was paused";
     EXPECT_LT(later, static_cast<size_t>(large_burst)) << "the whole burst arrived before the pause, so the pause held nothing back";
-    ASSERT_TRUE(wait_for([&]() { return receiver.count_on(0) == static_cast<size_t>(large_burst); }, 20000))
+    ASSERT_TRUE(wait_for([&]() { return receiver.count_on(0) == static_cast<size_t>(large_burst); }, 20'000))
         << "after resuming, " << receiver.count_on(0) << " of " << large_burst << " PDUs arrived";
     EXPECT_TRUE(exactly_once_in_order(receiver.received_on(0), large_burst));
 }
@@ -424,14 +424,14 @@ TEST_F(PauseReadingIntegrationTest, APausedOutboundConnectionDeliversNothingUnti
     ASSERT_TRUE(receiver->paused_now.load()) << "the pause ended before it was measured";
     EXPECT_EQ(later, early) << "PDUs kept arriving on an outbound connection whose reading was paused";
     EXPECT_LT(later, static_cast<size_t>(large_burst));
-    ASSERT_TRUE(wait_for([&]() { return receiver->count_on(0) == static_cast<size_t>(large_burst); }, 20000));
+    ASSERT_TRUE(wait_for([&]() { return receiver->count_on(0) == static_cast<size_t>(large_burst); }, 20'000));
     EXPECT_TRUE(exactly_once_in_order(receiver->received_on(0), large_burst));
 }
 
 TEST_F(PauseReadingIntegrationTest, OtherConnectionsAndTimersAreServedWhileOneIsPaused) {
     // Fairness between peers and between kinds of work: with connection 0 paused, connection 1's whole
     // burst arrives, and the receiver's one-millisecond timer goes on firing.
-    constexpr int second_burst = 50000;
+    constexpr int second_burst = 50'000;
     auto setup = make_inbound({large_burst}, {{0, PausePlan{1, std::chrono::milliseconds{4000}, std::chrono::milliseconds{0}}}});
     PausingReceiver& receiver = *setup.receiver;
     ASSERT_TRUE(wait_for([&]() { return receiver.paused_now.load(); }));
@@ -458,7 +458,7 @@ TEST_F(PauseReadingIntegrationTest, OtherConnectionsAndTimersAreServedWhileOneIs
     std::this_thread::sleep_until(ticks_counted_from + std::chrono::milliseconds{300});
     ASSERT_TRUE(receiver.paused_now.load()) << "connection 0's pause ended before the timer was counted";
     EXPECT_GT(receiver.timer_ticks.load() - ticks_before, 50) << "the receiver's timer stopped firing while a connection was paused";
-    ASSERT_TRUE(wait_for([&]() { return receiver.count_on(0) == static_cast<size_t>(large_burst); }, 20000));
+    ASSERT_TRUE(wait_for([&]() { return receiver.count_on(0) == static_cast<size_t>(large_burst); }, 20'000));
     EXPECT_TRUE(exactly_once_in_order(receiver.received_on(0), large_burst));
 }
 
@@ -470,7 +470,7 @@ TEST_F(PauseReadingIntegrationTest, ManyPausesAndResumesLoseDuplicateAndReorderN
     constexpr int per_tick = 100;
     auto setup = make_inbound({large_burst}, {{0, PausePlan{1, std::chrono::milliseconds{2}, std::chrono::milliseconds{2}}}}, per_tick);
     PausingReceiver& receiver = *setup.receiver;
-    ASSERT_TRUE(wait_for([&]() { return receiver.count_on(0) == static_cast<size_t>(large_burst); }, 60000))
+    ASSERT_TRUE(wait_for([&]() { return receiver.count_on(0) == static_cast<size_t>(large_burst); }, 60'000))
         << receiver.count_on(0) << " of " << large_burst << " PDUs arrived";
     EXPECT_GT(receiver.pauses.load(), 100) << "too few pauses for this to be a soak";
     EXPECT_TRUE(exactly_once_in_order(receiver.received_on(0), large_burst));

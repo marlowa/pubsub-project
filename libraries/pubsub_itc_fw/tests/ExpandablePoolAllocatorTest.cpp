@@ -1873,7 +1873,7 @@ TEST_F(ExpandablePoolAllocatorTest, MixedChaosInvalidFreeStress) {
     // to run. 20'000 takes nearly 3 minutes, so we had to reduce it.
     // 10'000 takes around 40s, still far too long.
     // 7'000 takes around 20s, still long but let's put up with that for now.
-    const int iterations = 7'000;
+    const int iterations = 7000;
     const int num_threads = 8;
 #endif
 

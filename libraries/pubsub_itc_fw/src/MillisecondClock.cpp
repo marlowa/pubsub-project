@@ -19,7 +19,7 @@ MillisecondClock::time_point MillisecondClock::now() {
     clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
 
     // Convert to milliseconds. CLOCK_MONOTONIC_COARSE guarantees millisecond-level resolution and VDSO fast-path access.
-    const auto total_ms = static_cast<std::int64_t>(ts.tv_sec) * 1000 + static_cast<std::int64_t>(ts.tv_nsec / 1000000);
+    const auto total_ms = static_cast<std::int64_t>(ts.tv_sec) * 1000 + static_cast<std::int64_t>(ts.tv_nsec / 1'000'000);
     return time_point{duration{total_ms}};
 }
 

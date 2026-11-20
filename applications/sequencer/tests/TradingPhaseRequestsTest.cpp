@@ -23,7 +23,7 @@ using Phase = pubsub_itc_fw_app::TradingPhase;
 using EventReason = pubsub_itc_fw_app::TechnicalEventReason;
 using ScheduleOutcome = pubsub_itc_fw_app::TradingScheduleOutcome;
 
-constexpr int32_t today = 20261116;
+constexpr int32_t today = 20'261'116;
 
 // The facts TradingPhaseRequests decides from, and every TechnicalEvent and TradingSchedule written and answer sent, in
 // order. Writing either notes it, as the sequencer notes every record it writes.
@@ -260,7 +260,7 @@ TEST_F(TradingPhaseRequestsTest, ASequencerThatDoesNotLeadWritesNothing) {
 }
 
 TEST_F(TradingPhaseRequestsTest, ARequestForAnotherTradingDayIsRefused) {
-    ask(Phase::StartOfDay, 20261117);
+    ask(Phase::StartOfDay, 20'261'117);
     EXPECT_TRUE(links_.written.empty());
     EXPECT_EQ(links_.answers, (std::vector<Outcome>{Outcome::WrongTradingDay}));
 }
@@ -673,7 +673,7 @@ TEST_F(TradingPhaseRequestsTest, AReplacementNamingAPhaseEnteredOrPassedIsRefuse
 TEST_F(TradingPhaseRequestsTest, AReplacementIsRefusedByAFollowerBeforeTheDayAndForAnotherDay) {
     replace_schedule({{Phase::PreOpen, 3000}});
     ask(Phase::StartOfDay);
-    replace_schedule({{Phase::PreOpen, 3000}}, 20261117);
+    replace_schedule({{Phase::PreOpen, 3000}}, 20'261'117);
     links_.is_leading = false;
     replace_schedule({{Phase::PreOpen, 3000}});
     EXPECT_EQ(links_.schedule_answers,

@@ -87,7 +87,7 @@ struct OrderKeyHash {
         size_t hash = fix_common::SessionIdentityHash{}(key.session);
         for (uint8_t index = 0; index < key.cl_ord_id_len; ++index) {
             hash ^= static_cast<uint8_t>(key.cl_ord_id[index]);
-            hash *= 1099511628211ULL;
+            hash *= 1'099'511'628'211ULL;
         }
         return hash;
     }

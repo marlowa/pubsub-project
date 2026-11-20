@@ -12,7 +12,7 @@ namespace sequencer {
 
 namespace {
 
-constexpr int64_t nanoseconds_per_second = 1000000000;
+constexpr int64_t nanoseconds_per_second = 1'000'000'000;
 
 } // namespaces
 

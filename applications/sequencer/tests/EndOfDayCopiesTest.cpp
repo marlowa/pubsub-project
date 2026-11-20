@@ -59,7 +59,7 @@ TEST(EndOfDayCopiesTest, OnePublisherAnsweringTwiceCountsOnce) {
 TEST(EndOfDayCopiesTest, TheLimitIsCountedFromTheFirstStartForTheSameBegin) {
     EndOfDayCopies copies(1, limit_ns);
     copies.start(begin_seq_no, 100);
-    copies.start(begin_seq_no, 5'000);
+    copies.start(begin_seq_no, 5000);
     EXPECT_EQ(copies.assess(std::nullopt, 100 + limit_ns - 1).verdict, Verdict::Waiting);
     const EndOfDayCopies::Assessment passed = copies.assess(std::nullopt, 100 + limit_ns);
     EXPECT_EQ(passed.verdict, Verdict::LimitPassed);
@@ -69,7 +69,7 @@ TEST(EndOfDayCopiesTest, TheLimitIsCountedFromTheFirstStartForTheSameBegin) {
 TEST(EndOfDayCopiesTest, ADifferentBeginStartsTheWaitAfresh) {
     EndOfDayCopies copies(1, limit_ns);
     copies.start(begin_seq_no, 0);
-    copies.start(begin_seq_no + 10, 8'000);
+    copies.start(begin_seq_no + 10, 8000);
     EXPECT_EQ(copies.begin_seq_no(), begin_seq_no + 10);
     EXPECT_EQ(copies.assess(std::nullopt, limit_ns).verdict, Verdict::Waiting);
 }

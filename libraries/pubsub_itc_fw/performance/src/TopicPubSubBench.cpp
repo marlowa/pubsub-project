@@ -126,7 +126,7 @@ std::string make_wal_dir() {
     }
 }
 
-bool wait_for(const std::function<bool()>& pred, int timeout_ms = 60000) {
+bool wait_for(const std::function<bool()>& pred, int timeout_ms = 60'000) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (!pred()) {
         if (std::chrono::steady_clock::now() > deadline) {
@@ -495,7 +495,7 @@ void run_latency(QuillLogger& logger, int ping_count, int payload_size, int max_
 } // namespaces
 
 int main(int argc, char** argv) {
-    int throughput_count = argc > 1 ? std::atoi(argv[1]) : 100000;
+    int throughput_count = argc > 1 ? std::atoi(argv[1]) : 100'000;
     int latency_pings = argc > 2 ? std::atoi(argv[2]) : 5000;
     int payload_size = argc > 3 ? std::atoi(argv[3]) : 64;
     // Records per TopicPage. 1 restores the old one-record-per-writable behaviour (for A/B).

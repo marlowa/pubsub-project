@@ -163,7 +163,7 @@ TEST(ThrottleHeapUseTest, DecidingAboutCommandsNeverUsesTheHeap) {
     long accepted = 0;
     long refused = 0;
     const AllocationCounter counter;
-    for (int step = 0; step < 33000; ++step) {
+    for (int step = 0; step < 33'000; ++step) {
         const Clock::time_point now = start_time + std::chrono::milliseconds(step * 3);
         for (const ThrottledCommand command : {ThrottledCommand::Place, ThrottledCommand::Amend, ThrottledCommand::Cancel}) {
             if (is_accepted(throttles.try_accept(command, now))) {
@@ -204,6 +204,6 @@ TEST(ThrottleHeapUseTest, KeepingAndAnsweringCommandsNeverUsesTheHeap) {
         }
     }
     const long allocations = counter.count();
-    EXPECT_GT(kept, 10000) << "too few commands were kept for the measurement to mean anything";
+    EXPECT_GT(kept, 10'000) << "too few commands were kept for the measurement to mean anything";
     EXPECT_EQ(allocations, 0) << "keeping or answering a command used the heap";
 }

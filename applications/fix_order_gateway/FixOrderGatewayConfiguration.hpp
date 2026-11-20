@@ -56,7 +56,7 @@ struct FixOrderGatewayConfiguration {
     uint16_t tls_listen_port{9880};
 
     /** @brief Size in bytes of the per-connection raw receive buffer. */
-    int64_t raw_buffer_capacity{65536};
+    int64_t raw_buffer_capacity{65'536};
 
     // Sequencer outbound connection
     //
@@ -301,7 +301,7 @@ struct FixOrderGatewayConfiguration {
      *  behind and the ring fills, records are dropped with a Warning.  64 MB
      *  (67108864) is ample for most workloads.
      *  Mandatory: must be set explicitly in the TOML configuration file. */
-    int64_t fix_capture_ring_bytes{67108864};
+    int64_t fix_capture_ring_bytes{67'108'864};
 
     // Wall clock
 
@@ -321,13 +321,13 @@ struct FixOrderGatewayConfiguration {
     // The store of commands sent to the sequencers and not yet answered, kept to be sent again after
     // a change of sequencer leader. Used only with high availability on. See pubsub_itc_fw::UnansweredCommands and
     // docs/availability/commands_during_a_change_of_leader.md, section 7, decision 4.
-    size_t unanswered_commands_capacity{262144};
+    size_t unanswered_commands_capacity{262'144};
     size_t unanswered_commands_bytes{64 * 1024 * 1024};
 
     // How many unanswered commands make this gateway stop reading its members' connections, until answers bring the
     // number down to half; no more than unanswered_commands_capacity. Used only with high availability on
     // (docs/availability/a_gateway_limits_its_unanswered_commands.md).
-    size_t unanswered_commands_limit{16384};
+    size_t unanswered_commands_limit{16'384};
 
     /**
      * @brief This process's Prometheus scrape endpoint; see docs/operations/metrics.md.

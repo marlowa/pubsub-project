@@ -41,18 +41,18 @@ PoolStatistics large_pool() {
     PoolStatistics statistics;
     statistics.pool_name_ = "ExamplePool";
     statistics.object_size_ = 168U;
-    statistics.number_of_objects_per_pool_ = 1048576;
+    statistics.number_of_objects_per_pool_ = 1'048'576;
     statistics.number_of_pools_ = 21;
-    statistics.number_of_allocated_objects_ = 3000000;
-    statistics.number_of_objects_available_ = 19020096;
+    statistics.number_of_allocated_objects_ = 3'000'000;
+    statistics.number_of_objects_available_ = 19'020'096;
     statistics.number_of_full_pools_ = 2;
     return statistics;
 }
 
 AllocatorBehaviourStatistics busy_allocator() {
     AllocatorBehaviourStatistics statistics;
-    statistics.total_allocations = 9000000U;
-    statistics.fast_path_allocations = 8999000U;
+    statistics.total_allocations = 9'000'000U;
+    statistics.fast_path_allocations = 8'999'000U;
     statistics.slow_path_allocations = 1000U;
     statistics.expansion_events = 3U;
     statistics.failed_allocations = 0U;

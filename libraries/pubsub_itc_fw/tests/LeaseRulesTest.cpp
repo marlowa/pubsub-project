@@ -68,9 +68,9 @@ TEST(LeaseRulesTest, VoterNeverGrantsAnEpochBelowOneItHasGranted) {
 TEST(LeaseRulesTest, VoterHeldForItsOwnInstanceGrantsNothingElse) {
     pubsub_itc_fw::LeaseVoter voter(lease_period, start, 0);
     voter.hold_for_self();
-    EXPECT_EQ(voter.consider(2, 2, start + milliseconds{60000}).verdict, pubsub_itc_fw::LeaseVoter::Verdict::RefusedPromisedElsewhere);
+    EXPECT_EQ(voter.consider(2, 2, start + milliseconds{60'000}).verdict, pubsub_itc_fw::LeaseVoter::Verdict::RefusedPromisedElsewhere);
     voter.release_self();
-    EXPECT_EQ(voter.consider(2, 2, start + milliseconds{60000}).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
+    EXPECT_EQ(voter.consider(2, 2, start + milliseconds{60'000}).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
 }
 
 TEST(LeaseRulesTest, VoterRejectsANonPositiveLeasePeriod) {
@@ -412,7 +412,7 @@ TEST(LeaseRulesTest, OnlyALeaderMakesStatements) {
 
 TEST(LeaseRulesTest, AnInstanceThatHoldsAStatementThatItMayNotLeadDoesNotAsk) {
     pubsub_itc_fw::LeaseParticipant participant(2, lease_period, drift_allowance, start, 0, statements);
-    const Clock::time_point later = start + milliseconds{60000};
+    const Clock::time_point later = start + milliseconds{60'000};
     EXPECT_EQ(participant.record_peer_statement(pubsub_itc_fw::LeaderStatement{1, 1, 2, false}), 2);
     EXPECT_FALSE(participant.may_ask_to_lead(later));
     EXPECT_EQ(participant.record_peer_statement(pubsub_itc_fw::LeaderStatement{1, 1, 1, true}), 0) << "a late statement is not echoed";
@@ -424,5 +424,5 @@ TEST(LeaseRulesTest, AnInstanceThatHoldsAStatementThatItMayNotLeadDoesNotAsk) {
 TEST(LeaseRulesTest, ARestoredStatementIsHonouredAfterARestart) {
     pubsub_itc_fw::LeaseParticipant participant(2, lease_period, drift_allowance, start, 1, statements);
     participant.restore_recorded_statement(pubsub_itc_fw::LeaderStatement{1, 1, 1, false});
-    EXPECT_FALSE(participant.may_ask_to_lead(start + milliseconds{60000}));
+    EXPECT_FALSE(participant.may_ask_to_lead(start + milliseconds{60'000}));
 }

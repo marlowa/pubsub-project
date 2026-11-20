@@ -179,7 +179,7 @@ TEST_F(FixedCapacityRingBufferTest, StaysCorrectAfterWrappingManyTimesAtEveryCap
     // The buffer is compared against std::deque through a long random run of additions and
     // removals at each capacity, so the positions cross the end of the storage many times, from
     // every starting point, with the buffer at every level of fullness.
-    std::mt19937 random_engine(20261002U);
+    std::mt19937 random_engine(20'261'002U);
     for (size_t capacity = 1; capacity <= 17; ++capacity) {
         FixedCapacityRingBuffer<int> buffer(capacity);
         std::deque<int> expected;

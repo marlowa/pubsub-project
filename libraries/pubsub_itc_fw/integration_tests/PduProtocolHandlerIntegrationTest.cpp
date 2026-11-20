@@ -92,7 +92,7 @@ static constexpr size_t inbound_decode_arena_size = 3 * 1024 * 1024;
 // SO_SNDBUF value applied to the sending socket to guarantee blocking.
 // The kernel doubles this value internally, giving an effective buffer of
 // 2 * small_send_buffer_size bytes -- well below the 2 MB payload.
-static constexpr int small_send_buffer_size = 16384;
+static constexpr int small_send_buffer_size = 16'384;
 
 // Size of the large DataResponse results string used in LargeResponseForcesPartialSend.
 static constexpr size_t large_response_string_bytes = 2 * 1024 * 1024;
@@ -401,7 +401,7 @@ class PduProtocolHandlerIntegrationTest : public ::testing::Test {
         logger_.reset();
     }
 
-    static bool wait_for(std::function<bool()> pred, int timeout_ms = 10000) {
+    static bool wait_for(std::function<bool()> pred, int timeout_ms = 10'000) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (!pred()) {
             if (std::chrono::steady_clock::now() > deadline) {
@@ -501,7 +501,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesPartialsend) {
 
     EXPECT_TRUE(wait_for([&]() { return connector_thread->query_sent.load(std::memory_order_acquire); })) << "Connector: large DataQuery not sent";
 
-    EXPECT_TRUE(wait_for([&]() { return listener_thread->query_received.load(std::memory_order_acquire); }, 15000))
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->query_received.load(std::memory_order_acquire); }, 15'000))
         << "Listener: large DataQuery not received within timeout";
 
     EXPECT_TRUE(wait_for([&]() { return listener_thread->response_sent.load(std::memory_order_acquire); })) << "Listener: DataResponse not sent";
@@ -567,7 +567,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeResponseForcesPartialSend) {
 
     EXPECT_TRUE(wait_for([&]() { return listener_thread->response_sent.load(std::memory_order_acquire); })) << "Listener: large DataResponse not sent";
 
-    EXPECT_TRUE(wait_for([&]() { return connector_thread->response_received.load(std::memory_order_acquire); }, 15000))
+    EXPECT_TRUE(wait_for([&]() { return connector_thread->response_received.load(std::memory_order_acquire); }, 15'000))
         << "Connector: large DataResponse not received within timeout";
 
     EXPECT_TRUE(wait_for([&]() { return connector_thread->connection_lost.load(std::memory_order_acquire); }))
@@ -627,7 +627,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, LargeQueryNameForcesOutboundWriteReady
 
     EXPECT_TRUE(wait_for([&]() { return connector_thread->query_sent.load(std::memory_order_acquire); })) << "Connector: large DataQuery not sent";
 
-    EXPECT_TRUE(wait_for([&]() { return listener_thread->query_received.load(std::memory_order_acquire); }, 15000))
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->query_received.load(std::memory_order_acquire); }, 15'000))
         << "Listener: large DataQuery not received within timeout";
 
     EXPECT_TRUE(wait_for([&]() { return listener_thread->response_sent.load(std::memory_order_acquire); })) << "Listener: DataResponse not sent";
@@ -878,7 +878,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
     // The connector's teardown_connection fires while:
     //   conn.has_pending_send() is true (first PDU still being written), and
     //   the second PDU is waiting in the connection's queue.
-    EXPECT_TRUE(wait_for([&]() { return connector_thread->connection_lost.load(std::memory_order_acquire); }, 15000))
+    EXPECT_TRUE(wait_for([&]() { return connector_thread->connection_lost.load(std::memory_order_acquire); }, 15'000))
         << "Connector: ConnectionLost not received after listener teardown";
 
     EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_lost.load(std::memory_order_acquire); })) << "Listener: ConnectionLost not received";

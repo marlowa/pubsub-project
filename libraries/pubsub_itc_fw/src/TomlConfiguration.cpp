@@ -136,7 +136,7 @@ struct TomlConfiguration::Impl {
         if (suffix == suffix_ns) {
             ns_out = count;
         } else if (suffix == suffix_us) {
-            ns_out = count * 1'000LL;
+            ns_out = count * 1000LL;
         } else if (suffix == suffix_ms) {
             ns_out = count * 1'000'000LL;
         } else if (suffix == suffix_s) {

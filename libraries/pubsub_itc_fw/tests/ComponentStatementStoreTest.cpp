@@ -41,7 +41,7 @@ class ComponentStatementStoreTest : public ::testing::Test {
 } // un-named namespace
 
 TEST_F(ComponentStatementStoreTest, StatementsAreReadBackForEachGroup) {
-    const pubsub_itc_fw::ComponentStatementStore store(path_, 20261116);
+    const pubsub_itc_fw::ComponentStatementStore store(path_, 20'261'116);
     pubsub_itc_fw::ComponentStatementStore::Statements statements;
     statements[first_pair] = pubsub_itc_fw::LeaderStatement{1, 5, 3, false};
     statements[second_pair] = pubsub_itc_fw::LeaderStatement{2, 6, 1, true};
@@ -55,21 +55,21 @@ TEST_F(ComponentStatementStoreTest, StatementsAreReadBackForEachGroup) {
 }
 
 TEST_F(ComponentStatementStoreTest, AMissingFileReadsAsNoStatements) {
-    EXPECT_TRUE(pubsub_itc_fw::ComponentStatementStore(path_, 20261116).load().empty());
+    EXPECT_TRUE(pubsub_itc_fw::ComponentStatementStore(path_, 20'261'116).load().empty());
 }
 
 TEST_F(ComponentStatementStoreTest, ADamagedLineIsSkippedAndTheRestRead) {
     std::ofstream(path_) << "1 3 5 1 0\n"
                          << "garbage\n"
                          << "2 1 6 2 1\n";
-    const pubsub_itc_fw::ComponentStatementStore::Statements read = pubsub_itc_fw::ComponentStatementStore(path_, 20261116).load();
+    const pubsub_itc_fw::ComponentStatementStore::Statements read = pubsub_itc_fw::ComponentStatementStore(path_, 20'261'116).load();
     ASSERT_EQ(read.size(), 1U);
     EXPECT_EQ(read.count(first_pair), 0U) << "a statement naming instance 3 as its leader was believed";
     EXPECT_EQ(read.at(second_pair).leader_id, 1);
 }
 
 TEST_F(ComponentStatementStoreTest, WithNoPathNothingIsKept) {
-    const pubsub_itc_fw::ComponentStatementStore store("", 20261116);
+    const pubsub_itc_fw::ComponentStatementStore store("", 20'261'116);
     pubsub_itc_fw::ComponentStatementStore::Statements statements;
     statements[first_pair] = pubsub_itc_fw::LeaderStatement{1, 5, 3, false};
     EXPECT_FALSE(store.save(statements));

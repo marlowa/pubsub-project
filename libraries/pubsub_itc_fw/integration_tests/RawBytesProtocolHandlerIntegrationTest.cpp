@@ -140,7 +140,7 @@ namespace pubsub_itc_fw::tests {
 static const std::string request_payload = "HELLO_RAW_SERVER";
 static const std::string response_payload = "HELLO_RAW_CLIENT";
 
-static constexpr int64_t raw_buffer_capacity = 65536;
+static constexpr int64_t raw_buffer_capacity = 65'536;
 static constexpr size_t length_prefix_size = sizeof(uint32_t);
 
 // Raw POSIX socket helpers
@@ -861,7 +861,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, LargeReplyContinueSend) {
         << "Listener: large reply not sent: " << last_wait_failure_description();
 
     // Drain all the reply bytes -- this unblocks EPOLLOUT and drives continue_send().
-    std::vector<uint8_t> drain_buf(65536);
+    std::vector<uint8_t> drain_buf(65'536);
     size_t total_received = 0;
     while (total_received < large_reply_payload_size) {
         const ssize_t n = ::recv(sock_fd, drain_buf.data(), drain_buf.size(), 0);
@@ -1008,7 +1008,7 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, EverySendOfABurstToAFullSocketIsD
     constexpr size_t expected_bytes = NumberedBurstListenerThread::message_count * NumberedBurstListenerThread::message_size;
     std::vector<uint8_t> received;
     received.reserve(expected_bytes);
-    std::vector<uint8_t> chunk(65536);
+    std::vector<uint8_t> chunk(65'536);
     while (received.size() < expected_bytes) {
         pollfd waiting{sock_fd, POLLIN, 0};
         if (::poll(&waiting, 1, 2000) <= 0) {

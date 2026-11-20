@@ -120,7 +120,7 @@ class PduProtocolHandlerTest : public ::testing::Test {
 
         // A modest slab for the inbound allocator passed to PduProtocolHandler.
         // The send-path tests never reach PduParser so this is just for construction.
-        inbound_allocator_ = std::make_unique<ExpandableSlabAllocator>(65536);
+        inbound_allocator_ = std::make_unique<ExpandableSlabAllocator>(65'536);
 
         // Create the socketpair. handler_fd_ is set non-blocking by TcpSocket::adopt().
         // raw_fd_ is set non-blocking explicitly below -- no fd in this test may block.
@@ -273,11 +273,11 @@ TEST_F(PduProtocolHandlerTest, SendPrebuiltProducesPartialSend) {
     // Now drain the raw end and call continue_send() until complete.
     int iterations = 0;
     while (handler_->has_pending_send()) {
-        drain_raw(65536);
+        drain_raw(65'536);
         auto [cont_ok, cont_error] = handler_->continue_send();
         ASSERT_TRUE(cont_ok) << cont_error;
         ++iterations;
-        ASSERT_LT(iterations, 10000) << "continue_send did not complete within expected iterations";
+        ASSERT_LT(iterations, 10'000) << "continue_send did not complete within expected iterations";
         if (handler_->has_pending_send()) {
             std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
@@ -304,7 +304,7 @@ TEST_F(PduProtocolHandlerTest, ContinueSendReleasesChunkOnCompletion) {
 
     // Drain and continue until done.
     while (handler_->has_pending_send()) {
-        drain_raw(65536);
+        drain_raw(65'536);
         auto [cont_ok, cont_error] = handler_->continue_send();
         ASSERT_TRUE(cont_ok) << cont_error;
         if (handler_->has_pending_send()) {

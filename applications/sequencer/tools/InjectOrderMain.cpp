@@ -53,7 +53,7 @@ namespace {
 
 struct Options {
     std::string host{"127.0.0.1"};
-    uint16_t port{11001};
+    uint16_t port{11'001};
     std::string comp_id{"INJECT-TEST"};
     std::string cl_ord_id;
     std::string cancel_orig_cl_ord_id;
@@ -209,7 +209,7 @@ std::vector<uint8_t> encode_command(const Options& options, const std::string& c
     envelope.payload.data = payload.data();
     envelope.payload.size = payload.size();
     envelope.has_gateway_session_conn_id = true;
-    envelope.gateway_session_conn_id = 999999;
+    envelope.gateway_session_conn_id = 999'999;
     envelope.has_origin_gateway_id = true;
     envelope.origin_gateway_id = options.protocol;
     envelope.has_sender_comp_id = true;
@@ -260,7 +260,7 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
     }
     // A moment for the sequencer to read the frames before the connection closes under them.
-    ::usleep(200000);
+    ::usleep(200'000);
     ::close(socket_fd);
     if (!sent) {
         fmt::print("could not send the command\n");

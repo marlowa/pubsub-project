@@ -41,7 +41,7 @@ struct ApplicationThreadConfiguration {
      *
      * Default: 65536 bytes (64 KB).
      */
-    size_t outbound_slab_size{65536};
+    size_t outbound_slab_size{65'536};
 
     /**
      * @brief Size in bytes of the decode arena buffer owned by this thread.
@@ -58,7 +58,7 @@ struct ApplicationThreadConfiguration {
      *
      * Default: 65536 bytes (64 KB).
      */
-    size_t inbound_decode_arena_size{65536};
+    size_t inbound_decode_arena_size{65'536};
 
     /**
      * @brief Scope label for this thread's metrics, or empty to record none.

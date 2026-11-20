@@ -95,7 +95,7 @@ std::set<uint16_t> parse_ports(const char* text) {
         const size_t comma = remaining.find(',');
         const std::string port_text(remaining.substr(0, comma));
         const long port = std::strtol(port_text.c_str(), nullptr, 10);
-        if (port > 0 && port <= 65535) {
+        if (port > 0 && port <= 65'535) {
             ports.insert(static_cast<uint16_t>(port));
         }
         if (comma == std::string_view::npos) {

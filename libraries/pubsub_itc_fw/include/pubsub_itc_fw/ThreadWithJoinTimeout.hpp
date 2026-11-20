@@ -162,12 +162,12 @@ class ThreadWithJoinTimeout {
         timespec ts{};
         clock_gettime(CLOCK_REALTIME, &ts);
 
-        auto ns = static_cast<long>(timeout.count()) * 1000000L;
-        ts.tv_sec += ns / 1000000000L;
-        ts.tv_nsec += ns % 1000000000L;
-        if (ts.tv_nsec >= 1000000000L) {
+        auto ns = static_cast<long>(timeout.count()) * 1'000'000L;
+        ts.tv_sec += ns / 1'000'000'000L;
+        ts.tv_nsec += ns % 1'000'000'000L;
+        if (ts.tv_nsec >= 1'000'000'000L) {
             ts.tv_sec += 1;
-            ts.tv_nsec -= 1000000000L;
+            ts.tv_nsec -= 1'000'000'000L;
         }
 
         const int rc = pthread_timedjoin_np(thread_, nullptr, &ts);

@@ -388,7 +388,7 @@ class MessagesWaitingIntegrationTest : public ::testing::Test {
         logger_.reset();
     }
 
-    bool wait_for(const std::function<bool()>& predicate, int timeout_ms = 30000) {
+    bool wait_for(const std::function<bool()>& predicate, int timeout_ms = 30'000) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (!predicate()) {
             if (std::chrono::steady_clock::now() > deadline) {
@@ -550,14 +550,14 @@ TEST_F(MessagesWaitingIntegrationTest, WithoutAnEffectiveLimitAFloodHoldsUpAnoth
 // Fairness between limited connections: two floods into one thread, each limited, are both served throughout.
 TEST_F(MessagesWaitingIntegrationTest, TwoLimitedFloodsIntoOneThreadAreBothServed) {
     Receiver& receiver = make_listening_receiver({64, 64}, {unstamped, unstamped}, TakingPlan{});
-    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(flood) || receiver.count(1) == static_cast<size_t>(flood); }, 60000));
+    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(flood) || receiver.count(1) == static_cast<size_t>(flood); }, 60'000));
     // When the first finishes, the second must be well under way, not waiting for its turn.
     const size_t behind = std::min(receiver.count(0), receiver.count(1));
     EXPECT_GT(behind, static_cast<size_t>(flood) / 2) << "one flood was served while the other waited: the senders had sent " << senders_[0]->sent.load()
                                                       << " and " << senders_[1]->sent.load() << ", the receiver had " << receiver.count(0) << " and "
                                                       << receiver.count(1) << ", and the counts waiting were " << receiver.waiting_at_last_tick(0) << " and "
                                                       << receiver.waiting_at_last_tick(1);
-    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(flood) && receiver.count(1) == static_cast<size_t>(flood); }, 60000));
+    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(flood) && receiver.count(1) == static_cast<size_t>(flood); }, 60'000));
     EXPECT_LE(receiver.connection(0).most_waiting, 64);
     EXPECT_LE(receiver.connection(1).most_waiting, 64);
     EXPECT_TRUE(exactly_once_in_order(receiver.connection(0).received, flood));
@@ -571,14 +571,14 @@ TEST_F(MessagesWaitingIntegrationTest, TwoLimitedFloodsIntoOneThreadAreBothServe
 TEST_F(MessagesWaitingIntegrationTest, AThreadAlternatingSlowAndFastLosesNothingAndLeavesNothingStopped) {
     constexpr int soak = 1'000'000;
     const auto big = std::make_tuple(soak, false, std::chrono::milliseconds{0});
-    const auto trickle = std::make_tuple(2'000, true, std::chrono::milliseconds{2});
+    const auto trickle = std::make_tuple(2000, true, std::chrono::milliseconds{2});
     Receiver& receiver = make_listening_receiver({16, 256, 4096, 0}, {big, big, big, trickle}, TakingPlan{20, 0, std::chrono::milliseconds{50}});
     ASSERT_TRUE(wait_for(
         [&]() {
             return receiver.count(0) == static_cast<size_t>(soak) && receiver.count(1) == static_cast<size_t>(soak) &&
-                   receiver.count(2) == static_cast<size_t>(soak) && receiver.count(3) == 2'000U;
+                   receiver.count(2) == static_cast<size_t>(soak) && receiver.count(3) == 2000U;
         },
-        180000))
+        180'000))
         << "received " << receiver.count(0) << ", " << receiver.count(1) << ", " << receiver.count(2) << " of " << soak << ", and " << receiver.count(3)
         << " of 2000 trickled";
     const int64_t limits[] = {16, 256, 4096};
@@ -598,7 +598,7 @@ TEST_F(MessagesWaitingIntegrationTest, AFloodWithoutALimitDoesNotStopItsReactorS
     constexpr int big_flood = 1'000'000;
     const auto big = std::make_tuple(big_flood, false, std::chrono::milliseconds{0});
     Receiver& receiver = make_listening_receiver({0}, {big}, TakingPlan{0, 0, std::chrono::milliseconds{0}}, true);
-    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(big_flood); }, 120000));
+    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(big_flood); }, 120'000));
     EXPECT_TRUE(exactly_once_in_order(receiver.connection(0).received, big_flood));
     EXPECT_GT(tick_counter_->ticks.load(), 100) << "the flood was too short for the timer to be tested";
     EXPECT_LT(tick_counter_->longest_gap_us.load(), 20'000) << "the reactor went more than 20 ms without ringing another thread's timer";
@@ -609,11 +609,13 @@ TEST_F(MessagesWaitingIntegrationTest, TwoFloodsWithoutALimitAreBothServedThroug
     constexpr int big_flood = 500'000;
     const auto big = std::make_tuple(big_flood, false, std::chrono::milliseconds{0});
     Receiver& receiver = make_listening_receiver({0, 0}, {big, big}, TakingPlan{0, 0, std::chrono::milliseconds{0}});
-    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(big_flood) || receiver.count(1) == static_cast<size_t>(big_flood); }, 120000));
+    ASSERT_TRUE(
+        wait_for([&]() { return receiver.count(0) == static_cast<size_t>(big_flood) || receiver.count(1) == static_cast<size_t>(big_flood); }, 120'000));
     const size_t behind = std::min(receiver.count(0), receiver.count(1));
     EXPECT_GT(behind, static_cast<size_t>(big_flood) / 2)
         << "one flood was served while the other waited: " << receiver.count(0) << " and " << receiver.count(1);
-    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(big_flood) && receiver.count(1) == static_cast<size_t>(big_flood); }, 120000));
+    ASSERT_TRUE(
+        wait_for([&]() { return receiver.count(0) == static_cast<size_t>(big_flood) && receiver.count(1) == static_cast<size_t>(big_flood); }, 120'000));
 }
 
 } // namespaces

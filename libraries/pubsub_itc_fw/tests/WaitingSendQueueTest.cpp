@@ -36,10 +36,10 @@ TEST(WaitingSendQueueTest, AnEmptyQueueHoldsNoStorage) {
 TEST(WaitingSendQueueTest, SendsLeaveInTheOrderTheyWereAdded) {
     WaitingSendQueue queue;
     for (uintptr_t marker = 1; marker <= 1000; ++marker) {
-        ASSERT_TRUE(queue.add(fake_send(marker, 10), 65536, plenty_of_bytes));
+        ASSERT_TRUE(queue.add(fake_send(marker, 10), 65'536, plenty_of_bytes));
     }
     EXPECT_EQ(queue.size(), 1000U);
-    EXPECT_EQ(queue.bytes(), 10000U);
+    EXPECT_EQ(queue.bytes(), 10'000U);
     for (uintptr_t marker = 1; marker <= 1000; ++marker) {
         ASSERT_EQ(queue.front().chunk, reinterpret_cast<void*>(marker));
         queue.pop_front();
@@ -50,10 +50,10 @@ TEST(WaitingSendQueueTest, SendsLeaveInTheOrderTheyWereAdded) {
 
 TEST(WaitingSendQueueTest, StorageStartsSmallDoublesAsItFillsAndIsReleasedWhenEmpty) {
     WaitingSendQueue queue;
-    ASSERT_TRUE(queue.add(fake_send(1, 1), 65536, plenty_of_bytes));
+    ASSERT_TRUE(queue.add(fake_send(1, 1), 65'536, plenty_of_bytes));
     EXPECT_EQ(queue.capacity(), 64U);
     for (uintptr_t marker = 2; marker <= 65; ++marker) {
-        ASSERT_TRUE(queue.add(fake_send(marker, 1), 65536, plenty_of_bytes));
+        ASSERT_TRUE(queue.add(fake_send(marker, 1), 65'536, plenty_of_bytes));
     }
     EXPECT_EQ(queue.capacity(), 128U);
     while (!queue.empty()) {
@@ -75,16 +75,16 @@ TEST(WaitingSendQueueTest, GrowingStopsAtTheLimitOnTheNumberOfSends) {
 
 TEST(WaitingSendQueueTest, ASendThatWouldPassTheByteLimitIsRefused) {
     WaitingSendQueue queue;
-    ASSERT_TRUE(queue.add(fake_send(1, 600), 65536, 1000));
-    EXPECT_FALSE(queue.add(fake_send(2, 401), 65536, 1000));
-    EXPECT_TRUE(queue.add(fake_send(3, 400), 65536, 1000)) << "a send that reaches the byte limit exactly was refused";
+    ASSERT_TRUE(queue.add(fake_send(1, 600), 65'536, 1000));
+    EXPECT_FALSE(queue.add(fake_send(2, 401), 65'536, 1000));
+    EXPECT_TRUE(queue.add(fake_send(3, 400), 65'536, 1000)) << "a send that reaches the byte limit exactly was refused";
     EXPECT_EQ(queue.bytes(), 1000U);
 }
 
 TEST(WaitingSendQueueTest, AnEmptyQueueAcceptsOneSendLargerThanTheByteLimit) {
     WaitingSendQueue queue;
-    EXPECT_TRUE(queue.add(fake_send(1, 5000), 65536, 1000)) << "a single large send would be refused for ever";
-    EXPECT_FALSE(queue.add(fake_send(2, 1), 65536, 1000));
+    EXPECT_TRUE(queue.add(fake_send(1, 5000), 65'536, 1000)) << "a single large send would be refused for ever";
+    EXPECT_FALSE(queue.add(fake_send(2, 1), 65'536, 1000));
 }
 
 TEST(WaitingSendQueueTest, ALimitOfZeroSendsIsRefused) {
@@ -105,7 +105,7 @@ TEST(WaitingSendQueueTest, ReleaseAllReturnsEveryChunkToItsAllocator) {
     constexpr uint32_t chunk_bytes = 512;
     for (int index = 0; index < 64; ++index) {
         auto [slab_id, chunk] = allocator.allocate(chunk_bytes);
-        ASSERT_TRUE(queue.add(WaitingSend{&allocator, slab_id, chunk, chunk_bytes}, 65536, plenty_of_bytes));
+        ASSERT_TRUE(queue.add(WaitingSend{&allocator, slab_id, chunk, chunk_bytes}, 65'536, plenty_of_bytes));
     }
     const int slabs_holding_the_chunks = allocator.slab_count();
     ASSERT_GT(slabs_holding_the_chunks, 1);

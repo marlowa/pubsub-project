@@ -28,7 +28,7 @@ using std::chrono::seconds;
 
 constexpr seconds orders_held_at_most{30};
 constexpr seconds recovery_limit{10};
-constexpr int64_t one_second_ns = 1000000000;
+constexpr int64_t one_second_ns = 1'000'000'000;
 
 // What EnginePresence reads from the thread, and what it asks the thread to do.
 struct RecordingLinks : public EnginePresenceLinksInterface {
@@ -236,7 +236,7 @@ TEST_F(EnginePresenceTest, StoppingLeadingForgetsTheTimeWithoutAnEngine) {
 // ---- The limit on the recovery the venue does by itself -------------------------------------------------------------
 
 TEST_F(EnginePresenceTest, TradingIsHaltedOnceWhenNoEngineIsRoutedToForLongerThanTheLimit) {
-    presence_->started(scratch_, 20261116, 0, wall_start_ns_);
+    presence_->started(scratch_, 20'261'116, 0, wall_start_ns_);
     presence_->check_absence(wall_start_ns_, start_);
     EXPECT_EQ(presence_->absence_began_ns(), wall_start_ns_);
     presence_->check_absence(wall_start_ns_ + recovery_limit.count() * one_second_ns, start_);
@@ -253,14 +253,14 @@ TEST_F(EnginePresenceTest, TradingIsHaltedOnceWhenNoEngineIsRoutedToForLongerTha
 
 TEST_F(EnginePresenceTest, AnInstanceThatDoesNotLeadDoesNotHalt) {
     links_.is_leading = false;
-    presence_->started(scratch_, 20261116, 0, wall_start_ns_);
+    presence_->started(scratch_, 20'261'116, 0, wall_start_ns_);
     presence_->check_absence(wall_start_ns_, start_);
     presence_->check_absence(wall_start_ns_ + (recovery_limit.count() + 1) * one_second_ns, start_);
     EXPECT_TRUE(links_.halts_written.empty());
 }
 
 TEST_F(EnginePresenceTest, ACatchUpThatWillTakeTooLongHaltsBeforeTheLimitAndItsEndStopsTheEstimate) {
-    presence_->started(scratch_, 20261116, 0, wall_start_ns_);
+    presence_->started(scratch_, 20'261'116, 0, wall_start_ns_);
     presence_->check_absence(wall_start_ns_, start_);
     const pubsub_itc_fw::ConnectionID engine{71};
     presence_->catch_up_progress(engine, RecoveryLimitRule::CatchUpProgress{0, 1000});
@@ -271,7 +271,7 @@ TEST_F(EnginePresenceTest, ACatchUpThatWillTakeTooLongHaltsBeforeTheLimitAndItsE
 }
 
 TEST_F(EnginePresenceTest, TheEndOfACatchUpOnAnotherConnectionLeavesItsProgressInPlace) {
-    presence_->started(scratch_, 20261116, 0, wall_start_ns_);
+    presence_->started(scratch_, 20'261'116, 0, wall_start_ns_);
     presence_->check_absence(wall_start_ns_, start_);
     const pubsub_itc_fw::ConnectionID engine{71};
     presence_->catch_up_progress(engine, RecoveryLimitRule::CatchUpProgress{0, 1000});
@@ -283,7 +283,7 @@ TEST_F(EnginePresenceTest, TheEndOfACatchUpOnAnotherConnectionLeavesItsProgressI
 }
 
 TEST_F(EnginePresenceTest, TheEndOfTheCatchUpBeingMeasuredStopsTheEstimate) {
-    presence_->started(scratch_, 20261116, 0, wall_start_ns_);
+    presence_->started(scratch_, 20'261'116, 0, wall_start_ns_);
     presence_->check_absence(wall_start_ns_, start_);
     const pubsub_itc_fw::ConnectionID engine{71};
     presence_->catch_up_progress(engine, RecoveryLimitRule::CatchUpProgress{0, 1000});
@@ -295,14 +295,14 @@ TEST_F(EnginePresenceTest, TheEndOfTheCatchUpBeingMeasuredStopsTheEstimate) {
 }
 
 TEST_F(EnginePresenceTest, AfterTheWholeVenueWasDownTheAbsenceIsMeasuredFromTheLastEngineRoutedTo) {
-    presence_->started(scratch_, 20261116, 0, wall_start_ns_);
+    presence_->started(scratch_, 20'261'116, 0, wall_start_ns_);
     links_.engine_routed = true;
     const int64_t routed_at_ns = wall_start_ns_ + 5 * one_second_ns;
     presence_->check_absence(routed_at_ns, start_);
     presence_.reset();
 
     presence_ = make_presence();
-    presence_->started(scratch_, 20261116, wall_start_ns_, routed_at_ns + 60 * one_second_ns);
+    presence_->started(scratch_, 20'261'116, wall_start_ns_, routed_at_ns + 60 * one_second_ns);
     EXPECT_EQ(presence_->absence_began_ns(), routed_at_ns) << "the time kept beside the WAL, later than the first record";
     EXPECT_TRUE(logged("this process last knew of a matching engine"));
 
@@ -311,7 +311,7 @@ TEST_F(EnginePresenceTest, AfterTheWholeVenueWasDownTheAbsenceIsMeasuredFromTheL
 }
 
 TEST_F(EnginePresenceTest, AnEmptyWalHasNothingToRecover) {
-    presence_->started(scratch_, 20261116, 0, wall_start_ns_);
+    presence_->started(scratch_, 20'261'116, 0, wall_start_ns_);
     EXPECT_EQ(presence_->absence_began_ns(), 0);
 }
 

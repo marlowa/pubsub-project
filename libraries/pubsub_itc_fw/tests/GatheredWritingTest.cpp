@@ -433,7 +433,7 @@ WaitingSend real_send(ExpandableSlabAllocator& allocator, const std::vector<uint
 }
 
 TEST(GatheredWritingTest, AFailedGatheredWriteGivesEveryChunkBackAndFails) {
-    ExpandableSlabAllocator allocator(65536);
+    ExpandableSlabAllocator allocator(65'536);
     const auto frames = make_frames({10, 20});
     FakeConnection connection(frames);
     connection.gathered_sends().add(real_send(allocator, frames[0]));
@@ -450,7 +450,7 @@ TEST(GatheredWritingTest, AFailedGatheredWriteGivesEveryChunkBackAndFails) {
 // The waiting queue refuses what is left, for its limits: those are given back and the write fails, so that the
 // connection is closed, as when a send cannot be queued today.
 TEST(GatheredWritingTest, WhatTheQueueRefusesIsGivenBackAndTheWriteFails) {
-    ExpandableSlabAllocator allocator(65536);
+    ExpandableSlabAllocator allocator(65'536);
     const auto frames = make_frames({10, 10, 10, 10});
     FakeConnection connection(frames);
     for (const auto& frame : frames) {

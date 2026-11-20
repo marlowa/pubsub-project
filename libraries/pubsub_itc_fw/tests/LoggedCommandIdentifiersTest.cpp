@@ -52,7 +52,7 @@ TEST(LoggedCommandIdentifiersTest, APositionTooLargeToPackIsHeldAsUnknown) {
 }
 
 TEST(LoggedCommandIdentifiersTest, APositionPacksAndUnpacksUnchanged) {
-    const WalPosition position{65535, (uint64_t{1} << 48U) - 1};
+    const WalPosition position{65'535, (uint64_t{1} << 48U) - 1};
     const WalPosition back = LoggedCommandIdentifiers::unpack(LoggedCommandIdentifiers::pack(position));
     EXPECT_EQ(back.segment, position.segment);
     EXPECT_EQ(back.offset, position.offset);
@@ -61,17 +61,17 @@ TEST(LoggedCommandIdentifiersTest, APositionPacksAndUnpacksUnchanged) {
 
 TEST(LoggedCommandIdentifiersTest, AMillionDistinctIdentitiesGiveAMillionDistinctNumbers) {
     std::set<uint64_t> seen;
-    for (int number = 0; number < 1000000; ++number) {
+    for (int number = 0; number < 1'000'000; ++number) {
         seen.insert(LoggedCommandIdentifiers::identifier("MEMBER" + std::to_string(number % 1000) + "/order-" + std::to_string(number)));
     }
-    EXPECT_EQ(seen.size(), 1000000U);
+    EXPECT_EQ(seen.size(), 1'000'000U);
 }
 
 // The table is reserved once and must never grow: a rehash of a table this size would stall the thread that
 // sequences orders. Reserving 900,000 at a maximum fill of 0.9 needs at least 1,000,000 slots, which rounds up
 // to 2^20.
 TEST(LoggedCommandIdentifiersTest, TheTableIsReservedOnceAndNeverGrowsUpToItsCapacity) {
-    const size_t capacity = 900000;
+    const size_t capacity = 900'000;
     LoggedCommandIdentifiers record(capacity, nullptr);
     EXPECT_EQ(record.slot_count(), size_t{1} << 20U);
     for (size_t number = 0; number < capacity; ++number) {
@@ -100,9 +100,9 @@ TEST(LoggedCommandIdentifiersTest, TheTableIsReportedToTheGrowthReporter) {
     reporter.report_threshold_bytes = 1024;
     size_t reported = 0;
     reporter.on_large_allocation = [&reported](size_t bytes, size_t /*largest*/) { reported = bytes; };
-    const LoggedCommandIdentifiers record(900000, &reporter);
+    const LoggedCommandIdentifiers record(900'000, &reporter);
     EXPECT_EQ(reported, (size_t{1} << 20U) * 24U);
-    EXPECT_EQ(record.capacity(), 900000U);
+    EXPECT_EQ(record.capacity(), 900'000U);
 }
 
 TEST(LoggedCommandIdentifiersTest, TheTableSizeWorkedOutBeforehandIsTheSizeReserved) {

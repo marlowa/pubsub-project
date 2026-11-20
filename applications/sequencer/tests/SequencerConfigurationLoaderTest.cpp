@@ -418,7 +418,7 @@ TEST(SequencerConfigurationLoaderTest, RejectsANegativeNumberOfPublishers) {
 TEST(SequencerConfigurationLoaderTest, ReadsTheListenerForOperators) {
     const auto config = load_with_gateways(one_gateway);
     EXPECT_EQ(config.operator_listen_host, "127.0.0.1");
-    EXPECT_EQ(config.operator_listen_port, 11050);
+    EXPECT_EQ(config.operator_listen_port, 11'050);
     EXPECT_EQ(config.operator_tls_certificate_path, "operator_listener.crt");
     EXPECT_EQ(config.operator_tls_private_key_path, "operator_listener.key");
     EXPECT_EQ(config.operator_tls_ca_path, "operator_ca.crt");
@@ -438,7 +438,7 @@ TEST(SequencerConfigurationLoaderTest, RejectsAListenerForOperatorsWithNoCertifi
 TEST(SequencerConfigurationLoaderTest, ReadsHowManyRecordsAreKeptForThePublishers) {
     const auto config = load_with_gateways(one_gateway);
     EXPECT_EQ(config.records_kept_for_publishers, 100U);
-    EXPECT_EQ(config.bytes_kept_for_publishers, 40000U);
+    EXPECT_EQ(config.bytes_kept_for_publishers, 40'000U);
 }
 
 TEST(SequencerConfigurationLoaderTest, AcceptsKeepingNoRecordsForThePublishers) {

@@ -24,7 +24,7 @@ namespace tag = fix_codec::tag;
 namespace {
 
 TEST(FixSerialiserTest, SerialisesAllRejectReferenceFields) {
-    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    pubsub_itc_fw::ReplayClock clock(1'700'000'000'000'000'000LL);
     const FixSerialiser serialiser("GATEWAY", "CLIENT", clock);
 
     FixMessage reject{};

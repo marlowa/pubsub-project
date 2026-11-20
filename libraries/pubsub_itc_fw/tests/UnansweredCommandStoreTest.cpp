@@ -134,7 +134,7 @@ TEST(UnansweredCommandStoreTest, RandomCommandsAndAnswersAgreeWithASimpleModel) 
     std::uniform_int_distribution<size_t> sizes(1, 300);
     int kept_count = 0;
     int refused_count = 0;
-    for (int number = 1; number <= 20000; ++number) {
+    for (int number = 1; number <= 20'000; ++number) {
         const std::string cl_ord_id = "order-" + std::to_string(number);
         const size_t size = sizes(random);
         if (keep(store, "MEMBER", cl_ord_id, size) == UnansweredCommandStore::Kept::kept) {

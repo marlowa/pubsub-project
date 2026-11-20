@@ -34,7 +34,7 @@ inline std::optional<int32_t> parse_trading_date(std::string_view text) {
  * @param[in] trading_date The date as the number yyyymmdd.
  */
 inline std::string trading_date_text(int32_t trading_date) {
-    return fmt::format("{:04}-{:02}-{:02}", trading_date / 10000, (trading_date / 100) % 100, trading_date % 100);
+    return fmt::format("{:04}-{:02}-{:02}", trading_date / 10'000, (trading_date / 100) % 100, trading_date % 100);
 }
 
 } // namespaces

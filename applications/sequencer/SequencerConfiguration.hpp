@@ -182,7 +182,7 @@ struct SequencerConfiguration {
      * holds the envelope and a pointer, so 16,384 slots are a few megabytes, allocated once when the
      * sequencer starts. Read only when ha_enabled=true; otherwise 16,384.
      */
-    size_t orders_held_at_most{16384};
+    size_t orders_held_at_most{16'384};
 
     // HA mode -- when false, the sequencer starts as leader immediately
     // with no peer election. Set to true only when running a paired
@@ -240,7 +240,7 @@ struct SequencerConfiguration {
      * 32,768 records allowed, which is every order the storage for held orders can hold with one execution
      * report each. Allocated once when the sequencer starts.
      */
-    size_t records_kept_for_publishers{32768};
+    size_t records_kept_for_publishers{32'768};
     size_t bytes_kept_for_publishers{16 * 1024 * 1024};
 
     /** @brief How often the WAL snapshot is taken, in seconds. */

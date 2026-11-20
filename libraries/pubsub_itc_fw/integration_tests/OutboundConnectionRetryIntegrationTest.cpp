@@ -86,7 +86,7 @@ class RetryCountingThread : public ApplicationThread {
 TEST(OutboundConnectionRetryIntegrationTest, RetryFailedConnectionsReissuesConnectAfterInterval) {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds{10};
-    cfg.init_phase_timeout_ = std::chrono::milliseconds{10000};
+    cfg.init_phase_timeout_ = std::chrono::milliseconds{10'000};
     cfg.shutdown_timeout_ = std::chrono::milliseconds{500};
     cfg.connect_retry_interval_ = std::chrono::milliseconds{1};
     cfg.connect_timeout = std::chrono::milliseconds{50};
@@ -139,7 +139,7 @@ uint16_t a_free_port() {
 ReactorConfiguration a_minute_between_attempts() {
     ReactorConfiguration cfg{};
     cfg.inactivity_check_interval_ = std::chrono::milliseconds{10};
-    cfg.init_phase_timeout_ = std::chrono::milliseconds{10000};
+    cfg.init_phase_timeout_ = std::chrono::milliseconds{10'000};
     cfg.shutdown_timeout_ = std::chrono::milliseconds{1000};
     cfg.connect_retry_interval_ = std::chrono::minutes{1};
     cfg.connect_timeout = std::chrono::milliseconds{2000};

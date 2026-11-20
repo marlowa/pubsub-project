@@ -41,7 +41,7 @@ struct TlsClientConfiguration {
     /**
      * @brief Minimum plaintext MirroredBuffer capacity in bytes for inbound data.
      */
-    int64_t raw_buffer_capacity{65536};
+    int64_t raw_buffer_capacity{65'536};
 };
 
 } // namespaces

@@ -45,7 +45,7 @@ class ExpandableSlabAllocatorTest : public ::testing::Test {
     static constexpr size_t small_slab = 256;
 
     // A larger slab for tests that just want to allocate without chaining.
-    static constexpr size_t large_slab = 65536;
+    static constexpr size_t large_slab = 65'536;
 };
 
 // Construction
@@ -1153,7 +1153,7 @@ TEST_F(ExpandableSlabAllocatorTest, CrossThreadDeallocationsWithExpansion) {
 //   - consumption does NOT scale with the number of messages, which is what says there is no
 //     lifetime bound left to reach.
 TEST_F(ExpandableSlabAllocatorTest, SlabSlotsAreRecycledSoConsumptionIsBoundedByInFlightDepth) {
-    constexpr size_t reactor_default_slab_size = 65536;
+    constexpr size_t reactor_default_slab_size = 65'536;
     constexpr size_t typical_pdu_size = 1024;
     constexpr int chunks_per_slab = static_cast<int>(reactor_default_slab_size / typical_pdu_size);
 
@@ -1190,7 +1190,7 @@ TEST_F(ExpandableSlabAllocatorTest, SlabSlotsAreRecycledSoConsumptionIsBoundedBy
 
     std::vector<Measurement> measurements;
     for (int depth : {1, 8, 64, 256}) {
-        measurements.push_back(measure(depth, 200000));
+        measurements.push_back(measure(depth, 200'000));
     }
     for (const auto& m : measurements) {
         std::cout << "  in-flight depth " << m.in_flight_depth << ": " << m.slots_used << " slots for " << m.allocations << " messages (" << m.slots_free
@@ -1198,7 +1198,7 @@ TEST_F(ExpandableSlabAllocatorTest, SlabSlotsAreRecycledSoConsumptionIsBoundedBy
     }
 
     // Without recycling this was one slot per slab-full: 3,125 for this workload.
-    const int slots_without_recycling = 200000 / chunks_per_slab;
+    const int slots_without_recycling = 200'000 / chunks_per_slab;
     for (const auto& m : measurements) {
         EXPECT_LT(m.slots_used, slots_without_recycling / 10) << "Slots must be recycled, not issued once per slab-full: " << m.slots_used
                                                               << " used where the old scheme would have taken " << slots_without_recycling << ".";
@@ -1209,8 +1209,8 @@ TEST_F(ExpandableSlabAllocatorTest, SlabSlotsAreRecycledSoConsumptionIsBoundedBy
 
     // The property that says the lifetime bound is gone: ten times the messages, through the
     // same in-flight window, must not cost more slots.
-    const Measurement short_run = measure(64, 100000);
-    const Measurement long_run = measure(64, 1000000);
+    const Measurement short_run = measure(64, 100'000);
+    const Measurement long_run = measure(64, 1'000'000);
     std::cout << "  100k messages: " << short_run.slots_used << " slots;  1M messages: " << long_run.slots_used << " slots\n";
     EXPECT_EQ(long_run.slots_used, short_run.slots_used) << "Slot consumption must not grow with the number of messages -- if it does, the registry is "
                                                             "still a ceiling on what a process may handle in its lifetime.";
@@ -1293,12 +1293,12 @@ TEST(DrainLoopHasStalledTest, DoesNotFireOnASingleIterationHoweverLongItTook) {
 }
 
 TEST(DrainLoopHasStalledTest, FiresOnAGenuineSpin) {
-    EXPECT_TRUE(pubsub_itc_fw::drain_loop_has_stalled(2000000, true));
+    EXPECT_TRUE(pubsub_itc_fw::drain_loop_has_stalled(2'000'000, true));
 }
 
 TEST(DrainLoopHasStalledTest, DoesNotFireWhileTheBudgetRemains) {
     // Iterations alone are not a fault: a busy drain inside its budget is working.
-    EXPECT_FALSE(pubsub_itc_fw::drain_loop_has_stalled(2000000, false));
+    EXPECT_FALSE(pubsub_itc_fw::drain_loop_has_stalled(2'000'000, false));
 }
 
 TEST(DrainLoopHasStalledTest, RequiresMoreThanAHandfulOfIterations) {

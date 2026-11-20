@@ -31,7 +31,7 @@ inline std::optional<int32_t> parse_trading_day(std::string_view text) {
         }
         value = value * 10 + (digit - '0');
     }
-    const int32_t year = value / 10000;
+    const int32_t year = value / 10'000;
     const int32_t month = (value / 100) % 100;
     const int32_t day = value % 100;
     if (year < 1 || month < 1 || month > 12 || day < 1) {

@@ -162,9 +162,9 @@ TEST(KeptReportStoreTest, RandomSizesAgreeWithASimpleModel) {
         return false;
     };
 
-    std::mt19937 random(12345);
+    std::mt19937 random(12'345);
     std::uniform_int_distribution<size_t> sizes(1, 120);
-    for (int64_t seq_no = 1; seq_no <= 20000; ++seq_no) {
+    for (int64_t seq_no = 1; seq_no <= 20'000; ++seq_no) {
         const size_t size = sizes(random);
 
         // Where the model writes it: after the newest copy if it fits before the end of the block,

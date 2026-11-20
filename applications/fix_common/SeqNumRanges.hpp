@@ -140,7 +140,7 @@ inline void trim(std::vector<SeqNumRange>& ranges, int32_t keep) {
  * WAL no longer holds buys nothing, and a venue that believed it could serve a range it cannot
  * would gap-fill after promising otherwise. See docs/availability/resend_provenance.md.
  */
-inline constexpr int32_t max_remembered = 100000;
+inline constexpr int32_t max_remembered = 100'000;
 
 } // namespaces
 

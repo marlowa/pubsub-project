@@ -547,7 +547,7 @@ TEST_F(ApplicationThreadTest, HandlerTimesWrittenOnOneThreadAndReadOnAnotherAreN
     auto thread =
         ApplicationThread::create<TestThread>(logger_with_sink_.logger, *reactor_, "TimesThread", ThreadID(1), make_queue_config(), make_allocator_config());
 
-    constexpr int64_t writes = 100000;
+    constexpr int64_t writes = 100'000;
     const HighResolutionClock::time_point origin{};
     ThreadWithJoinTimeout writer([&thread, origin] {
         for (int64_t i = 1; i <= writes; ++i) {

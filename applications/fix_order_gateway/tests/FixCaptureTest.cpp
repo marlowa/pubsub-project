@@ -73,7 +73,7 @@ TEST_F(FixCaptureTest, WritesRecordWithCorrectBinaryFormat) {
     const std::string data = "8=FIX.4.2\x01"
                              "35=A\x01"
                              "10=100\x01";
-    const int64_t timestamp = 1700000000000000000LL;
+    const int64_t timestamp = 1'700'000'000'000'000'000LL;
 
     {
         FixCapture capture(capture_file_, logger_.logger, 1000);
@@ -98,7 +98,7 @@ TEST_F(FixCaptureTest, InboundAndOutboundDirectionBytesAreCorrect) {
     const std::string outbound = "8=FIX.4.2\x01"
                                  "35=8\x01"
                                  "10=002\x01";
-    const int64_t timestamp = 999000000000LL;
+    const int64_t timestamp = 999'000'000'000LL;
 
     {
         FixCapture capture(capture_file_, logger_.logger, 1000);

@@ -61,7 +61,7 @@ TEST_F(StringUtilsTest, GetErrorString) {
     EXPECT_FALSE(permission_denied_message.empty());
 
     // Test with a bogus error number to trigger the fallback path
-    const std::string bogus_error_message = StringUtils::get_error_string(99999);
+    const std::string bogus_error_message = StringUtils::get_error_string(99'999);
     EXPECT_FALSE(bogus_error_message.empty());
 }
 

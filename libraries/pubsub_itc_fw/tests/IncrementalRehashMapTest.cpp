@@ -148,7 +148,7 @@ template <typename MapType> void move_assign(MapType& target, MapType& source) {
 /// Fills a map until a migration is in flight, returning the number of entries inserted.
 template <typename MapType> int fill_until_migrating(MapType& map) {
     int key = 0;
-    while (!map.is_migrating() && key < 100000) {
+    while (!map.is_migrating() && key < 100'000) {
         map.emplace(key, key);
         ++key;
     }
@@ -329,7 +329,7 @@ TEST_F(IncrementalRehashMapTest, ReserveOnAPopulatedMapMigratesRatherThanStallin
     for (int key = 0; key < 100; ++key) {
         map.emplace(key, key);
     }
-    map.reserve(100000);
+    map.reserve(100'000);
     EXPECT_TRUE(map.is_migrating());
 
     for (int key = 0; key < 100; ++key) {
@@ -551,9 +551,9 @@ TEST_F(IncrementalRehashMapTest, InsertMidMigrationIsFoundAndCounted) {
     const int inserted = fill_until_migrating(map);
     ASSERT_TRUE(map.is_migrating());
 
-    const auto result = map.emplace(inserted + 1, 12345);
+    const auto result = map.emplace(inserted + 1, 12'345);
     EXPECT_TRUE(result.second);
-    EXPECT_EQ(map.find(inserted + 1)->second, 12345);
+    EXPECT_EQ(map.find(inserted + 1)->second, 12'345);
     EXPECT_EQ(map.size(), static_cast<size_t>(inserted) + 1);
 }
 
@@ -563,11 +563,11 @@ TEST_F(IncrementalRehashMapTest, TheIncomingTableFillingMidMigrationIsHandled) {
     // the migration itself rather than carry a third table. Unreachable at the default rate,
     // which is why the rate is a template parameter.
     SteppedMap map;
-    for (int key = 0; key < 20000; ++key) {
+    for (int key = 0; key < 20'000; ++key) {
         map.emplace(key, key);
     }
-    EXPECT_EQ(map.size(), 20000u);
-    for (int key = 0; key < 20000; ++key) {
+    EXPECT_EQ(map.size(), 20'000u);
+    for (int key = 0; key < 20'000; ++key) {
         ASSERT_NE(map.find(key), map.end()) << "entry " << key << " lost when the incoming table filled";
         EXPECT_EQ(map.find(key)->second, key);
     }
@@ -655,7 +655,7 @@ TEST_F(IncrementalRehashMapTest, EraseDestroysTheEntryItRemoves) {
 TEST_F(IncrementalRehashMapTest, MigrationDestroysTheEntryItMovedFrom) {
     SteppedCountedMap map;
     int key = 0;
-    while (!map.is_migrating() && key < 100000) {
+    while (!map.is_migrating() && key < 100'000) {
         map.emplace(key, CountedValue(key));
         ++key;
     }
@@ -675,7 +675,7 @@ TEST_F(IncrementalRehashMapTest, NoSingleOperationMovesMoreThanTheMigrationRate)
     // it immediately.
     CountedMap map;
     int worst_case_moves = 0;
-    for (int key = 0; key < 20000; ++key) {
+    for (int key = 0; key < 20'000; ++key) {
         const int moves_before = CountedValue::moves;
         map.emplace(key, CountedValue(key));
         const int moves_for_this_operation = CountedValue::moves - moves_before;
@@ -691,13 +691,13 @@ TEST_F(IncrementalRehashMapTest, TheBoundHoldsAcrossManyDoublings) {
     // 200,000 entries crosses a dozen doublings. The old behaviour was O(capacity) in the one
     // operation that crossed each of them, and that is what has to stay gone as the map grows.
     CountedMap map;
-    for (int key = 0; key < 200000; ++key) {
+    for (int key = 0; key < 200'000; ++key) {
         const int moves_before = CountedValue::moves;
         map.emplace(key, CountedValue(key));
         ASSERT_LE(static_cast<size_t>(CountedValue::moves - moves_before), CountedMap::migration_slots_per_operation + 1)
             << "the per-operation bound broke at a map size of " << map.size();
     }
-    EXPECT_EQ(map.size(), 200000u);
+    EXPECT_EQ(map.size(), 200'000u);
 }
 
 TEST_F(IncrementalRehashMapTest, EachTableAllocationIsReportedOnceAndWhole) {
@@ -710,12 +710,12 @@ TEST_F(IncrementalRehashMapTest, EachTableAllocationIsReportedOnceAndWhole) {
     };
 
     IntMap map(0, std::hash<int>{}, std::equal_to<int>{}, &reporter);
-    for (int key = 0; key < 20000; ++key) {
+    for (int key = 0; key < 20'000; ++key) {
         map.emplace(key, key);
     }
 
     ASSERT_FALSE(reported_sizes.empty()) << "the reporter never fired, so growth is invisible again";
-    EXPECT_EQ(map.size(), 20000u);
+    EXPECT_EQ(map.size(), 20'000u);
     // One report per table rather than one per array, and each table larger than the last, so
     // the log reads as a structure doubling rather than as unrelated allocations.
     for (size_t index = 1; index < reported_sizes.size(); ++index) {
@@ -749,7 +749,7 @@ TEST_F(IncrementalRehashMapTest, RandomisedOperationsAgreeWithUnorderedMap) {
     // Differential testing against the standard library. Three seeds and three shapes:
     // insert-heavy, erase-heavy, and balanced churn over a small key space so that keys are
     // reused and tombstones accumulate.
-    const std::vector<uint32_t> seeds{1U, 20260811U, 987654321U};
+    const std::vector<uint32_t> seeds{1U, 20'260'811U, 987'654'321U};
     const std::vector<int> erase_weights{1, 5, 8};
 
     for (size_t shape = 0; shape < seeds.size(); ++shape) {
@@ -758,7 +758,7 @@ TEST_F(IncrementalRehashMapTest, RandomisedOperationsAgreeWithUnorderedMap) {
         std::mt19937 generator(seeds[shape]);
         const int erase_weight = erase_weights[shape];
 
-        for (int round = 0; round < 50000; ++round) {
+        for (int round = 0; round < 50'000; ++round) {
             const int key = static_cast<int>(generator() % 2000);
             const int action = static_cast<int>(generator() % 10);
             if (action < erase_weight) {
@@ -922,7 +922,7 @@ TEST_F(IncrementalRehashMapTest, ChurnLeavesNoSlotMarkedAndNeverCopiesTheTable) 
     const size_t capacity = map.capacity();
     std::mt19937 generator(7);
     std::uniform_int_distribution<int> keys(0, 3000);
-    for (int step = 0; step < 200000; ++step) {
+    for (int step = 0; step < 200'000; ++step) {
         const int key = keys(generator);
         if (map.find(key) == map.end()) {
             map.emplace(key, key);
@@ -943,7 +943,7 @@ TEST_F(IncrementalRehashMapTest, InsertsAndErasesAgreeWithAReferenceMap) {
     std::mt19937 generator(11);
     std::uniform_int_distribution<int> keys(0, 5000);
     std::uniform_int_distribution<int> choice(0, 9);
-    for (int step = 0; step < 100000; ++step) {
+    for (int step = 0; step < 100'000; ++step) {
         const int key = keys(generator);
         if (choice(generator) < 6) {
             const bool inserted = map.emplace(key, step).second;
@@ -1007,7 +1007,7 @@ TEST_F(IncrementalRehashMapTest, EntriesMovedByAMigrationAreFoundAndErasedByThei
     std::unordered_map<int, int> reference;
     size_t migrations_seen = 0;
     bool was_migrating = false;
-    for (int key = 1; key <= 20000; ++key) {
+    for (int key = 1; key <= 20'000; ++key) {
         map.emplace(key * 7919, key);
         reference.emplace(key * 7919, key);
         if (key % 3 == 0) {
@@ -1026,7 +1026,7 @@ TEST_F(IncrementalRehashMapTest, EntriesMovedByAMigrationAreFoundAndErasedByThei
         ASSERT_NE(found, map.end()) << key;
         EXPECT_EQ(found->second, value);
     }
-    for (int key = 1; key <= 20000; ++key) {
+    for (int key = 1; key <= 20'000; ++key) {
         EXPECT_EQ(map.find(key * 7919) != map.end(), reference.count(key * 7919) == 1) << key;
     }
 }

@@ -85,7 +85,7 @@ TEST(ScramCryptoTest, Pbkdf2Sha256MatchesRfc7914SingleIterationVector) {
 
 TEST(ScramCryptoTest, Pbkdf2Sha256MatchesRfc7914HighIterationVector) {
     const std::vector<uint8_t> salt = bytes_from_text("NaCl");
-    EXPECT_EQ(hex_from_bytes(scram_crypto::pbkdf2_sha256("Password", salt.data(), salt.size(), 80000)),
+    EXPECT_EQ(hex_from_bytes(scram_crypto::pbkdf2_sha256("Password", salt.data(), salt.size(), 80'000)),
               "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56");
 }
 

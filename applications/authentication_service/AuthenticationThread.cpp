@@ -312,7 +312,7 @@ void AuthenticationThread::handle_set_credential_request(const pubsub_itc_fw::Co
         send_result(pubsub_itc_fw_app::SetCredentialOutcome::InvalidInput);
         return;
     }
-    if (iterations < 1000 || iterations > 1000000) {
+    if (iterations < 1000 || iterations > 1'000'000) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "AuthenticationThread: SetCredentialRequest iterations={} out of range "
                    "[1000,1000000] comp_id={} -- InvalidInput",
@@ -474,7 +474,7 @@ void AuthenticationThread::handle_restore_credential_request(const pubsub_itc_fw
         send_result(pubsub_itc_fw_app::RestoreCredentialOutcome::InvalidInput);
         return;
     }
-    if (view.iterations < 1000 || view.iterations > 1000000) {
+    if (view.iterations < 1000 || view.iterations > 1'000'000) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "AuthenticationThread: RestoreCredentialRequest iterations={} out of range [1000,1000000] comp_id={} -- InvalidInput", view.iterations,
                    comp_id);

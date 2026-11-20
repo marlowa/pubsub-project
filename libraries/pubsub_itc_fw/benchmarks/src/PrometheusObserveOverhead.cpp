@@ -69,10 +69,10 @@ constexpr size_t value_index_mask = value_count - 1;
 // A fixed sequence, the same on every run, from a simple linear congruential generator.
 std::array<double, value_count> make_values() {
     std::array<double, value_count> values{};
-    uint32_t state = 12345;
+    uint32_t state = 12'345;
     for (double& value : values) {
-        state = state * 1103515245U + 12345U;
-        value = 50.0 + static_cast<double>((state >> 8) % 200000U);
+        state = state * 1'103'515'245U + 12'345U;
+        value = 50.0 + static_cast<double>((state >> 8) % 200'000U);
     }
     return values;
 }

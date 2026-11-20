@@ -210,7 +210,7 @@ AuthenticationServiceConfiguration AuthenticationServiceConfigurationLoader::loa
 
     int32_t listen_port = 0;
     toml.get_required_except("network.listen_port", listen_port);
-    if (listen_port < 1 || listen_port > 65535) {
+    if (listen_port < 1 || listen_port > 65'535) {
         throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: network.listen_port must be in [1, 65535], got " +
                                                     std::to_string(listen_port));
     }
@@ -287,7 +287,7 @@ AuthenticationServiceConfiguration AuthenticationServiceConfigurationLoader::loa
 
     int32_t admin_listen_port = 0;
     toml.get_required_except("admin.listen_port", admin_listen_port);
-    if (admin_listen_port < 1 || admin_listen_port > 65535) {
+    if (admin_listen_port < 1 || admin_listen_port > 65'535) {
         throw pubsub_itc_fw::ConfigurationException("AuthenticationServiceConfigurationLoader: admin.listen_port must be in [1, 65535], got " +
                                                     std::to_string(admin_listen_port));
     }

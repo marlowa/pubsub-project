@@ -100,8 +100,8 @@ class AuthenticationServiceConfigurationLoaderTest : public ::testing::Test {
 TEST_F(AuthenticationServiceConfigurationLoaderTest, ReadsTheListenerAndTheInactivityLimit) {
     const AuthenticationServiceConfiguration config = load(credential("MEMBER1"));
     EXPECT_EQ(config.listen_host, "127.0.0.1");
-    EXPECT_EQ(config.listen_port, 11070);
-    EXPECT_EQ(config.admin_listen_port, 11072);
+    EXPECT_EQ(config.listen_port, 11'070);
+    EXPECT_EQ(config.admin_listen_port, 11'072);
     EXPECT_EQ(config.connection_inactivity_limit, std::chrono::seconds(600));
 }
 

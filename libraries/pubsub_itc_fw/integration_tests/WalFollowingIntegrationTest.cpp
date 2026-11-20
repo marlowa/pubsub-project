@@ -560,7 +560,7 @@ bool wait_for(const std::function<bool()>& condition, std::chrono::milliseconds 
 ReactorConfiguration reactor_configuration() {
     ReactorConfiguration configuration{};
     configuration.inactivity_check_interval_ = std::chrono::milliseconds(100);
-    configuration.init_phase_timeout_ = std::chrono::milliseconds(10000);
+    configuration.init_phase_timeout_ = std::chrono::milliseconds(10'000);
     configuration.shutdown_timeout_ = std::chrono::milliseconds(1000);
     configuration.connect_timeout = std::chrono::milliseconds(2000);
     return configuration;
@@ -571,12 +571,12 @@ ReactorConfiguration reactor_configuration() {
 TEST(WalFollowingIntegrationTest, FollowersCatchUpWhileTheWalIsWrittenAndAreHandedOverWithoutAGapOrARepeat) {
 #ifdef USING_VALGRIND
     constexpr int64_t initial_records = 5000;
-    constexpr int64_t write_until = 20000;
-    const std::chrono::milliseconds timeout{120000};
+    constexpr int64_t write_until = 20'000;
+    const std::chrono::milliseconds timeout{120'000};
 #else
-    constexpr int64_t initial_records = 20000;
-    constexpr int64_t write_until = 80000;
-    const std::chrono::milliseconds timeout{30000};
+    constexpr int64_t initial_records = 20'000;
+    constexpr int64_t write_until = 80'000;
+    const std::chrono::milliseconds timeout{30'000};
 #endif
     constexpr int records_per_tick = 5;
     constexpr int64_t commit_lag = 25;
@@ -640,7 +640,7 @@ TEST(WalFollowingIntegrationTest, FollowersCatchUpWhileTheWalIsWrittenAndAreHand
 // The reading thread reads only before the write position the owning thread has published, so that it
 // reads only records completely written, even when the follower's limit is further on.
 TEST(WalFollowingIntegrationTest, TheReadingThreadNeverReadsPastThePublishedWritePosition) {
-    const std::chrono::milliseconds timeout{30000};
+    const std::chrono::milliseconds timeout{30'000};
     LoggerWithSink logger(FwLogLevel::Info);
     const std::string directory = tests_common::make_scratch_directory("wal_following_partly_published");
     WalFollowingPositions positions;
@@ -694,7 +694,7 @@ TEST(WalFollowingIntegrationTest, TheReadingThreadNeverReadsPastThePublishedWrit
 // before it is sent the records before it and is never told it caught up, nor handed over; the owning
 // thread is told which record it was. A follower asking from that record or later is served as usual.
 TEST(WalFollowingIntegrationTest, AFollowerIsNeverHandedOverPastADamagedRecordButOneAlreadyPastItIs) {
-    const std::chrono::milliseconds timeout{30000};
+    const std::chrono::milliseconds timeout{30'000};
     LoggerWithSink logger(FwLogLevel::Info);
     const std::string directory = tests_common::make_scratch_directory("wal_following_damaged_record");
     WalFollowingPositions positions;
@@ -754,9 +754,9 @@ namespace {
 // value of a committed record, never one written and not yet committed, and from an older segment when the newest gives
 // none. The reader here gives each seventh record's number, up to a ceiling.
 void the_reading_thread_reads_the_application_value(int64_t ceiling, int64_t expected) {
-    constexpr int64_t initial_records = 60000; // more than one segment
+    constexpr int64_t initial_records = 60'000; // more than one segment
     constexpr int64_t commit_lag = 25;
-    const std::chrono::milliseconds timeout{30000};
+    const std::chrono::milliseconds timeout{30'000};
     LoggerWithSink logger(FwLogLevel::Info);
     const std::string directory = tests_common::make_scratch_directory("wal_following_application_value");
     WalFollowingPositions positions;
@@ -809,7 +809,7 @@ void the_reading_thread_reads_the_application_value(int64_t ceiling, int64_t exp
 // 60,000 records are written and 59,975 committed. The highest seventh record committed is 59,969; 59,976 and later
 // are written but not committed, and must not be read.
 TEST(WalFollowingIntegrationTest, TheApplicationValueIsTheHighestTheNewestCommittedRecordsGive) {
-    the_reading_thread_reads_the_application_value(std::numeric_limits<int64_t>::max(), 59969);
+    the_reading_thread_reads_the_application_value(std::numeric_limits<int64_t>::max(), 59'969);
 }
 
 // Only records up to 1,000 give a value, and they are in the first segment, so the reading thread reads back to it.

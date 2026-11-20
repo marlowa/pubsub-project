@@ -183,7 +183,7 @@ int measure_sort(long orders) {
         placed[static_cast<size_t>(n)] = {n + 1, static_cast<OrderBook::SlotIndex>(n)};
     }
     // A fixed seed, so that a run can be repeated exactly.
-    std::mt19937_64 random(20261025);
+    std::mt19937_64 random(20'261'025);
     std::shuffle(placed.begin(), placed.end(), random);
     const auto start = Clock::now();
     std::sort(placed.begin(), placed.end());

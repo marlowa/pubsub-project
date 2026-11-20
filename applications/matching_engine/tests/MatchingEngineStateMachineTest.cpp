@@ -133,7 +133,7 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
 constexpr OrderBook::SlotIndex region_capacity = 4;
 constexpr size_t map_capacity = 16;
 constexpr int64_t taken_at = 1'700'000'000'000'000'000;
-constexpr int32_t trading_day = 20231114;
+constexpr int32_t trading_day = 20'231'114;
 
 // The TechnicalEvent the leading sequencer writes when no engine could be trading within the longest recovery the venue
 // does by itself, after the cancel of the book.

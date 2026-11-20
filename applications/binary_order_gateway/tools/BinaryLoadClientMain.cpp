@@ -87,9 +87,9 @@ struct Options {
     // and shrinks only from cancels, so a sustained rate above the arrival rate would drain
     // the book and then have nothing left to cancel.
     double cancel_ratio{0.0};
-    int underlyings{3};       // NoUnderlyings instances per order
-    int parties{1};           // NoPartyIDs instances per order
-    int party_sub_ids{1};     // NoPartySubIDs instances per party
+    int underlyings{3};   // NoUnderlyings instances per order
+    int parties{1};       // NoPartyIDs instances per order
+    int party_sub_ids{1}; // NoPartySubIDs instances per party
     bool minimal_order{false};
 };
 
@@ -707,7 +707,7 @@ int main(int argc, char** argv) {
 
     // Per-session pacing interval. Sessions send independently, so the venue-wide offered
     // rate is this multiplied by the session count.
-    const int64_t nanoseconds_between_orders = options.orders_per_second > 0 ? 1000000000LL / options.orders_per_second : 0;
+    const int64_t nanoseconds_between_orders = options.orders_per_second > 0 ? 1'000'000'000LL / options.orders_per_second : 0;
 
     // Each session sends on its own thread so the sessions genuinely overlap. Sending them
     // one after another in a loop would serialise the venue's load into a single stream --

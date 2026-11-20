@@ -191,6 +191,12 @@ whose call sites would otherwise be burdened with unexplained true/false literal
 This is enforced by check_standards.py: it flags a bare true/false passed to a project function that declares a bool parameter
 (standard/library calls such as an atomic store or make_tuple are not project functions and are not flagged). A genuinely
 unavoidable case can opt out with a "bool-arg-ok" comment on the call line.
+A decimal integer literal of five digits or more is written with digit separators, a quote mark between each group of three
+digits counted from the right: 123'456'789 rather than 123456789, 65'536, 10'000. It makes a large number readable at a
+glance. A literal of four digits or fewer, such as 1024 or 4096, is written without them. Hexadecimal, binary and octal
+literals, and floating-point numbers, are left as they are. This is enforced by check_standards.py (check 31), which reads
+literals only, never numbers in comments or strings. It applies to C++ only: Python and TOML write the same thing with an
+underscore, and this rule does not ask for that.
 
 Where files are written
 

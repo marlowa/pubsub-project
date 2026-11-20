@@ -104,7 +104,7 @@ struct RecordingLinks : public HaltAndVoidRequestsLinksInterface {
     // The trading day has started unless a test says otherwise: the start of day is the WAL's first record.
     TradingPhaseState phase = [] {
         TradingPhaseState started;
-        started.note_technical_event(1, pubsub_itc_fw_app::TradingPhase::Open, 20261104);
+        started.note_technical_event(1, pubsub_itc_fw_app::TradingPhase::Open, 20'261'104);
         return started;
     }();
     int64_t answered_through{0};
@@ -296,11 +296,11 @@ TEST_F(HaltAndVoidRequestsTest, NothingIsWrittenBeforeTheStartOfDay) {
 
 TEST_F(HaltAndVoidRequestsTest, AHaltCarriesThePhaseAndTheTradingDayTheVenueIsIn) {
     links_.phase = TradingPhaseState{};
-    links_.phase.note_technical_event(1, pubsub_itc_fw_app::TradingPhase::StartOfDay, 20261116);
+    links_.phase.note_technical_event(1, pubsub_itc_fw_app::TradingPhase::StartOfDay, 20'261'116);
     operator_asks(true);
     ASSERT_EQ(links_.written.size(), 1U);
     EXPECT_EQ(links_.written_phases, (std::vector<pubsub_itc_fw_app::TradingPhase>{pubsub_itc_fw_app::TradingPhase::StartOfDay}));
-    EXPECT_EQ(links_.written_days, (std::vector<int32_t>{20261116}));
+    EXPECT_EQ(links_.written_days, (std::vector<int32_t>{20'261'116}));
 }
 
 } // namespaces

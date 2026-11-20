@@ -29,18 +29,18 @@ pubsub_itc_fw::LeaseTiming timing() {
 TEST(VoterPeerContactTest, TheTwoWaitsFollowFromTheLeaseTimings) {
     const pubsub_itc_fw::VoterPeerContact contact(timing(), start);
     EXPECT_EQ(contact.may_be_behind_after(), milliseconds{7000});
-    EXPECT_EQ(contact.confirms_alone_after(), milliseconds{10000});
+    EXPECT_EQ(contact.confirms_alone_after(), milliseconds{10'000});
 }
 
 TEST(VoterPeerContactTest, AnArbiterConfirmsAloneOnlyOnceItHasHeardNothingFromTheOtherForLongEnough) {
     pubsub_itc_fw::VoterPeerContact contact(timing(), start);
     EXPECT_FALSE(contact.may_confirm_alone(start + milliseconds{9999})) << "starting counts as having heard from the other arbiter";
-    EXPECT_TRUE(contact.may_confirm_alone(start + milliseconds{10000}));
+    EXPECT_TRUE(contact.may_confirm_alone(start + milliseconds{10'000}));
 
-    contact.heard(start + milliseconds{10000});
-    EXPECT_FALSE(contact.may_confirm_alone(start + milliseconds{10000})) << "a message from the other arbiter ends confirming alone";
-    EXPECT_FALSE(contact.may_confirm_alone(start + milliseconds{19999}));
-    EXPECT_TRUE(contact.may_confirm_alone(start + milliseconds{20000}));
+    contact.heard(start + milliseconds{10'000});
+    EXPECT_FALSE(contact.may_confirm_alone(start + milliseconds{10'000})) << "a message from the other arbiter ends confirming alone";
+    EXPECT_FALSE(contact.may_confirm_alone(start + milliseconds{19'999}));
+    EXPECT_TRUE(contact.may_confirm_alone(start + milliseconds{20'000}));
 }
 
 TEST(VoterPeerContactTest, AnArbiterThatHasNeverHadItsHeartbeatEchoedMayBeBehind) {
@@ -80,5 +80,5 @@ TEST(VoterPeerContactTest, AMachineDeathLeavesTheSurvivorNotBehindAndLaterAbleTo
     const Clock::time_point becomes_active = last_heartbeat_sent + milliseconds{3000 + 1000 + 200};
     EXPECT_FALSE(survivor.may_be_behind(becomes_active));
     EXPECT_FALSE(survivor.may_confirm_alone(becomes_active));
-    EXPECT_TRUE(survivor.may_confirm_alone(last_heartbeat_sent + milliseconds{1} + milliseconds{10000}));
+    EXPECT_TRUE(survivor.may_confirm_alone(last_heartbeat_sent + milliseconds{1} + milliseconds{10'000}));
 }

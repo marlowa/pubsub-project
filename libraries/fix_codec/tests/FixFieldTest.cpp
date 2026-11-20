@@ -26,8 +26,8 @@ TEST(FixFieldTest, StringAndEmpty) {
 TEST(FixFieldTest, IntegerAccessors) {
     EXPECT_EQ(make(38, "100").as_int(), 100);
     EXPECT_EQ(make(38, "-7").as_int(), -7);
-    EXPECT_EQ(make(34, "9000000000").as_int64(), 9000000000LL);
-    EXPECT_EQ(make(38, "4294967000").as_uint(), 4294967000U);
+    EXPECT_EQ(make(34, "9000000000").as_int64(), 9'000'000'000LL);
+    EXPECT_EQ(make(38, "4294967000").as_uint(), 4'294'967'000U);
     // Malformed or trailing junk returns the fallback, not a partial parse.
     EXPECT_EQ(make(38, "12x").as_int(-1), -1);
     EXPECT_EQ(make(38, "").as_int(42), 42);
@@ -71,11 +71,11 @@ TEST(FixFieldTest, UtcTimestampToNanos) {
     // 1970-01-01 00:00:00 UTC is the epoch.
     EXPECT_EQ(make(52, "19700101-00:00:00").as_utc_timestamp_ns(), 0);
     // One second past the epoch.
-    EXPECT_EQ(make(52, "19700101-00:00:01").as_utc_timestamp_ns(), 1000000000LL);
+    EXPECT_EQ(make(52, "19700101-00:00:01").as_utc_timestamp_ns(), 1'000'000'000LL);
     // Millisecond fractional part is scaled to nanoseconds.
-    EXPECT_EQ(make(52, "19700101-00:00:00.123").as_utc_timestamp_ns(), 123000000LL);
+    EXPECT_EQ(make(52, "19700101-00:00:00.123").as_utc_timestamp_ns(), 123'000'000LL);
     // Full nanosecond precision is preserved.
-    EXPECT_EQ(make(52, "19700101-00:00:00.123456789").as_utc_timestamp_ns(), 123456789LL);
+    EXPECT_EQ(make(52, "19700101-00:00:00.123456789").as_utc_timestamp_ns(), 123'456'789LL);
     // Malformed input returns the fallback.
     EXPECT_EQ(make(52, "not-a-time").as_utc_timestamp_ns(-1), -1);
     EXPECT_EQ(make(52, "").as_utc_timestamp_ns(), 0);

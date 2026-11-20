@@ -33,7 +33,7 @@ TEST(LoggingConfigurationLoaderTest, SizeModeReadsSizeParameters) {
     const RollingLogfileConfiguration result = LoggingConfigurationLoader::load(config);
 
     EXPECT_EQ(result.mode, RollingLogfileConfiguration::Mode::Size);
-    EXPECT_EQ(result.max_file_size, 1048576);
+    EXPECT_EQ(result.max_file_size, 1'048'576);
     EXPECT_EQ(result.max_backup_files, 5);
 }
 

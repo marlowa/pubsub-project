@@ -98,7 +98,7 @@ TEST(Ff1CipherTest, DecryptsEveryNistSampleBackToItsPlaintext) {
 TEST(Ff1CipherTest, SixteenHexadecimalDigitsComeBackFromDecryptingWhatWasEncrypted) {
     const std::vector<uint8_t> key = bytes_of_hex(key_256);
     Ff1Cipher cipher(key.data(), key.size(), 16);
-    std::mt19937_64 random(20261025);
+    std::mt19937_64 random(20'261'025);
     for (int round = 0; round < 1000; ++round) {
         std::vector<uint16_t> numerals(16);
         for (uint16_t& numeral : numerals) {

@@ -360,7 +360,7 @@ class OutboundConnectionPreconditionTest : public ::testing::Test {
 
         reactor_ = std::make_unique<Reactor>(cfg, registry_, logger_->logger);
         thread_ = ApplicationThread::create<OutboundTestThread>(logger_->logger, *reactor_, "dummy_service");
-        allocator_ = std::make_unique<ExpandableSlabAllocator>(65536);
+        allocator_ = std::make_unique<ExpandableSlabAllocator>(65'536);
     }
 
     void TearDown() override {
@@ -694,8 +694,8 @@ TEST_F(OutboundConnectionManagerTest, ASendThatWaitsIsStartedWhenTheOneBeforeItI
         const int flags = ::fcntl(peer_fd_, F_GETFL, 0);
         ::fcntl(peer_fd_, F_SETFL, flags | O_NONBLOCK);
 
-        std::vector<uint8_t> buf(65536);
-        for (int i = 0; i < 100000 && (conn->has_pending_send() || !conn->waiting_sends().empty()); ++i) {
+        std::vector<uint8_t> buf(65'536);
+        for (int i = 0; i < 100'000 && (conn->has_pending_send() || !conn->waiting_sends().empty()); ++i) {
             const ssize_t n = ::read(peer_fd_, buf.data(), buf.size());
             if (n == -1) {
                 // EAGAIN/EWOULDBLOCK is normal in non-blocking mode: the kernel

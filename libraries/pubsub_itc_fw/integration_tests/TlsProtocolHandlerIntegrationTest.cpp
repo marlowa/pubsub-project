@@ -104,7 +104,7 @@ namespace pubsub_itc_fw::tests {
 static const std::string tls_request_payload = "HELLO_TLS_SERVER";
 static const std::string tls_response_payload = "HELLO_TLS_CLIENT";
 
-static constexpr int64_t tls_raw_buffer_capacity = 65536;
+static constexpr int64_t tls_raw_buffer_capacity = 65'536;
 static constexpr size_t tls_length_prefix_size = sizeof(uint32_t);
 
 // Framing helpers (shared between server-side decode and client-side send)
@@ -175,7 +175,7 @@ X509* create_self_signed_cert(EVP_PKEY* key, const char* cn, long serial) {
     X509_set_version(x509, 2);
     ASN1_INTEGER_set(X509_get_serialNumber(x509), serial);
     X509_gmtime_adj(X509_get_notBefore(x509), 0);
-    X509_gmtime_adj(X509_get_notAfter(x509), 86400L);
+    X509_gmtime_adj(X509_get_notAfter(x509), 86'400L);
     X509_set_pubkey(x509, key);
     X509_NAME* name = X509_get_subject_name(x509);
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
@@ -196,7 +196,7 @@ X509* create_signed_cert(EVP_PKEY* subject_key, const char* cn, long serial, X50
     X509_set_version(x509, 2);
     ASN1_INTEGER_set(X509_get_serialNumber(x509), serial);
     X509_gmtime_adj(X509_get_notBefore(x509), 0);
-    X509_gmtime_adj(X509_get_notAfter(x509), 86400L);
+    X509_gmtime_adj(X509_get_notAfter(x509), 86'400L);
     X509_set_pubkey(x509, subject_key);
     X509_NAME* subject_name = X509_get_subject_name(x509);
     X509_NAME_add_entry_by_txt(subject_name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);

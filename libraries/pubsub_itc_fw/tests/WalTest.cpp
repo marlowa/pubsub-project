@@ -170,14 +170,14 @@ TEST_F(WalClassTest, SingleRecordReplayWallTimeNs) {
         Wal wal;
         wal.open(dir_, segment_size);
         const uint8_t payload[] = {0x00};
-        wal.append(1, 1000, payload, 1, 1234567890LL, 0);
+        wal.append(1, 1000, payload, 1, 1'234'567'890LL, 0);
     }
 
     std::vector<CapturedRecord> records;
     Wal wal;
     wal.open(dir_, segment_size, capture(records));
     ASSERT_EQ(records.size(), 1u);
-    EXPECT_EQ(records[0].wall_time_ns, 1234567890LL);
+    EXPECT_EQ(records[0].wall_time_ns, 1'234'567'890LL);
 }
 
 // Counters and last_seq_no
@@ -940,11 +940,11 @@ TEST(WalEntryContentsTest, AnEntryShorterThanTheFieldsBeforeTheBytesIsRefused) {
 
 TEST(WalEntryContentsTest, WhatIsWrittenIsReadBack) {
     std::vector<uint8_t> entry(wal_entry_header_size + 3);
-    write_wal_entry_header(entry.data(), 123456789, 42, 1000);
+    write_wal_entry_header(entry.data(), 123'456'789, 42, 1000);
     entry[wal_entry_header_size] = 0xAA;
     const std::optional<WalEntryContents> contents = read_wal_entry_contents(entry.data(), entry.size());
     ASSERT_TRUE(contents.has_value());
-    EXPECT_EQ(contents->wall_time_ns, 123456789);
+    EXPECT_EQ(contents->wall_time_ns, 123'456'789);
     EXPECT_EQ(contents->leader_epoch, 42);
     EXPECT_EQ(contents->pdu_id, 1000);
     EXPECT_EQ(contents->size, 3U);

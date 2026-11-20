@@ -122,8 +122,8 @@ TEST(RollingWindowThrottleTest, ALimitOutsideTheRangeIsRefused) {
 
 TEST(RollingWindowThrottleTest, TheLargestPermittedLimitIsAcceptedAndHoldsEightBytesForEachCommand) {
     const RollingWindowThrottle throttle(ThrottleLimits::max_permitted_per_second);
-    EXPECT_EQ(throttle.max_per_second(), 100000);
-    EXPECT_EQ(throttle.allocated_bytes(), 800000u);
+    EXPECT_EQ(throttle.max_per_second(), 100'000);
+    EXPECT_EQ(throttle.allocated_bytes(), 800'000u);
 }
 
 TEST(RollingWindowThrottleTest, ItsStorageIsReportedToTheGrowthReporter) {

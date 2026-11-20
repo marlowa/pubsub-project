@@ -46,7 +46,7 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
         }
 
         auto validate_port = [&](int32_t port, const std::string& name) {
-            if (port < 1 || port > 65535) {
+            if (port < 1 || port > 65'535) {
                 throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: " + name + " must be in range [1, 65535], got " +
                                                             std::to_string(port));
             }

@@ -36,7 +36,7 @@ ThrottleLimits make_limits(int place, int amend, int cancel) {
 TEST(SessionThrottlesTest, ALimitOfZeroCreatesNoThrottleAndAcceptsEverything) {
     SessionThrottles throttles(make_limits(0, 0, 0));
     EXPECT_EQ(throttles.allocated_bytes(), 0u);
-    for (int command = 0; command < 10000; ++command) {
+    for (int command = 0; command < 10'000; ++command) {
         ASSERT_EQ(throttles.try_accept(ThrottledCommand::Place, start_time), ThrottleOutcome::Accepted);
         ASSERT_EQ(throttles.try_accept(ThrottledCommand::Amend, start_time), ThrottleOutcome::Accepted);
         ASSERT_EQ(throttles.try_accept(ThrottledCommand::Cancel, start_time), ThrottleOutcome::Accepted);
@@ -134,11 +134,11 @@ TEST(SessionThrottlesTest, TheRefusalTextUsesTheSingularForALimitOfOne) {
 }
 
 TEST(SessionThrottlesTest, TheLimitAppliedIsTheLimitGiven) {
-    const SessionThrottles throttles(make_limits(7, 0, 100000));
+    const SessionThrottles throttles(make_limits(7, 0, 100'000));
     EXPECT_EQ(throttles.max_per_second(ThrottledCommand::Place), 7);
     EXPECT_EQ(throttles.max_per_second(ThrottledCommand::Amend), 0);
-    EXPECT_EQ(throttles.max_per_second(ThrottledCommand::Cancel), 100000);
-    EXPECT_EQ(throttles.allocated_bytes(), (7u + 100000u) * sizeof(Clock::time_point));
+    EXPECT_EQ(throttles.max_per_second(ThrottledCommand::Cancel), 100'000);
+    EXPECT_EQ(throttles.allocated_bytes(), (7u + 100'000u) * sizeof(Clock::time_point));
 }
 
 TEST(SessionThrottlesTest, ALimitOutsideTheRangeIsRefused) {

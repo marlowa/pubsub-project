@@ -841,7 +841,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_session_sequence_update(const pubsub_itc_fw::EventMessage& message);
 
     /// Records a single replay may return before it truncates, when the caller names no cap.
-    static constexpr int32_t default_replay_max_records = 10000;
+    static constexpr int32_t default_replay_max_records = 10'000;
 };
 
 } // namespaces

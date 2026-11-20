@@ -141,7 +141,7 @@ constexpr int base_message_tags[] = {tag::BeginString, tag::BodyLength, tag::Che
 const std::vector<int>& paddable_tags() {
     static const std::vector<int> tags = [] {
         std::vector<int> collected;
-        for (int candidate = 1; candidate < 60000; ++candidate) {
+        for (int candidate = 1; candidate < 60'000; ++candidate) {
             const int index = fix_codec::field_index(candidate);
             if (index < 0 || !fix_codec::is_tag_permitted(fix_codec::msg_type::NewOrderSingle, candidate)) {
                 continue;
@@ -210,7 +210,7 @@ class FixCodecPerformanceTest : public ::testing::Test {
         ASSERT_GT(frame_nanoseconds_, 0.0) << "clock resolution too coarse to measure framing";
     }
 
-    static constexpr int batch_size = 20000;
+    static constexpr int batch_size = 20'000;
     static constexpr int batch_count = 100;
 
     // Field counts for the scaling test. Large enough that a quadratic term dominates

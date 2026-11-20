@@ -20,7 +20,7 @@ namespace sequencer::tests {
 namespace {
 
 constexpr int64_t second = 1'000'000'000;
-constexpr int64_t ended_at = 1'000 * second;
+constexpr int64_t ended_at = 1000 * second;
 
 const fix_common::SessionIdentity member = fix_common::SessionIdentity::make("MEMBER", gateway_ids::fix_order_gateway);
 const fix_common::SessionIdentity other = fix_common::SessionIdentity::make("OTHER", gateway_ids::fix_order_gateway);

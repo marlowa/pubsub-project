@@ -400,7 +400,7 @@ BENCHMARK(identity_to_number)->Repetitions(repetitions)->DisplayAggregatesOnly(t
 BENCHMARK(fenced_empty_loop)->Repetitions(repetitions)->DisplayAggregatesOnly(true);
 
 BENCHMARK(find_absent)
-    ->Args({10'000, 5'000})
+    ->Args({10'000, 5000})
     ->Args({static_cast<int64_t>(venue_capacity), 50'000'000})
     ->Args({static_cast<int64_t>(venue_capacity), 100'000'000})
     ->Repetitions(repetitions)
@@ -418,7 +418,7 @@ BENCHMARK(read_one_record)
     ->ArgNames({"cold", "segment_files", "read_only_pages"})
     ->Args({0, 20, 1})
     ->Args({0, 4000, 1})
-    ->Args({0, 16000, 1})
+    ->Args({0, 16'000, 1})
     ->UseManualTime()
     ->Iterations(2000)
     ->Repetitions(repetitions)
@@ -429,13 +429,13 @@ BENCHMARK(read_one_record)
     ->Args({1, 20, 0})
     ->Args({1, 20, 1})
     ->Args({1, 4000, 1})
-    ->Args({1, 16000, 1})
+    ->Args({1, 16'000, 1})
     ->UseManualTime()
     ->Iterations(200)
     ->Repetitions(repetitions)
     ->DisplayAggregatesOnly(true);
 
-BENCHMARK(find_segment_of_record)->Arg(20)->Arg(4000)->Arg(16000)->Repetitions(repetitions)->DisplayAggregatesOnly(true);
+BENCHMARK(find_segment_of_record)->Arg(20)->Arg(4000)->Arg(16'000)->Repetitions(repetitions)->DisplayAggregatesOnly(true);
 
 } // un-named namespace
 

@@ -63,7 +63,7 @@ X509* make_self_signed(EVP_PKEY* key, const char* cn) {
     X509_set_version(x, 2);
     ASN1_INTEGER_set(X509_get_serialNumber(x), 1);
     X509_gmtime_adj(X509_get_notBefore(x), 0);
-    X509_gmtime_adj(X509_get_notAfter(x), 86400L);
+    X509_gmtime_adj(X509_get_notAfter(x), 86'400L);
     X509_set_pubkey(x, key);
     X509_NAME* n = X509_get_subject_name(x);
     X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
@@ -83,7 +83,7 @@ X509* make_signed(EVP_PKEY* subject_key, const char* cn, X509* ca_cert, EVP_PKEY
     X509_set_version(x, 2);
     ASN1_INTEGER_set(X509_get_serialNumber(x), 2);
     X509_gmtime_adj(X509_get_notBefore(x), 0);
-    X509_gmtime_adj(X509_get_notAfter(x), 86400L);
+    X509_gmtime_adj(X509_get_notAfter(x), 86'400L);
     X509_set_pubkey(x, subject_key);
     X509_NAME* n = X509_get_subject_name(x);
     X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
