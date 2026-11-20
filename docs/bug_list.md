@@ -1710,14 +1710,17 @@ reports at Critical before refusing to start, rather than the out-of-memory kill
 [BUG-0010](#bug_0010) decided. It first compares what it will lock with its limit on locked memory, which must be
 raised in production ([locked_memory_requirement.md](operations/locked_memory_requirement.md)). Design and
 measurements: [the_engine_holds_its_memory_from_the_start.md](venue/the_engine_holds_its_memory_from_the_start.md).
+The engine's memory is flat through the day: measured on 20 November 2026 on the development machine, with the region for 4 million orders and the map reserved
+for 4 million, 2^23 slots: 80 minutes of 9.2 million orders, 80% of them cancelled, then 3 minutes of 632,000
+orders at 3,500 a second, 95% of them cancelled. Each engine locked 2,167 MB at its start, in about 0.3 seconds, and its resident
+memory was 2,408 MB at every 10-second sample from start to end. More orders were placed than half the map's slots, the
+point at which a map with erased marks would have been copied, and the map was never copied.
 
 **Still open in this entry:**
 
 - a restart costs time in proportion to the region's capacity, not to the orders open, and rewrites most of
   the region; this is for the design of phase 8 of the [recovery plan](recovery_plan.md), which changes how
-  the follower builds its book;
-- the engine's resident memory has not yet been recorded with `vmstat` over a long run of orders and cancels with the
-  map reserved for a large book, to show it flat from the start of the day.
+  the follower builds its book.
 
 ### BUG-0041: Five ways the venue will not start on a RHEL8 target host {#bug_0041}
 

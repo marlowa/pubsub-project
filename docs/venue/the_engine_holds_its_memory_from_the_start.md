@@ -104,9 +104,13 @@ in all on a machine of 200 GB.
 - **Measured** on the development machine, with the region for 2 million orders and the map reserved for 262,144: the
   engine locks 576 MB in 31 to 45 milliseconds, at its start in high-availability scenarios 1 and 111, both of which
   pass. Started by hand with a limit of 1 MB, it logs the refusal at Critical and exits with status 1 at once.
-- **Still to measure:** the engine's resident memory over a long run of orders and cancels with the map reserved for a
-  large book, recorded with `vmstat`, which should be flat from the start; and the accept times with every page of the
-  map supplied first.
+- **The engine's memory over a long day,** recorded every 10 seconds alongside `vmstat`, is flat from the start:
+  measured on 20 November 2026 on the development machine, with the region for 4 million orders and the map reserved
+  for 4 million, 2^23 slots: 80 minutes of 9.2 million orders, 80% of them cancelled, then 3 minutes of 632,000
+  orders at 3,500 a second, 95% of them cancelled. Each engine locked 2,167 MB at its start, in about 0.3 seconds, and its resident
+  memory was 2,408 MB at every 10-second sample from start to end. More orders were placed than half the map's slots, the
+  point at which a map with erased marks would have been copied, and the map was never copied.
+- **Still to measure:** the accept times with every page of the map supplied first.
 
 ## 7. Decisions
 
