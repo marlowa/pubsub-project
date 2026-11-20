@@ -24,7 +24,7 @@ milliseconds, from 19:48:07.394 to 19:48:07.512, each time adding a pool of 4,09
 BinaryOrderGatewayCommandPool exhausted: chaining new pool slab (4096 objects)
 ```
 
-That is about 61,000 commands waiting at once for the reactor, in a queue sized for 4,096.
+Sixteen pools hold 65,536 nodes; at its deepest the queue held 64,920 commands (section 2), in a queue sized for 4,096.
 
 ## 2. Why the pool was too small
 
@@ -36,12 +36,14 @@ third time: the execution report to the member.
 The gateway stops reading its members once 16,384 of its commands are unanswered (`[unanswered_commands] limit`,
 [a_gateway_limits_its_unanswered_commands.md](../availability/a_gateway_limits_its_unanswered_commands.md)); in
 scenario 116 it reached that limit 56 times. 16,384 unanswered orders can be 32,768 sends to the sequencers waiting for
-the reactor, eight times the pool, before any execution report is counted. The reports to the members, answered at the
-rate orders arrive, about 100,000 a second in that scenario, are the likely remainder of the 61,000. The pool's size,
+the reactor, eight times the pool, before any execution report is counted. The pool's size,
 4,096, predates the limit on unanswered commands, and was not changed when the limit was set.
 
-The first two steps are arithmetic from the code and the configuration. How the 61,000 divide between sends to the
-sequencers and reports is not yet measured; section 4 says how it is to be.
+Measured on 20 November 2026, with temporary counting in the reactor, the queue held 64,920 commands at its deepest:
+29,992 orders for each sequencer and 4,936 execution reports. The orders for each sequencer exceed the gateway's limit
+of 16,384 because the limit stops the gateway reading its members, but the orders already read are still forwarded;
+nothing bounds how many those can be, [BUG-0279](../bug_list.md#bug_0279). So the command queue cannot be sized from
+settings until that is bounded.
 
 ## 3. Which queues use the allocator
 
@@ -56,12 +58,12 @@ sequencers and reports is not yet measured; section 4 says how it is to be.
 
 ## 4. Sizing, and growth as an error
 
-1. **Measure what the queue holds at its peak.** A short run of scenario 116 with the binary gateway counting, at the
-   command queue's deepest, how many of its commands are sends to the sequencers and how many are reports to members,
-   and the same for the FIX order gateway, which sends each order to both sequencers in the same way.
-2. **Size each gateway's command queue from its limit on unanswered commands:** at least two sends for each
-   unanswered command, plus the reports measured in step 1, with the figure and how it was reached in the
-   configuration's comment, so that the two settings cannot drift apart again. Each other component's queues are
+1. **Measure what the queue holds at its peak.** Done for the binary order gateway (section 2); the FIX order gateway,
+   which sends each order to both sequencers in the same way, is to be measured the same way.
+2. **Size each gateway's command queue from what bounds it:** two sends for each order it can have read but not yet
+   answered, plus the reports in flight, with the figure and how it was reached in the configuration's comment, so that
+   the settings cannot drift apart again. This needs [BUG-0279](../bug_list.md#bug_0279) first: today nothing bounds
+   the orders read but not yet answered. Each other component's queues are
    checked against what bounds them in the same way.
 3. **Growth is an error.** The handlers for an exhausted pool log at Error rather than Warning, and each allocator's
    count of pools added, which it already keeps (`expansion_events_`), is published as a metric, so that a queue that

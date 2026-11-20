@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 278 |
-| Open | 52 (30 defects, 22 tasks) |
+| Bugs recorded | 279 |
+| Open | 53 (31 defects, 22 tasks) |
 | Closed | 226 |
-| Next id | BUG-0279 |
+| Next id | BUG-0280 |
 
 ## Open bugs by severity
 
-4 high, 32 medium, 16 low.
+4 high, 33 medium, 16 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -49,6 +49,7 @@
 | [BUG-0263](#bug_0263) | medium | defect | In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
 | [BUG-0278](#bug_0278) | medium | defect | An exception that ends an application thread stops the process with exit status 0, as if it had stopped normally |
+| [BUG-0279](#bug_0279) | medium | defect | A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -2410,6 +2411,34 @@ and the component's `main` returns what it returns. Only an exception that escap
 **What is wanted.** A thread that dies of an exception stops the reactor with `Reactor::shutdown_for_a_failure`, so that
 `run` returns `stopped_for_a_failure_status`, 1, as a refusal to start does. Whether anything relies on today's 0, such
 as a scenario of `ha_test.py` that expects a clean exit from a component that has failed, is to be checked first.
+
+### BUG-0279: A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent {#bug_0279}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| How | Measuring, for [BUG-0127](#bug_0127), what the binary order gateway's command queue held at its deepest in `ha_test.py` scenario 116 |
+| Impact | The commands a gateway has waiting for its reactor to send have no bound that any setting states, so no size of its command queue can be shown sufficient; the queue grows during the day, which [BUG-0010](#bug_0010) rules out, and while it grows it takes a lock ([BUG-0127](#bug_0127)) |
+
+**What was measured.** With temporary counting in the reactor, on 20 November 2026, scenario 116, a load client
+offering 1,800,000 orders on four sessions as fast as the sockets accept them: at its deepest the binary order gateway's
+command queue held 64,920 commands, 29,992 orders for each sequencer and 4,936 execution reports for the four members.
+The queue is sized for 4,096, and grew by 15 pools.
+
+**Why.** Each order is two sends with high availability on, one to each sequencer. The gateway stops reading its
+members' connections once 16,384 commands are unanswered (`[unanswered_commands] limit`), and its configuration says
+that this bounds every queue between the gateway and the matching engine. It does not: the orders the reactor has
+already read from the members' connections when reading stops are still processed and forwarded, 13,608 of them here,
+about 3,400 for each member. Nothing limits how many those can be for the binary gateway's member connections, so the
+excess grows with the number of members connected.
+
+**What is wanted.** A bound on the orders a gateway can have read but not yet answered that holds whatever the number of
+members, so that its command queue can be sized from settings: for example a limit on the messages waiting from each
+member's connection ([bounding_messages_waiting.md](framework/bounding_messages_waiting.md)), or the limit applied to
+each order as the gateway's thread takes it rather than only to reading. To be designed and agreed. The FIX order
+gateway forwards each order to both sequencers in the same way and is to be checked too.
 
 ## Closed
 
