@@ -1,7 +1,7 @@
 # The sequencer holds its memory from the start of the day {#the_sequencer_holds_its_memory_from_the_start}
 
-**Status: proposed, 20 November 2026, for [BUG-0131](../bug_list.md#bug_0131) and [BUG-0121](../bug_list.md#bug_0121).**
-Section 7 lists the decisions, none of them yet agreed.
+**Status: agreed with Andrew, 20 November 2026, for [BUG-0131](../bug_list.md#bug_0131) and
+[BUG-0121](../bug_list.md#bug_0121); not yet built.** Section 7 lists the decisions and the order of the work.
 
 ## 1. The problem
 
@@ -91,14 +91,15 @@ session that logs off still has its number when its orders' reports arrive.
 
 ## 7. Decisions
 
-Each is a separate yes-or-no question.
+Agreed with Andrew, 20 November 2026, each yes:
 
-1. **Is the growth of section 3 found first, with BUG-0087's tool and `/proc/<pid>/smaps`, and removed, before the
-   sequencer locks anything?** Recommended: yes.
-2. **Does the sequencer lock its session map at start, check its limit on locked memory first, and refuse to start at
-   Critical with status 1 if it cannot, as the engine does?** Recommended: yes.
-3. **Does it lock the record of command identifiers too, by giving its `tsl::robin_map` an allocator that locks what it
-   allocates?** Recommended: yes. Its pages are supplied at start already; locking keeps them from being swapped out.
-4. **Does the session map hold a small number for each session instead of the session's whole identity, as section 5
-   describes, cutting the map from 25 GB to 7.8 GB in production?** Recommended: yes, and before decision 2 is built,
-   so that what is locked is the smaller map.
+1. The growth of section 3 is found first, with BUG-0087's tool across all the sequencer's threads and with
+   `/proc/<pid>/smaps` sampled through a run, and removed, before the sequencer locks anything.
+2. The sequencer locks its session map at start, checks its limit on locked memory first, and refuses to start at
+   Critical with status 1 if it cannot, as the engine does.
+3. It locks the record of command identifiers too, by giving its `tsl::robin_map` an allocator that locks what it
+   allocates.
+4. The session map holds a small number for each session instead of the session's whole identity (section 5), and this
+   is built before decision 2, so that what is locked is the smaller map.
+
+The work is done in that order: 1, then 4, then 2 and 3.
