@@ -1664,25 +1664,25 @@ The map now holds only the order's identity and the number of its record in the 
 
 | | Bytes | How it was established |
 |---|---|---|
-| A record in the region | 248: the 232-byte order and a 16-byte header | `sizeof`, and the development region of 2,000,000 records is 496 MB |
-| A slot in the map | 141: the 134-byte identity, the 4-byte record number, 2 of padding and 1 for the slot's state | `sizeof`, and the engine's own log: 262,144 reserved is 2^19 slots, logged as 70 MB |
+| A slot in the region | 264: the 248-byte order and a 16-byte header | `sizeof`, and the fix of [BUG-0101](#bug_0101), which grew the order from 232 bytes |
+| A slot in the map | 145: the 134-byte identity, the 4-byte record number and 2 of padding, 4 for the entry's hash, kept in an array of its own, and 1 for the slot's state | `sizeof` |
 | Map slots per open order | at least 2: the map is never more than half used, and its size is a power of two | `IncrementalRehashMap::capacity_for` |
 
-The map's resident memory was measured filled: 1,000,000 orders took 288,836 kB, against 295.7 MB
-predicted, and 10,000,000 took 4,619,832 kB, against 4,731 MB. Reserving touches only the state byte of
-each slot; the rest is faulted in as the map fills.
+The map's resident memory was measured filled, before each entry's hash was kept: 1,000,000 orders took
+288,836 kB, against 295.7 MB predicted, and 10,000,000 took 4,619,832 kB, against 4,731 MB. Reserving touches
+only the state byte of each slot; the rest is faulted in as the map fills.
 
-| Most orders open at once | Region | Map, reserved | Total | At most, while the map is copied |
-|---|---|---|---|---|
-| 100 million | 24.8 GB | 37.8 GB (2^28 slots) | 62.7 GB | 100.5 GB |
+| Most orders open at once | Region | Map, reserved | Total |
+|---|---|---|---|
+| 100 million | 26.4 GB | 38.9 GB (2^28 slots) | 65.3 GB |
 
-The last column: a cancelled order's slot is marked erased rather than emptied, and erased slots count toward
-the map's half-full limit. A new order mostly lands on a slot never used before, so every order placed during
-the day uses up a slot, whether or not it is later cancelled. Once about half the slots have been used, about
-134 million orders placed in one day with 2^28 slots, the map is copied to a fresh one of the same size to
-clear the erased slots, and holds both while it does. What sets it off is the number of orders placed in the
-day, not the number cancelled; a day of 50 million orders never reaches it, however many are cancelled, and
-every trading day starts with a fresh map. The copy fits the 200 GB machine with room to spare.
+**The map is never copied during the day.** Removing an order empties its slot and moves later entries back
+to close the gap ([deleting_without_erased_marks.md](framework/deleting_without_erased_marks.md)), so the
+slots in use are exactly the orders open, however many are placed and cancelled in the day. The map is copied
+only when more than half its slots are in use, and with 2^28 slots that is about 134 million open at once,
+more than the region's 100 million allows. The one exception is a table being copied out of, which still marks
+a removed slot erased; that happens only when the map was reserved too small, as in the development
+environment.
 
 **What it costs to start.** Both creating the region and recovering it pass over every record, whatever is
 open, and recovery also writes the header of every record that holds no order, to rebuild the free list
@@ -1708,12 +1708,9 @@ are about, and it rules out a restarted engine keeping the lead within its 3-sec
 
 - the map's pages are not touched when it is reserved, so the memory is not proven available at the start
   of the day, as the decision in [BUG-0010](#bug_0010) requires;
-- copying the map to clear erased slots doubles it for a while, on a day of more than about 134 million orders
-  placed;
 - a restart costs time in proportion to the region's capacity, not to the orders open, and rewrites most of
   the region; this is for the design of phase 8 of the [recovery plan](recovery_plan.md), which changes how
-  the follower builds its book;
-- pre-production and test-1 still allow 1,000,000 open orders.
+  the follower builds its book.
 
 ### BUG-0041: Five ways the venue will not start on a RHEL8 target host {#bug_0041}
 

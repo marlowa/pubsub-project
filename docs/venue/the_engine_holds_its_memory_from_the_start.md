@@ -9,7 +9,7 @@ A matching engine must never die during the trading day for lack of memory. Toda
 
 The engine keeps its open orders in two places:
 
-- **the open-order region**, a file on disk mapped into the engine's memory: 24.8 GB for 100 million orders in
+- **the open-order region**, a file on disk mapped into the engine's memory: 26.4 GB for 100 million orders in
   production. Its pages belong to the file, so when memory is short the kernel can write them back to the file and
   reuse them. A shortage makes the region slow, by making the engine wait for the disk, but it cannot get the engine
   killed. The engine already writes to every page of it before it reports itself ready (`OrderBook::warm`), so that
@@ -72,7 +72,7 @@ stopped it and what it would need.
 The region's pages can be locked the same way. They cannot get the engine killed, so locking them is not needed for
 this bug; what locking them would add is that none is ever written back and dropped during the day, so that no order
 waits for a page to be read from the disk. Today `warm()` writes every page at the start, but the kernel may still drop
-clean pages later under memory pressure. Locking them would add 24.8 GB to what is locked in production, about 64 GB
+clean pages later under memory pressure. Locking them would add 26.4 GB to what is locked in production, about 65 GB
 in all on a machine of 200 GB.
 
 ## 5. What it costs
@@ -110,7 +110,7 @@ Each is a separate yes-or-no question.
    Critical before refusing to start, rather than the out-of-memory killer, at the cost of raising the venue user's
    limit on locked memory in production?** Recommended: yes. It is the only way of the three in which the engine finds
    out for itself, and can say why.
-3. **Does it lock the region's pages too, so that none is dropped and read back from the disk during the day, at 24.8
+3. **Does it lock the region's pages too, so that none is dropped and read back from the disk during the day, at 26.4
    GB more locked in production?** Recommended: yes, but it is a matter of latency, not of the engine dying, and could
    wait.
 4. **Before it locks anything, does the engine work out from its capacities how much it will lock, log it, and compare

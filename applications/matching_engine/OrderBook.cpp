@@ -84,7 +84,9 @@ bool OrderBook::remove(const OrderKey& key) {
         return false;
     }
     const SlotIndex slot = it->second;
-    index_.erase(it);
+    // remove() rather than erase(): the book is not walking the map, and erase() would also find the next entry,
+    // which in a nearly empty map means scanning most of it.
+    index_.remove(it);
     store_.release(slot);
     return true;
 }

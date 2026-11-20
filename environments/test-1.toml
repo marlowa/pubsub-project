@@ -582,7 +582,7 @@ order_book_region_capacity = 100000000
 identifier_secret_file = "etc/matching_engine/identifier_secret.key"
 # How many open orders the map from an order's identity to its record is sized for at start:
 # the same as the region, as in production, so the map never grows during the day. 100 million
-# orders take a map of 2^28 slots of 141 bytes, 37.8 GB. See docs/bug_list.md, BUG-0028.
+# orders take a map of 2^28 slots of 145 bytes, 38.9 GB. See docs/bug_list.md, BUG-0028.
 order_book_initial_capacity = 100000000
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9205

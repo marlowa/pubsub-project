@@ -15,6 +15,7 @@
 // the design already guarantees. PUBSUB_ITC_FW_THREAD_CHECKS is set by the top-level
 // CMakeLists for exactly those build types.
 #include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
 #include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
 #endif
@@ -62,12 +63,20 @@ namespace pubsub_itc_fw {
  * measures under a millisecond. The entry storage itself is left uninitialised, and the
  * kernel faults its pages in lazily as the migration touches them.
  *
- * **Erasure and tombstones**
+ * **Erasure: backward shift, not tombstones**
  *
- * Open addressing with linear probing, and an erased slot becomes a tombstone so that probe
- * chains through it stay intact. Tombstones count towards the load factor, so a workload that
- * inserts and erases in equal measure eventually triggers a migration to the SAME capacity,
- * which clears them. Growth and tombstone-clearing are one mechanism, not two.
+ * Open addressing with linear probing. An erased entry's slot is emptied, and then the entries
+ * further along its run that can sit earlier are moved back into the gap, one by one, until an
+ * empty slot is reached (backward-shift deletion: Knuth, volume 3, section 6.4, Algorithm R). So
+ * no slot is left marked erased, an insert/erase workload never fills the table with marks, and
+ * the table never has to be copied to the same size to clear them: its memory is what was
+ * reserved, however many entries are erased (docs/framework/deleting_without_erased_marks.md).
+ *
+ * The one exception is the table being migrated out of. There an erased slot is still marked
+ * as a tombstone, as is a slot the migration has moved an entry out of: shifting an entry back
+ * could move it from a slot the migration cursor has not reached into one it has passed, and it
+ * would never be moved. Nothing is inserted into that table, and it is released when the
+ * migration ends, so its marks never accumulate.
  *
  * **Iterator invalidation**
  *
@@ -75,6 +84,11 @@ namespace pubsub_itc_fw {
  * including the one being erased through, which is why erase(ConstIterator) does its removal
  * before it advances the migration. This is stricter than std::unordered_map, where erase
  * leaves other iterators alone, and it is the price of moving entries a few at a time.
+ *
+ * erase(ConstIterator) returns where a walk should go on from: the erased slot again when an
+ * entry has been shifted back into it, the following one otherwise. A walk that erases as it
+ * goes visits every entry at least once, but may visit one twice: when the shift wraps from the
+ * last slot to the first, an entry from the start of the table, already passed, moves to its end.
  *
  * **Mutating a stored value**
  *
@@ -141,6 +155,11 @@ class IncrementalRehashMap {
     struct Table {
         SlotState* states{nullptr};
         EntryStorage* entries{nullptr};
+        // The low 32 bits of each occupied slot's hash, kept so that an entry's home slot is known without hashing its key
+        // again, which shifting entries back on an erase needs for every entry it looks at, and so that a search compares
+        // four bytes before it compares a key. Meaningful only for an occupied slot. 32 bits are enough for any home slot,
+        // because a table's capacity is at most 2^32 (allocate_table).
+        uint32_t* hashes{nullptr};
         size_t capacity{0};
         size_t mask{0};
         size_t live{0};
@@ -300,6 +319,12 @@ class IncrementalRehashMap {
     }
 
     /// Slots of the outgoing table not yet examined by the migration. Zero when settled.
+    /// How many slots are marked erased, in both tables. Only a table being migrated out of has any:
+    /// erasing elsewhere shifts entries back instead of marking the slot.
+    [[nodiscard]] size_t slots_marked_erased() const {
+        return (current_.used - current_.live) + (next_.used - next_.live);
+    }
+
     [[nodiscard]] size_t migration_slots_remaining() const {
         return is_migrating() ? current_.capacity - migration_cursor_ : 0;
     }
@@ -421,8 +446,27 @@ class IncrementalRehashMap {
             step_migration();
             return 0;
         }
-        erase(position);
+        // Not through erase(ConstIterator): that works out where a walk would go on from, which in a nearly empty
+        // table means scanning most of it for the next entry, and a removal by key has no use for the answer.
+        static_cast<void>(remove_at(position.table_index_, position.slot_index_));
+        step_migration();
         return 1;
+    }
+
+    /**
+     * @brief Removes the entry an iterator refers to, for a caller that has found it and is not walking the map.
+     * @param[in] position The entry to remove; end() is ignored.
+     *
+     * The same removal as erase(ConstIterator), without working out where a walk would go on from, which in a nearly
+     * empty table means scanning most of it for the next entry. Every iterator is invalidated.
+     */
+    void remove(const ConstIterator& position) {
+        check_thread_confinement();
+        if (position == end()) {
+            return;
+        }
+        static_cast<void>(remove_at(position.table_index_, position.slot_index_));
+        step_migration();
     }
 
     /**
@@ -441,13 +485,8 @@ class IncrementalRehashMap {
         }
         // Removal happens before the migration step, because the step may move the very entry
         // this iterator names.
-        Table& table = mutable_table_for(position.table_index_);
-        table.entries[position.slot_index_].entry.~EntryType();
-        table.states[position.slot_index_] = SlotState::Tombstone;
-        --table.live;
-        --size_;
-
-        ConstIterator following(this, position.table_index_, position.slot_index_ + 1);
+        const size_t continue_from = remove_at(position.table_index_, position.slot_index_);
+        ConstIterator following(this, position.table_index_, continue_from);
         step_migration();
         return following;
     }
@@ -547,13 +586,19 @@ class IncrementalRehashMap {
     [[nodiscard]] Table allocate_table(size_t table_capacity) {
         const size_t state_bytes = table_capacity * sizeof(SlotState);
         const size_t entry_bytes = table_capacity * sizeof(EntryStorage);
+        const size_t hash_bytes = table_capacity * sizeof(uint32_t);
+        if (table_capacity > (size_t{1} << 32)) {
+            throw PreconditionAssertion("IncrementalRehashMap: a table of more than 2^32 slots cannot keep its entries' home slots in 32 bits", __FILE__,
+                                        __LINE__);
+        }
 
         Table table;
         table.states = static_cast<SlotState*>(::operator new(state_bytes));
         table.entries = static_cast<EntryStorage*>(::operator new(entry_bytes, std::align_val_t{alignof(EntryStorage)}));
+        table.hashes = static_cast<uint32_t*>(::operator new(hash_bytes));
         table.capacity = table_capacity;
         table.mask = table_capacity - 1;
-        report_table_allocation(state_bytes + entry_bytes);
+        report_table_allocation(state_bytes + entry_bytes + hash_bytes);
         // One byte per slot, and SlotState::Empty is zero. This is the only part of allocating
         // a table that touches every slot; the entry storage is left raw and is faulted in by
         // the migration as it goes.
@@ -582,6 +627,7 @@ class IncrementalRehashMap {
         destroy_entries(table);
         ::operator delete(table.states);
         ::operator delete(table.entries, std::align_val_t{alignof(EntryStorage)});
+        ::operator delete(table.hashes);
         table = Table{};
     }
 
@@ -598,7 +644,7 @@ class IncrementalRehashMap {
             if (state == SlotState::Empty) {
                 return table.capacity;
             }
-            if (state == SlotState::Occupied && key_equal_(table.entries[slot].entry.first, key)) {
+            if (state == SlotState::Occupied && table.hashes[slot] == static_cast<uint32_t>(hash_value) && key_equal_(table.entries[slot].entry.first, key)) {
                 return slot;
             }
             slot = (slot + 1) & table.mask;
@@ -611,6 +657,61 @@ class IncrementalRehashMap {
         return table.capacity;
     }
 
+    /**
+     * @brief Removes the entry at @p slot of the table numbered @p table_index: marks the slot erased in a table
+     *        being migrated out of, and shifts later entries back into it everywhere else.
+     * @return The slot a walk should go on from: @p slot again when an entry was shifted back into it, the next one
+     *         otherwise. Working it out costs nothing; finding the entry there is left to the caller that wants it.
+     */
+    size_t remove_at(size_t table_index, size_t slot) {
+        Table& table = mutable_table_for(table_index);
+        table.entries[slot].entry.~EntryType();
+        --table.live;
+        --size_;
+        const bool migrated_out_of = is_migrating() && table_index == 0;
+        if (migrated_out_of) {
+            table.states[slot] = SlotState::Tombstone;
+            return slot + 1;
+        }
+        return shift_back_into(table, slot) ? slot : slot + 1;
+    }
+
+    /**
+     * @brief Fills the gap left at @p gap, whose entry has been destroyed, by moving back each entry
+     *        further along the run whose search passes through the gap, and empties the slot that is
+     *        left (backward-shift deletion).
+     *
+     * An entry at slot j with home slot h is found by a search from h that meets no empty slot
+     * before j. The gap is on that search exactly when the entry is at least as far from its home
+     * as it is from the gap, counting forward and wrapping round, and then it can move into the gap
+     * and still be found; otherwise its home is after the gap and it stays. The walk ends at the first
+     * empty slot: no entry beyond it searches through the gap. A slot marked erased, which this table
+     * should not hold, is passed over rather than ended at, so that the walk stays correct if it
+     * does. The table is at most half full, so an empty slot is always reached.
+     *
+     * @return Whether an entry was moved into the slot at @p gap.
+     */
+    bool shift_back_into(Table& table, size_t gap) {
+        const size_t first_gap = gap;
+        size_t slot = (gap + 1) & table.mask;
+        while (table.states[slot] != SlotState::Empty) {
+            if (table.states[slot] == SlotState::Occupied) {
+                const size_t home = table.hashes[slot] & table.mask;
+                if (((slot - home) & table.mask) >= ((slot - gap) & table.mask)) {
+                    new (&table.entries[gap].entry) EntryType(std::move(table.entries[slot].entry));
+                    table.hashes[gap] = table.hashes[slot];
+                    table.states[gap] = SlotState::Occupied;
+                    table.entries[slot].entry.~EntryType();
+                    gap = slot;
+                }
+            }
+            slot = (slot + 1) & table.mask;
+        }
+        table.states[gap] = SlotState::Empty;
+        --table.used;
+        return gap != first_gap;
+    }
+
     /// Index of the slot a new entry belongs in. The caller must have established that the
     /// key is absent, so the first slot that is not occupied will do.
     [[nodiscard]] size_t find_free_slot(const Table& table, size_t hash_value) const {
@@ -621,9 +722,10 @@ class IncrementalRehashMap {
         return slot;
     }
 
-    void construct_at(Table& table, size_t slot, const Key& key, const Value& value) {
+    void construct_at(Table& table, size_t slot, const Key& key, const Value& value, size_t hash_value) {
         const SlotState previous = table.states[slot];
         new (&table.entries[slot].entry) EntryType(key, value);
+        table.hashes[slot] = static_cast<uint32_t>(hash_value);
         table.states[slot] = SlotState::Occupied;
         ++table.live;
         // A tombstone already counted towards the load: reusing it does not add to the count,
@@ -660,7 +762,7 @@ class IncrementalRehashMap {
         Table& target = is_migrating() ? next_ : current_;
         const size_t table_index = is_migrating() ? 1 : 0;
         const size_t slot = find_free_slot(target, hash_value);
-        construct_at(target, slot, key, value);
+        construct_at(target, slot, key, value, hash_value);
         ++size_;
         return {ConstIterator(this, table_index, slot), true};
     }
@@ -725,8 +827,11 @@ class IncrementalRehashMap {
             return;
         }
         EntryType& entry = current_.entries[slot].entry;
-        const size_t destination = find_free_slot(next_, hash_(entry.first));
+        // The kept hash, not a new one: the new table is at most 2^32 slots, so its low 32 bits give the home slot there.
+        const uint32_t hash_value = current_.hashes[slot];
+        const size_t destination = find_free_slot(next_, hash_value);
         new (&next_.entries[destination].entry) EntryType(std::move(entry));
+        next_.hashes[destination] = hash_value;
         next_.states[destination] = SlotState::Occupied;
         ++next_.live;
         ++next_.used;

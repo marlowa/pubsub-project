@@ -598,11 +598,10 @@ order_book_region_capacity = 100000000
 identifier_secret_file = "etc/matching_engine/identifier_secret.key"
 # How many open orders the map from an order's identity to its record is sized for at start:
 # the same as the region, so the map never grows during the day. 100 million orders take a
-# map of 2^28 slots of 141 bytes, 37.8 GB. A cancelled order's slot is marked erased, not
-# emptied, so every order placed uses up a slot; after about 134 million orders placed in one
-# day the map is copied to a fresh one of the same size to clear them, and holds both while it
-# does, 75.7 GB; with the region that is 102.1 GB at most, which the 200 GB machine has room
-# for. It is the orders placed, not the cancels, that set it off. See docs/bug_list.md, BUG-0028.
+# map of 2^28 slots of 145 bytes, 38.9 GB; with the region, 65.3 GB. Removing an order empties
+# its slot and moves later entries back to close the gap, so the slots in use are only the
+# orders open, however many are placed and cancelled in the day, and the map is never copied
+# while it stays within its size. See docs/bug_list.md, BUG-0028.
 order_book_initial_capacity = 100000000
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9205

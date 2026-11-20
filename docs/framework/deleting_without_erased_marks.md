@@ -1,17 +1,16 @@
 # Deleting from the order map without leaving erased marks {#deleting_without_erased_marks}
 
-**Status: proposed, 19 November 2026, for [BUG-0028](../bug_list.md#bug_0028).** Section 9 lists the decisions, none of
-them yet agreed.
+**Status: agreed with Andrew, 20 November 2026, for [BUG-0028](../bug_list.md#bug_0028), and built.** Section 9 lists
+the decisions.
 
 ## 1. The problem
 
 The matching engine finds an open order's record in the open-order region through a map from the order's identity to
 the record's number: `IncrementalRehashMap`, in the library. In production the map is reserved, when the engine starts,
-for the most orders that may be open at once, 100 million: 2^28 slots of about 140 bytes, 37.8 GB. Reserving it is meant
-to make its memory fixed for the whole day, with nothing allocated after the start.
+for the most orders that may be open at once, 100 million: 2^28 slots of 145 bytes, 38.9 GB. Reserving it is meant to
+make its memory fixed for the whole day, with nothing allocated after the start.
 
-It is not fixed today, because of the way an order is removed. The map is an open-addressing table with linear
-probing:
+The map is an open-addressing table with linear probing:
 
 - an order's identity is turned by a hash function into a slot number, the order's **home slot**;
 - a new order goes into its home slot, or, if that is taken, into the first free slot after it, wrapping round from
@@ -20,19 +19,17 @@ probing:
   slot, which means the order is not in the map.
 
 A cancelled order's slot cannot simply be emptied. A later order whose home slot is before it, and which was placed
-beyond it because it was taken, would no longer be found: its search would stop at the newly empty slot. So today the
-slot is marked **erased**: a search steps over it, as if it were taken, and a new order may reuse it if its search
-passes it.
+beyond it because it was taken, would no longer be found: its search would stop at the newly empty slot. The usual
+answer is to mark the slot **erased**: a search steps over it, as if it were taken, and a new order may reuse it if its
+search passes it.
 
-The map keeps itself at most half full, because searches slow down sharply beyond half, and an erased slot counts as
-used. A new order mostly lands on a slot never used before, so every order placed during the day uses up a slot,
-whether or not it is later cancelled. Once about half the slots are used, about 134 million orders placed in one day
-with 2^28 slots, the map copies its orders to a new table of the same size, which leaves the erased slots behind, and
-holds both tables while it copies: a second 37.8 GB, asked for at a moment nobody chose.
-
-A day of 50 million orders, the planned volume, never reaches that point, however many orders are cancelled. But the
-copy exists, it is set off by volume alone, and it is the one thing that stops the map's memory being fixed from the
-start of the day.
+The map keeps itself at most half full, because searches slow down sharply beyond half, and an erased slot would count
+as used. A new order mostly lands on a slot never used before, so with erased marks every order placed during the day
+would use up a slot, whether or not it was later cancelled. Once about half the slots were used, about 134 million
+orders placed in one day with 2^28 slots, the map would copy its orders to a new table of the same size, to leave the
+erased slots behind, and hold both tables while it copied: a second table of the same size, asked for at a moment
+nobody chose. That copy, set off by volume alone, would stop the map's memory being fixed from the start of the day.
+This document is how the map removes an order without marking its slot, so that the copy is never needed.
 
 ## 2. The method: backward-shift deletion
 
@@ -90,7 +87,7 @@ slot order by a cursor, and the one being copied **into**.
 
 - **In the table being copied into,** backward shift is used, as in a table not being copied. Orders are placed there
   only by the copy and by new inserts, both of which keep the rule of section 2.
-- **In the table being copied out of,** a removed order's slot is still marked erased, as today. Backward shift there
+- **In the table being copied out of,** a removed order's slot is still marked erased. Backward shift there
   could move an order from a slot the cursor has not reached into a slot it has already passed, and that order would
   never be copied and would be lost. The marks do no harm in that table: nothing is inserted into it, and it is
   released when the copy ends.
@@ -107,7 +104,7 @@ is now taken, and the next slot only when it is empty. One case remains that a w
 from the last slot to the first, an order from the start of the table, which the walk has already passed, can move to
 the end of the table and be visited a second time. No code in the venue walks the map while removing from it: the order
 book collects the orders it is to cancel first and removes each by its identity, and so does the sequencer's
-`MemberSessions`. The class's documentation will say this.
+`MemberSessions`. The class's documentation says this.
 
 ## 5. Threads
 
@@ -125,26 +122,26 @@ part-way through could miss an order or see one twice. No other thread looks at 
 - The sequencer's `MemberSessions`, the map's other user, is likewise used on the sequencer's thread alone.
 
 So the change adds no race, and needs no lock. Should a reader on another thread ever be wanted, it would need a design
-of its own, whatever the method of removal: today's erased marks do not make the map safe to read from another thread
+of its own, whatever the method of removal: erased marks do not make the map safe to read from another thread
 either, because inserts and the copy move orders too.
 
 ## 6. What it costs
 
-A removal now does more than mark a slot: it looks at each slot after the gap until it meets an empty one, works out
-the home slot of each order it meets, which means hashing its identity again, and moves some of them, each move copying
-one slot of about 140 bytes. The order's record in the open-order region does not move; only the map's slot that
+A removal does more than mark a slot would: it looks at each slot after the gap until it meets an empty one, works out
+the home slot of each order it meets from the hash kept for it, and moves some of them, each move copying one entry of
+140 bytes and its 4-byte hash. The order's record in the open-order region does not move; only the map's slot that
 names it does.
 
 How far the repair walks depends on how full the table is. The map is never more than half full of live orders, and
 with the map reserved for 100 million it is far emptier than that for most of the day. At half full, Knuth's analysis
 gives about 1.5 slots looked at on average for a successful search, and the repair walks a run of similar length. The
-worst case is a long run of orders with nearby home slots, which a good hash makes rare, and which would slow today's
+worst case is a long run of orders with nearby home slots, which a good hash makes rare, and which would slow
 searches as much.
 
 What it saves: the copy that clears erased slots, a second table of 37.8 GB and the work of moving every order into it,
 never happens.
 
-These are estimates. Section 8 says what will be measured.
+These are estimates. Section 8.1 gives what was measured.
 
 ## 7. Tests
 
@@ -162,7 +159,7 @@ Each test is to be made to fail on purpose, with the change undone or broken, be
   map empty.
 - **One thread:** the existing thread-confinement test still stops a second thread from using the map.
 
-## 8. What will be measured
+## 8. What is measured
 
 On the development machine, with the order book's own benchmark (`order_book_size_bench` and `order_book_bench` in
 `applications/matching_engine/performance`):
@@ -177,15 +174,15 @@ On the development machine, with the order book's own benchmark (`order_book_siz
 
 Built, and measured with `order_book_bench`: 1,000,000 orders added to a book reserved for 1,000,000, so a table of
 2^21 slots, then each cancelled, in the order they were added, each operation timed. Pinned to one core of the
-development machine, with its measurement settings on; the binary with today's map and the one with backward shift
+development machine, with its measurement settings on; the binary with the map with erased marks and the one with backward shift
 were run alternately, twice each, and the two runs of each agreed to within a few nanoseconds. Nanoseconds per
 operation:
 
 | Book with its region | p50 | p90 | p99 | p99.9 | worst |
 |---|---|---|---|---|---|
-| Accept, today's map | 60 | 215 | 886 | 1,987 | 100,000 to 175,000 |
+| Accept, the map with erased marks | 60 | 215 | 886 | 1,987 | 100,000 to 175,000 |
 | Accept, backward shift | 57 | 207 | 879 | 1,980 | 100,000 to 119,000 |
-| Cancel, today's map | 140 | 183 | 296 | 378 | 24,000 to 33,000 |
+| Cancel, the map with erased marks | 140 | 183 | 296 | 378 | 24,000 to 33,000 |
 | Cancel, backward shift | 149 | 256 | 387 | 528 | 32,000 |
 
 A cancel here is the whole of the book's work: finding the order, copying its record, removing it, and publishing the
@@ -197,7 +194,7 @@ where a walk of the map would go on from, by scanning for the next entry, and in
 handful of entries that scan crosses most of it. Today's map has the same scan, but its table is never empty of marks
 at that point, and the scan stops sooner. The order book has no use for the answer. The map now has `remove(iterator)`,
 which removes without working it out, and `erase(key)` no longer goes through it; the order book uses `remove`. That
-took the worst cancel back to what today's map gives, which looks like an interruption of the thread rather than work
+took the worst cancel back to what the map with erased marks gives, which looks like an interruption of the thread rather than work
 in the map.
 
 **What the shift costs:** 9 nanoseconds at the median, and 70 to 150 at the 90th to 99.9th percentiles. The cost is
@@ -209,13 +206,13 @@ the 2^28 slots of production's map.
 
 **With each entry's hash kept,** as Andrew decided on 19 November 2026, in an array of 4 bytes a slot beside the
 entries, working out an entry's home needs no hashing, and a search compares the four bytes before it compares
-identities. Measured the same way, alternating with today's map, twice each:
+identities. Measured the same way, alternating with the map with erased marks, twice each:
 
 | Book with its region | p50 | p90 | p99 | p99.9 |
 |---|---|---|---|---|
-| Accept, today's map | 60 | 215 | 882 | 1,987 |
+| Accept, the map with erased marks | 60 | 215 | 882 | 1,987 |
 | Accept, backward shift with the hash kept | 53 | 91 | 907 | 2,005 |
-| Cancel, today's map | 140 | 182 | 295 | 375 |
+| Cancel, the map with erased marks | 140 | 182 | 295 | 375 |
 | Cancel, backward shift with the hash kept | 146 | 232 | 343 | 466 |
 
 Differences of less than 10 nanoseconds do not matter (Andrew, 19 November 2026). What is left is a cancel 50 to 90
@@ -230,13 +227,14 @@ every page at the start of the day would take that tail away from accepts.
 
 ## 9. Decisions
 
-Each is a separate yes-or-no question.
+Agreed with Andrew, 19 and 20 November 2026:
 
-1. **Is backward-shift deletion used in every table of `IncrementalRehashMap` except one being copied out of, where a
-   removal still marks the slot erased?** Recommended: yes. Section 3 gives the reason.
-2. **Does `erase(iterator)` return the emptied slot again when an order has moved back into it, with the class's
-   documentation saying that a walk which removes as it goes may visit an order twice when the repair wraps round the
-   end of the table?** Recommended: yes. No code walks the map while removing from it (section 4).
-3. **Is the change built and measured first, as section 8 describes, and kept only if a removal stays within a few
-   hundred nanoseconds and the search and insert times do not change?** Recommended: yes. The figure to keep it by is
-   Andrew's to set; a few hundred nanoseconds is a proposal.
+1. Backward-shift deletion is used in every table of `IncrementalRehashMap` except one being copied out of, where a
+   removal still marks the slot erased (section 3).
+2. Each entry's hash is kept, in an array of 4 bytes a slot beside the entries, so that working out an entry's home
+   slot needs no hashing, and a search compares hashes before identities (section 8.1).
+3. The change is kept at the cost measured in section 8.1: a cancel 50 to 90 nanoseconds slower from the 90th
+   percentile up, and an accept 124 nanoseconds faster at the 90th. Differences of less than 10 nanoseconds do not
+   matter.
+4. The order book removes an order with `remove(iterator)`, which does not work out where a walk of the map would go on
+   from; `erase(iterator)` still does, for a caller that walks the map while removing from it (section 4).

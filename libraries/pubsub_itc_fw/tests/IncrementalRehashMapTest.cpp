@@ -96,7 +96,25 @@ struct NarrowHash {
     }
 };
 
+/// A key is its own home slot, in a table whose capacity is above the largest home used, so that a test can
+/// say exactly which slot each entry is in.
+struct KeyIsItsHome {
+    size_t operator()(int key) const {
+        return static_cast<size_t>(key);
+    }
+};
+
 using IntMap = IncrementalRehashMap<int, int>;
+using HomeMap = IncrementalRehashMap<int, int, KeyIsItsHome>;
+
+/// The keys of a map in slot order, which is the order a walk from begin() visits them in.
+template <typename Map> std::vector<int> keys_in_slot_order(const Map& map) {
+    std::vector<int> keys;
+    for (auto entry = map.begin(); entry != map.end(); ++entry) {
+        keys.push_back(entry->first);
+    }
+    return keys;
+}
 using StringMap = IncrementalRehashMap<int, std::string>;
 using CountedMap = IncrementalRehashMap<int, CountedValue>;
 
@@ -256,9 +274,12 @@ TEST_F(IncrementalRehashMapTest, AnErasedSlotIsReusedByTheNextInsert) {
         EXPECT_EQ(map.erase(round), 1u);
     }
     EXPECT_EQ(map.size(), 0u);
-    // 1000 inserts into a table of 16 slots, each erased again. Tombstones are reclaimed by a
-    // same-size migration, so the capacity must not have run away.
-    EXPECT_LE(map.capacity(), capacity_before * 4);
+    // 1000 inserts into a table of 16 slots, each erased again. Erasing shifts entries back rather
+    // than marking the slot, so the table is never copied, not even to the same size, and keeps the
+    // capacity it was reserved with (docs/framework/deleting_without_erased_marks.md).
+    EXPECT_EQ(map.capacity(), capacity_before);
+    EXPECT_FALSE(map.is_migrating());
+    EXPECT_EQ(map.slots_marked_erased(), 0u);
 }
 
 TEST_F(IncrementalRehashMapTest, ClearEmptiesTheMapAndKeepsItsCapacity) {
@@ -816,5 +837,188 @@ TEST_F(IncrementalRehashMapTest, AMapHandedOverIsOwnedByTheThreadThatTookItOver)
     EXPECT_THROW((void)map.find(1), PreconditionAssertion);
 }
 #endif
+
+// The worked example of docs/framework/deleting_without_erased_marks.md, section 2, in the smallest table, 16 slots: A in
+// its home slot 2, B (home 2) pushed to 3, C (home 3) pushed to 4, D in its home slot 5. Erasing A moves B back to 2 and
+// C back to 3, and leaves D, whose home is 5, where it is.
+TEST_F(IncrementalRehashMapTest, ErasingShiftsLaterEntriesOfTheRunBackIntoTheGap) {
+    HomeMap map;
+    map.reserve(4);
+    ASSERT_EQ(map.capacity(), 16u);
+    const int a = 2;
+    const int b = 18;
+    const int c = 19;
+    const int d = 5;
+    for (const int key : {a, b, c, d}) {
+        map.emplace(key, key);
+    }
+    ASSERT_EQ(keys_in_slot_order(map), (std::vector<int>{a, b, c, d}));
+    EXPECT_EQ(map.erase(a), 1u);
+    EXPECT_EQ(keys_in_slot_order(map), (std::vector<int>{b, c, d})) << "B and C move back to slots 2 and 3; D stays in 5";
+    for (const int key : {b, c, d}) {
+        EXPECT_NE(map.find(key), map.end()) << key;
+    }
+    EXPECT_EQ(map.find(a), map.end());
+    EXPECT_EQ(map.slots_marked_erased(), 0u);
+    // The slot C left, 4, is now empty: an entry whose home is 4 goes straight into it, before D.
+    map.emplace(20, 20);
+    EXPECT_EQ(keys_in_slot_order(map), (std::vector<int>{b, c, 20, d}));
+}
+
+// A run that wraps from the last slot to the first: 15 in its home slot 15, then 31 and 47, both home 15, in slots 0 and
+// 1. Erasing 15 moves 31 back to 15 and 47 back to 0; erasing 31 then moves 47 back across the end, to 15.
+TEST_F(IncrementalRehashMapTest, ErasingShiftsBackAcrossTheEndOfTheTable) {
+    HomeMap map;
+    map.reserve(4);
+    ASSERT_EQ(map.capacity(), 16u);
+    for (const int key : {15, 31, 47}) {
+        map.emplace(key, key);
+    }
+    ASSERT_EQ(keys_in_slot_order(map), (std::vector<int>{31, 47, 15}));
+    EXPECT_EQ(map.erase(15), 1u);
+    EXPECT_EQ(keys_in_slot_order(map), (std::vector<int>{47, 31})) << "31 moves back to slot 15, and 47 to slot 0";
+    EXPECT_EQ(map.erase(31), 1u);
+    EXPECT_EQ(keys_in_slot_order(map), (std::vector<int>{47})) << "47 moves back across the end, to slot 15";
+    EXPECT_NE(map.find(47), map.end());
+    EXPECT_EQ(map.slots_marked_erased(), 0u);
+}
+
+// An entry moves back only as far as its home: 3 in slot 3, 19 (home 3) in slot 4, 4 (home 4) in slot 5. Erasing 3 moves
+// 19 back to 3, and 4 back to 4, its home. Erasing 19 then leaves 4 in slot 4: slot 3 is before its home, and a search
+// for it, starting at 4, would never look there.
+TEST_F(IncrementalRehashMapTest, AnEntryMovesBackOnlyAsFarAsItsHome) {
+    HomeMap map;
+    map.reserve(4);
+    ASSERT_EQ(map.capacity(), 16u);
+    for (const int key : {3, 19, 4}) {
+        map.emplace(key, key);
+    }
+    ASSERT_EQ(keys_in_slot_order(map), (std::vector<int>{3, 19, 4}));
+    EXPECT_EQ(map.erase(3), 1u);
+    EXPECT_EQ(keys_in_slot_order(map), (std::vector<int>{19, 4}));
+    EXPECT_EQ(map.erase(19), 1u);
+    EXPECT_EQ(keys_in_slot_order(map), (std::vector<int>{4}));
+    EXPECT_NE(map.find(4), map.end());
+    // Had 4 been moved into slot 3, the search from its home, 4, would meet an empty slot at once and not find it; and
+    // an entry whose home is 3 goes into slot 3 rather than after 4.
+    map.emplace(35, 35);
+    EXPECT_EQ(keys_in_slot_order(map), (std::vector<int>{35, 4}));
+}
+
+// Inserting and erasing in any balance never marks a slot, so a reserved table is never copied.
+TEST_F(IncrementalRehashMapTest, ChurnLeavesNoSlotMarkedAndNeverCopiesTheTable) {
+    IncrementalRehashMap<int, int, NarrowHash> map;
+    map.reserve(4096);
+    const size_t capacity = map.capacity();
+    std::mt19937 generator(7);
+    std::uniform_int_distribution<int> keys(0, 3000);
+    for (int step = 0; step < 200000; ++step) {
+        const int key = keys(generator);
+        if (map.find(key) == map.end()) {
+            map.emplace(key, key);
+        } else {
+            map.erase(key);
+        }
+        ASSERT_EQ(map.slots_marked_erased(), 0u) << "at step " << step;
+    }
+    EXPECT_EQ(map.capacity(), capacity);
+    EXPECT_FALSE(map.is_migrating());
+}
+
+// Random inserts and erases, with keys that collide heavily and a table that grows, so that erasing happens in both tables
+// of a migration, compared after every step with std::unordered_map.
+TEST_F(IncrementalRehashMapTest, InsertsAndErasesAgreeWithAReferenceMap) {
+    IncrementalRehashMap<int, int, NarrowHash> map;
+    std::unordered_map<int, int> reference;
+    std::mt19937 generator(11);
+    std::uniform_int_distribution<int> keys(0, 5000);
+    std::uniform_int_distribution<int> choice(0, 9);
+    for (int step = 0; step < 100000; ++step) {
+        const int key = keys(generator);
+        if (choice(generator) < 6) {
+            const bool inserted = map.emplace(key, step).second;
+            const bool reference_inserted = reference.emplace(key, step).second;
+            ASSERT_EQ(inserted, reference_inserted) << "at step " << step;
+        } else {
+            ASSERT_EQ(map.erase(key), reference.erase(key)) << "at step " << step;
+        }
+        ASSERT_EQ(map.size(), reference.size()) << "at step " << step;
+        if (step % 997 == 0) {
+            for (const auto& [reference_key, reference_value] : reference) {
+                const auto found = map.find(reference_key);
+                ASSERT_NE(found, map.end()) << reference_key << " lost at step " << step;
+                ASSERT_EQ(found->second, reference_value);
+            }
+        }
+    }
+    for (int key = 0; key <= 5000; ++key) {
+        ASSERT_EQ(map.find(key) != map.end(), reference.count(key) == 1) << key;
+    }
+}
+
+// Removing every entry by walking the map, erasing as it goes, visits every entry and leaves the map empty, however the
+// entries shift back.
+TEST_F(IncrementalRehashMapTest, ErasingWhileWalkingVisitsEveryEntryAndEmptiesTheMap) {
+    IncrementalRehashMap<int, int, NarrowHash> map;
+    map.reserve(512);
+    for (int key = 0; key < 200; ++key) {
+        map.emplace(key, key);
+    }
+    std::unordered_map<int, int> visited;
+    for (auto entry = map.begin(); entry != map.end();) {
+        ++visited[entry->first];
+        entry = map.erase(entry);
+    }
+    EXPECT_EQ(map.size(), 0u);
+    EXPECT_EQ(visited.size(), 200u);
+}
+
+// remove(iterator) is the same removal as erase(iterator), shifting later entries back, for a caller that has found the
+// entry and is not walking the map.
+TEST_F(IncrementalRehashMapTest, RemoveByIteratorShiftsLaterEntriesBack) {
+    HomeMap map;
+    map.reserve(4);
+    for (const int key : {2, 18, 19, 5}) {
+        map.emplace(key, key);
+    }
+    map.remove(map.find(2));
+    EXPECT_EQ(keys_in_slot_order(map), (std::vector<int>{18, 19, 5}));
+    EXPECT_EQ(map.size(), 3u);
+    EXPECT_EQ(map.find(2), map.end());
+    map.remove(map.end());
+    EXPECT_EQ(map.size(), 3u) << "removing end() does nothing";
+    EXPECT_EQ(map.slots_marked_erased(), 0u);
+}
+
+// Entries moved into a larger table by a migration keep their hashes, so they are still found there and can still be
+// shifted back; erases happen in both tables while each migration is under way.
+TEST_F(IncrementalRehashMapTest, EntriesMovedByAMigrationAreFoundAndErasedByTheirKeys) {
+    IntMap map;
+    std::unordered_map<int, int> reference;
+    size_t migrations_seen = 0;
+    bool was_migrating = false;
+    for (int key = 1; key <= 20000; ++key) {
+        map.emplace(key * 7919, key);
+        reference.emplace(key * 7919, key);
+        if (key % 3 == 0) {
+            const int erased = (key - 1) * 7919;
+            ASSERT_EQ(map.erase(erased), reference.erase(erased)) << key;
+        }
+        if (map.is_migrating() && !was_migrating) {
+            ++migrations_seen;
+        }
+        was_migrating = map.is_migrating();
+    }
+    ASSERT_GE(migrations_seen, 5u) << "the map must have grown through several migrations for this test to mean anything";
+    ASSERT_EQ(map.size(), reference.size());
+    for (const auto& [key, value] : reference) {
+        const auto found = map.find(key);
+        ASSERT_NE(found, map.end()) << key;
+        EXPECT_EQ(found->second, value);
+    }
+    for (int key = 1; key <= 20000; ++key) {
+        EXPECT_EQ(map.find(key * 7919) != map.end(), reference.count(key * 7919) == 1) << key;
+    }
+}
 
 } // namespaces
