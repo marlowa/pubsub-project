@@ -24,6 +24,9 @@ Output directory:
         <name>.svg           flamegraph SVG (requires FlameGraph scripts)
         <name>.jpg           flamegraph JPG (requires ImageMagick convert)
         report.txt           combined perf report (--stdio, flat)
+        round_trip.png       the order round trip's p50, p90, p99 and p99.9 through the load, with
+                             orders a second underneath, drawn by pubsub_metrics.py from Prometheus
+                             (needs Prometheus running; the run says so when it is not)
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -581,6 +585,38 @@ def stop_perf_procs(perf_procs: list[tuple[str, subprocess.Popen]]) -> None:
             log(f"  WARNING: perf for {name} did not exit — killing")
             proc.kill()
             proc.wait()
+
+
+def draw_round_trip(gateway: str, load_started: float, load_ended: float, perf_dir: Path) -> None:
+    """Save the round trip's percentiles through the load, as a time series, beside the flame graphs.
+
+    Drawn by pubsub_metrics.py's band chart from the gateway's order_round_trip_nanoseconds histogram, which
+    Prometheus scraped during the run. perf_run.py does not start Prometheus, so when it is not running the chart is
+    not drawn, and the run says so rather than leaving it out silently.
+    """
+    prometheus = "http://localhost:9090"
+    try:
+        with urllib.request.urlopen(f"{prometheus}/-/healthy", timeout=5) as response:
+            healthy = response.status == 200
+    except OSError:
+        healthy = False
+    if not healthy:
+        log(f"Round-trip chart     : not drawn -- Prometheus is not running at {prometheus}; start it first "
+            "(devenv.py start prometheus) to have one")
+        return
+    duration = max(1.0, load_ended - load_started)
+    # About 150 points across the load, and never finer than the 5-second scrape interval.
+    step = max(5, int(duration / 150))
+    chart = perf_dir / "round_trip.png"
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve().parent / "pubsub_metrics.py"), "--application", "pubsub", "--component", gateway,
+         "--metrics", "bands", "--hist", "order_round_trip_nanoseconds", "--from", str(int(load_started) - step),
+         "--to", str(int(load_ended) + step), "--step", str(step), "--save-figure", str(chart)],
+        capture_output=True, text=True, check=False)
+    if result.returncode == 0 and chart.is_file():
+        log(f"Round-trip chart     : {chart}")
+    else:
+        log(f"WARNING: the round-trip chart was not drawn: {(result.stderr or result.stdout).strip()[-300:]}")
 
 
 def generate_reports(app_names: list[str], perf_dir: Path) -> None:
@@ -1534,6 +1570,7 @@ def main() -> None:
         time.sleep(1)  # give perf a moment to start recording
 
         # Drive load through whichever gateway is under test.
+        load_started = time.time()
         if args.profile:
             profile_manifest = run_trading_day(bin_dir, perf_dir, Path(args.profile), args.clients,
                                                gateway_listen_port(prefix, "binary", args.gateway_instance))
@@ -1548,6 +1585,7 @@ def main() -> None:
 
         log(f"Waiting {POST_ORDER_WAIT:.0f}s for pipeline to drain ...")
         venue_events.keep_reading(listener, POST_ORDER_WAIT)
+        load_ended = time.time()
 
         # Read the ME's accepted-order counter BEFORE shutting anything down. The counter
         # lives in the process, so unlike a Quill log it does not survive SIGTERM. Taken after
@@ -1559,6 +1597,7 @@ def main() -> None:
         gateway_counts = read_gateway_counters(gateway_metrics_port)
 
         full_shutdown()
+        draw_round_trip(gateway_under_test, load_started, load_ended, perf_dir)
 
     except KeyboardInterrupt:
         log("Interrupted — shutting down cleanly ...")
