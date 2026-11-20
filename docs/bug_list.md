@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 273 |
+| Bugs recorded | 276 |
 | Open | 51 (29 defects, 22 tasks) |
-| Closed | 222 |
-| Next id | BUG-0274 |
+| Closed | 225 |
+| Next id | BUG-0277 |
 
 ## Open bugs by severity
 
@@ -875,7 +875,7 @@ The waiting reports' storage and its limits are to be written up and agreed befo
 `IncrementalRehashMap`, reserved at start-up for `[commands] open_orders_expected`, each environment's matching engine
 region capacity, so that it no longer allocates a node for each order or rehashes all at once. Reserving writes only the
 table's state bytes; the entries are faulted in as orders first use each page, about one fault for every 46 new orders,
-as in the engine's book, and whether to touch them at start-up is still to be decided. The reports waiting for their
+as in the engine's book. The map has since been removed altogether ([BUG-0274](#bug_0274)). The reports waiting for their
 record to be committed (section 3) are not yet changed, and the allocation-counting test of step 2 waits for
 [BUG-0087](#bug_0087)'s tool.
 
@@ -890,11 +890,12 @@ which waited for [BUG-0087](#bug_0087)'s tool. The tool's first run, on 20 Novem
 leading sequencer's thread in 60 seconds, from the copied service name of [BUG-0270](#bug_0270), its lease requests and
 its logging, and none from the session map or the waiting reports.
 
-**The leading sequencer's memory grows during the day,** measured on 20 November 2026: from 7.0 GB to 11.0 GB at most
-over 83 minutes, while the follower stayed flat. The session map explains at most 0.78 GB of it. What else grows, and
-how the sequencer is to hold its memory from the start as the matching engine does, is proposed in
-[the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md), whose four
-decisions are Andrew's.
+**The leading sequencer's memory grew during the day,** measured on 20 November 2026: from 7.0 GB to 11.0 GB at most
+over 83 minutes, while the follower stayed flat. All of it was the session map, which kept every order placed rather than
+only the open ones, and doubled when half full; the map is removed, and reports are routed by the session they carry
+([BUG-0274](#bug_0274)). How the sequencer is to hold the rest of its memory from the start, as the matching engine does,
+is agreed in [the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md):
+it is to lock its record of command identifiers, which is not yet built.
 ### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
 
 | | |
@@ -2375,6 +2376,85 @@ always released oldest first, because a report is kept until it has been sent on
 design must say what happens to a report sent on one connection and waiting for the other.
 
 ## Closed
+
+### BUG-0276: Scenario 81 counted a report marked as a possible repeat as the same order reported twice {#bug_0276}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| Fixed | 2026-11-20 -- the scenario counts the New reports marked as possible repeats (PossResend, tag 97=Y) apart from the others, and requires each order to be reported exactly once without that mark |
+| How | Running the whole of `ha_test.py` to check [BUG-0274](#bug_0274) |
+| Impact | Scenario 81 failed when the member received a possible repeat before the scenario stopped listening: all 50 orders in one run, 1 in another. A failure of the scenario said nothing about whether held reports were sent once |
+
+**What happens.** In scenario 81 the leading sequencer holds the reports for a gateway it has no connection for reports
+to, and sends them once the connection is made. When the gateway's connection for answers is made, the gateway sends
+again every command it has not had answered, marked as sent again (`UnansweredCommands`,
+[a_gateway_limits_its_unanswered_commands.md](availability/a_gateway_limits_its_unanswered_commands.md)), and the sequencer
+answers each from its WAL with the report marked as a possible repeat. So the member may receive the held report and
+then its repeat. The repeat is correct: PossResend tells the member it may have seen the report already. The scenario
+counted every New report, and failed on the repeat.
+
+### BUG-0275: The test library that blocks a process's sends saw none of them, because the reactor writes with sendmsg() {#bug_0275}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| Fixed | 2026-11-20 -- `libblock_sends_to_ports.so` replaces `sendmsg()` as well as `send()`, with the same rules for both: a blocked `sendmsg()` reports every byte of every piece as sent, or fails with ECONNRESET in "break" mode |
+| How | Running the whole of `ha_test.py` to check [BUG-0274](#bug_0274) |
+| Impact | The nine scenarios of `ha_test.py` that use the library failed before reaching what they test: 59, 62, 65, 66, 76, 77, 87, 88 and 99. None of what they test was tested while this was so |
+
+**What happened.** `libblock_sends_to_ports.so` (`applications/sequencer/tools/BlockSendsToPorts.cpp`), preloaded into one
+process by a scenario, stops that process's sends on chosen connections from arriving once a flag file exists, and
+creates a confirmation file when it first discards a send, which the scenario waits for. It replaced only `send()`.
+The reactor writes each connection's messages several at a time with one `sendmsg()` call
+(`TcpSocket::send_gathered`), so the library saw no send on those connections, never began blocking, and never wrote its
+confirmation. Each scenario that uses it stopped with "libblock_sends_to_ports.so never confirmed that it had begun
+blocking", or, where the scenario words it so, that the process "sent no report after the block began".
+
+### BUG-0274: The leading sequencer's map of which session placed each order kept every order placed, so it grew through the day {#bug_0274}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| Fixed | 2026-11-20 -- the map is removed. Every report the matching engine sends names the session whose command it answers and carries the time that session's gateway read the command, and the sequencer routes each report by what it carries, as it already did for reports with no entry in the map. `[commands] open_orders_expected`, which only sized the map, is removed from the sequencer's configuration |
+| How | Looking for the leading sequencer's growth of [BUG-0131](#bug_0131), measured on 20 November 2026 ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md), section 3) |
+| Impact | The leading sequencer's memory grew through the day, in steps, each step holding two tables at once for some minutes: 4 GB in 83 minutes in development. At 50 million orders a day the table would reach tens of gigabytes during trading, the out-of-memory end [BUG-0010](#bug_0010) rules out |
+
+**What happened.** `MemberSessions::origins_` recorded, against each command's sequence number, the session that sent it
+and the time its gateway read it, so that the reports of the command could be routed home and the gateway could measure
+its round trip. An entry was removed when a report answering that sequence number said the order had ended. A cancel is
+a command with a sequence number of its own, and its report answers the cancel, so the cancel's entry was removed and the
+cancelled order's never was: it had only been answered by its acknowledgement. The venue does no matching, so no order
+ends by being filled. The map, reserved for the orders expected to be open at once, held every order placed, and when
+half full it allocated a table twice the size, moved its entries across a few at a time, and freed the old one.
+
+**How it was shown.** The steps of the 83-minute run fall at 4.2 and 8.4 million orders placed, when a map reserved for
+4 million doubles. A second run, 15 minutes at 3,500 orders a second with 80% cancelled, against a map reserved for
+2 million, grew at 13:06:10, at 2.1 million orders placed, as predicted, while no more than about 0.6 million orders were
+open; `/proc/<pid>/smaps`, read every 10 seconds, showed a mapping of 352 MB freed and 735 MB added, the two tables. The
+follower sequencer, which fills no such map, stayed flat.
+
+**Why removed rather than corrected.** Correcting it needed a new field on every report naming the order that ended, and
+left a map of 25 GB in production to be shrunk and locked. Everything it supplied already travels on the report: the
+engine takes the session's identity and the gateway's time of reading from the command, and puts both on every report
+it sends of it. Chosen by Andrew, 20 November 2026.
+
+**What was done.** `SequencerThread::forward_report_from_engine` takes the routing identity and the gateway's time of
+reading from the report's envelope. A report that may repeat one already sent carries no time on to the gateway, because
+its round trip would measure the delay of a change of leader rather than the venue. `MemberSessions` keeps nothing for
+each order, `ReportForwarding` forgets no order, and `[commands] open_orders_expected` is gone from the configuration,
+its loader and its tests. The sequencer's 313 unit tests pass, and so does the whole of `ha_test.py`: 118 of 118 results
+with the primary matching engine started first, and the 49 scenarios that run both engines with the secondary started
+first. The 15-minute run of section 3 of
+[the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md), repeated
+without the map, processed all 3,152,000 orders, and the leading sequencer's anonymous memory went from 7,014 MB to
+7,021 MB and never higher, where with the map it went from 7,018 MB to 7,814 MB.
 
 ### BUG-0271: The following matching engine allocates from the heap for every report it keeps to compare with the leader's {#bug_0271}
 

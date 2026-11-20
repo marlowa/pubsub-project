@@ -136,9 +136,6 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
 }
 
 void SequencerThread::on_initial_event() {
-    // Reserved here, on the thread that records which session placed each order, for every order that may be open at once,
-    // so that the map does not grow while the venue trades (docs/venue/sequencer_order_path_without_the_heap.md).
-    sessions_.reserve_orders(config_.open_orders_expected);
     // The log starts a helper thread to prepare its next segment, and a new thread inherits the
     // processor mask of whichever thread created it. This one is created from here, on the
     // application thread, by then pinned to a processor reserved for the order path -- so
@@ -830,33 +827,23 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                    "SequencerThread: order envelope on connection {} inner_pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
                    message.connection_id().get_value(), inner_pdu_id, seq, replicated_wal_->wal().record_count(), pubsub_itc_fw_app::to_string(role_));
 
-        // Record seq_no -> the session that placed this order, so its execution reports can
-        // be routed back to it. seq_no is globally unique, unlike a ClOrdID.
-        //
-        // What is stored is the session's identity, not the connection it arrived on. The
-        // connection is where the session happens to be *now*, and by the time a report is
-        // ready it may be somewhere else entirely -- a different socket, or a different
-        // gateway instance after a failover. Resolving that at send time is what makes a
-        // report survive the reconnect; see docs/availability/gateway_ha.md.
-        if (inbound.has_sender_comp_id && !inbound.sender_comp_id.empty()) {
-            MemberSessions::OriginSession origin;
-            origin.identity = fix_common::SessionIdentity::make(inbound.sender_comp_id,
-                                                                inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent);
-            // Remembered, not read: the gateway stamped this when it read the order off the
-            // client socket, and gets it back on the ER so it can measure the round trip.
-            origin.has_ingress_ns = inbound.has_gateway_ingress_ns;
-            origin.gateway_ingress_ns = inbound.gateway_ingress_ns;
-            sessions_.order_placed(seq, origin);
-        } else if (inbound.has_gateway_session_conn_id) {
-            // An order with a connection but no comp id cannot be routed home: the address
-            // it arrived on is not an identity, and there is nothing else to file it under.
-            // Warned rather than passed over, because it means a gateway stopped stamping
-            // the comp id and every report for that order will be dropped later, far from
-            // the cause.
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: order seq={} arrived with a session connection but no sender_comp_id -- "
-                       "its execution reports cannot be routed to any session",
-                       seq);
+        // The session that placed this command travels with it to the matching engine, which names that session on
+        // every report it sends of the command, so the report can be routed home without anything being kept here.
+        // What travels is the session's identity, not the connection it arrived on: by the time a report is ready
+        // the session may be on a different socket or a different gateway instance; see
+        // docs/availability/gateway_ha.md.
+        if (!inbound.has_sender_comp_id || inbound.sender_comp_id.empty()) {
+            if (inbound.has_gateway_session_conn_id) {
+                // An order with a connection but no comp id cannot be routed home: the address
+                // it arrived on is not an identity, and there is nothing else to file it under.
+                // Warned rather than passed over, because it means a gateway stopped stamping
+                // the comp id and every report for that order will be dropped later, far from
+                // the cause.
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "SequencerThread: order seq={} arrived with a session connection but no sender_comp_id -- "
+                           "its execution reports cannot be routed to any session",
+                           seq);
+            }
         }
 
         // The order goes to the matching engine once its record is committed: once the follower has
@@ -974,59 +961,27 @@ bool SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
                                                config_.wall_clock->now_ns());
     }
 
-    // Route the ER back to the originating FIX session. The ME echoes the order's
-    // seq_no in the transport header, so er_seq_no resolves via the map for
-    // ordinary ERs. ERs not tied to a sequenced order (the seq_no==0 cancel-on-failover
-    // ERs) instead carry the conn id on the inbound envelope. The conn id rides on the
-    // envelope, never inside the DD-derived ER.
-    // The session this report belongs to, and then -- separately -- where that session
-    // can be reached. Keeping the two apart is the whole of step 5: an order is filed
-    // under an identity that outlives connections, and the address is resolved at the
-    // last possible moment, so a member that reconnected while the report was in flight
-    // still receives it.
+    // The session this report belongs to, and then -- separately -- where that session can be reached. Every report
+    // the matching engine sends names the session whose command it answers, which the engine took from the command
+    // itself, and carries the time that session's gateway read the command, so that the gateway can measure its round
+    // trip. Nothing about the order is kept here: an identity outlives connections, and the address is resolved at the
+    // last possible moment, so a member that reconnected while the report was in flight still receives it. A report
+    // that may repeat one already sent carries no read time on to the gateway: it may be sent long after the command
+    // was read, after a change of leader, and its round trip would measure that rather than the venue.
     fix_common::SessionIdentity routing_identity{};
     bool has_routing_conn = false;
     int32_t routing_conn_id = 0;
     int16_t routing_gateway_id = gateway_ids::default_when_absent;
     int16_t routing_gateway_instance = gateway_ids::first_instance;
-    // The originating gateway's ingress stamp, returned to it on the ER so it can
-    // measure the round trip. Only the routing-map branch can supply one: an ER that
-    // is not tied to a sequenced order never had an originating read to measure from.
-    bool has_routing_ingress_ns = false;
-    int64_t routing_ingress_ns = 0;
-    bool erase_routing_entry = false;
+    const bool has_routing_ingress_ns = inbound.has_gateway_ingress_ns && !possible_repeat;
+    const int64_t routing_ingress_ns = has_routing_ingress_ns ? inbound.gateway_ingress_ns : 0;
     {
-        const MemberSessions::OriginSession* origin = sessions_.origin(er_seq_no);
-        if (origin != nullptr) {
-            routing_identity = origin->identity;
-            has_routing_ingress_ns = origin->has_ingress_ns;
-            routing_ingress_ns = origin->gateway_ingress_ns;
-
-            switch (view.ord_status) {
-                case pubsub_itc_fw_app::OrdStatus::Filled:
-                case pubsub_itc_fw_app::OrdStatus::Canceled:
-                case pubsub_itc_fw_app::OrdStatus::Rejected:
-                case pubsub_itc_fw_app::OrdStatus::Expired:
-                case pubsub_itc_fw_app::OrdStatus::DoneForDay:
-                case pubsub_itc_fw_app::OrdStatus::Replaced:
-                    erase_routing_entry = true;
-                    break;
-                default:
-                    break;
-            }
-        } else if (inbound.has_sender_comp_id && !inbound.sender_comp_id.empty()) {
-            // The order's sequence is not in the map. Either the report has no originating
-            // order sequence, as with the cancel-on-failover reports a promoted matching
-            // engine emits, or it was kept while this instance was not leading, and only a
-            // leader fills the map. Every report the engine sends carries the identity of the
-            // session whose order it is about, which is exactly what is needed -- and it is
-            // why the ME stores the identity against each resting order rather than the
-            // connection that placed it, which by then may no longer exist.
+        if (inbound.has_sender_comp_id && !inbound.sender_comp_id.empty()) {
             routing_identity = fix_common::SessionIdentity::make(inbound.sender_comp_id,
                                                                  inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: ER seq_no={} not in routing map and no comp id on the envelope -- forwarding unaddressed", er_seq_no);
+                       "SequencerThread: ER seq_no={} carries no comp id on its envelope -- forwarding unaddressed", er_seq_no);
         }
 
         // Now the address, resolved from the identity rather than remembered with it.
@@ -1141,7 +1096,6 @@ bool SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
         pending.gateway_ingress_ns = routing_ingress_ns;
         pending.poss_resend = possible_repeat;
         pending.is_new_order_ack = is_new_order_ack;
-        pending.erase_routing_entry = erase_routing_entry;
         pending.position = position;
         pending.log_seq_no = er_wal_seq;
         return pending;
@@ -1150,18 +1104,12 @@ bool SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     auto send_now = [&]() {
         if (!has_routing_conn && !routing_identity.empty()) {
             if (reports_.hold_for_unannounced_session(as_pending(false))) {
-                if (erase_routing_entry) {
-                    sessions_.order_ended(er_seq_no);
-                }
                 return;
             }
             sessions_.report_dropped_unbound(routing_identity, er_seq_no);
         }
         reports_.send_to_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack, position);
         sessions_.report_forwarded(routing_identity);
-        if (erase_routing_entry) {
-            sessions_.order_ended(er_seq_no);
-        }
     };
 
     // With no follower keeping up, a report is forwarded at once, as it always has been; otherwise once
@@ -2987,10 +2935,6 @@ void SequencerThread::ReportLinks::report_forwarded(const fix_common::SessionIde
 
 void SequencerThread::ReportLinks::report_dropped_unbound(const fix_common::SessionIdentity& identity, int64_t er_seq_no) {
     owner_.sessions_.report_dropped_unbound(identity, er_seq_no);
-}
-
-void SequencerThread::ReportLinks::order_ended(int64_t seq_no) {
-    owner_.sessions_.order_ended(seq_no);
 }
 
 void SequencerThread::ReportLinks::reports_held(const fix_common::SessionIdentity& identity, int32_t gateways_not_announced) {

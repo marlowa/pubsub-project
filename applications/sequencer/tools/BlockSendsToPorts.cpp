@@ -30,8 +30,10 @@
 //
 //   LD_PRELOAD=lib/libblock_sends_to_ports.so PUBSUB_TEST_BLOCK_PORTS=11003,11004 PUBSUB_TEST_BLOCK_FLAG=/path/to/flag bin/sequencer ...
 //
-// It replaces send(), which is the only call the framework uses to write to a TCP socket
-// (TcpSocket::send, and the TLS handler's sends). By default a blocked send reports every byte as sent, so
+// It replaces send() and sendmsg(), the two calls the framework uses to write to a TCP socket: the
+// reactor writes a connection's messages several at a time with one sendmsg() call
+// (TcpSocket::send_gathered), and TcpSocket::send and the TLS handler use send(). Both follow the same
+// rules below. By default a blocked send reports every byte as sent, so
 // the process does not retry or fail. Blocking is all at once and never undone: once the flag
 // has been seen, no later send on a blocked connection arrives, so the other end receives a whole
 // number of the frames sent before the flag appeared and nothing after.
@@ -56,6 +58,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -70,6 +73,7 @@
 namespace {
 
 using SendFunction = ssize_t (*)(int, const void*, size_t, int);
+using SendMessageFunction = ssize_t (*)(int, const msghdr*, int);
 
 struct Configuration {
     std::set<uint16_t> blocked_ports;
@@ -78,6 +82,7 @@ struct Configuration {
     // Whether a blocked send fails, and only while the flag file exists, rather than being discarded for good.
     bool break_connections{false};
     SendFunction real_send{nullptr};
+    SendMessageFunction real_send_message{nullptr};
 };
 
 std::set<uint16_t> parse_ports(const char* text) {
@@ -115,6 +120,7 @@ const Configuration& configuration() {
         const char* mode = std::getenv("PUBSUB_TEST_BLOCK_MODE");
         result.break_connections = mode != nullptr && std::string_view(mode) == "break";
         result.real_send = reinterpret_cast<SendFunction>(dlsym(RTLD_NEXT, "send"));
+        result.real_send_message = reinterpret_cast<SendMessageFunction>(dlsym(RTLD_NEXT, "sendmsg"));
         return result;
     }();
     return loaded;
@@ -183,6 +189,25 @@ bool connections_are_broken(const Configuration& config) {
     return true;
 }
 
+// What happens to one send on a connection, by the rules described at the top of this file.
+enum class SendOutcome { PassThrough, Discard, Fail };
+
+SendOutcome outcome_of_send(const Configuration& config, int file_descriptor) {
+    if (config.blocked_ports.empty() || config.flag_path.empty()) {
+        return SendOutcome::PassThrough;
+    }
+    if (config.break_connections) {
+        if (connection_is_blocked(file_descriptor, config.blocked_ports) && connections_are_broken(config)) {
+            return SendOutcome::Fail;
+        }
+        return SendOutcome::PassThrough;
+    }
+    if (blocking_has_begun(config) && connection_is_blocked(file_descriptor, config.blocked_ports)) {
+        return SendOutcome::Discard;
+    }
+    return SendOutcome::PassThrough;
+}
+
 } // namespaces
 
 extern "C" ssize_t send(int file_descriptor, const void* data, size_t size, int flags) {
@@ -191,18 +216,38 @@ extern "C" ssize_t send(int file_descriptor, const void* data, size_t size, int 
         errno = ENOSYS;
         return -1;
     }
-    if (config.blocked_ports.empty() || config.flag_path.empty()) {
-        return config.real_send(file_descriptor, data, size, flags);
-    }
-    if (config.break_connections) {
-        if (connection_is_blocked(file_descriptor, config.blocked_ports) && connections_are_broken(config)) {
+    switch (outcome_of_send(config, file_descriptor)) {
+        case SendOutcome::Discard:
+            return static_cast<ssize_t>(size);
+        case SendOutcome::Fail:
             errno = ECONNRESET;
             return -1;
-        }
-        return config.real_send(file_descriptor, data, size, flags);
-    }
-    if (blocking_has_begun(config) && connection_is_blocked(file_descriptor, config.blocked_ports)) {
-        return static_cast<ssize_t>(size);
+        case SendOutcome::PassThrough:
+            break;
     }
     return config.real_send(file_descriptor, data, size, flags);
+}
+
+extern "C" ssize_t sendmsg(int file_descriptor, const msghdr* message, int flags) {
+    const Configuration& config = configuration();
+    if (config.real_send_message == nullptr) {
+        errno = ENOSYS;
+        return -1;
+    }
+    switch (outcome_of_send(config, file_descriptor)) {
+        case SendOutcome::Discard: {
+            // Every byte of every piece is reported as sent, as a discarded send() reports its whole buffer.
+            size_t size = 0;
+            for (size_t piece = 0; piece < message->msg_iovlen; ++piece) {
+                size += message->msg_iov[piece].iov_len;
+            }
+            return static_cast<ssize_t>(size);
+        }
+        case SendOutcome::Fail:
+            errno = ECONNRESET;
+            return -1;
+        case SendOutcome::PassThrough:
+            break;
+    }
+    return config.real_send_message(file_descriptor, message, flags);
 }

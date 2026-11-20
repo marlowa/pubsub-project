@@ -233,9 +233,6 @@ void ReportForwarding::deliver(const Pending& pending) {
     const fix_common::SessionDestination* destination = pending.identity.empty() ? nullptr : links_.destination(pending.identity);
     if (destination == nullptr && !pending.identity.empty()) {
         if (hold_for_unannounced_session(pending)) {
-            if (pending.erase_routing_entry) {
-                links_.order_ended(pending.seq_no);
-            }
             return;
         }
         links_.report_dropped_unbound(pending.identity, pending.seq_no);
@@ -263,9 +260,6 @@ void ReportForwarding::deliver(const Pending& pending) {
         links_.report_forwarded(pending.identity);
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "ReportForwarding: buffered ER seq={} forwarded to protocol={} instance={}", pending.seq_no,
                    pending.identity.protocol, destination->instance);
-    }
-    if (pending.erase_routing_entry) {
-        links_.order_ended(pending.seq_no);
     }
 }
 
@@ -326,7 +320,6 @@ ReportForwarding::Pending ReportForwarding::decode_held_report(const uint8_t* by
     const uint8_t* payload = bytes + sizeof(header);
     pending.own_copy_of(payload, header.payload_size);
     pending.set_cl_ord_id(std::string_view(reinterpret_cast<const char*>(payload + header.payload_size), header.cl_ord_id_size));
-    pending.erase_routing_entry = false;
     return pending;
 }
 

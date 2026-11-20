@@ -466,11 +466,11 @@ subset, so a nanosecond ingress stamp cannot be smuggled in as an invented tag.
    its raw-socket read, before parsing; the binary gateway at entry to its client PDU
    dispatch, after the ER and authentication branches. Both are the earliest point at which
    the process has the order in hand, which is what makes the two comparable.
-2. The sequencer records it in the `OriginSession` entry it already keeps against the
-   order's `seq_no`, and stamps it back onto the outbound ER envelope. It rides with the
-   routing data rather than in a map of its own because it has the same key and the same
-   lifetime; a second map would be a second thing to insert into, erase from and rebuild on
-   replay, with no way to notice when the two drifted apart.
+2. The sequencer passes it to the matching engine on the order's envelope. The engine puts
+   it on the envelope of every report it sends of that command, and the sequencer stamps it
+   onto the ER envelope it sends to the gateway. Nothing is kept for the order on the way:
+   the time travels with the command and comes back with the report. A report that may
+   repeat one already sent goes to the gateway without it.
 3. The gateway subtracts it from the current time just before the send.
 
 **The matching engine is not involved at all** — it neither reads nor forwards the stamp,

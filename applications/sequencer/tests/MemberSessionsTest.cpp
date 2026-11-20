@@ -286,16 +286,4 @@ TEST_F(MemberSessionsTest, AReportForASessionATestExpectsNotToHaveIsCountedButNo
     EXPECT_TRUE(links_.dropped_events.empty());
 }
 
-TEST_F(MemberSessionsTest, TheSessionThatPlacedAnOrderIsKeptUntilAReportEndsIt) {
-    MemberSessions::OriginSession origin{};
-    origin.identity = member_;
-    origin.has_ingress_ns = true;
-    origin.gateway_ingress_ns = 1234;
-    sessions_->order_placed(10, origin);
-    ASSERT_NE(sessions_->origin(10), nullptr);
-    EXPECT_EQ(sessions_->origin(10)->gateway_ingress_ns, 1234);
-    sessions_->order_ended(10);
-    EXPECT_EQ(sessions_->origin(10), nullptr);
-}
-
 } // namespaces

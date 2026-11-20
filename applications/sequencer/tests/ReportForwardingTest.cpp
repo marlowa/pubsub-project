@@ -61,9 +61,6 @@ struct RecordingLinks : public ReportForwardingLinksInterface {
     void report_dropped_unbound(const fix_common::SessionIdentity&, int64_t er_seq_no) override {
         dropped_unbound.push_back(er_seq_no);
     }
-    void order_ended(int64_t seq_no) override {
-        ended.push_back(seq_no);
-    }
     void reports_held(const fix_common::SessionIdentity&, int32_t) override {
         ++held_events;
     }
@@ -91,7 +88,6 @@ struct RecordingLinks : public ReportForwardingLinksInterface {
     int acknowledgements{0};
     int forwarded{0};
     std::vector<int64_t> dropped_unbound;
-    std::vector<int64_t> ended;
     int held_events{0};
     std::vector<std::pair<int64_t, int64_t>> released;
     std::vector<int64_t> dropped_no_gateway;
@@ -225,14 +221,11 @@ TEST_F(ReportForwardingTest, AReportWaitsForItsRecordAndIsSentWhenItIsCommitted)
     EXPECT_EQ(links_.sent.size(), 2U);
 }
 
-TEST_F(ReportForwardingTest, AReportForASessionConnectedNowhereIsCountedAndItsOrderForgotten) {
+TEST_F(ReportForwardingTest, AReportForASessionConnectedNowhereIsCounted) {
     both_gateways_announce();
-    ReportForwarding::Pending report = pending("AWAY", 5, "r5");
-    report.erase_routing_entry = true;
-    forwarding_->deliver(report);
+    forwarding_->deliver(pending("AWAY", 5, "r5"));
     EXPECT_TRUE(links_.sent.empty());
     EXPECT_EQ(links_.dropped_unbound, (std::vector<int64_t>{5}));
-    EXPECT_EQ(links_.ended, (std::vector<int64_t>{5}));
 }
 
 TEST_F(ReportForwardingTest, HowFarReportsAreForwardedStopsBeforeTheOldestWaitingOrHeld) {

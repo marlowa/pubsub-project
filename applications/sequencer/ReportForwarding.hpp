@@ -56,8 +56,6 @@ class ReportForwardingLinksInterface {
     virtual void report_forwarded(const fix_common::SessionIdentity& identity) = 0;
     /// A report was dropped because its session is connected nowhere (MemberSessions).
     virtual void report_dropped_unbound(const fix_common::SessionIdentity& identity, int64_t er_seq_no) = 0;
-    /// A report has ended the order numbered @p seq_no (MemberSessions).
-    virtual void order_ended(int64_t seq_no) = 0;
 
     /// The test event ReportsHeld.
     virtual void reports_held(const fix_common::SessionIdentity& identity, int32_t gateways_not_announced) = 0;
@@ -176,8 +174,6 @@ class ReportForwarding {
         bool is_new_order_ack{false};
         /// Whether this repeats a report the member may already hold (R-0122).
         bool poss_resend{false};
-        /// Whether this report ends its order, so that which session placed it is forgotten once it is sent.
-        bool erase_routing_entry{false};
     };
 
     /**

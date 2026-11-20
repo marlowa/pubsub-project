@@ -1,7 +1,9 @@
 # The sequencer holds its memory from the start of the day {#the_sequencer_holds_its_memory_from_the_start}
 
 **Status: agreed with Andrew, 20 November 2026, for [BUG-0131](../bug_list.md#bug_0131) and
-[BUG-0121](../bug_list.md#bug_0121); not yet built.** Section 7 lists the decisions and the order of the work.
+[BUG-0121](../bug_list.md#bug_0121).** The growth measured in section 1 is explained in section 3 and removed
+([BUG-0274](../bug_list.md#bug_0274)); locking the record of command identifiers, section 4, is not yet built. Section 6
+lists the decisions.
 
 ## 1. The problem
 
@@ -24,82 +26,77 @@ to be found at the start of the day, or its lack reported then.
 
 ## 2. What the sequencer reserves at start
 
-Two large structures, both on the leading sequencer and on its follower:
+One large structure, on the leading sequencer and on its follower: **the record of command identifiers**
+(`LoggedCommandIdentifiers`, [BUG-0121](../bug_list.md#bug_0121) and
+[one_check_against_sequencing_twice.md](../availability/one_check_against_sequencing_twice.md)), which holds the
+identifier and WAL position of every command, so that a command is never sequenced twice. It is a `tsl::robin_map`
+reserved for `[commands] identifiers_reserved`, 200 million in every environment: 6 GiB. Reserving it constructs every
+bucket, which writes to every page, so the kernel supplies all 6 GiB at start; the log says it took 2.1 seconds. This is
+most of the 7 GB each sequencer holds at its start. It is not locked, so the kernel may swap its pages out later.
 
-- **The record of command identifiers** (`LoggedCommandIdentifiers`, [BUG-0121](../bug_list.md#bug_0121) and
-  [one_check_against_sequencing_twice.md](../availability/one_check_against_sequencing_twice.md)), which holds the
-  identifier and WAL position of every command, so that a command is never sequenced twice. It is a `tsl::robin_map`
-  reserved for `[commands] identifiers_reserved`, 200 million in every environment: 6 GiB. Reserving it constructs every
-  bucket, which writes to every page, so the kernel supplies all 6 GiB at start; the log says it took 2.1 seconds. This
-  is most of the 7 GB each sequencer holds at its start. It is not locked, so the kernel may swap its pages out later.
-- **The map of which session placed each open order** (`MemberSessions::origins_`, section 4 of
-  [sequencer_order_path_without_the_heap.md](sequencer_order_path_without_the_heap.md)), an `IncrementalRehashMap`
-  reserved for `[commands] open_orders_expected`, the environment's matching engine region capacity. Each slot holds the
-  order's sequence number and the session's identity, 88 bytes measured with `sizeof`, most of it the comp id's 64
-  characters, plus 4 bytes of kept hash and 1 of state: 93 bytes. Reserving it writes only the state bytes; the rest is
-  supplied page by page as orders first land in each slot, as the engine's map was.
+The sequencer keeps nothing for each order. A report from the matching engine names the session whose command it
+answers, which the engine took from the command, and carries the time that session's gateway read the command, so the
+sequencer routes each report by what it carries (section 4 of
+[sequencer_order_path_without_the_heap.md](sequencer_order_path_without_the_heap.md)).
 
-| Open orders | Session map slots | Session map | Record of identifiers | Together |
-|---|---|---|---|---|
-| 4 million, the run above | 2^23 | 0.78 GB | 6.4 GB | 7.2 GB |
-| 100 million, production | 2^28 | 25.0 GB | 6.4 GB | 31.4 GB |
+## 3. What the growth was
 
-## 3. What is not yet explained
+The leading sequencer kept a map of which session placed each order, keyed by the order's sequence number, and removed
+an order's entry when a report answering that sequence number said the order had ended. Every command was entered, the
+cancels too. A cancel is a command with a sequence number of its own, and its report answers the cancel, not the order:
+so a cancelled order's entry, which had only ever been answered by its acknowledgement, was never removed, and the
+venue, which does no matching, ends no order by filling it. The map held every order placed during the day. It was
+reserved for the orders expected to be open at once, and when it was half full it allocated a table twice the size,
+moved its entries across a few at a time, and freed the old table. Each slot was 93 bytes.
 
-The session map accounts for at most 0.78 GB of the leading sequencer's growth in the run above. The other 2 to 3 GB,
-and the 1 GB given back near the end, are not explained by anything reserved at start. The ring of reports waiting for
-the follower is allocated once, and the record of identifiers does not grow below its 200 million. So something on the
-leading sequencer allocates during the day, which is a breach of principle F5 whatever it turns out to be.
+In the run of section 1, 1,925 orders a second filled the first table of 2^23 slots, 0.78 GB, in the first twenty
+minutes; at 4.2 million orders, about 07:50, it moved to a table of 2^24 slots, 0.78 GB more once the old one was freed;
+at 8.4 million, about 08:25, to one of 2^25 slots, 3.1 GB, holding both tables while it moved, the old one
+1.56 GB, and the measured memory fell by 1 GB at the end of the run. Those are the steps in the table, at the times they happened. The follower filled no such map
+and stayed flat.
 
-Finding it comes first, before any locking, because locking the reserved structures would not stop it. Two instruments
-are to hand: [BUG-0087](../bug_list.md#bug_0087)'s counting of heap allocations by thread, which is being built now, and
-the kernel's map of the process's memory (`/proc/<pid>/smaps`), sampled through a run, which says which mapping grew.
+A second run confirmed it. On 20 November 2026 the development venue, whose map was reserved for 2 million orders, took
+3,500 orders a second for 15 minutes, 80% of them cancelled, so that no more than about 0.6 million were open at once.
+At 2.1 million orders placed, at 13:06:10, ten minutes in as predicted, the leading sequencer's memory grew: a mapping of
+352 MB, the old table, was freed, and 735 MB was added beside the record of identifiers, the new one. The mappings were
+read from `/proc/<pid>/smaps` every 10 seconds. Every one of the sequencer's threads freed as much as it allocated in a
+60-second count of its heap calls ([BUG-0087](../bug_list.md#bug_0087)), because a table doubles too rarely to fall in
+the window.
+
+The map has been removed rather than corrected ([BUG-0274](../bug_list.md#bug_0274)): everything it supplied, the
+session and the gateway's time of reading, already travels on the report. The same 15-minute run without the map, from a
+fresh WAL and order book, processed all 3,152,000 orders. The leading sequencer's anonymous memory (`RssAnon` in
+`/proc/<pid>/status`, sampled every 10 seconds) went from 7,014 MB to 7,021 MB and never higher, where with the map it
+went from 7,018 MB to 7,814 MB; the follower's went from 6,793 MB to 6,807 MB, as before.
 
 ## 4. The proposal
 
-Once the growth of section 3 is found and removed, the sequencer is to do what the engine does:
+The sequencer is to do what the engine does:
 
 1. **Before it reports itself ready,** work out how much it will lock, log it with its limit on locked memory, and
    refuse to start at Critical if the limit is too low.
-2. **Lock the session map** with `IncrementalRehashMap::hold_in_memory`, which the engine's map already uses. The kernel
-   then supplies every page at start.
-3. **Lock the record of identifiers.** Its pages are already supplied at start, but not locked, so they may be swapped
+2. **Lock the record of identifiers.** Its pages are already supplied at start, but not locked, so they may be swapped
    out under memory pressure and read back on the thread that sequences orders. `tsl::robin_map` keeps its buckets in a
    vector it allocates itself, and gives no access to their address. It does take an allocator as a template argument,
    so the record would pass one that locks each block it is given and unlocks it when the block is freed.
-4. **A refusal** is logged at Critical and the sequencer exits with status 1, as the engine does.
+3. **A refusal** is logged at Critical and the sequencer exits with status 1, as the engine does.
 
-## 5. A smaller session map
+## 5. What it costs
 
-The session map's slot is 93 bytes because it holds the session's whole identity, 64 bytes of it the comp id, once for
-every open order. Members are few and orders are many: a venue has hundreds to a few thousand comp ids. If the map held
-a small number naming the session instead, an index into a table of the sessions the sequencer has seen today, a slot
-would be the sequence number, the session's number and the gateway's ingress time, about 24 bytes, plus the 5 bytes of
-hash and state: 29 bytes. At 100 million open orders that is 7.8 GB instead of 25.0 GB, and the whole sequencer would
-lock about 14 GB instead of 31. The table of sessions is small, filled as sessions log on, and kept for the day, so a
-session that logs off still has its number when its orders' reports arrive.
+- **Time at the start.** Locking adds little to the 2.1 seconds the record of identifiers already takes to reserve,
+  because reserving it has already supplied every page; locking only marks them. It adds to
+  [BUG-0121](../bug_list.md#bug_0121), a restarted sequencer taking longer to start than its peer's lease, which is
+  already the case.
+- **The machine's limit on locked memory** for the user the venue runs as must cover the sequencer, 6.4 GB, as well as
+  the engine ([locked_memory_requirement.md](../operations/locked_memory_requirement.md)).
 
-## 6. What it costs
-
-- **Time at the start.** Locking supplies the session map's pages at about the rate the engine's book was locked in the
-  run above, 2,167 MB in about 0.3 seconds, some 7 GB a second on the development machine: about 3.5 seconds for 25 GB,
-  or about 1 second for 7.8 GB. This adds to the 2.1 seconds
-  the record of identifiers already takes, and adds to [BUG-0121](../bug_list.md#bug_0121), a restarted sequencer
-  taking longer to start than its peer's lease, which is already the case.
-- **The machine's limit on locked memory** for the user the venue runs as must cover the sequencer as well as the
-  engine ([locked_memory_requirement.md](../operations/locked_memory_requirement.md)).
-
-## 7. Decisions
+## 6. Decisions
 
 Agreed with Andrew, 20 November 2026, each yes:
 
-1. The growth of section 3 is found first, with BUG-0087's tool across all the sequencer's threads and with
-   `/proc/<pid>/smaps` sampled through a run, and removed, before the sequencer locks anything.
-2. The sequencer locks its session map at start, checks its limit on locked memory first, and refuses to start at
-   Critical with status 1 if it cannot, as the engine does.
-3. It locks the record of command identifiers too, by giving its `tsl::robin_map` an allocator that locks what it
-   allocates.
-4. The session map holds a small number for each session instead of the session's whole identity (section 5), and this
-   is built before decision 2, so that what is locked is the smaller map.
-
-The work is done in that order: 1, then 4, then 2 and 3.
+1. The growth of section 1 is found first, with BUG-0087's tool across all the sequencer's threads and with
+   `/proc/<pid>/smaps` sampled through a run, and removed, before the sequencer locks anything. Section 3 says what it
+   was; the map that grew is removed, and reports are routed by the session they carry.
+2. The sequencer locks the record of command identifiers, by giving its `tsl::robin_map` an allocator that locks what it
+   allocates, checks its limit on locked memory first, and refuses to start at Critical with status 1 if it cannot, as
+   the engine does.

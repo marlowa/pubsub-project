@@ -145,7 +145,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         [[nodiscard]] const fix_common::SessionDestination* destination(const fix_common::SessionIdentity& identity) const override;
         void report_forwarded(const fix_common::SessionIdentity& identity) override;
         void report_dropped_unbound(const fix_common::SessionIdentity& identity, int64_t er_seq_no) override;
-        void order_ended(int64_t seq_no) override;
         void reports_held(const fix_common::SessionIdentity& identity, int32_t gateways_not_announced) override;
         void held_reports_released(std::string_view comp_id, int16_t protocol, int64_t sent, int64_t dropped) override;
         void report_dropped_gateway_not_connected(int16_t protocol, int16_t instance, int64_t er_seq_no) override;

@@ -10,18 +10,17 @@ agreed with Andrew on 11 October 2026, and both decisions in section 6 on 9 Nove
 Two containers on the leading sequencer's order path allocate from the heap for every order or report (principle F5),
 and one copies each report that waits (principle F6):
 
-- **The session each order came from** (`MemberSessions::origins_`), a `std::unordered_map<int64_t, OriginSession>` keyed
-  by the order's sequence number. It gains an entry for every order sequenced and loses it when the order ends, so it holds
-  every open order. Each new key allocates a node, and when the table grows it rehashes every entry at once, the stall the
-  order book suffered before it moved to `IncrementalRehashMap`.
+- **The session each order came from**, a map keyed by the order's sequence number. Each new key allocated a node, and
+  when the table grew it rehashed every entry at once, the stall the order book suffered before it moved to
+  `IncrementalRehashMap`. The map is removed: section 4.
 - **Reports waiting for the record they depend on to be committed** (`ReportForwarding::pending_`), a
   `std::multimap<int64_t, Pending>` ordered by that record. Each `Pending` copies the report into a `std::vector<uint8_t>`
   and the ClOrdID into a `std::string`: with the map's node, up to three allocations and one copy for each waiting report.
 
 ## 2. What was agreed on 11 October 2026
 
-1. The session map becomes an `IncrementalRehashMap`, sized at start-up from the expected number of open orders, so that in
-   a normal day it never grows, and if it does, moves entries a few at a time.
+1. The session map allocates nothing for each order. It is now removed altogether, each report being routed by the session
+   it carries (section 4).
 2. A waiting report keeps the slab chunk it arrived in instead of being copied, and the chunk is released when the report
    is sent or discarded; and a limit is set on how much may wait, because a slab cannot be reclaimed until every chunk in it
    is freed.
@@ -69,20 +68,21 @@ said at Error.
 **What is not shown by a test.** The pause itself: a leader commits without its follower after 100 milliseconds, so
 filling 32,768 places would take more than 300,000 reports a second, and no scenario comes near that.
 
-## 4. The session map
+## 4. Routing reports without a session map
 
-`MemberSessions::origins_` is an `IncrementalRehashMap<int64_t, OriginSession>`, sized at start-up for the expected
-number of open orders (decision 2): `[commands] open_orders_expected` in each sequencer's configuration, set from the
-environment's `matching_engine_order_book_region_capacity`, and reserved by `MemberSessions::reserve_orders` on the
-sequencer's own thread before it sequences anything. `OriginSession` is a fixed size already. Inserting then allocates
-nothing, and a day with more open orders than expected moves entries a few at a time rather than stalling.
+The leading sequencer keeps nothing for each order. Every report the matching engine sends names, on its `WalRecord`
+envelope, the session whose command it answers (`sender_comp_id` and `origin_gateway_id`), which the engine took from the
+command itself, and carries the time that session's gateway read the command (`gateway_ingress_ns`). The sequencer
+routes the report by that identity, resolving where the session can be reached at the moment of sending, and passes the
+time on to the gateway, which measures its round trip from it. A report that may repeat one already sent passes no time
+on: it may be sent long after the command was read, after a change of leader, and its round trip would measure that.
 
-Reserving writes only the table's one byte of state for each slot, 4 MB at two million orders, which costs the
-sequencer's start-up a few milliseconds. The entries, 352 MB at two million orders, are left for the operating system to
-give real memory to as orders first use each page: about one page fault for every 46 new orders, on the thread that
-sequences them. The matching engine's book uses the same map in the same way. Touching every page at start-up would
-remove those faults at the cost of holding the whole table in memory from the start, about 24 GB in production; that is
-decided against, with Andrew, on 10 November 2026: the faults are left until they are measured to cost something.
+A map of which session placed each order would hold an entry for every order the day placed, not only the open ones: a
+cancel is a command of its own, and its report answers the cancel, so nothing would remove the entry of the order it
+cancelled ([BUG-0274](../bug_list.md#bug_0274), and section 3 of
+[the_sequencer_holds_its_memory_from_the_start.md](the_sequencer_holds_its_memory_from_the_start.md)). Routing by what
+the report carries needs no such map, and is how a sequencer that has just taken the lead routes reports it kept while
+following, of orders it never sequenced.
 
 ## 5. Steps, and how each is known to be right
 
@@ -103,14 +103,11 @@ spilling to the heap, would bring back what this removes, in exactly the moment 
 
 ### Decision 2. How many open orders is the venue built for? (Choose one.)
 
-The session map is sized for it, and [BUG-0072](../bug_list.md#bug_0072) needs the same figure for the gateways' pools of
+[BUG-0072](../bug_list.md#bug_0072) needs it for the gateways' pools of
 open orders, which today disagree with each other by a factor of 256. The matching engine's region is sized per
 environment by `order_book_region_capacity`: 2,000,000 in development, 1,000,000 in the preprod and test-1 environments,
 and 100,000,000 in production, where the engine never fills an order, so a day of 100 million orders with none cancelled
 must still be accepted.
 
 Agreed with Andrew on 9 November 2026: **the figure is each environment's own `order_book_region_capacity`**, so that the
-session map, the gateways' pools and the engine's region agree in every environment. The session map costs 89 bytes for
-each slot, an 88-byte entry and a byte of state, and keeps at least half its slots free, so it has at least twice as many
-slots as orders, rounded up to a power of two. At 2,000,000 orders that is 4,194,304 slots, about 370 MB; at 100,000,000
-it is 268,435,456 slots, about 24 GB, against the engine region's 26.4 GB. It is reserved once at start-up.
+gateways' pools and the engine's region agree in every environment.

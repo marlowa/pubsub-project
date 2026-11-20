@@ -11,7 +11,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include <pubsub_itc_fw/IncrementalRehashMap.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
 #include "SeqNumRanges.hpp"
@@ -92,14 +91,6 @@ class MemberSessions {
         int64_t bound_at_log_seq_no{0};
         /// Whether the member's previous gateway died without unbinding it, so the delivered figure may be behind.
         bool delivered_figure_may_be_behind{false};
-    };
-
-    /// The session that placed an order, and when its gateway read the order, for the gateway's measure of its round
-    /// trip. has_ingress_ns false means the order arrived without one.
-    struct OriginSession {
-        fix_common::SessionIdentity identity;
-        bool has_ingress_ns{false};
-        int64_t gateway_ingress_ns{0};
     };
 
     /// A member's instruction for its resting orders when its connection ends: whether they are to be cancelled, and how
@@ -233,32 +224,6 @@ class MemberSessions {
     /// the first since the session was last connected and at Debug for the rest.
     void report_dropped_unbound(const fix_common::SessionIdentity& identity, int64_t er_seq_no);
 
-    // ---- Orders --------------------------------------------------------------------------------------------------
-
-    /**
-     * @brief Makes the calling thread the owner of the map of which session placed each order, and reserves it for
-     *        @p open_orders_expected orders, so that it does not grow while the venue trades. Called once, by the
-     *        sequencer's own thread, before it sequences anything.
-     */
-    void reserve_orders(size_t open_orders_expected) {
-        origins_.hand_over_ownership();
-        origins_.reserve(open_orders_expected);
-    }
-
-    /// The order numbered @p seq_no was placed by @p origin.
-    void order_placed(int64_t seq_no, const OriginSession& origin) {
-        static_cast<void>(origins_.insert_or_assign(seq_no, origin));
-    }
-    /// The session that placed the order numbered @p seq_no, or nullptr when none is kept.
-    [[nodiscard]] const OriginSession* origin(int64_t seq_no) const {
-        const auto it = origins_.find(seq_no);
-        return it == origins_.end() ? nullptr : &it->second;
-    }
-    /// A report has ended the order numbered @p seq_no.
-    void order_ended(int64_t seq_no) {
-        origins_.erase(seq_no);
-    }
-
     /// The sequence state of @p identity, if any is remembered, for tests and the Quill log.
     [[nodiscard]] const SequenceState* sequence_state(const fix_common::SessionIdentity& identity) const;
 
@@ -272,10 +237,6 @@ class MemberSessions {
     std::unordered_map<fix_common::SessionIdentity, CancelOnDisconnect, fix_common::SessionIdentityHash> instructions_;
     // The default of the gateway that last bound each session (gateway_default_stated()).
     std::unordered_map<fix_common::SessionIdentity, CancelOnDisconnectApplied, fix_common::SessionIdentityHash> gateway_defaults_;
-    // Which session placed each order still open, by the order's sequence number. Reserved at start-up for every order
-    // that may be open at once (reserve_orders()), and grown a few entries at a time if a day exceeds that, rather than
-    // rehashed all at once on the thread that sequences orders.
-    pubsub_itc_fw::IncrementalRehashMap<int64_t, OriginSession> origins_;
     // Every session that has had a report dropped since it was last connected, so that the first is said as a Warning.
     std::unordered_set<fix_common::SessionIdentity, fix_common::SessionIdentityHash> sessions_with_reports_dropped_;
     int64_t reports_dropped_unbound_{0};

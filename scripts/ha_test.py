@@ -4901,7 +4901,8 @@ _SCENARIOS: list[Scenario] = [
         description="Reports for a gateway the leading sequencer has no connection for reports to are held, and sent once it has",
         expected_outcome=(
             "the leading sequencer holds the reports for the gateway while it has no connection for reports to it, drops none, "
-            "and sends every one once the connection is made; every order is reported to the member exactly once"
+            "and sends every one once the connection is made; every order is reported to the member exactly once without the mark "
+            "of a possible repeat, and the repeats the gateway asks for by sending its unanswered commands again may come as well"
         ),
         orders_during_override=0,
         orders_after_override=0,
@@ -13795,25 +13796,36 @@ def run_scenario(scenario: Scenario, args) -> bool:
                         member.close()
                         die(f"gateway reports: sequencer_primary dropped {released.dropped} held report(s) for want of room.")
                     log(f"  the relay let the connection through, and sequencer_primary sent the {released.sent} report(s) it held")
+                    # When its connection for answers is made, the gateway sends again every command still unanswered,
+                    # marked as sent again, and the sequencer answers each from its WAL with a report marked as a possible
+                    # repeat (PossResend, tag 97=Y). Those may arrive as well as the held reports, so they are counted apart:
+                    # what must happen exactly once is the report that is not marked as a possible repeat.
                     accepted: dict[str, int] = {}
+                    repeats: dict[str, int] = {}
+
+                    def count_new_order_report(report: dict[int, str]) -> None:
+                        if report.get(35) == "8" and report.get(39) == "0":
+                            counts = repeats if report.get(97) == "Y" else accepted
+                            counts[report.get(11)] = counts.get(report.get(11), 0) + 1
+
                     deadline = time.monotonic() + 20.0
                     while len(accepted) < len(sent) and time.monotonic() < deadline:
                         for report in member.receive(timeout=0.5):
-                            if report.get(35) == "8" and report.get(39) == "0":
-                                accepted[report.get(11)] = accepted.get(report.get(11), 0) + 1
+                            count_new_order_report(report)
                     for report in member.receive(timeout=1.0):
-                        if report.get(35) == "8" and report.get(39) == "0":
-                            accepted[report.get(11)] = accepted.get(report.get(11), 0) + 1
+                        count_new_order_report(report)
                     member.close()
                 finally:
                     relay.stop()
                 missing = [c for c in sent if c not in accepted]
                 twice = [c for c, n in accepted.items() if n > 1]
                 if missing:
-                    die(f"gateway reports: {len(missing)} of {len(sent)} orders were never reported to the member, for example {missing[:3]}.")
+                    die(f"gateway reports: {len(missing)} of {len(sent)} orders were never reported to the member without the mark of a possible "
+                        f"repeat, for example {missing[:3]}.")
                 if twice:
-                    die(f"gateway reports: {len(twice)} orders were reported to the member more than once, for example {twice[:3]}.")
-                log(f"  all {len(sent)} orders reported to the member exactly once -- OK")
+                    die(f"gateway reports: {len(twice)} orders were reported to the member more than once without the mark of a possible repeat, "
+                        f"for example {twice[:3]}.")
+                log(f"  all {len(sent)} orders reported to the member exactly once, and {len(repeats)} also as a possible repeat -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:
