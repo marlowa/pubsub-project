@@ -42,6 +42,10 @@ java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeListNoCo
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeValidation.cfg PoolFreeList.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config FollowerHandOver.cfg FollowerHandOver.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config FollowerHandOverNoCompare.cfg FollowerHandOver.tla
+java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChain.cfg PoolChain.tla
+java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainTwoNodes.cfg PoolChain.tla
+java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainHandOutBeforeLink.cfg PoolChain.tla
+java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainPlainStore.cfg PoolChain.tla
 ```
 
 To check the three pool free-list configurations as one test, run
@@ -279,6 +283,44 @@ being released from ever being handed over; it was found by measurement and fixe
 | The owning thread sends new records while the follower is still being caught up | `NoGapNoRepeat` |
 | The reading thread reports before it has queued its last record | `NothingMissedAtHandOver` |
 | The reading thread reads one record past the limit | checked alone, `NeverAboveLimit` |
+
+---
+
+## 5. Adding a pool without a lock: PoolChain.tla
+
+**The code.** `ExpandablePoolAllocator`, as designed in
+[pools_that_grow_without_a_lock.md](../pools_that_grow_without_a_lock.md), section 5, to show that the lock can be
+removed from adding a pool before the code is written. Producers take nodes from a chain of pools, the current pool
+first. When it is full, a producer walks the chain from its head one link at a time, trying each pool; when every pool
+is full, it makes a pool and links it by a compare-and-swap of the last pool's link from null. A producer that loses
+that race walks on to the end of the chain and tries again, so that every pool it makes is linked, and it takes a node
+only once its pool is linked. One consumer frees nodes, walking the chain one link at a time to find each node's pool,
+while producers add pools. Each pool's own free list is one atomic step here; `PoolFreeList.tla` checks it.
+
+**The properties.**
+
+| Property | Meaning |
+|---|---|
+| `ChainAcyclic` | The chain from its head never meets a pool twice |
+| `LinkedAtMostOnce` | No pool is the link of two pools, and none links back to the head |
+| `EveryNodeInTheChain` | Every node handed out and not yet freed belongs to a pool in the chain |
+| `NeverLost` | The consumer always finds the pool of a node it frees |
+| `NeverTakenTwice` | No node is handed out while handed out already, or both free and handed out |
+| `NoPoolLost` | Every pool made is in the chain, or is still being linked by the producer that made it |
+
+**As designed** (`PoolChain.cfg`, `PoolChainTwoNodes.cfg`): every property holds.
+
+| Producers | Pools | Nodes in a pool | Nodes waiting at most | Distinct states | Depth | Time on 32 workers | Result |
+|---|---|---|---|---|---|---|---|
+| 3 | 4 | 1 | 3 | 11,711,383 | 76 | 53 s | holds (`PoolChain.cfg`) |
+| 3 | 3 | 2 | 4 | 5,067,730 | 69 | 22 s | holds (`PoolChainTwoNodes.cfg`) |
+
+**Made to fail.**
+
+| Change | Property TLC found violated |
+|---|---|
+| A producer hands out a node from its new pool before linking the pool (`PoolChainHandOutBeforeLink.cfg`) | `EveryNodeInTheChain`, in 227 states: a producer takes the first pool's only node, makes a second pool and hands out its node while no pool is linked to the first |
+| A producer links its pool by a plain store rather than a compare-and-swap (`PoolChainPlainStore.cfg`) | `NoPoolLost`, in 878 states: two producers each make a pool, and the second store overwrites the first, cutting its pool out of the chain |
 
 ---
 

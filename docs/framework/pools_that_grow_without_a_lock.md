@@ -1,6 +1,7 @@
 # Pools that grow without a lock {#pools_that_grow_without_a_lock}
 
-**Status: agreed with Andrew, 20 November 2026, for [BUG-0127](../bug_list.md#bug_0127); not yet built.** Two pieces
+**Status: agreed with Andrew, 20 November 2026, for [BUG-0127](../bug_list.md#bug_0127); the TLA+ model of section 6
+is written and holds; the code is not yet built.** Two pieces
 of work, neither a substitute for the other: the queues' pools are sized so that they do not grow during the day, and
 any growth is reported as an error (section 4); and the lock is removed from growing, if and only if a TLA+ model
 checked with TLC proves the lock-free version safe (sections 5 and 6). Section 8 lists the decisions.
@@ -118,6 +119,13 @@ invariants:
 The model is also checked with a deliberate fault, a node handed out before its pool is linked, to show that TLC finds
 it. If the model holds, the C++ follows it step for step, which is checked by reading it against the model. If it does
 not hold, the lock stays.
+
+**The result.** The model is `PoolChain.tla`. With three producers and four pools of one node each, TLC visits
+11,711,383 distinct states, every one reachable within those bounds, and every invariant holds; with three producers
+and three pools of two nodes each, so that a pool can be partly used while producers race past it, 5,067,730 states,
+and every invariant holds. Each of two deliberate faults is found: a node handed out before its pool is linked breaks
+`EveryNodeInTheChain`, and a pool linked by a plain store rather than a compare-and-swap breaks `NoPoolLost`. The
+figures, and the steps TLC prints for each fault, are in [tla/findings.md](tla/findings.md), section 5.
 
 ## 7. What is not changed
 
