@@ -11,6 +11,7 @@ the primitive rather than the venue: a component here is a building block, not a
 - [gathering_sends.md](gathering_sends.md) — The reactor writes the messages waiting for a connection several at a time, with one `sendmsg()` call, instead of one system call for each. **Built**: under overload 68,626 orders a second where it was 18,275, and lower latency at every percentile
 - [allocators.md](allocators.md) — Pool, slab and bump allocators, chaining on exhaustion, and the tripwire
 - [deleting_without_erased_marks.md](deleting_without_erased_marks.md) — Removing an order from the order map by moving later orders back, so that no slot is left marked erased and the map never copies itself to clear them. **Proposed for BUG-0028**
+- [pools_that_grow_without_a_lock.md](pools_that_grow_without_a_lock.md) — Adding a pool to an `ExpandablePoolAllocator` without its mutex, with a spare pool mapped in advance, so that a queue that runs out of nodes makes no thread wait. **Proposed for BUG-0127**
 - [tla/findings.md](tla/findings.md) — TLA+ models of the lock-free allocators and queues, checked with TLC: what each checks, and what was found
 - [cpu_pinning.md](cpu_pinning.md) — Pinning threads to cores, and the registry that records what is pinned
 - [cpu_pinning_anti_affinity.md](cpu_pinning_anti_affinity.md) — Declared core allocation, and background-by-default for everything undeclared

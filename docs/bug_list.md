@@ -983,7 +983,13 @@ adds it to the chain, still holding the mutex.
 
 **Who uses it.** Every `LockFreeMessageQueue` allocates its nodes from one, so every event the
 reactor queues for an application thread and every command an application thread queues for the
-reactor go through it. The gateways' open-order pools are one too.
+reactor go through it. It has no other user.
+
+**Seen.** In the run of `ha_test.py` on 20 November 2026, scenario 116 made the binary order gateway's command queue
+run out 15 times in 118 milliseconds, adding a pool of 4,096 nodes each time, with the mutex held.
+
+**Design.** Proposed in [pools_that_grow_without_a_lock.md](framework/pools_that_grow_without_a_lock.md), for
+agreement before any code.
 
 **How often.** With one pool that never fills, never. But pools have run out during load runs, which
 is why the queue pools in `fix_order_gateway_a.toml` have been enlarged more than once. And once a
