@@ -462,6 +462,14 @@ def generate_coverage_report(build_dir, source_dir):
         "--exclude-lines-by-pattern", r'PUBSUB_LOG|^\s+"[^"]*"',
         "--exclude-throw-branches",
         "--exclude-unreachable-branches",
+        # gcovr takes a line counted more than a threshold of times, 2^32 unless told otherwise, to be a corrupt count
+        # from gcov (gcc bug 68080) and stops, writing no report. Some counts here are real and pass 2^32: all_zero in
+        # WalEntryChecks.hpp checks the unwritten end of a WAL segment one byte at a time, and the tests write and read
+        # many large segments, so its loop was counted 9,906,879,382 times in the coverage run of 21 November 2026.
+        # The threshold is raised to 2^40, about 1.1 trillion, rather than the error turned into a warning: a count
+        # gcovr warns about and ignores is recorded as zero, so the report would show that loop as never run. A corrupt
+        # count from that bug is a counter that has wrapped round, near 2^64, and is still caught.
+        "--gcov-suspicious-hits-threshold", str(2**40),
         "--lcov", str(raw_info),
     ]
     for pattern in excludes:
