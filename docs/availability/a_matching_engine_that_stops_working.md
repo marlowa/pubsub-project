@@ -404,4 +404,4 @@ seconds and a gauge (section 6). The leading engine goes on serving.
 
 ---
 
-Back to [High availability](README.md).
+Back to [High availability](../availability/README.md).
