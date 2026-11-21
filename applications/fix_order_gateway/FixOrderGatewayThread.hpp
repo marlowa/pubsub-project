@@ -123,6 +123,9 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // All inbound messages are received as ParsedFixMessage: string_views into
     // the MirroredBuffer, valid only for the duration of the callback.
     void handle_logon(FixSession& session, const ParsedFixMessage& msg);
+    /// The members whose logon is being authenticated, whose numbering is being settled, or whose session is established,
+    /// which count against members_most_connected.
+    [[nodiscard]] size_t members_admitted() const;
     void handle_heartbeat(FixSession& session, const ParsedFixMessage& msg);
     void handle_test_request(FixSession& session, const ParsedFixMessage& msg);
     void handle_logout(FixSession& session, const ParsedFixMessage& msg);

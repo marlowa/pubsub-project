@@ -216,6 +216,10 @@ void BinaryOrderGatewayThread::on_connection_established(pubsub_itc_fw::Connecti
         sessions_owner_.check();
 #endif
         sessions_.emplace(id.get_value(), std::move(session));
+        // So that a member's connection is not read while this many of its messages wait in this thread's queue: with
+        // the limit on the members served, it bounds what the gateway can have read and not yet sent
+        // (docs/availability/bounding_what_a_gateway_has_read.md).
+        limit_messages_waiting(id, config_.members_messages_waiting_each);
         if (members_paused_) {
             pause_reading(id);
         }
@@ -398,6 +402,16 @@ void BinaryOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::Eve
     release_pdu_payload(message);
 }
 
+size_t BinaryOrderGatewayThread::members_admitted() const {
+    size_t admitted = 0;
+    for (const auto& [conn, session] : sessions_) {
+        if (session.logged_on || session.auth_pending) {
+            ++admitted;
+        }
+    }
+    return admitted;
+}
+
 void BinaryOrderGatewayThread::handle_logon(BinarySession& session, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buffer = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
@@ -447,6 +461,17 @@ void BinaryOrderGatewayThread::handle_logon(BinarySession& session, const pubsub
                    "BinaryOrderGatewayThread: connection {} Logon names TargetCompID '{}' but this gateway is '{}' -- refusing", session.conn_id.get_value(),
                    view.target_comp_id, config_.sender_comp_id);
         refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::WrongTargetCompId, "this gateway is " + config_.sender_comp_id);
+        return;
+    }
+
+    // At most members_most_connected members, so that what the members can have waiting in this gateway stays within what
+    // its queues are sized for (docs/availability/bounding_what_a_gateway_has_read.md).
+    if (members_admitted() >= config_.members_most_connected) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "BinaryOrderGatewayThread: connection {} Logon for comp id '{}' refused -- this gateway instance already serves {} members, its most",
+                   session.conn_id.get_value(), view.comp_id, config_.members_most_connected);
+        refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::NoRoomForMoreMembers,
+                     "this gateway instance serves at most " + std::to_string(config_.members_most_connected) + " members; log on to another instance");
         return;
     }
 

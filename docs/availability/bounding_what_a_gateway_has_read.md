@@ -1,8 +1,9 @@
 # Bounding what a gateway has read and not yet answered {#bounding_what_a_gateway_has_read}
 
-**Status: agreed with Andrew, 20 November 2026, for [BUG-0279](../bug_list.md#bug_0279); not yet built.** Option 3.1:
-each member's connection to the binary gateway may have a set number of messages waiting, and each gateway instance
-serves at most a set number of members. Section 6 lists the decisions.
+**Status: agreed with Andrew, 20 November 2026, for [BUG-0279](../bug_list.md#bug_0279), and built.** Option 3.1:
+each member's connection to the binary gateway may have at most 64 messages waiting, and each gateway instance serves
+at most 64 members in development and 500 in the other environments, provisional until measured with real member counts.
+Section 6 lists the decisions, and section 7 what was measured.
 
 ## 1. The problem
 
@@ -96,3 +97,23 @@ Agreed with Andrew, 20 November 2026, each yes:
    reason the member can act on.
 3. Refusing orders read beyond the limit, option 3.2, is left for later, to be decided only if option 3.1 proves not
    enough.
+
+## 7. What was built and measured
+
+- **The binary order gateway** limits the messages waiting from each member's connection to 64
+  (`[members] messages_waiting_each`), and refuses a logon beyond `[members] most_connected` with the new
+  `LogonOutcome` value `NoRoomForMoreMembers`, whose text names the limit.
+- **The FIX order gateway** refuses a logon beyond `[members] most_connected` with a Logout whose Text names the limit.
+- **Each environment file** sets `members_most_connected` for every gateway instance, and sizes the binary gateway's
+  command queue from the settings, with the arithmetic in its comment: 49,152 nodes in development and 106,496 in the
+  other environments.
+
+Scenario 116 run again on 21 November 2026: the binary gateway's command queue added no pool, where it had added 15;
+every one of the 1,800,000 orders was acknowledged, at 101,613 orders a second, against 100,599 before; and the gateway
+stopped reading its members 109 times, against 56, because it now pauses each member after fewer orders. With
+`most_connected` lowered to 2 in a deployed copy, the binary gateway accepted two members and refused the third with
+`NoRoomForMoreMembers`; with it lowered to 1, the FIX gateway refused a second member with a Logout naming the limit.
+
+The execution reports waiting to be sent to members are not bounded by a setting: the binary gateway's command queue
+allows about twice the most measured, and a queue that grows beyond its size is logged at Error and counted.
+

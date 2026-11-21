@@ -329,6 +329,12 @@ struct FixOrderGatewayConfiguration {
     // (docs/availability/a_gateway_limits_its_unanswered_commands.md).
     size_t unanswered_commands_limit{16'384};
 
+    // The most member connections this gateway instance serves at once: a logon beyond it is refused with a Logout naming
+    // the limit. Each member's connection is already read into a buffer of raw_buffer_capacity bytes, and not read while
+    // it is three-quarters full, so with this limit what the gateway can have read from its members and not yet sent is
+    // bounded (docs/availability/bounding_what_a_gateway_has_read.md). Set by each environment.
+    size_t members_most_connected{64};
+
     /**
      * @brief This process's Prometheus scrape endpoint; see docs/operations/metrics.md.
      *

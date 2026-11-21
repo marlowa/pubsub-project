@@ -1355,6 +1355,16 @@ void FixOrderGatewayThread::report_logon_refused(const FixSession& session, pubs
 
 // FIX session handlers
 
+size_t FixOrderGatewayThread::members_admitted() const {
+    size_t admitted = 0;
+    for (const auto& [conn, session] : sessions_) {
+        if (session.auth_pending || session.awaiting_sequence_state || session.session_established) {
+            ++admitted;
+        }
+    }
+    return admitted;
+}
+
 void FixOrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMessage& msg) {
     cancel_timer(session.logon_timeout_timer_id);
     // client_comp_id is stored as std::string for use beyond this callback;
@@ -1391,6 +1401,21 @@ void FixOrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMes
     session.heartbeat_interval = 30;
     if (!heartbeat_interval_text.empty()) {
         std::from_chars(heartbeat_interval_text.data(), heartbeat_interval_text.data() + heartbeat_interval_text.size(), session.heartbeat_interval);
+    }
+
+    // At most members_most_connected members, so that what the members can have waiting in this gateway stays within what
+    // its queues are sized for (docs/availability/bounding_what_a_gateway_has_read.md).
+    if (members_admitted() >= config_.members_most_connected) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixOrderGatewayThread: connection {} Logon from SenderCompID='{}' refused -- this gateway instance already serves {} members, its most",
+                   session.conn_id.get_value(), session.client_comp_id, config_.members_most_connected);
+        FixMessage logout;
+        logout.set(Tag::MsgType, MsgType::Logout);
+        logout.set(Tag::Text,
+                   "This gateway instance serves at most " + std::to_string(config_.members_most_connected) + " members; log on to another instance");
+        send_fix_to_session(session, logout);
+        disconnect_session(session, "this gateway instance serves its most members");
+        return;
     }
 
     // The primary authentication service if it is answering, the secondary if it is not.

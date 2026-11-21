@@ -247,6 +247,18 @@ BinaryOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& 
     }
     config.unanswered_commands_limit = static_cast<size_t>(unanswered_limit);
 
+    int64_t most_connected = 0;
+    int64_t messages_waiting_each = 0;
+    toml.get_required_except("members.most_connected", most_connected);
+    toml.get_required_except("members.messages_waiting_each", messages_waiting_each);
+    if (most_connected < 1 || messages_waiting_each < 1) {
+        throw pubsub_itc_fw::ConfigurationException(fmt::format(
+            "BinaryOrderGatewayConfigurationLoader: members.most_connected and members.messages_waiting_each must both be at least 1, got {} and {}",
+            most_connected, messages_waiting_each));
+    }
+    config.members_most_connected = static_cast<size_t>(most_connected);
+    config.members_messages_waiting_each = static_cast<size_t>(messages_waiting_each);
+
     toml.get_required_except("order_limits.max_symbol_length", config.max_symbol_length);
     toml.get_required_except("order_limits.max_order_qty_length", config.max_order_qty_length);
     if (config.max_symbol_length < 1 || static_cast<size_t>(config.max_symbol_length) > fix_order_limits::max_symbol_length) {

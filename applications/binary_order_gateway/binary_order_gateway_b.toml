@@ -140,10 +140,20 @@ commands = 262144
 bytes    = 67108864
 # While this many are unanswered, the gateway stops reading its members' connections, so that orders
 # offered faster than the venue answers them wait in the members' own sockets, and reads them again
-# once answers bring the number down to half. Every queue between the gateway and the matching engine
-# holds only unanswered commands, so this bounds them all
-# (docs/availability/a_gateway_limits_its_unanswered_commands.md). Provisional: to be measured.
+# once answers bring the number down to half (docs/availability/a_gateway_limits_its_unanswered_commands.md).
+# The orders already read when reading stops are still sent, so this alone does not bound what the gateway
+# has waiting; with [members] below, it does. Provisional: to be measured.
 limit    = 16384
+
+# The most member connections this instance serves at once, set by each environment: a logon beyond it is
+# refused with LogonOutcome NoRoomForMoreMembers, naming the limit. And the most messages from one member's
+# connection that may wait in this gateway's queue; while that many wait, the connection is not read. Together
+# with the limit on unanswered commands, they bound what the gateway can have read and not yet sent: at most
+# limit + most_connected x messages_waiting_each orders, each sent to both sequencers, which is what the
+# command queue above is sized for (docs/availability/bounding_what_a_gateway_has_read.md).
+[members]
+most_connected        = ${binary_order_gateway_b_members_most_connected}
+messages_waiting_each = 64
 
 # The longest Symbol and OrderQty a member's command may carry, in bytes. A command with a longer
 # value is refused with the limit in its text. The same limits as the FIX gateway's [fix_limits],

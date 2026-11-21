@@ -193,10 +193,18 @@ commands = 262144
 bytes    = 67108864
 # While this many are unanswered, the gateway stops reading its members' connections, so that orders
 # offered faster than the venue answers them wait in the members' own sockets, and reads them again
-# once answers bring the number down to half. Every queue between the gateway and the matching engine
-# holds only unanswered commands, so this bounds them all
-# (docs/availability/a_gateway_limits_its_unanswered_commands.md). Provisional: to be measured.
+# once answers bring the number down to half (docs/availability/a_gateway_limits_its_unanswered_commands.md).
+# The orders already read when reading stops are still sent, so this alone does not bound what the gateway
+# has waiting; with [members] below, and each member's raw buffer above, it does. Provisional: to be measured.
 limit    = 16384
+
+# The most member connections this instance serves at once, set by each environment: a logon beyond it is
+# refused with a Logout naming the limit. Each member's connection is read into a buffer of
+# raw_buffer_capacity bytes and not read while it is three-quarters full, so what the gateway can have read
+# and not yet sent is at most limit plus, for each member, the orders three-quarters of that buffer holds
+# (docs/availability/bounding_what_a_gateway_has_read.md).
+[members]
+most_connected = ${fix_order_gateway_b_members_most_connected}
 
 [end_of_day]
 # The file of this instance's last trading state, which outlives the day. It is read first at start-up: a

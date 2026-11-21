@@ -88,6 +88,8 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
   private:
     void handle_logon(BinarySession& session, const pubsub_itc_fw::EventMessage& message);
+    /// The members whose logon is being authenticated or has been accepted, which count against members_most_connected.
+    [[nodiscard]] size_t members_admitted() const;
 
     /**
      * @brief Starts the SCRAM-SHA-256 exchange for a session that has sent a valid Logon.

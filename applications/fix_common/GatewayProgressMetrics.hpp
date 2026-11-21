@@ -45,7 +45,8 @@ class GatewayProgressMetrics {
      */
     void register_metrics(pubsub_itc_fw::PrometheusEndpoint& metrics, const char* scope) {
         orders_received_ = metrics.register_counter(scope, orders_received_metric_name, "New orders taken from members");
-        reports_sent_ = metrics.register_counter(scope, reports_sent_metric_name, "Execution reports delivered to members");
+        reports_sent_ = metrics.register_counter(scope, reports_sent_metric_name,
+                                                 "Execution reports handed to members' connections to be sent; not confirmation that a member received them");
         reports_dropped_ =
             metrics.register_counter(scope, reports_dropped_metric_name, "Execution reports dropped because the member's session had gone when they arrived");
         orders_refused_ = metrics.register_counter(scope, orders_refused_metric_name, "New orders refused because the venue said it could not process orders");
@@ -59,7 +60,8 @@ class GatewayProgressMetrics {
         orders_received_.increment();
     }
 
-    /// Counts an execution report delivered to a member.
+    /// Counts an execution report handed to the send path for a member's connection. It is counted before the report is
+    /// written to the socket, so it says the gateway sent the report on, not that the member received it.
     void count_report_sent() {
         reports_sent_.increment();
     }

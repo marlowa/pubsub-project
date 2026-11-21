@@ -242,6 +242,16 @@ struct BinaryOrderGatewayConfiguration {
     // (docs/availability/a_gateway_limits_its_unanswered_commands.md).
     size_t unanswered_commands_limit{16'384};
 
+    // The most member connections this gateway instance serves at once: a logon beyond it is refused with
+    // LogonOutcome::NoRoomForMoreMembers. Together with members_messages_waiting_each it bounds what the gateway can have
+    // read from its members and not yet sent (docs/availability/bounding_what_a_gateway_has_read.md). Set by each
+    // environment.
+    size_t members_most_connected{64};
+
+    // The most messages from one member's connection that may wait in this gateway's queue; while that many wait, the
+    // reactor does not read the connection (docs/framework/bounding_messages_waiting.md).
+    size_t members_messages_waiting_each{64};
+
     /**
      * @brief The longest Symbol and OrderQty a member's command may carry, in bytes.
      *

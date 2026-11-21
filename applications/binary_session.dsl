@@ -82,6 +82,10 @@ enum LogonOutcome : i32 {
     # member off rotating a password that was never the problem; the text names the
     # instances it should be using instead.
     NotProvisionedForInstance = 8
+    # This gateway instance already serves as many members as it is configured to, so that what its members can have
+    # waiting in it stays bounded (docs/availability/bounding_what_a_gateway_has_read.md). The text names the limit; the
+    # member logs on to another instance.
+    NoRoomForMoreMembers = 9
 }
 
 # ---------------------------------------------------------------------------

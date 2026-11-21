@@ -317,6 +317,14 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
         }
         config.unanswered_commands_limit = static_cast<size_t>(unanswered_limit);
 
+        int64_t most_connected = 0;
+        toml.get_required_except("members.most_connected", most_connected);
+        if (most_connected < 1) {
+            throw pubsub_itc_fw::ConfigurationException(
+                fmt::format("FixOrderGatewayConfigurationLoader: members.most_connected must be at least 1, got {}", most_connected));
+        }
+        config.members_most_connected = static_cast<size_t>(most_connected);
+
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;
     }

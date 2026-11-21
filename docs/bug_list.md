@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 279 |
-| Open | 53 (31 defects, 22 tasks) |
+| Bugs recorded | 280 |
+| Open | 54 (31 defects, 23 tasks) |
 | Closed | 226 |
-| Next id | BUG-0280 |
+| Next id | BUG-0281 |
 
 ## Open bugs by severity
 
-4 high, 33 medium, 16 low.
+4 high, 33 medium, 17 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -66,6 +66,7 @@
 | [BUG-0267](#bug_0267) | low | task | `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines |
 | [BUG-0272](#bug_0272) | low | defect | Each lease request allocates from the heap on the requesting instance's own thread, which is the thread that handles orders |
 | [BUG-0273](#bug_0273) | low | defect | A matching engine holding reports for want of a connection, or until it knows whether it serves, allocates from the heap for each |
+| [BUG-0280](#bug_0280) | low | task | Huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine |
 
 ---
 
@@ -277,6 +278,9 @@ standby there only because its store of reports to compare filled, which the lim
 
 **What is wanted.** The cause found from the logs of 16 November, or the case reproduced: which report of command 0 the
 follower produced, and why the leading engine produced none, or one that differed; and a test of it.
+
+The logs of 16 November are kept, outside the repository, in `pubsub-evidence/leader_change_under_load_20261116.tar.gz`
+beside the project's directory, so that they outlive the cleaning of `tmp/`.
 
 ### BUG-0264: Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time {#bug_0264}
 
@@ -610,6 +614,25 @@ and its error output, and remove this failure along with fix8. The size of the w
       or its rejection.
    7. Checking the behaviour through both gateways: the same order, rejection, cancellation and reporting outcomes
       through FIX and through the binary gateway.
+
+**The order of the book around it.** Ordinary operation is to come first, as the foundation the high-availability
+chapters build on, so that a reader has a working picture of the venue before its failover. The high-availability
+material stays as it is; it is not reorganised away:
+
+1. **The ordinary order lifecycle**, the chapter above: what a member sends, what each gateway checks, when the venue
+   has taken the command, how the book accepts, rejects or cancels it, and what the member is told, saying plainly that
+   the venue accepts and cancels orders but does not match them.
+2. **Sessions, authentication and administration**: admission, identity and credentials, session numbering,
+   reconnecting, permissions, and what a member or an administrator is told when any of them fails.
+3. **Trading state and reports**: opening, halting and closing, which commands are allowed in each state, and how
+   reports reach members.
+4. **Ordinary publishing and subscribing**: the framework's guarantees for topics and subscribers, then the matching
+   engine publisher, with the order activity recorder (OAR), which is not built, marked as a requirement and not as
+   current behaviour.
+5. **High availability**, referring back to the rules above to state what changes under each failure and what must
+   stay true, rather than stating the ordinary rules again in slightly different words.
+
+This waits until the bugs before it in [bug_review.md](bug_review.md) are done.
 
 ### BUG-0222: No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it {#bug_0222}
 
@@ -2340,6 +2363,49 @@ a loss of resilience is not a loss of service (V11).
 **Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
 the member.
 
+**Points for the design**, to be settled in a design document before any code:
+
+- **A connection, a lease and a heartbeat prove that an engine can communicate, not that it is applying commands.** The
+  evidence of work has to be the engine's progress through the commands it is sent.
+- **The serving engine's progress and the standby's lag mean different things.** A serving engine that makes no progress
+  while commands wait is a loss of service. A standby that falls behind is a loss of resilience, which V11 says must
+  never stop a working leader ([design_principles.md](design_principles.md), V11). Only the first is
+  this bug, and the design must keep the two apart.
+- **The evidence exists already.** The leading sequencer can ask the engine orders are routed to for the highest command
+  it has applied, and how far its reports have got: the last report it sent and how many it still holds
+  (`EnginePositionQuery`, answered in `TradingPhaseRequests::engine_position`). It is used today for the trading-phase
+  checks and for releasing orders, not as a continuous check of health.
+- **Judge by time without progress, not by the size of the gap.** Under overload the gap between commands sent and
+  commands applied is large while the engine is healthy: about 60,000 commands in `ha_test.py` scenario 116. The test is
+  rather that commands are outstanding and the engine's applied position has not moved for a stated time.
+- **A report passes three hands, and progress has to be judged at each.** V8 promises that every report reaches the
+  member, but the engine's report position says only that the engine sent its reports. The stages are: the engine
+  produces and sends a report (its position in `EnginePositionQuery`, `sent_through`); the leading sequencer receives it
+  and writes it into the WAL (`latest_engine_report_in_wal`, which the sequencer knows already); the sequencer hands it
+  to its connection to the gateway that serves the member (`ReportForwarding`; `MemberSessions::report_forwarded`
+  counts these hand-overs, not their receipt); and the gateway hands it to its connection to the member (counted by
+  `GatewayProgressMetrics::count_report_sent` when it is given to the send path, before it is written to the socket).
+  No counter at any stage confirms that the next stage received the report, and the venue learns that a member missed
+  one only from the member: by its FIX sequence numbers, when it sees a gap and asks for the report again, or by asking
+  for the reports it has not received when it logs on. An engine whose sent position stops while its applied position
+  moves is this bug. Reports the engine sent that do not reach the WAL, or that reach the WAL and not the member, are
+  failures of the stages after the engine. The design must name, for each stage, the hand-over it can observe and how a
+  gap there is detected or recovered, rather than take a count of reports sent as proof that they were received.
+- **Do not stop sending the engine commands while confirming a suspicion.** If it is stalled, holding commands back
+  gains nothing, since they are in the WAL; if the suspicion is wrong, holding them back causes the outage this is meant
+  to prevent.
+- **Who decides is the open question.** The arbiter never judges health
+  ([matching_engine_presence.md](availability/matching_engine_presence.md)). The candidates: the leading sequencer
+  closes its connection to the engine, so that the failure becomes one the existing failover sees, though the engine
+  may connect again and look healthy; the engine watches its own progress from a thread other than the one that applies
+  commands and stands down, as the reactor's watchdog does for a stuck callback; or a statement from the sequencer that
+  the engines' own leadership acts on. Also to be settled: both engines stalled; a stall during catch-up; the end of the
+  day.
+- **Other venues.** Public material describes the same kind of failure without revealing how it is detected: Eurex's T7
+  incident-handling guidance distinguishes a loss of service from a matching engine's failure, and notes that a
+  connected but stalled gateway can go on sending heartbeats, so that participants notice only that responses stop.
+  That is background on the failure, not a description of how any venue detects it.
+
 ### BUG-0203: The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together {#bug_0203}
 
 | | |
@@ -2457,6 +2523,47 @@ to both sequencers in the same way and is to be checked too.
 **Design.** Agreed in [bounding_what_a_gateway_has_read.md](availability/bounding_what_a_gateway_has_read.md): a limit on
 the messages waiting from each member's connection to the binary gateway, and a limit on the members each gateway
 instance serves, so that the gateway's command queue can be sized from settings.
+
+**Built, 21 November 2026.** The binary gateway limits the messages waiting from each member's connection to 64, and
+both gateways refuse a logon beyond `[members] most_connected` with a reason naming the limit (binary:
+`LogonOutcome::NoRoomForMoreMembers`; FIX: a Logout). Every environment sets the limit, 64 in development and 500
+elsewhere, and sizes the binary gateway's command queue from the settings: 49,152 nodes in development, 106,496
+elsewhere. In scenario 116 the binary gateway's command queue now adds no pool, where it added 15, and every order is
+acknowledged at the same rate; the refusals were shown by hand with the limit lowered in a deployed copy
+([bounding_what_a_gateway_has_read.md](availability/bounding_what_a_gateway_has_read.md), section 7).
+
+**Left before this entry closes:** a scenario in `ha_test.py` that logs on more members than a gateway instance serves
+and decides from test events that the one beyond is refused; and the FIX gateway's command queue measured at its
+deepest under overload, as the binary gateway's was.
+
+### BUG-0280: Huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine {#bug_0280}
+
+| | |
+|---|---|
+| Severity | low |
+| Kind | task |
+| Found | 2026-11-21 |
+| Recorded | 2026-11-21 |
+| How | Discussing with Andrew whether the huge-page support in the allocators should serve socket communication |
+| Impact | None measured. Every lookup in a table of gigabytes, made with pages of 4 KB, can miss the processor's cache of address translations (the TLB); with pages of 2 MB it covers 512 times as much memory. Whether those misses are a real share of the order path's time is not known |
+
+**Where huge pages would and would not help.** The memory for socket communication is a poor fit: `MirroredBuffer`,
+used for connections that carry raw bytes, is 64 KB for each connection, read in order, and would grow to 2 MB each,
+about 1 GB for 500 members; framework connections use slabs of 256 KB. Their cost is the system call and the copy out
+of the kernel, not address translation. The good fit is the large tables the order path reads at random: the matching
+engine's order map (38.9 GB in production) and open-order region (26.4 GB), and the sequencer's record of command
+identifiers (6 GiB).
+
+**The development machine has no huge pages reserved** (`HugePages_Total: 0`), so `FixedSizeMemoryPool`'s
+`MAP_HUGETLB` path always falls back to ordinary pages there, and no test or run has exercised it. Transparent huge
+pages are in "madvise" mode, in which a program asks for them with `madvise(MADV_HUGEPAGE)`, with no pages reserved
+beforehand; that may suit the large tables better than `MAP_HUGETLB`.
+
+**What is wanted.** First a measurement: the matching engine and the sequencer under `perf stat` through a load run,
+counting the misses in the cache of address translations, to show whether they are a real share of the order path's
+time. Only if they are, huge pages for the large tables, with the choice between reserved pages and transparent ones
+made from measurements. And the allocators' huge-page path exercised by a test on a machine with huge pages reserved.
+To be done after the bugs agreed before it ([bug_review.md](bug_review.md)).
 
 ## Closed
 
