@@ -4,7 +4,7 @@
 |---|---|
 | Bugs recorded | 281 |
 | Open | 52 (29 defects, 23 tasks) |
-| Closed | 229 |
+| Closed | 230 |
 | Next id | BUG-0282 |
 
 ## Open bugs by severity
@@ -2422,6 +2422,42 @@ It depends on [BUG-0046](#bug_0046): a binary member cannot learn, after reconne
 cancelled while it was away. To be done after the bugs agreed before it ([bug_review.md](bug_review.md)).
 
 ## Closed
+
+### BUG-0282: A test of the limit on messages waiting required a fixed 20 ms that the coverage build does not reach, and failed three runs in ten there {#bug_0282}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-21 |
+| Recorded | 2026-11-21 |
+| Fixed | 2026-11-21 -- the test measures the wait with and without a limit in one run and compares the two, instead of comparing one with a fixed figure |
+| How | The release check for 0.6.0: the coverage stage failed on `MessagesWaitingIntegrationTest.WithoutAnEffectiveLimitAFloodHoldsUpAnotherConnection`, which had passed in the coverage build an hour before |
+| Impact | The coverage build, and so the release check, failed on some runs for a reason unrelated to the code under test |
+
+**What the test is for.** `AFloodOnALimitedConnectionDoesNotHoldUpAnotherConnectionOrTheTimer` sends a flood of PDUs
+on one connection and a trickle of 500 time-stamped PDUs on another, both into one thread, and requires that with a
+limit of 64 messages waiting on the flood's connection no trickled PDU waits more than 20 ms. The test this entry is
+about was its control: the same without an effective limit, required to wait **more than** 20 ms, to show that the
+first test can tell the two apart.
+
+**What was wrong.** How long a trickled PDU waits behind the flood without a limit depends on how far the flood's
+sender gets ahead of the receiver, which depends on the speed of the machine and of the build. Run ten times in each
+build on 21 November 2026:
+
+| Build | Longest wait with a limit of 64 | Without an effective limit | Ratio |
+|---|---|---|---|
+| ordinary | 1.36 to 1.45 ms | 34.8 to 64.6 ms | 24 to 47 |
+| coverage | 2.59 to 2.94 ms | 16.5 to 28.1 ms | 6.3 to 10.7 |
+
+The coverage build's counting slows both ends and changes how far the sender gets ahead, so the wait without a limit
+fell below 20 ms in about half its runs (the original test failed 3 of 10 there, at 15.7, 17.9 and 18.3 ms). Nothing
+in the reactor was at fault: the flood held the other connection up, by less than the fixed figure assumed.
+
+**The fix.** The control,
+`WithoutAnEffectiveLimitAFloodHoldsUpAnotherConnectionFarLongerThanWithOne`, measures the longest wait with a limit
+of 64 and then without an effective limit, one after the other in the same run, prints both, and requires the second
+to be at least 3 times the first: half the smallest ratio measured. With the limit removed from its first run on
+purpose it failed three times out of three, at ratios between 0.7 and 1.5.
 
 ### BUG-0263: In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service {#bug_0263}
 

@@ -30,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
@@ -486,6 +487,11 @@ class MessagesWaitingIntegrationTest : public ::testing::Test {
 };
 
 constexpr int flood = 100'000;
+// How many times longer a trickled PDU must wait behind a flood without a limit than with one, for the test of the
+// limit to be shown able to tell the two apart. Measured on 21 November 2026, ten runs in each build: 24 to 47 times in
+// the ordinary build and 6.3 to 10.7 times in the coverage build. Three is half the smallest, and a limit that did not
+// work would make the two waits about the same (docs/bug_list.md, BUG-0282).
+constexpr int64_t longer_without_a_limit_at_least = 3;
 const auto unstamped = std::make_tuple(flood, false, std::chrono::milliseconds{0});
 
 // The control for every test below: without an effective limit, a receiver taking each PDU in 20 microseconds falls far
@@ -537,14 +543,24 @@ TEST_F(MessagesWaitingIntegrationTest, AFloodOnALimitedConnectionDoesNotHoldUpAn
     EXPECT_LT(receiver.longest_tick_gap_us.load(), 20'000) << "the receiver's timer went more than 20 ms without a tick";
 }
 
-// The same without an effective limit, to show the test above can tell the difference: the same measurement exceeds the
-// 20 ms that test allows.
-TEST_F(MessagesWaitingIntegrationTest, WithoutAnEffectiveLimitAFloodHoldsUpAnotherConnection) {
+// The same measurement with and without an effective limit, in one run, to show that the test above can tell the
+// difference. How long a trickled PDU waits behind the flood without a limit depends on how far the flood's sender gets
+// ahead of the receiver, which depends on the speed of the machine and of the build: in the coverage build it was found
+// to be as little as 15.7 ms, where a fixed threshold of 20 ms had been assumed (docs/bug_list.md, BUG-0282). So the two
+// are compared with each other, measured on the same machine in the same build, rather than with a fixed figure. The
+// runs are one after the other, so that neither competes with the other for the processor.
+TEST_F(MessagesWaitingIntegrationTest, WithoutAnEffectiveLimitAFloodHoldsUpAnotherConnectionFarLongerThanWithOne) {
     const auto trickle = std::make_tuple(500, true, std::chrono::milliseconds{1});
-    Receiver& receiver = make_listening_receiver({no_effective_limit, 0}, {unstamped, trickle}, TakingPlan{});
-    ASSERT_TRUE(wait_for([&]() { return receiver.count(0) == static_cast<size_t>(flood) && receiver.count(1) == 500U; }));
-    EXPECT_GT(receiver.connection(1).longest_wait_ns, 20'000'000)
-        << "without a limit a trickled PDU was expected to wait behind the flood for longer than the 20 ms the test with a limit allows";
+    Receiver& limited = make_listening_receiver({64, 0}, {unstamped, trickle}, TakingPlan{});
+    ASSERT_TRUE(wait_for([&]() { return limited.count(0) == static_cast<size_t>(flood) && limited.count(1) == 500U; }));
+    const int64_t limited_wait_ns = limited.connection(1).longest_wait_ns;
+    Receiver& unlimited = make_listening_receiver({no_effective_limit, 0}, {unstamped, trickle}, TakingPlan{});
+    ASSERT_TRUE(wait_for([&]() { return unlimited.count(0) == static_cast<size_t>(flood) && unlimited.count(1) == 500U; }));
+    const int64_t unlimited_wait_ns = unlimited.connection(1).longest_wait_ns;
+    fmt::print("[ MEASURED ] longest wait of a trickled PDU: {:.3f} ms with a limit of 64, {:.3f} ms without an effective limit\n",
+               static_cast<double>(limited_wait_ns) / 1e6, static_cast<double>(unlimited_wait_ns) / 1e6);
+    EXPECT_GT(unlimited_wait_ns, limited_wait_ns * longer_without_a_limit_at_least)
+        << "without a limit a trickled PDU was expected to wait behind the flood at least " << longer_without_a_limit_at_least << " times as long as with one";
 }
 
 // Fairness between limited connections: two floods into one thread, each limited, are both served throughout.
