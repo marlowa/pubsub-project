@@ -686,7 +686,8 @@ TEST_F(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown) {
     auto bad_thread = ApplicationThread::create<ThrowingDuringRunThread>(logger_with_sink_.logger, *reactor_, "ThrowingRunLoopThread", ThreadID{999},
                                                                          make_queue_config(), make_allocator_config());
     reactor_->register_thread(bad_thread);
-    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+    int status = -99;
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this, &status] { status = reactor_->run(); });
 
     // Wait until Reactor has started the thread and it is Operational
     for (int i = 0; i < 200 && bad_thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
@@ -724,26 +725,35 @@ TEST_F(ReactorTest, ThreadThrowsDuringRunLoopReactorShutsDown) {
     }
 
     EXPECT_TRUE(reactor_->is_finished());
+    // A thread that died of an exception is a failure, which whatever started the component must be able to tell from
+    // a stop that was asked for (BUG-0278).
+    ASSERT_TRUE(reactor_thread_->join_with_timeout(std::chrono::seconds(10)));
+    EXPECT_EQ(status, Reactor::stopped_for_a_failure_status);
 }
 
 TEST_F(ReactorTest, ThreadThrowsDuringInitialProcessingReactorShutsDown) {
     auto bad_thread = ApplicationThread::create<ThrowingInitialThread>(logger_with_sink_.logger, *reactor_, "BadInitThread", ThreadID{101}, make_queue_config(),
                                                                        make_allocator_config());
     reactor_->register_thread(bad_thread);
-    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+    int status = -99;
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this, &status] { status = reactor_->run(); });
 
     // Give the reactor some time to start things up and send the init event.
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 
     EXPECT_TRUE(reactor_->is_finished());
     EXPECT_FALSE(bad_thread->is_running());
+    // A thread that cannot start is a failure, as a component's refusal to start is (BUG-0278).
+    ASSERT_TRUE(reactor_thread_->join_with_timeout(std::chrono::seconds(10)));
+    EXPECT_EQ(status, Reactor::stopped_for_a_failure_status);
 }
 
 TEST_F(ReactorTest, ThreadThrowsDuringAppReadyProcessingReactorShutsDown) {
     auto bad_thread = ApplicationThread::create<ThrowingAppReadyThread>(logger_with_sink_.logger, *reactor_, "BadAppReadyThread", ThreadID{202},
                                                                         make_queue_config(), make_allocator_config());
     reactor_->register_thread(bad_thread);
-    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+    int status = -99;
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this, &status] { status = reactor_->run(); });
 
     // Give the reactor some time to start things up and send the init event.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -757,6 +767,8 @@ TEST_F(ReactorTest, ThreadThrowsDuringAppReadyProcessingReactorShutsDown) {
 
     EXPECT_TRUE(reactor_->is_finished());
     EXPECT_FALSE(bad_thread->is_running());
+    ASSERT_TRUE(reactor_thread_->join_with_timeout(std::chrono::seconds(10)));
+    EXPECT_EQ(status, Reactor::stopped_for_a_failure_status);
 }
 
 TEST_F(ReactorTest, ReactorRequiresAtLeastOneRegisteredThreadTest) {

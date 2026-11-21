@@ -409,3 +409,53 @@ session is still served by one instance.
   cursor per session, or skipping segments, would trade work on the order path or memory for it,
   and neither is worth paying while a replay is rare.
 - **Disaster recovery.** A second site is not a third backup. [BUG-0047](../bug_list.md#bug_0047).
+- **What happens to members' orders when their gateways are down for longer than the grace period?**
+  [BUG-0281](../bug_list.md#bug_0281). The next section sets out the question and the recommendation.
+
+### When the gateways are down and the rest of the venue is not
+
+A gateway instance that dies is restarted by its launcher, and its members reconnect to their backup instance. While
+neither of a member's instances is serving, that member cannot reach the venue, although the sequencers and matching
+engines may be working normally. This is a loss of access for those members, not a market halt.
+
+The sequencer already treats every session a lost gateway held as ended without a clean Logout, and starts each one's
+cancel-on-disconnect grace period. If the member logs on again within it, through either instance, its orders stay.
+If not, the sequencer writes `CancelSessionOrders` and the matching engines cancel the session's orders, other than
+GoodTillCancel and GoodTillDate orders. The sequencer does this whatever the reason the session ended.
+
+**The question.** When a member's gateways are down because of a fault in the venue, not in the member, should the
+grace period go on running, so that the member's day orders are cancelled if the gateways take longer than the grace
+period to come back, or should it stop, so that the orders stay live although the member cannot see or change them?
+
+**The recommendation: the grace period goes on running, whatever the cause.** Not yet decided.
+
+1. A member asks for cancel-on-disconnect so that it never has live orders it cannot manage. That risk is the same
+   whether the member's network failed or the venue's gateways did. Stopping the grace period leaves the member's
+   orders live in a market the member cannot see, which is what the member configured the venue to prevent. A member
+   that wants orders to outlive an outage already has the means: GoodTillCancel and GoodTillDate orders are never
+   cancelled on disconnect, and cancel-on-disconnect can be turned off for the member.
+2. The venue cannot reliably tell when the fault is its own. The sequencer sees only that connections from gateways
+   were lost. It cannot tell gateways that died from a fault in the network between the gateways and the sequencers
+   while the gateways still serve their members, and a rule that depends on telling those apart will one day decide
+   wrongly. The question is also not only about every gateway at once: a member whose primary and backup instances
+   are both down is in the position of a venue-wide outage while other members are unaffected.
+3. The sequencer does this already. Stopping the grace period would need a new state in the WAL that both matching
+   engines, every catch-up and every replay must apply alike.
+4. It makes the halt simpler. By the time the venue concludes that no gateway is coming back, the orders that
+   cancel-on-disconnect cancels have been cancelled, and what stays on the book are the orders members chose to keep.
+   So a halt for a total loss of the gateways can be the ordinary halt, which leaves the book as it is, rather than
+   the halt after a failed recovery of a matching engine, which cancels the book
+   ([engine_absence_after_a_restart.md](engine_absence_after_a_restart.md)).
+
+**What it costs.** An outage of the venue's gateways longer than the grace period, 30 seconds by default, cancels the
+members' day orders. If that proves too harsh, the remedy is a longer default grace period, not stopping it.
+
+**What it depends on.** After reconnecting, a member must be able to learn which of its orders were cancelled while it
+was away. A FIX member can, by a ResendRequest. A binary member cannot until the binary gateway can send the reports a
+member missed ([BUG-0046](../bug_list.md#bug_0046)).
+
+**Still to decide, separately:**
+
+- how the venue detects that no gateway has come back for a member, or for every member, and after how long;
+- whether the venue then halts trading by itself, or alerts an operator who decides. The recommendation is to alert an
+  operator, because the venue cannot tell an outage of its own gateways from a fault in the network outside it.

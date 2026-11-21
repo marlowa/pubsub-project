@@ -102,7 +102,9 @@ class Reactor : public ThreadLookupInterface {
     /**
      * @brief Starts the reactor's event loop.
      *
-     * @return An integer status code: 0 for normal shutdown, non-zero otherwise.
+     * @return The status a component's main returns: 0 for a stop that was asked for; stopped_for_the_end_of_day_status for
+     *         the end of the trading day; stopped_for_a_failure_status for a failure -- threads that did not start, a thread
+     *         that died of an exception, an exception that escaped the event loop, or shutdown_for_a_failure().
      */
     int run();
 

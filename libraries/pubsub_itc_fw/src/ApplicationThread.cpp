@@ -509,12 +509,14 @@ void ApplicationThread::run() {
     } catch (const std::exception& ex) {
         PUBSUB_LOG(logger_, FwLogLevel::Error, "{} [{}] terminating due to exception: {}", thread_name_, thread_id_.get_value(), ex.what());
         set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
-        reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to exception: {}", thread_name_, thread_id_.get_value(), ex.what()));
+        // A failure, not a stop that was asked for: run() then returns Reactor::stopped_for_a_failure_status, so that whatever
+        // started the component can tell (BUG-0278).
+        reactor_.shutdown_for_a_failure(fmt::format("Thread {} [{}] terminated due to exception: {}", thread_name_, thread_id_.get_value(), ex.what()));
         set_lifecycle_state(ThreadLifecycleState::Terminated);
     } catch (...) {
         PUBSUB_LOG(logger_, FwLogLevel::Error, "{} [{}] terminating due to unknown exception", thread_name_, thread_id_.get_value());
         set_lifecycle_state(ThreadLifecycleState::ShuttingDown);
-        reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to unknown exception", thread_name_, thread_id_.get_value()));
+        reactor_.shutdown_for_a_failure(fmt::format("Thread {} [{}] terminated due to unknown exception", thread_name_, thread_id_.get_value()));
         set_lifecycle_state(ThreadLifecycleState::Terminated);
     }
     // Last thing, on every path including both catches, which do not rethrow. Anybody asking

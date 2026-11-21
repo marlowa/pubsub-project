@@ -243,10 +243,12 @@ int Reactor::run() {
     static_cast<void>(lifecycle_.compare_exchange_strong(not_started, ReactorLifecycleState::Running, std::memory_order_acq_rel));
 
     if (!initialize_threads()) {
+        // Threads that did not start, a thread that threw while starting among them, are a failure to start
+        // (BUG-0278).
         lifecycle_.store(ReactorLifecycleState::FinalizingThreads, std::memory_order_release);
         finalize_threads_after_shutdown();
         lifecycle_.store(ReactorLifecycleState::Finished, std::memory_order_release);
-        return -1;
+        return stopped_for_a_failure_status;
     }
 
     bool exception_caught = false;
@@ -258,11 +260,11 @@ int Reactor::run() {
         // orderly shutdown. Calling it unhandled says std::terminate ran, which sends a
         // reader looking for a crash that did not happen.
         PUBSUB_LOG(logger_, FwLogLevel::Error, "Reactor::run: exception escaped the event loop; shutting down: {}", ex.what());
-        shutdown(fmt::format("reactor event loop terminated due to exception: {}", ex.what()));
+        shutdown_for_a_failure(fmt::format("reactor event loop terminated due to exception: {}", ex.what()));
         exception_caught = true;
     } catch (...) {
         PUBSUB_LOG_STR(logger_, FwLogLevel::Error, "Reactor::run: exception not derived from std::exception escaped the event loop; shutting down");
-        shutdown("reactor event loop terminated due to unknown exception");
+        shutdown_for_a_failure("reactor event loop terminated due to unknown exception");
         exception_caught = true;
     }
 
@@ -273,7 +275,7 @@ int Reactor::run() {
 
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Reactor::run has finished. Returning.");
     if (exception_caught) {
-        return -1;
+        return stopped_for_a_failure_status;
     }
     if (stopped_for_a_failure_.load(std::memory_order_acquire)) {
         return stopped_for_a_failure_status;

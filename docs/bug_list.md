@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 280 |
-| Open | 54 (31 defects, 23 tasks) |
+| Bugs recorded | 281 |
+| Open | 55 (31 defects, 24 tasks) |
 | Closed | 226 |
-| Next id | BUG-0281 |
+| Next id | BUG-0282 |
 
 ## Open bugs by severity
 
-4 high, 33 medium, 17 low.
+4 high, 34 medium, 17 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -50,6 +50,7 @@
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
 | [BUG-0278](#bug_0278) | medium | defect | An exception that ends an application thread stops the process with exit status 0, as if it had stopped normally |
 | [BUG-0279](#bug_0279) | medium | defect | A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent |
+| [BUG-0281](#bug_0281) | medium | task | What happens to members' orders when their gateways are down for longer than the grace period is not decided |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -253,9 +254,21 @@ its WAL from record 174,246, and at 22:56:16 it wrote `SessionEnded` records at 
 The gateways' limit on unanswered commands ([BUG-0251](#bug_0251)) keeps a backlog that long from forming, so this has
 not been seen since; but nothing stops a leader acting on what it reads once its own clock says its lease has run out.
 
-**What is wanted.** A sequencer whose lease has run out by its own clock acts on nothing a leader would, accepting no
-request and writing no record, until it has renewed its lease or stepped down; and a test that makes a leader's lease
-run out while messages wait for it, and fails before the change.
+**What has changed since.** The sequencer's lease timer is checked by the clock before each message its thread handles,
+not only when the timer's event reaches the front of the thread's queue (`start_recurring_timer_checked_between_messages`,
+commit a915f0fa). A lease that has run out by the sequencer's own clock is therefore noticed, and the sequencer steps
+down, within the handling of one message after the next lease tick, every 100 ms; it no longer waits for the whole
+backlog. In development the sequencer counts its lease as ending 250 ms before the voters do, so it steps down before
+any other instance can be granted the lead, provided no single message takes longer than about 150 ms to handle.
+
+**What is wanted.**
+
+1. A test at the level of the sequencer, not only of the timer: a leading sequencer's lease is made to run out while
+   messages wait in its thread's queue, and the test checks that it accepts no request and writes no record after the
+   lease ran out. It must fail with the check between messages disabled.
+2. The one case left: a single message whose handling takes longer than the margin. The known one is a resend request,
+   which reads the day's WAL on the sequencer's thread ([BUG-0113](#bug_0113)); work that long belongs off that thread,
+   which is what BUG-0113 does, so this remainder is closed by BUG-0113 rather than here.
 
 ### BUG-0263: In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service {#bug_0263}
 
@@ -276,8 +289,30 @@ sequencer leader, at 22:55:19.98.
 The runs of 19 November, with and without the gateways' limit, did not show it; the follower engine stopped being a
 standby there only because its store of reports to compare filled, which the limit prevents.
 
-**What is wanted.** The cause found from the logs of 16 November, or the case reproduced: which report of command 0 the
-follower produced, and why the leading engine produced none, or one that differed; and a test of it.
+**The cause, found from the logs of 16 November.** It is a fault in how the follower compares reports, not a
+difference between the engines: both applied command 235,499, which cancelled the 1,971 orders of the session LOADCLIENT
+because it had not returned within its grace period, and both logged the same count.
+
+1. A report that answers no member's command carries the command number 0 (`MatchingEngineStateMachine.cpp`, where
+   the cancel's reports are sent); these cancels are such reports.
+2. The follower keeps its own reports in the order it produced them, under the number each carries, so its 1,971
+   cancel reports were kept under 0, after the reports it kept of command 235,498.
+3. The leader's copies, read back from the WAL, have no `answers_seq_no` and so also arrive as command 0.
+   `FollowerReportComparison::leader_report` passes over a report of a command lower than the highest it has already
+   compared, so it passed over every one of them.
+4. The leader's first report of a later command made the comparison discard every kept report of an earlier command
+   that the leader had not matched. Those included the follower's reports kept under 0, so it concluded that the leader
+   had not sent a report of command 0, and the engine stopped being a standby.
+
+So any report produced by applying a command without answering it, while the follower keeps its reports, takes the
+standby out of service for no reason.
+
+**The fix, agreed with Andrew on 21 November 2026.** A new field on the report envelope in `leader_follower.dsl`,
+`produced_by_seq_no`, always present: the sequence number of the command being applied when the engine produced the
+report. The leading engine sets it and the sequencer writes it to the WAL with the report. The comparison keys both its
+kept reports and the leader's on it. `answers_seq_no` is unchanged. A unit test of `FollowerReportComparison` comes
+first: a report answering command 10, a cancel produced by command 11 carrying 0, and a report answering command 12,
+alike on both sides; it must find a difference before the change and none after.
 
 The logs of 16 November are kept, outside the repository, in `pubsub-evidence/leader_change_under_load_20261116.tar.gz`
 beside the project's directory, so that they outlive the cleaning of `tmp/`.
@@ -2492,6 +2527,13 @@ and the component's `main` returns what it returns. Only an exception that escap
 `run` returns `stopped_for_a_failure_status`, 1, as a refusal to start does. Whether anything relies on today's 0, such
 as a scenario of `ha_test.py` that expects a clean exit from a component that has failed, is to be checked first.
 
+
+**Built, 21 November 2026.** A thread that dies of an exception now stops the reactor with
+`shutdown_for_a_failure`, and `Reactor::run` returns `stopped_for_a_failure_status`, 1, where it returned 0 for that
+case and -1 for threads that did not start and for an exception that escaped the event loop. The three `ReactorTest`
+tests of a thread that throws, while starting, while becoming ready and while running, now require status 1; they
+failed before the change with 0, -1 and -1. `ha_test.py` passes 118 of 118 and 49 of 49. Left before closing: a check
+by hand that a sequencer refusing another day's WAL exits with status 1.
 ### BUG-0279: A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent {#bug_0279}
 
 | | |
@@ -2564,6 +2606,38 @@ counting the misses in the cache of address translations, to show whether they a
 time. Only if they are, huge pages for the large tables, with the choice between reserved pages and transparent ones
 made from measurements. And the allocators' huge-page path exercised by a test on a machine with huge pages reserved.
 To be done after the bugs agreed before it ([bug_review.md](bug_review.md)).
+
+### BUG-0281: What happens to members' orders when their gateways are down for longer than the grace period is not decided {#bug_0281}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-11-21 |
+| Recorded | 2026-11-21 |
+| How | Andrew's review of gateway availability, with Codex |
+| Impact | Unknown until decided: a venue-side outage of the gateways either cancels members' day orders when the grace period runs out, as the sequencer does today, or would leave them live while the members cannot manage them; and nothing yet detects that no gateway has come back, or says what the venue then does |
+
+**The question.** When a member's gateway instances are down because of a fault in the venue, the sequencer starts
+each of the member's sessions' cancel-on-disconnect grace periods, as it does for any lost gateway, and cancels the
+session's day orders when it runs out. Whether that is right for an outage the venue caused, or whether the grace period
+should stop, is not decided. Set out in full in [gateway_ha.md](availability/gateway_ha.md), section "When the gateways
+are down and the rest of the venue is not".
+
+**The recommendation**, not yet decided: the grace period goes on running whatever the cause, which is what the
+sequencer does now. The member asked not to have live orders it cannot manage; the venue cannot reliably tell its own
+gateways' failure from a network fault; and the halt for a total loss of the gateways can then be the ordinary halt,
+which leaves the book as it is.
+
+**What is wanted.**
+
+1. Andrew's decision on whether the grace period runs or stops.
+2. How the venue detects that no gateway has come back for a member, or for every member, and after how long.
+3. Whether the venue then halts by itself or alerts an operator who decides; the recommendation is to alert an operator.
+4. Scenarios for whatever is decided.
+
+It depends on [BUG-0046](#bug_0046): a binary member cannot learn, after reconnecting, which of its orders were
+cancelled while it was away. To be done after the bugs agreed before it ([bug_review.md](bug_review.md)).
 
 ## Closed
 
