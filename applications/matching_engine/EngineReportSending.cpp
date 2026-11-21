@@ -28,6 +28,7 @@ HeldEngineReport EngineReportSending::held_report_of(const Report& report) {
     HeldEngineReport held;
     held.payload.assign(report.bytes, report.bytes + report.size);
     held.seq_no = report.seq_no;
+    held.produced_by_seq_no = report.produced_by_seq_no;
     held.session = *report.session;
     held.poss_resend = report.poss_resend;
     return held;
@@ -71,6 +72,7 @@ bool EngineReportSending::send(const Report& report, int32_t epoch, bool holding
 
     pubsub_itc_fw_app::WalRecord envelope{};
     envelope.seq_no = report.seq_no;
+    envelope.produced_by_seq_no = report.produced_by_seq_no;
     envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
     envelope.payload.data = report.bytes;
     envelope.payload.size = report.size;
@@ -158,6 +160,7 @@ void EngineReportSending::send_held(bool to_primary, bool to_secondary, int32_t 
     for (HeldEngineReport& held : held_) {
         pubsub_itc_fw_app::WalRecord envelope{};
         envelope.seq_no = held.seq_no;
+        envelope.produced_by_seq_no = held.produced_by_seq_no;
         envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
         envelope.payload.data = held.payload.data();
         envelope.payload.size = held.payload.size();

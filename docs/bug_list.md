@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 281 |
-| Open | 54 (30 defects, 24 tasks) |
-| Closed | 227 |
+| Open | 52 (29 defects, 23 tasks) |
+| Closed | 229 |
 | Next id | BUG-0282 |
 
 ## Open bugs by severity
 
-4 high, 33 medium, 17 low.
+4 high, 31 medium, 17 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -31,7 +31,6 @@
 | [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
 | [BUG-0128](#bug_0128) | medium | defect | Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread |
 | [BUG-0131](#bug_0131) | medium | defect | The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower |
-| [BUG-0132](#bug_0132) | medium | task | Orders still open at the end of the trading day are never cancelled, and their members are never told |
 | [BUG-0134](#bug_0134) | medium | defect | A venue running without a standby says so once, and not at all when no follower is connected |
 | [BUG-0135](#bug_0135) | medium | defect | While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record |
 | [BUG-0136](#bug_0136) | medium | task | Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known |
@@ -45,7 +44,6 @@
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0258](#bug_0258) | medium | defect | While a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere, so a flood of them is dropped, and the follower cannot discard its copies |
 | [BUG-0262](#bug_0262) | medium | defect | A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog |
-| [BUG-0263](#bug_0263) | medium | defect | In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
 | [BUG-0278](#bug_0278) | medium | defect | An exception that ends an application thread stops the process with exit status 0, as if it had stopped normally |
 | [BUG-0279](#bug_0279) | medium | defect | A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent |
@@ -268,53 +266,6 @@ any other instance can be granted the lead, provided no single message takes lon
 2. The one case left: a single message whose handling takes longer than the margin. The known one is a resend request,
    which reads the day's WAL on the sequencer's thread ([BUG-0113](#bug_0113)); work that long belongs off that thread,
    which is what BUG-0113 does, so this remainder is closed by BUG-0113 rather than here.
-
-### BUG-0263: In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service {#bug_0263}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-16 |
-| Recorded | 2026-11-19 |
-| How | The overload of 16 November 2026 recorded in [BUG-0251](#bug_0251), step 5 |
-| Impact | A standby matching engine taken out of service for a difference whose cause is unknown, and which may mean the two engines do not apply the same commands alike |
-
-**What happened.** In the overload of 16 November 2026 (Quill logs in `tmp/leader_change_under_load/`), the follower
-matching engine logged at 22:55:22 that it had produced a report of command 0 that the leader did not send, and so
-took itself out of service as a standby until restarted, as principle V11 requires. Command 0 is the number carried by
-reports no member's command produced, such as cancels on a change of leader. It happened in the middle of a change of
-sequencer leader, at 22:55:19.98.
-
-The runs of 19 November, with and without the gateways' limit, did not show it; the follower engine stopped being a
-standby there only because its store of reports to compare filled, which the limit prevents.
-
-**The cause, found from the logs of 16 November.** It is a fault in how the follower compares reports, not a
-difference between the engines: both applied command 235,499, which cancelled the 1,971 orders of the session LOADCLIENT
-because it had not returned within its grace period, and both logged the same count.
-
-1. A report that answers no member's command carries the command number 0 (`MatchingEngineStateMachine.cpp`, where
-   the cancel's reports are sent); these cancels are such reports.
-2. The follower keeps its own reports in the order it produced them, under the number each carries, so its 1,971
-   cancel reports were kept under 0, after the reports it kept of command 235,498.
-3. The leader's copies, read back from the WAL, have no `answers_seq_no` and so also arrive as command 0.
-   `FollowerReportComparison::leader_report` passes over a report of a command lower than the highest it has already
-   compared, so it passed over every one of them.
-4. The leader's first report of a later command made the comparison discard every kept report of an earlier command
-   that the leader had not matched. Those included the follower's reports kept under 0, so it concluded that the leader
-   had not sent a report of command 0, and the engine stopped being a standby.
-
-So any report produced by applying a command without answering it, while the follower keeps its reports, takes the
-standby out of service for no reason.
-
-**The fix, agreed with Andrew on 21 November 2026.** A new field on the report envelope in `leader_follower.dsl`,
-`produced_by_seq_no`, always present: the sequence number of the command being applied when the engine produced the
-report. The leading engine sets it and the sequencer writes it to the WAL with the report. The comparison keys both its
-kept reports and the leader's on it. `answers_seq_no` is unchanged. A unit test of `FollowerReportComparison` comes
-first: a report answering command 10, a cancel produced by command 11 carrying 0, and a report answering command 12,
-alike on both sides; it must find a difference before the change and none after.
-
-The logs of 16 November are kept, outside the repository, in `pubsub-evidence/leader_change_under_load_20261116.tar.gz`
-beside the project's directory, so that they outlive the cleaning of `tmp/`.
 
 ### BUG-0264: Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time {#bug_0264}
 
@@ -842,44 +793,6 @@ removed. Point 3, the dashboard's alert, is not built.
 **No time limit.** Decided with Andrew, 11 October 2026: the venue does not halt itself after running
 without a standby for some time, because that would turn a loss of resilience into a loss of service
 (V11). Whether to halt is for the operators, with this reporting in front of them.
-
-### BUG-0132: Orders still open at the end of the trading day are never cancelled, and their members are never told {#bug_0132}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task |
-| Found | 2026-10-11 |
-| Recorded | 2026-10-11 |
-| How | Reviewing principle V2 (the log is the record) in `docs/design_principles.md`, and checking its statement that every order is a day order |
-| Impact | An order still resting when trading ends simply disappears when the processes are stopped and the logs archived. The member is never sent a cancel, so its own record still shows the order as open |
-
-**What is meant to happen.** Every trading day starts fresh, with empty logs, and every order is a day
-order: orders that outlive the trading day (long orders) are deliberately not implemented. So
-anything still open at the end of the trading day is to be cancelled, with an execution report to its
-member, before end of day, and the cancels are commands the sequencer logs like any other (V1, V2).
-
-**What happens.** Built as wanted: see "Where it stands" below. The trading phases are built
-(`docs/venue/trading_phases.md`), and when the venue enters `closed` each matching engine cancels every
-order on its book and tells each member.
-
-**What is wanted.** When trading closes, every open order is cancelled through the sequencer and its
-member told, before end of day begins. This depends on the trading phases being built, and is to be
-designed with them.
-
-**Principle.** V2 in `docs/design_principles.md`.
-
-**Where it stands, 15 November 2026.** Built as step 6 of `docs/venue/trading_day_plan.md`. Each matching
-engine, applying the `TechnicalEvent` that enters `closed`, cancels every order on its book and sends a
-report of each to its member; each report answers the close, so the WAL records it with the close's
-sequence number in `answers_seq_no`. The sequencer refuses every member's command from the close on, and
-writes the end-of-day begin (`EndOfDayBegin`) only once the leading engine's answer to `EnginePositionQuery`
-shows the close applied, no report held unsent, and the WAL holding every report the engine says it sent. `EnginePosition` carries the
-report counts for that check, because the engine answers on the sequencer's connection for orders and sends
-its reports on its own connections, so the answer can arrive first. Scenario 111 places two orders, closes,
-and checks that the member is sent a cancel of each, that the WAL records both as answering the close
-before the end-of-day begin, and that the follower engine found its reports of the close the same as the leader's; it
-fails when the follower's reports are made to differ. Left open for Andrew to close.
 
 ### BUG-0131: The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower {#bug_0131}
 
@@ -2509,6 +2422,123 @@ It depends on [BUG-0046](#bug_0046): a binary member cannot learn, after reconne
 cancelled while it was away. To be done after the bugs agreed before it ([bug_review.md](bug_review.md)).
 
 ## Closed
+
+### BUG-0263: In the overload of 16 November the follower matching engine produced a report of command 0 that the leader did not send, and took itself out of service {#bug_0263}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-16 |
+| Recorded | 2026-11-19 |
+| How | The overload of 16 November 2026 recorded in [BUG-0251](#bug_0251), step 5 |
+| Fixed | 2026-11-21 -- every report carries the command that produced it, `produced_by_seq_no`, and the follower compares its reports with the leader's under it; ha_test 118 of 118 with the primary engine first and 49 of 49 with the secondary first |
+| Impact | A standby matching engine taken out of service for a difference whose cause is unknown, and which may mean the two engines do not apply the same commands alike |
+
+**What happened.** In the overload of 16 November 2026 (Quill logs in `tmp/leader_change_under_load/`), the follower
+matching engine logged at 22:55:22 that it had produced a report of command 0 that the leader did not send, and so
+took itself out of service as a standby until restarted, as principle V11 requires. Command 0 is the number carried by
+reports no member's command produced, such as cancels on a change of leader. It happened in the middle of a change of
+sequencer leader, at 22:55:19.98.
+
+The runs of 19 November, with and without the gateways' limit, did not show it; the follower engine stopped being a
+standby there only because its store of reports to compare filled, which the limit prevents.
+
+**The cause, found from the logs of 16 November.** It is a fault in how the follower compares reports, not a
+difference between the engines: both applied command 235,499, which cancelled the 1,971 orders of the session LOADCLIENT
+because it had not returned within its grace period, and both logged the same count.
+
+1. A report that answers no member's command carries the command number 0 (`MatchingEngineStateMachine.cpp`, where
+   the cancel's reports are sent); these cancels are such reports.
+2. The follower keeps its own reports in the order it produced them, under the number each carries, so its 1,971
+   cancel reports were kept under 0, after the reports it kept of command 235,498.
+3. The leader's copies, read back from the WAL, have no `answers_seq_no` and so also arrive as command 0.
+   `FollowerReportComparison::leader_report` passes over a report of a command lower than the highest it has already
+   compared, so it passed over every one of them.
+4. The leader's first report of a later command made the comparison discard every kept report of an earlier command
+   that the leader had not matched. Those included the follower's reports kept under 0, so it concluded that the leader
+   had not sent a report of command 0, and the engine stopped being a standby.
+
+So any report produced by applying a command without answering it, while the follower keeps its reports, takes the
+standby out of service for no reason.
+
+**The fix, agreed with Andrew on 21 November 2026.** A new field on the report envelope in `leader_follower.dsl`,
+`produced_by_seq_no`, always present: the sequence number of the command being applied when the engine produced the
+report. The leading engine sets it and the sequencer writes it to the WAL with the report. The comparison keys both its
+kept reports and the leader's on it. `answers_seq_no` is unchanged. A unit test of `FollowerReportComparison` comes
+first: a report answering command 10, a cancel produced by command 11 carrying 0, and a report answering command 12,
+alike on both sides; it must find a difference before the change and none after.
+
+The logs of 16 November are kept, outside the repository, in `pubsub-evidence/leader_change_under_load_20261116.tar.gz`
+beside the project's directory, so that they outlive the cleaning of `tmp/`.
+
+**Fixed 21 November 2026.** `WalRecord` has the field `produced_by_seq_no`, always present. The matching engine's state
+machine gives every report both numbers: the command it was applying when it produced the report, and the command the
+report answers, which is 0 for a cancel that answers no member's command. The engine sends the first on the report's
+envelope and the second in the transport header, both when it sends a report at once and when it holds one to send
+later, and the sequencer writes the first into the WAL with the report. `FollowerReportComparison` keeps each report
+under the command that produced it and compares the leader's under the same; on taking the lead it hands each kept
+report on with the command it answers, by which the sequencer routes it. Two more readers use the producing command:
+the engine's check, during a catch-up and while following, that the WAL already holds every report of a command, and the
+sequencer's `fully_reported_through`.
+
+The same cause had a second effect, found while writing the test: a follower taking the lead handed on only kept
+reports whose answered command was after the last the WAL holds every report of, so a kept cancel, answering 0, was
+never sent. Keying on the producing command fixes it too.
+
+Tests, each of which failed first: `FollowerReportComparisonTest.AReportAnsweringNoCommandIsComparedUnderTheCommandThatProducedIt`
+(the fault of 16 November: two differences, the first at command 0) and
+`TakingTheLeadHandsOnAReportAnsweringNoCommandThatTheWalLacks` (one report handed on of two); and
+`EngineReportSendingTest.TheCommandThatProducedAReportIsCarriedWhetherItIsSentAtOnceOrHeld`, which failed with the held
+path broken on purpose. A `WalRecord` written by an earlier version no longer decodes, which Andrew accepted on 21
+November 2026: no WAL outlives the version that wrote it (principle V12).
+
+The test targets `matching_engine_tests` and `sequencer_tests` did not depend on the targets that generate the headers
+they include, so building one of them alone used the header from before a change to its DSL file. Both now do.
+
+### BUG-0132: Orders still open at the end of the trading day are never cancelled, and their members are never told {#bug_0132}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Reviewing principle V2 (the log is the record) in `docs/design_principles.md`, and checking its statement that every order is a day order |
+| Fixed | 2026-11-15, closed by Andrew 2026-11-21 -- entering `closed` makes each matching engine cancel every open order and send its member a report of each, which the sequencer writes into the WAL before the end-of-day begin; checked by scenario 111 of `ha_test.py` |
+| Impact | An order still resting when trading ends simply disappears when the processes are stopped and the logs archived. The member is never sent a cancel, so its own record still shows the order as open |
+
+**What is meant to happen.** Every trading day starts fresh, with empty logs, and every order is a day
+order: orders that outlive the trading day (long orders) are deliberately not implemented. So
+anything still open at the end of the trading day is to be cancelled, with an execution report to its
+member, before end of day, and the cancels are commands the sequencer logs like any other (V1, V2).
+
+**What happens.** Built as wanted: see "Where it stands" below. The trading phases are built
+(`docs/venue/trading_phases.md`), and when the venue enters `closed` each matching engine cancels every
+order on its book and tells each member.
+
+**What is wanted.** When trading closes, every open order is cancelled through the sequencer and its
+member told, before end of day begins. This depends on the trading phases being built, and is to be
+designed with them.
+
+**Principle.** V2 in `docs/design_principles.md`.
+
+**Where it stands, 15 November 2026.** Built as step 6 of `docs/venue/trading_day_plan.md`. Each matching
+engine, applying the `TechnicalEvent` that enters `closed`, cancels every order on its book and sends a
+report of each to its member; each report answers the close, so the WAL records it with the close's
+sequence number in `answers_seq_no`. The sequencer refuses every member's command from the close on, and
+writes the end-of-day begin (`EndOfDayBegin`) only once the leading engine's answer to `EnginePositionQuery`
+shows the close applied, no report held unsent, and the WAL holding every report the engine says it sent. `EnginePosition` carries the
+report counts for that check, because the engine answers on the sequencer's connection for orders and sends
+its reports on its own connections, so the answer can arrive first. Scenario 111 places two orders, closes,
+and checks that the member is sent a cancel of each, that the WAL records both as answering the close
+before the end-of-day begin, and that the follower engine found its reports of the close the same as the leader's; it
+fails when the follower's reports are made to differ.
+
+**What it does not cover.** A member disconnected at the close is not told that day: its cancels are in the WAL and
+are sent to its gateway, but the next trading day starts with none of this day's files, so it cannot ask for them
+after the end of day. By then its Day orders have usually been cancelled already, when its session's grace period ran
+out, so what remains is its Good Till Cancel and Good Till Date orders. That belongs to what happens to members whose
+gateways are down for longer than the grace period ([BUG-0281](#bug_0281)), not to the close.
 
 ### BUG-0041: Five ways the venue will not start on a RHEL8 target host {#bug_0041}
 

@@ -44,18 +44,15 @@ TEST(WalRecordEncodingTest, ARecordCarriesTheEpochOfTheLeadershipThatWroteIt) {
     EXPECT_EQ(view.leader_epoch, 9);
 }
 
-TEST(WalRecordEncodingTest, ARecordWrittenBeforeTheEpochFieldExistedStillDecodes) {
-    // A record encoded without the field ends one byte earlier than one that says it is absent: the
-    // presence byte. Removing that byte gives exactly the bytes a record written before the field was
-    // added to the message holds, as the records already in a write-ahead log do.
+// A report carries the command that produced it as well as the one it answers, which for a cancel of a session's orders
+// is none (docs/bug_list.md, BUG-0263).
+TEST(WalRecordEncodingTest, AReportCarriesTheCommandThatProducedItAsWellAsTheOneItAnswers) {
     pubsub_itc_fw_app::WalRecord record{};
     record.seq_no = 42;
-    record.has_leader_epoch = false;
-    std::vector<uint8_t> old_form = encoded(record);
-    ASSERT_EQ(old_form.back(), 0);
-    old_form.pop_back();
+    record.has_answers_seq_no = false;
+    record.produced_by_seq_no = 41;
     pubsub_itc_fw_app::WalRecordView view{};
-    ASSERT_TRUE(decoded(old_form, view));
-    EXPECT_EQ(view.seq_no, 42);
-    EXPECT_FALSE(view.has_leader_epoch);
+    ASSERT_TRUE(decoded(encoded(record), view));
+    EXPECT_FALSE(view.has_answers_seq_no);
+    EXPECT_EQ(view.produced_by_seq_no, 41);
 }

@@ -120,7 +120,9 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // session is connected -- and on the path that needs this most, promotion after a
     // gateway or ME failure, any address it remembered would name a process that has since
     // died. The sequencer holds the live bindings and resolves the identity when it sends.
-    void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, const fix_common::SessionIdentity& session,
+    // @p produced_by is the command being applied when the report was produced, and @p answers the command it answers, or
+    // 0 for a report that answers no member's command; the second travels in the transport header.
+    void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t produced_by, int64_t answers, const fix_common::SessionIdentity& session,
                               ReportIsRepeat repeat = ReportIsRepeat::no);
 
     const MatchingEngineConfiguration& config_;
@@ -210,7 +212,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     class EngineOutputs : public MatchingEngineOutputsInterface {
       public:
         explicit EngineOutputs(MatchingEngineThread& owner) : owner_(owner) {}
-        void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number, const fix_common::SessionIdentity& session,
+        void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t produced_by, int64_t answers, const fix_common::SessionIdentity& session,
                          ReportIsRepeat repeat) override;
         void order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
                            ReportIsRepeat repeat, int64_t sequence_number, std::string_view orig_cl_ord_id) override;
@@ -567,8 +569,9 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     /// or is catching up in order to follow it.
     [[nodiscard]] bool keeps_its_reports() const;
 
-    /// Keeps @p report, of command @p seq_no for @p session, until the WAL holds the leader's reports of that command.
-    void keep_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t seq_no, const fix_common::SessionIdentity& session);
+    /// Keeps @p report, produced by applying command @p produced_by and answering command @p answers (0 for none), for
+    /// @p session, until the WAL holds the leader's reports of that command.
+    void keep_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t produced_by, int64_t answers, const fix_common::SessionIdentity& session);
 
     /// Taking the lead: sends the kept reports of every command after @p reported_through, the last command the WAL holds
     /// every report of, and drops the rest.

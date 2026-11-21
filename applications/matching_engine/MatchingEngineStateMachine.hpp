@@ -61,13 +61,17 @@ class MatchingEngineOutputsInterface {
 
     /**
      * @brief An execution report to send to the member whose order it concerns.
-     * @param[in] report          The report. Its string fields point into buffers that end with the call.
-     * @param[in] sequence_number The sequence number of the command that produced it, or 0 for a report no
-     *                            command produced, such as a cancel of every order on promotion.
-     * @param[in] session         The session that placed the order the report concerns.
-     * @param[in] repeat          Whether it may repeat a report an earlier engine sent.
+     * @param[in] report      The report. Its string fields point into buffers that end with the call.
+     * @param[in] produced_by The sequence number of the command being applied when the report was produced. Never zero:
+     *                        every report is produced by applying a command.
+     * @param[in] answers     The sequence number of the command the report answers, which is the same command for a
+     *                        report of a member's order or cancel, or 0 for a report that answers no member's command,
+     *                        such as a cancel of the orders of a session that has not come back. The sequencer routes a
+     *                        report by it.
+     * @param[in] session     The session that placed the order the report concerns.
+     * @param[in] repeat      Whether it may repeat a report an earlier engine sent.
      */
-    virtual void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number, const fix_common::SessionIdentity& session,
+    virtual void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t produced_by, int64_t answers, const fix_common::SessionIdentity& session,
                              ReportIsRepeat repeat) = 0;
 
     /**

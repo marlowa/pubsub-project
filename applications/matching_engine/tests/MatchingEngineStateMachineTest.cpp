@@ -57,7 +57,8 @@ struct RecordedReport {
     pubsub_itc_fw_app::OrdRejReason ord_rej_reason{};
     std::string text;
     int64_t transact_time{0};
-    int64_t sequence_number{0};
+    int64_t sequence_number{0}; // the command the report answers, or 0
+    int64_t produced_by{0};     // the command being applied when it was produced
     std::string comp_id;
     ReportIsRepeat repeat{ReportIsRepeat::no};
 };
@@ -72,7 +73,7 @@ struct RecordedOutcome {
 // Records everything the state machine hands to its outputs.
 class RecordingOutputs : public MatchingEngineOutputsInterface {
   public:
-    void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number, const fix_common::SessionIdentity& session,
+    void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t produced_by, int64_t sequence_number, const fix_common::SessionIdentity& session,
                      ReportIsRepeat repeat) override {
         if (fail_next_report) {
             fail_next_report = false;
@@ -98,6 +99,7 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
         recorded.text = report.has_text ? std::string(report.text) : std::string();
         recorded.transact_time = report.transact_time;
         recorded.sequence_number = sequence_number;
+        recorded.produced_by = produced_by;
         recorded.comp_id = std::string(session.comp_id_view());
         recorded.repeat = repeat;
         reports.push_back(recorded);
@@ -1021,6 +1023,8 @@ TEST_F(MatchingEngineStateMachineTest, ACancelSessionOrdersCommandCancelsTheSess
     EXPECT_EQ(report.cl_ord_id, "ORD-A");
     EXPECT_EQ(report.exec_id, exec_id_of(7, 0)) << "named by the command's sequence number and the report's place";
     EXPECT_EQ(report.exec_type, pubsub_itc_fw_app::ExecType::Canceled);
+    EXPECT_EQ(report.sequence_number, 0) << "it answers no member's command";
+    EXPECT_EQ(report.produced_by, 7) << "it was produced by applying command 7, and is compared under it (BUG-0263)";
     EXPECT_EQ(report.comp_id, "MEMBER-A");
     EXPECT_EQ(report.transact_time, taken_at + 9);
     EXPECT_EQ(report.repeat, ReportIsRepeat::no);

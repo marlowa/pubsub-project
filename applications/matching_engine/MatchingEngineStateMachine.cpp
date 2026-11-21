@@ -134,7 +134,7 @@ void MatchingEngineStateMachine::apply_new_order(const pubsub_itc_fw_app::NewOrd
             er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
             er.has_text = true;
             er.text = "Venue could not process the order";
-            outputs_.send_report(er, sequence_number, session, source == CommandSource::live ? ReportIsRepeat::no : ReportIsRepeat::yes);
+            outputs_.send_report(er, sequence_number, sequence_number, session, source == CommandSource::live ? ReportIsRepeat::no : ReportIsRepeat::yes);
         });
     }
 }
@@ -169,7 +169,7 @@ void MatchingEngineStateMachine::apply_cancel(const pubsub_itc_fw_app::OrderCanc
             er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
             er.has_text = true;
             er.text = "Venue could not process the cancel. The order is unchanged";
-            outputs_.send_report(er, sequence_number, session, source == CommandSource::live ? ReportIsRepeat::no : ReportIsRepeat::yes);
+            outputs_.send_report(er, sequence_number, sequence_number, session, source == CommandSource::live ? ReportIsRepeat::no : ReportIsRepeat::yes);
         });
     }
 }
@@ -181,7 +181,7 @@ void MatchingEngineStateMachine::begin_command() {
 
 void MatchingEngineStateMachine::send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number,
                                              const fix_common::SessionIdentity& session, ReportIsRepeat repeat) {
-    outputs_.send_report(report, sequence_number, session, repeat);
+    outputs_.send_report(report, sequence_number, sequence_number, session, repeat);
     ++reports_for_command_;
 }
 
@@ -1094,7 +1094,7 @@ void MatchingEngineStateMachine::send_cancel_by_command(const OrderEntry& entry,
     // The session that placed the order rides on the report's envelope, because no member placed the command, so the
     // sequencer finds no member's session under its sequence number. A report that answers the command carries the
     // command's sequence number, which the sequencer records as the command it answers; any other carries 0.
-    outputs_.send_report(er, answers == AnswersTheCommand::yes ? sequence_number : 0, entry.session, repeat);
+    outputs_.send_report(er, sequence_number, answers == AnswersTheCommand::yes ? sequence_number : 0, entry.session, repeat);
 }
 
 MatchingEngineStateMachine::BookCancelledByCommand MatchingEngineStateMachine::apply_cancel_book(int64_t orders_placed_through, int64_t sequence_number,

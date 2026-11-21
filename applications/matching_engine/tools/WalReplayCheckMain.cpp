@@ -218,8 +218,8 @@ class RecordingOutputs : public MatchingEngineOutputsInterface {
     // The report is filed under the command being applied, not the sequence number it is handed with: the reports of a
     // CancelBook command are handed over with 0, for the sequencer to route them by session, and are that command's all
     // the same.
-    void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t /*sequence_number*/, const fix_common::SessionIdentity& /*session*/,
-                     ReportIsRepeat /*repeat*/) override {
+    void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t /*produced_by*/, int64_t /*answers*/,
+                     const fix_common::SessionIdentity& /*session*/, ReportIsRepeat /*repeat*/) override {
         produced.push_back(ProducedReport{current_command, fields_of(report)});
     }
     void order_outcome(const fix_common::SessionIdentity& /*session*/, std::string_view /*cl_ord_id*/, pubsub_itc_fw_app::OrderOutcomeKind /*outcome*/,

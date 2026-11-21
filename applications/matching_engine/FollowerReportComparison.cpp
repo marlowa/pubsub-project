@@ -84,7 +84,7 @@ void FollowerReportComparison::drop_oldest() {
     --count_;
 }
 
-void FollowerReportComparison::store_full(int64_t seq_no, size_t size) {
+void FollowerReportComparison::store_full(int64_t produced_by, size_t size) {
     if (overflowed_) {
         return;
     }
@@ -94,7 +94,7 @@ void FollowerReportComparison::store_full(int64_t seq_no, size_t size) {
                "there is no room for the next, of {} bytes: at most {} reports and {} bytes are kept. The leading engine's reports are that far behind its "
                "commands in the WAL. Later reports are not kept, so this instance can no longer send every report the WAL lacks if it takes the lead",
                count_, kept_bytes_, size, entries_.size(), bytes_.size());
-    refuse_to_lead(seq_no, pubsub_itc_fw_app::FollowerCannotLeadReason::KeptReportsFull, "it kept as many reports as it has room for");
+    refuse_to_lead(produced_by, pubsub_itc_fw_app::FollowerCannotLeadReason::KeptReportsFull, "it kept as many reports as it has room for");
 }
 
 void FollowerReportComparison::start_keeping_after(int64_t after_seq_no) {
@@ -118,16 +118,16 @@ void FollowerReportComparison::leader_report(int64_t record_seq_no, int64_t comm
     highest_command_compared_ = command;
     // A report of a later command means the leader sent no more of the earlier ones: any of those this instance kept and
     // was not matched is one the leader did not send.
-    while (count_ > 0 && entries_[oldest_].seq_no < command) {
+    while (count_ > 0 && entries_[oldest_].produced_by < command) {
         if (!entries_[oldest_].compared) {
-            report_difference(entries_[oldest_].seq_no, pubsub_itc_fw_app::FollowerCannotLeadReason::ReportNotSent);
+            report_difference(entries_[oldest_].produced_by, pubsub_itc_fw_app::FollowerCannotLeadReason::ReportNotSent);
         }
         drop_oldest();
     }
     // The leader's reports of one command arrive in the order it produced them, as this instance's were kept.
     for (size_t position = 0; position < count_; ++position) {
         KeptReport& kept = entry_at(position);
-        if (kept.seq_no != command) {
+        if (kept.produced_by != command) {
             break;
         }
         if (kept.compared) {

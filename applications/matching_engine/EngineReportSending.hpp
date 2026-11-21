@@ -105,7 +105,8 @@ class EngineReportSending {
     struct Report {
         const uint8_t* bytes{nullptr}; ///< the encoded ExecutionReport; valid only during the call
         size_t size{0};
-        int64_t seq_no{0}; ///< the number of the command it answers
+        int64_t seq_no{0};             ///< the number of the command it answers, or 0 for none
+        int64_t produced_by_seq_no{0}; ///< the number of the command being applied when it was produced
         const fix_common::SessionIdentity* session{nullptr};
         bool poss_resend{false};
         /// The time the member's gateway read the order, for the gateway's measure of its round trip.

@@ -155,6 +155,11 @@ target_link_libraries(sequencer_tests PRIVATE
         GTest::gtest_main
 )
 
+# The same generated headers as the sequencer target, because the tests compile its sources. Without a dependency on a
+# generator, building only this target uses the header from before a change to its DSL file, and in a parallel build of
+# everything the order is left to chance.
+add_dependencies(sequencer_tests fix_orders_generated leader_follower_generated sequencer_test_events_generated)
+
 include(GoogleTest)
 if(ENABLE_TSAN)
     gtest_discover_tests(sequencer_tests DISCOVERY_MODE PRE_TEST)

@@ -680,8 +680,10 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         if (role_.role() == MeRole::Reconciling) {
             catch_up_.record_offered(message.seq_no());
         }
-        if (keeps_its_reports() && envelope.has_answers_seq_no) {
-            report_comparison_.leader_report(message.seq_no(), envelope.answers_seq_no, envelope.payload.data, envelope.payload.size,
+        // Compared under the command whose application produced it, which every report has, rather than the command it
+        // answers, which a cancel of a session's orders does not (docs/bug_list.md, BUG-0263).
+        if (keeps_its_reports()) {
+            report_comparison_.leader_report(message.seq_no(), envelope.produced_by_seq_no, envelope.payload.data, envelope.payload.size,
                                              catch_up_.reports_in_wal_through());
         }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
@@ -893,27 +895,29 @@ CommandSource MatchingEngineThread::command_source_for(int64_t sequence_number) 
     return CommandSource::catch_up;
 }
 
-void MatchingEngineThread::EngineOutputs::send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number,
+void MatchingEngineThread::EngineOutputs::send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t produced_by, int64_t answers,
                                                       const fix_common::SessionIdentity& session, ReportIsRepeat repeat) {
+    // Whether the WAL holds every report of a command is a question about the command that produced the report, which a
+    // cancel answering no member's command has as much as any other report.
     if (owner_.current_command_follows_) {
         ++owner_.followed_reports_withheld_;
-        if (sequence_number > 0 && sequence_number <= owner_.catch_up_.reports_in_wal_through()) {
+        if (produced_by <= owner_.catch_up_.reports_in_wal_through()) {
             owner_.catch_up_.report_left_out(); // the WAL holds every report of this command already
             return;
         }
-        owner_.keep_report(report, sequence_number, session);
+        owner_.keep_report(report, produced_by, answers, session);
         return;
     }
     // Every report a catch-up produces is marked as a possible repeat, and no other report is. One for a command the WAL
     // already holds every report of is not sent: the member has it, or is sent it, by the sequencers.
     if (repeat == ReportIsRepeat::yes) {
-        if (sequence_number > 0 && sequence_number <= owner_.catch_up_.reports_in_wal_through()) {
+        if (produced_by <= owner_.catch_up_.reports_in_wal_through()) {
             owner_.catch_up_.report_left_out();
             return;
         }
         owner_.catch_up_.report_sent();
     }
-    owner_.send_er_to_sequencer(report, sequence_number, session, repeat);
+    owner_.send_er_to_sequencer(report, produced_by, answers, session, repeat);
 }
 
 void MatchingEngineThread::EngineOutputs::order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
@@ -940,8 +944,8 @@ bool MatchingEngineThread::holding_reports_until_entitled() const {
     return role_.holding_reports_until_entitled();
 }
 
-void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, const fix_common::SessionIdentity& session,
-                                                ReportIsRepeat repeat) {
+void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t produced_by, int64_t answers,
+                                                const fix_common::SessionIdentity& session, ReportIsRepeat repeat) {
     // Encode the ER, then wrap it in a WalRecord envelope. The echoed seq_no travels in
     // the transport header, which is how the leading sequencer usually routes an ER: it looks
     // the order's sequence up and finds the session that placed it. The session identity on
@@ -968,7 +972,8 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
     // Sent to both sequencers, or held: while this instance is becoming current without having been told it may serve,
     // or while there is no connection for reports. Only a report sent now is timed.
     const EngineReportSending::Report report{
-        er_encode_buffer_.data(), bytes_written, seq_no, &session, repeat == ReportIsRepeat::yes, has_current_order_ingress_ns_, current_order_ingress_ns_};
+        er_encode_buffer_.data(), bytes_written, answers, produced_by, &session, repeat == ReportIsRepeat::yes, has_current_order_ingress_ns_,
+        current_order_ingress_ns_};
     if (!report_sending_.send(report, epoch_, holding_reports_until_entitled())) {
         return;
     }
@@ -1472,12 +1477,13 @@ bool MatchingEngineThread::keeps_its_reports() const {
     return role_.keeps_its_reports();
 }
 
-void MatchingEngineThread::keep_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t seq_no, const fix_common::SessionIdentity& session) {
+void MatchingEngineThread::keep_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t produced_by, int64_t answers,
+                                       const fix_common::SessionIdentity& session) {
     size_t bytes_written = 0;
     size_t bytes_needed = 0;
     static_cast<void>(pubsub_itc_fw_app::encode(report, nullptr, 0, bytes_written, bytes_needed));
     // Encoded straight into the store of kept reports, so that keeping it calls no allocator.
-    report_comparison_.keep(seq_no, session, bytes_needed, [this, &report](uint8_t* destination, size_t room) -> size_t {
+    report_comparison_.keep(produced_by, answers, session, bytes_needed, [this, &report](uint8_t* destination, size_t room) -> size_t {
         size_t written = 0;
         size_t needed = 0;
         if (!pubsub_itc_fw_app::encode(report, destination, room, written, needed)) {

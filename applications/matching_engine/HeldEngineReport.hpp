@@ -21,8 +21,11 @@ namespace matching_engine {
 struct HeldEngineReport {
     /// The encoded ExecutionReport.
     std::vector<uint8_t> payload;
-    /// The number of the command the report answers, sent in the transport header, as a live report's is.
+    /// The number of the command the report answers, sent in the transport header, as a live report's is; 0 for a report
+    /// that answers no member's command.
     int64_t seq_no{0};
+    /// The number of the command being applied when the report was produced, sent on the envelope.
+    int64_t produced_by_seq_no{0};
     /// The member's session the report is for.
     fix_common::SessionIdentity session;
     /// Whether the report is marked as a possible repeat.

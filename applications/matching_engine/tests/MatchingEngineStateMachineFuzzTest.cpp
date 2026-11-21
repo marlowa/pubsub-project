@@ -68,8 +68,8 @@ struct Report {
 
 class Outputs : public MatchingEngineOutputsInterface {
   public:
-    void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t sequence_number, const fix_common::SessionIdentity& session,
-                     ReportIsRepeat /*repeat*/) override {
+    void send_report(const pubsub_itc_fw_app::ExecutionReport& report, int64_t /*produced_by*/, int64_t sequence_number,
+                     const fix_common::SessionIdentity& session, ReportIsRepeat /*repeat*/) override {
         Report copy;
         copy.exec_id = std::string(report.exec_id);
         copy.order_id = std::string(report.order_id);

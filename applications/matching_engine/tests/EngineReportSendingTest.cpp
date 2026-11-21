@@ -35,11 +35,12 @@ struct RecordingLinks : public EngineReportSendingLinksInterface {
         bool has_gateway_ingress_ns{false};
         int64_t gateway_ingress_ns{0};
         std::string comp_id;
+        int64_t produced_by{0};
     };
     void send_report(const pubsub_itc_fw::ConnectionID& connection, int64_t seq_no, const pubsub_itc_fw_app::WalRecord& envelope) override {
         sent.push_back(Sent{connection.get_value(), seq_no, std::string(reinterpret_cast<const char*>(envelope.payload.data), envelope.payload.size),
                             envelope.report_engine_epoch, envelope.report_number, envelope.poss_resend, envelope.has_gateway_ingress_ns,
-                            envelope.gateway_ingress_ns, std::string(envelope.sender_comp_id)});
+                            envelope.gateway_ingress_ns, std::string(envelope.sender_comp_id), envelope.produced_by_seq_no});
     }
     void reports_held(int64_t count) override {
         held_events.push_back(count);
@@ -72,9 +73,12 @@ class EngineReportSendingTest : public ::testing::Test {
         sending_ = std::make_unique<EngineReportSending>(true, links_, logger_);
     }
 
-    // Sends a report whose bytes are @p text, answering command @p seq_no.
-    bool send(const std::string& text, int64_t seq_no = 1, int32_t epoch = 7, bool holding_until_entitled = false, bool poss_resend = false) {
-        const EngineReportSending::Report report{reinterpret_cast<const uint8_t*>(text.data()), text.size(), seq_no, &session_, poss_resend, false, 0};
+    // Sends a report whose bytes are @p text, answering command @p seq_no and produced by applying @p produced_by, which is
+    // @p seq_no itself when it is not given.
+    bool send(const std::string& text, int64_t seq_no = 1, int32_t epoch = 7, bool holding_until_entitled = false, bool poss_resend = false,
+              int64_t produced_by = -1) {
+        const EngineReportSending::Report report{
+            reinterpret_cast<const uint8_t*>(text.data()), text.size(), seq_no, produced_by < 0 ? seq_no : produced_by, &session_, poss_resend, false, 0};
         return sending_->send(report, epoch, holding_until_entitled);
     }
 
@@ -119,12 +123,26 @@ TEST_F(EngineReportSendingTest, ANewEpochNumbersFromOneAgain) {
 TEST_F(EngineReportSendingTest, TheMarkOfAPossibleRepeatAndTheGatewaysTimeAreCarried) {
     connect_both();
     const std::string text = "report";
-    const EngineReportSending::Report report{reinterpret_cast<const uint8_t*>(text.data()), text.size(), 5, &session_, true, true, 123'456'789};
+    const EngineReportSending::Report report{reinterpret_cast<const uint8_t*>(text.data()), text.size(), 5, 5, &session_, true, true, 123'456'789};
     ASSERT_TRUE(sending_->send(report, 7, false));
     EXPECT_TRUE(links_.sent[0].poss_resend);
     EXPECT_TRUE(links_.sent[0].has_gateway_ingress_ns);
     EXPECT_EQ(links_.sent[0].gateway_ingress_ns, 123'456'789);
     EXPECT_EQ(links_.sent[0].seq_no, 5);
+}
+
+// A cancel of a session's orders, produced by applying command 11, answers no member's command: it is sent with 0 in the
+// transport header and 11 on its envelope, whether it is sent at once or held and sent later (docs/bug_list.md, BUG-0263).
+TEST_F(EngineReportSendingTest, TheCommandThatProducedAReportIsCarriedWhetherItIsSentAtOnceOrHeld) {
+    connect_both();
+    ASSERT_TRUE(send("cancel-sent-at-once", 0, 7, false, false, 11));
+    EXPECT_FALSE(send("cancel-held", 0, 7, true, false, 12));
+    sending_->release_now_serving(7);
+    ASSERT_EQ(links_.sent.size(), 4U);
+    for (const auto& one : links_.sent) {
+        EXPECT_EQ(one.seq_no, 0) << one.payload;
+        EXPECT_EQ(one.produced_by, one.payload == "cancel-sent-at-once" ? 11 : 12) << one.payload;
+    }
 }
 
 TEST_F(EngineReportSendingTest, ReportsAreHeldUntilTheEngineServesAndThenSentNumberedUnderTheEpochThen) {

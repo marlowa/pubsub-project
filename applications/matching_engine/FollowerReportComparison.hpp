@@ -50,8 +50,12 @@ class FollowerReportComparisonLinksInterface {
  *        docs/venue/dividing_the_sequencer_and_matching_engine.md, section 6.3).
  *
  * An engine that follows the WAL applies every command the leader applies, and sends none of the reports. It keeps
- * them, in the order of their commands. When a report record of the leader's arrives, answering command N, the WAL
- * holds every report of every command before N, so:
+ * them, in the order of their commands. Each report is kept, and compared, under the command whose application produced
+ * it, which the leader's report record carries as produced_by_seq_no. That is not always the command the report
+ * answers: a cancel of the orders of a session that has not come back answers no member's command, and carries 0 as the
+ * command it answers, but it was produced by applying the command that cancelled them (docs/bug_list.md, BUG-0263).
+ * When a report record of the leader's arrives, produced by command N, the WAL holds every report of every command
+ * before N, so:
  *
  * - each kept report of a command before N that was never compared is one the leader did not send, a difference;
  * - the first kept report of N not yet compared is compared byte for byte with the leader's, and a mismatch is a
@@ -121,20 +125,23 @@ class FollowerReportComparison {
     [[nodiscard]] int hold_in_memory();
 
     /**
-     * @brief Keeps a report of command @p seq_no, for @p session, until the WAL holds the leader's reports of that
-     *        command. When the store is full it is not kept, and the first time that happens, which is said at Error,
-     *        this instance refuses to lead.
-     * @param[in] seq_no  The command the report answers.
-     * @param[in] session The member's session the report is for.
+     * @brief Keeps a report produced by command @p produced_by, for @p session, until the WAL holds the leader's reports
+     *        of that command. When the store is full it is not kept, and the first time that happens, which is said at
+     *        Error, this instance refuses to lead.
+     * @param[in] produced_by The command being applied when the report was produced, which it is compared under.
+     * @param[in] answers     The command the report answers, or 0 for a report that answers no member's command. It is
+     *                        handed on with the report if this instance takes the lead, because the sequencer routes a
+     *                        report by it.
+     * @param[in] session     The member's session the report is for.
      * @param[in] size    How many bytes the encoded report needs.
      * @param[in] write   Called as `size_t write(uint8_t* destination, size_t room)` when there is room, to write the
      *                    encoded report at @p destination, which has @p room bytes, @p size of them. It returns how many
      *                    bytes it wrote, or zero when it could not write the report, which is then not kept.
      */
-    template <typename Write> void keep(int64_t seq_no, const fix_common::SessionIdentity& session, size_t size, Write&& write) {
+    template <typename Write> void keep(int64_t produced_by, int64_t answers, const fix_common::SessionIdentity& session, size_t size, Write&& write) {
         const std::optional<size_t> offset = place_for(size);
         if (!offset.has_value()) {
-            store_full(seq_no, size);
+            store_full(produced_by, size);
             return;
         }
         const size_t written = write(bytes_.data() + *offset, size);
@@ -142,7 +149,8 @@ class FollowerReportComparison {
             return;
         }
         KeptReport& entry = entries_[(oldest_ + count_) % entries_.size()];
-        entry.seq_no = seq_no;
+        entry.produced_by = produced_by;
+        entry.answers = answers;
         entry.session = session;
         entry.offset = *offset;
         entry.size = written;
@@ -158,13 +166,13 @@ class FollowerReportComparison {
     void start_keeping_after(int64_t after_seq_no);
 
     /**
-     * @brief The leader's report record @p record_seq_no, answering command @p command, has arrived, as @p size bytes at
-     *        @p bytes.
+     * @brief The leader's report record @p record_seq_no, produced by command @p command, has arrived, as @p size bytes
+     *        at @p bytes.
      * @param[in] record_seq_no          The report record's own number. A record numbered at or below the last one
      *                                   accounted for has been accounted for already, and is passed over: an answer to
      *                                   a request made again sends again the report records after the last command
      *                                   applied.
-     * @param[in] command                The command it answers.
+     * @param[in] command                The command being applied when the leader produced it, its produced_by_seq_no.
      * @param[in] bytes                  The leader's encoded report.
      * @param[in] size                   Its size.
      * @param[in] reports_in_wal_through The last command the WAL held every report of when the latest catch-up started.
@@ -204,10 +212,11 @@ class FollowerReportComparison {
         int64_t sent = 0;
         for (size_t position = 0; position < count_; ++position) {
             const KeptReport& kept = entry_at(position);
-            if (kept.seq_no > reported_through) {
+            if (kept.produced_by > reported_through) {
                 HeldEngineReport report;
                 report.payload.assign(bytes_.data() + kept.offset, bytes_.data() + kept.offset + kept.size);
-                report.seq_no = kept.seq_no;
+                report.seq_no = kept.answers;
+                report.produced_by_seq_no = kept.produced_by;
                 report.session = kept.session;
                 // Sent by an instance taking the lead after the leader that may have sent it already.
                 report.poss_resend = true;
@@ -228,9 +237,11 @@ class FollowerReportComparison {
     }
 
   private:
-    // One kept report: what it answers, and where its encoded bytes lie in bytes_.
+    // One kept report: the command that produced it, which it is compared under, the command it answers, or 0, and where
+    // its encoded bytes lie in bytes_.
     struct KeptReport {
-        int64_t seq_no{0};
+        int64_t produced_by{0};
+        int64_t answers{0};
         fix_common::SessionIdentity session;
         size_t offset{0};
         size_t size{0};
@@ -248,8 +259,8 @@ class FollowerReportComparison {
     void drop_oldest();
     // Unlocks both parts of the store, if they are locked.
     void release_from_memory();
-    // There is no room for a report of command @p seq_no, of @p size bytes: said once, and the lead refused.
-    void store_full(int64_t seq_no, size_t size);
+    // There is no room for a report produced by command @p produced_by, of @p size bytes: said once, and the lead refused.
+    void store_full(int64_t produced_by, size_t size);
     // Says that this instance's report of @p command and the leader's differ, as @p reason says.
     void report_difference(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason);
 
@@ -258,8 +269,8 @@ class FollowerReportComparison {
 
     // The encoded reports, one after another, allocated and written once when this object is made.
     std::vector<uint8_t> bytes_;
-    // A ring of the kept reports, in the order of their commands, which is the order they were applied in: count_ of
-    // them, starting at oldest_.
+    // A ring of the kept reports, in the order of the commands that produced them, which is the order they were applied
+    // in: count_ of them, starting at oldest_.
     std::vector<KeptReport> entries_;
     size_t oldest_{0};
     size_t count_{0};

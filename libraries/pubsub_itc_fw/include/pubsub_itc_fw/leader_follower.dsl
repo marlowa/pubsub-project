@@ -207,8 +207,10 @@ message WalRecord (id=103, version=1)
     # The epoch of the leadership that sequenced this record. Two logs that hold a record with
     # the same sequence number and the same epoch hold the same record, which is how a rejoining
     # follower finds the last record its log and its leader's agree on
-    # (docs/availability/follower_log_repair.md). Optional, and last, so that records written
-    # before it existed still decode: such a record lacks it and is taken to be from epoch zero.
+    # (docs/availability/follower_log_repair.md). A record without it is taken to be from epoch
+    # zero. A record written by an earlier version of this message need not decode: every trading
+    # day starts with none of the previous day's files (principle V12), so no WAL outlives the
+    # version that wrote it.
     optional i32 leader_epoch
     # The command's ClOrdID, copied onto the envelope by the gateway so that the sequencer can keep
     # its record of the identifiers in its log without decoding the command itself. Absent on a
@@ -243,6 +245,13 @@ message WalRecord (id=103, version=1)
     # session-level Reject naming the refused message by it, as FIX requires (docs/venue/gateway_refusals.md). Absent
     # on a command from the binary gateway, whose protocol has no sequence numbers, and on every other record.
     optional i64 member_msg_seq_num
+    # On an execution report: the sequence number of the command the matching engine was applying when it produced the
+    # report. Unlike answers_seq_no it is never zero on a report, because every report is produced by applying some
+    # command, including a cancel that answers no member's command, such as the cancel of the orders of a session that
+    # has not come back. The engine sets it, the sequencer writes it into the WAL with the report, and a matching engine
+    # following the WAL compares its own reports with the leader's under it (docs/bug_list.md, BUG-0263). Zero on every
+    # other record.
+    i64 produced_by_seq_no
 end
 
 # ------------------------------------------------------------

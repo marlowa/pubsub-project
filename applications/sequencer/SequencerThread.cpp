@@ -1061,9 +1061,13 @@ bool SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     envelope.report_engine_epoch = position.has_value() ? position->epoch : 0;
     envelope.has_report_number = position.has_value();
     envelope.report_number = position.has_value() ? position->number : 0;
-    // The command the report answers, which its transport header carried; zero for a report no command produced.
+    // The command the report answers, which its transport header carried; zero for a report that answers no member's
+    // command.
     envelope.has_answers_seq_no = er_seq_no > 0;
     envelope.answers_seq_no = er_seq_no;
+    // The command the engine was applying when it produced the report, which every report has. A matching engine
+    // following the WAL compares its reports with these under it (docs/bug_list.md, BUG-0263).
+    envelope.produced_by_seq_no = inbound.produced_by_seq_no;
     stamp_reports_forwarded_through(envelope);
 
     append_envelope_to_wal(envelope);

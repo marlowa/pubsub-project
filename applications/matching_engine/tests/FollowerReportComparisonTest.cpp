@@ -73,13 +73,9 @@ class FollowerReportComparisonTest : public ::testing::Test {
         comparison_ = std::make_unique<FollowerReportComparison>(links_, logger_, most_reports, most_bytes);
     }
 
-    // Keeps a report of command @p command whose bytes are @p text.
+    // Keeps a report of command @p command, produced by applying it, whose bytes are @p text.
     void keep(int64_t command, const std::string& text) {
-        comparison_->keep(command, fix_common::SessionIdentity{}, text.size(), [&text](uint8_t* destination, size_t room) -> size_t {
-            EXPECT_GE(room, text.size());
-            std::memcpy(destination, text.data(), text.size());
-            return text.size();
-        });
+        keep_report_of(command, command, text);
     }
 
     // The bytes of the reports of commands after @p reported_through, handed on as if this instance took the lead.
@@ -90,9 +86,37 @@ class FollowerReportComparisonTest : public ::testing::Test {
         return taken;
     }
 
-    // The leader's report record @p record, answering @p command, whose bytes are @p text.
+    // The leader's report record @p record, produced by command @p command, whose bytes are @p text.
     void leader(int64_t record, int64_t command, const std::string& text, int64_t reports_in_wal_through = 0) {
         comparison_->leader_report(record, command, reinterpret_cast<const uint8_t*>(text.data()), text.size(), reports_in_wal_through);
+    }
+
+    // A report this instance produced while applying command @p produced_by, answering command @p answers, which is zero
+    // for a report that answers no member's command, such as a cancel of a session's orders. It is kept as the engine
+    // keeps it.
+    void keep_report_of(int64_t produced_by, int64_t answers, const std::string& text) {
+        comparison_->keep(produced_by, answers, fix_common::SessionIdentity{}, text.size(), [&text](uint8_t* destination, size_t room) -> size_t {
+            EXPECT_GE(room, text.size());
+            std::memcpy(destination, text.data(), text.size());
+            return text.size();
+        });
+    }
+
+    // The leader's report record @p record, produced while applying command @p produced_by and answering @p answers, as
+    // the engine passes it on for comparison.
+    void leader_report_of(int64_t record, int64_t produced_by, int64_t answers, const std::string& text) {
+        static_cast<void>(answers); // the leader's report is compared under the command that produced it
+        leader(record, produced_by, text);
+    }
+
+    // The command numbers the reports of commands after @p reported_through are handed on with, as if this instance took
+    // the lead: the number each answers, which is what the sequencer routes it by.
+    std::vector<std::pair<std::string, int64_t>> take_after_with_numbers(int64_t reported_through) {
+        std::vector<std::pair<std::string, int64_t>> taken;
+        static_cast<void>(comparison_->take_reports_after(reported_through, [&taken](HeldEngineReport&& report) {
+            taken.emplace_back(std::string(report.payload.begin(), report.payload.end()), report.seq_no);
+        }));
+        return taken;
     }
 
     std::vector<std::string> log_;
@@ -112,6 +136,36 @@ TEST_F(FollowerReportComparisonTest, ReportsThatMatchTheLeadersAreNoDifference) 
     leader(12, 3, "x") /* a later command: the reports of 1 and 2, compared, are dropped */;
     EXPECT_EQ(comparison_->differences(), 1) << "command 3 was not kept: the leader sent a report this instance did not produce";
     EXPECT_EQ(comparison_->kept(), 0U);
+}
+
+// The fault of BUG-0263. Command 11 cancels the orders of a session that has not come back, and each cancel answers no
+// member's command, so it carries the number 0. Both engines produce the same reports, so there is no difference.
+TEST_F(FollowerReportComparisonTest, AReportAnsweringNoCommandIsComparedUnderTheCommandThatProducedIt) {
+    comparison_->start_keeping_after(0);
+    keep_report_of(10, 10, "accepted-10");
+    keep_report_of(11, 0, "cancelled-by-11");
+    keep_report_of(12, 12, "accepted-12");
+    leader_report_of(100, 10, 10, "accepted-10");
+    leader_report_of(101, 11, 0, "cancelled-by-11");
+    leader_report_of(102, 12, 12, "accepted-12");
+    leader_report_of(103, 13, 13, "accepted-13") /* a later command: everything before it has been compared */;
+    EXPECT_EQ(comparison_->differences(), 1) << "only command 13, which was not kept here, is a difference";
+    ASSERT_EQ(links_.stopped.size(), 1U);
+    EXPECT_EQ(links_.stopped[0].first, 13);
+    EXPECT_EQ(links_.stopped[0].second, Reason::ReportNotProduced);
+}
+
+// Taking the lead hands on every kept report of a command after the last the WAL holds every report of, including one
+// that answers no member's command, and hands it on with the number it answers.
+TEST_F(FollowerReportComparisonTest, TakingTheLeadHandsOnAReportAnsweringNoCommandThatTheWalLacks) {
+    comparison_->start_keeping_after(0);
+    keep_report_of(10, 10, "accepted-10");
+    keep_report_of(11, 0, "cancelled-by-11");
+    keep_report_of(12, 12, "accepted-12");
+    const std::vector<std::pair<std::string, int64_t>> taken = take_after_with_numbers(10);
+    ASSERT_EQ(taken.size(), 2U);
+    EXPECT_EQ(taken[0], (std::pair<std::string, int64_t>{"cancelled-by-11", 0}));
+    EXPECT_EQ(taken[1], (std::pair<std::string, int64_t>{"accepted-12", 12}));
 }
 
 TEST_F(FollowerReportComparisonTest, AReportThatDiffersFromTheLeadersRefusesTheLead) {
@@ -281,7 +335,7 @@ TEST_F(FollowerReportComparisonTest, AReportLargerThanTheWholeStoreRefusesTheLea
 
 TEST_F(FollowerReportComparisonTest, AReportThatCouldNotBeWrittenIsNotKept) {
     comparison_->start_keeping_after(0);
-    comparison_->keep(1, fix_common::SessionIdentity{}, 8, [](uint8_t*, size_t) -> size_t { return 0; });
+    comparison_->keep(1, 1, fix_common::SessionIdentity{}, 8, [](uint8_t*, size_t) -> size_t { return 0; });
     EXPECT_EQ(comparison_->kept(), 0U);
     EXPECT_FALSE(comparison_->refused_to_lead());
 }
