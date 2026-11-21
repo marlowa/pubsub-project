@@ -33,20 +33,20 @@ TLC is in `tla2tools.jar`, from the TLA+ project's releases at
 `/opt/tla2tools-1.8.0`. From this directory:
 
 ```
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config SlabReclaim.cfg SlabReclaim.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config SlabReclaimBeforeBug0157.cfg SlabReclaim.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config QueueOfEmptySlabs.cfg QueueOfEmptySlabs.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config QueueOfEmptySlabsNoKeepBack.cfg QueueOfEmptySlabs.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeList.cfg PoolFreeList.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeListNoCounter.cfg PoolFreeList.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeValidation.cfg PoolFreeList.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config FollowerHandOver.cfg FollowerHandOver.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config FollowerHandOverNoCompare.cfg FollowerHandOver.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChain.cfg PoolChain.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainTwoNodes.cfg PoolChain.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainHandOutBeforeLink.cfg PoolChain.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainPlainStore.cfg PoolChain.tla
-java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainBeyondNeed.cfg PoolChain.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config SlabReclaim.cfg SlabReclaim.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config SlabReclaimBeforeBug0157.cfg SlabReclaim.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config QueueOfEmptySlabs.cfg QueueOfEmptySlabs.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config QueueOfEmptySlabsNoKeepBack.cfg QueueOfEmptySlabs.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeList.cfg PoolFreeList.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeListNoCounter.cfg PoolFreeList.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeValidation.cfg PoolFreeList.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config FollowerHandOver.cfg FollowerHandOver.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config FollowerHandOverNoCompare.cfg FollowerHandOver.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChain.cfg PoolChain.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainTwoNodes.cfg PoolChain.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainHandOutBeforeLink.cfg PoolChain.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainPlainStore.cfg PoolChain.tla
+mkdir -p states && java -Djava.io.tmpdir=states -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainBeyondNeed.cfg PoolChain.tla
 ```
 
 To check the three pool free-list configurations as one test, run

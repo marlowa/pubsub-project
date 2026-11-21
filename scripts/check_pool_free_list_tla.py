@@ -53,7 +53,9 @@ def run_tlc(java: str, jar: Path, config: str) -> tuple[int, str]:
         shutil.copy(_TLA_DIR / 'PoolFreeList.tla', work_dir)
         shutil.copy(_TLA_DIR / config, work_dir)
         command = [
-            java, '-XX:+UseParallelGC', '-cp', str(jar), 'tlc2.TLC',
+            # java.io.tmpdir: TLC unpacks its standard modules into a new tlc-<number> directory under Java's temporary
+            # directory on every run, and that is /tmp unless it is set.
+            java, '-XX:+UseParallelGC', f'-Djava.io.tmpdir={work_dir}', '-cp', str(jar), 'tlc2.TLC',
             '-deadlock', '-workers', 'auto', '-metadir', str(work_dir / 'states'),
             '-config', config, 'PoolFreeList.tla',
         ]
