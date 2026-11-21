@@ -101,7 +101,7 @@ _ETC_EXCLUDE_SUFFIXES = {".crt", ".key", ".pem", ".tmp"}
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def so_lib_dir(install_dir: Path) -> Path:
-    """Return the directory where CMake installed the C++ shared library.
+    """Return the directory where CMake installed the C++ shared library, and the generated Python modules beside it.
 
     GNUInstallDirs uses lib64 on RHEL/Rocky/CentOS 8 for 64-bit builds;
     everywhere else it uses lib.
@@ -194,8 +194,10 @@ def stage_lib(install_dir: Path, stage: Path, jar_paths: set[str]) -> None:
     # messages and the PDU framing (docs/availability/voided_commands.md, section 6.2).
     stage_python_dir = stage_lib_dir / "python"
     stage_python_dir.mkdir()
+    # CMake installs them into lib/python beside the shared library, which is lib64 on Rocky and Red Hat 8, so they are
+    # found where the library was found. The release always calls the directory lib, whatever the staging tree called it.
     for module_name in ("pdu_framing.py", "leader_follower.py"):
-        source = install_dir / "lib" / "python" / module_name
+        source = so_lib_dir(install_dir) / "python" / module_name
         if not source.is_file():
             sys.exit(f"error: generated Python module not found: {source}")
         shutil.copy2(source, stage_python_dir / module_name)

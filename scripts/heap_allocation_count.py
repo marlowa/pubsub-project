@@ -37,7 +37,6 @@ import sys
 import time
 from pathlib import Path
 
-import tomllib
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPT_DIR.parent
@@ -201,6 +200,16 @@ def summarise(reports: list[Report], stacks_shown: int) -> tuple[list[str], dict
 
 def compare(calls_by_thread: dict[tuple[str, str], int], expectations_path: Path) -> list[str]:
     """Each [[thread]] of the file names a program, a thread name and the most calls it may make in the window."""
+    # Imported here rather than at module scope: tomllib is in the standard library from Python 3.11, and the Rocky 8
+    # container has Python 3.8, where --help must still work (docs/bug_list.md, BUG-0044) and the tomli package is the
+    # same parser under another name.
+    try:
+        import tomllib  # pylint: disable=import-outside-toplevel
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]  # pylint: disable=import-outside-toplevel
+        except ModuleNotFoundError:
+            sys.exit("error: Python 3.11+ or the 'tomli' package is required to read the expectations file")
     expectations = tomllib.loads(expectations_path.read_text(encoding="utf-8")).get("thread", [])
     failures = []
     for expected in expectations:

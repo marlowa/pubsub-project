@@ -15,7 +15,7 @@ All 81 open entries have been judged. The figures:
 | Breach of a named principle | 16, and 3 more if their causes prove to be in the venue: BUG-0142, BUG-0207, BUG-0130, BUG-0113 (its remainder), BUG-0210, BUG-0137, BUG-0225, BUG-0211, BUG-0226, BUG-0131, BUG-0090, BUG-0072, BUG-0129, BUG-0127, BUG-0128, BUG-0119; and BUG-0183, BUG-0175 and BUG-0184 if their causes are in the venue; with BUG-0095's undefined behaviour and BUG-0181's test that can pass over lost orders treated as equally urgent |
 | Fixed, or no longer applies: closed on 8 November 2026 with Andrew's agreement | 13: BUG-0066, BUG-0193, BUG-0086, BUG-0141, BUG-0092, BUG-0096, BUG-0169, BUG-0144, BUG-0040, BUG-0030, BUG-0083, BUG-0145 (into BUG-0185), and BUG-0167 if its remaining risk is accepted |
 | Decision needed from Andrew | BUG-0229 |
-| Partly done | BUG-0121, BUG-0134, BUG-0065, BUG-0069, BUG-0041 |
+| Partly done | BUG-0121, BUG-0134, BUG-0065, BUG-0069 |
 | The rest | new requirements, investigations, small defects, and tests and tools, each placed in its area's recommended order |
 
 **The decisions that unblock the most.**
@@ -256,11 +256,11 @@ Seven entries.
 |---|---|---|---|
 | [BUG-0189](bug_list.md#bug_0189): anyone who reaches first-run setup can create the first administrator | **Defect**, of security (R-0153) | Unchanged: nothing in `java/admin-service` asks for a one-time secret on first-run setup | **Fixed on 8 November 2026** and closed: the editor writes a one-time secret, readable only by its owner, while no administrator exists; setup refuses a wrong or missing one with HTTP 403, and creating the first administrator deletes it. Tried against the deployed editor, which found [BUG-0236](bug_list.md#bug_0236): the administrators' file is readable by every account |
 | [BUG-0069](bug_list.md#bug_0069): the sequencer, arbiters and witness report no metrics | **Partly done** | The sequencer now registers seventeen metrics (`SequencerThread.cpp`), among them `sequencer_running_alone` and the measures of a slow disk from BUG-0228. The arbiter, the witness and the authentication service register none of their own | Metrics for the arbiters (which is active, leases granted and refused, statements held) and the witness |
-| [BUG-0041](bug_list.md#bug_0041): five ways the venue will not start on a RHEL8 target host | **Partly done** | All five points are fixed: points 1, 2, 3 and 5 in the scripts that create the database and start the venue, and point 4 by deriving the install directory from the detected platform (`scripts/target_platform.py`) | Build and run the current code in the Rocky 8 container, then close it |
+| [BUG-0041](bug_list.md#bug_0041): five ways the venue will not start on a RHEL8 target host | **Done** | Closed: all five points are fixed, and the current code builds, passes its tests, is released and is deployed in the Rocky 8 container, where `devenv.py` finds `installed-rocky8` unaided | Nothing |
 | [BUG-0073](bug_list.md#bug_0073): the placeholder environments carry settings nobody chose | **Fixed on 11 November 2026** and closed | The three placeholder files say so, and deploy.py refuses them unless asked | None |
 | [BUG-0060](bug_list.md#bug_0060): microbursts are not measured | **New requirement** | Unchanged | Place in the order of work; the latency work is otherwise complete |
 | [BUG-0006](bug_list.md#bug_0006): ResendRequest under load | **Test or tool**, a missing measurement | Unchanged; a resend from far back is also BUG-0113's remainder | Exercise resends in a trading-day run; best done after the recovery service of BUG-0113 |
 | [BUG-0047](bug_list.md#bug_0047): disaster recovery is not modelled | **New requirement**, deliberately deferred | Unchanged | Nothing until Andrew says |
 
 **Recommended order in this area.** BUG-0189 first: it is small and a security hole. BUG-0069's
-remainder next. BUG-0041 once the current code has been built and run in the Rocky 8 container.
+remainder next.

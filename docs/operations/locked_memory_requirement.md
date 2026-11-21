@@ -70,6 +70,10 @@ a session that began before the change keeps the old limit. Whatever starts the 
 the limit itself, for example with `ulimit -l` in the script that starts it. A process running as root may lock memory
 whatever its limit, and the engine does not compare the figure with the limit then.
 
+A container has a limit of its own, which does not come from the host's files. Docker's default is 8 MiB, so a
+container that runs the venue or its tests is started with `--ulimit memlock=-1:-1`, as `scripts/release_check.py`
+does for the Rocky 8 container.
+
 The machine must also have the memory to spare: two engines on one machine lock twice the figure between them, and a
 sequencer on the same machine adds its own.
 

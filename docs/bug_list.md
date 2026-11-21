@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 281 |
-| Open | 55 (31 defects, 24 tasks) |
-| Closed | 226 |
+| Open | 54 (30 defects, 24 tasks) |
+| Closed | 227 |
 | Next id | BUG-0282 |
 
 ## Open bugs by severity
 
-4 high, 34 medium, 17 low.
+4 high, 33 medium, 17 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -18,7 +18,6 @@
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
-| [BUG-0041](#bug_0041) | medium | defect | Five ways the venue will not start on a RHEL8 target host |
 | [BUG-0045](#bug_0045) | medium | task | A member has no defined way to discover its primary gateway is down |
 | [BUG-0046](#bug_0046) | medium | task | The binary order gateway has no in-flight report recovery |
 | [BUG-0047](#bug_0047) | medium | task | Disaster recovery is not modelled |
@@ -1729,168 +1728,6 @@ handling and process failures:
 Not urgent, but it should not sit indefinitely: the gate as it stands protects against the
 class of defect that stops a script dead, and nothing else.
 
-### BUG-0041: Five ways the venue will not start on a RHEL8 target host {#bug_0041}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-08-24 |
-| Recorded | 2026-08-24 (95b8713) |
-| How | Bringing the venue up on a RHEL8 target host -- the first run of `create_db.py` and `devenv.py` outside this machine and the Rocky container |
-| Impact | Database creation fails outright; the venue starts only after hand-editing `environments/dev.toml` |
-
-BUG-0026 found this class of thing at build and install time. These are the next
-stage along: creating the database, and launching. Nothing here is a fault in the C++ -- the
-binaries were fine and the venue came up once the scripts were worked around.
-
-Two of the five are the same mistake made twice: **a tool located by where one distribution's
-package manager puts it, rather than by asking the system where it is.**
-
-**1. The Liquibase launcher is found by a hardcoded absolute path.** `_check_jdbc_driver()`
-opens with `Path(os.path.realpath("/usr/bin/liquibase"))` (`db/create_db.py:149`) and derives
-everything else from it. On a host where Liquibase is installed anywhere else -- under `/opt`,
-from the vendor tarball, from an RPM that does not drop a `/usr/bin` symlink -- that resolves
-to a path that does not exist, and the rest of the function reasons from it anyway.
-`shutil.which("liquibase")` is what this wants, and it is the same question the script asks
-again in point 3 by a different means.
-
-**2. The JDBC driver is sought in the wrong directory of the Liquibase tree.** Line 150 takes
-`liquibase_real.parent / "lib"`. Liquibase 4.x and later ship their bundled drivers under
-`<root>/internal/lib`, so the glob finds nothing even when the driver is present and correct.
-The search should start from the Liquibase root and accept either layout rather than assuming
-one.
-
-The fallback makes this harder to diagnose rather than easier. When the glob comes up empty the
-function copies the JAR bundled in `db/drivers/` to the same place, and calls
-`liquibase_lib.mkdir(parents=True, exist_ok=True)` first (line 163). On a system install that
-needs root; on a wrong path it quietly creates a plausible-looking empty `lib` directory beside
-the real `internal/lib`. **A repair path that acts on an unchecked guess leaves the host in a
-state that looks deliberate.** The error text it prints when even that fails names `apt` and
-`libpostgresql-jdbc-java`, which is the same single-distribution assumption stated out loud.
-
-**3. `liquibase` as a bare command is not found.** `liquibase_cmd` is `["liquibase", ...]`
-(line 294), and running it reports command not found. **Not diagnosed**, and it disagrees with
-point 1 in a way that is itself the clue: the script hardcodes `/usr/bin/liquibase` *and*
-invokes the bare name, and both fail on the same host. So Liquibase is neither at `/usr/bin`
-nor on the `PATH` the script sees -- consistent with an `/opt` install reachable through an
-interactive login shell, by alias or a `PATH` set in a profile script, but not through
-`subprocess.run` without a shell.
-
-To settle it on the host, run these side by side:
-
-```bash
-command -v liquibase
-python3 -c 'import shutil; print(shutil.which("liquibase"))'
-```
-
-Fixing point 1 with `shutil.which` addresses this one too, and turns it into a clear message:
-`which()` returning `None` is the same absence, and the script can say so at the point it looks
-instead of failing several steps later on a path it invented.
-
-**4. The install tree is named in the environment file, and the build already disagrees with
-it.** `environments/dev.toml:22` sets `install_dir = "installed"`, and `devenv.py` resolves
-every binary, config and library path off it. But `build.py:58` and `devsetup.py:40` stage a
-gcc-8.5 Rocky/RHEL8 build to `installed-rocky8/` **precisely so it cannot overwrite the host's
-`installed/`**. The run side therefore looks in the one tree the build deliberately avoided,
-and `authentication_service` is reported missing because it is genuinely not there.
-
-**The fix is a choice, not a lookup**, and the axes are the reason. `environments/*.toml` varies
-by deployment environment -- dev, preprod, prod, test-1. The install tree varies by target
-platform. An `rhel8.toml` is a dev environment that happens to be RHEL8, and the cross product
-arrives the day there is a preprod on one. Three ways to settle it:
-
-- An `--install-dir` override on `devenv.py`, matching the `--db-port` precedent -- cheapest,
-  and it keeps the two axes apart.
-- Default `install_dir` from the detected platform, so the run side derives what the build side
-  already decides.
-- A per-platform environment file, accepting the cross product when it comes.
-
-Related: *Environment placeholders are missing outside dev*, which is the same file family seen
-from the other side.
-
-**5. `devenv.py --db-port` exists, and is invisible from where it is needed.** It is a global
-option, so it must precede the subcommand:
-
-```bash
-python3 scripts/devenv.py --db-port 5433 start     # works
-python3 scripts/devenv.py start --db-port 5433     # unrecognized arguments
-```
-
-`devenv.py start --help` lists only `[-h] [name]`. Its own help text says the flag matches
-`deploy.py`'s of the same name so that a host with a non-default cluster "names it the same way
-at deploy time and at start time" -- and then does not appear at the point of use. The cost is
-not the typing: the environment file was edited instead, which is a change that then has to be
-un-picked, and which is how a host ends up running a profile against configuration nobody meant
-to keep.
-
-#### Four of the five fixed 2026-08-28; point 4 is still a choice
-
-**Points 1 and 3 had one cause and now have one answer.** `find_liquibase()` asks
-`shutil.which("liquibase")`, and both the driver check and the `liquibase_cmd` invocation use what
-it returns. The script no longer hardcodes `/usr/bin/liquibase` in one place and invokes a bare
-name in another. When it is absent the message says which PATH was searched -- the one this
-process was given, not the one a login shell builds from a profile -- and gives the two commands
-that tell those apart, which is the distinction that made this confusing on the host.
-
-**Point 2.** The driver is looked for in `<root>/internal/lib` *and* `<root>/lib`, so both the 4.x
-and 3.x layouts are found. The repair path no longer calls `mkdir(parents=True)` on a guess: it
-copies only into a directory that already exists, and if that fails for permissions it says to use
-`sudo` rather than leaving a plausible-looking empty `lib/` beside the real one. The error text
-names RHEL/Rocky packages alongside the Debian ones instead of assuming a single distribution.
-
-**Point 5.** `--env` and `--db-port` are attached to every subcommand as well as to the top-level
-parser, so `devenv.py start --db-port 5433` works and `devenv.py start --help` lists it. The two
-copies use `argparse.SUPPRESS` for their defaults, without which a subcommand copy would overwrite
-a value the top-level parser had already stored and `--db-port 5433 start` would silently become
-`None`. Verified in all three positions: before the subcommand, after it, and absent.
-
-#### Point 4 fixed 2026-11-21: the install directory is derived from the detected platform
-
-Of the three ways set out above, the second is the one chosen: the run side works out the install
-directory from the platform it runs on, as the build side already does.
-
-**The rule.** `scripts/target_platform.py` holds the platform detection that was in `build.py`, and
-one new function, `environment_path()`, which turns a path from an environment file's `[paths]`
-section into a directory on this machine. A relative path names a directory inside the project
-tree, and on Rocky Linux 8 or Red Hat Enterprise Linux 8 its first directory is given the
-platform's suffix: `installed` becomes `installed-rocky8`, and `installed/log` becomes
-`installed-rocky8/log`. On the development host the suffix is empty and nothing changes. An
-absolute path, such as `/opt/pubsub` in `prod.toml`, `preprod.toml` and `test-1.toml`, is used as
-it is written, because it names the real location of the venue on a target host, and a host runs
-only one platform.
-
-The suffix is applied to every relative path in `[paths]`, not only to `install_dir`, because
-`log_dir`, `run_dir` and `archive_dir` in `dev.toml` are directories inside the install tree. Had
-only `install_dir` been qualified, a Rocky 8 venue would run from `installed-rocky8/` and write its
-logs and process identifier files into the host's `installed/`.
-
-**Who uses it.** `devenv.py` (`resolve_paths()` and `archive_dir()`, and so `launch.py` and
-`trading_day.py` through it), `deploy.py`, `cpu_audit.py`, and the default install directory of
-`operator_halt.py` and `trading_phase.py`. `build.py`, `release.py` and `devsetup.py` take the
-platform's name and suffix from the same module, so it is defined once. Tests in
-`scripts/tests/test_target_platform.py` check both platforms and both kinds of path, and check that
-`devenv.py` arrives at the directory `build.py` stages into; each failed when the rule was broken
-on purpose, once by dropping the suffix and once by suffixing an absolute path.
-
-**Found while doing it, and fixed in the same change: the shipped `deploy.py` could not run.** It
-imports `cpu_layout`, and `release.py` did not ship `cpu_layout.py`, so `deploy.py` from a release
-tarball stopped at once with `ModuleNotFoundError: No module named 'cpu_layout'`. The developer
-loop never showed it, because `devsetup.py` runs `scripts/deploy.py` from the source tree. A
-release now ships `cpu_layout.py` and `target_platform.py` beside the scripts that import them.
-
-**Still to do before this entry is closed:** build and run the current code in the Rocky 8
-container, which shows the rule on the platform it exists for.
-
-Confirmed on the host by Andrew: with the database created while logged in as `postgres`,
-everything came up. Prometheus did not start, which is the non-defect below -- it had not been set
-up on that machine.
-
-**Not a defect: Prometheus did not start.** `devenv.py:239` skips any component whose command is
-absent from `PATH` and prints that it is doing so. The comment above it gives the reason --
-refusing to start a trading system because a monitoring tool is absent gets the priority
-backwards. Recorded here because it appears alongside the five as a sixth failure and is not
-one.
-
 ### BUG-0045: A member has no defined way to discover its primary gateway is down {#bug_0045}
 
 | | |
@@ -2673,6 +2510,179 @@ It depends on [BUG-0046](#bug_0046): a binary member cannot learn, after reconne
 cancelled while it was away. To be done after the bugs agreed before it ([bug_review.md](bug_review.md)).
 
 ## Closed
+
+### BUG-0041: Five ways the venue will not start on a RHEL8 target host {#bug_0041}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-24 |
+| Recorded | 2026-08-24 (95b8713) |
+| How | Bringing the venue up on a RHEL8 target host -- the first run of `create_db.py` and `devenv.py` outside this machine and the Rocky container |
+| Impact | Database creation fails outright; the venue starts only after hand-editing `environments/dev.toml` |
+| Fixed | 2026-08-28 (points 1, 2, 3 and 5) and 2026-11-21 (point 4) -- the install directory of a relative path in an environment file's `[paths]` section is derived from the detected platform, as the build's staging directory is (`scripts/target_platform.py`) |
+
+BUG-0026 found this class of thing at build and install time. These are the next
+stage along: creating the database, and launching. Nothing here is a fault in the C++ -- the
+binaries were fine and the venue came up once the scripts were worked around.
+
+Two of the five are the same mistake made twice: **a tool located by where one distribution's
+package manager puts it, rather than by asking the system where it is.**
+
+**1. The Liquibase launcher is found by a hardcoded absolute path.** `_check_jdbc_driver()`
+opens with `Path(os.path.realpath("/usr/bin/liquibase"))` (`db/create_db.py:149`) and derives
+everything else from it. On a host where Liquibase is installed anywhere else -- under `/opt`,
+from the vendor tarball, from an RPM that does not drop a `/usr/bin` symlink -- that resolves
+to a path that does not exist, and the rest of the function reasons from it anyway.
+`shutil.which("liquibase")` is what this wants, and it is the same question the script asks
+again in point 3 by a different means.
+
+**2. The JDBC driver is sought in the wrong directory of the Liquibase tree.** Line 150 takes
+`liquibase_real.parent / "lib"`. Liquibase 4.x and later ship their bundled drivers under
+`<root>/internal/lib`, so the glob finds nothing even when the driver is present and correct.
+The search should start from the Liquibase root and accept either layout rather than assuming
+one.
+
+The fallback makes this harder to diagnose rather than easier. When the glob comes up empty the
+function copies the JAR bundled in `db/drivers/` to the same place, and calls
+`liquibase_lib.mkdir(parents=True, exist_ok=True)` first (line 163). On a system install that
+needs root; on a wrong path it quietly creates a plausible-looking empty `lib` directory beside
+the real `internal/lib`. **A repair path that acts on an unchecked guess leaves the host in a
+state that looks deliberate.** The error text it prints when even that fails names `apt` and
+`libpostgresql-jdbc-java`, which is the same single-distribution assumption stated out loud.
+
+**3. `liquibase` as a bare command is not found.** `liquibase_cmd` is `["liquibase", ...]`
+(line 294), and running it reports command not found. **Not diagnosed**, and it disagrees with
+point 1 in a way that is itself the clue: the script hardcodes `/usr/bin/liquibase` *and*
+invokes the bare name, and both fail on the same host. So Liquibase is neither at `/usr/bin`
+nor on the `PATH` the script sees -- consistent with an `/opt` install reachable through an
+interactive login shell, by alias or a `PATH` set in a profile script, but not through
+`subprocess.run` without a shell.
+
+To settle it on the host, run these side by side:
+
+```bash
+command -v liquibase
+python3 -c 'import shutil; print(shutil.which("liquibase"))'
+```
+
+Fixing point 1 with `shutil.which` addresses this one too, and turns it into a clear message:
+`which()` returning `None` is the same absence, and the script can say so at the point it looks
+instead of failing several steps later on a path it invented.
+
+**4. The install tree is named in the environment file, and the build already disagrees with
+it.** `environments/dev.toml:22` sets `install_dir = "installed"`, and `devenv.py` resolves
+every binary, config and library path off it. But `build.py:58` and `devsetup.py:40` stage a
+gcc-8.5 Rocky/RHEL8 build to `installed-rocky8/` **precisely so it cannot overwrite the host's
+`installed/`**. The run side therefore looks in the one tree the build deliberately avoided,
+and `authentication_service` is reported missing because it is genuinely not there.
+
+**The fix is a choice, not a lookup**, and the axes are the reason. `environments/*.toml` varies
+by deployment environment -- dev, preprod, prod, test-1. The install tree varies by target
+platform. An `rhel8.toml` is a dev environment that happens to be RHEL8, and the cross product
+arrives the day there is a preprod on one. Three ways to settle it:
+
+- An `--install-dir` override on `devenv.py`, matching the `--db-port` precedent -- cheapest,
+  and it keeps the two axes apart.
+- Default `install_dir` from the detected platform, so the run side derives what the build side
+  already decides.
+- A per-platform environment file, accepting the cross product when it comes.
+
+Related: *Environment placeholders are missing outside dev*, which is the same file family seen
+from the other side.
+
+**5. `devenv.py --db-port` exists, and is invisible from where it is needed.** It is a global
+option, so it must precede the subcommand:
+
+```bash
+python3 scripts/devenv.py --db-port 5433 start     # works
+python3 scripts/devenv.py start --db-port 5433     # unrecognized arguments
+```
+
+`devenv.py start --help` lists only `[-h] [name]`. Its own help text says the flag matches
+`deploy.py`'s of the same name so that a host with a non-default cluster "names it the same way
+at deploy time and at start time" -- and then does not appear at the point of use. The cost is
+not the typing: the environment file was edited instead, which is a change that then has to be
+un-picked, and which is how a host ends up running a profile against configuration nobody meant
+to keep.
+
+#### Four of the five fixed 2026-08-28; point 4 is still a choice
+
+**Points 1 and 3 had one cause and now have one answer.** `find_liquibase()` asks
+`shutil.which("liquibase")`, and both the driver check and the `liquibase_cmd` invocation use what
+it returns. The script no longer hardcodes `/usr/bin/liquibase` in one place and invokes a bare
+name in another. When it is absent the message says which PATH was searched -- the one this
+process was given, not the one a login shell builds from a profile -- and gives the two commands
+that tell those apart, which is the distinction that made this confusing on the host.
+
+**Point 2.** The driver is looked for in `<root>/internal/lib` *and* `<root>/lib`, so both the 4.x
+and 3.x layouts are found. The repair path no longer calls `mkdir(parents=True)` on a guess: it
+copies only into a directory that already exists, and if that fails for permissions it says to use
+`sudo` rather than leaving a plausible-looking empty `lib/` beside the real one. The error text
+names RHEL/Rocky packages alongside the Debian ones instead of assuming a single distribution.
+
+**Point 5.** `--env` and `--db-port` are attached to every subcommand as well as to the top-level
+parser, so `devenv.py start --db-port 5433` works and `devenv.py start --help` lists it. The two
+copies use `argparse.SUPPRESS` for their defaults, without which a subcommand copy would overwrite
+a value the top-level parser had already stored and `--db-port 5433 start` would silently become
+`None`. Verified in all three positions: before the subcommand, after it, and absent.
+
+#### Point 4 fixed 2026-11-21: the install directory is derived from the detected platform
+
+Of the three ways set out above, the second is the one chosen: the run side works out the install
+directory from the platform it runs on, as the build side already does.
+
+**The rule.** `scripts/target_platform.py` holds the platform detection that was in `build.py`, and
+one new function, `environment_path()`, which turns a path from an environment file's `[paths]`
+section into a directory on this machine. A relative path names a directory inside the project
+tree, and on Rocky Linux 8 or Red Hat Enterprise Linux 8 its first directory is given the
+platform's suffix: `installed` becomes `installed-rocky8`, and `installed/log` becomes
+`installed-rocky8/log`. On the development host the suffix is empty and nothing changes. An
+absolute path, such as `/opt/pubsub` in `prod.toml`, `preprod.toml` and `test-1.toml`, is used as
+it is written, because it names the real location of the venue on a target host, and a host runs
+only one platform.
+
+The suffix is applied to every relative path in `[paths]`, not only to `install_dir`, because
+`log_dir`, `run_dir` and `archive_dir` in `dev.toml` are directories inside the install tree. Had
+only `install_dir` been qualified, a Rocky 8 venue would run from `installed-rocky8/` and write its
+logs and process identifier files into the host's `installed/`.
+
+**Who uses it.** `devenv.py` (`resolve_paths()` and `archive_dir()`, and so `launch.py` and
+`trading_day.py` through it), `deploy.py`, `cpu_audit.py`, and the default install directory of
+`operator_halt.py` and `trading_phase.py`. `build.py`, `release.py` and `devsetup.py` take the
+platform's name and suffix from the same module, so it is defined once. Tests in
+`scripts/tests/test_target_platform.py` check both platforms and both kinds of path, and check that
+`devenv.py` arrives at the directory `build.py` stages into; each failed when the rule was broken
+on purpose, once by dropping the suffix and once by suffixing an absolute path.
+
+**Found while doing it, and fixed in the same change: the shipped `deploy.py` could not run.** It
+imports `cpu_layout`, and `release.py` did not ship `cpu_layout.py`, so `deploy.py` from a release
+tarball stopped at once with `ModuleNotFoundError: No module named 'cpu_layout'`. The developer
+loop never showed it, because `devsetup.py` runs `scripts/deploy.py` from the source tree. A
+release now ships `cpu_layout.py` and `target_platform.py` beside the scripts that import them.
+
+**Shown on Rocky 8.** In the Rocky 8 container the current code was built with gcc 8.5, its
+tests passed, it was released as a `-rocky8` artefact and deployed into `installed-rocky8/`, and
+`installed-rocky8/devenv.py`, given no install directory, resolved `installed-rocky8` and its
+`log`, `run` and `archive` directories, and cleared the WALs there. The same run found three
+things that stopped the container build, all fixed with this entry's closure: the Dockerfile's
+checksum of the TLA+ tools no longer matched, because release 1.8.0 is a pre-release that its
+project rebuilds, so the image now takes the jar from the host by a second build input;
+`scripts/heap_allocation_count.py` imported `tomllib`, which Python 3.8 lacks, at module scope;
+and `release.py` looked for the generated Python modules in `lib/python`, where CMake installs
+them into `lib64/python` on Rocky 8. A unit test that locks a table of a million entries also
+failed under Docker's default locked-memory limit of 8 MiB, so the container is now started with
+`--ulimit memlock=-1:-1`, as a host running the venue needs.
+
+Confirmed on the host by Andrew: with the database created while logged in as `postgres`,
+everything came up. Prometheus did not start, which is the non-defect below -- it had not been set
+up on that machine.
+
+**Not a defect: Prometheus did not start.** `devenv.py:239` skips any component whose command is
+absent from `PATH` and prints that it is doing so. The comment above it gives the reason --
+refusing to start a trading system because a monitoring tool is absent gets the priority
+backwards. Recorded here because it appears alongside the five as a sixth failure and is not
+one.
 
 ### BUG-0277: Plain "make" in docs/book no longer built the book, only checked that the PDF's tools are installed {#bug_0277}
 

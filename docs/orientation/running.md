@@ -93,10 +93,12 @@ docker run --rm hello-world
 From the project root:
 
 ```bash
-docker build -t pubsub-rhel8 .
+docker build -t pubsub-rhel8 --build-context tla2tools=$THIRDPARTY_DIR/tla2tools-1.8.0 .
 ```
 
 This downloads Rocky Linux 8, installs the compiler toolchain and PostgreSQL, and saves the result as a local image called `pubsub-rhel8`. It takes a few minutes the first time; subsequent builds are fast because Docker caches layers.
+
+`$THIRDPARTY_DIR` is the third-party directory on your machine, the one the host build uses. The image takes the TLA+ model checker, `tla2tools.jar`, from its `tla2tools-1.8.0/` directory instead of downloading it, and checks the file's SHA-256 checksum against the one in the `Dockerfile`. Release 1.8.0 of the TLA+ tools is a pre-release, which the TLA+ project rebuilds and uploads again under the same name, so a download would not match the build every model in this project has been checked with: the build of 30 October 2026. A different file stops the image build at the checksum. Without the `--build-context` argument the build stops at the line that copies the jar, because Docker then looks for an image named `tla2tools`.
 
 ### Step 3 — Create the database volume (once, ever)
 
@@ -110,6 +112,7 @@ docker volume create pubsub-pgdata
 
 ```bash
 docker run -it --rm \
+    --ulimit memlock=-1:-1 \
     -v "$(pwd)":/workspace \
     -v /path/to/thirdparty:/development/3rdparty \
     -v pubsub-pgdata:/var/lib/pgsql/data \
@@ -122,6 +125,7 @@ You are now at a bash prompt inside Rocky Linux 8. The flags mean:
 |---|---|
 | `-it` | Interactive terminal — required for a usable shell |
 | `--rm` | Delete the container automatically when you type `exit` |
+| `--ulimit memlock=-1:-1` | Lets processes in the container lock any amount of memory, as a host that runs the venue must (see [the locked-memory requirement](../operations/locked_memory_requirement.md)). Docker's default is 8 MiB, too little for the matching engine and the sequencer to start, and for the unit test that locks a table of a million entries |
 | `-v "$(pwd)":/workspace` | Mounts the project root into the container at `/workspace`; edits are shared instantly in both directions |
 | `-v /path/to/thirdparty:/development/3rdparty` | Pre-built third-party libraries (fmt, quill, etc.) built for Rocky 8. This is the path the real RHEL8 build hosts use, and it must stay outside `/workspace`: CMake leaves directories inside the project tree out of the install RPATH, so a tree mounted under the project links but is not found at run time |
 | `-v pubsub-pgdata:/var/lib/pgsql/data` | Persistent PostgreSQL data directory |
@@ -150,6 +154,7 @@ If you only want to compile and run the C++ tests, omit the database volume enti
 
 ```bash
 docker run -it --rm \
+    --ulimit memlock=-1:-1 \
     -v "$(pwd)":/workspace \
     -v /path/to/thirdparty:/development/3rdparty \
     pubsub-rhel8

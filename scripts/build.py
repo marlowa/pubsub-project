@@ -830,6 +830,12 @@ def build_directory_name(args):
 def install_directory_notice(staging_dir):
     """Explain a non-default staging directory, and how to use it deliberately."""
     print(f"NOTE: this build is staged to {staging_dir.name}/ instead of installed/")
+    if staging_dir.name == "installed" + platform_suffix():
+        # Only the platform differs. devenv.py and deploy.py give the relative install directory of the environment
+        # file the same suffix on this platform (target_platform.environment_path), so they find this tree unaided.
+        print(f"  {staging_dir.name}/ is this platform's staging directory, kept apart from the development host's installed/,")
+        print("  and devenv.py and deploy.py use it on this platform without being told to.")
+        return
     print("  installed/ is left untouched so devenv.py, perf_run.py, ha_test.py and the")
     print("  standalone test scripts keep loading uninstrumented libraries.  This matters")
     print("  because LD_LIBRARY_PATH points at installed/lib and takes precedence over the")
@@ -837,8 +843,13 @@ def install_directory_notice(staging_dir):
     print("  become what every other tool loads -- a perf_run.py after a coverage build")
     print("  would report figures with no indication that they are meaningless.")
     print(f"  To run the system instrumented, name this prefix: ./scripts/perf_run.py {staging_dir.name}")
+    # devenv.py adds this platform's suffix to a relative install directory itself, so the name to write in the
+    # environment file is the staging directory's name without it.
+    name_in_environment_file = staging_dir.name
+    if platform_suffix() and name_in_environment_file.endswith(platform_suffix()):
+        name_in_environment_file = name_in_environment_file[:-len(platform_suffix())]
     print(f"  or ./scripts/ha_test.py --scenario N {staging_dir.name}.  devenv.py takes it from the")
-    print(f"  env TOML instead: copy environments/dev.toml and set install_dir = \"{staging_dir.name}\".")
+    print(f"  env TOML instead: copy environments/dev.toml and set install_dir = \"{name_in_environment_file}\".")
 
 
 def run_tests(build_dir, use_tsan=False, tsan_suppressions=None):

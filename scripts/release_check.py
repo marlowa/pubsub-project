@@ -265,7 +265,9 @@ def stage_rocky(args) -> tuple[bool, str]:
     code, out = run(["docker", "image", "inspect", ROCKY_IMAGE])
     if code != 0:
         return False, (f"image '{ROCKY_IMAGE}' not present. Build it first:\n"
-                       f"    docker build -t {ROCKY_IMAGE} .")
+                       f"    docker build -t {ROCKY_IMAGE} --build-context tla2tools=$THIRDPARTY_DIR/tla2tools-1.8.0 .\n"
+                       "The second build input is the directory holding the TLA+ tools jar the models were checked with;\n"
+                       "see the Dockerfile.")
 
     # Two mounts are needed, and getting this wrong is easy.
     #
@@ -311,6 +313,10 @@ def stage_rocky(args) -> tuple[bool, str]:
     command = [
         "docker", "run", "--rm", "--entrypoint", "bash",
         "--user", f"{os.getuid()}:{os.getgid()}",
+        # Docker's default limit on locked memory is 8 MiB. The unit tests lock tables larger than that, and the matching
+        # engine and the sequencer lock theirs at start, so the container is given the limit a host running the venue
+        # must have (docs/operations/locked_memory_requirement.md).
+        "--ulimit", "memlock=-1:-1",
         "-e", "HOME=/tmp",
         "-v", f"{PROJECT_ROOT}:{CONTAINER_WORKSPACE}",
         "-v", f"{host_tree}:{CONTAINER_WORKSPACE}/thirdparty",

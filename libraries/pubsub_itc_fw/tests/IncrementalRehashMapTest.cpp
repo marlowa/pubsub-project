@@ -1036,7 +1036,9 @@ TEST_F(IncrementalRehashMapTest, HoldingInMemoryLocksEveryPageOfTheTablesAndRele
     {
         IntMap map;
         map.reserve(1 << 20);
-        ASSERT_EQ(map.hold_in_memory(), 0);
+        ASSERT_EQ(map.hold_in_memory(), 0) << "locking failed: this test locks " << map.bytes_to_hold_in_memory() / 1024
+                                           << " KiB, so the locked-memory limit (ulimit -l) must be at least that; "
+                                           << "a Docker container needs --ulimit memlock=-1:-1";
         const size_t table_kilobytes = map.capacity() * (1 + 8 + 4) / 1024;
         EXPECT_GE(locked_kilobytes() - before, table_kilobytes) << "every page of the three arrays must be locked";
         EXPECT_LE(locked_kilobytes() - before, map.bytes_to_hold_in_memory() / 1024) << "no more than the map said it would lock";

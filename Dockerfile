@@ -74,15 +74,24 @@ RUN dnf install -y --enablerepo=powertools doxygen graphviz \
 
 # TLA+ tools (the TLC model checker), used by scripts/tla_trace_pages.py to reproduce the
 # counterexamples of docs/availability/tla/MajorityLeaseHA.tla at install time. Not packaged
-# for Rocky 8: it is a single jar published on the TLA+ project's GitHub releases page, and runs
-# on the Java 17 installed above. The release and its checksum are pinned so the counterexamples
-# are reproduced by the same checker on every build.
+# for Rocky 8: it is a single jar, tla2tools.jar, and runs on the Java 17 installed above.
+#
+# The jar is not downloaded. It is copied from the directory that holds the copy on the machine
+# building the image, which docker build is given as a second build input named tla2tools:
+#
+#   docker build -t pubsub-rhel8 --build-context tla2tools=$THIRDPARTY_DIR/tla2tools-1.8.0 .
+#
+# Release 1.8.0 on the TLA+ project's GitHub releases page is a pre-release, which that project
+# rebuilds and uploads again under the same name, so the file it serves changes from time to time
+# and a checksum of it does not stay true. The checksum below is that of the build of 30 October 2026
+# (tlaplus revision 090e85c), the one every model in this project has been checked with. The check
+# makes sure the image holds that build and no other; a different file stops the image build here.
+# Without the --build-context argument, docker build stops at the COPY line, because it then looks
+# for an image named tla2tools.
 ARG TLA_TOOLS_VERSION=1.8.0
 ARG TLA_TOOLS_SHA256=011267fca25d0752cf18894dd585cd28b96960c112ea8a20b823ea770e7e10cd
-RUN mkdir -p /opt/tla2tools-${TLA_TOOLS_VERSION} \
-    && wget -q -O /opt/tla2tools-${TLA_TOOLS_VERSION}/tla2tools.jar \
-       https://github.com/tlaplus/tlaplus/releases/download/v${TLA_TOOLS_VERSION}/tla2tools.jar \
-    && echo "${TLA_TOOLS_SHA256}  /opt/tla2tools-${TLA_TOOLS_VERSION}/tla2tools.jar" | sha256sum -c -
+COPY --from=tla2tools tla2tools.jar /opt/tla2tools-${TLA_TOOLS_VERSION}/tla2tools.jar
+RUN echo "${TLA_TOOLS_SHA256}  /opt/tla2tools-${TLA_TOOLS_VERSION}/tla2tools.jar" | sha256sum -c -
 ENV TLA2TOOLS_JAR=/opt/tla2tools-1.8.0/tla2tools.jar
 
 # Configure git to allow /workspace
