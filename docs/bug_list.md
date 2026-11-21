@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 281 |
+| Bugs recorded | 282 |
 | Open | 52 (29 defects, 23 tasks) |
 | Closed | 230 |
-| Next id | BUG-0282 |
+| Next id | BUG-0283 |
 
 ## Open bugs by severity
 
