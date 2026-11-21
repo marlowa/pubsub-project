@@ -1844,9 +1844,42 @@ copies use `argparse.SUPPRESS` for their defaults, without which a subcommand co
 a value the top-level parser had already stored and `--db-port 5433 start` would silently become
 `None`. Verified in all three positions: before the subcommand, after it, and absent.
 
-**Point 4 is not fixed, because the entry is right that it is a choice.** `install_dir` varies by
-deployment environment and the install tree varies by target platform, and the three ways to settle
-that are set out above. Nothing here picks one.
+#### Point 4 fixed 2026-11-21: the install directory is derived from the detected platform
+
+Of the three ways set out above, the second is the one chosen: the run side works out the install
+directory from the platform it runs on, as the build side already does.
+
+**The rule.** `scripts/target_platform.py` holds the platform detection that was in `build.py`, and
+one new function, `environment_path()`, which turns a path from an environment file's `[paths]`
+section into a directory on this machine. A relative path names a directory inside the project
+tree, and on Rocky Linux 8 or Red Hat Enterprise Linux 8 its first directory is given the
+platform's suffix: `installed` becomes `installed-rocky8`, and `installed/log` becomes
+`installed-rocky8/log`. On the development host the suffix is empty and nothing changes. An
+absolute path, such as `/opt/pubsub` in `prod.toml`, `preprod.toml` and `test-1.toml`, is used as
+it is written, because it names the real location of the venue on a target host, and a host runs
+only one platform.
+
+The suffix is applied to every relative path in `[paths]`, not only to `install_dir`, because
+`log_dir`, `run_dir` and `archive_dir` in `dev.toml` are directories inside the install tree. Had
+only `install_dir` been qualified, a Rocky 8 venue would run from `installed-rocky8/` and write its
+logs and process identifier files into the host's `installed/`.
+
+**Who uses it.** `devenv.py` (`resolve_paths()` and `archive_dir()`, and so `launch.py` and
+`trading_day.py` through it), `deploy.py`, `cpu_audit.py`, and the default install directory of
+`operator_halt.py` and `trading_phase.py`. `build.py`, `release.py` and `devsetup.py` take the
+platform's name and suffix from the same module, so it is defined once. Tests in
+`scripts/tests/test_target_platform.py` check both platforms and both kinds of path, and check that
+`devenv.py` arrives at the directory `build.py` stages into; each failed when the rule was broken
+on purpose, once by dropping the suffix and once by suffixing an absolute path.
+
+**Found while doing it, and fixed in the same change: the shipped `deploy.py` could not run.** It
+imports `cpu_layout`, and `release.py` did not ship `cpu_layout.py`, so `deploy.py` from a release
+tarball stopped at once with `ModuleNotFoundError: No module named 'cpu_layout'`. The developer
+loop never showed it, because `devsetup.py` runs `scripts/deploy.py` from the source tree. A
+release now ships `cpu_layout.py` and `target_platform.py` beside the scripts that import them.
+
+**Still to do before this entry is closed:** build and run the current code in the Rocky 8
+container, which shows the rule on the platform it exists for.
 
 Confirmed on the host by Andrew: with the database created while logged in as `postgres`,
 everything came up. Prometheus did not start, which is the non-defect below -- it had not been set

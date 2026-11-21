@@ -55,6 +55,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import cpu_layout
+import target_platform
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_ENV_FILE = _PROJECT_ROOT / "environments" / "dev.toml"
@@ -658,7 +659,7 @@ def main() -> None:
     if args.install_dir is not None:
         install_dir = args.install_dir.resolve()
     else:
-        install_dir = (_PROJECT_ROOT / env["paths"]["install_dir"]).resolve()
+        install_dir = target_platform.environment_path(_PROJECT_ROOT, env["paths"]["install_dir"])
 
     run_dir = install_dir / "run"
     layout_path = run_dir / "cpu_layout.toml"

@@ -57,6 +57,7 @@ import sys
 from pathlib import Path
 
 import operator_requests
+import target_platform
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _PHASES = {"start-of-day": "StartOfDay", "pre-open": "PreOpen", "open": "Open", "closed": "Closed", "end-of-day": "EndOfDayBegin"}
@@ -64,10 +65,11 @@ _PHASES = {"start-of-day": "StartOfDay", "pre-open": "PreOpen", "open": "Open", 
 
 def _default_install_dir() -> Path:
     """The install directory: this script's own directory when it was shipped there with lib/python beside it, as a
-    release ships it; otherwise the project's installed/ directory, for a script run from the source tree."""
+    release ships it; otherwise the project's installed/ directory, for a script run from the source tree. On Rocky or Red Hat 8
+    that directory is installed-rocky8/ or installed-rhel8/, the one build.py stages into there."""
     if (_SCRIPT_DIR / "lib" / "python").is_dir():
         return _SCRIPT_DIR
-    return _SCRIPT_DIR.parent / "installed"
+    return target_platform.environment_path(_SCRIPT_DIR.parent, "installed")
 
 
 def trading_day_argument(text: str) -> int:

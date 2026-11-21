@@ -16,7 +16,12 @@ description = "Single-machine developer sandbox. All components on localhost."
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 # Relative paths are resolved from the project root (the directory that
-# contains the environments/ folder).
+# contains the environments/ folder). On Rocky Linux 8 or Red Hat Enterprise
+# Linux 8 the first directory of a relative path is given the platform's suffix,
+# so "installed/log" means installed-rocky8/log there. That is the directory
+# build.py stages a Rocky 8 build into, so the build for one platform never
+# writes over the other's in a project tree the two share. An absolute path is
+# used as it is written. See scripts/target_platform.py.
 
 [paths]
 install_dir = "installed"     # binaries, component configs, certs

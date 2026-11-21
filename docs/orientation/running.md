@@ -53,7 +53,7 @@ git clang-format --staged && git add -u
 ./scripts/build.sh
 ```
 
-Builds both the C++ components and the Java admin service, runs all tests, and stages the result into `installed/` at the project root (`installed-rhel8/` on Rocky or RHEL 8, and a directory of its own for each instrumented build; see [building](building.md)). This staging directory is what `release.py` reads from. In the developer sandbox the deployed system also runs from `installed/`, because `dev.toml` sets `paths.install_dir` to it.
+Builds both the C++ components and the Java admin service, runs all tests, and stages the result into `installed/` at the project root (`installed-rocky8/` on Rocky Linux 8 and `installed-rhel8/` on Red Hat Enterprise Linux 8, and a directory of its own for each instrumented build; see [building](building.md)). This staging directory is what `release.py` reads from. In the developer sandbox the deployed system also runs from it, because `dev.toml` sets `paths.install_dir` to the relative path `installed`, and on Rocky or Red Hat 8 the first directory of every relative path in the environment file's `[paths]` section is given the same suffix as the staging directory (`scripts/target_platform.py`). The two platforms can then share one project tree, as the Rocky 8 container does, without either writing over the other's binaries, configuration or logs. An absolute path, such as `/opt/pubsub` in `prod.toml`, is used as it is written.
 
 Unit tests and integration tests run automatically. The build script reports signal-based failures (SIGABRT, SIGSEGV, etc.) by name.
 
@@ -175,7 +175,7 @@ Assembles a versioned deployment artefact from the build staging area:
 python3 scripts/release.py
 ```
 
-Reads the version from `project(... VERSION x.y.z ...)` in `CMakeLists.txt` and the git short hash from `git rev-parse`. Reads binaries and the admin-service JAR from `installed/` (`installed-rhel8/` on Rocky or RHEL 8). Outputs `release/pubsub-<version>-<hash>.tar.gz` containing `bin/`, `lib/`, `etc/` (config templates with unexpanded `${placeholder}` values), `db/`, `environments/`, `devenv.py`, `deploy.py`, and a `release.json` manifest.
+Reads the version from `project(... VERSION x.y.z ...)` in `CMakeLists.txt` and the git short hash from `git rev-parse`. Reads binaries and the admin-service JAR from `installed/` (`installed-rocky8/` on Rocky Linux 8, `installed-rhel8/` on Red Hat Enterprise Linux 8). Outputs `release/pubsub-<version>-<hash>.tar.gz` containing `bin/`, `lib/`, `etc/` (config templates with unexpanded `${placeholder}` values), `db/`, `environments/`, `devenv.py`, `deploy.py`, the operator's tools `operator_halt.py`, `trading_phase.py` and `trading_day.py`, the modules those scripts import (`operator_requests.py`, `cpu_layout.py` and `target_platform.py`), and a `release.json` manifest.
 
 A build for a platform other than the development host appends its tag, giving
 `pubsub-<version>-<hash>-<mode>-rocky8.tar.gz`. A release tree is not portable between the two —
@@ -183,7 +183,7 @@ a gcc-8.5 build links against an older glibc and names its own third-party tree 
 and the release directory is shared with the Rocky container, so both artefacts land side by
 side and the name is the only thing telling them apart.
 
-Options: `--install-dir` (staging dir, default: `installed`, or `installed-rhel8` on Rocky or RHEL 8), `--env`, `--version`, `--output-dir` (default: `release`), `--no-git-hash`, `--mode` (`release` or `debug`, recorded in the artefact's name) and `--sanitizer` (`none`, `asan`, `tsan` or `valgrind`, likewise).
+Options: `--install-dir` (staging directory, default: `installed`, or `installed-rocky8` on Rocky Linux 8 and `installed-rhel8` on Red Hat Enterprise Linux 8), `--env`, `--version`, `--output-dir` (default: `release`), `--no-git-hash`, `--mode` (`release` or `debug`, recorded in the artefact's name) and `--sanitizer` (`none`, `asan`, `tsan` or `valgrind`, likewise).
 
 ## Deployment (`deploy.py`)
 

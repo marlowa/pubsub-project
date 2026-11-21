@@ -27,6 +27,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import target_platform
+
 _SCRIPT_DIR = Path(__file__).resolve().parent
 # The tree above scripts/. Sibling scripts are reached through the script directory;
 # everything the project owns -- environments/, db/, installed/ -- hangs off here.
@@ -36,23 +38,17 @@ _PROJECT_ROOT = _SCRIPT_DIR.parent
 def _staging_dir() -> Path:
     """The directory build.py stages into on this platform, which deploy must also use.
 
-    All four steps have to name the same directory. build.py and release.py qualify it
-    by target platform -- a gcc-8.5 Rocky/RHEL8 tree stages to installed-rocky8/ so it
-    cannot overwrite the host's gcc-13 one -- but deploy.py takes its destination from
-    the env TOML, where "installed" is unqualified and correct, because a real target
-    host deploys to that name whatever compiler built the artefact.
+    All four steps have to name the same directory. On Rocky or Red Hat 8 it is installed-rocky8/ or installed-rhel8/,
+    so that a gcc 8.5 tree cannot overwrite the development host's gcc 13 one in a project tree the two share through
+    the container's bind mount. Binaries written over the host's tree carry a run path of /opt/deps, which exists only
+    inside the container, so every one of them would then fail to start with exit status 127.
 
-    Unqualified is right for deploy.py on its own and wrong here. In the Rocky container
-    the repo is bind-mounted, so a deploy that honoured the env TOML wrote gcc-8.5
-    binaries over the host's installed/ tree. They carry an RPATH of /opt/deps, a path
-    that exists only inside the container, so every binary then failed to start with
-    exit 127 and every stage run afterwards failed against a venue that could not launch.
-
-    Imported from build.py rather than duplicated so there is one definition of the name.
+    deploy.py would arrive at the same directory from the development environment file, whose install directory is the
+    relative path "installed" (see target_platform.environment_path()). It is still named here on the command line,
+    because devsetup.py may be given another environment file, and one whose install directory is absolute, such as
+    /opt/pubsub, must not send a developer's build there.
     """
-    import build  # noqa: PLC0415  -- deferred: only needed to resolve the default
-    tag = build.platform_tag()
-    return _PROJECT_ROOT / (f"installed-{tag}" if tag else "installed")
+    return target_platform.environment_path(_PROJECT_ROOT, "installed")
 
 
 def _run(command: list[str], step: str) -> None:
@@ -77,7 +73,7 @@ def _find_tarball() -> Path:
     through a bind mount, so a gcc-8.5 artefact lands beside the host's and is often the
     newer of the two. Deploying it puts binaries on the host that die at startup.
     """
-    import build  # noqa: PLC0415  -- deferred: matches _staging_dir() above
+    import build  # noqa: PLC0415  -- deferred: needed only to tell this platform's tarballs from another's
     release_dir = _PROJECT_ROOT / "release"
     tarballs = sorted(
         (p for p in release_dir.glob("pubsub-*.tar.gz")
@@ -108,7 +104,7 @@ def _prune_old_artefacts(keep: int) -> None:
     """
     if keep < 0:
         return
-    import build  # noqa: PLC0415  -- deferred: matches _staging_dir() above
+    import build  # noqa: PLC0415  -- deferred: needed only to tell this platform's tarballs from another's
     release_dir = _PROJECT_ROOT / "release"
     if not release_dir.is_dir():
         return

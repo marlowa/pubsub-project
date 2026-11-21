@@ -13,6 +13,10 @@ import re
 import shutil
 from pathlib import Path
 
+# How this platform is named, and the suffix its build products carry. Defined in target_platform.py because a release
+# ships that file to scripts that do not ship with build.py; imported here so build.platform_tag() and the rest still work.
+from target_platform import known_platform_tags, platform_suffix, platform_tag  # noqa: F401  # pylint: disable=unused-import
+
 def _is_rhel8():
     try:
         text = Path('/etc/os-release').read_text(encoding='utf-8')
@@ -21,44 +25,6 @@ def _is_rhel8():
             and lines.get('VERSION_ID', '').strip('"').startswith('8')
     except OSError:
         return False
-
-
-def platform_tag():
-    """Short name for the target platform, or None when this is the ordinary dev host.
-
-    Used to keep build output for a different toolchain apart. A gcc-8.5 Rocky/RHEL8
-    build is a different artefact from a gcc-13 host build in exactly the way a
-    coverage or sanitizer build is: same sources, incompatible objects. Sharing a
-    directory means every platform switch is a full rebuild at best, and a confusing
-    mixture of stale objects and a stale CMake cache at worst.
-    """
-    try:
-        text = Path('/etc/os-release').read_text(encoding='utf-8')
-        lines = {l.split('=')[0]: l.split('=', 1)[1] for l in text.splitlines() if '=' in l}
-        identifier = lines.get('ID', '').strip('"')
-        version = lines.get('VERSION_ID', '').strip('"')
-    except OSError:
-        return None
-    if identifier in ('rhel', 'rocky', 'centos') and version.startswith('8'):
-        return 'rhel8' if identifier == 'rhel' else 'rocky8'
-    return None
-
-
-# Every value platform_tag() can return. Needed to recognise another platform's
-# artefact by name, which the ordinary dev host cannot do from its own tag alone
-# because its tag is None.
-known_platform_tags = ('rhel8', 'rocky8')
-
-
-def platform_suffix():
-    """The suffix that distinguishes this platform's build products from another's.
-
-    Empty on the ordinary dev host, so its names are unchanged and only a
-    cross-compiled build is qualified -- the same rule the staging directory follows,
-    where the host keeps installed/ and Rocky gets installed-rocky8/.
-    """
-    tag = platform_tag()
-    return f"-{tag}" if tag else ""
 
 
 def artefact_belongs_to_this_platform(artefact_name):

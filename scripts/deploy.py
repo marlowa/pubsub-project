@@ -50,6 +50,7 @@ import zipfile
 from pathlib import Path
 
 import cpu_layout
+import target_platform
 
 # Matches intentional ${placeholder} patterns — used to catch unresolved
 # placeholders after safe_substitute (which silently skips unknowns).
@@ -1012,7 +1013,9 @@ def main() -> None:
     if args.install_dir is not None:
         install_dir = args.install_dir.resolve()
     else:
-        install_dir = (_PROJECT_ROOT / env["paths"]["install_dir"]).resolve()
+        # On Rocky or Red Hat 8 a relative install directory carries the platform's suffix, as build.py's staging
+        # directory does, so that a deployment there cannot write over the development host's tree.
+        install_dir = target_platform.environment_path(_PROJECT_ROOT, env["paths"]["install_dir"])
 
     print("=== deploy.py ===")
     print(f"  env         : {env_path}")
@@ -1060,7 +1063,7 @@ def main() -> None:
     # Where each component keeps the file of its last trading state, which outlives the day: the environment's run directory,
     # made absolute as the install directory is, or the installation's own when one is given on the command line
     # (docs/venue/start_and_end_of_day.md, section 4.2, decision 5).
-    namespace["last_state_dir"] = str(install_dir / "run" if args.install_dir else (_PROJECT_ROOT / env["paths"]["run_dir"]).resolve())
+    namespace["last_state_dir"] = str(install_dir / "run" if args.install_dir else target_platform.environment_path(_PROJECT_ROOT, env["paths"]["run_dir"]))
 
     # Nothing else clears these -- they are ordinary files, not tmpfs entries that
     # a reboot would remove -- so a fresh install starts from an empty registry

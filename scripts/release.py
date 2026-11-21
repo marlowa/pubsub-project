@@ -22,6 +22,9 @@ and can be handed directly to deploy.py:
   trading_phase.py  an operator's tool to start the trading day and move it from one phase to the next
   trading_day.py  the procedures that start and end a trading day
   operator_requests.py  what the operator's tools and devenv.py share for asking the sequencers
+  cpu_layout.py   how deploy.py chooses the cores each component runs on
+  target_platform.py  how devenv.py, deploy.py and the operator's tools name the
+                  directories of a copy of the venue inside the project tree
   release.json    version, git hash, build timestamp
 
 Artefact name:  pubsub-<version>-<git-short-hash>-<mode>.tar.gz
@@ -49,6 +52,8 @@ import tarfile
 import tempfile
 from pathlib import Path
 
+import target_platform
+
 _SCRIPT_DIR       = Path(__file__).resolve().parent
 # The tree above scripts/. Sibling scripts are reached through the script directory;
 # everything the project owns -- environments/, db/, installed/ -- hangs off here.
@@ -74,17 +79,12 @@ def _tomllib():
 def _default_install_dir() -> Path:
     """The staging directory build.py would have installed into on this platform.
 
-    build.py qualifies the staging directory by target platform, so a Rocky/RHEL8 build
-    stages to installed-rhel8/ rather than installed/ -- gcc-8.5 binaries must not
-    overwrite the host's. release.py has to agree, or it looks in the wrong place and
-    reports the install directory as missing, which is exactly what happened on RHEL8
-    after the split landed.
-
-    Imported from build.py rather than duplicated so there is one definition of the name.
+    build.py names the staging directory by target platform, so a Rocky or Red Hat 8 build stages to installed-rocky8/
+    or installed-rhel8/ rather than installed/, and gcc 8.5 binaries cannot overwrite the development host's.
+    release.py has to name the same directory, or it looks in the wrong place and reports the install directory as
+    missing. Both take the name from target_platform.py, so it is defined once.
     """
-    import build  # noqa: PLC0415  -- deferred: only needed to resolve the default
-    tag = build.platform_tag()
-    return _PROJECT_ROOT / (f"installed-{tag}" if tag else "installed")
+    return target_platform.environment_path(_PROJECT_ROOT, "installed")
 
 
 _DEFAULT_INSTALL  = _default_install_dir()
@@ -300,7 +300,10 @@ def stage_environments(stage: Path) -> None:
 
 
 def stage_scripts(stage: Path) -> None:
-    scripts = ["devenv.py", "deploy.py", "operator_halt.py", "trading_phase.py", "trading_day.py", "operator_requests.py"]
+    # Every script a release ships, and every module of this project that one of them imports: deploy.py imports
+    # cpu_layout and target_platform, and devenv.py and the operator's tools import operator_requests and target_platform.
+    scripts = ["devenv.py", "deploy.py", "operator_halt.py", "trading_phase.py", "trading_day.py", "operator_requests.py",
+               "cpu_layout.py", "target_platform.py"]
     for script_name in scripts:
         source = _SCRIPT_DIR / script_name
         if source.is_file():
@@ -387,8 +390,6 @@ def main() -> None:
     with open(env_path, "rb") as file_handle:
         env = _tomllib().load(file_handle)
 
-    import build  # noqa: PLC0415  -- deferred: matches _default_install_dir() above
-
     version  = args.version or read_cmake_version(_CMAKE_LISTS)
     git_hash = None if args.no_git_hash else git_short_hash()
     if git_hash is None and not args.no_git_hash:
@@ -402,7 +403,7 @@ def main() -> None:
     # Last, so the platform reads as the outermost qualifier and the name sorts with
     # its own platform's builds. Empty on the dev host, which keeps its names as they
     # were; only a cross-compiled artefact is qualified.
-    artefact_name += build.platform_suffix()
+    artefact_name += target_platform.platform_suffix()
 
     binaries = deployment_binaries(env)
     jar_paths = deployment_jar_paths(env)

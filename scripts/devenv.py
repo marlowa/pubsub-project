@@ -61,6 +61,7 @@ import time
 from pathlib import Path
 
 import operator_requests
+import target_platform
 
 # A sandbox aid, and deliberately not staged into a release: on a target host there is no source
 # tree to compare against and the check would be a no-op anyway. Absent means silent rather than
@@ -118,10 +119,13 @@ def load_env(path: Path) -> dict:
 
 
 def resolve_paths(env: dict) -> tuple[Path, Path, Path]:
-    """Return (install_dir, log_dir, run_dir) as absolute Paths."""
-    install_dir = (_PROJECT_ROOT / env["paths"]["install_dir"]).resolve()
-    log_dir     = (_PROJECT_ROOT / env["paths"]["log_dir"]).resolve()
-    run_dir     = (_PROJECT_ROOT / env["paths"]["run_dir"]).resolve()
+    """Return (install_dir, log_dir, run_dir) as absolute Paths.
+
+    A relative path names a directory in the project tree, and on Rocky or Red Hat 8 its first directory carries the
+    platform's suffix, as the directory build.py stages into does: see target_platform.environment_path()."""
+    install_dir = target_platform.environment_path(_PROJECT_ROOT, env["paths"]["install_dir"])
+    log_dir     = target_platform.environment_path(_PROJECT_ROOT, env["paths"]["log_dir"])
+    run_dir     = target_platform.environment_path(_PROJECT_ROOT, env["paths"]["run_dir"])
     return install_dir, log_dir, run_dir
 
 
@@ -131,7 +135,7 @@ def archive_dir(env: dict) -> Path:
     configured = env["paths"].get("archive_dir")
     if not configured:
         sys.exit("error: the environment file has no [paths] archive_dir, which says where each trading day's files are archived")
-    return (_PROJECT_ROOT / configured).resolve()
+    return target_platform.environment_path(_PROJECT_ROOT, configured)
 
 
 def startup_order(env: dict, ha_enabled: bool) -> list[str]:
