@@ -9,131 +9,157 @@
 #                 python3 coverage_baseline.py --update
 # Commit the result alongside the change that moved it.
 
-COMMIT 14b987a
+COMMIT 4daa0e80
 PLATFORM linuxmint22.2-gcc13.3.0
-GENERATED 2026-08-11T19:06:35Z
+GENERATED 2026-11-21T16:13:50Z
 TRACEFILE build-coverage/coverage.info
-TOTALS lines 6054/7217 functions 1552/1724
+TOTALS lines 11103/12743 functions 2745/3030
 
 FILE libraries/fix_codec/FixChecksum.hpp lines 15/15 functions 2/2
-FILE libraries/fix_codec/FixField.hpp lines 91/93 functions 15/15
+FILE libraries/fix_codec/FixField.hpp lines 79/80 functions 15/15
 FILE libraries/fix_codec/FixGroupWalker.hpp lines 36/51 functions 3/4
   UNCOVERED fix_codec::skip_repeating_group(fix_codec::group_def const&, fix_codec::FixMessageReader::const_iterator&, fix_codec::FixMessageReader::const_iterator const&)
-FILE libraries/fix_codec/FixMessageReader.hpp lines 117/133 functions 22/22
-FILE libraries/fix_codec/FixMessageValidator.hpp lines 118/135 functions 13/14
+FILE libraries/fix_codec/FixMessageReader.hpp lines 119/133 functions 22/22
+FILE libraries/fix_codec/FixMessageValidator.hpp lines 118/144 functions 13/14
   UNCOVERED fix_codec::FixMessageValidator::GroupValidationVisitor::orphan_field(int, fix_codec::group_def const&, fix_codec::FixField const&)
 FILE libraries/fix_codec/FixMessageWriter.hpp lines 68/77 functions 11/11
 FILE libraries/fix_codec/FixReject.hpp lines 31/31 functions 3/3
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/AllocatorBehaviourStatistics.hpp lines 1/1 functions 1/1
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/AllocatorConfiguration.hpp lines 1/1 functions 1/1
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ApplicationAnnouncer.hpp lines 5/6 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ApplicationThread.hpp lines 66/88 functions 134/169
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ApplicationThread.hpp lines 92/100 functions 188/243
+  UNCOVERED pubsub_itc_fw::ApplicationThread::departure_level() const
   UNCOVERED pubsub_itc_fw::ApplicationThread::on_connection_writable(pubsub_itc_fw::ConnectionID)
-  UNCOVERED pubsub_itc_fw::ApplicationThread::send_pdu_payload(pubsub_itc_fw::ConnectionID const&, short, long, void const*, unsigned long)
   UNCOVERED std::shared_ptr<arbiter::ArbiterThread> pubsub_itc_fw::ApplicationThread::create<arbiter::ArbiterThread, pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, arbiter::ArbiterConfiguration&>(pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, arbiter::ArbiterConfiguration&)
   UNCOVERED std::shared_ptr<authentication_service::AuthenticationThread> pubsub_itc_fw::ApplicationThread::create<authentication_service::AuthenticationThread, pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, authentication_service::AuthenticationServiceConfiguration&>(pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, authentication_service::AuthenticationServiceConfiguration&)
   UNCOVERED std::shared_ptr<binary_order_gateway::BinaryOrderGatewayThread> pubsub_itc_fw::ApplicationThread::create<binary_order_gateway::BinaryOrderGatewayThread, pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, binary_order_gateway::BinaryOrderGatewayConfiguration&>(pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, binary_order_gateway::BinaryOrderGatewayConfiguration&)
   UNCOVERED std::shared_ptr<fix_order_gateway::FixOrderGatewayThread> pubsub_itc_fw::ApplicationThread::create<fix_order_gateway::FixOrderGatewayThread, pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, fix_order_gateway::FixOrderGatewayConfiguration&>(pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, fix_order_gateway::FixOrderGatewayConfiguration&)
   UNCOVERED std::shared_ptr<matching_engine::MatchingEngineThread> pubsub_itc_fw::ApplicationThread::create<matching_engine::MatchingEngineThread, pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, matching_engine::MatchingEngineConfiguration&>(pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, matching_engine::MatchingEngineConfiguration&)
   UNCOVERED std::shared_ptr<matching_engine_publisher::MatchingEnginePublisherThread> pubsub_itc_fw::ApplicationThread::create<matching_engine_publisher::MatchingEnginePublisherThread, pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, matching_engine_publisher::MatchingEnginePublisherConfiguration&>(pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, matching_engine_publisher::MatchingEnginePublisherConfiguration&)
-  UNCOVERED std::shared_ptr<sequencer::SequencerThread> pubsub_itc_fw::ApplicationThread::create<sequencer::SequencerThread, pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, sequencer::SequencerConfiguration&>(pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, sequencer::SequencerConfiguration&)
   UNCOVERED std::shared_ptr<topic_probe::(anonymous namespace)::ProbeThread> pubsub_itc_fw::ApplicationThread::create<topic_probe::(anonymous namespace)::ProbeThread, pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::ThreadIDTag, int>, long const&>(pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::ThreadIDTag, int>&&, long const&)
   UNCOVERED std::shared_ptr<witness::WitnessThread> pubsub_itc_fw::ApplicationThread::create<witness::WitnessThread, pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, witness::WitnessConfiguration&>(pubsub_itc_fw::QuillLogger&, pubsub_itc_fw::Reactor&, witness::WitnessConfiguration&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::ArbiterHeartbeat>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::ArbiterHeartbeat const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::ArbiterStateAck>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::ArbiterStateAck const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::ArbiterStateRecord>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::ArbiterStateRecord const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::ArbiterVoteRequest>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::ArbiterVoteRequest const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::ArbiterVoteResponse>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::ArbiterVoteResponse const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::ArbitrationDecision>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::ArbitrationDecision const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::ArbitrationReport>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::ArbitrationReport const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AuthenticationChallenge>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AuthenticationChallenge const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AuthenticationProof>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AuthenticationProof const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AuthenticationRequest>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AuthenticationRequest const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AuthenticationResult>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AuthenticationResult const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::BookUpdate>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::BookUpdate const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::Heartbeat>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::Heartbeat const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::LogonAck>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::LogonAck const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::MePositionAck>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::MePositionAck const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::MePositionRequest>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::MePositionRequest const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionBound>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionBound const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionBoundAck>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionBoundAck const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionReplayComplete>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionReplayComplete const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionReplayRecord>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionReplayRecord const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionReplayRequest>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionReplayRequest const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionSequenceUpdate>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionSequenceUpdate const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionUnbound>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionUnbound const&)
-  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::TopicNotLeader>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::TopicNotLeader const&)
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackoffWithYield.hpp lines 12/12 functions 2/2
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::ArbiterHeartbeat>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::ArbiterHeartbeat const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::ArbiterStateRecord>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::ArbiterStateRecord const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::LeaseGrant>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::LeaseGrant const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::LeaseRefusal>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::LeaseRefusal const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::LeaseRequest>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::LeaseRequest const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::LogPositionReply>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::LogPositionReply const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::LogPositionRequest>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::LogPositionRequest const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::ReplicatedRecord>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::ReplicatedRecord const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::StatementHeld>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::StatementHeld const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::WalFollowDeclined>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::WalFollowDeclined const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::WalHeldReply>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::WalHeldReply const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::WalHeldRequest>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::WalHeldRequest const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw::WalLeaderChanged>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw::WalLeaderChanged const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AppliedThrough>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AppliedThrough const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AppliedThroughQuery>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AppliedThroughQuery const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AuthenticationChallenge>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AuthenticationChallenge const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AuthenticationHeartbeat>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AuthenticationHeartbeat const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AuthenticationHeartbeatAnswer>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AuthenticationHeartbeatAnswer const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AuthenticationProof>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AuthenticationProof const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AuthenticationRequest>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AuthenticationRequest const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::AuthenticationResult>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::AuthenticationResult const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::CommandRefused>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::CommandRefused const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::EnginePosition>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::EnginePosition const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::EnginePositionQuery>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::EnginePositionQuery const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::EngineSettings>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::EngineSettings const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::HaltRequest>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::HaltRequest const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::LogonAck>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::LogonAck const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::Logout>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::Logout const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::OrderAcceptance>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::OrderAcceptance const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::OrderCancelReject>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::OrderCancelReject const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::RequestRefused>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::RequestRefused const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::RoleAnnouncement>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::RoleAnnouncement const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionBound>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionBound const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionBoundAck>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionBoundAck const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionReplayComplete>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionReplayComplete const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionReplayRecord>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionReplayRecord const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionReplayRequest>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionReplayRequest const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionSequenceUpdate>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionSequenceUpdate const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionUnbound>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionUnbound const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::SessionsAnnounced>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::SessionsAnnounced const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::TradingSessionStatus>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::TradingSessionStatus const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::VoidDeclined>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::VoidDeclined const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::VoidRequest>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::VoidRequest const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::VoidedCommands>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::VoidedCommands const&, pubsub_itc_fw::SendLatencyClass)
+  UNCOVERED void pubsub_itc_fw::ApplicationThread::send_pdu<pubsub_itc_fw_app::WalRecord>(pubsub_itc_fw::ConnectionID const&, short, long, pubsub_itc_fw_app::WalRecord const&, pubsub_itc_fw::SendLatencyClass)
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ApplicationThreadConfiguration.hpp lines 1/1 functions 0/0
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackgroundPromiseRecorder.hpp lines 9/9 functions 6/6
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackgroundPromiseRecorderInterface.hpp lines 1/1 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackgroundRecorder.hpp lines 41/44 functions 14/20
+  UNCOVERED pubsub_itc_fw::BackgroundRecorder<arbiter::ArbiterThread::StatementsRecord>::BackgroundRecorder(std::function<bool (arbiter::ArbiterThread::StatementsRecord const&)>, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
+  UNCOVERED pubsub_itc_fw::BackgroundRecorder<arbiter::ArbiterThread::StatementsRecord>::in_progress() const
+  UNCOVERED pubsub_itc_fw::BackgroundRecorder<arbiter::ArbiterThread::StatementsRecord>::result()
+  UNCOVERED pubsub_itc_fw::BackgroundRecorder<arbiter::ArbiterThread::StatementsRecord>::start(arbiter::ArbiterThread::StatementsRecord const&)
+  UNCOVERED pubsub_itc_fw::BackgroundRecorder<arbiter::ArbiterThread::StatementsRecord>::write_requests(pubsub_itc_fw::BackgroundRecorder<arbiter::ArbiterThread::StatementsRecord>::Shared&)
+  UNCOVERED pubsub_itc_fw::BackgroundRecorder<arbiter::ArbiterThread::StatementsRecord>::~BackgroundRecorder()
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackoffWithYield.hpp lines 15/15 functions 3/3
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackoffWithoutYield.hpp lines 6/6 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/BumpAllocator.hpp lines 24/24 functions 12/20
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/BumpAllocator.hpp lines 24/24 functions 13/23
   UNCOVERED pubsub_itc_fw::ListView<std::basic_string_view<char, std::char_traits<char> > >* pubsub_itc_fw::BumpAllocator::allocate<pubsub_itc_fw::ListView<std::basic_string_view<char, std::char_traits<char> > > >(unsigned long)
   UNCOVERED pubsub_itc_fw::MediumMessageView* pubsub_itc_fw::BumpAllocator::allocate<pubsub_itc_fw::MediumMessageView>(unsigned long)
   UNCOVERED pubsub_itc_fw_app::PartyIDs* pubsub_itc_fw::BumpAllocator::allocate<pubsub_itc_fw_app::PartyIDs>(unsigned long)
   UNCOVERED pubsub_itc_fw_app::PartyIDsView* pubsub_itc_fw::BumpAllocator::allocate<pubsub_itc_fw_app::PartyIDsView>(unsigned long)
   UNCOVERED pubsub_itc_fw_app::PartySubIDs* pubsub_itc_fw::BumpAllocator::allocate<pubsub_itc_fw_app::PartySubIDs>(unsigned long)
   UNCOVERED pubsub_itc_fw_app::PartySubIDsView* pubsub_itc_fw::BumpAllocator::allocate<pubsub_itc_fw_app::PartySubIDsView>(unsigned long)
+  UNCOVERED pubsub_itc_fw_app::SeqNumRangeView* pubsub_itc_fw::BumpAllocator::allocate<pubsub_itc_fw_app::SeqNumRangeView>(unsigned long)
   UNCOVERED pubsub_itc_fw_app::Underlyings* pubsub_itc_fw::BumpAllocator::allocate<pubsub_itc_fw_app::Underlyings>(unsigned long)
   UNCOVERED pubsub_itc_fw_app::UnderlyingsView* pubsub_itc_fw::BumpAllocator::allocate<pubsub_itc_fw_app::UnderlyingsView>(unsigned long)
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ByteStreamInterface.hpp lines 1/1 functions 1/1
+  UNCOVERED pubsub_itc_fw_app::VoidedCommandView* pubsub_itc_fw::BumpAllocator::allocate<pubsub_itc_fw_app::VoidedCommandView>(unsigned long)
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ByteStreamInterface.hpp lines 11/12 functions 2/2
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CacheLine.hpp lines 1/1 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CatchUpTally.hpp lines 32/32 functions 6/6
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CommandIdentityInterface.hpp lines 1/1 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ComponentArguments.hpp lines 30/30 functions 2/2
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ComponentLeaseVoters.hpp lines 52/59 functions 10/13
+  UNCOVERED pubsub_itc_fw::ComponentLeaseVoters::active() const
+  UNCOVERED pubsub_itc_fw::ComponentLeaseVoters::highest_epochs() const
+  UNCOVERED pubsub_itc_fw::ComponentLeaseVoters::statements() const
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ComponentStatementStore.hpp lines 78/97 functions 6/8
+  UNCOVERED pubsub_itc_fw::ComponentStatementStore::abandon_temp(int) const
+  UNCOVERED pubsub_itc_fw::ComponentStatementStore::path[abi:cxx11]() const
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ConfigurationException.hpp lines 1/1 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ConnectionID.hpp lines 15/15 functions 9/9
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ConnectionID.hpp lines 24/24 functions 16/16
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CounterHandle.hpp lines 6/6 functions 3/3
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CounterInterface.hpp lines 1/1 functions 1/1
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CpuLayout.hpp lines 14/14 functions 8/8
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CpuPinning.hpp lines 116/182 functions 9/13
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CpuPinning.hpp lines 116/189 functions 9/14
   UNCOVERED auto pubsub_itc_fw::get_available_cpu_ids(bool, pubsub_itc_fw::SharedCoreRegistryLayout const&)::{lambda(auto:1 const&, auto:2 const&)#1}::operator()<std::filesystem::__cxx11::path, std::filesystem::__cxx11::path>(std::filesystem::__cxx11::path const&, std::filesystem::__cxx11::path const&) const
+  UNCOVERED pubsub_itc_fw::apply_affinity_mask(unsigned long, std::vector<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>, std::allocator<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int> > > const&)
   UNCOVERED pubsub_itc_fw::apply_process_affinity_mask(std::vector<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>, std::allocator<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int> > > const&)
   UNCOVERED pubsub_itc_fw::apply_thread_affinity_mask(int, std::vector<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>, std::allocator<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int> > > const&)
   UNCOVERED pubsub_itc_fw::format_cpu_list[abi:cxx11](std::vector<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>, std::allocator<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int> > > const&)
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/DeliverLostEventFlag.hpp lines 5/5 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/EpochRecording.hpp lines 71/74 functions 12/12
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/EpochStore.hpp lines 55/68 functions 6/7
+  UNCOVERED pubsub_itc_fw::EpochStore::abandon_temp(int) const
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventHandler.hpp lines 2/2 functions 2/2
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventMessage.hpp lines 7/7 functions 4/4
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventType.hpp lines 26/39 functions 6/6
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp lines 148/159 functions 53/77
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>::ExpandablePoolAllocator(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, int, int, int, std::function<void (void*, int)>, std::function<void (void*, void*)>, std::function<void (void*)>, pubsub_itc_fw::UseHugePagesFlag)
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>::add_pool_to_chain()
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>::add_pool_to_chain()::{lambda(void*, unsigned long)#1}::operator()(void*, unsigned long) const
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>::allocate()
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>::deallocate(open_orders::OpenOrderEntry*)
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>::get_canary_for_object(open_orders::OpenOrderEntry*)
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>::get_is_constructed_for_object(open_orders::OpenOrderEntry*)
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>::~ExpandablePoolAllocator()
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>::~ExpandablePoolAllocator()::{lambda(open_orders::OpenOrderEntry*, bool)#1}::operator()(open_orders::OpenOrderEntry*, bool) const
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventMessage.hpp lines 17/17 functions 8/8
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventType.hpp lines 23/39 functions 6/6
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp lines 153/166 functions 61/78
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::ExpandablePoolAllocator(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, int, int, int, std::function<void (void*, int)>, std::function<void (void*, void*)>, std::function<void (void*)>, pubsub_itc_fw::UseHugePagesFlag)
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::add_pool_to_chain()
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::add_pool_to_chain()::{lambda(void*, unsigned long)#1}::operator()(void*, unsigned long) const
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::allocate()
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::deallocate(pubsub_itc_fw::CoverageDummy*)
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::get_behaviour_statistics() const
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::get_canary_for_object(pubsub_itc_fw::CoverageDummy*)
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::get_is_constructed_for_object(pubsub_itc_fw::CoverageDummy*)
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::get_pool_statistics() const
+  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::link_at_end(pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>*, pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>*)
+  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::make_pool()
+  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::make_pool()::{lambda(void*, unsigned long)#1}::operator()(void*, unsigned long) const
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::~ExpandablePoolAllocator()
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::CoverageDummy>::~ExpandablePoolAllocator()::{lambda(pubsub_itc_fw::CoverageDummy*, bool)#1}::operator()(pubsub_itc_fw::CoverageDummy*, bool) const
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::LockFreeMessageQueue<pubsub_itc_fw::EventMessage>::Node>::add_pool_to_chain()::{lambda(void*, unsigned long)#1}::operator()(void*, unsigned long) const
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::LockFreeMessageQueue<pubsub_itc_fw::ReactorControlCommand>::Node>::add_pool_to_chain()::{lambda(void*, unsigned long)#1}::operator()(void*, unsigned long) const
-  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::tests::NumaAwarePoolAllocatorTest::TestObject>::add_pool_to_chain()::{lambda(void*, unsigned long)#1}::operator()(void*, unsigned long) const
+  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::LockFreeMessageQueue<(anonymous namespace)::TestOrder>::Node>::link_at_end(pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::LockFreeMessageQueue<(anonymous namespace)::TestOrder>::Node>*, pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::LockFreeMessageQueue<(anonymous namespace)::TestOrder>::Node>*)
+  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::LockFreeMessageQueue<pubsub_itc_fw::EventMessage>::Node>::make_pool()::{lambda(void*, unsigned long)#1}::operator()(void*, unsigned long) const
+  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::LockFreeMessageQueue<pubsub_itc_fw::ReactorControlCommand>::Node>::make_pool()::{lambda(void*, unsigned long)#1}::operator()(void*, unsigned long) const
+  UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::tests::NumaAwarePoolAllocatorTest::TestObject>::make_pool()::{lambda(void*, unsigned long)#1}::operator()(void*, unsigned long) const
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::tests::NumaAwarePoolAllocatorTest::TestObject>::~ExpandablePoolAllocator()::{lambda(pubsub_itc_fw::tests::NumaAwarePoolAllocatorTest::TestObject*, bool)#1}::operator()(pubsub_itc_fw::tests::NumaAwarePoolAllocatorTest::TestObject*, bool) const
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandableSlabAllocator.hpp lines 8/8 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp lines 31/32 functions 5/5
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp lines 31/31 functions 5/5
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FileLock.hpp lines 25/27 functions 5/5
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FileOpenMode.hpp lines 5/5 functions 3/3
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FixedSizeMemoryPool.hpp lines 119/128 functions 120/156
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::FixedSizeMemoryPool(int, pubsub_itc_fw::UseHugePagesFlag, std::function<void (void*, unsigned long)>)
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::allocate()
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::compare_exchange_weak(pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::HeadPtr&, pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::HeadPtr)
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::contains(open_orders::OpenOrderEntry const*) const
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::deallocate(open_orders::OpenOrderEntry*)
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::get_next_pool() const
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::load_head() const
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::object_from_slot(pubsub_itc_fw::Slot<open_orders::OpenOrderEntry>*)
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::pop_slot_from_free_list()
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::push_slot_to_free_list(pubsub_itc_fw::Slot<open_orders::OpenOrderEntry>*)
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::set_next_pool(pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>*)
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::slot_from_object(open_orders::OpenOrderEntry*)
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::sweep_constructed_slots(std::function<void (open_orders::OpenOrderEntry*, bool)>)
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<open_orders::OpenOrderEntry>::~FixedSizeMemoryPool()
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FixedCapacityRingBuffer.hpp lines 93/94 functions 158/159
+  UNCOVERED pubsub_itc_fw::FixedCapacityRingBuffer<std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > > >::operator=(pubsub_itc_fw::FixedCapacityRingBuffer<std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > > >&&)
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FixedSizeMemoryPool.hpp lines 121/130 functions 122/143
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::FixedSizeMemoryPool(int, pubsub_itc_fw::UseHugePagesFlag, std::function<void (void*, unsigned long)>)
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::allocate()
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::compare_exchange_weak(pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::HeadPtr&, pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::HeadPtr)
@@ -144,129 +170,260 @@ FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FixedSizeMemoryPool.hpp lines
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::get_next_pool() const
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::get_number_of_available_objects() const
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::is_full() const
+  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::link_next_pool(pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>*)
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::load_head() const
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::object_from_slot(pubsub_itc_fw::Slot<pubsub_itc_fw::CoverageDummy>*)
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::pop_slot_from_free_list()
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::push_slot_to_free_list(pubsub_itc_fw::Slot<pubsub_itc_fw::CoverageDummy>*)
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::set_next_pool(pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>*)
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::slot_from_object(pubsub_itc_fw::CoverageDummy*)
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::sweep_constructed_slots(std::function<void (pubsub_itc_fw::CoverageDummy*, bool)>)
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::uses_huge_pages() const
   UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::CoverageDummy>::~FixedSizeMemoryPool()
-  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::LockFreeMessageQueue<(anonymous namespace)::TestOrder>::Node>::set_next_pool(pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::LockFreeMessageQueue<(anonymous namespace)::TestOrder>::Node>*)
-  UNCOVERED pubsub_itc_fw::SlotStorage<open_orders::OpenOrderEntry>::object_ptr()
+  UNCOVERED pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::LockFreeMessageQueue<(anonymous namespace)::TestOrder>::Node>::link_next_pool(pubsub_itc_fw::FixedSizeMemoryPool<pubsub_itc_fw::LockFreeMessageQueue<(anonymous namespace)::TestOrder>::Node>*)
   UNCOVERED pubsub_itc_fw::SlotStorage<pubsub_itc_fw::CoverageDummy>::object_ptr()
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FwLogLevel.hpp lines 53/53 functions 11/11
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GaugeHandle.hpp lines 5/5 functions 2/2
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GaugeInterface.hpp lines 1/1 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GrowthReportingAllocator.hpp lines 19/19 functions 18/26
-  UNCOVERED bool pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >::operator==<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >(pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> > const&) const
-  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> >::GrowthReportingAllocator(pubsub_itc_fw::AllocationGrowthReporter*)
-  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> >::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >(pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> > const&)
-  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> >::reporter() const
-  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> >(pubsub_itc_fw::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> > const&)
-  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >::allocate(unsigned long)
-  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >::deallocate(tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true>*, unsigned long)
-  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >::reporter() const
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/HistogramHandle.hpp lines 5/6 functions 2/3
-  UNCOVERED pubsub_itc_fw::HistogramHandle::HistogramHandle()
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/HistogramInterface.hpp lines 1/1 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GatheredSends.hpp lines 29/30 functions 9/9
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GatheredWriting.hpp lines 44/49 functions 6/6
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GaugeHandle.hpp lines 8/8 functions 4/4
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GrowthReportingAllocator.hpp lines 19/19 functions 33/33
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/HistogramHandle.hpp lines 6/6 functions 3/3
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/HotPathThreadCount.hpp lines 0/7 functions 0/1
   UNCOVERED pubsub_itc_fw::answer_hot_path_thread_count_query(int, char**, unsigned long)
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/IdleTimeoutFlag.hpp lines 5/5 functions 3/3
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/InboundConnection.hpp lines 13/13 functions 7/7
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/InboundConnectionManager.hpp lines 3/3 functions 2/2
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/IncrementalRehashMap.hpp lines 291/292 functions 225/245
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/InboundConnection.hpp lines 39/39 functions 17/17
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/InboundConnectionManager.hpp lines 4/4 functions 2/2
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/IncrementalRehashMap.hpp lines 354/356 functions 345/386
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::ConstantHash, std::equal_to<int>, 8ul>::capacity_for(unsigned long)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::ConstantHash, std::equal_to<int>, 8ul>::complete_migration()
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::ConstantHash, std::equal_to<int>, 8ul>::reserve(unsigned long)
-  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 8ul>::capacity_for(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::KeyIsItsHome, std::equal_to<int>, 8ul>::begin_migration(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::KeyIsItsHome, std::equal_to<int>, 8ul>::complete_migration()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::KeyIsItsHome, std::equal_to<int>, 8ul>::finish_migration()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::KeyIsItsHome, std::equal_to<int>, 8ul>::move_slot(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 1ul>::capacity_for(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 1ul>::complete_migration()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 1ul>::migration_slots_remaining() const
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 1ul>::mutable_table_for(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 1ul>::remove_at(unsigned long, unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 1ul>::reserve(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 1ul>::shift_back_into(pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 1ul>::Table&, unsigned long)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 8ul>::complete_migration()
-  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 8ul>::reserve(unsigned long)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, std::hash<int>, std::equal_to<int>, 1ul>::capacity_for(unsigned long)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, std::hash<int>, std::equal_to<int>, 1ul>::reserve(unsigned long)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, std::hash<int>, std::equal_to<int>, 8ul>::complete_migration()
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::capacity_for(unsigned long)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::complete_migration()
-  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::erase(pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::ConstIterator const&)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::mutable_table_for(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::remove_at(unsigned long, unsigned long)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::reserve(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::shift_back_into(pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::Table&, unsigned long)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 8ul>::capacity_for(unsigned long)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 8ul>::complete_migration()
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 8ul>::reserve(unsigned long)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::hash<int>, std::equal_to<int>, 8ul>::capacity_for(unsigned long)
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::hash<int>, std::equal_to<int>, 8ul>::complete_migration()
   UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::hash<int>, std::equal_to<int>, 8ul>::reserve(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::begin_migration(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::bytes_to_hold(pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::Table const&)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::bytes_to_hold_in_memory() const
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::capacity() const
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::complete_migration()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::finish_migration()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::hand_over_ownership()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::hold_in_memory()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::lock_table(pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::Table&)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::move_slot(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<matching_engine::OrderKey, unsigned int, matching_engine::OrderKeyHash, std::equal_to<matching_engine::OrderKey>, 8ul>::page_bytes()
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/InetAddress.hpp lines 1/1 functions 1/1
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/IpAddressInterface.hpp lines 1/1 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LockFreeMessageQueue.hpp lines 87/88 functions 38/38
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeaderEpoch.hpp lines 9/9 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeaderStatement.hpp lines 8/8 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeaseHolder.hpp lines 55/55 functions 10/10
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeaseLinksInterface.hpp lines 1/1 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeaseParticipant.hpp lines 121/121 functions 28/28
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeasePromiseRecorderInterface.hpp lines 1/1 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeasePromiseStore.hpp lines 94/112 functions 8/9
+  UNCOVERED pubsub_itc_fw::LeasePromiseStore::abandon_temp(int) const
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeaseTiming.hpp lines 19/23 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeaseVoter.hpp lines 60/61 functions 16/16
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LockFreeMessageQueue.hpp lines 92/92 functions 43/43
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LogEpochTable.hpp lines 54/60 functions 10/10
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LoggedCommandIdentifiers.hpp lines 53/54 functions 15/15
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LoggedCommandIdentifiersBuilder.hpp lines 73/74 functions 19/19
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LoggerUtils.hpp lines 12/18 functions 1/1
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LoggingConfigurationLoader.hpp lines 16/16 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/MappedSlotStore.hpp lines 3/3 functions 2/2
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/MemoryLockingAllocator.hpp lines 27/27 functions 26/28
+  UNCOVERED bool pubsub_itc_fw::MemoryLockingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<unsigned long, unsigned long>, false> >::operator==<tsl::detail_robin_hash::bucket_entry<std::pair<unsigned long, unsigned long>, false> >(pubsub_itc_fw::MemoryLockingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<unsigned long, unsigned long>, false> > const&) const
+  UNCOVERED bool pubsub_itc_fw::MemoryLockingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<unsigned long, unsigned long>, true> >::operator==<tsl::detail_robin_hash::bucket_entry<std::pair<unsigned long, unsigned long>, true> >(pubsub_itc_fw::MemoryLockingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<unsigned long, unsigned long>, true> > const&) const
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/MessagesWaitingLimit.hpp lines 37/37 functions 8/8
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/MetricKey.hpp lines 12/12 functions 6/6
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/MetricsConfigurationLoader.hpp lines 0/19 functions 0/1
-  UNCOVERED pubsub_itc_fw::MetricsConfigurationLoader::load(pubsub_itc_fw::TomlConfiguration const&)
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/MetricsConfigurationLoader.hpp lines 7/19 functions 1/1
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/MirroredBuffer.hpp lines 2/2 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/NoOpCounter.hpp lines 2/2 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/NoOpGauge.hpp lines 2/2 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/NoOpHistogram.hpp lines 2/2 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/OutboundConnection.hpp lines 42/42 functions 20/20
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/OutboundConnectionManager.hpp lines 5/5 functions 4/4
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PduParser.hpp lines 1/1 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PduProtocolHandler.hpp lines 5/5 functions 3/3
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PreconditionAssertion.hpp lines 15/16 functions 4/4
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusCounter.hpp lines 4/4 functions 2/2
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/OutboundConnection.hpp lines 66/66 functions 29/29
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/OutboundConnectionManager.hpp lines 11/11 functions 6/6
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PacedResend.hpp lines 32/32 functions 9/9
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PairLeaseAgent.hpp lines 295/314 functions 35/38
+  UNCOVERED pubsub_itc_fw::PairLeaseAgent::leading() const
+  UNCOVERED pubsub_itc_fw::PairLeaseAgent::say_peer_may_lead(std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >)
+  UNCOVERED pubsub_itc_fw::PairLeaseAgent::say_peer_may_not_lead(std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >)
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PduParser.hpp lines 8/8 functions 4/4
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PduProtocolHandler.hpp lines 3/3 functions 2/2
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PeerStatementsFlag.hpp lines 5/5 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PreconditionAssertion.hpp lines 18/19 functions 5/5
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusEndpoint.hpp lines 2/2 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusGauge.hpp lines 4/4 functions 2/2
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusHistogram.hpp lines 4/4 functions 2/2
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ProtocolHandlerInterface.hpp lines 9/9 functions 5/5
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ProtocolHandlerInterface.hpp lines 13/17 functions 7/9
+  UNCOVERED pubsub_itc_fw::ProtocolHandlerInterface::limit_messages_waiting(std::shared_ptr<pubsub_itc_fw::MessagesWaitingLimit>)
+  UNCOVERED pubsub_itc_fw::ProtocolHandlerInterface::send_gathered(pubsub_itc_fw::WaitingSend const*, unsigned long)
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ProtocolType.hpp lines 5/5 functions 3/3
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/PubSubItcException.hpp lines 1/5 functions 1/2
   UNCOVERED pubsub_itc_fw::PubSubItcException::throw_errno(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, char const*, int)
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/QueueConfiguration.hpp lines 1/1 functions 1/1
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/QuillLogger.hpp lines 4/4 functions 2/2
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/RawBytesProtocolHandler.hpp lines 3/3 functions 2/2
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/Reactor.hpp lines 19/21 functions 8/9
-  UNCOVERED pubsub_itc_fw::Reactor::metrics()
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ReactorConfiguration.hpp lines 16/16 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ReactorControlCommand.hpp lines 22/24 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/Reactor.hpp lines 29/29 functions 13/13
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ReactorConfiguration.hpp lines 17/17 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ReactorControlCommand.hpp lines 33/34 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/RecentAnswers.hpp lines 25/26 functions 4/4
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/RecordEpochBeforeAskingInterface.hpp lines 1/1 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ReplicatedWal.hpp lines 36/51 functions 22/28
+  UNCOVERED pubsub_itc_fw::ReplicatedWal::alone() const
+  UNCOVERED pubsub_itc_fw::ReplicatedWal::follower_acknowledged_through() const
+  UNCOVERED pubsub_itc_fw::ReplicatedWal::note_the_day_has_ended()
+  UNCOVERED pubsub_itc_fw::ReplicatedWal::publish_positions_to(pubsub_itc_fw::WalFollowingPositions&)
+  UNCOVERED pubsub_itc_fw::ReplicatedWal::take_snapshot()
+  UNCOVERED pubsub_itc_fw::ReplicatedWal::waits_for_confirmation() const
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/RollingLogfileConfiguration.hpp lines 10/13 functions 3/3
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ServiceRegistry.hpp lines 44/44 functions 13/13
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/SendLatencyClass.hpp lines 3/3 functions 2/2
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/SendsToGoneConnections.hpp lines 8/8 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ServiceRegistry.hpp lines 50/50 functions 24/31
+  UNCOVERED void pubsub_itc_fw::ServiceRegistry::add<16ul>(char const (&) [16ul], pubsub_itc_fw::NetworkEndpointConfiguration, pubsub_itc_fw::NetworkEndpointConfiguration)
+  UNCOVERED void pubsub_itc_fw::ServiceRegistry::add<20ul>(char const (&) [20ul], pubsub_itc_fw::NetworkEndpointConfiguration, pubsub_itc_fw::NetworkEndpointConfiguration)
+  UNCOVERED void pubsub_itc_fw::ServiceRegistry::add<23ul>(char const (&) [23ul], pubsub_itc_fw::NetworkEndpointConfiguration, pubsub_itc_fw::NetworkEndpointConfiguration)
+  UNCOVERED void pubsub_itc_fw::ServiceRegistry::add<26ul>(char const (&) [26ul], pubsub_itc_fw::NetworkEndpointConfiguration, pubsub_itc_fw::NetworkEndpointConfiguration)
+  UNCOVERED void pubsub_itc_fw::ServiceRegistry::add<31ul>(char const (&) [31ul], pubsub_itc_fw::NetworkEndpointConfiguration, pubsub_itc_fw::NetworkEndpointConfiguration)
+  UNCOVERED void pubsub_itc_fw::ServiceRegistry::add<33ul>(char const (&) [33ul], pubsub_itc_fw::NetworkEndpointConfiguration, pubsub_itc_fw::NetworkEndpointConfiguration)
+  UNCOVERED void pubsub_itc_fw::ServiceRegistry::add<8ul>(char const (&) [8ul], pubsub_itc_fw::NetworkEndpointConfiguration, pubsub_itc_fw::NetworkEndpointConfiguration)
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/SimpleSpan.hpp lines 8/8 functions 8/8
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/SingleWriterHistogram.hpp lines 15/15 functions 5/5
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/SingleWriterHistogramRegistry.hpp lines 2/2 functions 2/2
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/SlabHandle.hpp lines 6/8 functions 3/4
   UNCOVERED pubsub_itc_fw::format_as(pubsub_itc_fw::SlabHandle)
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/StoreCapacityDiffersException.hpp lines 6/6 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TestEventChannel.hpp lines 11/13 functions 7/63
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send<pubsub_itc_fw::CommandReadingChanged>(short, pubsub_itc_fw::CommandReadingChanged const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send<pubsub_itc_fw::StatementRecorded>(short, pubsub_itc_fw::StatementRecorded const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw::CommandReadingChanged>(short, pubsub_itc_fw::CommandReadingChanged const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw::StatementRecorded>(short, pubsub_itc_fw::StatementRecorded const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::BookCancelled>(short, pubsub_itc_fw_app::BookCancelled const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::CatchUp>(short, pubsub_itc_fw_app::CatchUp const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::CheckingLogForRepeats>(short, pubsub_itc_fw_app::CheckingLogForRepeats const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::DiedApplying>(short, pubsub_itc_fw_app::DiedApplying const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::EngineHandedOver>(short, pubsub_itc_fw_app::EngineHandedOver const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::EngineServedFromWal>(short, pubsub_itc_fw_app::EngineServedFromWal const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::EngineTakesOrdersAgain>(short, pubsub_itc_fw_app::EngineTakesOrdersAgain const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::FollowerCannotLead>(short, pubsub_itc_fw_app::FollowerCannotLead const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::HaltLifted>(short, pubsub_itc_fw_app::HaltLifted const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::Halted>(short, pubsub_itc_fw_app::Halted const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::HeldOrdersFull>(short, pubsub_itc_fw_app::HeldOrdersFull const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::HeldReportsReleased>(short, pubsub_itc_fw_app::HeldReportsReleased const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::IdentifierRefused>(short, pubsub_itc_fw_app::IdentifierRefused const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::KeptReportsForwarded>(short, pubsub_itc_fw_app::KeptReportsForwarded const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::KeptReportsSent>(short, pubsub_itc_fw_app::KeptReportsSent const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::LogonRefused>(short, pubsub_itc_fw_app::LogonRefused const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::OrderAcceptanceChanged>(short, pubsub_itc_fw_app::OrderAcceptanceChanged const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::OrderOutcome>(short, pubsub_itc_fw_app::OrderOutcome const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ProgressReported>(short, pubsub_itc_fw_app::ProgressReported const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::RegionRebuilt>(short, pubsub_itc_fw_app::RegionRebuilt const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::RegionUnusable>(short, pubsub_itc_fw_app::RegionUnusable const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReplayAnswered>(short, pubsub_itc_fw_app::ReplayAnswered const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReplayAskedAgain>(short, pubsub_itc_fw_app::ReplayAskedAgain const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReplayDeclined>(short, pubsub_itc_fw_app::ReplayDeclined const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReportDroppedGatewayNotConnected>(short, pubsub_itc_fw_app::ReportDroppedGatewayNotConnected const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReportDroppedNoSession>(short, pubsub_itc_fw_app::ReportDroppedNoSession const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReportDroppedSessionNotConnected>(short, pubsub_itc_fw_app::ReportDroppedSessionNotConnected const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReportSentFromWal>(short, pubsub_itc_fw_app::ReportSentFromWal const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReportsDiscarded>(short, pubsub_itc_fw_app::ReportsDiscarded const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReportsHeld>(short, pubsub_itc_fw_app::ReportsHeld const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReportsHeldForGateway>(short, pubsub_itc_fw_app::ReportsHeldForGateway const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReportsReleased>(short, pubsub_itc_fw_app::ReportsReleased const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ReportsSentToGateway>(short, pubsub_itc_fw_app::ReportsSentToGateway const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ResendCompleted>(short, pubsub_itc_fw_app::ResendCompleted const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ResendRequested>(short, pubsub_itc_fw_app::ResendRequested const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ResumedAsLeader>(short, pubsub_itc_fw_app::ResumedAsLeader const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::SessionAnnounced>(short, pubsub_itc_fw_app::SessionAnnounced const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::SessionAnnouncedAgain>(short, pubsub_itc_fw_app::SessionAnnouncedAgain const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::SessionCancelWritten>(short, pubsub_itc_fw_app::SessionCancelWritten const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::SessionDisconnected>(short, pubsub_itc_fw_app::SessionDisconnected const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::SessionEstablished>(short, pubsub_itc_fw_app::SessionEstablished const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::SessionOrdersCancelled>(short, pubsub_itc_fw_app::SessionOrdersCancelled const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::SessionProvisioned>(short, pubsub_itc_fw_app::SessionProvisioned const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::SessionReclaimed>(short, pubsub_itc_fw_app::SessionReclaimed const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::SessionResumed>(short, pubsub_itc_fw_app::SessionResumed const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::SessionUnboundRecorded>(short, pubsub_itc_fw_app::SessionUnboundRecorded const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::SettingsDifferFromPeer>(short, pubsub_itc_fw_app::SettingsDifferFromPeer const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ThrottleApplied>(short, pubsub_itc_fw_app::ThrottleApplied const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ThrottleStarted>(short, pubsub_itc_fw_app::ThrottleStarted const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::ThrottleStopped>(short, pubsub_itc_fw_app::ThrottleStopped const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::TradingSessionChanged>(short, pubsub_itc_fw_app::TradingSessionChanged const&)
+  UNCOVERED void pubsub_itc_fw::TestEventChannel::send_event<pubsub_itc_fw_app::UndeliveredReportsSent>(short, pubsub_itc_fw_app::UndeliveredReportsSent const&)
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TestEventsConfiguration.hpp lines 47/56 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ThreadConfinementCheck.hpp lines 23/23 functions 6/6
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ThreadLifecycleState.hpp lines 20/23 functions 3/4
   UNCOVERED pubsub_itc_fw::ThreadLifecycleState::as_string[abi:cxx11]() const
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ThreadLookupInterface.hpp lines 1/1 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ThreadWithJoinTimeout.hpp lines 60/64 functions 147/149
-  UNCOVERED pubsub_itc_fw::ThreadWithJoinTimeout::start<fix_order_gateway::FixCapture::FixCapture(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, pubsub_itc_fw::QuillLogger&, unsigned long)::{lambda()#2}>(fix_order_gateway::FixCapture::FixCapture(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, pubsub_itc_fw::QuillLogger&, unsigned long)::{lambda()#2}&&)::{lambda(void*)#1}::operator()(void*) const
-  UNCOVERED void pubsub_itc_fw::ThreadWithJoinTimeout::start<fix_order_gateway::FixCapture::FixCapture(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, pubsub_itc_fw::QuillLogger&, unsigned long)::{lambda()#2}>(fix_order_gateway::FixCapture::FixCapture(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, pubsub_itc_fw::QuillLogger&, unsigned long)::{lambda()#2}&&)
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ThreadWithJoinTimeout.hpp lines 60/64 functions 213/214
+  UNCOVERED void pubsub_itc_fw::ThreadWithJoinTimeout::start<pubsub_itc_fw::BackgroundRecorder<arbiter::ArbiterThread::StatementsRecord>::BackgroundRecorder(std::function<bool (arbiter::ArbiterThread::StatementsRecord const&)>, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)::{lambda()#1}>(pubsub_itc_fw::BackgroundRecorder<arbiter::ArbiterThread::StatementsRecord>::BackgroundRecorder(std::function<bool (arbiter::ArbiterThread::StatementsRecord const&)>, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)::{lambda()#1}&&)
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/Timer.hpp lines 10/10 functions 5/5
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TimerHandler.hpp lines 2/2 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TimerType.hpp lines 5/5 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TimerType.hpp lines 7/7 functions 4/4
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TlsContext.hpp lines 2/2 functions 1/1
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TlsRawBytesProtocolHandler.hpp lines 5/5 functions 3/3
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TlsState.hpp lines 7/7 functions 3/3
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TopicControlChannel.hpp lines 15/15 functions 4/4
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TopicPublisher.hpp lines 179/218 functions 14/16
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TopicPublisher.hpp lines 198/229 functions 17/19
   UNCOVERED pubsub_itc_fw::TopicPublisher::drop_all_subscribers()
-  UNCOVERED pubsub_itc_fw::TopicPublisher::set_leader(bool)
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TopicSubscriberChannel.hpp lines 40/42 functions 6/6
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TopicSubscriberThread.hpp lines 36/50 functions 7/12
-  UNCOVERED pubsub_itc_fw::TopicSubscriberThread::on_connection_failed(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
+  UNCOVERED pubsub_itc_fw::TopicPublisher::forget_waiting(pubsub_itc_fw::ConnectionID)::{lambda(pubsub_itc_fw::TopicPublisher::WaitingSubscription const&)#1}::operator()(pubsub_itc_fw::TopicPublisher::WaitingSubscription const&) const
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TopicSubscriberChannel.hpp lines 45/47 functions 8/8
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TopicSubscriberThread.hpp lines 50/76 functions 11/18
   UNCOVERED pubsub_itc_fw::TopicSubscriberThread::on_connection_lost(pubsub_itc_fw::ConnectionID const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
   UNCOVERED pubsub_itc_fw::TopicSubscriberThread::on_itc_message(pubsub_itc_fw::EventMessage const&)
+  UNCOVERED pubsub_itc_fw::TopicSubscriberThread::on_other_connection_established(pubsub_itc_fw::ConnectionID)
+  UNCOVERED pubsub_itc_fw::TopicSubscriberThread::on_other_connection_lost(pubsub_itc_fw::ConnectionID const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
+  UNCOVERED pubsub_itc_fw::TopicSubscriberThread::on_other_framework_pdu_message(pubsub_itc_fw::EventMessage const&)
   UNCOVERED pubsub_itc_fw::TopicSubscriberThread::topic_name[abi:cxx11]() const
-  UNCOVERED pubsub_itc_fw::TopicSubscriberThread::topic_send_ack(pubsub_itc_fw::ConnectionID, pubsub_itc_fw_app::TopicAck const&)
+  UNCOVERED pubsub_itc_fw::TopicSubscriberThread::topic_send_ack(pubsub_itc_fw::ConnectionID, pubsub_itc_fw::TopicAck const&)
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/TradingDayOfFile.hpp lines 42/44 functions 5/5
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/UnansweredCommandStore.hpp lines 110/113 functions 16/16
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/UnansweredCommands.hpp lines 9/9 functions 5/5
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/UseHugePagesFlag.hpp lines 5/5 functions 3/3
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/Wal.hpp lines 13/13 functions 8/8
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/VoterPeerContact.hpp lines 27/27 functions 9/9
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/VotingPair.hpp lines 19/19 functions 2/2
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WaitingSendQueue.hpp lines 50/51 functions 12/12
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/Wal.hpp lines 25/30 functions 13/15
+  UNCOVERED pubsub_itc_fw::Wal::segments_filled_inline() const
+  UNCOVERED pubsub_itc_fw::Wal::set_helper_cores(std::vector<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>, std::allocator<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int> > > const&)
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WalCommandSearch.hpp lines 67/73 functions 13/13
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WalCursor.hpp lines 3/3 functions 2/2
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WalWriter.hpp lines 5/5 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WalEntryChecks.hpp lines 25/26 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WalEntryContents.hpp lines 16/16 functions 2/2
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WalFollowerClient.hpp lines 7/7 functions 4/4
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WalFollowerService.hpp lines 4/4 functions 3/3
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WalFollowing.hpp lines 39/42 functions 12/12
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WalHandedOverFollowers.hpp lines 7/7 functions 4/4
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WalWriter.hpp lines 17/20 functions 7/8
+  UNCOVERED pubsub_itc_fw::WalWriter::set_helper_cores(std::vector<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>, std::allocator<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int> > > const&)
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WallClock.hpp lines 9/9 functions 5/5
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WrappedInteger.hpp lines 17/19 functions 19/22
   UNCOVERED pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>::operator==(pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int> const&) const
   UNCOVERED std::ostream& pubsub_itc_fw::operator<< <pubsub_itc_fw::ServiceIDTag, int>(std::ostream&, pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::ServiceIDTag, int> const&)
   UNCOVERED std::ostream& pubsub_itc_fw::operator<< <pubsub_itc_fw::TimerIDTag, int>(std::ostream&, pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::TimerIDTag, int> const&)
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/utils/SimpleSpan.hpp lines 8/8 functions 8/8
-FILE libraries/pubsub_itc_fw/src/ApplicationThread.cpp lines 271/332 functions 30/30
+FILE libraries/pubsub_itc_fw/src/ApplicationThread.cpp lines 388/487 functions 41/46
+  UNCOVERED auto pubsub_itc_fw::ApplicationThread::process_message(pubsub_itc_fw::EventMessage const&)::{lambda(auto:1 const&)#1}::operator()<std::pair<pubsub_itc_fw::ConnectionID, std::shared_ptr<pubsub_itc_fw::MessagesWaitingLimit> > >(std::pair<pubsub_itc_fw::ConnectionID, std::shared_ptr<pubsub_itc_fw::MessagesWaitingLimit> > const&) const
+  UNCOVERED pubsub_itc_fw::ApplicationThread::cancel_timer(pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::TimerIDTag, int>)::{lambda(pubsub_itc_fw::ApplicationThread::TimerCheckedBetweenMessages const&)#1}::operator()(pubsub_itc_fw::ApplicationThread::TimerCheckedBetweenMessages const&) const
+  UNCOVERED pubsub_itc_fw::ApplicationThread::note_the_day_has_ended()
+  UNCOVERED pubsub_itc_fw::ApplicationThread::release_pdu_payload(pubsub_itc_fw::SlabHandle, unsigned char const*) const
+  UNCOVERED pubsub_itc_fw::ApplicationThread::stop_for_end_of_day(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
 FILE libraries/pubsub_itc_fw/src/CpuLayout.cpp lines 39/86 functions 1/6
   UNCOVERED pubsub_itc_fw::(anonymous namespace)::join_core_ids(std::vector<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>, std::allocator<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int> > > const&)
   UNCOVERED pubsub_itc_fw::CpuLayout::verify_cores_present[abi:cxx11]() const
@@ -277,47 +434,63 @@ FILE libraries/pubsub_itc_fw/src/CpuRegistry.cpp lines 81/104 functions 6/7
   UNCOVERED pubsub_itc_fw::CpuRegistry::operator=(pubsub_itc_fw::CpuRegistry&&)
 FILE libraries/pubsub_itc_fw/src/Crc32.cpp lines 20/20 functions 4/4
 FILE libraries/pubsub_itc_fw/src/EmptySlabQueue.cpp lines 20/20 functions 3/3
-FILE libraries/pubsub_itc_fw/src/EventMessage.cpp lines 68/75 functions 20/20
-FILE libraries/pubsub_itc_fw/src/ExpandableSlabAllocator.cpp lines 140/146 functions 13/13
-FILE libraries/pubsub_itc_fw/src/FileSystemUtils.cpp lines 18/20 functions 1/1
+FILE libraries/pubsub_itc_fw/src/EventMessage.cpp lines 68/71 functions 20/20
+FILE libraries/pubsub_itc_fw/src/ExpandableSlabAllocator.cpp lines 139/145 functions 13/13
+FILE libraries/pubsub_itc_fw/src/FileSystemUtils.cpp lines 50/56 functions 2/2
 FILE libraries/pubsub_itc_fw/src/HighResolutionClock.cpp lines 4/4 functions 1/1
-FILE libraries/pubsub_itc_fw/src/InboundConnection.cpp lines 17/19 functions 3/3
-FILE libraries/pubsub_itc_fw/src/InboundConnectionManager.cpp lines 224/315 functions 18/19
-  UNCOVERED pubsub_itc_fw::InboundConnectionManager::find_by_id(pubsub_itc_fw::ConnectionID) const
+FILE libraries/pubsub_itc_fw/src/InboundConnection.cpp lines 20/23 functions 4/4
+FILE libraries/pubsub_itc_fw/src/InboundConnectionManager.cpp lines 300/383 functions 32/33
+  UNCOVERED pubsub_itc_fw::InboundConnectionManager::has_sends_to_write() const
 FILE libraries/pubsub_itc_fw/src/InetAddress.cpp lines 96/116 functions 12/12
-FILE libraries/pubsub_itc_fw/src/MetricKey.cpp lines 40/52 functions 4/5
-  UNCOVERED pubsub_itc_fw::MetricKey::compose(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
+FILE libraries/pubsub_itc_fw/src/LastStateFile.cpp lines 54/66 functions 6/6
+FILE libraries/pubsub_itc_fw/src/LockedMemory.cpp lines 18/26 functions 4/4
+FILE libraries/pubsub_itc_fw/src/MappedSlotStore.cpp lines 170/173 functions 28/28
+FILE libraries/pubsub_itc_fw/src/MetricKey.cpp lines 51/52 functions 5/5
 FILE libraries/pubsub_itc_fw/src/MillisecondClock.cpp lines 5/5 functions 1/1
 FILE libraries/pubsub_itc_fw/src/MirroredBuffer.cpp lines 53/59 functions 10/10
-FILE libraries/pubsub_itc_fw/src/OutboundConnection.cpp lines 61/62 functions 6/6
-FILE libraries/pubsub_itc_fw/src/OutboundConnectionManager.cpp lines 306/439 functions 17/17
-FILE libraries/pubsub_itc_fw/src/PduFramer.cpp lines 53/54 functions 5/5
-FILE libraries/pubsub_itc_fw/src/PduParser.cpp lines 89/106 functions 5/6
-  UNCOVERED pubsub_itc_fw::PduParser::set_inline_handler(std::function<bool (short, long, unsigned char const*, unsigned long)>)
-FILE libraries/pubsub_itc_fw/src/PduProtocolHandler.cpp lines 43/49 functions 7/7
-FILE libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp lines 96/108 functions 12/16
-  UNCOVERED pubsub_itc_fw::PrometheusEndpoint::key_for(char const*, char const*) const
-  UNCOVERED pubsub_itc_fw::PrometheusEndpoint::register_counter(char const*, char const*, char const*)
-  UNCOVERED pubsub_itc_fw::PrometheusEndpoint::register_gauge(char const*, char const*, char const*)
-  UNCOVERED pubsub_itc_fw::PrometheusEndpoint::register_histogram(char const*, char const*, char const*, std::vector<double, std::allocator<double> > const&)
-FILE libraries/pubsub_itc_fw/src/QuillLogger.cpp lines 109/111 functions 17/17
-FILE libraries/pubsub_itc_fw/src/RawBytesProtocolHandler.cpp lines 86/99 functions 9/9
-FILE libraries/pubsub_itc_fw/src/Reactor.cpp lines 486/700 functions 42/43
+FILE libraries/pubsub_itc_fw/src/OutboundConnection.cpp lines 73/76 functions 7/7
+FILE libraries/pubsub_itc_fw/src/OutboundConnectionManager.cpp lines 428/567 functions 33/34
+  UNCOVERED pubsub_itc_fw::OutboundConnectionManager::has_sends_to_write() const
+FILE libraries/pubsub_itc_fw/src/PduFramer.cpp lines 83/85 functions 6/6
+FILE libraries/pubsub_itc_fw/src/PduParser.cpp lines 98/109 functions 5/5
+FILE libraries/pubsub_itc_fw/src/PduProtocolHandler.cpp lines 65/73 functions 11/11
+FILE libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp lines 97/101 functions 13/13
+FILE libraries/pubsub_itc_fw/src/QuillLogger.cpp lines 115/117 functions 18/18
+FILE libraries/pubsub_itc_fw/src/RawBytesProtocolHandler.cpp lines 84/99 functions 9/9
+FILE libraries/pubsub_itc_fw/src/Reactor.cpp lines 674/905 functions 59/60
   UNCOVERED pubsub_itc_fw::Reactor::verify_hot_path_thread_count[abi:cxx11](unsigned long) const
-FILE libraries/pubsub_itc_fw/src/SlabAllocator.cpp lines 67/71 functions 15/16
-  UNCOVERED pubsub_itc_fw::SlabAllocator::is_current() const
+FILE libraries/pubsub_itc_fw/src/ReplicatedWal.cpp lines 579/681 functions 47/51
+  UNCOVERED pubsub_itc_fw::ReplicatedWal::dispatch_message(pubsub_itc_fw::ConnectionID const&, short, unsigned char const*, unsigned long, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >)::{lambda(char const*)#1}::operator()(char const*) const
+  UNCOVERED pubsub_itc_fw::ReplicatedWal::follower_too_far_behind(char const*, std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >)
+  UNCOVERED pubsub_itc_fw::ReplicatedWal::open(std::chrono::time_point<std::chrono::_V2::steady_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >)::{lambda(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)#1}::operator()(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
+  UNCOVERED pubsub_itc_fw::to_string(pubsub_itc_fw::ReplicaRole)
+FILE libraries/pubsub_itc_fw/src/SingleWriterHistogram.cpp lines 25/26 functions 4/4
+FILE libraries/pubsub_itc_fw/src/SingleWriterHistogramRegistry.cpp lines 41/41 functions 2/2
+FILE libraries/pubsub_itc_fw/src/SlabAllocator.cpp lines 64/66 functions 15/15
 FILE libraries/pubsub_itc_fw/src/StringUtils.cpp lines 43/45 functions 7/7
 FILE libraries/pubsub_itc_fw/src/TcpAcceptor.cpp lines 36/41 functions 12/12
 FILE libraries/pubsub_itc_fw/src/TcpConnector.cpp lines 63/70 functions 18/18
-FILE libraries/pubsub_itc_fw/src/TcpSocket.cpp lines 157/193 functions 33/33
-FILE libraries/pubsub_itc_fw/src/TimerHandler.cpp lines 38/54 functions 3/3
+FILE libraries/pubsub_itc_fw/src/TcpSocket.cpp lines 175/219 functions 35/35
+FILE libraries/pubsub_itc_fw/src/TechnicalEventsSubscription.cpp lines 43/51 functions 5/7
+  UNCOVERED pubsub_itc_fw::TechnicalEventsSubscription::already_ended(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, int)
+  UNCOVERED pubsub_itc_fw::TechnicalEventsSubscription::record_the_end(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, int)
+FILE libraries/pubsub_itc_fw/src/TestEventChannel.cpp lines 89/92 functions 8/8
+FILE libraries/pubsub_itc_fw/src/TimerHandler.cpp lines 45/62 functions 3/3
 FILE libraries/pubsub_itc_fw/src/TlsContext.cpp lines 59/65 functions 6/6
 FILE libraries/pubsub_itc_fw/src/TlsRawBytesProtocolHandler.cpp lines 126/165 functions 12/12
 FILE libraries/pubsub_itc_fw/src/TlsState.cpp lines 44/44 functions 3/3
-FILE libraries/pubsub_itc_fw/src/TomlConfiguration.cpp lines 329/364 functions 53/54
-  UNCOVERED pubsub_itc_fw::TomlConfiguration::get_required_except(std::basic_string_view<char, std::char_traits<char> >, std::vector<double, std::allocator<double> >&) const
-FILE libraries/pubsub_itc_fw/src/Wal.cpp lines 109/113 functions 10/10
-FILE libraries/pubsub_itc_fw/src/WalCursor.cpp lines 79/93 functions 6/6
-FILE libraries/pubsub_itc_fw/src/WalReader.cpp lines 59/68 functions 3/3
-FILE libraries/pubsub_itc_fw/src/WalWriter.cpp lines 63/72 functions 7/7
+FILE libraries/pubsub_itc_fw/src/TomlConfiguration.cpp lines 361/388 functions 57/57
+FILE libraries/pubsub_itc_fw/src/UnansweredCommands.cpp lines 94/106 functions 13/13
+FILE libraries/pubsub_itc_fw/src/Wal.cpp lines 210/266 functions 17/19
+  UNCOVERED pubsub_itc_fw::Wal::first_entry() const
+  UNCOVERED pubsub_itc_fw::Wal::first_wall_time_ns() const
+FILE libraries/pubsub_itc_fw/src/WalCursor.cpp lines 103/117 functions 10/10
+FILE libraries/pubsub_itc_fw/src/WalFollowerClient.cpp lines 53/57 functions 9/10
+  UNCOVERED pubsub_itc_fw::WalFollowerClient::on_disconnected(pubsub_itc_fw::ConnectionID const&)
+FILE libraries/pubsub_itc_fw/src/WalFollowerService.cpp lines 130/144 functions 11/12
+  UNCOVERED pubsub_itc_fw::WalFollowerService::handed_over_followers() const
+FILE libraries/pubsub_itc_fw/src/WalHandedOverFollowers.cpp lines 193/204 functions 18/18
+FILE libraries/pubsub_itc_fw/src/WalReader.cpp lines 88/98 functions 7/7
+FILE libraries/pubsub_itc_fw/src/WalReadingThread.cpp lines 160/193 functions 11/11
+FILE libraries/pubsub_itc_fw/src/WalWriter.cpp lines 275/308 functions 26/26
 FILE libraries/scram_crypto/ScramCrypto.cpp lines 38/42 functions 7/7
