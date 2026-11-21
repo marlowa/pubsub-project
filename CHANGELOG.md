@@ -9,70 +9,139 @@ change in any release.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-21
+
+New features are frozen while the design is restored, phase by phase, under `docs/recovery_plan.md`. Phases 1 to 11
+of that plan are finished, and phase 12, returning to the bug list, is under way. The trading day was built during
+phase 12, because the bug list needed it: a venue whose open orders were never cancelled at the end of the day, and
+whose files from one day were taken as a restart on the next, broke two of the design principles. The entries below
+describe the venue as it now is. `docs/history/releases/v0.6.0.md` gives the highlights and what to change when
+upgrading.
+
 ### Added
 
-- **An operator halts trading, and lifts a halt, with `scripts/operator_halt.py`**, which the release now
-  ships with the two Python modules it needs (`lib/python/pdu_framing.py` and `leader_follower.py`). It
-  sends `OperatorHaltRequest` to both sequencers over a new listener for operators, `[operator]` in each
-  sequencer's configuration, which accepts only TLS with a client certificate signed by the operator's
-  certificate authority. The leading sequencer halts without cancelling anything, and lifts a halt only
-  once a matching engine leads and every order and cancel written before the halt has been answered;
-  otherwise it declines and says why (`docs/availability/voided_commands.md`, section 6). `deploy.py`
-  makes the authority, the operator's certificate and each listener's certificate from the new
-  `[operator_certificates]` section of the environment file; add that section, and the five
-  `operator_*` settings of each sequencer, to any environment file of your own. Scenarios 94 and 95
-  check it.
+- **The trading day.** Every phase is entered in order, once, either on an operator's request
+  (`scripts/trading_phase.py`) or at the time in the day's schedule, which the leading sequencer holds and follows.
+  Members' new orders and cancels are accepted only in pre-open and open; the gateways refuse them in every other
+  phase and say why, and every member is told of each change of phase. The close cancels every order still open and
+  tells each member. Every technical event is published on a topic of its own, `technical_events`.
+  `docs/venue/trading_phases.md` and `docs/venue/start_and_end_of_day.md` describe it, and requirements R-0164 to
+  R-0175 in the functional specification state it.
+- **The start and the end of the trading day.** `scripts/trading_day.py start` checks the day's files, writes the run
+  manifest and starts the day. Each component is given the trading day on its command line, `--trading-day D`, and
+  refuses a file written on another day. The end of day is two events in the WAL: the end-of-day begin ends trading,
+  and the leading sequencer writes the end-of-day end once the follower sequencer and both publishers hold every
+  record up to the begin, or once a limit of time has passed. On the end every component shuts itself down, keeping a
+  file of its last trading state, and its launcher archives its files under `archive_dir`.
+  `trading_day.py end` archives the files of a component that missed the end. `scripts/trading_day_test.py` and
+  scenarios 111, 113, 117 and 118 check it.
+- **An operator halts trading, and lifts a halt, with `scripts/operator_halt.py`**, which the release ships with the
+  two Python modules it needs (`lib/python/pdu_framing.py` and `leader_follower.py`). It sends
+  `OperatorHaltRequest` to both sequencers over a listener for operators, `[operator]` in each sequencer's
+  configuration, which accepts only TLS with a client certificate signed by the operator's certificate authority. The
+  leading sequencer halts without cancelling anything, and lifts a halt only once a matching engine leads and every
+  order and cancel written before the halt has been answered; otherwise it declines and says why
+  (`docs/availability/voided_commands.md`, section 6). Scenarios 94 and 95 check it.
+- **A gateway bounds what it has read and not yet answered.** Each gateway limits the commands it has sent and not
+  yet had answered, a member connection to the binary gateway may have at most `messages_waiting_each` messages
+  waiting, and each gateway instance accepts at most `[members] most_connected` members, refusing a logon beyond it with a
+  reason. Its command queue is sized from those settings, so under overload the leading sequencer no longer falls so
+  far behind that it loses its lease (BUG-0251, BUG-0279).
+- **The matching engine paces its reports.** While the leading sequencer has a set number of its reports waiting, the
+  engine stops reading commands, so a fast catch-up no longer loses reports (BUG-0234). The framework gives any
+  connection a limit on the messages waiting in its thread's queue, and the reactor stops reading the connection
+  while that many wait; one read hands on at most 64 messages, so a flooded connection no longer holds its reactor
+  (BUG-0238).
+- **A cancel of many orders is carried out in pieces of 2,000**, so cancelling a session's orders, or the book, no
+  longer stops the matching engine for the whole cancel (BUG-0255).
+- **Cancel on disconnect is carried out by the venue, where the orders are.** A member's instruction travels with its
+  session, and its orders are cancelled when its grace period runs out (BUG-0090, BUG-0091, BUG-0239).
+- **Every command is checked once against the WAL** by the leading sequencer, in one place; a command sent again
+  after a change of leader is answered from the WAL, and both gateways refuse a reused ClOrdID (phase 9).
+- **The reactor writes a connection's waiting messages with one `sendmsg()` call.**
+- **Whether the order path allocates from the heap can be established on demand**, with
+  `scripts/heap_allocation_count.py` (BUG-0087).
+- **`scripts/target_platform.py`**: on Rocky Linux 8 and Red Hat Enterprise Linux 8, a relative path in an
+  environment file's `[paths]` section carries the platform's suffix, so `devenv.py`, `deploy.py` and the
+  operator's tools find the directory the build staged into there (BUG-0041).
+- `build.py --compiler` (the project builds and passes its tests with clang 14), `--keep-going` and `--skip-tla`;
+  `scripts/check_doxygen.sh`, which checks the documentation comments in about two seconds;
+  `scripts/cpu_affinity_report.py`; and the 99.9th percentile in Grafana and the latency report.
 
 ### Changed
 
-- **A halt stays until an operator lifts it.** The leading sequencer keeps whether trading is halted from
-  the `TechnicalEvent` records in its WAL, and while it is, tells the gateways so with the new
-  `OrderAcceptance` reason `Halted`, whether or not a matching engine leads: they refuse new orders,
-  saying the venue is halted, and pass cancels on, which the engine carries out while halted. After a halt
-  for the limit on automatic recovery, a matching engine that leads again no longer makes the gateways
-  pass new orders on. A gateway refusing a new order because trading is halted gives OrdRejReason 2,
-  exchange closed, as the engine does, instead of 99.
-
-- **An instance asking to lead sends its request again every renewal interval** until a voter grants it,
-  instead of waiting out a whole lease period after a refusal; it still gives the request up a lease period
-  after it first sent it. A voter whose promise to a dead leader runs out is therefore asked again within a
-  second. With the primary matching engine leading first, an ordinary change of engine leader holds orders
-  for about 2.4 seconds instead of 4.8, and in both full runs of the scenarios no change of leader between
-  two running engines holds them for more than 3.0 seconds, so the 5 second limit on holding orders stays.
-  The TLA+ model `MajorityLeaseHA` allows the repeated request (`CandidateResends`), and TLC finds no state
-  with two leaders.
-- **When no matching engine could be trading within the longest recovery the venue does by itself, the
-  halt now cancels the book and rejects the orders held.** Before the `TechnicalEvent` that halts trading,
-  the leading sequencer writes a `VoidCommands` naming the new orders it holds and a `CancelBook` that
-  cancels every order on the book. The engine that next leads rejects each held order, saying trading
-  halted while it was waiting, carries out each held cancel, and reports each cancel to its member (R-0117,
-  `docs/availability/voided_commands.md`, section 5.3). Scenario 85 checks it with both engines killed;
-  scenario 51 checks the cancel of the book with one engine.
-
-- **The build uses release 1.8.0 of the TLA+ tools**, in place of 1.7.4. The Rocky 8 container downloads it
-  and checks its checksum. On a host with no network, copy `tla2tools.jar` from release 1.8.0 to
-  `$THIRDPARTY_DIR/tla2tools-1.8.0/` by hand, or set `TLA2TOOLS_JAR`; without it the install skips the
-  TLA+ counterexample pages and says why. Every model gives the same result under both releases.
+- **The matching engine and the sequencer hold their memory from the start of the day.** The matching engine locks
+  its order map and its open-order region into memory before it is ready, and the sequencer locks its record of
+  command identifiers; either refuses to start, saying so at Critical, if the memory cannot be locked. The host must
+  allow the venue's user to lock that much memory (`docs/operations/locked_memory_requirement.md`). Removing an order
+  from the order map now shifts later entries back instead of leaving an erased mark, so the map is never copied
+  during the day (BUG-0028).
+- **The sequencer's order path no longer calls the heap allocator**: the leading sequencer keeps no map of which
+  session placed each order, reports waiting for the follower stay in the memory they arrived in, and the following
+  matching engine keeps its reports in a block allocated at the start (BUG-0131, BUG-0270, BUG-0271, BUG-0274).
+- **A pool is added to a queue's allocator without a lock**, as a TLA+ model, `docs/framework/tla/PoolChain.tla`,
+  checked with TLC, shows to be safe; a queue that has to grow is logged at Error and counted (BUG-0127).
+- **The sequencer and the matching engine are each divided into parts with one job each** (phase 10), with no
+  measurable cost.
+- **Leases are renewed between messages, however much work is queued**, and an instance asking to lead sends its
+  request again every renewal interval until a voter grants it. An ordinary change of engine leader holds orders for
+  about 2.4 seconds instead of 4.8.
+- **The arbiter writes leaders' statements on a thread of its own** (BUG-0142), and the WAL keeps four segments ready
+  so that the writing thread never waits for its helper (BUG-0130).
+- **When no matching engine could be trading within the longest recovery the venue does by itself, the halt cancels
+  the book and rejects the orders held** (R-0117, `docs/availability/voided_commands.md`, section 5.3). A halt stays
+  until an operator lifts it.
+- **A gateway refuses a cancel itself with a session-level Reject**, and keeps no list of open orders (BUG-0072).
+- **The development environment keeps the WALs, the small synced files and the open-order regions on a disk of their
+  own, mounted `lazytime`** (`/nvme` here, through `PUBSUB_WAL_ROOT`), which removed stalls of up to 1.5 seconds
+  (BUG-0228, BUG-0243).
+- **A component whose thread fails stops with exit status 1**, as one that refuses to start does (BUG-0278).
+- **An execution report's envelope says which command produced it**, `produced_by_seq_no`, and a following matching
+  engine compares its reports with the leader's under it (BUG-0263).
+- **The build uses release 1.8.0 of the TLA+ tools**, in place of 1.7.4. The Rocky 8 image takes the jar from the
+  host, `docker build --build-context tla2tools=$THIRDPARTY_DIR/tla2tools-1.8.0`, and checks its checksum: release
+  1.8.0 is a pre-release that its project rebuilds under the same name, so a download no longer matches the build the
+  models were checked with. A Rocky 8 container is run with `--ulimit memlock=-1:-1`.
+- Every runnable Python script parses its arguments with argparse; large decimal literals in C++ use digit
+  separators, which `check_standards.py` enforces.
 
 ### Removed
 
-- **The absence rule and its setting, `[absence] absence_limit_seconds`.** The halt for the limit on
-  automatic recovery, 10 seconds, now cancels the book, so the separate cancel after 300 seconds without an
-  engine is gone, with `CancelBookReason::UnableToMatchTooLong`, the engine's halt reason of the same name,
-  and the `CancelBook` field `halt_if_orders_cancelled`. Remove the `[absence]` section from any sequencer
-  configuration and `absence_limit_seconds` from each environment's `[shared]` section.
+- **The absence rule and its setting, `[absence] absence_limit_seconds`**, with
+  `CancelBookReason::UnableToMatchTooLong` and the `CancelBook` field `halt_if_orders_cancelled`. The halt for the
+  limit on automatic recovery, 10 seconds, cancels the book instead.
+- **The sequencer's replay mode** (phase 10).
+- **The gateways' `[open_order_pool]` settings**, with the gateways' lists of open orders (BUG-0072).
 
 ### Fixed
 
-- `scripts/tla_trace_pages.py` failed on about one run in four, because TLC 2.19, in release 1.7.4 of the
-  TLA+ tools, prints a liveness counterexample on two threads that read one file with no lock, and the race
-  can make it fail while printing the trace. Release 1.8.0 has the fix, and the project now uses it (see
-  Changed); none of 2,000 runs failed. Given an older release, the script stops with a message naming the
-  race (BUG-0220).
-- While no matching engine led, a member was told nothing about the orders it sent, for as long as no
-  engine led. Orders are now held for at most 5 seconds; past the limit on automatic recovery the venue
-  halts, rejects every order it held and cancels the book, each reported to its member, and trading
-  resumes only when an operator lifts the halt (BUG-0197).
+- **A following matching engine took itself out of service for a cancel that answered no member's command**, and a
+  follower taking the lead never sent such cancels that it had kept (BUG-0263).
+- **Open orders were never cancelled at the end of the day**, and their members never told (BUG-0132).
+- **A trading day's files were taken as a restart on the next day** (BUG-0137).
+- **The leading sequencer lost its lease to a backlog under overload** (BUG-0251, BUG-0252, BUG-0279): a record
+  read from far back in the WAL was reread on the sequencer's own thread, and a flood of work starved the lease tick.
+- **A slow sync recording a new epoch could use up the lease just granted**; the epoch is now written before the
+  request to lead (BUG-0228).
+- **A statement the leader relied on was lost on a change of active arbiter** (BUG-0230).
+- **A follower whose WAL had lost its first segment file was not sent every record again** (BUG-0210).
+- **A price or quantity could overflow**; each is checked by its characters alone (BUG-0095).
+- **Single fixes:** an engine whose region was made with a different capacity refuses to start (BUG-0211); the
+  sequencer reconnects at once to a restarted engine (BUG-0237); the gateways keep their authentication connections
+  open with an answered heartbeat (BUG-0244); with high availability off, every secondary instance refuses to start
+  (BUG-0061, R-0163); the administrators' file is readable only by its owner (BUG-0236); the first run of the COMPID
+  editor asks for a one-time secret from the host (BUG-0189); and the scripts that deploy and run the venue find the
+  install directory on Rocky and Red Hat 8 (BUG-0041).
+- `scripts/tla_trace_pages.py` failed on about one run in four, a race in TLC 2.19 fixed in release 1.8.0 (BUG-0220).
+- While no matching engine led, a member was told nothing about the orders it sent. Orders are now held for at most
+  5 seconds; past the limit on automatic recovery the venue halts, rejects every order it held and cancels the book
+  (BUG-0197).
+
+### Known limitations
+
+- **52 bugs are open, 4 of them high severity**; `docs/bug_list.md` lists them.
+- A `WalRecord` written by 0.5.0 is not read by 0.6.0. No WAL outlives the version that wrote it, because every
+  trading day starts with none of the previous day's files.
 
 ## [0.5.0] - 2026-11-01
 
