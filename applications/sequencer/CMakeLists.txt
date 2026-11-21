@@ -46,6 +46,7 @@ target_sources(sequencer PRIVATE
         SequencerThread.hpp
         ServingWalFollowers.hpp
         Sequencer.hpp
+        StalledEngineRule.hpp
         TradingHaltState.hpp
         VenueStateFromTheWal.hpp
         VoidFromWal.hpp
@@ -107,6 +108,7 @@ add_executable(sequencer_tests
         tests/EngineOrderRoutingTest.cpp
         tests/EngineAbsenceRuleTest.cpp
         tests/RecoveryLimitRuleTest.cpp
+        tests/StalledEngineRuleTest.cpp
         tests/KeptReportStoreTest.cpp
         tests/ReportsHeldForUnknownSessionsTest.cpp
         tests/SequencerCommandIdentityTest.cpp
