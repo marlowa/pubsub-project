@@ -290,8 +290,10 @@ def run_tlc(java: str, jar: Path, example: Counterexample) -> str:
         # otherwise picks at random on each run. A liveness property is broken by several loops, and which
         # one TLC reports depends on the fingerprint function: with one chosen at random, lease-6 and
         # lease-7 come out as a different loop on each run, so the page would change on every build. The
-        # safety counterexamples are the same under any fingerprint function.
-        command = [java, '-XX:+UseParallelGC', '-cp', str(jar), 'tlc2.TLC', '-deadlock', '-workers', '1', '-fp', '0',
+        # safety counterexamples are the same under any fingerprint function. java.io.tmpdir is set because TLC
+        # unpacks the standard modules into a new tlc-<number> directory under Java's temporary directory on every
+        # run, and that is /tmp unless it is set.
+        command = [java, '-XX:+UseParallelGC', f'-Djava.io.tmpdir={work_dir}', '-cp', str(jar), 'tlc2.TLC', '-deadlock', '-workers', '1', '-fp', '0',
                    '-metadir', str(work_dir / 'states'), '-config', f'{spec}.cfg', f'{spec}.tla']
         try:
             result = subprocess.run(command, cwd=work_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
