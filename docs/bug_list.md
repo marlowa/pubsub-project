@@ -2181,8 +2181,9 @@ a loss of resilience is not a loss of service (V11).
 **Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
 the member.
 
-**The design** is in [a_matching_engine_that_stops_working.md](availability/a_matching_engine_that_stops_working.md), with seven decisions
-open. The points it was written to settle:
+**The design** is in [a_matching_engine_that_stops_working.md](availability/a_matching_engine_that_stops_working.md). Six of its
+seven decisions are made; the stall limit is chosen once the engine's longest pause while healthy has been measured.
+The points it was written to settle:
 
 - **A connection, a lease and a heartbeat prove that an engine can communicate, not that it is applying commands.** The
   evidence of work has to be the engine's progress through the commands it is sent.

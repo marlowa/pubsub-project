@@ -1,7 +1,8 @@
 # A matching engine that stops working while it stays connected {#a_matching_engine_that_stops_working}
 
-> **Designed, not built.** This is the design for [BUG-0194](../bug_list.md#bug_0194). Its decisions, in section 9, are
-> Andrew's to make. Nothing here is built until they are made.
+> **Designed, not built.** This is the design for [BUG-0194](../bug_list.md#bug_0194). Six of its seven decisions are
+> made (section 9). The stall limit is chosen once the engine's longest pause while healthy has been measured, as
+> section 4.4 describes.
 
 ## 1. The failure
 
@@ -86,18 +87,22 @@ From the answers and what it knows itself, the sequencer keeps two times:
    the highest command it has sent the engine. While that is above `highest_applied`, and `highest_applied` has not
    moved since the previous answer, the time runs. It stops, and starts again from zero, whenever `highest_applied`
    moves or the engine has applied everything sent to it.
-2. **The time since the engine last sent a report, while it held reports.** While `reports_held` is above zero and
-   `reports_sent_through` has not moved since the previous answer, the time runs. It starts again from zero whenever
-   `reports_sent_through` moves or `reports_held` is zero.
+2. **The time since the engine last sent a report, while it held reports.** While `reports_held` is above zero and the
+   last report sent has not changed since the previous answer, the time runs. The last report sent is the pair
+   `reports_sent_epoch` and `reports_sent_through`, compared as a pair: the number of a report starts again under each
+   new epoch, so a number alone could appear not to move, or to go backwards, across a change of epoch. The time starts
+   again from zero whenever the pair changes or `reports_held` is zero.
 
-A missing answer counts as no movement: an engine that does not answer the question has not shown that it moved.
+A missing answer counts as no movement: an engine that does not answer the question has not shown that it moved. An
+answer counts only if it carries the `request_id` of the latest query sent to that engine, so a late answer to an
+earlier query can neither show progress nor hide its absence.
 
 **The engine is judged by time without progress, not by the size of the gap.** Under overload the gap between commands
 sent and commands applied is large while the engine is healthy: about 60,000 commands in `ha_test.py` scenario 116.
 What a healthy engine never does is stop moving for seconds while it has work.
 
 **The engine has stopped working** when either time reaches the stall limit, `[recovery] engine_stall_limit_seconds`.
-The recommended value is 3 seconds (decision 2).
+Its value is chosen from measurement (section 4.4).
 
 ### 3.1 Not blaming the engine for the sequencer's own delay
 
@@ -109,7 +114,9 @@ sequencer that is slow.
 So neither time runs while the sequencer has messages from that engine that it has not yet taken: while it has paused
 reading either of the engine's connections, or while messages from them wait in its own thread's queue
 ([bounding_messages_waiting.md](../framework/bounding_messages_waiting.md)). Both are facts the sequencer's own
-framework already holds. This is decision 4.
+framework already holds. Both of the engine's connections count: the one on which the sequencer sends commands and
+receives answers to its queries, and the one on which the engine sends reports. This is decision 4, and section 8 says
+how it is tested against a slow disk.
 
 ### 3.2 Which engine is judged
 
@@ -133,21 +140,25 @@ a matching engine.
 
 When the sequencer judges that the leading engine has stopped working, it:
 
-1. **Writes the statement to its own disk**, in the record it keeps of its statements, so that the statement outlives
-   the process.
-2. **Sends it to both arbiters and to the other engine.** The statement names the engine, the epoch the engine leads
-   in, the sequencer's own epoch, and a number that goes up by one each time the sequencer changes what it says, so that
-   a late message cannot undo a newer one. This is how every statement is numbered now.
-3. **Stops counting the engine as taking orders**, so that it holds the orders that arrive from then on, exactly as it
+1. **Sends the statement to both arbiters and to the other engine, and sends it again every second** for as long as it
+   stands. The statement names the engine, the sequencer's own epoch, and a number that goes up by one each time the
+   sequencer changes what it says, so that a late message cannot undo a newer one, as every statement is numbered now.
+2. **Stops counting the engine as taking orders**, so that it holds the orders that arrive from then on, exactly as it
    does when an engine disconnects. The orders already sent to the stalled engine are in the WAL.
-4. **Logs at Error** which engine, which time ran out, and the last positions it was told.
+3. **Logs at Error** which engine, which time ran out, and the last positions it was told.
 
-Each voter that receives the statement writes it to disk and from then on refuses that engine's lease requests:
+Each voter that receives the statement holds it in memory and from then on refuses that engine's lease requests,
+renewals included:
 
 - **The arbiters** refuse the stalled engine's renewals. They record a statement another component made; they judge
   nothing.
 - **The other engine** refuses the stalled engine's renewals, and, since it no longer grants its vote to the stalled
   engine, asks to lead.
+
+Refusing a renewal is what ends the stalled engine's lead: a voter that refused only a request to begin leading would
+go on renewing the lease it had already granted, and the stalled engine would lead for good. A candidate holding the
+statement also does not give way to the stalled engine under lease rule 9, which otherwise makes a candidate grant a
+peer's request at a higher epoch. The model check in section 4.3 shows each of these is needed.
 
 The stalled engine then has only its own vote. Its lease runs out within one lease period. If its thread is still
 running, it notices this by the lease rules it already follows and stops acting as leader; if it is not running, it
@@ -155,30 +166,85 @@ does nothing at all, which is equally safe. The other engine is granted the lead
 promise to the stalled engine has run out, catches up from the WAL, and is sent the held orders, as after any change of
 engine leader.
 
-### 4.3 Why this cannot produce two leaders
+### 4.3 What the statement survives, and the model check
 
-The statement only makes voters refuse. A refusal can make the venue slower to choose a leader; it cannot give any
-instance a lease. Section 4 of [majority_leases.md](majority_leases.md) shows that two instances could only lead at
-once if some voter granted to both, and nothing in this design makes a voter grant. So the safety argument, and the
-TLA+ model check of it ([tla/findings.md](tla/findings.md)), are unchanged. Only a sequencer that leads may make the
-statement: an arbiter accepts it only from the sequencer it currently grants the sequencer pair's lease to, and the
-other engine only from the sequencer whose `RoleAnnouncement` says it leads, under the higher epoch if both say so.
+**A statement lasts only as long as the leadership of the sequencer that made it.** An arbiter accepts it only from the
+sequencer it currently grants the sequencer pair's lease to, and drops it once it grants that lease at a higher epoch.
+The other engine accepts it only from the sequencer whose `RoleAnnouncement` says it leads, under the higher epoch if
+both say so, and drops it once a sequencer announces that it leads at a higher epoch. A new leading sequencer, whether
+the other one or the same one after a restart, therefore starts with no statement standing, and judges the engines
+afresh.
 
-### 4.4 The time it takes
+**Nothing about the statement is written to disk**, by the sequencer or by the voters. A statement under lease rule 11
+must be on disk because forgetting it could let a follower that lacks commands lead, which loses commands. Forgetting
+this statement can only let a stalled engine keep the lead for longer, which is the failure the design exists to end,
+not a new one, and the sequencer's repetition every second restores it. Each way it can be lost:
 
-With the timings in `environments/dev.toml`, from the moment the engine stops:
-
-| Step | Time |
+| What happens | What follows |
 |---|---|
-| The stall limit runs out | 3 seconds, plus up to 1 second for the next answer |
-| The stalled engine's lease, and the arbiter's promise to it, run out | up to 3 seconds |
-| The other engine asks, is granted, and catches up | as after any change of engine leader: 2.4 seconds measured when the leader dies |
+| The sequencer dies after judging the engine stalled and before any voter receives the statement | No voter refuses the engine. The sequencer that leads next judges it afresh and, if it is still stalled, makes the statement after one stall limit |
+| One voter receives the statement and the other does not | The engine keeps the vote of the voter without it and goes on leading, until the next repetition reaches that voter |
+| A voter restarts and forgets it | The same: the next repetition restores it within a second |
+| A late copy of an older statement arrives | It carries a lower number, or an older sequencer epoch, and is ignored |
+| The leading sequencer changes | Every voter drops the old leadership's statements; the new leader judges afresh |
 
-About 8 to 10 seconds in all. Orders accepted in the first 3 or 4 seconds were sent to the stalled engine; they are in
-the WAL, the new leader applies them when it catches up, and their reports reach the members. The orders accepted
-after the sequencer judged the engine stalled are held, and refused once they have been held for 5 seconds. If no
-engine takes orders 10 seconds after the sequencer stops counting the stalled one, the existing recovery limit halts
-trading and an operator decides.
+**The model check, and what it covers.** The statement is added to the TLA+ specification of the lease rules,
+`MajorityLeaseHA.tla`, as the other engine and the arbiter coming to hold, or dropping, the statement that the stalled
+engine may not lead, at any moment and independently of each other. The model has no statement messages, numbers or
+sequencer epochs. What it checks is the lease question: whatever pattern of holding and dropping the voters go
+through, which includes every pattern the rows of the table above can produce,
+
+- two engines never act as leader at once;
+- once both voters have held the statement for a lease period without a break, the stalled engine does not act as
+  leader; and
+- if from some point both voters hold it for good, the other engine comes to lead for good.
+
+Removing the refusal of renewals, or letting a candidate give way under rule 9, each makes the second property fail.
+The configurations are `EngineStallHA.cfg` for the first two and `EngineStallLiveHA.cfg` for the third, and the
+results are in section 5 of [tla/findings.md](tla/findings.md).
+
+That a voter ignores a statement with a lower number or from an older sequencer leadership, and drops a leadership's
+statements when a newer sequencer leads, is not in the model. It is a property of the code that receives the statement,
+and the unit tests of section 8 check it.
+
+### 4.4 The time it takes, and how the stall limit is chosen
+
+The time from the engine stopping to the other engine answering orders falls into two parts, which the venue's limits
+treat differently.
+
+**Before the judgement.** From the moment the engine stops until the sequencer judges it stalled: the stall limit, plus
+up to one second until the next answer is due. Throughout this time the sequencer still counts the engine as taking
+orders, so it sends it every order the gateways accept. Those orders are in the WAL; the engine that leads next applies
+them and their reports reach the members, but until then the members hear nothing. No existing limit bounds this part.
+
+**After the judgement.** The sequencer stops counting the engine as taking orders, and from that moment it is exactly
+the case of an engine that has died ([order_acceptance.md](order_acceptance.md), "When holding becomes refusing"): the
+engine may have renewed its lease just before the statement reached the voters, as a dead engine may have just before
+it died, so the other engine can lead after at most one renewal interval, plus the lease period, plus the drift
+allowance, which is 4.25 seconds with the timings every environment uses, plus its catch-up. The limit on holding
+orders, 5 seconds, is derived from that same gap, and the limit on automatic recovery, 10 seconds, is longer. Both are
+counted from the judgement, so a stalled engine is replaced within them as a dead one is.
+
+**How the stall limit is chosen.** It must be longer than the longest a healthy engine goes without progress while it
+has work, or a healthy engine is replaced, and short enough that the silence before the judgement stays within what a
+member is told to expect at a change of engine leader. The first is a measurement, not an estimate, so the limit is
+chosen in two steps:
+
+1. The judging rule is built with the limit configurable, and the sequencer records, as a gauge and in a test event,
+   the longest each time has run on a healthy engine. Scenarios 115 and 116, the load scenarios, and the scenarios that
+   change the engine leader are run, and the longest time measured is recorded in
+   [latency_findings.md](../operations/latency_findings.md).
+2. The limit is set to at least three times that measurement, and the scenario of section 8 measures the time from the
+   engine stopping to the first order answered by the other engine. Andrew then decides the value (decision 2).
+
+**The configuration check.** The sequencer refuses to start unless:
+
+- the stall limit is at least two query intervals, so that one late answer cannot by itself make an engine look
+  stalled; and
+- the stall limit plus one query interval is no longer than `[recovery] orders_held_at_most_seconds`, so that a member
+  waits no longer for the venue to act on a stalled engine than it may wait for any change of engine leader.
+
+With a query once a second and orders held for at most 5 seconds, the stall limit can be 2, 3 or 4 seconds.
 
 ### 4.5 The alternatives considered
 
@@ -202,8 +268,16 @@ statement under a higher number, once the engine shows that it is applying comma
 has applied every command committed up to a point after the statement was made.
 
 To know that, the sequencer asks the following engine for its position in the same way as the leading one. Today a
-following engine does not answer `EnginePositionQuery`; in this design it answers with its `highest_applied` and says
-that it follows. A following engine applies every committed command from the WAL
+following engine does not answer `EnginePositionQuery`; in this design it answers, and `EnginePosition` gains two
+fields: whether the engine leads or follows, and the epoch of the engine pair's leadership it knows. The sequencer
+withdraws the statement only on an answer that
+
+- carries the `request_id` of the latest query it sent that engine, so a late answer to an earlier query is ignored;
+- was asked after the statement was made, so it cannot describe the engine as it was before;
+- says the engine follows, under an engine epoch at least as high as the one the stalled engine led in; and
+- gives a `highest_applied` at or above the sequencer's committed position at the moment it sent the query.
+
+The withdrawal is a new statement with a higher number, so a delayed copy of the statement it replaces cannot undo it. A following engine applies every committed command from the WAL
 ([both_engines_apply_the_wal.md](both_engines_apply_the_wal.md)), so a working one keeps up, and the usual way for a
 stalled one to start working again is to be restarted, catch up as a follower, and so show that it applies commands.
 
@@ -217,9 +291,12 @@ sequencer says the second may not lead either. No engine can then take orders, a
 trading and tells the gateways why. That is the right outcome: the venue cannot process orders, and a person must
 decide. Nothing new is needed. This is decision 6.
 
-**The following engine stops applying.** That is a loss of resilience, not of service. The sequencer logs it at
-Warning once its own time without progress runs past the stall limit, and repeats it at Error while it lasts, as the
-leading sequencer does while it trades without a follower sequencer. It makes no statement about it. If that
+**The following engine stops applying.** That is a loss of resilience, not of service, and principle V11 asks that it
+be reported loudly for as long as it lasts. The sequencer measures the following engine's time without progress in the
+same way, from its answers. Once that passes the stall limit it logs at Error that the venue has no working standby
+engine, and repeats the Error every 60 seconds until the engine is applying again, when it logs at Info that the
+standby is back. It also sets a gauge, the seconds the following engine has gone without progress, which is zero
+while the engine keeps up. It makes no statement about the engine, and the leading engine goes on serving. If that
 engine is later promoted while still stalled, it is judged as the leading engine like any other. This is decision 7.
 
 **With high availability turned off** there is one engine and nothing to promote. The sequencer still judges it,
@@ -252,43 +329,66 @@ detected by this design.
 1. **The rule that judges the engine** is a class of its own in the sequencer, as `RecoveryLimitRule` is, tested by
    unit tests that give it positions and times: a healthy engine under a large gap is never judged stalled; an engine
    whose applied position stops while it has commands is judged stalled at the limit and not before; one that sends no
-   reports while holding them likewise; neither time runs while the sequencer has unread messages from the engine; a
-   missing answer counts as no movement.
-2. **Each voter's refusal** is tested where the existing statements are tested: an arbiter and an engine holding the
+   reports while holding them likewise; a report number that starts again under a new epoch counts as movement;
+   neither time runs while the sequencer has unread messages from the engine; a missing answer, or one to an earlier
+   query, counts as no movement; a withdrawal needs an answer asked after the statement.
+2. **The sequencer's own delay.** A scenario slows the leading sequencer's writes to its WAL, through a setting that
+   only a test build accepts, until the engine pauses for its reports to be read, for longer than the stall limit, and
+   requires that no statement is made and that the engine goes on leading.
+3. **Each voter's refusal** is tested where the existing statements are tested: an arbiter and an engine holding the
    sequencer's statement refuse the named engine's renewals, accept a later withdrawal, ignore a statement from a
-   sequencer that does not lead, and ignore a late statement with a lower number.
-3. **An `ha_test.py` scenario** stops the leading engine applying while it goes on renewing its lease, through a
+   sequencer that does not lead, ignore a late statement with a lower number or from an older sequencer leadership,
+   and drop a leadership's statements when a sequencer leads at a higher epoch.
+4. **An `ha_test.py` scenario** stops the leading engine applying while it goes on renewing its lease, through a
    setting that only a test build accepts, and requires that every order the members sent is answered, that the other
    engine leads, and that no order is answered twice. Its result is decided from test events and members' messages,
    never from a Quill log.
-4. **A second scenario** stops both engines and requires the halt and the gateways' refusals.
-5. **Scenarios 115 and 116**, the load scenarios, must still pass, showing that overload is not mistaken for a stall.
-6. Each test is made to fail on purpose before it is trusted.
+5. **A second scenario** stops both engines and requires the halt and the gateways' refusals.
+6. **Scenarios 115 and 116**, the load scenarios, must still pass, showing that overload is not mistaken for a stall.
+7. **The model check** of section 4.3, with each new rule removed in turn to show it fails.
+8. Each test is made to fail on purpose before it is trusted.
 
 ## 9. Decisions
 
-Each decision is a separate yes-or-no question.
+Each decision is a separate yes-or-no question. Andrew answered them on 21 November 2026.
 
 ### Decision 1. Is the evidence that the leading engine works its progress, asked for once a second with `EnginePositionQuery`, measured as the two times in section 3? (Yes or no.)
 
-The alternative would be to watch only the reports arriving at the sequencer. That cannot tell an engine that has
-nothing to report from one that has stopped.
+**Yes.** The report position is compared as the pair of epoch and number, and a missing answer counts as no progress
+only because the times stop while the sequencer has unread messages from the engine (decision 4). The alternative,
+watching only the reports arriving at the sequencer, cannot tell an engine that has nothing to report from one that
+has stopped.
 
 ### Decision 2. Is the stall limit 3 seconds, set as `[recovery] engine_stall_limit_seconds`? (Yes or no.)
 
-It must be longer than the longest pause a healthy engine makes while it has work, which in normal running is a few
-milliseconds, and short enough that the whole change of engine leader stays near the venue's other limits (section
-4.4). The configuration check would refuse a value of the recovery limit or more.
+**No, not yet.** The value is chosen from measurement, as section 4.4 describes: the longest a healthy engine goes
+without progress under load, and the time from an engine stopping to the other engine answering. The configuration
+check enforces the budget of section 4.4, not only that the limit is below the recovery limit. This decision is asked
+again once the measurements are made.
 
 ### Decision 3. Does the leading sequencer decide, and act by a statement that the engine may not lead, recorded by both arbiters and the other engine, which then refuse its lease requests (section 4.2)? (Yes or no.)
 
+**Yes,** with what the statement survives specified, including the sequencer dying after it decides and before any voter
+receives the statement, and with the new path model-checked rather than argued from the existing check (section 4.3).
+
 ### Decision 4. Do the times stop while the sequencer has unread messages from that engine, so that the engine is not blamed for the sequencer's own delay (section 3.1)? (Yes or no.)
+
+**Yes,** covering both of the engine's connections and the sequencer's queue, and tested against a slow disk
+(section 8).
 
 ### Decision 5. Is the statement withdrawn once the engine, following, has applied every command committed up to a point after the statement, with a following engine answering `EnginePositionQuery` for this (section 5)? (Yes or no.)
 
+**Yes,** with the answer saying the engine's role and epoch, and a late answer unable to withdraw a newer statement
+(section 5).
+
 ### Decision 6. When both engines stall, is the existing halt by the recovery limit the outcome, with nothing new added (section 6)? (Yes or no.)
 
+**Yes.**
+
 ### Decision 7. Is a following engine that stops applying logged, as a loss of resilience, with no statement made about it (section 6)? (Yes or no.)
+
+**Yes,** provided the signal lasts as long as the engine is stalled, not a single warning: an Error repeated every 60
+seconds and a gauge (section 6). The leading engine goes on serving.
 
 ## See also
 

@@ -26,7 +26,10 @@ Two specifications are checked, both in this directory:
   the matching engine has acted on from leading, with the arbiter tier as two arbiters of which one is active at a
   time. The instance leading always holds every command the engine has acted on, and each part of the rule is needed.
 
-Section 4 sets the two against the venue's design principles, and says which principles no model checks.
+Section 4 sets the two against the venue's design principles, and says which principles no model checks. Section 5
+checks the leading sequencer's statement that a matching engine which has stopped working may not lead, added to
+`MajorityLeaseHA.tla`: the statement never lets two engines lead, the engine it names stops leading within a lease
+period of both other voters holding it, and the other engine then leads.
 
 **What remains open.** An epoch can go backwards after both arbiters restart, as section 2.5 shows. Two instances
 still never act at once, and a leader learns of the higher epoch from its peer. Learning it from a receiver is not
@@ -542,3 +545,86 @@ counterexample of sections 2 and 3 still breaks its property and matches its com
   just become active waits one lease period; one that may lack a statement also grants nothing until it hears from
   the other arbiter. The principles hold. Their descriptions are to be agreed before they are changed, as the
   principles page requires.
+
+---
+
+## 5. A matching engine that stops working: the leading sequencer's statement
+
+This section checks the part of the design for a matching engine that stays connected and stops working
+([../a_matching_engine_that_stops_working.md](../a_matching_engine_that_stops_working.md), section 4) that touches
+leadership: the leading sequencer says that the leading engine may not lead, the other engine and the arbiter hold that
+statement and refuse the engine it names, and the other engine takes the lead.
+
+### 5.1 How it is specified
+
+It is added to `MajorityLeaseHA.tla`, behind the constant `SequencerDenies`, which is `FALSE` in every configuration of
+sections 2 and 4, so that those checks are unchanged. With it `TRUE`, voters 2 and 3 (the other engine and the arbiter)
+may each come to hold, or drop, the statement that instance 1 may not lead, at any moment and independently of each
+other (`StatementArrives`, `StatementDropped`). A voter that crashes forgets it. A voter holding it refuses instance 1's
+requests, renewals included, and a candidate holding it does not give way to instance 1 under rule 9.
+
+The model has no statement messages, numbers or sequencer epochs. Holding and dropping at any moment covers every
+pattern in which a voter can hold the statement: one that arrives late, reaches one voter and not the other, is lost
+when a voter restarts, is withdrawn, or is dropped because a new sequencer leads. That a voter ignores an older
+statement is a property of the code that receives it, not of the lease rules, and is left to unit tests.
+
+### 5.2 The properties
+
+| Property | Kind | What it says |
+|----------|------|--------------|
+| `AtMostOneActing` | Safety | As in section 2: two instances never act as leader at once. |
+| `EpochNamesOneLeader` | Safety | As in section 2. |
+| `DeniedLeaderStops` | Safety | Once voters 2 and 3 have both held the statement for a lease period without a break, instance 1 does not act as leader. |
+| `DeniedLeaderReplaced` | Liveness | If from some point voters 2 and 3 both hold the statement for good, instance 2 acts as leader for good. |
+
+### 5.3 What held
+
+Every run is exhaustive within the budgets given, with every rule of the design on and each instance keeping its
+promises on disk, as in `MajorityLeaseHA.cfg`. Lease is 2 ticks.
+
+| Run | Failures allowed | `MaxEpoch` | `CandidateResends` | Distinct states | Time on 28 workers | Result |
+|-----|------------------|-----------:|--------------------|----------------:|-------------------:|--------|
+| Safety | One instance crash, one restart of voter 3 | 0 | `FALSE` | 126,076,755 | 25 minutes | All three safety properties hold |
+| Safety | None | 1 | `FALSE` | 242,745,015 | 44 minutes | All three hold |
+| Safety | One instance crash | 0 | `TRUE`, as in the code | 449,989,665 | 96 minutes | All three hold |
+| Liveness, `Prompt` on | None | 1 | `FALSE` | 48,530 | 2 seconds | `DeniedLeaderReplaced` holds |
+| Liveness, `Prompt` on | One instance crash | 1 | `FALSE` | 1,380,685 | 2 minutes | `DeniedLeaderReplaced` holds |
+
+The second row is the one in which rule 9 can apply, since an instance can ask to lead at an epoch above its peer's
+only when there are two generations of epochs. TLC estimates the chance that two states shared a fingerprint, so that
+one was never checked, at 0.33%, 0.26% and 1.9% for the three safety rows from the fingerprints it saw, and at 10% for
+the third by its more cautious calculation. The third row, the code's own setting, is the largest, and so the least
+certain to have checked every state.
+
+**Each new rule is needed.** With no failures allowed:
+
+- With `DenialRefusesRenewals = FALSE`, so that a voter holding the statement still renews a lease it has already
+  granted, `DeniedLeaderStops` is broken within 77,506 distinct states; and in the liveness check, with the invariants
+  removed so that the property itself is tested, `DeniedLeaderReplaced` is broken within 12,096 distinct states, by
+  instance 1 renewing its lease for ever.
+- With `DenialOverridesYield = FALSE`, so that a candidate holding the statement still gives way to instance 1 under
+  rule 9, `DeniedLeaderStops` is broken within 93,066 distinct states with `MaxEpoch = 1`. With `MaxEpoch = 0` the
+  setting makes no difference at all, 9,759,923 distinct states either way, because rule 9 then never applies.
+
+**Fairness.** The first liveness check failed. Instance 1, refused by both voters, asked to lead in every tick, and
+instance 2 stayed a candidate for ever, never giving up its request and asking again. The model lets a candidate give
+up only when no message to or from it is in flight, and under weak fairness a step that is disabled part of every tick
+need never be taken; instance 1's repeated requests disabled it. In the code a candidate gives up on a timer, a lease
+period after it first asked, whatever arrives meanwhile (`PairLeaseAgent.hpp`), so this behaviour cannot happen there.
+Giving up is now strongly fair in `Fairness`: if it is possible again and again, it happens. Strong fairness only
+removes behaviours, so the liveness results of section 2.3 still hold.
+
+### 5.4 Limits
+
+- The statement is about instance 1 only. Instance 2 is the same kind of instance under a different epoch numbering, so
+  the results are expected to hold for a statement about instance 2, and they are not checked for it.
+- A statement about both engines at once, for which the design's outcome is a halt by the recovery limit, is not
+  modelled: with both refused, no engine leads, which is what the design intends and not a property to check.
+- The counterexamples of 5.3 are not among those `scripts/tla_trace_pages.py` reruns on every install.
+
+### 5.5 Files
+
+| File | What it is |
+|------|------------|
+| `EngineStallHA.cfg` | The first safety run of 5.3. Change the constants as the table says to reproduce the others. |
+| `EngineStallLiveHA.cfg` | The second liveness run of 5.3. |

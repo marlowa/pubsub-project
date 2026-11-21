@@ -57,6 +57,15 @@
 (*  and is checked in FollowerBehindHA.tla. Rule 12 uses the same          *)
 (*  statements in the matching engine pair, to keep an engine configured   *)
 (*  differently from its peer from leading; it is not modelled.            *)
+(*  The leading sequencer may say that the leading matching engine may not *)
+(*  lead, because it has stopped applying commands or sending reports      *)
+(*  (docs/availability/a_matching_engine_that_stops_working.md). The other *)
+(*  engine and the arbiter hold the statement, in memory only, and refuse  *)
+(*  the engine it names. It is modelled, with SequencerDenies on, as       *)
+(*  voters 2 and 3 coming to hold or to drop, at any moment, a statement   *)
+(*  that instance 1 may not lead. That covers a statement that arrives     *)
+(*  late, reaches one voter and not the other, is lost when a voter        *)
+(*  restarts, is withdrawn, or is dropped because a new sequencer leads.   *)
 (*  13. An instance writes the epoch it is about to ask to lead in to disk *)
 (*      before it sends the request, so that the wait for the disk does    *)
 (*      not come out of a lease already running. The epoch on disk can     *)
@@ -119,7 +128,16 @@ CONSTANTS
     \* rule 13: TRUE writes the epoch to disk before asking to lead in it. FALSE writes it only
     \* once it has been granted or led in, so that a restart starts from the highest epoch granted
     \* or led in.
-    RecordBeforeAsking
+    RecordBeforeAsking,
+    \* TRUE adds the leading sequencer's statement that instance 1 may not lead. FALSE leaves the
+    \* model as it was without it.
+    SequencerDenies,
+    \* TRUE: a voter holding the statement refuses instance 1's renewals as well as its requests to
+    \* begin leading. FALSE refuses only a request to begin, to show that renewals must be refused.
+    DenialRefusesRenewals,
+    \* TRUE: a candidate holding the statement does not give way to instance 1 under rule 9. FALSE
+    \* lets it, to show that the statement must override rule 9.
+    DenialOverridesYield
 
 Cand == {1, 2}
 Third == 3
@@ -158,11 +176,14 @@ VARIABLES
     crashes, thirdRestarts, linkFailures,
     leaderAt,    \* history: every <<instance, epoch>> that has led
     regressed,   \* history: an instance began leading below an epoch the other led in
-    restartedHigher  \* history: an instance crashed while the epoch on its disk was higher
+    restartedHigher, \* history: an instance crashed while the epoch on its disk was higher
                      \* than the highest it had granted or led in (rule 13)
+    denying,     \* the voters, of 2 and 3, that hold the sequencer's statement that instance 1
+                 \* may not lead
+    deniedTicks  \* ticks for which voters 2 and 3 have both held it without a break, up to Lease
 
 vars == <<up, role, epoch, candEpoch, askedOnDisk, promise, quiet, held, sent, backoff, alone, link, msgs,
-          crashes, thirdRestarts, linkFailures, leaderAt, regressed, restartedHigher>>
+          crashes, thirdRestarts, linkFailures, leaderAt, regressed, restartedHigher, denying, deniedTicks>>
 
 NoPromise == [to |-> None, left |-> 0]
 
@@ -183,6 +204,9 @@ Acting(s) == role[s] = "leader" /\ (HasGrant(s) \/ alone[s])
 
 RegressesAt(s, e) == \E p \in leaderAt : p[1] # s /\ p[2] > e
 
+(* Voter v holds the sequencer's statement that x may not lead. *)
+DeniedBy(v, x) == x = 1 /\ v \in denying
+
 (* Whether voter v would grant a lease at epoch e to instance x now. *)
 WouldGrant(v, x, e) ==
     /\ up[v]
@@ -190,12 +214,16 @@ WouldGrant(v, x, e) ==
     /\ v \in Cand => PeerVotes
     /\ (promise[v].left = 0 \/ promise[v].to = x)
     /\ e >= epoch[v]
+    \* A voter holding the sequencer's statement refuses the instance it names. With
+    \* DenialRefusesRenewals off, it still renews a promise it has already made to that instance.
+    /\ (DeniedBy(v, x) => (~DenialRefusesRenewals /\ promise[v].to = x /\ promise[v].left > 0))
 
 (* Rule 9: candidate v gives way to a request from its peer at a higher epoch. *)
 Yields(v, x, e) ==
     /\ CandidateYields /\ PeerVotes
     /\ v \in Cand /\ up[v] /\ role[v] = "candidate" /\ quiet[v] = 0
     /\ e > candEpoch[v] /\ e >= epoch[v]
+    /\ (DenialOverridesYield => ~DeniedBy(v, x))
 
 ClearedHeld == [v \in Voters |-> 0]
 NoneSent == [v \in Voters |-> FALSE]
@@ -222,6 +250,8 @@ Init ==
     /\ leaderAt = {}
     /\ regressed = FALSE
     /\ restartedHigher = FALSE
+    /\ denying = {}
+    /\ deniedTicks = 0
 
 -----------------------------------------------------------------------------
 (* Instance s asks to lead. It may do so at any time that the rules allow, *)
@@ -238,7 +268,7 @@ StartCandidacy(s) ==
        /\ held' = [held EXCEPT ![s] = ClearedHeld]
        /\ msgs' = msgs \cup {Req(s, v, e) : v \in {w \in Others(s) : LinkUp(s, w)}}
     /\ UNCHANGED <<up, epoch, quiet, sent, backoff, alone, link, crashes, thirdRestarts, linkFailures,
-                   leaderAt, regressed, restartedHigher>>
+                   leaderAt, regressed, restartedHigher, denying, deniedTicks>>
 
 (* A candidate gives up, which any timeout may cause. It releases the vote *)
 (* it gave itself. Any grant still on its way to it is ignored on arrival.  *)
@@ -250,7 +280,7 @@ AbandonCandidacy(s) ==
     /\ promise' = [promise EXCEPT ![s] = NoPromise]
     /\ backoff' = [backoff EXCEPT ![s] = TRUE]
     /\ UNCHANGED <<up, epoch, candEpoch, quiet, held, sent, alone, link, msgs,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
 
 (* Degraded self-promotion, which the design removes: a candidate leads on *)
 (* its own vote alone.                                                      *)
@@ -263,7 +293,7 @@ PromoteAlone(s) ==
     /\ leaderAt' = leaderAt \cup {<<s, candEpoch[s]>>}
     /\ regressed' = (regressed \/ RegressesAt(s, candEpoch[s]))
     /\ UNCHANGED <<up, candEpoch, promise, quiet, held, sent, backoff, link, msgs,
-                   crashes, thirdRestarts, linkFailures, askedOnDisk, restartedHigher>>
+                   crashes, thirdRestarts, linkFailures, askedOnDisk, restartedHigher, denying, deniedTicks>>
 
 (* A leader asks voter v to renew its lease, at most once in each tick. *)
 SendRenewal(s, v) ==
@@ -272,7 +302,7 @@ SendRenewal(s, v) ==
     /\ sent' = [sent EXCEPT ![s][v] = TRUE]
     /\ msgs' = msgs \cup {Req(s, v, epoch[s])}
     /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, backoff, alone, link,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
 
 (* A candidate sends its request again to voter v, at most once in each   *)
 (* tick: a voter that refused it, because its vote was promised to a leader *)
@@ -284,7 +314,7 @@ ResendRequest(s, v) ==
     /\ sent' = [sent EXCEPT ![s][v] = TRUE]
     /\ msgs' = msgs \cup {Req(s, v, candEpoch[s])}
     /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, backoff, alone, link,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
 
 (* A request reaches voter v, which grants or refuses it. An instance that *)
 (* grants its peer a lease becomes, or stays, its follower.                 *)
@@ -300,7 +330,7 @@ ReceiveReq(m) ==
           ELSE /\ msgs' = (msgs \ {m}) \cup {Nack(v, x, epoch[v])}
                /\ UNCHANGED <<promise, epoch, role>>
     /\ UNCHANGED <<up, candEpoch, quiet, held, sent, backoff, alone, link,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
 
 (* A grant reaches instance x. A candidate that receives one for the epoch *)
 (* it asked for now holds a majority and leads; a leader that receives one  *)
@@ -318,11 +348,11 @@ ReceiveAck(m) ==
                /\ regressed' = (regressed \/ RegressesAt(x, m.epoch))
           ELSE IF role[x] = "leader" /\ ~alone[x] /\ m.epoch = epoch[x]
                THEN /\ held' = [held EXCEPT ![x][v] = Max(held[x][v], left)]
-                    /\ UNCHANGED <<role, epoch, leaderAt, regressed, askedOnDisk, restartedHigher>>
-               ELSE UNCHANGED <<role, epoch, held, leaderAt, regressed, askedOnDisk, restartedHigher>>
+                    /\ UNCHANGED <<role, epoch, leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
+               ELSE UNCHANGED <<role, epoch, held, leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
     /\ msgs' = msgs \ {m}
     /\ UNCHANGED <<up, candEpoch, promise, quiet, sent, backoff, alone, link,
-                   crashes, thirdRestarts, linkFailures, askedOnDisk, restartedHigher>>
+                   crashes, thirdRestarts, linkFailures, askedOnDisk, restartedHigher, denying, deniedTicks>>
 
 (* A refusal reaches instance x. If it names a newer epoch than the one x  *)
 (* leads in, or asks to lead in, x stops (rule 8). Either way x learns the  *)
@@ -345,14 +375,14 @@ ReceiveNack(m) ==
                /\ UNCHANGED <<role, promise, held, alone, backoff>>
     /\ msgs' = msgs \ {m}
     /\ UNCHANGED <<up, candEpoch, quiet, sent, link, crashes, thirdRestarts, linkFailures,
-                   leaderAt, regressed, askedOnDisk, restartedHigher>>
+                   leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
 
 (* A message addressed to a voter that is down is lost. *)
 DropToDown(m) ==
     /\ m \in msgs /\ ~up[m.to]
     /\ msgs' = msgs \ {m}
     /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, sent, backoff, alone, link,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
 
 (* A leader whose lease has run out stops leading. Until it does, it is    *)
 (* not acting (see Acting), so this step only tidies its state.             *)
@@ -362,7 +392,7 @@ LeaseRunsOut(s) ==
     /\ promise' = [promise EXCEPT ![s] = NoPromise]
     /\ held' = [held EXCEPT ![s] = ClearedHeld]
     /\ UNCHANGED <<up, epoch, candEpoch, quiet, sent, backoff, alone, link, msgs,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
 
 (* One tick of the clock. Every period remaining is reduced by one, except  *)
 (* the vote an instance gives itself while it leads or asks to lead.         *)
@@ -378,8 +408,9 @@ Tick ==
     /\ sent' = [s \in Cand |-> NoneSent]
     /\ backoff' = [s \in Cand |-> FALSE]
     /\ msgs' = {[m EXCEPT !.rem = m.rem - 1] : m \in {n \in msgs : n.rem > 1}}
+    /\ deniedTicks' = IF denying = {2, Third} THEN IF deniedTicks < Lease THEN deniedTicks + 1 ELSE Lease ELSE 0
     /\ UNCHANGED <<up, role, epoch, candEpoch, alone, link, crashes, thirdRestarts, linkFailures,
-                   leaderAt, regressed, askedOnDisk, restartedHigher>>
+                   leaderAt, regressed, askedOnDisk, restartedHigher, denying>>
 
 -----------------------------------------------------------------------------
 (* Failures and recoveries. *)
@@ -404,6 +435,9 @@ Crash(v) ==
     /\ msgs' = {m \in msgs : m.to # v}
     /\ crashes' = IF v = Third THEN crashes ELSE crashes + 1
     /\ thirdRestarts' = IF v = Third THEN thirdRestarts + 1 ELSE thirdRestarts
+    \* A voter holds the sequencer's statement in memory only.
+    /\ denying' = denying \ {v}
+    /\ deniedTicks' = IF v \in denying THEN 0 ELSE deniedTicks
     /\ UNCHANGED <<candEpoch, sent, backoff, link, linkFailures, leaderAt, regressed, askedOnDisk>>
 
 Restart(v) ==
@@ -412,7 +446,7 @@ Restart(v) ==
     /\ up' = [up EXCEPT ![v] = TRUE]
     /\ quiet' = [quiet EXCEPT ![v] = IF RestartWaits /\ ~(v \in Cand /\ InstancesKeepPromises) THEN Lease ELSE 0]
     /\ UNCHANGED <<role, epoch, candEpoch, promise, held, sent, backoff, alone, link, msgs,
-                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
 
 LinkFails(l) ==
     /\ l \in link /\ linkFailures < MaxLinkFailures
@@ -420,12 +454,32 @@ LinkFails(l) ==
     /\ msgs' = {m \in msgs : ~OverLink(m, l)}
     /\ linkFailures' = linkFailures + 1
     /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, sent, backoff, alone,
-                   crashes, thirdRestarts, leaderAt, regressed, askedOnDisk, restartedHigher>>
+                   crashes, thirdRestarts, leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
 
 LinkRecovers(l) ==
     /\ l \in AllLinks \ link
     /\ link' = link \cup {l}
     /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, sent, backoff, alone, msgs,
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher, denying, deniedTicks>>
+
+-----------------------------------------------------------------------------
+(* The leading sequencer's statement that instance 1 may not lead reaches  *)
+(* voter v, at any moment: the sequencer repeats it while it stands, so it  *)
+(* may arrive at any time, and at either voter before the other.            *)
+StatementArrives(v) ==
+    /\ SequencerDenies
+    /\ v \in {2, Third} /\ up[v] /\ v \notin denying
+    /\ denying' = denying \cup {v}
+    /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, sent, backoff, alone, link, msgs,
+                   crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher, deniedTicks>>
+
+(* Voter v drops the statement, at any moment: it is withdrawn, or a new    *)
+(* sequencer leads and has not made it.                                     *)
+StatementDropped(v) ==
+    /\ v \in denying
+    /\ denying' = denying \ {v}
+    /\ deniedTicks' = 0
+    /\ UNCHANGED <<up, role, epoch, candEpoch, promise, quiet, held, sent, backoff, alone, link, msgs,
                    crashes, thirdRestarts, linkFailures, leaderAt, regressed, askedOnDisk, restartedHigher>>
 
 -----------------------------------------------------------------------------
@@ -437,17 +491,28 @@ Next ==
     \/ Tick
     \/ \E v \in Voters : Crash(v) \/ Restart(v)
     \/ \E l \in AllLinks : LinkFails(l) \/ LinkRecovers(l)
+    \/ \E v \in Voters : StatementArrives(v) \/ StatementDropped(v)
 
 Spec == Init /\ [][Next]_vars
 
 (* For the liveness property: every step the design takes happens once it  *)
 (* has been possible for long enough, and whatever has failed recovers,     *)
 (* except a third voter that ThirdStaysDown keeps down.                     *)
+(*                                                                          *)
+(* Giving up a request to lead is strongly fair: if it is possible again    *)
+(* and again, it happens. In the code a candidate gives up on a timer, a    *)
+(* lease period after it first asked, whatever messages arrive meanwhile    *)
+(* (PairLeaseAgent.hpp). Under Prompt the model lets it give up only when   *)
+(* no message to or from it is in flight, so weak fairness would let an     *)
+(* instance that keeps asking to lead, and is refused each time, keep its   *)
+(* peer a candidate for ever, which the code cannot do (findings.md,        *)
+(* section 5.3). Strong fairness only removes behaviours, so every liveness *)
+(* result checked with weak fairness here still holds.                      *)
 Fairness ==
     /\ WF_vars(Tick)
     /\ WF_vars(\E m \in msgs : ReceiveReq(m) \/ ReceiveAck(m) \/ ReceiveNack(m) \/ DropToDown(m))
     /\ \A s \in Cand : /\ WF_vars(StartCandidacy(s))
-                       /\ WF_vars(AbandonCandidacy(s))
+                       /\ SF_vars(AbandonCandidacy(s))
                        /\ WF_vars(LeaseRunsOut(s))
                        /\ \A v \in Voters : WF_vars(SendRenewal(s, v))
     /\ \A v \in Voters : WF_vars(Restart(v))
@@ -468,6 +533,8 @@ TypeOK ==
     /\ promise \in [Voters -> [to : Voters \cup {None}, left : 0..Lease]]
     /\ quiet \in [Voters -> 0..Lease]
     /\ held \in [Cand -> [Voters -> 0..Lease]]
+    /\ denying \subseteq {2, Third}
+    /\ deniedTicks \in 0..Lease
 
 (* The property the design exists for: two instances never act as leader  *)
 (* at the same moment, whatever fails and however long messages take.       *)
@@ -490,5 +557,15 @@ NeverRestartsHigher == ~restartedHigher
 (* ThirdStaysDown this says that losing the third voter does not stop the  *)
 (* pair, so the design needs no promotion of an instance on its own vote.  *)
 EventuallyLeaderForGood == <>[](\E s \in Cand : Acting(s))
+
+(* Once the other engine and the arbiter have both held the sequencer's     *)
+(* statement for a lease period without a break, instance 1 does not act as *)
+(* leader. This is how long the venue goes on sending orders to an engine   *)
+(* judged to have stopped working, after the statement has reached both.    *)
+DeniedLeaderStops == deniedTicks >= Lease => ~Acting(1)
+
+(* Liveness: if from some point the other engine and the arbiter hold the   *)
+(* statement for good, instance 2 acts as leader for good.                  *)
+DeniedLeaderReplaced == (<>[](denying = {2, Third})) => <>[]Acting(2)
 
 =============================================================================
