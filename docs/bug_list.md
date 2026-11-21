@@ -859,10 +859,9 @@ order: orders that outlive the trading day (long orders) are deliberately not im
 anything still open at the end of the trading day is to be cancelled, with an execution report to its
 member, before end of day, and the cancels are commands the sequencer logs like any other (V1, V2).
 
-**What happens.** Nothing in the applications cancels open orders at the end of the day. The trading
-phases that would mark the end of trading (`closed`, then `eod`) are designed in
-`docs/venue/trading_phases.md` and not built, and that document leaves open whether a member may cancel
-a resting order after the close.
+**What happens.** Built as wanted: see "Where it stands" below. The trading phases are built
+(`docs/venue/trading_phases.md`), and when the venue enters `closed` each matching engine cancels every
+order on its book and tells each member.
 
 **What is wanted.** When trading closes, every open order is cancelled through the sequencer and its
 member told, before end of day begins. This depends on the trading phases being built, and is to be
@@ -874,12 +873,12 @@ designed with them.
 engine, applying the `TechnicalEvent` that enters `closed`, cancels every order on its book and sends a
 report of each to its member; each report answers the close, so the WAL records it with the close's
 sequence number in `answers_seq_no`. The sequencer refuses every member's command from the close on, and
-writes `eod` only once the leading engine's answer to `EnginePositionQuery` shows the close applied, no
-report held unsent, and the WAL holding every report the engine says it sent. `EnginePosition` carries the
+writes the end-of-day begin (`EndOfDayBegin`) only once the leading engine's answer to `EnginePositionQuery`
+shows the close applied, no report held unsent, and the WAL holding every report the engine says it sent. `EnginePosition` carries the
 report counts for that check, because the engine answers on the sequencer's connection for orders and sends
 its reports on its own connections, so the answer can arrive first. Scenario 111 places two orders, closes,
 and checks that the member is sent a cancel of each, that the WAL records both as answering the close
-before `eod`, and that the follower engine found its reports of the close the same as the leader's; it
+before the end-of-day begin, and that the follower engine found its reports of the close the same as the leader's; it
 fails when the follower's reports are made to differ. Left open for Andrew to close.
 
 ### BUG-0131: The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower {#bug_0131}

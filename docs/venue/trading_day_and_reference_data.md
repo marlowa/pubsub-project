@@ -1,11 +1,15 @@
 # Trading day start and reference data {#trading_day_and_reference_data}
 
-**Status: exploratory design.** The trading phases are described in
-[`trading_phases.md`](trading_phases.md), and the record that announces a phase, `TechnicalEvent`, is built.
-The start-of-day procedure, the requests that move the venue from one phase to the next, and the replay
-contract described here are not built or agreed. Reference data is left until something in the venue uses
-it; this note keeps only the requirement any design for it must meet. This note collects the current design
-direction and marks unresolved choices explicitly.
+**Status: partly built.** The trading phases are described in [`trading_phases.md`](trading_phases.md) and
+built, and so is the record that announces a phase, `TechnicalEvent`. The trading date is built as this note
+describes: each sequencer is started with `--trading-day D`, and the start-of-day event at the head of the WAL
+fixes the date for the day. `scripts/trading_day.py start` writes the run manifest and starts the day
+([`start_and_end_of_day.md`](start_and_end_of_day.md), section 3), and `scripts/trading_phase.py` sends the
+requests that move the venue from one phase to the next. The replay of an archived day, described under
+"Trading date, run manifest, and replay", is not built. Reference data is left until something in the venue
+uses it; this note keeps only the requirement any design for it must meet. Some of the choices listed under
+"Decisions still required" have since been settled in [`start_and_end_of_day.md`](start_and_end_of_day.md) and
+[`trading_phases.md`](trading_phases.md); this note has not yet been checked against them.
 
 ## Purpose
 

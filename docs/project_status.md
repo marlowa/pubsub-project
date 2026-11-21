@@ -65,7 +65,11 @@ they are being fixed. The ones most likely to matter first, by design area:
   applied to one instrument
   ([BUG-0065](bug_list.md#bug_0065)).
 - **The write-ahead log is never reclaimed during the day** ([BUG-0048](bug_list.md#bug_0048)).
-  Whether it may be waits on a decision about how long history must be kept.
+  How long history is kept is decided: a recovery service will answer members' resend requests from its own
+  store of the most recent 100,000 messages sent to each member, with a FIX gap fill for anything older
+  ([BUG-0113](bug_list.md#bug_0113)). The WAL then has to reach back only as far as the follower sequencer has
+  acknowledged and the matching engine has checkpointed. Neither the recovery service nor the reclaiming of the
+  WAL is built.
 
 ## What comes next
 
@@ -84,8 +88,8 @@ first the breaches of a principle whose remedy is small, then those that need a 
 The phase is finished when there is an agreed set of the guarantees the venue gives, evidence for which
 of them hold, and a recorded decision about which remaining risks are accepted.
 
-New features, including further pub/sub work, the order activity recorder and the trading phases, wait until the
-plan is finished.
+New features, including further pub/sub work and the order activity recorder, wait until the plan is finished.
+The trading day and its phases are already built, as described above.
 
 ## Where to start
 

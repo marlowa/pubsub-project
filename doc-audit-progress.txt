@@ -152,6 +152,12 @@ pubsub: `flow_control.md`, `mep_oar.md`, `mep_rewire_and_oar.md`,
 
 top level of `docs/`: `roadmap.md`
 
+venue: `start_and_end_of_day.md`, `trading_day_and_reference_data.md` (its "Decisions still required" section
+lists choices that `start_and_end_of_day.md` and `trading_phases.md` have since settled), `trading_day_plan.md`,
+`long_orders.md`, `dividing_the_sequencer_and_matching_engine.md`, `gateway_refusals.md`,
+`sequencer_order_path_without_the_heap.md`, `the_engine_holds_its_memory_from_the_start.md`,
+`the_sequencer_holds_its_memory_from_the_start.md`
+
 Doxygen pages at the top of `docs/`: `architecture_map.dox`, `architecture_map_howto.dox`,
 `dsl_design.dox`, `groups.dox`
 

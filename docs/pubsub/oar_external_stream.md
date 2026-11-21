@@ -54,8 +54,10 @@ Related documents:
 - **Every event can be decoded.** Its writer's schema can always be found from the event itself
   (section 8). Every version of the schema is compatible with every earlier one in both directions
   (section 6).
-- **The trading day is fully recorded before it ends.** The end of day is not complete until OAR
-  reports that every event up to the `eod` technical event is confirmed (section 13.6).
+- **The trading day is fully recorded before it ends, unless the end of day's limit of time passes
+  first.** The leading sequencer ends the day once OAR reports that every event up to the end-of-day
+  begin is confirmed, or once a limit of time has passed; what happens to events still unconfirmed at
+  that limit is not decided (section 13.6, and open decision 6 in section 14).
 
 **OAR does not guarantee:**
 
@@ -1367,29 +1369,32 @@ OAR is not stopped during a trading day. The venue's software starts afresh each
 end-of-day processing is complete; maintenance and upgrades are done when the venue is not trading.
 During the day, then, OAR stops only by accident, and sections 2 and 12.1 cover that.
 
-**The end of day is not complete until OAR reports that every event of the day is confirmed.** OAR
-learns that the day is ending from the `eod` technical event, which it follows (section 4.4). The
-`eod` event is sequenced by the sequencer, so it has a definite place among the execution reports.
-When every event up to it has been confirmed, OAR reports that it has finished the day. Only then is
-end-of-day processing complete, and only then is OAR stopped. OAR may be the component that declares
-the end of day finished; how its report combines with the other work of the `eod` phase, such as
-receiving instrument prices for the next day, belongs to the venue's end-of-day design
-([trading_phases.md](../venue/trading_phases.md)).
+**The end of the day is two events in the WAL, and OAR's report is one of the conditions for the
+second** ([start_and_end_of_day.md](../venue/start_and_end_of_day.md), section 4). The end-of-day
+begin, `EndOfDayBegin`, ends trading; no component shuts down on it. OAR follows it like any other
+technical event (section 4.4). It is sequenced by the sequencer, so it has a definite place among the
+execution reports, and no order record follows it: from the close, which comes before the begin, the
+leading sequencer refuses every member's new order and cancel, and the begin is written only once the
+matching engine holds no report the WAL does not already hold. When every event up to the begin has been confirmed, OAR reports
+that it has finished the day. The leading sequencer writes the end-of-day end, `EndOfDayEnd`, once
+OAR has reported this and the follower sequencer and both publishers hold every record up to the
+begin, **or once a limit of time set for each environment has passed**. Every component, OAR
+included, shuts down when it receives the end-of-day end, and its launcher archives its files.
 
-This relies on no order record ever following the `eod` event, which must be settled with the trading
-phases: whether a member may cancel an order during `eod` is still open there.
-
-**OAR waits as long as it takes, and never finishes quietly with events unconfirmed.** No trading is
-waiting on it, so there is no time limit. If the external messaging system cannot confirm, OAR reports
-the problem and keeps trying until the events are confirmed or someone intervenes. The waiting is part
-of OAR's normal work, done before the process is told to stop, so the framework's limit on how long a
+**At that limit OAR may still hold events the external messaging system has not confirmed, and what
+then happens to them is not decided** (open decision 6 in section 14). Until the limit, OAR reports
+the problem and keeps trying, and never treats an unconfirmed event as done. The waiting is part of
+OAR's normal work, done before the process is told to stop, so the framework's limit on how long a
 thread may take to stop does not come into it. OAR does not call `rd_kafka_flush()` to wait, because
 librdkafka delivers the confirmations it collects to whichever thread calls it; OAR waits until its
 count of unconfirmed events reaches zero, while the helper thread goes on collecting them (section
 3.3).
 
-If OAR is told to stop at any other time, it stops reading, closes its producer and finishes. Nothing
-is lost: whatever was unconfirmed is published again when it next starts (section 12.1).
+If OAR is told to stop at any other time during the day, it stops reading, closes its producer and
+finishes. Nothing is lost: whatever was unconfirmed is published again when it next starts during the
+same day (section 12.1). This does not cover the end of the day. The next start is on a new trading
+day, which begins with none of the previous day's files, so the matching engine publisher no longer
+holds the records the unconfirmed events came from.
 
 ---
 
@@ -1423,3 +1428,12 @@ is lost: whatever was unconfirmed is published again when it next starts (sectio
    last sequence number for a producer name with its removal of duplicates switched off, and stores a
    producer's events with no gaps. With Pulsar, also how a new leader waits for the broker to release
    the producer name (section 12), and how long that takes.
+6. **What happens to events still unconfirmed when the end of day's limit of time passes.** The
+   leading sequencer writes the end-of-day end once OAR reports every event up to the end-of-day begin
+   confirmed, or once a limit of time has passed, and OAR shuts down on it like every other component
+   (section 13.6). The next trading day starts with none of this day's files, so OAR cannot publish
+   the unconfirmed events again by restarting, as it does during the day (section 12.1). The choices
+   include: the end-of-day end waits for OAR with no limit, as the venue does not trade meanwhile; or
+   the limit stands, and the day's archived WAL is replayed through OAR afterwards to publish what was
+   not confirmed; or the limit stands, and the events not confirmed are reported to an operator as
+   missing from the external stream.

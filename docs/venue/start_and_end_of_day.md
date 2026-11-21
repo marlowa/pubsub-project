@@ -1,6 +1,6 @@
 # Starting and ending the trading day {#start_and_end_of_day}
 
-**Status: the start of the day is agreed and built (sections 3 and 5): each file records its trading day and is refused on another day, and `scripts/trading_day.py start` starts a day. How the day ends is agreed and partly built (section 4): the end of day is two events, and the leading sequencer writes the second once every copy of the WAL is complete; when each component receives it, it is to shut itself down and its launcher to archive its files, which is not built.** This note is step 3 of
+**Status: the start of the day is agreed and built (sections 3 and 5): each file records its trading day and is refused on another day, and `scripts/trading_day.py start` starts a day. How the day ends is agreed and built (section 4): the end of day is two events, and the leading sequencer writes the second once every copy of the WAL is complete; when each component receives it, it shuts itself down, keeping a file of its last trading state, and its launcher archives its files (section 4.4). The order activity recorder, which the end of day would wait for, is not built.** This note is step 3 of
 [trading_day_plan.md](trading_day_plan.md). It lists every file the venue writes during a trading day, and sets out
 the procedure that starts a day and the procedure that ends one
 ([BUG-0137](../bug_list.md#bug_0137)). The choices made are collected in the last section.
@@ -155,12 +155,12 @@ Logging on is allowed in every phase, so members may connect as soon as the gate
 
 ## 4. Ending the trading day
 
-**Status: agreed, and partly built.** The two events are built: the leading sequencer writes the end-of-day end
-once the follower sequencer and the publishers hold every record up to the begin, or once the limit of time has
-passed, and refuses an operator's request for it (decisions 3 and 4). Nothing yet happens when a component receives
-the end-of-day end: no component shuts down, and nothing is archived, except by `trading_day.py end` as section 4.3
-describes. What is built today is a procedure run from outside the venue, described in section 4.3, which this
-design replaces.
+**Status: agreed and built.** The leading sequencer writes the end-of-day end once the follower sequencer and the
+publishers hold every record up to the begin, or once the limit of time has passed, and refuses an operator's
+request for it (decisions 3 and 4). When a component receives the end-of-day end it shuts itself down, keeping a
+file of its last trading state, and its launcher archives its files (section 4.4). The procedure run from outside
+the venue, `trading_day.py end` (section 4.3), is kept as the manual way to archive the files of a component that
+missed the end of day.
 
 ### 4.1 How the day ends
 
