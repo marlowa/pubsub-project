@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 282 |
-| Open | 52 (29 defects, 23 tasks) |
+| Bugs recorded | 283 |
+| Open | 53 (29 defects, 24 tasks) |
 | Closed | 230 |
-| Next id | BUG-0283 |
+| Next id | BUG-0284 |
 
 ## Open bugs by severity
 
-4 high, 31 medium, 17 low.
+4 high, 32 medium, 17 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,6 +48,7 @@
 | [BUG-0278](#bug_0278) | medium | defect | An exception that ends an application thread stops the process with exit status 0, as if it had stopped normally |
 | [BUG-0279](#bug_0279) | medium | defect | A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent |
 | [BUG-0281](#bug_0281) | medium | task | What happens to members' orders when their gateways are down for longer than the grace period is not decided |
+| [BUG-0283](#bug_0283) | medium | task | Parts of the framework library that the venue runs every day are not reached by any test |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -2420,6 +2421,68 @@ which leaves the book as it is.
 
 It depends on [BUG-0046](#bug_0046): a binary member cannot learn, after reconnecting, which of its orders were
 cancelled while it was away. To be done after the bugs agreed before it ([bug_review.md](bug_review.md)).
+
+### BUG-0283: Parts of the framework library that the venue runs every day are not reached by any test {#bug_0283}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-11-21 |
+| Recorded | 2026-11-21 |
+| How | Andrew, reading the coverage report of release 0.6.0 (`build.py --coverage`, report written 21 November 2026 at 16:12) |
+| Impact | A fault in these parts is found only when the venue runs, and in some of them only on a machine or in a failure that the development venue rarely has |
+
+**What the report measures.** The coverage report counts the lines and functions of the framework library
+(`libraries/pubsub_itc_fw`, with `libraries/fix_codec`) that the library's own unit and integration tests run. It does
+not count what the applications or `ha_test.py` run. For release 0.6.0 it found 87.1% of lines (11,103 of 12,743) and
+90.6% of functions (2,745 of 3,030) run.
+
+**The function figure for a header is not a guide.** A function template is counted once for each type it is
+instantiated with. `BumpAllocator.hpp` has every one of its 24 lines run and is shown with 56.5% of its functions run,
+because `allocate` is instantiated for 18 types and some of those instantiations are never called. The same accounts
+for the low function figures of `TestEventChannel.hpp` (11.1%) and `BackgroundRecorder.hpp` (70.0%). The line figure is
+the one to read.
+
+**Where the line figure is low.** The files below 85%, grouped by what the missing lines do. Every count is of lines
+no test runs.
+
+1. **Placing threads on cores at startup.** `CpuLayout.cpp` (47 lines, 45.3% run), `CpuPinning.hpp` (73 lines, 61.4%)
+   and `HotPathThreadCount.hpp` (7 lines, none run). No test runs `CpuLayout::verify_cores_present`,
+   `apply_background_affinity`, `format_cpu_list`, the three functions that apply an affinity mask, the reading of
+   `/sys/devices/system/cpu/present` when the core list cannot be read otherwise, the reading of a core's capacity to
+   tell performance cores from efficiency cores, or `answer_hot_path_thread_count_query`, which `cpu_layout.py` uses to
+   learn how many hot-path threads each component has. Every component runs this code each time it starts.
+2. **The leading sequencer's replicated WAL when its follower falls behind.** `ReplicatedWal.cpp` (102 lines, 85.0%):
+   `follower_too_far_behind`, starting and ending running alone, the Error repeated while the leader trades without a
+   standby, saying that the peer may lead again once the follower holds every record, and the discarding of a
+   follower's records that disagree with the leader's while the WAL is still being read for the follower. These are
+   checked by `ha_test.py` scenarios, which the report does not count, but not by any test of the library.
+3. **A topic subscriber losing its publisher.** `TopicSubscriberThread.hpp` (26 lines, 65.8%): the loss of the
+   connection to the publisher that serves the topic, a publisher's answer that it does not lead (`TopicNotLeader`), and
+   connections and messages that are not from a publisher.
+4. **The reactor and the connection managers.** `Reactor.cpp` (231 lines, 74.5%), `OutboundConnectionManager.cpp` (139,
+   75.5%), `InboundConnectionManager.cpp` (83, 78.3%), `ApplicationThread.cpp` (99, 79.7%), `TcpSocket.cpp` (44, 79.9%),
+   `TlsRawBytesProtocolHandler.cpp` (39, 76.4%) and `TimerHandler.cpp` (17, 72.6%). Most of the missing lines are the
+   handling of a failed system call or of a connection lost at an awkward moment, each with its log line. They are the
+   largest number of missing lines in the library, and the least often exercised by the running venue.
+5. **The WAL and the records kept on disk.** `Wal.cpp` (56 lines, 78.9%), `WalReadingThread.cpp` (33, 82.9%),
+   `EpochStore.hpp` (13, 80.9%), `ComponentStatementStore.hpp` (19, 80.4%), `LeasePromiseStore.hpp` (18, 83.9%) and
+   `LastStateFile.cpp` (12, 81.8%): mostly a file that cannot be opened, written or read back, and a record that is
+   damaged.
+6. **Smaller files.** `MetricsConfigurationLoader.hpp` (12 lines, 36.8%), `EventType.hpp` (16, 59.0%), `LockedMemory.cpp`
+   (8, 69.2%: the descriptions of the errors from locking memory), `LoggerUtils.hpp` (6, 66.7%),
+   `PubSubItcException.hpp` (4, 20.0%: `throw_errno`), `FixGroupWalker.hpp` and `FixMessageValidator.hpp` (15 and 26).
+
+**What is wanted.**
+
+1. Tests for groups 1, 2 and 3 first: each is code the venue relies on every day or in a failure it must survive, and
+   each can be tested without a running venue. Group 1 needs a way to give `CpuLayout` and `CpuPinning` a made-up
+   `/sys` tree, since the code reads the machine's own and no test can choose what it finds there.
+2. For group 4 and 5, tests of the failures that change what the venue does, not of every log line. A failed system
+   call that only logs and returns does not need a test of its own.
+3. Each new test made to fail on purpose before it is trusted, and `coverage_baseline.txt` regenerated in the same
+   commit.
 
 ## Closed
 
