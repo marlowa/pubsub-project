@@ -1057,6 +1057,17 @@ void Reactor::on_housekeeping_tick() {
     inbound_manager_.check_for_inactive_connections();
     outbound_manager_.check_for_timed_out_connections();
 
+    // How many pools each queue has added since start: any above zero means a queue was sized too small, which each
+    // component also logs at Error as it happens (docs/framework/pools_that_grow_without_a_lock.md, section 4). Read here,
+    // off the order path, from counts the allocators keep anyway. No lock: threads_ changes only before the reactor runs
+    // and after its threads have been joined (BUG-0129).
+    command_queue_pools_added_gauge_.set(static_cast<double>(command_queue_.pools_added()));
+    for (auto& [name, thread] : threads_) {
+        if (thread != nullptr) {
+            thread->publish_queue_pools_added();
+        }
+    }
+
     // Retry outbound connections that failed on a previous attempt.
     //
     // This addresses the TCP rendezvous problem: when components start at
@@ -1360,6 +1371,9 @@ void Reactor::register_command_latency_metrics() {
         "reactor", "reactor_lap_nanoseconds", "Nanoseconds between one look for work and the next, during which nothing is noticed", waited_buckets);
     reactor_command_latency_unstamped_counter_ = metrics_endpoint_.register_counter(
         "reactor", "reactor_command_latency_unstamped_total", "Commands picked up with no enqueue stamp, so excluded from reactor_command_latency_nanoseconds");
+    command_queue_pools_added_gauge_ = metrics_endpoint_.register_gauge(
+        "reactor", "reactor_command_queue_pools_added",
+        "Pools added to the command queue since start, beyond those it started with; above zero means the queue was sized too small");
 }
 
 size_t Reactor::process_control_commands(size_t max_commands) {

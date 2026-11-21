@@ -997,6 +997,20 @@ sequencer, and each answered order a third, its execution report.
 so that they do not grow during the day, growth logged at Error and counted, and the lock removed from growing only if a
 TLA+ model checked with TLC proves it safe.
 
+**Built, 21 November 2026: growing without the lock, and growth reported.** `expansion_mutex_` is removed: a pool is
+linked by a compare-and-swap of the last pool's link from null (`FixedSizeMemoryPool::link_next_pool`), and a node is
+taken from a new pool only once it is linked, following `docs/framework/tla/PoolChain.tla` step for step with
+sequentially consistent atomic operations. TLC finds every property of the model holding, including a bound on the pools
+added when threads find the chain full at once, over 25,489,848 and 16,538,971 distinct states, and finds each of two
+faults put in on purpose ([tla/findings.md](framework/tla/findings.md), section 5). Every component's handler for an
+exhausted pool logs at Error, and the reactor publishes the pools each queue has added
+(`reactor_command_queue_pools_added`, `itc_queue_pools_added`). A unit test of many threads growing the chain at once
+fails when the compare-and-swap is replaced by a plain store. `ha_test.py` passes 118 of 118 with the primary engine
+started first and 49 of 49 with the secondary.
+
+**Left before this entry closes:** sizing each component's queues so that they do not grow during the day, which needs
+[BUG-0279](#bug_0279) built first, so that the orders a gateway can have read and not answered are bounded by settings.
+
 **How often.** With one pool that never fills, never. But pools have run out during load runs, which
 is why the queue pools in `fix_order_gateway_a.toml` have been enlarged more than once. And once a
 pool has been added, the slow path can be taken again each time the current pool fills while an
@@ -2437,8 +2451,12 @@ excess grows with the number of members connected.
 **What is wanted.** A bound on the orders a gateway can have read but not yet answered that holds whatever the number of
 members, so that its command queue can be sized from settings: for example a limit on the messages waiting from each
 member's connection ([bounding_messages_waiting.md](framework/bounding_messages_waiting.md)), or the limit applied to
-each order as the gateway's thread takes it rather than only to reading. To be designed and agreed. The FIX order
-gateway forwards each order to both sequencers in the same way and is to be checked too.
+each order as the gateway's thread takes it rather than only to reading. The FIX order gateway forwards each order
+to both sequencers in the same way and is to be checked too.
+
+**Design.** Agreed in [bounding_what_a_gateway_has_read.md](availability/bounding_what_a_gateway_has_read.md): a limit on
+the messages waiting from each member's connection to the binary gateway, and a limit on the members each gateway
+instance serves, so that the gateway's command queue can be sized from settings.
 
 ## Closed
 

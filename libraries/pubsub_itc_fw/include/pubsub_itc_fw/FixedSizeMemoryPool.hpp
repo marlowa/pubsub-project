@@ -328,7 +328,7 @@ template <typename T> class FixedSizeMemoryPool {
         return allocation_count_;
     }
 
-    void set_next_pool(FixedSizeMemoryPool<T>* next);
+    [[nodiscard]] FixedSizeMemoryPool<T>* link_next_pool(FixedSizeMemoryPool<T>* next);
 
     [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const;
 
@@ -723,20 +723,26 @@ template <typename T> class FixedSizeMemoryPool {
     [[nodiscard]] size_t get_huge_page_size() const;
 
     /**
-     * @brief Sets the next pool in a linked chain (for ExpandablePoolAllocator).
+     * @brief Links @p next after this pool in a chain (for ExpandablePoolAllocator), if nothing is linked here yet.
      *
-     * @param[in] next Pointer to the next pool, or nullptr if this is the tail.
+     * One compare-and-swap of this pool's link from null to @p next, so that when several threads link a pool here
+     * at once exactly one succeeds (docs/framework/pools_that_grow_without_a_lock.md, section 5).
      *
-     * @note Uses atomic store with RELEASE ordering to ensure visibility.
+     * @param[in] next The pool to link; not null.
+     * @return Null when @p next is now linked here; otherwise the pool another thread linked here first, from which a
+     *         thread whose compare-and-swap failed walks on to the new end of the chain.
+     *
+     * @note Sequentially consistent, as docs/framework/tla/PoolChain.tla assumes.
      */
-    void set_next_pool(FixedSizeMemoryPool<T>* next);
+    [[nodiscard]] FixedSizeMemoryPool<T>* link_next_pool(FixedSizeMemoryPool<T>* next);
 
     /**
      * @brief Gets the next pool in a linked chain (for ExpandablePoolAllocator).
      *
      * @return Pointer to the next pool, or nullptr if this is the tail.
      *
-     * @note Uses atomic load with ACQUIRE ordering to ensure visibility.
+     * @note Sequentially consistent, as docs/framework/tla/PoolChain.tla assumes. A link changes once, from null to a
+     *       pool, and never again.
      */
     [[nodiscard]] FixedSizeMemoryPool<T>* get_next_pool() const;
 
@@ -1143,12 +1149,16 @@ template <typename T> inline size_t FixedSizeMemoryPool<T>::get_huge_page_size()
     return 0U;
 }
 
-template <typename T> inline void FixedSizeMemoryPool<T>::set_next_pool(FixedSizeMemoryPool<T>* next) {
-    __atomic_store_n(&next_pool_, next, __ATOMIC_RELEASE);
+template <typename T> inline FixedSizeMemoryPool<T>* FixedSizeMemoryPool<T>::link_next_pool(FixedSizeMemoryPool<T>* next) {
+    FixedSizeMemoryPool<T>* expected = nullptr;
+    if (__atomic_compare_exchange_n(&next_pool_, &expected, next, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+        return nullptr;
+    }
+    return expected;
 }
 
 template <typename T> inline FixedSizeMemoryPool<T>* FixedSizeMemoryPool<T>::get_next_pool() const {
-    return __atomic_load_n(&next_pool_, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(&next_pool_, __ATOMIC_SEQ_CST);
 }
 
 } // namespaces

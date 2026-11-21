@@ -70,12 +70,6 @@ refused.
   \covers{ha_test:111}
 \end{requirement}
 
-\begin{gap}{BUG-0137}
-  The procedure that ends the trading day works only where every component runs on one machine.
-  The design that replaces it, in which every component shuts itself down and archives its own
-  files when the leading sequencer writes the end of the end of day, is not built.
-\end{gap}
-
 \begin{requirement}{R-0177}{A component refuses to start on a file from another trading day}
   Every file a component writes during a trading day, and reads when it starts, shall record the
   trading day it belongs to. A component started for one trading day that finds such a file from

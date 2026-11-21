@@ -41,7 +41,7 @@ AuthenticationService::AuthenticationService(const AuthenticationServiceConfigur
     reactor_configuration_.command_allocator_configuration_.objects_per_pool = config_.command_queue_pool_objects_per_slab;
     reactor_configuration_.command_allocator_configuration_.initial_pools = config_.command_queue_pool_initial_slabs;
     reactor_configuration_.command_allocator_configuration_.handler_for_pool_exhausted = [this](void* /*ctx*/, int objects_per_pool) {
-        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning, "AuthenticationServiceCommandPool exhausted: chaining new pool slab ({} objects)",
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Error, "AuthenticationServiceCommandPool exhausted: chaining new pool slab ({} objects)",
                    objects_per_pool);
     };
 

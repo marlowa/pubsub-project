@@ -342,7 +342,86 @@ TEST_F(ExpandablePoolAllocatorTest, ThunderingHerdExpansionRace) {
     }
 
     EXPECT_EQ(success_count, num_threads);
-    EXPECT_EQ(pool_exhausted_callback_count_.load(), num_threads - initial_pools);
+    // Every thread needs a node of its own, so at least num_threads - initial_pools pools are added. Pools are added
+    // without a lock, so two threads that find the chain full at once may each add one, and more may be added than
+    // were strictly needed; what must hold is that every pool added is in the chain, once.
+    EXPECT_GE(pool_exhausted_callback_count_.load(), num_threads - initial_pools);
+    EXPECT_EQ(allocator.get_pool_statistics().number_of_pools_, initial_pools + pool_exhausted_callback_count_.load())
+        << "a pool added was lost from the chain, or linked into it twice";
+}
+
+TEST_F(ExpandablePoolAllocatorTest, NoInitialPoolIsRefused) {
+    EXPECT_THROW(make_allocator("NoInitialPool", 4, 0), PreconditionAssertion);
+}
+
+// Many threads arriving at a full chain at once, again and again: each round makes a fresh allocator with pools of one
+// node, and every thread takes and holds several nodes, so that the chain is full at nearly every allocation and
+// threads add pools at the same moment. Then they free every node, each free walking the chain to find the node's pool.
+// This is what docs/framework/tla/PoolChain.tla checks, run on the real code: no pool lost or linked twice, no node
+// given twice, every node's pool found.
+TEST_F(ExpandablePoolAllocatorTest, PoolsAddedByManyThreadsAtOnceAreEachLinkedOnceAndEveryNodeIsFreed) {
+#ifdef USING_VALGRIND
+    const int num_threads = 4;
+    const int rounds = 5;
+#else
+    const int num_threads = 32;
+    const int rounds = 50;
+#endif
+    const int held_per_thread = 8;
+
+    for (int round = 0; round < rounds; ++round) {
+        pool_exhausted_callback_count_ = 0;
+        invalid_free_callback_count_ = 0;
+        auto allocator = make_allocator("PoolsAddedAtOnce", 1, 1);
+
+        std::atomic<bool> start_gate{false};
+        std::atomic<int> ready{0};
+        std::vector<std::vector<TestObject*>> held(static_cast<size_t>(num_threads));
+        std::vector<std::thread> threads;
+        threads.reserve(num_threads);
+        for (int thread_index = 0; thread_index < num_threads; ++thread_index) {
+            threads.emplace_back([&, thread_index]() {
+                ready.fetch_add(1);
+                while (!start_gate.load(std::memory_order_acquire)) {}
+                for (int i = 0; i < held_per_thread; ++i) {
+                    held[static_cast<size_t>(thread_index)].push_back(allocator.allocate());
+                }
+            });
+        }
+        while (ready.load() < num_threads) {
+            std::this_thread::yield();
+        }
+        start_gate.store(true, std::memory_order_release);
+        for (auto& thread : threads) {
+            thread.join();
+        }
+
+        std::set<TestObject*> distinct;
+        for (const auto& nodes : held) {
+            distinct.insert(nodes.begin(), nodes.end());
+        }
+        const PoolStatistics full = allocator.get_pool_statistics();
+        ASSERT_EQ(distinct.size(), static_cast<size_t>(num_threads * held_per_thread)) << "round " << round << ": a node was given out twice";
+        ASSERT_EQ(full.number_of_pools_, 1 + pool_exhausted_callback_count_.load())
+            << "round " << round << ": a pool added was lost from the chain, or linked into it twice";
+        ASSERT_GE(full.number_of_pools_, num_threads * held_per_thread) << "round " << round << ": fewer pools than nodes held";
+
+        // Free from many threads at once, each free finding its node's pool by walking the chain.
+        std::vector<std::thread> freers;
+        freers.reserve(num_threads);
+        for (int thread_index = 0; thread_index < num_threads; ++thread_index) {
+            freers.emplace_back([&, thread_index]() {
+                for (TestObject* node : held[static_cast<size_t>(thread_index)]) {
+                    allocator.deallocate(node);
+                }
+            });
+        }
+        for (auto& thread : freers) {
+            thread.join();
+        }
+        ASSERT_EQ(invalid_free_callback_count_.load(), 0) << "round " << round << ": a node was freed whose pool deallocate() could not find";
+        ASSERT_EQ(allocator.get_pool_statistics().number_of_allocated_objects_, 0) << "round " << round << ": not every node was returned to its pool";
+    }
 }
 
 TEST_F(ExpandablePoolAllocatorTest, ProducerConsumerStressTest) {

@@ -25,6 +25,7 @@
 #include <pubsub_itc_fw/EventHandler.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/GaugeHandle.hpp>
 #include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/InboundConnectionManager.hpp>
 #include <pubsub_itc_fw/InboundListener.hpp>
@@ -863,6 +864,8 @@ class Reactor : public ThreadLookupInterface {
      * family into the overflow bucket, so it is counted here instead.
      */
     CounterHandle reactor_command_latency_unstamped_counter_;
+    // The pools the command queue's allocator has added since start, set at each housekeeping tick (BUG-0127).
+    GaugeHandle command_queue_pools_added_gauge_;
 
     /** @brief Whether the two members above have been registered yet. */
     bool command_latency_metrics_registered_{false};

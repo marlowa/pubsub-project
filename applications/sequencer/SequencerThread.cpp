@@ -95,7 +95,7 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const SequencerConfi
     allocator_configuration.objects_per_pool = config.event_queue_pool_objects_per_slab;
     allocator_configuration.initial_pools = config.event_queue_pool_initial_slabs;
     allocator_configuration.handler_for_pool_exhausted = [&logger](void* /*context*/, int objects_per_pool) {
-        PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning, "SequencerPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+        PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Error, "SequencerPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
     return allocator_configuration;
 }

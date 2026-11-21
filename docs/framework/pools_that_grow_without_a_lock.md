@@ -101,7 +101,8 @@ threads adding pools at once may call it at once; every handler in the venue onl
 
 ## 6. Proving it: TLA+ first
 
-Tests cannot show that code shared between threads has no race: they pass while a race remains. ThreadSanitizer cannot
+Tests cannot show that code shared between threads has no race condition: they pass while one remains, if the order of
+steps that shows it never happens to come up. ThreadSanitizer cannot
 check this code either, because the builds for Valgrind and ThreadSanitizer (`USING_VALGRIND`) replace the pool's
 lock-free free list with a mutex, so that those tools can follow it, and so test different code.
 
@@ -121,11 +122,24 @@ it. If the model holds, the C++ follows it step for step, which is checked by re
 not hold, the lock stays.
 
 **The result.** The model is `PoolChain.tla`. With three producers and four pools of one node each, TLC visits
-11,711,383 distinct states, every one reachable within those bounds, and every invariant holds; with three producers
-and three pools of two nodes each, so that a pool can be partly used while producers race past it, 5,067,730 states,
-and every invariant holds. Each of two deliberate faults is found: a node handed out before its pool is linked breaks
+25,489,848 distinct states, every one reachable within those bounds, and every invariant holds; with three producers
+and three pools of two nodes each, so that a pool can be partly used while other producers walk past it, 16,538,971
+states, and every invariant holds. Each of two deliberate faults is found: a node handed out before its pool is linked breaks
 `EveryNodeInTheChain`, and a pool linked by a plain store rather than a compare-and-swap breaks `NoPoolLost`. The
 figures, and the steps TLC prints for each fault, are in [tla/findings.md](tla/findings.md), section 5.
+
+## 6a. Threads arriving at once
+
+Several producers finding the chain full at the same moment is not a race condition: TLC finds no order of their steps
+that gives a wrong result. The one thing that depends on the order of their steps is how many pools are added. Two
+producers that each find the chain full each add a pool, so more pools can be added than the nodes in use needed. Each
+extra pool is linked and is used by later allocations, so the cost is memory taken sooner than needed. The model bounds
+it, and TLC checks the bound in every state: the nodes in all the pools made never exceed one pool's worth, plus the
+most nodes ever in use at once, plus one pool's worth for each producer (`PoolsBounded`). The tighter claim, that no
+pool is ever added beyond need, does not hold, and TLC shows how: with one node in use, two producers each find the
+only pool full and each add a pool, so three pools exist where two would serve. A pool added during the day is in any
+case a fault of sizing, logged at Error (section 4), so the extra memory can be taken only when that fault has already
+been reported.
 
 ## 7. What is not changed
 

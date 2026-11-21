@@ -38,7 +38,7 @@ Witness::Witness(const WitnessConfiguration& config, std::unique_ptr<pubsub_itc_
     reactor_configuration_.command_allocator_configuration_.objects_per_pool = config_.command_queue_pool_objects_per_slab;
     reactor_configuration_.command_allocator_configuration_.initial_pools = config_.command_queue_pool_initial_slabs;
     reactor_configuration_.command_allocator_configuration_.handler_for_pool_exhausted = [this](void* /*context*/, int objects_per_pool) {
-        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Warning, "WitnessCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
+        PUBSUB_LOG(*logger_, pubsub_itc_fw::FwLogLevel::Error, "WitnessCommandPool exhausted: chaining new pool slab ({} objects)", objects_per_pool);
     };
 
     // The matching engine publishers, for the technical_events topic (docs/venue/start_and_end_of_day.md, section 4.4).

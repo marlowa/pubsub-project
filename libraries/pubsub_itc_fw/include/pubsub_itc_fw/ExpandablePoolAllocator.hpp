@@ -14,7 +14,6 @@
 #include <string>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 #include <fmt/format.h>
 
@@ -32,14 +31,22 @@
  * ============================================================================
  *
  * This allocator manages a chain of FixedSizeMemoryPool instances to provide
- * expandable memory allocation while maintaining lock-free performance for
- * the common case.
+ * expandable memory allocation. No path through it takes a lock: not taking a
+ * node from the current pool, not looking through the chain for one, and not
+ * adding a pool to the chain. See WHY ADDING A POOL NEEDS NO LOCK below.
+ *
+ * Adding a pool during the trading day is nevertheless a fault: it means the
+ * pools were sized too small for their queue, and the memory taken was not
+ * planned for at the start of the day. The handler_for_pool_exhausted of every
+ * component logs it at Error (docs/framework/pools_that_grow_without_a_lock.md,
+ * section 4).
  *
  * POOL CHAIN STRUCTURE
  *    - Pools linked via next_pool_ pointers (singly-linked list).
- *    - head_pool_ points to the first pool in the chain.
+ *    - head_pool_ points to the first pool in the chain. It is made by the
+ *      constructor, which makes at least one pool, and never changes.
  *    - current_pool_ptr_ points to the most recently active pool (optimisation).
- *    - cleanup_list_ holds unique_ptrs for RAII cleanup.
+ *    - The chain owns its pools: the destructor deletes every pool in it.
  *
  * CURRENT POOL POINTER STRATEGY
  *    - current_pool_ptr_ always points to the most recently added pool.
@@ -65,7 +72,7 @@
  *      strategy.
  *
  * EXPANSION STRATEGY
- *    - Starts with initial_pools pre-allocated.
+ *    - Starts with initial_pools pre-allocated, at least one.
  *    - Expands on demand when all pools are exhausted.
  *    - No hard limit -- expands as long as the operating system can provide memory.
  *    - expansion_threshold_hint is for monitoring and alerts only.
@@ -82,31 +89,30 @@
  *    - Acceptable for environments where deallocation is off the critical path.
  *
  * POOL OWNERSHIP
- *    - All FixedSizeMemoryPool instances are owned by this allocator.
+ *    - All FixedSizeMemoryPool instances are owned by this allocator, through
+ *      the chain: every pool made is linked into it (see below), and the
+ *      destructor deletes every pool it finds there.
  *    - Pools are added to the chain but never removed during the allocator's
  *      lifetime. This ensures that traversal of the pool chain is always safe.
  *    - All pools are destroyed together when the allocator itself is destroyed.
  *
  * THREAD SAFETY
- *    - allocate() is thread-safe (fast path lock-free, slow path mutex).
+ *    - allocate() is thread-safe and takes no lock, on its fast path or its
+ *      slow path.
  *    - deallocate() is thread-safe (traversal uses atomic loads).
  *    - get_pool_statistics() is thread-safe (snapshot via atomic loads).
  *
  * MEMORY ORDERING GUARANTEES
- *    - current_pool_ptr_ is published using __ATOMIC_RELEASE. This ensures that
- *      all writes performed during pool creation, including linking the pool
- *      into the chain, become visible before other threads observe the new
- *      pointer.
+ *    - Every read and write of a pool's link to the next, and every write of
+ *      current_pool_ptr_ on the slow path, is sequentially consistent
+ *      (__ATOMIC_SEQ_CST). Every thread then sees those operations in one
+ *      single order, which is what the TLA+ model of the chain assumes, so the
+ *      model's result holds for this code. The slow path is rare, so the cost
+ *      of the strongest ordering does not matter there.
  *
- *    - Threads reading current_pool_ptr_ use __ATOMIC_ACQUIRE, which guarantees
- *      that once a thread observes a new pool pointer, it also observes the
- *      fully initialised pool and its correct position in the chain.
- *
- *    - head_pool_ is updated under the expansion mutex and published using
- *      __ATOMIC_RELEASE. Readers use __ATOMIC_ACQUIRE to ensure that the pool
- *      chain is observed in a consistent state. Pools are only added, never
- *      removed, so readers may safely traverse the chain without additional
- *      synchronisation.
+ *    - The fast path reads current_pool_ptr_ with __ATOMIC_ACQUIRE. It is only
+ *      where to look first: whichever pool it names, the pool is fully made,
+ *      because it was in the chain before any thread could name it.
  *
  * BACKPRESSURE AND MEMORY EXHAUSTION
  *    - The message queue is backed by an ExpandablePoolAllocator, which means
@@ -140,15 +146,17 @@
  *
  * CALLBACK SEMANTICS
  *    - Callback functions may be invoked from threads performing allocation or
- *      deallocation. They are not invoked concurrently by multiple threads at
- *      the same time.
+ *      deallocation. handler_for_pool_exhausted_ and
+ *      handler_for_huge_pages_error_ may be invoked by two threads at once,
+ *      when both add a pool at once; every handler in the venue only logs,
+ *      which the logger allows.
  *
  *    - Callbacks are expected to be lightweight. They may log messages, and
  *      they may allocate memory if required, although this is not recommended
  *      for performance-critical paths.
  *
- *    - handler_for_pool_exhausted_ is invoked under expansion_mutex_ and
- *      therefore cannot be called concurrently by multiple threads.
+ *    - handler_for_pool_exhausted_ is invoked by the thread that added a
+ *      pool, after the pool is linked into the chain, holding no lock.
  *
  *    - handler_for_invalid_free_ is invoked under callback_mutex_ and
  *      therefore cannot be called concurrently by multiple threads. The
@@ -156,9 +164,8 @@
  *      has been confirmed atomically, so it does not appear on the normal
  *      deallocation path.
  *
- *    - handler_for_huge_pages_error_ is invoked from add_pool_to_chain(),
- *      which is called under expansion_mutex_, so it also cannot be called
- *      concurrently by multiple threads.
+ *    - handler_for_huge_pages_error_ is invoked while a pool is being made,
+ *      by the thread making it, holding no lock.
  *
  * DEALLOCATION COST
  *    - Deallocation performs a linear search through the pool chain to locate
@@ -172,21 +179,95 @@
  *      is owned by a single application thread and destroyed only after that
  *      thread has completed all allocation and deallocation activity.
  *
- * RACE CONDITION NOTES
- *    - Linking a new pool into the chain is safe. The next_pool_ pointer is
- *      published using __ATOMIC_RELEASE, and readers use __ATOMIC_ACQUIRE.
- *      This ensures that once a reader observes the new pool, it also observes
- *      the fully initialised chain.
+ * WHY ADDING A POOL NEEDS NO LOCK
+ *    An earlier version of this allocator took a mutex, expansion_mutex_, on
+ *    its slow path: a thread that found the current pool full locked it, looked
+ *    through the chain, and, if every pool was full, made a pool and linked it,
+ *    all while holding the mutex. Every other thread that wanted a node from the
+ *    same queue waited, and in a load test that waiting fell on the order path
+ *    (BUG-0127). The mutex is not needed: each thing it guarded can be done
+ *    safely without it, as the four points below explain, and a model checker
+ *    has confirmed it (HOW THIS WAS CHECKED, below).
+ *    docs/framework/pools_that_grow_without_a_lock.md sets the argument out in
+ *    full.
  *
- *    - During expansion, the creating thread performs the first allocation from
- *      the new pool while still holding the expansion mutex. The pool is only
- *      published via current_pool_ptr_ after this allocation has succeeded.
- *      This prevents other threads from observing an empty pool and attempting
- *      to allocate from it simultaneously.
+ *    1. Looking through the chain for a pool with a free node. Each pool's
+ *       free list is lock-free already (FixedSizeMemoryPool, checked by
+ *       docs/framework/tla/PoolFreeList.tla), so several threads may take
+ *       nodes from one pool at once. Walking the chain only reads links, and a
+ *       link changes once, from null to a pool, because pools are never
+ *       removed; deallocate() has always walked the chain while pools are
+ *       being added.
  *
- *    - The pool chain is traversed using __ATOMIC_ACQUIRE loads. Pools are only
- *      added, never removed, so traversal is safe even while another thread is
- *      expanding the chain.
+ *    2. Making the pool found the current one. current_pool_ptr_ is only
+ *       where to look first. Two threads that set it at once each set a pool
+ *       that had a free node, and either is correct.
+ *
+ *    3. Adding a pool. A thread that finds every pool full makes a pool, and
+ *       only then links it, by a compare-and-swap of the last pool's link from
+ *       null to its own pool (FixedSizeMemoryPool::link_next_pool). When
+ *       several threads find the chain full at the same moment and each tries
+ *       to link a pool there, exactly one compare-and-swap succeeds. Each other
+ *       thread learns from its failed compare-and-swap which pool is now
+ *       linked there, walks on to the new end of the chain, and links its own
+ *       pool there in the same way. So every pool made is linked, and linked
+ *       once, because only the thread that made it links it and a link from
+ *       null can be set only once. The chain cannot form a loop, because a
+ *       link only ever points to a pool that was in no chain before. The fault
+ *       known as ABA, in which a compare-and-swap is fooled by a value that
+ *       changed and changed back, cannot happen, because no link ever returns
+ *       to null and no pool is freed or reused while the allocator lives.
+ *
+ *    4. Taking a node only from a pool in the chain. A thread never takes a
+ *       node from the pool it made before that pool is linked. A node handed
+ *       out from a pool not yet linked could be freed by the consumer, whose
+ *       deallocate() would walk the chain and not find its pool.
+ *
+ *    THREADS ARRIVING AT ONCE. Several threads finding the chain full at the
+ *    same moment is not a race condition: no order of their steps gives a
+ *    wrong result -- no pool is lost, no node is given to two threads, and
+ *    every freed node finds its pool. The one thing that depends on the order
+ *    of their steps is how many pools are added. Two threads that each find
+ *    the chain full each add a pool, so more pools can be added than were
+ *    strictly needed. Each extra pool is linked and is used by later
+ *    allocations; the cost is memory taken sooner than it was needed, and it
+ *    is bounded: the nodes in all the pools never exceed one pool's worth,
+ *    plus the most nodes ever in use at once, plus one pool's worth for each
+ *    thread allocating. Adding a pool during the trading day is in any case a
+ *    fault of sizing, logged at Error, so this can only happen when a fault
+ *    has already been reported.
+ *
+ *    HOW THIS WAS CHECKED. Tests cannot show that code shared by threads has
+ *    no race condition: they pass while one remains, if the order of steps
+ *    that shows it never happens to come up. ThreadSanitizer cannot check the
+ *    pools' free lists either, because the builds for it and for Valgrind
+ *    (USING_VALGRIND) replace each free list with a mutex, which those tools
+ *    can follow; it does see the chain, whose compare-and-swap is an ordinary
+ *    one. So the slow path was specified in TLA+,
+ *    docs/framework/tla/PoolChain.tla, before this code was written, and
+ *    checked with the model checker TLC. TLC does not sample orders of steps
+ *    as a test does: within its bounds it tries every order in which the
+ *    threads' steps can happen -- several producers allocating, finding the
+ *    chain full and linking pools at the same moment, while a consumer frees
+ *    nodes by walking the chain. Every property held: the chain never loops,
+ *    no pool is linked twice, every node handed out belongs to a pool in the
+ *    chain, the consumer always finds a node's pool, no node is handed out
+ *    twice, no pool is lost, and the bound on the pools added holds. That is
+ *    25,489,848 distinct states with three producers and four pools of one
+ *    node, and 16,538,971 with three pools of two nodes. TLC also found each
+ *    of two faults put in on purpose: a node handed out before its pool is
+ *    linked, and a pool linked by a plain store instead of a compare-and-swap.
+ *    The figures, and the steps TLC prints for each fault, are in
+ *    docs/framework/tla/findings.md, section 5. The unit test
+ *    PoolsAddedByManyThreadsAtOnceAreEachLinkedOnceAndEveryNodeIsFreed runs
+ *    the same situation on this code, and fails when the compare-and-swap is
+ *    replaced by a plain store.
+ *
+ *    The model assumes each step above is one atomic operation and that every
+ *    thread sees them in one order; the sequentially consistent operations
+ *    named under MEMORY ORDERING GUARANTEES give that. This code follows the
+ *    model step for step: a change to the slow path is to be made to the
+ *    model first and checked again with TLC.
  *
  * CANARY PROTECTION
  *    - Each Slot<T> (defined in FixedSizeMemoryPool.hpp) contains a canary
@@ -214,16 +295,17 @@ template <typename T> class ExpandablePoolAllocator {
      *      threads using this allocator have completed their work and joined
      *      before this object is destroyed.
      *
-     * @warning This precondition is not mechanically enforced. The fast path in
-     *          allocate() does not hold expansion_mutex_, so taking the mutex
-     *          in the destructor would not protect against concurrent allocations.
-     *          Violating this precondition is undefined behaviour and will not
-     *          be reliably detected at runtime.
+     * @warning This precondition is not mechanically enforced. No path in
+     *          allocate() takes a lock, so nothing the destructor could take
+     *          would protect against concurrent allocations. Violating this
+     *          precondition is undefined behaviour and will not be reliably
+     *          detected at runtime.
      *
-     * @note cleanup_list_ is traversed without a lock during destruction. This
-     *       is safe only because of the precondition above. Any pool objects
-     *       that still have allocated slots will have their objects destructed
-     *       here -- see FixedSizeMemoryPool destructor for details.
+     * @note The chain is walked, and every pool in it deleted, without a lock
+     *       during destruction. This is safe only because of the precondition
+     *       above. Any pool objects that still have allocated slots will have
+     *       their objects destructed here -- see FixedSizeMemoryPool destructor
+     *       for details.
      */
 
     /**
@@ -267,11 +349,14 @@ template <typename T> class ExpandablePoolAllocator {
     /**
      * @brief Allocates and constructs an object.
      *
-     * Fast path: attempts lock-free allocation from current_pool_ptr_.
-     * Slow path: under mutex, searches all pools and expands if necessary.
+     * Fast path: takes a node from the pool current_pool_ptr_ names.
+     * Slow path: walks the chain for a pool with a free node, and adds a pool
+     * to the end of the chain if every pool is full. Neither takes a lock; see
+     * WHY ADDING A POOL NEEDS NO LOCK at the top of this file.
      *
-     * @return Pointer to newly constructed object, or nullptr if operating
-     *         system memory is exhausted.
+     * @return Pointer to the newly constructed object; never null. If the
+     *         operating system refuses the memory for a new pool, it throws
+     *         PreconditionAssertion.
      */
     [[nodiscard]] T* allocate();
 
@@ -305,7 +390,17 @@ template <typename T> class ExpandablePoolAllocator {
     AllocatorBehaviourStatistics get_behaviour_statistics() const;
 
   private:
-    FixedSizeMemoryPool<T>* add_pool_to_chain();
+    /// Makes a pool, every node free, linked to nothing and known to no other thread.
+    [[nodiscard]] FixedSizeMemoryPool<T>* make_pool();
+
+    /**
+     * @brief Links @p pool at the end of the chain, starting the walk at @p from, a pool in the chain.
+     *
+     * A compare-and-swap of the last pool's link from null to @p pool. If another thread linked a pool there first,
+     * walks on to the new end and tries again, until @p pool is linked: the actions Link and ToEnd of
+     * docs/framework/tla/PoolChain.tla.
+     */
+    static void link_at_end(FixedSizeMemoryPool<T>* from, FixedSizeMemoryPool<T>* pool);
 
     /**
      * @brief Returns a pointer to the is_constructed atomic flag for a given object.
@@ -360,10 +455,9 @@ template <typename T> class ExpandablePoolAllocator {
     std::function<void(void*, void*)> handler_for_invalid_free_;
     std::function<void(void*)> handler_for_huge_pages_error_;
 
+    // The first pool, made by the constructor and never changed; the chain from it owns every pool.
     FixedSizeMemoryPool<T>* head_pool_{nullptr};
     CacheLine<FixedSizeMemoryPool<T>*> current_pool_ptr_{nullptr};
-    mutable std::mutex expansion_mutex_;
-    std::vector<std::unique_ptr<FixedSizeMemoryPool<T>>> cleanup_list_;
 
     CacheLine<std::atomic<uint64_t>> total_allocations_;
     CacheLine<std::atomic<uint64_t>> fast_path_allocations_;
@@ -392,8 +486,15 @@ ExpandablePoolAllocator<T>::ExpandablePoolAllocator(std::string pool_name, int o
     expansion_events_.value.store(0, std::memory_order_relaxed);
     failed_allocations_.value.store(0, std::memory_order_relaxed);
 
-    for (int i = 0; i < initial_pools_; ++i) {
-        add_pool_to_chain();
+    // The chain always has a first pool, which never changes, so that no thread ever has to make the first one: the
+    // TLA+ model of the chain (docs/framework/tla/PoolChain.tla) starts with one pool.
+    if (initial_pools_ < 1) {
+        throw PreconditionAssertion("ExpandablePoolAllocator: initial_pools must be at least 1, got " + std::to_string(initial_pools_), __FILE__, __LINE__);
+    }
+    head_pool_ = make_pool();
+    __atomic_store_n(&current_pool_ptr_.value, head_pool_, __ATOMIC_SEQ_CST);
+    for (int i = 1; i < initial_pools_; ++i) {
+        link_at_end(head_pool_, make_pool());
     }
 }
 
@@ -415,48 +516,47 @@ template <typename T> T* ExpandablePoolAllocator<T>::allocate() {
 
     slow_path_allocations_.value.fetch_add(1, std::memory_order_relaxed);
 
-    const std::lock_guard<std::mutex> lock(expansion_mutex_);
-
-    FixedSizeMemoryPool<T>* traverse = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
-
-    while (traverse != nullptr) {
+    // The slow path takes no lock. It follows docs/framework/tla/PoolChain.tla step for step, and every read and
+    // write of a link, and every write of current_pool_ptr_, is sequentially consistent, as the model assumes; see
+    // WHY ADDING A POOL NEEDS NO LOCK at the top of this file.
+    FixedSizeMemoryPool<T>* traverse = __atomic_load_n(&head_pool_, __ATOMIC_SEQ_CST);
+    for (;;) {
+        // Take a free node from the pool reached, and make that pool the current one (WalkStep in the model).
         raw_mem = traverse->allocate();
         if (raw_mem != nullptr) {
             total_allocations_.value.fetch_add(1, std::memory_order_relaxed);
-            __atomic_store_n(&current_pool_ptr_.value, traverse, __ATOMIC_RELEASE);
+            __atomic_store_n(&current_pool_ptr_.value, traverse, __ATOMIC_SEQ_CST);
             T* obj = ::new (static_cast<void*>(raw_mem)) T();
             std::atomic<std::uintptr_t>* is_constructed = get_is_constructed_for_object(obj);
             is_constructed->store(1U, std::memory_order_release);
             return obj;
         }
-        traverse = traverse->get_next_pool();
-    }
-
-    FixedSizeMemoryPool<T>* new_pool = add_pool_to_chain();
-    if (new_pool != nullptr) {
+        // Or move on along the chain.
+        FixedSizeMemoryPool<T>* next = traverse->get_next_pool();
+        if (next != nullptr) {
+            traverse = next;
+            continue;
+        }
+        // Every pool is full: make a pool (Create), and link it at the end of the chain (Link, ToEnd). No node is
+        // taken from it until it is linked, so that every node handed out belongs to a pool deallocate() can find.
+        FixedSizeMemoryPool<T>* new_pool = nullptr;
+        try {
+            new_pool = make_pool();
+        } catch (const std::exception&) {
+            // At this point, the operating system has refused to provide memory for a new pool. On an overcommitting
+            // system this is already a catastrophic condition.
+            failed_allocations_.value.fetch_add(1, std::memory_order_relaxed);
+            throw PreconditionAssertion("ExpandablePoolAllocator::allocate: operating system refused memory for new pool", __FILE__, __LINE__);
+        }
+        link_at_end(traverse, new_pool);
         expansion_events_.value.fetch_add(1, std::memory_order_relaxed);
-        raw_mem = new_pool->allocate();
-
-        if (raw_mem != nullptr) {
-            total_allocations_.value.fetch_add(1, std::memory_order_relaxed);
-            __atomic_store_n(&current_pool_ptr_.value, new_pool, __ATOMIC_RELEASE);
-
-            if (handler_for_pool_exhausted_ != nullptr) {
-                handler_for_pool_exhausted_(nullptr, objects_per_pool_);
-            }
-
-            T* obj = ::new (static_cast<void*>(raw_mem)) T();
-            std::atomic<std::uintptr_t>* is_constructed = get_is_constructed_for_object(obj);
-            is_constructed->store(1U, std::memory_order_release);
-            return obj;
+        if (handler_for_pool_exhausted_ != nullptr) {
+            handler_for_pool_exhausted_(nullptr, objects_per_pool_);
         }
+        // Walk on into the pool just linked. Another thread may have taken its nodes meanwhile, in which case the
+        // walk goes on from there.
+        traverse = new_pool;
     }
-
-    failed_allocations_.value.fetch_add(1, std::memory_order_relaxed);
-
-    // At this point, the operating system has refused to provide memory for a new pool.
-    // On an overcommitting system this is already a catastrophic condition.
-    throw PreconditionAssertion("ExpandablePoolAllocator::allocate: operating system refused memory for new pool", __FILE__, __LINE__);
 }
 
 template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
@@ -528,29 +628,34 @@ template <typename T> void ExpandablePoolAllocator<T>::deallocate(T* obj) {
     owner_pool->deallocate(obj);
 }
 
-template <typename T> FixedSizeMemoryPool<T>* ExpandablePoolAllocator<T>::add_pool_to_chain() {
-    auto new_pool = std::make_unique<FixedSizeMemoryPool<T>>(objects_per_pool_, use_huge_pages_flag_, [this](void* addr, size_t) {
-        if (handler_for_huge_pages_error_ != nullptr) {
-            handler_for_huge_pages_error_(addr);
-        }
-    });
+template <typename T> FixedSizeMemoryPool<T>* ExpandablePoolAllocator<T>::make_pool() {
+    // Owned by the chain once linked; until then by the thread making it, which always links it (link_at_end).
+    return std::make_unique<FixedSizeMemoryPool<T>>(objects_per_pool_, use_huge_pages_flag_,
+                                                    [this](void* addr, size_t) {
+                                                        if (handler_for_huge_pages_error_ != nullptr) {
+                                                            handler_for_huge_pages_error_(addr);
+                                                        }
+                                                    })
+        .release();
+}
 
-    FixedSizeMemoryPool<T>* pool_ptr = new_pool.get();
-    FixedSizeMemoryPool<T>* current_head = __atomic_load_n(&head_pool_, __ATOMIC_ACQUIRE);
-
-    if (current_head == nullptr) {
-        __atomic_store_n(&head_pool_, pool_ptr, __ATOMIC_RELEASE);
-    } else {
-        FixedSizeMemoryPool<T>* tail = current_head;
-        while (tail->get_next_pool() != nullptr) {
-            tail = tail->get_next_pool();
+template <typename T> void ExpandablePoolAllocator<T>::link_at_end(FixedSizeMemoryPool<T>* from, FixedSizeMemoryPool<T>* pool) {
+    FixedSizeMemoryPool<T>* at = from;
+    for (;;) {
+        // Walk to the last pool (ToEnd).
+        FixedSizeMemoryPool<T>* next = at->get_next_pool();
+        while (next != nullptr) {
+            at = next;
+            next = at->get_next_pool();
         }
-        tail->set_next_pool(pool_ptr);
+        // A compare-and-swap of its link from null to the pool (Link). On failure, the pool another thread linked
+        // there is where the walk goes on from.
+        FixedSizeMemoryPool<T>* already_linked = at->link_next_pool(pool);
+        if (already_linked == nullptr) {
+            return;
+        }
+        at = already_linked;
     }
-
-    cleanup_list_.push_back(std::move(new_pool));
-
-    return pool_ptr;
 }
 
 template <typename T> PoolStatistics ExpandablePoolAllocator<T>::get_pool_statistics() const {
@@ -580,10 +685,10 @@ template <typename T> ExpandablePoolAllocator<T>::~ExpandablePoolAllocator() {
     // For each such slot, check the canary before calling ~T(). If the canary is
     // corrupt, call handler_for_invalid_free_ and clear is_constructed without
     // calling ~T() -- doing so on a corrupt object risks a secondary crash.
-    // The pool destructor (run when cleanup_list_ is destroyed) will then find
+    // The pool destructor (run as each pool is deleted below) will then find
     // is_constructed already cleared and skip those slots cleanly.
-    for (auto& pool_uptr : cleanup_list_) {
-        pool_uptr->sweep_constructed_slots([this](T* obj, bool canary_ok) {
+    for (FixedSizeMemoryPool<T>* pool = head_pool_; pool != nullptr; pool = pool->get_next_pool()) {
+        pool->sweep_constructed_slots([this](T* obj, bool canary_ok) {
             if (!canary_ok) {
                 if (handler_for_invalid_free_ != nullptr) {
                     std::lock_guard<std::mutex> lock(callback_mutex_);
@@ -593,6 +698,13 @@ template <typename T> ExpandablePoolAllocator<T>::~ExpandablePoolAllocator() {
                 obj->~T();
             }
         });
+    }
+    // The chain owns its pools: delete each, reading its link before it goes.
+    FixedSizeMemoryPool<T>* pool = head_pool_;
+    while (pool != nullptr) {
+        FixedSizeMemoryPool<T>* next = pool->get_next_pool();
+        const std::unique_ptr<FixedSizeMemoryPool<T>> owned(pool);
+        pool = next;
     }
 }
 

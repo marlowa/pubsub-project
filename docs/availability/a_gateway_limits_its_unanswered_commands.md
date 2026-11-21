@@ -75,6 +75,16 @@ so fault 1 cannot happen. No single gateway has more than 16,384 sends waiting o
 orders ahead of a lease renewal take about 0.6 seconds, a fifth of the 3-second lease, which answers fault 3 for the
 queue's length. Section 6 says what remains to be found for fault 3.
 
+**The bound does not yet hold as stated** ([BUG-0279](../bug_list.md#bug_0279)). A command counts as unanswered from
+the moment the gateway sends it, but the gateway stops only its reading: the orders the reactor has already read from the
+members' connections when the limit is reached are still taken and sent. In `ha_test.py` scenario 116, on 20 November
+2026, with four members offering orders as fast as their sockets accept them, the binary order gateway had 29,992 sends
+waiting on its connection to each sequencer, 13,608 more than its limit. Faults 1 and 2 still did not happen there, but
+with more members the excess grows, and nothing bounds it. The fix, a limit on the messages waiting from each member's
+connection and on the members a gateway serves, is in
+[bounding_what_a_gateway_has_read.md](bounding_what_a_gateway_has_read.md); once it is built, each figure above is the
+gateway's limit plus what its members' connections may have waiting.
+
 Commands that do not come from a gateway, such as the cancel of all of an ended session's orders, are outside this
 bound. The matching engine already carries out such a cancel in pieces
 ([pacing_the_engines_reports.md](pacing_the_engines_reports.md), section 7).

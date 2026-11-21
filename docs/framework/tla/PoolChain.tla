@@ -42,7 +42,8 @@
 (*                                                                         *)
 (* No step waits for another thread, so no thread can wait for another.   *)
 (* There is no fairness or progress property: a producer may go on        *)
-(* losing the race to link. The number of pools is bounded by MaxPools;   *)
+(* finding that another producer linked first. The number of pools is    *)
+(* bounded by MaxPools;                                                     *)
 (* a producer that would need more stops, which is a limit of the model,  *)
 (* not of the code.                                                        *)
 (***************************************************************************)
@@ -75,9 +76,10 @@ VARIABLES
     cnode,       \* the node the consumer is freeing
     ccursor,     \* the pool the consumer's walk is at
     lostNode,    \* the consumer walked the whole chain without finding a node's pool
-    takenTwice   \* a node was handed out while already handed out
+    takenTwice,  \* a node was handed out while already handed out
+    peak         \* the most nodes ever handed out and not yet freed at once
 
-vars == <<created, link, free, current, pc, cursor, mine, early, queued, cpc, cnode, ccursor, lostNode, takenTwice>>
+vars == <<created, link, free, current, pc, cursor, mine, early, queued, cpc, cnode, ccursor, lostNode, takenTwice, peak>>
 
 ProducerSteps == {"idle", "try_current", "walk", "create", "link", "to_end", "stopped"}
 ConsumerSteps == {"idle", "walk"}
@@ -108,6 +110,7 @@ TypeOK ==
     /\ ccursor \in Pools \cup {Null}
     /\ lostNode \in BOOLEAN
     /\ takenTwice \in BOOLEAN
+    /\ peak \in Nat
 
 \* One pool at the start, every node free.
 Init ==
@@ -125,6 +128,7 @@ Init ==
     /\ ccursor = Null
     /\ lostNode = FALSE
     /\ takenTwice = FALSE
+    /\ peak = 0
 
 \* Handing out node n: it joins the queue. Taking a node already queued is the fault TLC must not find.
 HandOut(n) ==
@@ -223,7 +227,8 @@ Link(t) ==
     /\ UNCHANGED <<created, free, current, early, queued, takenTwice>>
     /\ ProducerUnchanged
 
-\* After losing the race to link: walk to the last pool, one link at a time, then try to link there again.
+\* After finding that another producer linked a pool first: walk to the last pool, one link at a time, then try to link
+\* there again.
 ToEnd(t) ==
     /\ pc[t] = "to_end"
     /\ LET p == cursor[t] IN
@@ -266,10 +271,12 @@ ConsumerWalk ==
                  /\ UNCHANGED free
     /\ UNCHANGED <<created, link, current, pc, cursor, mine, early, queued, takenTwice>>
 
+\* peak follows the nodes in use; no action above mentions it.
 Next ==
-    \/ \E t \in Producers : Begin(t) \/ TryCurrent(t) \/ WalkStep(t) \/ Create(t) \/ HandOutEarly(t) \/ Link(t) \/ ToEnd(t)
-    \/ ConsumerBegin
-    \/ ConsumerWalk
+    /\ \/ \E t \in Producers : Begin(t) \/ TryCurrent(t) \/ WalkStep(t) \/ Create(t) \/ HandOutEarly(t) \/ Link(t) \/ ToEnd(t)
+       \/ ConsumerBegin
+       \/ ConsumerWalk
+    /\ peak' = IF Cardinality(queued') > peak THEN Cardinality(queued') ELSE peak
 
 Spec == Init /\ [][Next]_vars
 
@@ -301,5 +308,16 @@ NeverTakenTwice ==
 \* Every pool made is in the chain, or is the pool its maker has yet to link: no pool is made and then lost.
 NoPoolLost ==
     \A p \in 2..created : p \in Chain.pools \/ \E t \in Producers : mine[t] = p
+
+\* How much the chain can grow beyond what was needed. Producers that find the chain full at the same moment may each
+\* add a pool, so more pools can be added than the most nodes ever in use needed: but never more nodes, in all the pools
+\* made, than the first pool, plus the most nodes ever in use at once, plus one pool for each producer.
+PoolsBounded ==
+    created * NodesPerPool <= NodesPerPool + peak + NodesPerPool * Cardinality(Producers)
+
+\* The tighter claim, that no more pools are made than the most nodes ever in use needed: checked only to show, by the
+\* steps TLC prints when it breaks it, how producers arriving at once add a pool more than was needed.
+NoPoolBeyondNeed ==
+    created * NodesPerPool <= NodesPerPool + peak + (NodesPerPool - 1)
 
 =============================================================================

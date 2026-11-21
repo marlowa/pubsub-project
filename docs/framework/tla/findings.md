@@ -46,6 +46,7 @@ java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChain.cfg Po
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainTwoNodes.cfg PoolChain.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainHandOutBeforeLink.cfg PoolChain.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainPlainStore.cfg PoolChain.tla
+java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolChainBeyondNeed.cfg PoolChain.tla
 ```
 
 To check the three pool free-list configurations as one test, run
@@ -292,8 +293,8 @@ being released from ever being handed over; it was found by measurement and fixe
 [pools_that_grow_without_a_lock.md](../pools_that_grow_without_a_lock.md), section 5, to show that the lock can be
 removed from adding a pool before the code is written. Producers take nodes from a chain of pools, the current pool
 first. When it is full, a producer walks the chain from its head one link at a time, trying each pool; when every pool
-is full, it makes a pool and links it by a compare-and-swap of the last pool's link from null. A producer that loses
-that race walks on to the end of the chain and tries again, so that every pool it makes is linked, and it takes a node
+is full, it makes a pool and links it by a compare-and-swap of the last pool's link from null. A producer that finds
+another producer linked first walks on to the end of the chain and tries again, so that every pool it makes is linked, and it takes a node
 only once its pool is linked. One consumer frees nodes, walking the chain one link at a time to find each node's pool,
 while producers add pools. Each pool's own free list is one atomic step here; `PoolFreeList.tla` checks it.
 
@@ -307,20 +308,31 @@ while producers add pools. Each pool's own free list is one atomic step here; `P
 | `NeverLost` | The consumer always finds the pool of a node it frees |
 | `NeverTakenTwice` | No node is handed out while handed out already, or both free and handed out |
 | `NoPoolLost` | Every pool made is in the chain, or is still being linked by the producer that made it |
+| `PoolsBounded` | The nodes in all the pools made never exceed one pool's worth, plus the most nodes ever in use at once, plus one pool's worth for each producer |
 
 **As designed** (`PoolChain.cfg`, `PoolChainTwoNodes.cfg`): every property holds.
 
 | Producers | Pools | Nodes in a pool | Nodes waiting at most | Distinct states | Depth | Time on 32 workers | Result |
 |---|---|---|---|---|---|---|---|
-| 3 | 4 | 1 | 3 | 11,711,383 | 76 | 53 s | holds (`PoolChain.cfg`) |
-| 3 | 3 | 2 | 4 | 5,067,730 | 69 | 22 s | holds (`PoolChainTwoNodes.cfg`) |
+| 3 | 4 | 1 | 3 | 25,489,848 | 76 | 2 min 19 s | holds (`PoolChain.cfg`) |
+| 3 | 3 | 2 | 4 | 16,538,971 | 69 | 1 min 29 s | holds (`PoolChainTwoNodes.cfg`) |
+
+The state counts include the most nodes ever in use at once, which `PoolsBounded` needs; without it, the same
+configurations have 11,711,383 and 5,067,730 distinct states, and every other property holds there too.
+
+**Producers arriving at once.** Two producers that find the chain full at the same moment each make a pool and link
+it, so more pools can be added than the nodes in use needed. That is not a fault: both pools are linked and used, and
+`PoolsBounded` holds, so the extra memory is at most one pool for each producer. The tighter claim that no pool is
+added beyond need, `NoPoolBeyondNeed`, is checked in `PoolChainBeyondNeed.cfg` only to show how it happens: TLC breaks
+it in 536 states. One node is in use; producers p1 and p2 each find the only pool full, and each makes a pool, so that
+three pools exist where two would serve.
 
 **Made to fail.**
 
 | Change | Property TLC found violated |
 |---|---|
-| A producer hands out a node from its new pool before linking the pool (`PoolChainHandOutBeforeLink.cfg`) | `EveryNodeInTheChain`, in 227 states: a producer takes the first pool's only node, makes a second pool and hands out its node while no pool is linked to the first |
-| A producer links its pool by a plain store rather than a compare-and-swap (`PoolChainPlainStore.cfg`) | `NoPoolLost`, in 878 states: two producers each make a pool, and the second store overwrites the first, cutting its pool out of the chain |
+| A producer hands out a node from its new pool before linking the pool (`PoolChainHandOutBeforeLink.cfg`) | `EveryNodeInTheChain`, in 259 states: a producer takes the first pool's only node, makes a second pool and hands out its node while no pool is linked to the first |
+| A producer links its pool by a plain store rather than a compare-and-swap (`PoolChainPlainStore.cfg`) | `NoPoolLost`, in 934 states: two producers each make a pool, and the second store overwrites the first, cutting its pool out of the chain |
 
 ---
 

@@ -23,6 +23,7 @@
 #include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
+#include <pubsub_itc_fw/GaugeHandle.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
@@ -265,6 +266,14 @@ class ApplicationThread {
      * threads is handled by the Reactor.
      */
     void post_message(ThreadID target_thread_id, EventMessage message) const;
+
+    /**
+     * @brief Publishes how many pools this thread's queue has added since start, as the gauge itc_queue_pools_added.
+     *
+     * Called by the reactor at each housekeeping tick, on the reactor's thread. It reads a count the queue's allocator
+     * keeps atomically and sets a gauge, which may be set from any thread, so it touches nothing this thread owns.
+     */
+    void publish_queue_pools_added();
 
     /**
      * @brief Returns a reference to the thread's message queue.
@@ -1120,6 +1129,8 @@ class ApplicationThread {
      * count is true at the moment it describes.
      */
     HistogramHandle itc_queue_depth_histogram_;
+    // The pools this thread's queue's allocator has added since start, set by the reactor at each housekeeping tick.
+    GaugeHandle itc_queue_pools_added_gauge_;
 
     // How the wait for work turned out, counted rather than logged. Written only by this
     // thread's own run loop and read after the fact, so relaxed ordering is enough: nothing

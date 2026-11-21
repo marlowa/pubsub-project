@@ -192,17 +192,33 @@ system provides memory.
 **Fast path.** `allocate()` first tries the one pool that `current_pool_ptr_` points at, which
 is the pool that most recently satisfied an allocation. This takes no lock.
 
-**Slow path.** If that pool is full, `allocate()` takes `expansion_mutex_` and walks the chain
-from the first pool, because slots may have been freed in an earlier pool since it filled. If
-it finds a free slot, it points `current_pool_ptr_` at that pool. If every pool is full, it
-creates a new pool, links it onto the end of the chain, and allocates from it, all while still
-holding the mutex. The new pool is published to the fast path only after that allocation has
-succeeded.
+**Slow path.** If that pool is full, `allocate()` walks the chain from the first pool, one link
+at a time, because slots may have been freed in an earlier pool since it filled. If it finds a
+free slot, it points `current_pool_ptr_` at that pool. If every pool is full, it makes a new
+pool and links it onto the end of the chain with a compare-and-swap of the last pool's link
+from null to the new pool; it takes a slot from the new pool only once it is linked. If several
+threads find the chain full at the same moment, exactly one compare-and-swap succeeds, and
+each other thread walks on to the new end of the chain and links its own pool there in the
+same way, so every pool made is linked once and none is lost. None of this takes a lock.
 
-**Reporting.** The allocator calls `handler_for_pool_exhausted` each time it has to add a
-pool, so an application can log that it reached out to the operating system for memory.
-`get_behaviour_statistics()` returns counts of how the allocator has behaved over its
-lifetime.
+The slow path took a mutex, `expansion_mutex_`, until BUG-0127 removed it. The reasons the lock
+is not needed are set out in
+[pools_that_grow_without_a_lock.md](pools_that_grow_without_a_lock.md), section 5, and in the
+comment at the top of `ExpandablePoolAllocator.hpp`. The design was specified in TLA+ and
+checked with TLC before the code was written ([tla/findings.md](tla/findings.md), section 5):
+no order of the threads' steps loses a pool, links one twice, gives a slot to two threads, or
+leaves a freed slot whose pool cannot be found. The one thing that depends on the order of the
+threads' steps is how many pools are added: threads that find the chain full at the same moment
+can each add one, so more can be added than were strictly needed, never more than one pool for
+each thread allocating.
+
+**Reporting.** The allocator calls `handler_for_pool_exhausted` each time it adds a pool. Every
+component logs it at Error, because a pool added during the trading day means the queue was
+sized too small. The handler may be called by two threads at once, when both add a pool at
+once. The reactor also publishes, at each housekeeping tick, how many pools each queue has added
+since start: `reactor_command_queue_pools_added` for its command queue and
+`itc_queue_pools_added` for each application thread's queue. `get_behaviour_statistics()`
+returns counts of how the allocator has behaved over its lifetime.
 
 **Used for:** the nodes of every `LockFreeMessageQueue`. Each `ApplicationThread` has a
 `LockFreeMessageQueue<EventMessage>` and the reactor has a

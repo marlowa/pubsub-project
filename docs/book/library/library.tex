@@ -32,18 +32,17 @@ its own work and not the reactor's.
 \subsection{Lock-free algorithms}
 \label{sec:fw_lock_free}
 
-The framework avoids locks on its common message-processing paths. The
-message queue operations and the pool allocator's fast allocation path are
-lock-free. If the current pool has no free slots, however,
-\texttt{ExpandablePoolAllocator::allocate()} takes a mutex while it searches
-the pool chain and, if necessary, maps and adds another pool. This slow path
-can occur while a message is being processed, so allocation is not lock-free
-in every case. A thread blocked on a mutex waits for a thread the scheduler may
-not run for milliseconds, and a venue cannot answer a member on that timescale.
+The framework takes no locks on its message-processing paths. A thread blocked
+on a mutex waits for a thread the scheduler may not run for milliseconds, and a
+venue cannot answer a member on that timescale. The message queue operations
+and the pool allocator are lock-free, including the pool allocator's slow path:
+when the current pool has no free slots,
+\texttt{ExpandablePoolAllocator::allocate()} walks the chain of pools for one
+that has, and, if every pool is full, makes a pool and links it onto the end of
+the chain, all without a lock (\cref{sec:fw_pool_allocators}).
 
-The production build uses two lock-free structures on its common
-message-processing paths. Both are stated in full in the sections that specify
-them.
+The production build uses three lock-free structures on its message-processing
+paths. Each is stated in full in the section that specifies it.
 
 \begin{itemize}[nosep]
   \item \textbf{A Treiber stack} of free memory slots
@@ -52,11 +51,16 @@ them.
   \item \textbf{Vyukov's intrusive MPSC queue}
         \cite{vyukov_mpsc_queue}, a queue with many producers and one
         consumer, used to carry messages between threads.
+  \item \textbf{An append-only chain of pools}, used by
+        \texttt{ExpandablePoolAllocator}. A pool is added by a
+        compare-and-swap of the last pool's link from null, and no pool is
+        ever removed while the allocator lives.
 \end{itemize}
 
-Lock-free is not the same as wait-free. A thread that loses a race retries, so
-the framework bounds the retries where a corrupt structure would otherwise
-produce an unbounded loop.
+Lock-free is not the same as wait-free. A thread whose compare-and-swap fails,
+because another thread changed the value first, tries again, so the framework
+bounds the retries where a corrupt structure would otherwise produce an
+unbounded loop.
 
 \subsection{Pool allocators}
 \label{sec:fw_pool_allocators}
@@ -393,19 +397,48 @@ The pool's free list is a Treiber stack, described in
 system; the pool releases its mapping when it is destroyed.
 
 \texttt{ExpandablePoolAllocator<T>} chains these fixed-capacity pools. It
-starts with the configured number of pools and adds another when no existing
-pool has a free slot. Pools remain in the chain for the allocator's lifetime,
-so freed slots can be reused and pointers to allocated objects remain valid
-until those objects are returned. The allocator reports when it adds a pool,
-but that notification does not impose a limit or stop further growth.
+starts with the configured number of pools, at least one, and adds another when
+no existing pool has a free slot. Pools remain in the chain for the allocator's
+lifetime, so freed slots can be reused and pointers to allocated objects remain
+valid until those objects are returned.
+
+Adding a pool takes no lock. A thread that finds every pool full makes a pool,
+and only then links it onto the end of the chain, by a compare-and-swap of the
+last pool's link from null to the new pool; it takes a slot from the new pool
+only once the pool is linked, so every slot handed out belongs to a pool that
+the thread returning it can find. When several threads find the chain full at
+the same moment, exactly one compare-and-swap succeeds, and each other thread
+walks on to the new end of the chain and links its own pool there, so every
+pool made is linked once and none is lost. Nothing in this depends on the order
+in which the threads' steps happen, except how many pools are added: threads
+that find the chain full at the same moment may each add one, so more pools can
+be added than were strictly needed, never more than one for each thread
+allocating. The extra pools are used by later allocations.
+
+An earlier version of the allocator took a mutex to add a pool. It was removed
+once the design without it had been specified in TLA+ and checked with the
+model checker TLC, which tries every order in which the threads' steps can
+happen within its bounds; tests can pass while a fault of that kind remains,
+because the order that shows it may never come up. With three threads and four
+pools, no order loses a pool, links one twice, gives a slot to two threads, or
+leaves a returned slot whose pool cannot be found, and each of two faults put
+in on purpose, handing out a slot before its pool is linked and linking a pool
+by a plain store, is found.
+
+A pool added during the trading day is nevertheless a fault: it means the queue
+held more messages than it was sized for, and took memory the day did not plan
+for. The allocator reports each pool it adds, every component logs it as an
+error, and each component publishes how many pools each of its queues has
+added. The report does not impose a limit or stop further growth.
 
 The message queues use this combination for their nodes. Each message waiting
 in an application-thread queue or the reactor's command queue occupies a node.
 Producers allocate nodes and the queue's single consumer returns them after
 dequeueing. This allows a queue to grow beyond its initial node capacity; queue
 depth watermarks are separate notifications and do not cap its memory use.
-Pool expansion allocates another pool and may therefore require operating
-system memory while handling a message.
+Pool expansion allocates another pool and therefore asks the operating system
+for memory while handling a message, which is why each queue's pools are sized
+so that it does not happen during the day.
 
 \subsection{Variable-size slabs for transport payloads}
 

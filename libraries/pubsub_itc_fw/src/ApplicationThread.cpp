@@ -134,6 +134,9 @@ ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reac
         itc_queue_depth_histogram_ =
             reactor_.metrics().register_histogram(thread_config.metrics_scope.c_str(), "itc_queue_depth",
                                                   "Messages still waiting on the queue when one was taken off for dispatch", itc_queue_depth_buckets);
+        itc_queue_pools_added_gauge_ = reactor_.metrics().register_gauge(
+            thread_config.metrics_scope.c_str(), "itc_queue_pools_added",
+            "Pools added to the thread's queue since start, beyond those it started with; above zero means the queue was sized too small");
     }
 
     // resize(), not reserve(): the buffer is a fixed scratch arena addressed via
@@ -492,6 +495,12 @@ void ApplicationThread::shutdown([[maybe_unused]] const std::string& reason) {
 
     // Joining is the sole responsibility of Reactor::finalize_threads_after_shutdown().
     // ApplicationThread::shutdown() only requests shutdown and makes the queue stop accepting messages.
+}
+
+void ApplicationThread::publish_queue_pools_added() {
+    if (message_queue_ != nullptr) {
+        itc_queue_pools_added_gauge_.set(static_cast<double>(message_queue_->pools_added()));
+    }
 }
 
 void ApplicationThread::run() {

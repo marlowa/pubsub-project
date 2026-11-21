@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <type_traits>
@@ -108,6 +109,11 @@ template <typename T> class LockFreeMessageQueue {
     [[nodiscard]] int size() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return static_cast<int>(queue_.size());
+    }
+
+    /// The queue in this build holds its messages in a std::deque, not in pools, so it never adds a pool.
+    [[nodiscard]] uint64_t pools_added() const {
+        return 0;
     }
 
   private:
@@ -315,6 +321,13 @@ template <typename T> class LockFreeMessageQueue {
 
     // To test for priority inversion we need to add some hooks that are just used by a unit test.
     std::function<void()> test_stall_callback_;
+
+    /// How many pools the queue's node allocator has added since it was made, beyond those it started with. Any above
+    /// zero means the queue held more messages at once than it was sized for (docs/framework/pools_that_grow_without_a_lock.md,
+    /// section 4). Callable from any thread.
+    [[nodiscard]] uint64_t pools_added() const {
+        return node_allocator_.get_behaviour_statistics().expansion_events;
+    }
 
   private:
     void enqueue_stub_() {

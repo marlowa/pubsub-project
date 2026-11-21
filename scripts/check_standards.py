@@ -1153,8 +1153,6 @@ _PERMITTED_LOCKS = [
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::create_timer_fd', 'breach: BUG-0128, removed by a framework fix done alongside the phases'),
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::cancel_timer_fd', 'breach: BUG-0128, removed by a framework fix done alongside the phases'),
     # Memory pools.
-    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp', 'expansion_mutex_',
-     'breach: BUG-0127, removed by a framework fix done alongside the phases'),
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp', 'callback_mutex_', _ERROR_PATH),
     # Metrics: registration happens at start-up, and the scrape runs on the endpoint's own thread.
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusEndpoint.hpp', 'mutex_', _NOT_ORDER_HANDLING),
