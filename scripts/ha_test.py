@@ -177,7 +177,8 @@ Options:
                           matching engine the secondary leads, so a scenario
                           must pass from that start too.  Applies only to the
                           scenarios that run both matching engines; with
-                          'all', only those are run.
+                          'all', only those are run, except the load
+                          scenarios 115 and 116.
 
 When a scenario fails, its Quill logs and the test clients' output are copied to
 tmp/ha_test_failures/<time>-scenario-<number>-<short name> under the project before the next
@@ -15170,6 +15171,12 @@ def _scenario_type(value: str):
         )
 
 
+# The two load scenarios, each sending 1.8 million orders, which together take about 12 minutes. They test what overload
+# costs the leaders, which does not depend on which matching engine started first, so "--scenario all" with
+# --secondary-engine-first leaves them out, and they run in the primary-first suite only. Either can still be run
+# secondary-first on its own, by number.
+_LOAD_SCENARIOS_RUN_PRIMARY_FIRST_ONLY = frozenset({115, 116})
+
 def main() -> None:
     valid_scenario_numbers = sorted(_SCENARIO_MAP.keys())
 
@@ -15223,7 +15230,7 @@ def main() -> None:
         help=(
             "Start matching_engine_secondary before matching_engine_primary, and start the primary only once the "
             "secondary leads. Applies only to the scenarios that run both matching engines; with 'all', only those "
-            "scenarios are run"
+            "scenarios are run, except the load scenarios 115 and 116"
         ),
     )
     args = parser.parse_args()
@@ -15267,7 +15274,8 @@ def main() -> None:
     os.environ["LD_LIBRARY_PATH"] = f"{lib_dir}:{existing}" if existing else lib_dir
 
     if args.scenario == "all":
-        scenarios_to_run = ([scenario for scenario in _SCENARIOS if scenario.me_ha and not scenario.engine_started_first]
+        scenarios_to_run = ([scenario for scenario in _SCENARIOS
+                             if scenario.me_ha and not scenario.engine_started_first and scenario.number not in _LOAD_SCENARIOS_RUN_PRIMARY_FIRST_ONLY]
                             if args.secondary_engine_first else _SCENARIOS)
     else:
         scenario = _SCENARIO_MAP.get(args.scenario)

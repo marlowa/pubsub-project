@@ -183,7 +183,13 @@ assertion-free test the coverage figure cannot see.
 - `applications/<application>/tests/` — each application's own tests: the arbiter, both gateways,
   `fix_common`, the matching engine and the sequencer.
 - `scripts/ha_test.py` — the high availability scenarios, run against a deployed venue, each numbered;
-  the design documents name the scenario that checks each behaviour. The other `scripts/*_test.py`
+  the design documents name the scenario that checks each behaviour. `--scenario all` runs every scenario with the
+  primary matching engine leading at the start, the way the venue starts. `--scenario all --secondary-engine-first`
+  runs the scenarios with both matching engines again, with the secondary leading at the start, which is how the
+  venue stands after any failover of the matching engine; it found a defect the first run could not
+  ([BUG-0195](../bug_list.md#bug_0195)). The second run is needed only for a change to the matching engines, the
+  sequencers or the high availability code, and it leaves out the two load scenarios, 115 and 116, whose subject
+  does not depend on which engine started first. The other `scripts/*_test.py`
   files test the authentication service, FIX capture and the FIX client, and `scripts/tests/` and
   `python/` hold the Python tests.
 - The framework's tests are excluded from the coverage report: they are the instrument, not the
