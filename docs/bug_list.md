@@ -2104,8 +2104,17 @@ left; on the binary gateway the same, with `LogonOutcome::NoRoomForMoreMembers`.
 sent. With both gateways' limit checks taken out it fails on the FIX gateway; with only the binary gateway's taken out,
 it fails on the binary gateway.
 
-**Left before this entry closes:** the FIX gateway's command queue measured at its deepest under overload, as the
-binary gateway's was.
+**The FIX gateway's command queue, measured 22 November 2026** with counting added to the reactor for the run and taken
+out after: `perf_run.py --gateway fix` with 8 fix8 sessions sending 400,000 orders as fast as they go filled it to at
+most 10,529 commands, of a pool of 1,000,000, and added no pool. That load is not an overload: the gateway never
+reached its limit of 16,384 unanswered commands, because each fix8 session waits for the answers to one burst of 1,000
+before sending the next, and the Python FIX load client is slower still. So it shows how deep the queue gets under the
+most these clients can offer, not how deep it can get.
+
+**Left before this entry closes:** a decision on how to bound the FIX gateway, put to Andrew: a load generator that
+sends FIX orders without waiting (the compiled load client given a FIX mode), to measure a true overload; or the FIX
+gateway bounded as the binary one is, by a limit on the messages waiting from each member's connection and a command
+queue sized from settings, then measured.
 
 ### BUG-0280: Huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine {#bug_0280}
 

@@ -145,17 +145,16 @@ connect_retry_warning_interval = "15m"
 # top of the environment file for what it buys and what it costs.
 spin_before_block = "${fix_order_gateway_a_reactor_spin_before_block}"
 [event_queue_pool]
-# Single pre-allocated pool sized for observed peak (50 clients, burst=10).
-# Previous peak 21,504; still exhausted at 22,528 once full pipeline active.
-# Doubled to 45,056 for headroom.
-# A heavy perf test of a million orders caused this to be increased again, to xxxxx
+# One pool allocated at start, its size set in the environment file (80,000 in development). Unlike the binary
+# gateway's, it is not worked out from the gateway's limits; a run of a million orders needed more than 45,056.
 objects_per_slab = ${fix_order_gateway_a_event_queue_pool_objects_per_slab}
 initial_slabs    = ${fix_order_gateway_a_event_queue_pool_initial_slabs}
 
 [command_queue_pool]
-# Single pre-allocated pool sized for observed peak (50 clients, burst=10).
-# 62 slabs × 1024 base + 253 exhaustion chains × 1024 = 322,560; rounded to 327,680.
-# A heavy perf test of a million orders caused this to be increased again, to 1,000,000
+# One pool allocated at start, its size set in the environment file (1,000,000 in development). Unlike the binary
+# gateway's, it is not worked out from the gateway's limits, because the FIX gateway does not limit the messages
+# waiting from each member's connection (docs/bug_list.md, BUG-0279). Measured on 22 November 2026: 400,000 orders from
+# 8 fix8 sessions as fast as they send, which never reached the limit on unanswered commands, filled it to at most 10,529.
 objects_per_slab = ${fix_order_gateway_a_command_queue_pool_objects_per_slab}
 initial_slabs    = ${fix_order_gateway_a_command_queue_pool_initial_slabs}
 
