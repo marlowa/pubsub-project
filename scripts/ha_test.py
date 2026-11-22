@@ -5429,7 +5429,9 @@ _SCENARIOS: list[Scenario] = [
     # without cancelling anything; a new order must be refused, saying the venue is halted; a cancel must be carried out;
     # and a second request to halt must be answered that trading is halted already. The operator then lifts the halt: a
     # new order must be accepted, and an order placed before the halt must still be on the book, which a cancel of it
-    # shows.
+    # shows. A second member, logged on and sending nothing, must be sent a TradingSessionStatus saying trading is halted,
+    # must be told so at once when it logs on again during the halt, and must be told the venue is open once the halt is
+    # lifted: a member not trading learns of a halt only that way (R-0023, BUG-0065).
     Scenario(
         number=95,
         short_name="operator_halt_keeps_book",
@@ -5437,7 +5439,8 @@ _SCENARIOS: list[Scenario] = [
         expected_outcome=(
             "the halt is written and the engine halts without cancelling; a new order is refused, a cancel is carried out, a "
             "second halt is answered as halted already; the lift is written, a new order is accepted, and an order placed "
-            "before the halt is still on the book"
+            "before the halt is still on the book; a member sending nothing is told of the halt, at once on logging on during "
+            "it, and of the lift"
         ),
         me_ha=True,
         assert_operator_halt=True,
@@ -11972,6 +11975,37 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("operator's halt: the raw client could not log on. A test that cannot log on looks identical to a venue "
                     "that will not answer, so this is checked first.")
 
+            # A second member that sends nothing: a member not trading learns of a halt and of its lift only from the
+            # TradingSessionStatus (35=h) the gateway sends unasked, never from the answer to an order (R-0023, BUG-0065).
+            def logged_on_idle_member():
+                client = FixRawClient("127.0.0.1", gateway_port, FIX8_RECOVERY_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+                client.connect()
+                client.logon(reset_seq_num=True)
+                if client.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                    client.close()
+                    member.close()
+                    die(f"operator's halt: {FIX8_RECOVERY_COMP_ID}, the member that sends nothing, could not log on")
+                return client
+
+            def idle_member_told(client, wanted_status: str, wanted_text: str, what: str) -> None:
+                seen: list[dict[int, str]] = []
+                deadline = time.monotonic() + _HELD_ANSWER_TIMEOUT
+                while time.monotonic() < deadline:
+                    message = client.receive_until("h", timeout=1.0)
+                    if message is None:
+                        continue
+                    seen.append(message)
+                    if message.get(340) == wanted_status and wanted_text in (message.get(58) or ""):
+                        return
+                client.close()
+                member.close()
+                die(f"operator's halt: {what}: the member that sends nothing was to be sent a TradingSessionStatus with "
+                    f"TradSesStatus {wanted_status} and the text '{wanted_text}'; it was sent {seen}")
+
+            idle_member = logged_on_idle_member()
+            idle_member_told(idle_member, "2", "open", "on logging on before the halt")
+            log("  a member that sends nothing is logged on, and told the venue is open -- OK")
+
             operator_reports: dict[str, list[dict[int, str]]] = {}
 
             def receive_operator_reports(timeout: float, done=lambda: False) -> None:
@@ -12014,6 +12048,12 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 member.close()
                 die("operator's halt: the gateway was never told that trading is halted")
             log(f"  the halt is written, {leader} halts, and the gateway is told -- OK")
+            idle_member_told(idle_member, "1", "trading halted", "when trading was halted")
+            log("  the member that sends nothing is told trading is halted, unasked (35=h, TradSesStatus 1) -- OK")
+            idle_member.close()
+            idle_member = logged_on_idle_member()
+            idle_member_told(idle_member, "1", "trading halted", "on logging on during the halt")
+            log("  a member logging on during the halt is told at once that trading is halted -- OK")
 
             status, said = run_operator_halt(prefix, "halt")
             if status != 1 or "AlreadyHalted" not in said:
@@ -12060,6 +12100,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 member.close()
                 die("operator's halt: the halt is lifted, and the gateway was never told the venue accepts orders again")
             log("  the halt is lifted, the engine applies it, and the gateway is told -- OK")
+            idle_member_told(idle_member, "2", "open", "when the halt was lifted")
+            idle_member.close()
+            log("  the member that sends nothing is told the venue is open again -- OK")
 
             after_id = "op-after-lift-1"
             member.new_order_single(after_id)

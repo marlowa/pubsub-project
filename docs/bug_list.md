@@ -1367,8 +1367,8 @@ the phase through `refusal_by_phase` (`applications/fix_common/TradingSession.hp
 phase allows.
 
 **What is left.** Halting one instrument rather than the venue, which needs the list of instruments of
-[BUG-0242](#bug_0242); and a scenario that halts trading and checks that a member not trading is told, which the
-functional specification records as the gap under R-0023.
+[BUG-0242](#bug_0242). `ha_test.py` scenario 95 shows a member that sends nothing being told of a halt, told at once
+on logging on during it, and told of its lift; with the FIX gateway made not to tell members unasked, it fails.
 
 Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the third state
 necessary rather than tidy. [BUG-0061](#bug_0061), since a non-HA venue has no arbiter and reaches
