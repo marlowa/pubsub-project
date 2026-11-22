@@ -3,20 +3,19 @@
 | | |
 |---|---|
 | Bugs recorded | 284 |
-| Open | 54 (30 defects, 24 tasks) |
-| Closed | 230 |
+| Open | 53 (29 defects, 24 tasks) |
+| Closed | 231 |
 | Next id | BUG-0285 |
 
 ## Open bugs by severity
 
-4 high, 33 medium, 17 low.
+3 high, 33 medium, 17 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
 | [BUG-0065](#bug_0065) | high | task | A trading halt cannot be applied to one instrument |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
-| [BUG-0194](#bug_0194) | high | defect | A matching engine that is connected but has stopped working looks healthy to everything that watches it |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0045](#bug_0045) | medium | task | A member has no defined way to discover its primary gateway is down |
 | [BUG-0046](#bug_0046) | medium | task | The binary order gateway has no in-flight report recovery |
@@ -2155,85 +2154,6 @@ from it by then, would tell the two apart.
 
 **Principles.** None directly; the reactor's pausing of a connection is what the gateways rely on to hold back a member.
 
-### BUG-0194: A matching engine that is connected but has stopped working looks healthy to everything that watches it {#bug_0194}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-24 |
-| Recorded | 2026-10-24 |
-| How | Closing [BUG-0010](#bug_0010): three passages, in [matching_engine_presence.md](availability/matching_engine_presence.md) and [order_acceptance.md](availability/order_acceptance.md), cited it for this concern, which its entry never covered |
-| Impact | Orders are accepted and sequenced, and no member is told anything, for as long as the engine stays connected. Nothing promotes the other engine, because nothing has failed that anything can see |
-
-**What happens.** Everything that decides whether the venue can process orders keys on the matching engine being
-connected and registered: the sequencer's acceptance of orders ([order_acceptance.md](availability/order_acceptance.md))
-and the arbiter's view of which engines are present
-([matching_engine_presence.md](availability/matching_engine_presence.md)). An engine whose thread is stuck in one
-callback is caught, because the reactor's watchdog stops the process after its limit and the other engine is promoted.
-An engine that is connected, keeps renewing its lease and answering, and has stopped applying orders, or applies them
-and sends no reports, is not caught by anything.
-
-**What is wanted.** A design for noticing it. The question to answer first is what evidence says the engine is
-working: for example, that the engine's position in the WAL keeps up with the records committed to it, or that each
-order it is sent is answered within a bound. Then who notices, who decides, and what is done, keeping to the rules
-that the arbiter never judges health ([matching_engine_presence.md](availability/matching_engine_presence.md)) and that
-a loss of resilience is not a loss of service (V11).
-
-**Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
-the member.
-
-**The design** is in [a_matching_engine_that_stops_working.md](availability/a_matching_engine_that_stops_working.md). Six of its
-seven decisions are made; the stall limit is chosen once the engine's longest pause while healthy has been measured.
-
-**Built, 22 November 2026, apart from decision 2.** The leading sequencer judges the engine orders are routed to once a
-second, says one it judges stopped may not lead, so that the other engine takes over, withdraws that once the engine
-has caught up, and reports a following engine that stops. `ha_test.py` scenarios 119 to 125 check each case (section 8
-of the design). Left open until the stall limit, 3 seconds for now, is chosen from measurement and the full suites
-pass. While building it, scenario 123 found [BUG-0284](#bug_0284).
-
-The points it was written to settle:
-
-- **A connection, a lease and a heartbeat prove that an engine can communicate, not that it is applying commands.** The
-  evidence of work has to be the engine's progress through the commands it is sent.
-- **The serving engine's progress and the standby's lag mean different things.** A serving engine that makes no progress
-  while commands wait is a loss of service. A standby that falls behind is a loss of resilience, which V11 says must
-  never stop a working leader ([design_principles.md](design_principles.md), V11). Only the first is
-  this bug, and the design must keep the two apart.
-- **The evidence exists already.** The leading sequencer can ask the engine orders are routed to for the highest command
-  it has applied, and how far its reports have got: the last report it sent and how many it still holds
-  (`EnginePositionQuery`, answered in `TradingPhaseRequests::engine_position`). It is used today for the trading-phase
-  checks and for releasing orders, not as a continuous check of health.
-- **Judge by time without progress, not by the size of the gap.** Under overload the gap between commands sent and
-  commands applied is large while the engine is healthy: about 60,000 commands in `ha_test.py` scenario 116. The test is
-  rather that commands are outstanding and the engine's applied position has not moved for a stated time.
-- **A report passes three hands, and progress has to be judged at each.** V8 promises that every report reaches the
-  member, but the engine's report position says only that the engine sent its reports. The stages are: the engine
-  produces and sends a report (its position in `EnginePositionQuery`, `sent_through`); the leading sequencer receives it
-  and writes it into the WAL (`latest_engine_report_in_wal`, which the sequencer knows already); the sequencer hands it
-  to its connection to the gateway that serves the member (`ReportForwarding`; `MemberSessions::report_forwarded`
-  counts these hand-overs, not their receipt); and the gateway hands it to its connection to the member (counted by
-  `GatewayProgressMetrics::count_report_sent` when it is given to the send path, before it is written to the socket).
-  No counter at any stage confirms that the next stage received the report, and the venue learns that a member missed
-  one only from the member: by its FIX sequence numbers, when it sees a gap and asks for the report again, or by asking
-  for the reports it has not received when it logs on. An engine whose sent position stops while its applied position
-  moves is this bug. Reports the engine sent that do not reach the WAL, or that reach the WAL and not the member, are
-  failures of the stages after the engine. The design must name, for each stage, the hand-over it can observe and how a
-  gap there is detected or recovered, rather than take a count of reports sent as proof that they were received.
-- **Do not stop sending the engine commands while confirming a suspicion.** If it is stalled, holding commands back
-  gains nothing, since they are in the WAL; if the suspicion is wrong, holding them back causes the outage this is meant
-  to prevent.
-- **Who decides is the open question.** The arbiter never judges health
-  ([matching_engine_presence.md](availability/matching_engine_presence.md)). The candidates: the leading sequencer
-  closes its connection to the engine, so that the failure becomes one the existing failover sees, though the engine
-  may connect again and look healthy; the engine watches its own progress from a thread other than the one that applies
-  commands and stands down, as the reactor's watchdog does for a stuck callback; or a statement from the sequencer that
-  the engines' own leadership acts on. Also to be settled: both engines stalled; a stall during catch-up; the end of the
-  day.
-- **Other venues.** Public material describes the same kind of failure without revealing how it is detected: Eurex's T7
-  incident-handling guidance distinguishes a loss of service from a matching engine's failure, and notes that a
-  connected but stalled gateway can go on sending heartbeats, so that participants notice only that responses stop.
-  That is background on the failure, not a description of how any venue detects it.
-
 ### BUG-0203: The FIX gateway sometimes refuses a member's logon as an impostor, when the authentication service has granted it, and two logons are under way together {#bug_0203}
 
 | | |
@@ -2525,6 +2445,88 @@ takes over that much later, and the cost is not that of BUG-0194, which only mad
 3. A scenario that requires the takeover within the limit on holding orders.
 
 ## Closed
+
+### BUG-0194: A matching engine that is connected but has stopped working looks healthy to everything that watches it {#bug_0194}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | Closing [BUG-0010](#bug_0010): three passages, in [matching_engine_presence.md](availability/matching_engine_presence.md) and [order_acceptance.md](availability/order_acceptance.md), cited it for this concern, which its entry never covered |
+| Impact | Orders are accepted and sequenced, and no member is told anything, for as long as the engine stays connected. Nothing promotes the other engine, because nothing has failed that anything can see |
+| Fixed | 2026-11-22 -- the leading sequencer judges the engine orders are routed to once a second by its progress, says one that has stopped may not lead so that the other engine takes over, withdraws that once the engine has caught up, and reports a following engine that stops ([a_matching_engine_that_stops_working.md](availability/a_matching_engine_that_stops_working.md)). Scenarios 119 to 125; both full suites pass |
+
+**What happens.** Everything that decides whether the venue can process orders keys on the matching engine being
+connected and registered: the sequencer's acceptance of orders ([order_acceptance.md](availability/order_acceptance.md))
+and the arbiter's view of which engines are present
+([matching_engine_presence.md](availability/matching_engine_presence.md)). An engine whose thread is stuck in one
+callback is caught, because the reactor's watchdog stops the process after its limit and the other engine is promoted.
+An engine that is connected, keeps renewing its lease and answering, and has stopped applying orders, or applies them
+and sends no reports, is not caught by anything.
+
+**What is wanted.** A design for noticing it. The question to answer first is what evidence says the engine is
+working: for example, that the engine's position in the WAL keeps up with the records committed to it, or that each
+order it is sent is answered within a bound. Then who notices, who decides, and what is done, keeping to the rules
+that the arbiter never judges health ([matching_engine_presence.md](availability/matching_engine_presence.md)) and that
+a loss of resilience is not a loss of service (V11).
+
+**Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
+the member.
+
+**The design** is in [a_matching_engine_that_stops_working.md](availability/a_matching_engine_that_stops_working.md). Six of its
+seven decisions are made; the stall limit is chosen once the engine's longest pause while healthy has been measured.
+
+**Built, 22 November 2026.** The leading sequencer judges the engine orders are routed to once a
+second, says one it judges stopped may not lead, so that the other engine takes over, withdraws that once the engine
+has caught up, and reports a following engine that stops. `ha_test.py` scenarios 119 to 125 check each case (section 8
+of the design). The stall limit is 3 seconds, chosen by Andrew from the measurements
+(decision 2), and both full suites pass: 125 of 125 with the primary engine leading first, 52 of 52 with the
+secondary. While building it, scenario 123 found [BUG-0284](#bug_0284).
+
+The points it was written to settle:
+
+- **A connection, a lease and a heartbeat prove that an engine can communicate, not that it is applying commands.** The
+  evidence of work has to be the engine's progress through the commands it is sent.
+- **The serving engine's progress and the standby's lag mean different things.** A serving engine that makes no progress
+  while commands wait is a loss of service. A standby that falls behind is a loss of resilience, which V11 says must
+  never stop a working leader ([design_principles.md](design_principles.md), V11). Only the first is
+  this bug, and the design must keep the two apart.
+- **The evidence exists already.** The leading sequencer can ask the engine orders are routed to for the highest command
+  it has applied, and how far its reports have got: the last report it sent and how many it still holds
+  (`EnginePositionQuery`, answered in `TradingPhaseRequests::engine_position`). It is used today for the trading-phase
+  checks and for releasing orders, not as a continuous check of health.
+- **Judge by time without progress, not by the size of the gap.** Under overload the gap between commands sent and
+  commands applied is large while the engine is healthy: about 60,000 commands in `ha_test.py` scenario 116. The test is
+  rather that commands are outstanding and the engine's applied position has not moved for a stated time.
+- **A report passes three hands, and progress has to be judged at each.** V8 promises that every report reaches the
+  member, but the engine's report position says only that the engine sent its reports. The stages are: the engine
+  produces and sends a report (its position in `EnginePositionQuery`, `sent_through`); the leading sequencer receives it
+  and writes it into the WAL (`latest_engine_report_in_wal`, which the sequencer knows already); the sequencer hands it
+  to its connection to the gateway that serves the member (`ReportForwarding`; `MemberSessions::report_forwarded`
+  counts these hand-overs, not their receipt); and the gateway hands it to its connection to the member (counted by
+  `GatewayProgressMetrics::count_report_sent` when it is given to the send path, before it is written to the socket).
+  No counter at any stage confirms that the next stage received the report, and the venue learns that a member missed
+  one only from the member: by its FIX sequence numbers, when it sees a gap and asks for the report again, or by asking
+  for the reports it has not received when it logs on. An engine whose sent position stops while its applied position
+  moves is this bug. Reports the engine sent that do not reach the WAL, or that reach the WAL and not the member, are
+  failures of the stages after the engine. The design must name, for each stage, the hand-over it can observe and how a
+  gap there is detected or recovered, rather than take a count of reports sent as proof that they were received.
+- **Do not stop sending the engine commands while confirming a suspicion.** If it is stalled, holding commands back
+  gains nothing, since they are in the WAL; if the suspicion is wrong, holding them back causes the outage this is meant
+  to prevent.
+- **Who decides is the open question.** The arbiter never judges health
+  ([matching_engine_presence.md](availability/matching_engine_presence.md)). The candidates: the leading sequencer
+  closes its connection to the engine, so that the failure becomes one the existing failover sees, though the engine
+  may connect again and look healthy; the engine watches its own progress from a thread other than the one that applies
+  commands and stands down, as the reactor's watchdog does for a stuck callback; or a statement from the sequencer that
+  the engines' own leadership acts on. Also to be settled: both engines stalled; a stall during catch-up; the end of the
+  day.
+- **Other venues.** Public material describes the same kind of failure without revealing how it is detected: Eurex's T7
+  incident-handling guidance distinguishes a loss of service from a matching engine's failure, and notes that a
+  connected but stalled gateway can go on sending heartbeats, so that participants notice only that responses stop.
+  That is background on the failure, not a description of how any venue detects it.
+
 
 ### BUG-0282: A test of the limit on messages waiting required a fixed 20 ms that the coverage build does not reach, and failed three runs in ten there {#bug_0282}
 

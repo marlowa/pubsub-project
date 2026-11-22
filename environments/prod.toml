@@ -356,9 +356,9 @@ orders_held_at_most_seconds = 5
 # sequencer asks the engine its position once a second. At least 2, and no more than
 # orders_held_at_most_seconds less one, so that a member waits no longer for the venue to act on a
 # stopped engine than it may wait for any change of engine leader. Declared once here: both
-# sequencers of the pair must use the same figure. Three seconds until the longest a healthy
-# engine goes without progress has been measured
-# (docs/availability/a_matching_engine_that_stops_working.md, section 4.4).
+# sequencers of the pair must use the same figure. Three seconds is three times the longest a
+# working engine was measured going without progress, one second
+# (docs/availability/a_matching_engine_that_stops_working.md, section 4.4, decision 2).
 engine_stall_limit_seconds = 3
 
 # The longest the leading sequencer waits, after the end-of-day begin, for the follower sequencer

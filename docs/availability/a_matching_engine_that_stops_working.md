@@ -1,8 +1,8 @@
 # A matching engine that stops working while it stays connected {#a_matching_engine_that_stops_working}
 
-> **Built, apart from decision 2.** This is the design for [BUG-0194](../bug_list.md#bug_0194). Six of its seven
-> decisions are made and built (section 9), and section 8 lists the tests and scenarios that check them. The stall
-> limit stays at 3 seconds until it is chosen from the measurements of section 4.4.
+> **Built.** This is the design for [BUG-0194](../bug_list.md#bug_0194). Its seven decisions are made and built
+> (section 9), and section 8 lists the tests and scenarios that check them. The stall limit is 3 seconds, chosen from
+> the measurements of section 4.4.
 
 ## 1. The failure
 
@@ -408,10 +408,11 @@ has stopped.
 
 ### Decision 2. Is the stall limit 3 seconds, set as `[recovery] engine_stall_limit_seconds`? (Yes or no.)
 
-**No, not yet.** The value is chosen from measurement, as section 4.4 describes: the longest a healthy engine goes
-without progress under load, and the time from an engine stopping to the other engine answering. The configuration
-check enforces the budget of section 4.4, not only that the limit is below the recovery limit. This decision is asked
-again once the measurements are made.
+**Yes,** decided by Andrew on 22 November 2026 from the measurements. Across 287 runs of `ha_test.py` scenarios with
+working engines, in three runs of the suites, the longest a working engine went without progress while it had work was
+one round, a second, in two scenarios, and nothing in every other ([latency_findings.md](../operations/latency_findings.md)). Three
+seconds is three times that, as section 4.4 asks, and the configuration check holds it within the limit on holding
+orders.
 
 ### Decision 3. Does the leading sequencer decide, and act by a statement that the engine may not lead, recorded by both arbiters and the other engine, which then refuse its lease requests (section 4.2)? (Yes or no.)
 

@@ -426,6 +426,32 @@ second, nine in ten cancelled.
 The medians average 103.2 µs before and 102.8 µs after. Both arms drift down by about 4 µs from the first session to
 the last, so the difference between them is within the variation between sessions, not a cost or a saving of the code.
 
+### A working matching engine never goes a whole second without progress while it has work
+
+The leading sequencer asks the engine orders are routed to for its position once a second and judges it stopped once it
+has gone the stall limit without progress while it had work
+([a_matching_engine_that_stops_working.md](../availability/a_matching_engine_that_stops_working.md), section 4.4). The
+limit has to be longer than the longest a working engine goes without progress, so that was measured: every
+`ha_test.py` scenario records it, from the sequencer's test events, at the granularity of one round, a second.
+
+| Run, 22 November 2026 | Scenarios with working engines | Longest without progress |
+|---|---|---|
+| Primary engine leading first | 119 | 1,000 ms, in scenarios 48 and 97; 0 in every other |
+| Secondary engine leading first | 48 | 0 in every one |
+| Primary engine leading first, on the final code | 120 | 999 ms, in scenario 97; 0 in every other |
+
+The stall limit is 3 seconds, three times the longest of these. The five scenarios that stop an engine on purpose, 119
+to 123, are left out. So is scenario 77 in the first run, where a
+working engine was judged stopped for 31 seconds without sending reports: those were reports it held only for the
+sequencer that did not lead, which the judgement now leaves out, and the scenario now measures 0. The load scenarios,
+115, 116 and 124, the last with the sequencers slowed so that the engine is held up behind them for 91 rounds, all
+measure 0.
+
+Two things made these figures what they are, both found by measuring. Rounds run on a timer checked between messages:
+on an ordinary timer they waited behind the sequencer's backlog of reports, for up to 18 seconds in scenario 116, and a
+working engine looked still for up to 7. And reports the sequencer receives count as progress, because an engine
+pausing while its reports wait to be written answers its query late while its reports keep arriving.
+
 ## Ruled out by measurement
 
 ### Looking for work more often

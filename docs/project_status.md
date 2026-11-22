@@ -37,7 +37,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 54 open entries, 4 of them high severity. Each one is judged,
+The [bug list](bug_list.md) holds 53 open entries, 3 of them high severity. Each one is judged,
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
@@ -51,9 +51,11 @@ they are being fixed. The ones most likely to matter first, by design area:
   [design_principles.md](design_principles.md) records each.
 - **High availability.** The machinery is in the library, as agreed in
   [ha_in_the_library.md](availability/ha_in_the_library.md) and
-  [ha_library_boundary.md](availability/ha_library_boundary.md). Open defects include a matching engine
-  that is connected but has stopped working looking healthy ([BUG-0194](bug_list.md#bug_0194)), a
-  restarted sequencer or matching engine taking longer to start than its peer's lease
+  [ha_library_boundary.md](availability/ha_library_boundary.md). A matching engine that stays connected and
+  stops working is judged by the leading sequencer and replaced by the other engine
+  ([a_matching_engine_that_stops_working.md](availability/a_matching_engine_that_stops_working.md)). Open
+  defects include a matching engine restarted moments before the leading engine dies taking ten seconds to
+  lead ([BUG-0284](bug_list.md#bug_0284)), a restarted sequencer or matching engine taking longer to start than its peer's lease
   ([BUG-0121](bug_list.md#bug_0121)), and a venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).
 - **The trading day is built, and only lightly tried.** Every phase is entered on request or at the time in
   the day's schedule, the close cancels every open order, every member is told of each change, each
