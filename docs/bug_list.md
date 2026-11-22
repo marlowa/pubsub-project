@@ -1087,6 +1087,11 @@ and it is the practice of the London Stock Exchange and Turquoise. The reasoning
 behind the count, and the alternative not followed are under [BUG-0048](#bug_0048). **The count is
 100,000 messages for each comp id (decided 2026-11-08).**
 
+**First step, chosen 22 November 2026: both reads move onto the sequencer's reading thread** before the recovery
+service is built, which removes the danger this entry records. The design is
+[member_reports_read_off_the_order_thread.md](availability/member_reports_read_off_the_order_thread.md), proposed for
+Andrew to agree.
+
 **Decided (22 November 2026): undelivered reports are all kept.** The count settles resends: a resend asks for
 messages the member has already been sent, under FIX sequence numbers, and for numbers beyond what is kept
 a gap fill is a correct answer, telling the member those numbers carry nothing it can have again.
