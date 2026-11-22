@@ -2,64 +2,64 @@
 
 This is the working record of phase 12 of the [recovery plan](recovery_plan.md). Every entry in the
 [bug list](bug_list.md) that is open is judged here against the design principles in
-[design_principles.md](design_principles.md) and against the code as it is now, after phases 3 to 11.
-Nothing is fixed while the review is made: what it produces is a judgement for each entry, with the
-evidence for it, and then an order of work agreed with Andrew for the entries that remain.
+[design_principles.md](design_principles.md) and against the code as it is now. The review fixes nothing
+itself: what it gives is a judgement for each open entry, with the evidence for it, and an order of work for
+Andrew to agree. An entry that is closed is no longer listed here; its record is in the bug list.
 
 ## Summary
 
-All 81 open entries have been judged. The figures:
+There are 52 open entries, and each is judged below. The figures:
 
 | Judgement | Entries |
 |---|---|
-| Breach of a named principle | 16, and 3 more if their causes prove to be in the venue: BUG-0142, BUG-0207, BUG-0130, BUG-0113 (its remainder), BUG-0210, BUG-0137, BUG-0225, BUG-0211, BUG-0226, BUG-0131, BUG-0090, BUG-0072, BUG-0129, BUG-0127, BUG-0128, BUG-0119; and BUG-0183, BUG-0175 and BUG-0184 if their causes are in the venue; with BUG-0095's undefined behaviour and BUG-0181's test that can pass over lost orders treated as equally urgent |
-| Fixed, or no longer applies: closed on 8 November 2026 with Andrew's agreement | 13: BUG-0066, BUG-0193, BUG-0086, BUG-0141, BUG-0092, BUG-0096, BUG-0169, BUG-0144, BUG-0040, BUG-0030, BUG-0083, BUG-0145 (into BUG-0185), and BUG-0167 if its remaining risk is accepted |
-| Decision needed from Andrew | BUG-0229 |
-| Partly done | BUG-0121, BUG-0134, BUG-0065, BUG-0069 |
-| The rest | new requirements, investigations, small defects, and tests and tools, each placed in its area's recommended order |
+| Breach of a named principle | 9: BUG-0113 (what is left of it), BUG-0249, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0272, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
+| Partly done | 8: BUG-0121, BUG-0134, BUG-0262, BUG-0065, BUG-0279, BUG-0278, BUG-0283, BUG-0069 |
+| Decision needed from Andrew | 3: BUG-0258, BUG-0281, BUG-0229; and BUG-0250 needs one choice made between two remedies |
+| Decided, and waiting to be built | 1: BUG-0048, with the recovery service of BUG-0113 |
+| New requirement | 12 |
+| Investigation | 10 |
+| Test or tool | 8 |
+| Defect that breaks no principle | 1: BUG-0259 |
 
-**The decisions that unblock the most.**
+**The decisions that would unblock the most.**
 
-1. **How long a member's execution reports are kept (R-0008).** Decided on 8 November 2026: the recovery
-   service keeps a fixed count of recent messages for each comp id, the same count for every comp id, and
-   answers a resend request beyond them with a FIX gap fill, as the London Stock Exchange and Turquoise do.
-   The count is 100,000 messages. It decides BUG-0048 (reclaiming the WAL), BUG-0113's remainder
-   (the recovery service), BUG-0086, and through them BUG-0121's start-up time and BUG-0209's scenario.
-2. **The start-of-day and end-of-day procedures with the trading phases.** BUG-0137 (V12), BUG-0132,
-   BUG-0065's remainder, and BUG-0028's check that the reserved memory is there at the start of the day
-   belong in one design. BUG-0137 was closed on 19 November 2026 and BUG-0028 on 20 November 2026.
-3. **Which sequencer the gateways use with high availability off** (BUG-0061, then BUG-0062). Decided on 8
-   November 2026: none but the primary, and a secondary instance refuses to start with high availability off
-   (R-0163). Built and closed on 9 November 2026.
+1. **What the recovery service does with reports a member never received** (BUG-0113). How long a member's
+   execution reports are kept for resends is decided (R-0008, 8 November 2026): the recovery service keeps the
+   most recent 100,000 messages for each comp id, and answers a resend request for anything older with a FIX gap
+   fill. That settles resends, which ask again for messages already sent. It does not settle reports produced
+   while a member had no connection, which were never sent and cannot be answered with a gap fill. The choices
+   seen so far are to keep every report not yet delivered to a session however many there are, or to send,
+   beyond the count, the present state of each of the member's orders in place of their history. This decides
+   the recovery service's design, and through it BUG-0048 (reclaiming the WAL during the day), BUG-0121's
+   start-up time, BUG-0209's scenario and BUG-0006's measurement.
+2. **What happens to members' orders when the venue's own gateways are down** (BUG-0281): whether the
+   cancel-on-disconnect grace period runs on, as it does now, or stops.
+3. **How long the leading sequencer holds a report for a session connected nowhere** while a configured gateway
+   instance has not announced its sessions (BUG-0258).
+4. **Which of two remedies for repeated reports from a restarting engine** (BUG-0250): the leading sequencer
+   discards a report whose engine epoch and number the WAL already holds, or the engine is told whether it leads
+   before its replay produces any reports.
 
-**The order of work**, agreed with Andrew on 8 November 2026:
+**The recommended order of work**, for Andrew to agree or change:
 
-1. Close the thirteen entries above that are fixed or no longer apply. Done, 8 November 2026.
-2. The small breaches, each with a remedy already agreed or obvious: BUG-0129 (a data race; fixed and closed on
-   8 November 2026), BUG-0225 (fixed and closed on 8 November 2026, with BUG-0233; BUG-0234 and BUG-0235 found),
-   BUG-0226, BUG-0210, BUG-0095 and BUG-0189, and the tests BUG-0181 and BUG-0185, each fixed and closed on 8 November
-   2026. Done.
-3. The breaches that need a short design first: BUG-0142 (statements written in the background; fixed and closed on 9
-   November 2026),
-   BUG-0130 (segments kept ready; fixed and closed on 9 November 2026), BUG-0207 (closed by decision on 10 November 2026, with its scenario), BUG-0211 (fixed and closed on 9 November 2026), BUG-0090 with BUG-0091 (fixed and closed on 10 November 2026),
-   BUG-0131, and BUG-0072. The designs for BUG-0207, BUG-0211, BUG-0090 with BUG-0091, and BUG-0131 were agreed with
-   Andrew on 9 November 2026, as was the design for BUG-0237; BUG-0131's decision sets the venue's figure for open orders
-   as each environment's `order_book_region_capacity`, which is the figure BUG-0072 needs.
-4. BUG-0087's tool for counting heap allocations, then the framework's locks, BUG-0127 and BUG-0128,
-   and BUG-0119.
-5. The three decisions above, and the designs they lead to: retention and the recovery service; the
-   trading day; high availability off.
-6. Then the new requirements, the investigations and the remaining small defects, in the order Andrew
-   chooses.
+1. The small breaches, each with an obvious remedy: BUG-0272 (the lease requests in storage of a fixed size) and
+   BUG-0249 (a change of phase told to the gateways only once the follower sequencer holds it).
+2. The partly done entries with little left: BUG-0278 (one check by hand), BUG-0279 (one scenario and one
+   measurement), BUG-0262 (one test), and BUG-0065's scenario.
+3. The four decisions above, each put to Andrew with its background and options.
+4. The breaches that need a short design first: BUG-0127 and BUG-0128 (the framework's two locks), BUG-0119
+   (shutdown), BUG-0273 (the matching engine's held reports) and BUG-0131's remainder.
+5. BUG-0121 (start-up time), then the recovery service with BUG-0048 and BUG-0113, the largest piece of work.
+6. Then the new requirements, the investigations and the tests and tools, in the order Andrew chooses.
 
 ## How each entry is judged
 
-Each entry is given one of these judgements. The evidence column says what was actually checked, in the
-code or the documents, to reach it.
+Each entry is given one of these judgements. The evidence column says what was checked, in the code or the
+documents, to reach it.
 
 | Judgement | Meaning |
 |---|---|
-| **Fixed** | The phases already removed the defect, or did what the task asked. The entry can be closed once Andrew agrees |
+| **Fixed** | The defect is gone, or the task is done. The entry can be closed once Andrew agrees |
 | **Partly done** | Some of what the entry asks for is built; what is left is stated |
 | **Breach** | The code breaks a named principle. These come first in the order of work |
 | **New requirement** | The code breaks no principle, but the venue lacks something it should have. Whether and when to build it is a decision |
@@ -85,70 +85,50 @@ review recommends working on them.
 
 ## 1. Leadership, leases and the arbiters
 
-Eleven entries.
+Six entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0142](bug_list.md#bug_0142): the arbiter writes each changed statement to disk on its own thread | **Fixed on 9 November 2026** and closed | The arbiter writes statements on a thread of its own and confirms each only once it is on disk; scenario 103 shows the primary sequencer keeping its lease while the arbiter's statement writes take 5 seconds, and losing it when the arbiter is made to wait for the write | Nothing |
-| [BUG-0207](bug_list.md#bug_0207): a sequencer that was down past the recovery limit can, after the whole venue restarts, cancel the book for an absence that did not happen | **Closed** on 10 November 2026 by decision | No longer arises: such a sequencer is barred from leading by its leader's recorded statement, which the arbiters keep. Scenario 105 protects it | None |
-| [BUG-0121](bug_list.md#bug_0121): a restarted sequencer takes longer to start than its peer's lease | **Partly done** | The record of command identifiers is built in the background (`LoggedCommandIdentifiersBuilder`). The whole WAL is still read at start-up: `ReplicatedWal::open` says so, because the table of epochs and the check for a gap need every record. So a supervised restart late in a busy day will not be back within the lease, and rule 6's promise that a restarted leader keeps the lead does not hold then | The decided change, not yet designed: keep the table of epochs in a small file written when the epoch changes, and check for gaps only after the last snapshot |
-| [BUG-0134](bug_list.md#bug_0134): a venue running without a standby says so once | **Partly done** | The gauge covers both cases; starting is logged at Error, and the Error is repeated once a minute with how long it has lasted and how many records exist only on the leader (10 November 2026) | The dashboard's alert |
-| [BUG-0167](bug_list.md#bug_0167): a lease promise record can take longer to write than a lease period | **Dismissed on 8 November 2026**: the remaining risk is accepted by Andrew | The promise record is written in the background and refreshed five seconds before it is needed (`PairLeaseAgent`). BUG-0228, closed, measured the cause (a slow disk under load from other writers), moved the WALs and the small synced files to a disk of their own, made an instance write its epoch before asking to lead (rule 13), and added metrics for how long each record takes and how much lease is left. What remains is that a disk slower than a lease period still costs the lead, and is now reported | None |
-| [BUG-0029](bug_list.md#bug_0029): a process death on the same host takes the machine-death path | **Closed** on 8 November 2026 by decision | Andrew chose to replace the 50-millisecond target with "the lead never moves": a process restarted by its supervisor leads again within its lease period. Measured twice: 2.50 and 2.11 seconds from death to leading, most of it the sequencer's 2-second wait before connecting to the engine again | [BUG-0237](bug_list.md#bug_0237), the sequencer's wait, closed on 10 November 2026: an engine now leads again about 0.6 seconds after it dies |
-| [BUG-0135](bug_list.md#bug_0135): while the leader trades alone, a power failure can lose the last seconds of the record | **New requirement** | Nothing syncs the leader's WAL while it runs without its follower; there is no such interval in `ReplicatedWal` or `Wal` | Build it as the entry describes, on a thread of its own (F4), if Andrew agrees |
+| [BUG-0262](bug_list.md#bug_0262): a leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog | **Partly done** | The sequencer's lease timer is checked by the clock before each message its thread handles (`start_recurring_timer_checked_between_messages`, `SequencerThread.cpp`), so it steps down within one message of the next lease tick rather than after its whole backlog. No test at the level of the sequencer shows it | A test in which a leading sequencer's lease runs out while messages wait in its queue, and which fails with the check between messages turned off. The one case left, a single message that takes longer than the margin, is a resend from far back, which BUG-0113 moves off the thread |
+| [BUG-0121](bug_list.md#bug_0121): a restarted sequencer takes longer to start than its peer's lease | **Partly done** | The record of command identifiers is built in the background (`LoggedCommandIdentifiersBuilder`). `ReplicatedWal::open` still reads the whole WAL, because the table of epochs needs every record's epoch and the check for a gap needs every record's number. So a supervised restart late in a busy day is not back within the lease, and rule 6's promise that a restarted leader keeps the lead does not hold then | The decided change, not yet designed: keep the table of epochs in a small file written when the epoch changes, and check for gaps only after the last snapshot |
+| [BUG-0134](bug_list.md#bug_0134): a venue running without a standby says so too quietly | **Partly done** | The gauge `sequencer_running_alone` covers both ways of running without a standby; starting to do so is logged at Error, and the Error is repeated once a minute with how long it has lasted and how many records exist only on the leader (`ReplicatedWal.cpp`) | The dashboard's alert |
+| [BUG-0135](bug_list.md#bug_0135): while the leader trades alone, a power failure can lose the last seconds of the record | **New requirement** | Nothing syncs the leader's WAL at an interval while it runs without its follower; there is no such interval in `ReplicatedWal` or `Wal` | Build it as the entry describes, on a thread of its own (principle F4), if Andrew agrees |
 | [BUG-0222](bug_list.md#bug_0222): no operator procedure lets the follower lead after the old leader's machine is lost while it ran alone | **New requirement** (R-0161, R-0162) | Not built; [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md), section 4.4, says so | The operator's tool and the procedure for telling members, designed together |
-| [BUG-0136](bug_list.md#bug_0136): whether a copy of the log elsewhere could recover what the leader's machine took with it | **Investigation** | Unchanged. The order activity recorder is not built | Find out what each follower of the log keeps; then decide whether recovering from it is worth designing. Best done with BUG-0222 |
-| [BUG-0061](bug_list.md#bug_0061): with high availability off, a secondary sequencer started alone leads, but no gateway can reach it | **Fixed on 9 November 2026** and closed | Every secondary refuses to start with high availability off (R-0163), and scenarios 46 and 47 check each refuses and says why | Nothing |
-| [BUG-0062](bug_list.md#bug_0062): two instances that led with high availability off, and nothing notices when they are reunited | **Closed** on 9 November 2026, with Andrew's agreement, because it no longer arises as described | With every secondary refusing to start with high availability off, two instances cannot both lead in that configuration; a primary later joined by its secondary is a follower behind, already handled | None |
+| [BUG-0136](bug_list.md#bug_0136): whether a copy of the WAL elsewhere could recover what the leader's machine took with it | **Investigation** | The order activity recorder is not built, and nothing else keeps a copy of the WAL away from the two sequencers' machines | Find out what each follower of the WAL keeps; then decide whether recovering from it is worth designing. Best done with BUG-0222 |
 
-**Recommended order in this area.** BUG-0142 and BUG-0207 were first, and both are closed. Then BUG-0121, because without it the rule that a restarted
-leader keeps the lead fails late in a busy day. BUG-0134's remaining reporting is small. BUG-0237, the sequencer's
-2-second wait before connecting to a restarted engine again, is fixed and closed (10 November 2026). BUG-0167
-is dismissed, its remaining risk accepted by Andrew. BUG-0135 and BUG-0222 with BUG-0136 are new requirements to be placed in the order with
-the rest. BUG-0061 and BUG-0062 are closed.
+**Recommended order in this area.** BUG-0262's test first: it is small, and it shows that the fix for a leader
+acting on an expired lease works. Then BUG-0121, because without it the rule that a restarted leader keeps the
+lead fails late in a busy day. BUG-0134's alert is small. BUG-0135, and BUG-0222 with BUG-0136, are new
+requirements to be placed in the order with the rest.
 
 ## 2. The write-ahead log, its retention, the disk, and the trading day
 
-Ten entries.
+Five entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0130](bug_list.md#bug_0130): the WAL's helper keeps only one segment ready | **Fixed on 9 November 2026** and closed | Four segments are kept ready, each filled under a temporary name and given its final name only when full, and the writing thread never waits for the helper; a short segment that crashed the next start is completed at opening | The trading-day run the design asks for |
-| [BUG-0113](bug_list.md#bug_0113): a resend request reads the log on the thread that sequences orders | **Partly done**; what is left is a **Breach** of F4, accepted for now and listed by name | A matching engine's catch-up is read on the reading thread (phase 5). A resend reads backwards from the newest segment and stops once it has what it needs, so a resend after a reconnect reads a few segments; one that asks for reports from far back still reads far back on the sequencer's thread. `scripts/check_standards.py` permits this read by name, as a resend or a request for undelivered reports, "BUG-0113, which moves them to a recovery service" | The recovery service, chosen on 4 October 2026, keeping a fixed count of messages for each comp id of 100,000 (R-0008, decided on 8 November 2026) |
-| [BUG-0210](bug_list.md#bug_0210): a sequencer whose WAL has lost its first segment dies on an exception | **Breach** of V11 | Unchanged. `Wal::truncate_after` opens the segment that holds the record to keep, and throws if it cannot be opened; nothing catches it | **Fixed on 8 November 2026** and closed: a follower that has lost its first segment file discards every record and is sent them all again, and an instance running without high availability refuses a WAL with a gap, naming each missing segment file. Scenario 102 deletes a follower's first segment file; it failed with the old code |
-| [BUG-0183](bug_list.md#bug_0183): a sequencer dies with SIGBUS appending to a WAL left by earlier runs | **Closed on 10 November 2026** by Andrew's decision, the original cause being unknown | The route thought to have caused it is removed by BUG-0130, and a test reproduces the recorded shape | None |
-| [BUG-0175](bug_list.md#bug_0175): while the disk is slow, the leading sequencer's own thread waits in the file system's journal | **Investigation**; a **Breach** of F4 if confirmed | Not reproduced since the WALs moved to a disk of their own with `lazytime` (BUG-0228). Finding the call needs the scheduler's events with kernel stacks, which `perf` now records without root when attached per thread (the method recorded under BUG-0228) | Reproduce under a slow disk with that method, then take the call off the thread or show F4 permits it |
-| [BUG-0137](bug_list.md#bug_0137): no start-of-day or end-of-day procedure, and a file from an earlier day is taken as a restart | **Breach** of V12, which says each trading day starts fresh and is met only by a procedure that does not exist | Closed on 19 November 2026: every file the venue writes is listed, each records its trading day and is refused on another day, `scripts/trading_day.py start` starts a day, and at the end of the day every component shuts itself down and its launcher archives its files ([start_and_end_of_day.md](venue/start_and_end_of_day.md)) | Nothing |
-| [BUG-0132](bug_list.md#bug_0132): orders open at the end of the trading day are never cancelled | **New requirement**, needed for V2 (every order is a day order) | Closed on 21 November 2026: entering `closed` makes each matching engine cancel every open order and tell its member, and the sequencer writes the end-of-day begin only once the WAL holds every one of those reports; checked by scenario 111 of `ha_test.py` | Nothing |
-| [BUG-0048](bug_list.md#bug_0048): the log retains all of its history | **Decided** on 8 November 2026: the recovery service keeps the most recent 100,000 messages for each comp id (R-0008); what is left is work | Unchanged: `Wal::truncate_below` is called by nothing, and nothing reclaims the log during the day. Of the three positions retention depends on, the matching engine's position is still not reported to the sequencer, and the third is replaced by the recovery service's own store | The recovery service built; the engine's position reported, and retention anchored to the lower of the follower's acknowledgement and the engine's checkpoint |
-| [BUG-0086](bug_list.md#bug_0086): the engine's fallback recovery replays a whole day | **Fixed** as far as this entry goes; what is left is BUG-0048 | The document is corrected ([open_order_checkpoint.md](durability/open_order_checkpoint.md) says the record is not truncated and what the replay costs). The entry itself says it closes with BUG-0048 | Close it into BUG-0048, if Andrew agrees |
-| [BUG-0141](bug_list.md#bug_0141): a follower discarding records while its identifier record is built stops | **Fixed**, by a different route from the one the entry asked for | `LoggedCommandIdentifiersBuilder` now passes over a segment it cannot read, counts it, and `ReplicatedWal` logs a Warning naming the cause, so the process no longer stops. An identifier it records from a record later discarded is harmless: a match is checked against the WAL itself and searched for when it differs (phase 9, [one_check_against_sequencing_twice.md](availability/one_check_against_sequencing_twice.md)). The builder and the repair still use the files without synchronising, which the entry asked to end | Close it, if Andrew accepts that a builder skipping a segment the repair deleted is correct rather than a race to be removed |
+| [BUG-0249](bug_list.md#bug_0249): the leading sequencer tells the gateways of a change of phase before the follower sequencer holds it | **Breach** of V2: a member can be told of a phase the WAL of the next leader never holds | When the leader writes a `TechnicalEvent` that changes the phase or the halt, it sends every gateway `OrderAcceptance` at once (`SequencerThread.cpp`, after each record it writes), whereas it holds an execution report until the follower sequencer has confirmed the record the report depends on | The change of phase or halt told to the gateways only once the follower has confirmed the record, or after the limit of time the leader waits when the follower is absent, as for reports; a scenario that stops the leader inside that window and fails before the change |
+| [BUG-0113](bug_list.md#bug_0113): a resend or a request for undelivered reports can read far back in the WAL on the thread that sequences orders | **Breach** of F4, accepted for now and permitted by name in `scripts/check_standards.py` | Two reads remain on the sequencer's thread: `handle_session_replay_request`, a member's resend, and `handle_undelivered_reports_request`, the reports produced while a member had no connection. Each reads segments from the newest backwards and stops when it has what it needs, so a resend after a reconnect reads a few segments; one reaching far back, or a member away most of the day, reads much of the day's WAL. A matching engine's catch-up is read on the thread that follows the WAL and is not part of this entry | The recovery service, with the 100,000 messages for each comp id decided under R-0008; and first the decision about undelivered reports beyond that count (Summary, decision 1) |
+| [BUG-0048](bug_list.md#bug_0048): the WAL keeps the whole day | **Decided**, and waiting to be built | `Wal::truncate_below` is called by nothing, and nothing reclaims the WAL during the day. Of the positions retention depends on, the matching engine's position is not reported to the sequencer, and members' resends are to be served by the recovery service's own store | The recovery service built; the engine's position reported; and retention anchored to the lower of the follower's acknowledgement and the engine's checkpoint |
+| [BUG-0175](bug_list.md#bug_0175): while the disk is slow, the leading sequencer's own thread waits in the file system's journal | **Investigation**; a **Breach** of F4 if confirmed | Not reproduced since the WALs moved to a disk of their own mounted with `lazytime`. Finding the call needs the scheduler's events with kernel stacks, which `perf` records without root when attached to one thread (the method recorded under [BUG-0228](bug_list.md#bug_0228)) | Reproduce under a slow disk with that method, then take the call off the thread or show that F4 permits it |
+| [BUG-0264](bug_list.md#bug_0264): under overload the follower sequencer still falls behind its leader | **Investigation** | In an overload of 68,626 orders a second the leader judged its follower too far behind nine times, because its storage for orders waiting on the follower was full, and ran without it for 3,963 ms of a 26.2-second run. The leader's reactor is idle about half the time, so what holds the follower back is not known | Profile the follower in the same overload to find the stage that limits it; then keep it in step at the rate the leader sustains, or state that rate as the venue's ceiling |
 
-**Recommended order in this area.** BUG-0130 and BUG-0210 first: each is a breach with an agreed or
-obvious remedy. BUG-0183 and BUG-0175 are
-investigations to schedule. BUG-0048 and BUG-0113's remainder are decided, at 100,000 messages kept for
-each member by the recovery service, and wait to be built; BUG-0086 and BUG-0141 can be closed if Andrew
-agrees.
+**Recommended order in this area.** BUG-0249 first: the remedy is the one already used for execution reports.
+BUG-0113 and BUG-0048 wait on the decision about undelivered reports and then on the recovery service.
+BUG-0175 and BUG-0264 are investigations to schedule.
 
 ## 3. The matching engine
 
-Nine entries.
+Three entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0225](bug_list.md#bug_0225): an engine that becomes a follower before asking to follow the WAL applies nothing | **Breach** of V11: a standby that cannot take over promptly is not reported | Unchanged when judged: `MatchingEngineThread::follow_peer_claiming_leadership` made the instance a follower with `enter_follower_state`, and nothing then asked to follow the WAL; scenario 24 passed, because it checked only the role | **Fixed on 8 November 2026** and closed: an engine that becomes a follower without having asked to follow the WAL asks at once, and the leading sequencer takes a request to follow as the engine saying it does not lead. Scenario 24 checks that the restarted engine applies commands, and scenario 100 makes it take the defect's way every time, with a setting used only by tests that Andrew agreed ([BUG-0233](bug_list.md#bug_0233), closed). The full suite found [BUG-0234](bug_list.md#bug_0234), reports lost when an engine's catch-up outruns the sequencer, and a run of scenario 80 alone found [BUG-0235](bug_list.md#bug_0235), a test whose window is too narrow |
-| [BUG-0211](bug_list.md#bug_0211): changing the region's size during a day can rebuild a different book | **Fixed on 9 November 2026** and closed | An engine whose region was created with a different capacity, smaller or larger, refuses to start and says how to put the capacity back; the region is left exactly as it was, and a damaged region is still rebuilt from the WAL. Scenario 104 | None |
-| [BUG-0194](bug_list.md#bug_0194): an engine that is connected but has stopped working looks healthy | **New requirement**, a design, for V6 and V8 | Unchanged. The reactor's watchdog catches a thread stuck in one callback; nothing catches an engine that answers its lease and applies nothing | The design the entry asks for: what evidence shows an engine is working, who notices, and what is done |
-| [BUG-0028](bug_list.md#bug_0028): growing the order book needs more memory than the machine has | **Fixed on 20 November 2026** and closed | The map is reserved at start for the configured number of open orders, 100 million in production, pre-production and test-1; removing an order leaves no erased mark, so the map is never copied; the engine locks the map and the region into memory before it is ready, or refuses to start; its memory was measured flat over 9.9 million orders | The restart cost, 8 to 17 seconds at 100 million, is the problem of [BUG-0121](bug_list.md#bug_0121) and is carried there |
-| [BUG-0066](bug_list.md#bug_0066): a flapping matching engine resets the deferral clock | **Fixed** in effect, by V14 and by phase 8 | What the entry measured was orders stranded on every cycle and the venue never refusing. Orders are no longer stranded: they are held while no engine leads and released to the engine that next leads (BUG-0064, fixed). An engine interrupted twice is not restarted again (`launch.py --max-interruptions 2`, V14), so a flap becomes one absence, which reaches the refusal after five seconds and the halt after ten. What remains true is that the venue's own clock still restarts each time an engine leads; it is the supervisor that ends the flap | Close it, if Andrew agrees; [order_acceptance.md](availability/order_acceptance.md) then drops it from "What this does not solve" |
-| [BUG-0193](bug_list.md#bug_0193): a command that crashes one engine crashes both | **Fixed** | All three parts are built: a fault caught while applying a command rejects that command (phase 7, [deterministic_matching_engine.md](availability/deterministic_matching_engine.md), section 6, with fuzzing); an engine that died applying a command asks for it to be voided unless its peer applied it ([voided_commands.md](availability/voided_commands.md), section 4); the gateways' strict checks remain | Close it, if Andrew agrees |
-| [BUG-0151](bug_list.md#bug_0151): the round trip is about 20 microseconds slower when the secondary engine leads | **Fixed on 11 November 2026** and closed | An engine looks for work before sleeping only while it leads; the difference is gone | None |
-| [BUG-0209](bug_list.md#bug_0209): no scenario reaches the halt when an engine cannot account for the venue's orders | **Test or tool** | Unchanged; the case cannot be reached while the WAL keeps the whole day | A scenario, possible once BUG-0048 is done. Fixing BUG-0210 does not make it possible: a follower that loses its first segment file is sent every record again, and an instance running alone refuses to start |
-| [BUG-0216](bug_list.md#bug_0216): sending every record to the follower engine adds about 2 microseconds at the median | **Investigation** | Unchanged: one run of each build, and the spread between runs of one build not measured | Measure that spread first; only then decide whether to reduce it |
+| [BUG-0273](bug_list.md#bug_0273): a matching engine holding reports allocates from the heap for each | **Breach** of F5 | `EngineReportSending` keeps held reports in a `std::vector<HeldEngineReport>`, and each `HeldEngineReport` holds its bytes in a `std::vector<uint8_t>`; `discard` gives the memory back with `shrink_to_fit`. Reports are held only outside ordinary running: with no connection to either sequencer, or while the engine catches up before it knows whether it serves | Storage of a fixed size allocated at start, as for the reports kept while following ([BUG-0271](bug_list.md#bug_0271)); the design must say what happens to a report sent on one connection and waiting for the other, since held reports are not always released oldest first |
+| [BUG-0209](bug_list.md#bug_0209): no scenario reaches the halt when an engine cannot account for the venue's orders | **Test or tool** | The case cannot be reached while the WAL keeps the whole day: a follower that loses its first segment file is sent every record again, and an instance running alone refuses a WAL with a gap | A scenario, possible once BUG-0048 is done |
+| [BUG-0216](bug_list.md#bug_0216): sending every record to the follower engine adds about 2 microseconds at the median | **Investigation** | One run of each build was compared; the spread between runs of one build is not measured | Measure that spread first; only then decide whether to reduce it |
 
-**Recommended order in this area.** BUG-0225 and BUG-0211 first, as breaches; both are now closed. Then the
-design for BUG-0194. BUG-0028 was closed on 20 November 2026, its restart cost carried in BUG-0121. BUG-0066 and BUG-0193 can be closed if Andrew agrees.
-BUG-0151 and BUG-0216 are measurements; BUG-0209 waits on BUG-0048.
+**Recommended order in this area.** BUG-0273's design, with the framework's breaches in section 6. BUG-0209
+waits on BUG-0048. BUG-0216 is a measurement.
 
 ## 4. The sequencer's handling of reports
 
@@ -156,112 +136,91 @@ Three entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0226](bug_list.md#bug_0226): a report held for a gateway with no connection counts as forwarded | **Breach** of V8 | Unchanged after phase 10 moved the code into `ReportForwarding`. `ReportForwarding::forwarded_through` holds the position back for reports waiting on the follower (`pending_`) and for reports held for an unannounced session (`held_reports_oldest_position_`), but not for reports held in `reports_held_for_gateways_` | **Fixed on 8 November 2026** and closed: the leader takes the oldest report held for a gateway into the position it says it has forwarded through, and the follower discards a kept report by its age only if the report has no position. Scenario 101 kills the leader while it holds a gateway's reports and requires every one to reach the member; it failed with either half put back |
-| [BUG-0131](bug_list.md#bug_0131): the leading sequencer allocates from the heap for every order, and copies waiting reports | **Breach** of F5 and F6 | The waiting reports are built: a ring allocated once, each report in the slab chunk it arrived in. The map of which session placed each order is removed ([BUG-0274](bug_list.md#bug_0274)): it kept every order placed and grew through the day, and reports are now routed by the session they carry | Lock the record of command identifiers at start ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)), and the latency run compared with the last |
-| [BUG-0227](bug_list.md#bug_0227): an operator whose lift cannot be written is told reports are outstanding | **Fixed on 10 November 2026** and closed | A new outcome, `NotWritten`, for the halt and the lift | None |
+| [BUG-0250](bug_list.md#bug_0250): a restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member | **Breach** of V2, and a choice between two remedies | A restarting engine holds at most 50,000 reports (`max_held_reports`, `EngineReportSending.hpp`) and sends the rest as possible repeats. `SequencerThread::forward_report_from_engine` reads each report's engine epoch and number but does not check whether the WAL already holds it, so every repeat is written, replicated, published and sent | Andrew's choice of remedy (Summary, decision 4), then a scenario that restarts an engine after more than 50,000 reports and fails before the change |
+| [BUG-0258](bug_list.md#bug_0258): while a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere | **Decision needed** | `ReportForwarding` holds such reports in room for 32,768 (`held_report_capacity_reports`), drops the oldest when it is full, and holds back the position it says it has forwarded through, so the follower sequencer discards none of its kept copies. A venue runs this way whenever a standby gateway instance is stopped | Andrew's decision on how long such a report is held, and whether a session known to have ended needs holding at all (Summary, decision 3) |
+| [BUG-0131](bug_list.md#bug_0131): the leading sequencer allocates from the heap for every order, and copies waiting reports | **Breach** of F5 and F6 | The waiting reports are in a ring allocated once, each report in the slab chunk it arrived in, and reports are routed by the session they carry, so no map of orders grows through the day | Lock the record of command identifiers into memory at start ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)), and compare a latency run with the last |
 
-**Recommended order in this area.** BUG-0226 first: it is small, and a report a member never receives is
-the failure V8 exists to prevent. BUG-0131 next, through its agreed design. BUG-0227 whenever the
-`OperatorHaltAnswer` outcomes are next touched.
+**Recommended order in this area.** The decisions for BUG-0250 and BUG-0258, then their changes. BUG-0131's
+remainder through its agreed design.
 
 ## 5. The gateways and what a member sees
 
-Sixteen entries.
+Twelve entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0090](bug_list.md#bug_0090): a restarted gateway silently stops honouring cancel-on-disconnect | **Fixed on 10 November 2026** and closed | The leading sequencer holds the grace period in its WAL and writes `CancelSessionOrders`, which the engines apply; the gateways send no cancels. Scenarios 106, 107, 108 and 109 | None |
-| [BUG-0095](bug_list.md#bug_0095): checking a FIX price or quantity overflows a signed integer | **Defect**, undefined behaviour in the C++ | Unchanged: `FixField::as_decimal` still builds `digits = digits * 10 + ...` in an `int64_t` with no check. The binary gateway's checks, added since (`BinaryCommandChecks`), call the same rule, so the binary gateway now has the same fault | **Fixed on 8 November 2026** and closed: `FixField::is_decimal` checks the text's form character by character and builds no number, for both gateways. Under the undefined behaviour sanitizer the old check overflowed on a 40-digit value and the new one does not |
-| [BUG-0091](bug_list.md#bug_0091): a member's standing instructions die with the gateway that received them | **Fixed on 10 November 2026** and closed | The instruction travels on `SessionBound` and `SessionBoundAck`, is kept by every sequencer, and is applied by the leader when the gateway cannot act. R-0103 verified by scenario 107 | None |
-| [BUG-0072](bug_list.md#bug_0072): the gateway's open-order pool is sized by nothing in particular | **Fixed on 10 November 2026** and closed | The gateways keep no list of open orders, so there is no pool to size; a cancel a gateway refuses is answered with a session-level Reject (FIX) or `RequestRefused` (binary), and R-0151 is amended ([gateway_refusals.md](venue/gateway_refusals.md)). Scenarios 42, 56, 57 and 96 | None |
-| [BUG-0203](bug_list.md#bug_0203): the FIX gateway sometimes refuses a logon as an impostor when two are under way together | **Investigation** | Not reproduced since; cause unknown | Reproduce with many simultaneous logons, as at the start of the day, and find the shared state |
-| [BUG-0056](bug_list.md#bug_0056): the FIX gateway stopped completing logons while still running | **Not reproducible**, and closed on 14 November 2026 | A four-hour soak of 699 untidy sessions with a logon probe after each of 159 rounds (`scripts/fix_session_soak.py`): every probe answered, and the gateway's descriptors, memory and threads did not grow | None |
-| [BUG-0089](bug_list.md#bug_0089): a member cannot ask the venue what it is holding | **New requirement** (R-0002) | Unchanged: no order status messages in the dictionary or the code | Order status and mass status requests, answered from the book |
-| [BUG-0046](bug_list.md#bug_0046): the binary gateway has no in-flight report recovery | **New requirement** | Unchanged | A recovery for the binary protocol, designed with the sequencer's replay contract |
-| [BUG-0045](bug_list.md#bug_0045): a member has no defined way to discover its primary gateway is down | **New requirement**, an open design question | Unchanged | A statement of what a member should do, in the member documentation |
-| [BUG-0059](bug_list.md#bug_0059): no defence against a member reconnecting in a loop | **New requirement** | Unchanged; the entry already sets out the graduated answer | Place in the order of work |
-| [BUG-0058](bug_list.md#bug_0058): a member halted by a sequence gap is invisible to monitoring | **New requirement** | Unchanged | The gauge the entry describes |
-| [BUG-0109](bug_list.md#bug_0109): the FIX gateway's health line counts cancel reports as answered orders | **Fixed on 10 November 2026** and closed | `awaiting` counts only reports that answer a new order; checked by scenario 51 | None |
-| [BUG-0065](bug_list.md#bug_0065): the venue tells a member of a halt only in the reply to an order | **Partly done** | Halting and lifting are built; the entry itself lists what remains | `TradingSessionStatus` and its binary equivalent, halting one instrument, and the table of what each trading phase allows, designed with the trading phases |
-| [BUG-0092](bug_list.md#bug_0092): a refused cancel is answered with an execution report | **Fixed** | The FIX gateway answers its own refusal of a cancel with a session-level `Reject` (35=3) ([gateway_refusals.md](venue/gateway_refusals.md)), and `FixErEncoder` encodes the matching engine's refusal of a cancel as an `OrderCancelReject` (`FixErEncoder.hpp`, "Encodes a matching engine report that refuses a request to cancel as a FIX OrderCancelReject"), under R-0151 and BUG-0099 | Close it, if Andrew agrees |
-| [BUG-0096](bug_list.md#bug_0096): the binary gateway passes on prices and quantities without checking them | **Fixed** | `BinaryCommandChecks` checks every quantity and price as a decimal number by the FIX codec's rule (BUG-0100) | Close it, if Andrew agrees; the overflow it inherits is BUG-0095 |
-| [BUG-0244](bug_list.md#bug_0244): an idle connection to the authentication service is closed every ten minutes | **Fixed on 14 November 2026** and closed | Each gateway sends an answered heartbeat on each connection; one that stops answering is closed and made again, and logons go to the other instance. `ha_test.py` scenario 110 fails with either half of the fix taken out | None |
+| [BUG-0279](bug_list.md#bug_0279): a gateway's limit on unanswered commands does not bound the commands it has waiting to be sent | **Partly done** | The binary gateway limits the messages waiting from each member's connection to 64; both gateways refuse a logon beyond `[members] most_connected`; every environment sizes the binary gateway's command queue from those settings, and in scenario 116 the queue no longer grows | A scenario that logs on more members than a gateway instance serves and decides from test events that the one beyond is refused; and the FIX gateway's command queue measured at its deepest under overload |
+| [BUG-0065](bug_list.md#bug_0065): the venue tells a member of a halt only in the reply to an order | **Partly done** | An operator declares and lifts a halt, and the gateways refuse orders while trading is halted (scenarios 94 and 95). Both gateways send every logged-on member a `TradingSessionStatus` when the venue's state changes, and answer a request for it. Each gateway refuses by the phase through `refusal_by_phase` (`TradingSession.hpp`) | Halting one instrument, which needs the list of instruments of BUG-0242; and a scenario that halts trading and checks that a member not trading is told, which the specification records as the gap under R-0023 |
+| [BUG-0259](bug_list.md#bug_0259): under a steady flood, the warning that a gateway's store of unanswered commands is full is logged once for every command refused | **Defect** | `UnansweredCommands::keep` logs a Warning when the store becomes full and an Info when it has room again; under a steady flood one answer makes room for one command, so the two alternate once for each command | The warning said once when commands begin to be refused, and once when an interval passes with none refused, with how many were refused, as `KeptReports` does |
+| [BUG-0203](bug_list.md#bug_0203): the FIX gateway sometimes refuses a logon as an impostor when two are under way together | **Investigation** | Not reproduced since it was recorded; the cause is unknown | Reproduce with many simultaneous logons, as at the start of the day, and find the shared state |
+| [BUG-0281](bug_list.md#bug_0281): what happens to members' orders when their gateways are down for longer than the grace period is not decided | **Decision needed** | The sequencer starts each session's cancel-on-disconnect grace period when its gateway is lost, whatever the cause, and cancels the session's day orders when it runs out ([gateway_ha.md](availability/gateway_ha.md)) | Andrew's decision (Summary, decision 2); then how the venue detects that no gateway has come back, whether it halts or alerts an operator, and scenarios. It depends on BUG-0046 |
+| [BUG-0089](bug_list.md#bug_0089): a member cannot ask the venue what it is holding | **New requirement** (R-0002) | There are no order status or mass status messages in the dictionary or the code | Order status and mass status requests, answered from the book |
+| [BUG-0046](bug_list.md#bug_0046): the binary gateway has no recovery of reports in flight | **New requirement** | The binary protocol has no resend | A recovery for the binary protocol, designed with the recovery service of BUG-0113 |
+| [BUG-0045](bug_list.md#bug_0045): a member has no defined way to discover that its primary gateway is down | **New requirement**, an open design question | Nothing in the member documentation says what a member should do | A statement of what a member should do, in the member documentation |
+| [BUG-0059](bug_list.md#bug_0059): no defence against a member reconnecting in a loop | **New requirement** | The entry sets out the graduated answer; nothing of it is built | Place in the order of work |
+| [BUG-0058](bug_list.md#bug_0058): a member halted by a sequence gap is invisible to monitoring | **New requirement** | No gauge or counter records a session halted by a gap | The gauge the entry describes |
+| [BUG-0242](bug_list.md#bug_0242): the venue has no list of the instruments it trades | **New requirement**, needing its own design | Any Symbol up to `fix_order_limits::max_symbol_length`, 35 characters, is accepted; nothing reads SecurityID (48) or SecurityIDSource (22) | A design, discussed with Andrew first: where the list comes from, what identifies an instrument on an order, how the list changes during a day, and what options on futures need |
+| [BUG-0265](bug_list.md#bug_0265): the Java test client's blotter does not show the trading-session status its member is told | **New requirement**, in a tool | The blotter in `java/fix-test-client` does not handle 35=h | Ask for the status at logon, act on every 35=h, and show the state prominently |
 
-**Recommended order in this area.** BUG-0090 and BUG-0091 were first, and are closed. BUG-0095 next, being small and undefined behaviour in
-both gateways. BUG-0072 is a configuration change. BUG-0056 is closed as not reproducible after a four-hour soak of abandoned
-and badly ended sessions. BUG-0203 needs a stress test of many simultaneous logons. The new requirements are
-placed with the rest; BUG-0065's remainder goes with the trading phases. BUG-0092 and BUG-0096 can close.
+**Recommended order in this area.** BUG-0279's scenario and measurement, and BUG-0065's scenario, which are
+small. BUG-0259 is small and can be done whenever `UnansweredCommands` is next touched. BUG-0281 waits on
+Andrew's decision. BUG-0203 needs a stress test of many simultaneous logons. The new requirements are placed
+with the rest; BUG-0065's halting of one instrument waits on BUG-0242.
 
 ## 6. The framework: reactor, timers, allocators and threads
 
-Fifteen entries. None was touched by phases 3 to 11, which moved the venue's machinery into the library
-but did not change these parts of it.
+Nine entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0129](bug_list.md#bug_0129): the stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation | **Breach** of F2 (the lock), and a data race, undefined behaviour in C++ | Unchanged when judged: `Reactor.cpp` took `thread_registry_mutex_` (twelve uses), and `ApplicationThread::time_event_started_` and `time_event_finished_` were plain `HighResolutionClock::time_point` members written by one thread and read by another | **Fixed on 8 November 2026**, as the entry describes, and closed. The lock is now taken only at start-up and shutdown, and the two handler times are atomic. A unit test run under ThreadSanitizer reports the race with plain members and nothing with atomic ones |
-| [BUG-0127](bug_list.md#bug_0127): a pool that runs out takes a mutex and maps a new pool while holding it | **Breach** of F2 and F5 | Unchanged: `ExpandablePoolAllocator` still has `expansion_mutex_` on its slow path | No lock on the allocation path, as the entry describes; with BUG-0072, sizing so the slow path is not reached in a normal day |
-| [BUG-0128](bug_list.md#bug_0128): every timer start creates a timer and every cancel destroys one, with a lock and system calls on the reactor thread | **Breach** of F2 and F3 | Unchanged: `Reactor` still has `timer_registry_mutex_`, and there is still no way to create a timer apart from starting it | Timers created once and armed and disarmed afterwards; the design the entry asks for |
-| [BUG-0119](bug_list.md#bug_0119): a thread still in a handler when its reactor shuts down uses the destroyed reactor | **Breach** of F8 (shutdown is deterministic) | Unchanged in the shutdown path | Decide whether a reactor may ever be destroyed while one of its threads may still run, and make shutdown wait or refuse accordingly |
-| [BUG-0184](bug_list.md#bug_0184): a paused connection sometimes went on delivering | **Investigation**, a **Breach** if the fault is in the reactor | Still failing about one run in four of the coverage build, as the entry records | Find whether pausing fails or the test's timing does, under load |
-| [BUG-0104](bug_list.md#bug_0104): a connection whose reads were paused can stay stalled after they resume | **Investigation** | Unchanged; the kernel rule is not established | As the entry describes; related to BUG-0184 and best done with it |
-| [BUG-0087](bug_list.md#bug_0087): whether the hot path allocates cannot be established on demand | **Built on 20 November 2026** and closed | `scripts/heap_allocation_count.py` with the counting library `libraries/heap_allocation_count`, checked against `scripts/heap_allocation_expectations.toml`; its first run found [BUG-0270](bug_list.md#bug_0270) and [BUG-0271](bug_list.md#bug_0271) | BUG-0270 and BUG-0271 are fixed, and counting again finds no heap call from either; what it still finds is [BUG-0272](bug_list.md#bug_0272), all 114 calls on the leading engine's thread and 116 of the 118 on the leading sequencer's, the other 2 building a string in one of the sequencer's handlers |
-| [BUG-0166](bug_list.md#bug_0166): the reactor writes a Warning for every send to a connection that has gone | **Fixed on 10 November 2026** and closed | One Warning for each gone connection at each housekeeping tick, with the count of sends dropped | None |
-| [BUG-0240](bug_list.md#bug_0240): a recurring timer asked for with no interval never fires | **Fixed on 10 November 2026** and closed | Refused with `PreconditionAssertion` on the calling thread; every caller checked | None |
-| [BUG-0161](bug_list.md#bug_0161): the framework names the venue's ideas in how it classifies a send | **Fixed on 14 November 2026** and closed | `SendLatencyClass` with `Waited` and `Routine`; scope labels `waited` and `routine` | None |
-| [BUG-0177](bug_list.md#bug_0177): the C++ generated from the DSL does not compile for a list of enums | **Fixed on 10 November 2026** and closed | A list of enums is a list of the enum's integers in the C++ and pybind11 code; the smallest i64 compiles cleanly | None |
-| [BUG-0179](bug_list.md#bug_0179): the Java generated from the DSL decodes an unlisted enum value as null | **Fixed on 14 November 2026** and closed | Java enums are generated as classes that keep an unlisted value; the cross-language test runs the unlisted case in Java | None |
-| [BUG-0246](bug_list.md#bug_0246): a message with no fields closes the connection it arrives on | **Fixed on 14 November 2026** and closed | The DSL validator refuses a message with no fields; `TopicNotLeader` carries a one-value enum and a test shows it reaching a subscriber | None |
-| [BUG-0247](bug_list.md#bug_0247): the authentication service compared a position in one map with the end of another | **Fixed on 14 November 2026** and closed | Undefined behaviour by the standard; harmless with the GNU standard library | None |
-| [BUG-0248](bug_list.md#bug_0248): a WAL unit test gives the helper thread a fixed second | **Fixed on 14 November 2026** and closed | The test waits for the helper to choose and make each segment; passes under heavy disk writing | None |
+| [BUG-0272](bug_list.md#bug_0272): each lease request allocates from the heap on the requesting instance's own thread | **Breach** of F5 | `LeaseHolder` keeps outstanding requests in a `std::map<int64_t, Outstanding>` and their expiries in a second `std::map`, adding a node for each request on the thread that renews, which in the sequencer and the matching engine is the thread that handles orders. `scripts/heap_allocation_count.py` finds about one heap call a second there | The outstanding requests in storage of a fixed size, since an instance asks only its few voters and forgets a request older than a lease period; then the count finds no call from `LeaseHolder` |
+| [BUG-0278](bug_list.md#bug_0278): an exception that ends an application thread stops the process with exit status 0 | **Partly done** | A thread that dies of an exception stops the reactor with `shutdown_for_a_failure`, and `Reactor::run` returns `stopped_for_a_failure_status`, 1; three `ReactorTest` tests require it | A check by hand that a sequencer refusing another day's WAL exits with status 1 |
+| [BUG-0283](bug_list.md#bug_0283): parts of the framework library that the venue runs every day are not reached by any test | **Partly done** | Groups 1 to 3 have tests, each made to fail by breaking the code it tests; the coverage baseline records 11,292 of 12,811 lines run | Group 1's reading of `/sys`, which needs a made-up `/sys` tree; then groups 4 and 5, the failures that change what the venue does |
+| [BUG-0127](bug_list.md#bug_0127): a pool that runs out takes a mutex and maps a new pool while holding it | **Breach** of F2 and F5 | `ExpandablePoolAllocator` takes `expansion_mutex_` on its slow path | No lock on the allocation path, as the entry describes, and pools sized so that the slow path is not reached in a normal day |
+| [BUG-0128](bug_list.md#bug_0128): every timer start creates a timer and every cancel destroys one, with a lock and system calls on the reactor thread | **Breach** of F2 and F3 | `Reactor` takes `timer_registry_mutex_`, and there is no way to create a timer apart from starting it | Timers created once and armed and disarmed afterwards; the design the entry asks for |
+| [BUG-0119](bug_list.md#bug_0119): a thread still in a handler when its reactor shuts down uses the destroyed reactor | **Breach** of F8, shutdown is deterministic | Shutdown does not wait for a thread still in a handler, nor refuse to destroy the reactor while one may still run | Decide whether a reactor may ever be destroyed while one of its threads may still run, and make shutdown wait or refuse accordingly |
+| [BUG-0184](bug_list.md#bug_0184): a paused connection sometimes went on delivering | **Investigation**, a **Breach** if the fault is in the reactor | The test fails about one run in four of the coverage build, as the entry records | Find whether pausing fails or the test's timing does, under load |
+| [BUG-0104](bug_list.md#bug_0104): a connection whose reads were paused can stay stalled after they resume | **Investigation** | The kernel's rule for this case is not established | As the entry describes; best done with BUG-0184 |
+| [BUG-0280](bug_list.md#bug_0280): huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine | **Investigation** | The development machine has no huge pages reserved, so `FixedSizeMemoryPool`'s `MAP_HUGETLB` path always falls back to ordinary pages there; no measurement shows misses in the cache of address translations to be a real share of the order path's time | Measure those misses under `perf stat` through a load run first; only if they matter, huge pages for the large tables; and the huge-page path exercised by a test on a machine with huge pages reserved |
 
-**Recommended order in this area.** BUG-0129 first, for its data race. Then BUG-0127 and BUG-0128,
-the two locks on paths an order can take; each needs a design agreed before code, and BUG-0128 the larger
-one. BUG-0087's tool is worth building before those, since it is how their fixes, and BUG-0131's, would
-be shown to work. BUG-0119 with the shutdown sequence. BUG-0184 and BUG-0104 together. The four defects
-are small and can be done when their files are next touched.
+**Recommended order in this area.** BUG-0272 first: it is small and the counting tool shows when it is done.
+BUG-0278's check by hand is smaller still. Then BUG-0127 and BUG-0128, the two locks on paths an order can
+take, each needing a design agreed before code, BUG-0128 the larger. BUG-0119 with the shutdown sequence.
+BUG-0184 and BUG-0104 together. BUG-0283's remaining groups by its own rule, testing the failures that change
+what the venue does rather than every log line. BUG-0280 is a measurement.
 
 ## 7. Tests and tooling
 
-Sixteen entries.
+Eight entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0223](bug_list.md#bug_0223): the fix8 test client sometimes logs on and exits without sending its orders | **Defect** in the test tooling, reopened 10 November 2026 | Happened in scenario 22 on 2 November and scenario 12 on 10 November; the harness now notices the exit at once | Keep the client's exit status and standard error when it happens, to find the cause |
-| [BUG-0181](bug_list.md#bug_0181): with orders in flight, Phase 5 confirms that a thousand further orders were accepted, not the recovery orders themselves | **Test or tool**, and the most serious here: a scenario can pass when the orders sent after a failure are lost | Unchanged: Phase 5 waits with `await_new_orders_since` for any 1,000 further orders | **Fixed on 8 November 2026** and closed: Phase 5 names the recovery orders by their ClOrdIDs, and waits while reports keep arriving; made to look for orders never sent, it failed |
-| [BUG-0185](bug_list.md#bug_0185) and [BUG-0145](bug_list.md#bug_0145): scenarios 59 and 76 stop the leader the moment `inject_order` has sent | **Test or tool**; the two entries describe one fault | Unchanged: both scenarios send `SIGSTOP` straight after reading `inject_order`'s "sent" line. Scenario 62, which BUG-0145 also named, now waits until the leader's WAL holds the orders | **Fixed on 8 November 2026** and closed: scenarios 59 and 76 stop the leader only once its WAL holds the orders, through the function scenario 62 now uses too |
-| [BUG-0149](bug_list.md#bug_0149): scenario 62 can crash reading a WAL segment the sequencer deletes | **Fixed on 10 November 2026** and closed | A segment deleted after the directory was listed reads as holding nothing | None |
-| [BUG-0215](bug_list.md#bug_0215): `perf_run.py` fails every run of the trading-day profile | **Fixed on 10 November 2026** and closed | Refusals for a full book are counted by the engine and taken as answered by perf_run.py | None |
-| [BUG-0214](bug_list.md#bug_0214): `fix_load_client.py` reports answered messages as unreported | **Fixed on 10 November 2026** and closed | A Rejected order is not resting; an OrderCancelReject and a session-level Reject each count as an answer | None |
-| [BUG-0014](bug_list.md#bug_0014): Python style warnings in the scripts, and a lint gate that ignores them | **Test or tool**, under way | Andrew's commit 2d28b39 dealt with some of the warnings; the gate does not yet fail on style messages | Finish the warnings, then make the gate fail on them |
-| [BUG-0068](bug_list.md#bug_0068): the specification states behaviour that almost nothing tests | **Investigation**, a coverage record | `scripts/check_book_requirements.py` reports the figures on every build | Kept open as the record of coverage; worked with BUG-0229 |
-| [BUG-0229](bug_list.md#bug_0229): the functional specification has not been checked against the code | **Decision needed**: Andrew has left it for now | Unchanged; recorded so as not to be forgotten | When to audit the book, and to specify the ordinary order lifecycle |
-| [BUG-0173](bug_list.md#bug_0173): no scenario withholds a record during a real catch-up | **Test or tool**, a missing scenario | Unchanged | As the entry describes |
-| [BUG-0083](bug_list.md#bug_0083): scenario 26 failed once inside the suite and has not been reproduced | **No longer applies**, as far as can be told | It was one failure in five runs, in August, before phases 3 to 10 replaced the code it ran through; full runs since, such as the 99 of 99 on 7 November 2026, have passed scenario 26 | Close it, if Andrew agrees; a recurrence would be a new entry |
-| [BUG-0144](bug_list.md#bug_0144): `ha_test.py` searches each read of a Quill log separately | **No longer applies** | Phase 6 removed every wait on and count of a Quill log: `poll_log_for` no longer exists, and nothing calls `count_lines_with_all` | Close it, if Andrew agrees |
-| [BUG-0169](bug_list.md#bug_0169): the high availability tests depend on the wording of Quill log messages | **Fixed** by phase 6 | No check reads a Quill log of the venue ([test_events_inventory.md](availability/test_events_inventory.md)). Three `TEST CONTRACT` messages remain, in the arbiter, the witness and the sequencer, each an operator message a scenario checks deliberately, because what it checks is that an operator is told why | Close it, if Andrew agrees |
-| [BUG-0040](bug_list.md#bug_0040): the order-accounting check reports lost orders when it could not count them | **Fixed** | `perf_run.py` now says "NOT VERIFIED -- the run completed, but its order count could not be read" and that this is not a failure of the venue | Close it, if Andrew agrees |
-| [BUG-0030](bug_list.md#bug_0030): restart coverage | **Fixed**: the matrix is complete | All eighteen cells are covered, as the entry records. Row R6, "restart with no arbiter reachable, degraded", describes a degraded path that majority leases removed; those scenarios now check that no instance leads without a majority | Close it, if Andrew agrees |
+| [BUG-0223](bug_list.md#bug_0223): the fix8 test client sometimes logs on and exits without sending its orders | **Test or tool** | Seen in scenario 22 and scenario 12; the harness notices the exit at once | Keep the client's exit status and standard error when it happens, to find the cause |
+| [BUG-0261](bug_list.md#bug_0261): the check that runs the matching engines on a copy of the WAL starts a sequencer that can write new commands into that copy | **Test or tool**, partly done | `run_engines_on_the_wal` in `ha_test.py` gives the copy's sequencer settings that keep it from writing the end of day, and scenario 116 waits for its sessions' cancels before it ends. Nothing keeps the copy's sequencer from writing the cancels of a session whose grace period passes during the check | The copy's sequencer writes nothing into the copy, so that every engine run sees the same records |
+| [BUG-0253](bug_list.md#bug_0253): `binary_load_client --help` prints its help and then tries to connect to the venue | **Test or tool** | `parse_options` in `BinaryLoadClientMain.cpp` returns `true` for `--help`, the value it returns for a valid command line, so `main` goes on to connect | `--help` prints the usage and exits with status 0, doing nothing else |
+| [BUG-0173](bug_list.md#bug_0173): no scenario withholds a record during a real catch-up | **Test or tool**, a missing scenario | No scenario does it | As the entry describes |
+| [BUG-0014](bug_list.md#bug_0014): Python style warnings in the scripts, and a lint gate that ignores them | **Test or tool**, under way | Some of the warnings are dealt with; the gate does not fail on style messages | Finish the warnings, then make the gate fail on them |
+| [BUG-0267](bug_list.md#bug_0267): `ha_test.py` is one script of 15,000 lines | **Test or tool** | The script has 15,943 lines, and its checks are in one function | A package, `scripts/ha_test/`, with the machinery every scenario shares in one module and each group of scenarios in its own, with the same command line and the same results for every scenario |
+| [BUG-0068](bug_list.md#bug_0068): the specification states behaviour that almost nothing tests | **Investigation**, a record of coverage | `scripts/check_book_requirements.py` reports the figures on every build | Kept open as the record of coverage; worked with BUG-0229 |
+| [BUG-0229](bug_list.md#bug_0229): the functional specification has not been checked against the code | **Decision needed**: Andrew has left it for now | Recorded so as not to be forgotten | When to audit the specification, and to specify the ordinary order lifecycle |
 
-**Recommended order in this area.** BUG-0181 first, because it lets a scenario pass over lost orders,
-which is the failure the tests exist to catch. Then BUG-0185 (with BUG-0145 closed into it) and BUG-0149,
-which make the suite fail at random and so make its verdict harder to trust. BUG-0215 and BUG-0214 make
-the load tools' verdicts trustworthy. Six entries can be closed if Andrew agrees: BUG-0083, BUG-0144,
-BUG-0169, BUG-0040, BUG-0030, and BUG-0145 into BUG-0185.
+**Recommended order in this area.** BUG-0223 first, because a client that exits without sending its orders
+makes a scenario's verdict harder to trust. BUG-0261 next, for the same reason in the check that runs the
+engines on the WAL. BUG-0253 is small. BUG-0267 is a large change with no effect on what is tested, best done
+when the suite is not otherwise being changed.
 
 ## 8. Operations, deployment and metrics
 
-Seven entries.
+Six entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0189](bug_list.md#bug_0189): anyone who reaches first-run setup can create the first administrator | **Defect**, of security (R-0153) | Unchanged: nothing in `java/admin-service` asks for a one-time secret on first-run setup | **Fixed on 8 November 2026** and closed: the editor writes a one-time secret, readable only by its owner, while no administrator exists; setup refuses a wrong or missing one with HTTP 403, and creating the first administrator deletes it. Tried against the deployed editor, which found [BUG-0236](bug_list.md#bug_0236): the administrators' file is readable by every account |
-| [BUG-0069](bug_list.md#bug_0069): the sequencer, arbiters and witness report no metrics | **Partly done** | The sequencer now registers seventeen metrics (`SequencerThread.cpp`), among them `sequencer_running_alone` and the measures of a slow disk from BUG-0228. The arbiter, the witness and the authentication service register none of their own | Metrics for the arbiters (which is active, leases granted and refused, statements held) and the witness |
-| [BUG-0041](bug_list.md#bug_0041): five ways the venue will not start on a RHEL8 target host | **Done** | Closed: all five points are fixed, and the current code builds, passes its tests, is released and is deployed in the Rocky 8 container, where `devenv.py` finds `installed-rocky8` unaided | Nothing |
-| [BUG-0073](bug_list.md#bug_0073): the placeholder environments carry settings nobody chose | **Fixed on 11 November 2026** and closed | The three placeholder files say so, and deploy.py refuses them unless asked | None |
-| [BUG-0060](bug_list.md#bug_0060): microbursts are not measured | **New requirement** | Unchanged | Place in the order of work; the latency work is otherwise complete |
-| [BUG-0006](bug_list.md#bug_0006): ResendRequest under load | **Test or tool**, a missing measurement | Unchanged; a resend from far back is also BUG-0113's remainder | Exercise resends in a trading-day run; best done after the recovery service of BUG-0113 |
-| [BUG-0047](bug_list.md#bug_0047): disaster recovery is not modelled | **New requirement**, deliberately deferred | Unchanged | Nothing until Andrew says |
+| [BUG-0069](bug_list.md#bug_0069): the sequencer, arbiters and witness report no metrics | **Partly done** | The sequencer registers its metrics, among them `sequencer_running_alone` and the measures of a slow disk. The arbiter, the witness and the authentication service register none of their own | Metrics for the arbiters (which is active, leases granted and refused, statements held) and the witness |
+| [BUG-0266](bug_list.md#bug_0266): the administration service's desktop does not show the venue's trading phase | **New requirement** | The administration service subscribes to the `technical_events` topic (`TechnicalEventsSubscriber`), which carries every phase, but uses it only for the end of day, and no page shows the phase | The desktop shows the latest phase and the trading day |
+| [BUG-0060](bug_list.md#bug_0060): microbursts are not measured | **New requirement** | Nothing measures them | Place in the order of work |
+| [BUG-0006](bug_list.md#bug_0006): ResendRequest under load | **Test or tool**, a missing measurement | No trading-day run sends resends | Exercise resends in a trading-day run; best done after the recovery service of BUG-0113 |
+| [BUG-0245](bug_list.md#bug_0245): in one trading-day run the 99th percentile of the first two phases was higher than in the runs before it | **Investigation** | One run only: 326 and 384 microseconds against 238 to 250 in three earlier runs | A second run, to see whether it repeats |
+| [BUG-0047](bug_list.md#bug_0047): disaster recovery is not modelled | **New requirement**, deliberately deferred | Not designed | Nothing until Andrew says |
 
-**Recommended order in this area.** BUG-0189 first: it is small and a security hole. BUG-0069's
-remainder next.
+**Recommended order in this area.** BUG-0069's remainder first. BUG-0266 is small now that the subscription
+exists. BUG-0245 needs one run. BUG-0006 waits for the recovery service.

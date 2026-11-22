@@ -1393,9 +1393,15 @@ is published because a person decided it was safe, never because an engine recon
 
 **Built.** An operator's means of declaring and lifting a halt, the sequencer keeping whether trading is halted, and
 the gateways refusing new orders while it is, as [voided_commands.md](availability/voided_commands.md), section 6,
-designs them, because [BUG-0197](#bug_0197) needs them (`ha_test.py` scenarios 94 and 95). Telling members who are not
-trading, halting one instrument, and the table of what each phase allows are not built; section 6.3 of that design
-says where they go.
+designs them, because [BUG-0197](#bug_0197) needs them (`ha_test.py` scenarios 94 and 95). Members who are not trading
+are told too: both gateways send every logged-on member a `TradingSessionStatus` when the venue's phase or halt
+changes, and one that logs on during a halt is told at once ([BUG-0137](#bug_0137), R-0174). Each gateway refuses by
+the phase through `refusal_by_phase` (`applications/fix_common/TradingSession.hpp`), which is the table of what each
+phase allows.
+
+**What is left.** Halting one instrument rather than the venue, which needs the list of instruments of
+[BUG-0242](#bug_0242); and a scenario that halts trading and checks that a member not trading is told, which the
+functional specification records as the gap under R-0023.
 
 Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the third state
 necessary rather than tidy. [BUG-0061](#bug_0061), since a non-HA venue has no arbiter and reaches

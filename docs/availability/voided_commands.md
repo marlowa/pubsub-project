@@ -354,15 +354,11 @@ operator's name. A follower sequencer declines, as for `HaltRequest`.
 ### 6.3 What is left of BUG-0065
 
 This design builds what BUG-0197 needs: an operator can declare and lift a halt, and the gateways refuse orders while
-trading is halted. It does not build:
-
-- telling a member that is connected and not trading, or that logs on during a halt, that the venue is halted and when
-  it resumes: FIX `TradingSessionStatus` (35=h) and its equivalent on the binary gateway, which R-0023 requires;
-- halting one instrument rather than the venue;
-- the table of what each trading phase allows ([trading_phases.md](../venue/trading_phases.md), step 4).
-
-Decision 8 proposes that these stay in BUG-0065, to be designed when the plan returns to the bug list (phase 12), and
-that R-0023 is marked partly met until then.
+trading is halted. Two other parts of BUG-0065 are built with the trading day: every logged-on member is sent FIX
+`TradingSessionStatus` (35=h), or its equivalent on the binary gateway, when the venue is halted and when it resumes,
+and a member that logs on during a halt is told at once; and each gateway refuses by the phase, which is the table of
+what each trading phase allows ([trading_phases.md](../venue/trading_phases.md)). What is not built is halting one
+instrument rather than the venue, which stays in BUG-0065 (decision 8).
 
 ## 7. What goes, and what changes
 
