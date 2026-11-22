@@ -184,8 +184,14 @@ connected nowhere, and the two secondary gateway instances never announce, so:
 With all four gateway instances running, neither happens. A venue runs this way whenever a configured gateway instance
 is stopped, which is the usual state of a standby gateway that has failed or not yet been started.
 
-**What is wanted.** A decision on how long a report for a session connected nowhere is held when a configured gateway
-instance stays unannounced, and whether a session known to have ended needs holding at all.
+**Decided (22 November 2026): only a session the venue still counts as open is held.** A session that has ended, by
+Logout or by its cancel-on-disconnect grace period running out, is served by no gateway, so its reports are written to
+the WAL and not held; the member is sent them as undelivered reports when it next logs on. Reports for a session that
+is open but connected nowhere are held as now. Chosen by Andrew over holding everything for a limited time, or leaving
+it as it is.
+
+**What is wanted.** That change, and scenario 115 run with it: the close's cancels for the ended load sessions must not
+fill the room, nothing may be dropped, and the follower must discard its kept copies as the leader forwards past them.
 
 ### BUG-0259: Under a steady flood of commands, the warning that a gateway's store of unanswered commands is full is logged once for every command refused {#bug_0259}
 
