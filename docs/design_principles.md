@@ -670,8 +670,9 @@ reach the member from the new leader, and the session scenarios.
   which the venue does not answer: [BUG-0089](bug_list.md#bug_0089).
 - The binary order gateway cannot recover the reports a member missed while disconnected:
   [BUG-0046](bug_list.md#bug_0046).
-- Every resend request reads the whole day's log on the thread that sequences orders, so late in a busy
-  day one member's request could stop the sequencer taking orders for minutes:
+- A resend from far back, or a member logging on after being away most of the day, makes the sequencer
+  read much of the day's WAL on the thread that sequences orders, so late in a busy day one member's
+  request could stop the sequencer taking orders for minutes:
   [BUG-0113](bug_list.md#bug_0113). The reports are delivered; the cost breaks the framework principles
   about order-handling threads.
 

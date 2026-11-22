@@ -15,7 +15,7 @@
 |---|---|---|---|
 | [BUG-0065](#bug_0065) | high | task | A trading halt cannot be applied to one instrument |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
-| [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
+| [BUG-0113](#bug_0113) | high | defect | A resend or a request for undelivered reports can read far back in the WAL on the thread that sequences orders |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0045](#bug_0045) | medium | task | A member has no defined way to discover its primary gateway is down |
 | [BUG-0046](#bug_0046) | medium | task | The binary order gateway has no in-flight report recovery |
@@ -1087,7 +1087,7 @@ still be running, which is a question for the framework; and whether that test's
 for the second connection's 50,000 messages is too tight on a busy machine, since it failed there with
 and without the change for BUG-0112.
 
-### BUG-0113: Every resend request reads the whole day's log on the thread that sequences orders {#bug_0113}
+### BUG-0113: A resend or a request for undelivered reports can read far back in the WAL on the thread that sequences orders {#bug_0113}
 
 | | |
 |---|---|
@@ -1095,37 +1095,45 @@ and without the change for BUG-0112.
 | Found | 2026-10-04 |
 | Recorded | 2026-10-04 |
 | How | Checking whether the sequencer holds its write-ahead log in memory, while sizing the record of identifiers for part 4.3 of [change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md) |
-| Impact | One member's FIX resend request late in a busy day stops the leading sequencer taking orders for as long as it takes to read the whole log, which by the arithmetic below is minutes. Every member's orders wait meanwhile |
+| Impact | A member's FIX resend request for reports from early in a busy day, or a member logging on again after being away most of the day, makes the leading sequencer read and decode much of the day's WAL before it takes another order, which by the arithmetic below could be minutes. Every member's orders wait meanwhile. A resend after an ordinary reconnect reads a few segments and costs milliseconds |
 
-**What happens.** A member's FIX `ResendRequest` reaches the gateway, which sends a
-`SessionReplayRequest` to the sequencers (`FixOrderGatewayThread::handle_resend_request`). The leading
-sequencer answers it in `SequencerThread::handle_session_replay_request`. That function reads the log
-from its first record (`WalReader::replay` from position `{0, 0}`), decodes every record of every
-member, and keeps the ones that are this member's execution reports. It runs on the sequencer thread,
-the thread that sequences orders, so no order is sequenced until it finishes. The comment beside it
-says the scan is deliberate, because the log has no index and resends are rare.
+**What happens.** Two requests make the leading sequencer read its WAL on the thread that sequences
+orders, so that no order is sequenced until the read finishes. This breaches principle F4
+([design_principles.md](design_principles.md)), and `scripts/check_standards.py` permits both reads by
+name until this entry is closed.
 
-**How large the read becomes.** Every trading day starts with an empty log, so the read grows through
-the day. The figures measured under [BUG-0048](#bug_0048), 3.72 log records per order and 310 bytes per
+- **A member's resend.** A member's FIX `ResendRequest` reaches the gateway, which sends a
+  `SessionReplayRequest` to the sequencers (`FixOrderGatewayThread::handle_resend_request`). The leading
+  sequencer answers it in `SequencerThread::handle_session_replay_request`: it reads the WAL's segments
+  from the newest backwards, decoding every record of every member, and keeps that member's execution
+  reports in the range asked for. It stops when it has them, so the further back the range starts, the
+  more it reads.
+- **Reports produced while a member had no connection.** When a member's session is bound again and its
+  numbering restored, the FIX gateway sends `UndeliveredReportsRequest`, and
+  `SequencerThread::handle_undelivered_reports_request` sends every report for that session after its
+  `last_report_delivered`, read from the WAL in the same way
+  ([session_binding.md](availability/session_binding.md), "Reports produced while the session had no
+  connection"). The range to send is fixed when the session binds (`MemberSessions::take_undelivered`),
+  so that reports produced after the bind, which are sent live, are not sent a second time. A member away
+  for most of the day makes this read reach back most of the day.
+
+A matching engine's catch-up, which once read the WAL on the same thread, is read on the thread that
+follows the WAL ([following_the_wal.md](availability/following_the_wal.md), section 2.1), and is no
+longer part of this entry.
+
+**How large the read can become.** Every trading day starts with an empty WAL, so the furthest read
+grows through the day. The figures measured under [BUG-0048](#bug_0048), 3.72 log records per order and 310 bytes per
 record, give about 46 GB in one sequencer's log at the close of a 40 million order day, and about
 230 GB at 200 million orders, the figure a MiFID test uses. That cannot be held in memory on a
 machine like this one, so most of it is read from disk: at about 2 GB a second, around two minutes
 for 230 GB. **Not measured:** the arithmetic is from measured record sizes; the scan itself has not
 been timed on a log that large. The function logs how long each scan took (`scanned_in_ms`).
 
-**The same pattern serves a matching engine's catch-up.** When an engine starts or is promoted it asks
-the leading sequencer for every order after its position, and `SequencerThread::handle_me_position_request`
-also reads the log from its first record, on the sequencer thread, to find them. The log's own
-`scan_start_for` already finds the segment holding a given record, so that read could start there.
-
-**Interim fix (2026-10-05): both reads are bounded.** A resend now reads the log's segments from
-the newest backwards and stops as soon as it has the reports it was asked for, or reaches a segment
-that begins at or before the position the request starts from. A matching engine's catch-up starts at
-the segment holding the first record the engine lacks (`Wal::scan_start_for`), and takes the earliest
-record the log holds from the first segment's first entry (`Wal::first_seq_no`). Measured in
-`ha_test.py` scenarios 22 and 23: a resend after a reconnect read 2 of 215 segments in 7 milliseconds.
-A resend that asks for reports from far back still reads far back, so this entry stays open for the
-recovery service below.
+**What bounds the reads today.** A resend reads segments from the newest backwards and stops as soon
+as it has the reports it was asked for, or reaches a segment that begins at or before the position the
+request starts from. Measured in `ha_test.py` scenarios 22 and 23: a resend after a reconnect read 2 of
+215 segments in 7 milliseconds. A request reaching far back still reads far back, which is what remains
+for the recovery service below.
 
 **The sequencer does not hold the log in memory.** It maps the segment it is writing, and a reader
 maps a file only while reading it. The problem is the amount read on each request and the thread it
@@ -1146,7 +1154,48 @@ the current trading day, up to one count that applies to every comp id, in stora
 start of the day. A resend request for anything older is answered with a FIX gap fill. This is R-0008,
 and it is the practice of the London Stock Exchange and Turquoise. The reasoning, the measurements
 behind the count, and the alternative not followed are under [BUG-0048](#bug_0048). **The count is
-100,000 messages for each comp id (decided 2026-11-08).** **Decided (2026-10-04): a table of segments, not files by period of
+100,000 messages for each comp id (decided 2026-11-08).**
+
+**Open: what the count means for undelivered reports.** The count settles resends: a resend asks for
+messages the member has already been sent, under FIX sequence numbers, and for numbers beyond what is kept
+a gap fill is a correct answer, telling the member those numbers carry nothing it can have again.
+Undelivered reports are different: they were never sent, and have no numbers yet; the gateway numbers them
+as new reports. A gap fill cannot stand in for them, because the member would then never learn what became
+of its orders. So a member away long enough for more than 100,000 reports to be produced for it needs a
+decision of its own. The choices seen so far are to keep every report not yet delivered to a session,
+however many, or to send, beyond the count, the present state of each of the member's orders in place of
+their history. Neither is decided.
+
+**What the design of the recovery service must settle**, besides that question:
+
+1. Both requests move to the service: `SessionReplayRequest` and `UndeliveredReportsRequest`. The range
+   fixed when a session binds must still divide the reports sent from the store from those sent live.
+2. The gateway keeps what it does now for a resend: FIX sequence numbers, `PossDupFlag`, `OrigSendingTime`,
+   the record of which report each number carried, and gap fills. One request gets one answer, through a
+   change of leader of the service or of the sequencer.
+3. The service acknowledges a WAL position only once what it needs to answer from that position is durable,
+   or held by its other instance, so that a restart neither loses a report it has acknowledged nor stores one
+   twice. The WAL is reclaimed ([BUG-0048](#bug_0048)) only up to a position the service can still recover.
+4. A request from far back is answered in batches, oldest first, with a bound on the memory it takes and
+   without holding up the service's following of the WAL. The present code sizes its working window as the
+   records asked for plus the records to skip; the service must not allocate in proportion to how far back
+   a request reaches.
+5. The store's key is the session's identity as the requests give it, comp id and gateway protocol. The
+   design says what happens when FIX numbering is reset or a comp id is used again, and the store starts
+   empty each trading day, never answering with an earlier day's records.
+6. The service being unavailable never stops orders being taken: what a gateway does then, how a request is
+   retried, and how an operator learns that recovery is impaired.
+
+**How it is shown to work.** Scenarios 22, 23 and 40 stay: a resend, a resend across a change of gateway,
+and a resend from the middle of a session's history. Added: a resend from far back while orders go on
+being sequenced; the boundary at 100,000 messages, answering with what is kept and a gap fill for only what
+is not; a session away long enough to reach the open question above; undelivered reports sent once each, in
+order, across a session binding again and a restart of the service; a restart or change of leader of the
+service losing nothing it acknowledged; and memory staying bounded with several resends at once under load.
+When the reads have moved, their two exceptions are removed from `scripts/check_standards.py`, which then
+fails the build if either handler reads the WAL on the sequencer's thread again.
+
+**Decided (2026-10-04): a table of segments, not files by period of
 time.** The log is already divided into segments of 4 MB. The sequencer keeps a small table of the
 time and sequence number of each segment's first record, about 1.4 MB for a 230 GB day. With it a
 reader finds the segment holding any moment or any record in one step, and everything before a given
