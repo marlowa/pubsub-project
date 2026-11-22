@@ -2422,8 +2422,13 @@ because `allocate` is instantiated for 18 types and some of those instantiations
 for the low function figures of `TestEventChannel.hpp` (11.1%) and `BackgroundRecorder.hpp` (70.0%). The line figure is
 the one to read.
 
-**Where the line figure is low.** The files below 85%, grouped by what the missing lines do. Every count is of lines
-no test runs.
+**A log call is not a guide either.** `build.py` passes gcovr `--exclude-lines-by-pattern` for `PUBSUB_LOG`, and still
+the report counts the first line of a log call that spans more than one line as never run, even where the lines just
+before it ran and a test asserts the message was logged (`ReplicatedWal.cpp`, the Error repeated while trading without
+a standby). A missed line that is a log call says nothing about whether its code ran; read the code lines around it.
+
+**Where the line figure is low.** The files below 85% in the report of 21 November, grouped by what the missing lines
+do. Every count is of lines no test runs, including log lines as above.
 
 1. **Placing threads on cores at startup.** `CpuLayout.cpp` (47 lines, 45.3% run), `CpuPinning.hpp` (73 lines, 61.4%)
    and `HotPathThreadCount.hpp` (7 lines, none run). No test runs `CpuLayout::verify_cores_present`,
@@ -2452,9 +2457,27 @@ no test runs.
    (8, 69.2%: the descriptions of the errors from locking memory), `LoggerUtils.hpp` (6, 66.7%),
    `PubSubItcException.hpp` (4, 20.0%: `throw_errno`), `FixGroupWalker.hpp` and `FixMessageValidator.hpp` (15 and 26).
 
+**Done, 22 November 2026.** Each new test was made to fail by breaking the code it tests, and the code restored.
+
+- Group 1: `format_cpu_list`, the three functions that apply an affinity mask, `CpuLayout::verify_cores_present`,
+  the failures of `apply_background_affinity` (which leave the process's mask as it was), and
+  `answer_hot_path_thread_count_query`. `CpuLayout.cpp` went from 39 to 73 of 86 lines run, `CpuPinning.hpp` from 116 to
+  159 of 189, `HotPathThreadCount.hpp` from none to all 7. Not done: reading `/sys/devices/system/cpu/present` when the
+  core list cannot be read otherwise, and reading a core's capacity, both of which need the made-up `/sys` tree below.
+- Group 2: three of the five paths listed were already run by the unit tests, and were listed only because of the log
+  lines above. The other two, and one more, now have tests: `follower_too_far_behind`, which the sequencer calls when
+  its storage for orders waiting on the follower is full; a follower lost while it is being caught up; and records to
+  be discarded kept until the WAL is no longer being read for a follower.
+- Group 3: `TopicSubscriberThread` answered with `TopicNotLeader` and then served; losing each of two publishers; and a
+  derived thread's own connection, which is passed to it and never delivered as the topic. `TopicSubscriberThread.hpp`
+  went from 50 to 72 of its lines run. These tests found that both log lines for a lost publisher named it as `''`,
+  because the connection a loss is reported on carries no service name; fixed.
+- `PairLeaseAgent::set_instances_said_may_not_lead`, added for [BUG-0194](#bug_0194), was run by no test of the
+  library; it has one now.
+
 **What is wanted.**
 
-1. Tests for groups 1, 2 and 3 first: each is code the venue relies on every day or in a failure it must survive, and
+1. Tests for groups 1, 2 and 3 first (done, as above, except group 1's reading of `/sys`): each is code the venue relies on every day or in a failure it must survive, and
    each can be tested without a running venue. Group 1 needs a way to give `CpuLayout` and `CpuPinning` a made-up
    `/sys` tree, since the code reads the machine's own and no test can choose what it finds there.
 2. For group 4 and 5, tests of the failures that change what the venue does, not of every log line. A failed system
