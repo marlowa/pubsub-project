@@ -37,7 +37,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 52 open entries, 3 of them high severity. Each one is judged,
+The [bug list](bug_list.md) holds 49 open entries, 2 of them high severity. Each one is judged,
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
@@ -62,9 +62,8 @@ they are being fixed. The ones most likely to matter first, by design area:
   the day every component shuts itself down, keeping a file of its last trading state, and its launcher
   archives its files; `trading_day.py end` archives, on an operator's word, the files of a component that
   missed the end ([BUG-0137](bug_list.md#bug_0137), closed). This is checked by `scripts/trading_day_test.py`
-  and by `ha_test.py` scenarios that lose the leading sequencer during the end of day. A trading halt cannot be
-  applied to one instrument
-  ([BUG-0065](bug_list.md#bug_0065)).
+  and by `ha_test.py` scenarios that lose the leading sequencer during the end of day. A trading halt is venue-wide;
+  halting one instrument is part of the design of the venue's list of instruments ([BUG-0242](bug_list.md#bug_0242)).
 - **The write-ahead log is never reclaimed during the day** ([BUG-0048](bug_list.md#bug_0048)).
   How long history is kept is decided: a recovery service will answer members' resend requests from its own
   store of the most recent 100,000 messages sent to each member, with a FIX gap fill for anything older

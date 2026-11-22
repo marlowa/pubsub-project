@@ -8,12 +8,12 @@ agreed with Andrew. An entry that is closed is no longer listed here; its record
 
 ## Summary
 
-There are 50 open entries, and each is judged below. The figures:
+There are 49 open entries, and each is judged below. The figures:
 
 | Judgement | Entries |
 |---|---|
 | Breach of a named principle | 8: BUG-0113 (what is left of it), BUG-0285, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
-| Partly done | 7: BUG-0121, BUG-0134, BUG-0262, BUG-0065, BUG-0279, BUG-0283, BUG-0069 |
+| Partly done | 6: BUG-0121, BUG-0134, BUG-0262, BUG-0279, BUG-0283, BUG-0069 |
 | Decision needed from Andrew | 3: BUG-0258, BUG-0281, BUG-0229; and BUG-0250 needs one choice made between two remedies |
 | Decided, and waiting to be built | 1: BUG-0048, with the recovery service of BUG-0113 |
 | New requirement | 12 |
@@ -43,8 +43,8 @@ There are 50 open entries, and each is judged below. The figures:
 **The order of work**, agreed with Andrew on 22 November 2026:
 
 1. The small breaches, each with an obvious remedy: BUG-0272, BUG-0249 and BUG-0286 are closed.
-2. The partly done entries with little left: BUG-0278 is closed and BUG-0065's scenario is written; BUG-0279 (one
-   scenario and one measurement) and BUG-0262 (one test).
+2. The partly done entries with little left: BUG-0278 and BUG-0065 are closed, halting one instrument having moved
+   to BUG-0242; BUG-0279 (one scenario and one measurement) and BUG-0262 (one test).
 3. The four decisions above, each put to Andrew with its background and options.
 4. The breaches that need a short design first: BUG-0127 and BUG-0128 (the framework's two locks), BUG-0119
    (shutdown), BUG-0273 (the matching engine's held reports) and BUG-0131's remainder.
@@ -143,12 +143,11 @@ decisions for BUG-0250 and BUG-0258, then their changes. BUG-0131's remainder th
 
 ## 5. The gateways and what a member sees
 
-Twelve entries.
+Eleven entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
 | [BUG-0279](bug_list.md#bug_0279): a gateway's limit on unanswered commands does not bound the commands it has waiting to be sent | **Partly done** | The binary gateway limits the messages waiting from each member's connection to 64; both gateways refuse a logon beyond `[members] most_connected`; every environment sizes the binary gateway's command queue from those settings, and in scenario 116 the queue no longer grows | A scenario that logs on more members than a gateway instance serves and decides from test events that the one beyond is refused; and the FIX gateway's command queue measured at its deepest under overload |
-| [BUG-0065](bug_list.md#bug_0065): the venue tells a member of a halt only in the reply to an order | **Partly done** | An operator declares and lifts a halt, and the gateways refuse orders while trading is halted (scenarios 94 and 95). Both gateways send every logged-on member a `TradingSessionStatus` when the venue's state changes, and answer a request for it. Each gateway refuses by the phase through `refusal_by_phase` (`TradingSession.hpp`) | Halting one instrument, which needs the list of instruments of BUG-0242. Scenario 95 shows a member not trading told of a halt and of its lift |
 | [BUG-0259](bug_list.md#bug_0259): under a steady flood, the warning that a gateway's store of unanswered commands is full is logged once for every command refused | **Defect** | `UnansweredCommands::keep` logs a Warning when the store becomes full and an Info when it has room again; under a steady flood one answer makes room for one command, so the two alternate once for each command | The warning said once when commands begin to be refused, and once when an interval passes with none refused, with how many were refused, as `KeptReports` does |
 | [BUG-0203](bug_list.md#bug_0203): the FIX gateway sometimes refuses a logon as an impostor when two are under way together | **Investigation** | Not reproduced since it was recorded; the cause is unknown | Reproduce with many simultaneous logons, as at the start of the day, and find the shared state |
 | [BUG-0281](bug_list.md#bug_0281): what happens to members' orders when their gateways are down for longer than the grace period is not decided | **Decision needed** | The sequencer starts each session's cancel-on-disconnect grace period when its gateway is lost, whatever the cause, and cancels the session's day orders when it runs out ([gateway_ha.md](availability/gateway_ha.md)) | Andrew's decision (Summary, decision 2); then how the venue detects that no gateway has come back, whether it halts or alerts an operator, and scenarios. It depends on BUG-0046 |
@@ -157,12 +156,12 @@ Twelve entries.
 | [BUG-0045](bug_list.md#bug_0045): a member has no defined way to discover that its primary gateway is down | **New requirement**, an open design question | Nothing in the member documentation says what a member should do | A statement of what a member should do, in the member documentation |
 | [BUG-0059](bug_list.md#bug_0059): no defence against a member reconnecting in a loop | **New requirement** | The entry sets out the graduated answer; nothing of it is built | Place in the order of work |
 | [BUG-0058](bug_list.md#bug_0058): a member halted by a sequence gap is invisible to monitoring | **New requirement** | No gauge or counter records a session halted by a gap | The gauge the entry describes |
-| [BUG-0242](bug_list.md#bug_0242): the venue has no list of the instruments it trades | **New requirement**, needing its own design | Any Symbol up to `fix_order_limits::max_symbol_length`, 35 characters, is accepted; nothing reads SecurityID (48) or SecurityIDSource (22) | A design, discussed with Andrew first: where the list comes from, what identifies an instrument on an order, how the list changes during a day, and what options on futures need |
+| [BUG-0242](bug_list.md#bug_0242): the venue has no list of the instruments it trades | **New requirement**, needing its own design | Any Symbol up to `fix_order_limits::max_symbol_length`, 35 characters, is accepted; nothing reads SecurityID (48) or SecurityIDSource (22) | A design, discussed with Andrew first: where the list comes from, what identifies an instrument on an order, how the list changes during a day, what options on futures need, and whether one instrument can be halted |
 | [BUG-0265](bug_list.md#bug_0265): the Java test client's blotter does not show the trading-session status its member is told | **New requirement**, in a tool | The blotter in `java/fix-test-client` does not handle 35=h | Ask for the status at logon, act on every 35=h, and show the state prominently |
 
 **Recommended order in this area.** BUG-0279's scenario and measurement, which are small. BUG-0259 is small and can be done whenever `UnansweredCommands` is next touched. BUG-0281 waits on
 Andrew's decision. BUG-0203 needs a stress test of many simultaneous logons. The new requirements are placed
-with the rest; BUG-0065's halting of one instrument waits on BUG-0242.
+with the rest.
 
 ## 6. The framework: reactor, timers, allocators and threads
 

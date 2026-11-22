@@ -358,7 +358,8 @@ trading is halted. Two other parts of BUG-0065 are built with the trading day: e
 `TradingSessionStatus` (35=h), or its equivalent on the binary gateway, when the venue is halted and when it resumes,
 and a member that logs on during a halt is told at once; and each gateway refuses by the phase, which is the table of
 what each trading phase allows ([trading_phases.md](../venue/trading_phases.md)). What is not built is halting one
-instrument rather than the venue, which stays in BUG-0065 (decision 8).
+instrument rather than the venue, which belongs to the design of the venue's list of instruments
+([BUG-0242](../bug_list.md#bug_0242)).
 
 ## 7. What goes, and what changes
 

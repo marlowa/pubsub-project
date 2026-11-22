@@ -29,8 +29,8 @@ pass cancels on, which the engine carries out while halted.
 
 Every logged-on member is told of a halt, and of its lift, by a trading session status (FIX 35=h, and its
 binary counterpart), and a member that logs on during a halt is told at once ([fix_order_gateway.md](fix_order_gateway.md)).
-What the venue does not do is halt one instrument: a halt is venue-wide. That is what remains of
-[BUG-0065](../bug_list.md#bug_0065). R-0126, the venue saying it has no instance of a component, is still to
+What the venue does not do is halt one instrument: a halt is venue-wide. Halting one instrument belongs to the
+design of the venue's list of instruments ([BUG-0242](../bug_list.md#bug_0242)). R-0126, the venue saying it has no instance of a component, is still to
 be built on these messages.
 
 This note settles the shape of the mechanism.
@@ -253,6 +253,6 @@ shows whether a rule is sufficient as well as necessary.
   broadcasts `OrderAcceptance`; see also [Order acceptance](../availability/order_acceptance.md)
 - [Matching engine](matching_engine.md) — whether trading is halted is kept in the book's file
   (`OrderBook`), so that it outlives the process, and the ways the engine comes to halt
-- [Bug list](../bug_list.md#bug_0065) — BUG-0065, a trading halt that cannot be applied to one instrument
+- [Bug list](../bug_list.md#bug_0242) — BUG-0242, the venue's list of instruments, whose design decides whether one instrument can be halted
 - [Process death](../availability/process_death.md) — R-0126, which cannot be built until the venue
   can announce something about itself

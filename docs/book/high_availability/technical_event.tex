@@ -225,12 +225,8 @@ subscribe.
   learn the venue's state only by sending an order and having it refused. Every member is told
   every change, with no list of which members asked, because every member wants to know when the
   market closes.}
-  \covers{ha_test:111}
+  \covers{ha_test:111, ha_test:95}
 \end{requirement}
-
-\begin{gap}{BUG-0065}
-  A member learns of a halt only from the reply to an order, and is never told the phase.
-\end{gap}
 
 \begin{requirement}{R-0175}{Components that only need to know take the changes from a topic}
   The matching engine publisher shall publish every \texttt{TechnicalEvent} on a topic of its own,

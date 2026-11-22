@@ -3,17 +3,16 @@
 | | |
 |---|---|
 | Bugs recorded | 286 |
-| Open | 50 (26 defects, 24 tasks) |
-| Closed | 236 |
+| Open | 49 (26 defects, 23 tasks) |
+| Closed | 237 |
 | Next id | BUG-0287 |
 
 ## Open bugs by severity
 
-3 high, 32 medium, 15 low.
+2 high, 32 medium, 15 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
-| [BUG-0065](#bug_0065) | high | task | A trading halt cannot be applied to one instrument |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0113](#bug_0113) | high | defect | A resend or a request for undelivered reports can read far back in the WAL on the thread that sequences orders |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
@@ -465,6 +464,8 @@ An identifier the venue assigns has a fixed width, so the matching engine could 
    is still accepted beside it; and what an order naming an instrument the venue does not trade is answered with.
 3. How the list changes during a trading day, if it may, and how every component holding it learns of a change.
 4. What the list must say about an instrument for options on futures, whose underlying is itself an instrument.
+5. Whether one instrument can be halted while the rest of the venue trades, and if so how: who declares it, how it
+   reaches the matching engines and the gateways, and how members are told. The venue halts only as a whole today.
 
 Related: [BUG-0241](#bug_0241), the length of Symbol; docs/venue/gateway_refusals.md, for the exchange documents cited.
 
@@ -1207,172 +1208,6 @@ not at all for 1.5 seconds. `ss -tnoi` showed `timer:(persist,...)` with `backof
 is full, rather than once, after resuming; or resume at a lower fill so that more room opens at
 once; or keep reading into the kernel's buffer and apply backpressure only at a much higher level.
 Any of them needs the soak and fairness tests the reactor's other foundational changes were given.
-
----
-
-### BUG-0065: A trading halt cannot be applied to one instrument {#bug_0065}
-
-| | |
-|---|---|
-| Severity | high |
-| Kind | task |
-| Found | 2026-08-28 |
-| Recorded | 2026-08-28 |
-| How | Andrew observing that members will not put up with "service not available" indefinitely, while reviewing the escalation design for [BUG-0009](#bug_0009) |
-| Impact | A halt stops trading in every instrument, so a problem with one instrument stops trading in all of them |
-
-**What is built.** The venue has a halted state, distinct from refusing orders for want of a matching engine. It is a
-`TechnicalEvent` command in the WAL, which every matching engine applies, and which the leading sequencer writes when
-an engine cannot account for the orders the venue holds, when no engine could be trading within the longest recovery
-the venue does by itself, and when an operator declares one with `scripts/operator_halt.py`. Only an operator lifts
-it, with the same tool, and the sequencer lifts it only once an engine leads and every order and cancel written before
-the halt has been answered. The sequencer keeps the halted state from its WAL, and tells the gateways, which refuse new
-orders saying the venue is halted and pass cancels on, which the engine carries out while halted
-([voided_commands.md](availability/voided_commands.md), section 6).
-
-**What remains**: a halt is always venue-wide; it cannot be applied to one instrument. The rest of this entry is the
-analysis the work was designed from.
-
-**Where it stands, 15 November 2026.** Members are told. Both gateways send every logged-on member a
-`TradingSessionStatus` (FIX 35=h, and its binary counterpart) each time the phase, the trading day or the halt changes,
-and to each member as it logs on, and answer a request for it (35=g) at once; a halt is reported as TradSesStatus 1,
-halted. The table of what each phase allows exists, in [trading_phases.md](venue/trading_phases.md), and both gateways
-and the sequencer refuse by it (step 7 of [trading_day_plan.md](venue/trading_day_plan.md)). Scenario 111 checks a
-member is told at logon and at each phase, and that a request is answered. A member logging on during a halt is now told
-the venue is halted, and is told when it resumes. What is left is a halt for one instrument, which belongs with the
-instrument list ([BUG-0242](#bug_0242)).
-
-**How it works in practice, from a venue Andrew has operated:** the matching engine holds a halted
-state, and a member placing an order is told so in the FIX reply. That is the mechanism that must
-exist here too -- it answers the question the member actually asked, and it reaches the member who
-is trading. A broadcast should exist as well rather than instead: the reply leaves a connected but
-idle member unaware, and leaves a member reconnecting into a halt to find out by trial.
-
-**A halt must be rare.** Also from practice: halts get declared at the drop of a hat, and a venue
-that halts readily trains its members to ignore the signal. That is the reason the escalation
-puts two automatic, self-clearing states beneath it -- everything recoverable is recovered before a
-halt is reached. The error to avoid is not automating too little but automating so completely that
-no halt is possible.
-
-**It is needed for ordinary reasons before it is needed for failures.** A venue halts for a
-scheduled pause, a market-wide event, an instrument suspension, an operator decision. None of those
-can be expressed today.
-
-**And it is the state the escalation needs above the other two.** See
-[design notes 15](availability/design_notes.md#ha_recovery_ends_at_loss). Deferring and refusing are
-both automatic and both self-clearing, which is right while nothing has been lost. Once orders have
-been stranded -- [BUG-0064](#bug_0064) -- resuming automatically conceals the damage, and the venue
-needs a state that does not lift by itself.
-
-**Halting is not refusing, and the two must not be conflated.** Refusing is a statement about
-capacity: this order cannot be processed now, and the venue will accept again on its own. Halting is
-a statement about the venue's condition: trading has stopped, it will not restart by itself, and a
-person is dealing with it. A member reads them differently and should.
-
-What a design has to settle:
-
-- **What declares it.** An operator certainly. Automatically on a condition -- no matching engine
-  service, orders known stranded -- is the harder question, and it is the one that decides whether
-  a halt can ever be entered without a person.
-- **What lifts it.** A person, on the argument in design notes 15. Whether anything may lift it
-  automatically is a separate decision and the answer is probably no.
-- **Scope.** Venue-wide, or per instrument. Real exchanges do both, and per-instrument is what an
-  instrument suspension needs. Settled far enough to matter below: whatever is chosen has to be
-  chosen before the technical event has a shape.
-- **Where the state lives, which is not obvious here.** Holding it in the matching engine is natural
-  when the engine is up and the halt is a trading decision. It cannot be the whole answer for this
-  venue: the condition that prompted the escalation is *there is no matching engine*, so a halt entered
-  for that reason must be held by something outliving the engine -- the sequencer, the gateways, or
-  both -- or it vanishes exactly when it is needed.
-- **What a halted venue does with an order.** Reject with a halt reason is the obvious answer, but
-  a member's cancels are a different case: a member may reasonably want to withdraw orders during a
-  halt, and whether the venue can honour that depends on why it halted. Sharpened by the resting-
-  order rule below -- the long orders a halt deliberately keeps alive are exactly the ones a member
-  might most want to cancel while it lasts.
-- **What members are told on logon during a halt**, so a member connecting into one is not left to
-  discover it by sending an order.
-
-#### What a halt does to resting orders, agreed 2026-08-28
-
-**On halt, cancel everything except the long orders.** A long order is one meant to outlive the day:
-good-till-cancel and good-till-date. Everything else -- day orders above all -- is cancelled, which
-is what the venue Andrew works on does.
-
-The reasoning is the same one already written into cancel-on-disconnect, and **the venue already has
-the predicate**: `open_orders::is_persistent_time_in_force()` in `applications/fix_common/OpenOrderEntry.hpp`
-returns true for `'1'` (good-till-cancel) and `'6'` (good-till-date), with the comment that *"a
-member that asked for good-till-cancel did not ask for 'until my socket drops'"*. A halt is the same
-argument at venue scope: a member that asked for good-till-cancel did not ask for "until the venue
-next stops", while a day order has no meaning across a halt that may outlast the day.
-
-So this needs no new concept, and it should not grow one. Reusing that predicate keeps the two
-behaviours defined in one place -- and if the rule ever changes, cancel-on-disconnect and
-cancel-on-halt change together instead of drifting apart, which is the shape recorded in
-[Two shapes that keep coming back](#bug_list_shapes).
-
-Three things a design has to settle beyond the predicate:
-
-- **Who cancels, and where the cancels come from.** `cancel-on-failover` already cancels a whole
-  book on promotion and emits sequenced cancel execution reports, so the machinery exists. But a
-  halt declared *because there is no matching engine* has no engine to do the cancelling, which is
-  the same difficulty as where the halt state lives.
-- **What the member is told.** A cancel execution report per order is correct and may be a great
-  many of them at once, which is [BUG-0060](#bug_0060)'s microburst territory pointed inward.
-- **What happens to the long orders on resume**, and whether a member can cancel one *during* a
-  halt. Refusing that is defensible -- a cancel needs the engine -- but it leaves a member unable
-  to act on an order the venue is deliberately keeping alive.
-
-#### Publishing it as a technical event, agreed 2026-08-28
-
-A halt should also be published on the topic bus as a **technical event**: an enumerated kind, so
-that other kinds can follow, carried to anything that subscribes. Market data is the first
-consumer, and monitoring, dashboards and external consumers follow.
-
-**Gateways are the exception, and must not learn it this way.** The matching engine publisher
-subscribes to the sequencer's WAL and publishes topics; nothing in the venue depends on it. Making
-a gateway depend on it for halt state inverts that, so a publisher outage would leave every gateway
-believing the market is open while it is not -- a market-data component placed in the trading
-control plane, which is the objection that keeps Prometheus out of it. Gateways should be told down
-the link they already depend on, the way `OrderAcceptance` (127) already travels sequencer to
-gateway.
-
-**Two audiences, two paths, one source of truth.** Whoever owns the halt state publishes both ways.
-
-Four things the event's shape has to get right:
-
-- **Carry the state, not two separate events.** "Halted" and "available" as distinct kinds invites
-  *which arrived last?*, and a missed one leaves a subscriber permanently wrong. One event carrying
-  the current status is idempotent: receiving it twice is harmless and the latest wins. The same
-  reason `OrderAcceptance` carries a flag rather than having separate Refuse and Resume messages.
-- **A late subscriber must learn the current state.** A component that starts *during* a halt must
-  not inherit a default of "open" -- that is [BUG-0009](#bug_0009)'s shape arriving by another road,
-  and it has now caught this project more than once. The cursor model supports replay-from-last, so
-  this is a decision rather than new machinery.
-- **A reason beside the enum.** A scheduled pause, a market-wide event, an instrument suspension
-  and "the matching engine died" are different things to a subscriber and very different to an
-  operator. The enum says what; the reason says why.
-- **Decide instrument scope early.** If a halt can be per instrument, the event needs an instrument
-  field or the topic needs to be per instrument, and that is painful to retrofit.
-
-**Resuming is not automatic even here.** Per [design notes 15](availability/design_notes.md#ha_recovery_ends_at_loss),
-a venue that reopens quietly after losing orders conceals the loss, so the event that lifts a halt
-is published because a person decided it was safe, never because an engine reconnected.
-
-**Built.** An operator's means of declaring and lifting a halt, the sequencer keeping whether trading is halted, and
-the gateways refusing new orders while it is, as [voided_commands.md](availability/voided_commands.md), section 6,
-designs them, because [BUG-0197](#bug_0197) needs them (`ha_test.py` scenarios 94 and 95). Members who are not trading
-are told too: both gateways send every logged-on member a `TradingSessionStatus` when the venue's phase or halt
-changes, and one that logs on during a halt is told at once ([BUG-0137](#bug_0137), R-0174). Each gateway refuses by
-the phase through `refusal_by_phase` (`applications/fix_common/TradingSession.hpp`), which is the table of what each
-phase allows.
-
-**What is left.** Halting one instrument rather than the venue, which needs the list of instruments of
-[BUG-0242](#bug_0242). `ha_test.py` scenario 95 shows a member that sends nothing being told of a halt, told at once
-on logging on during it, and told of its lift; with the FIX gateway made not to tell members unasked, it fails.
-
-Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the third state
-necessary rather than tidy. [BUG-0061](#bug_0061), since a non-HA venue has no arbiter and reaches
-these states differently. [BUG-0060](#bug_0060), for the burst of cancels a halt produces.
 
 ---
 
@@ -2451,6 +2286,173 @@ which checks that no report reaches a member before its record is committed, fai
 **Principles.** V2 of [design_principles.md](design_principles.md), the log is the record.
 
 ## Closed
+
+### BUG-0065: A trading halt cannot be applied to one instrument {#bug_0065}
+
+| | |
+|---|---|
+| Severity | high |
+| Kind | task |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Andrew observing that members will not put up with "service not available" indefinitely, while reviewing the escalation design for [BUG-0009](#bug_0009) |
+| Impact | A halt stops trading in every instrument, so a problem with one instrument stops trading in all of them |
+| Fixed | 2026-11-22 -- an operator declares and lifts a venue-wide halt, the gateways refuse orders while trading is halted, every logged-on member is told of a halt and of its lift by a trading session status, and one logging on during a halt is told at once; each gateway refuses by the phase. Checked by `ha_test.py` scenarios 94, 95 and 111; scenario 95 shows a member that sends nothing told of the halt and the lift. Halting one instrument rather than the venue moves to [BUG-0242](#bug_0242), by Andrew's decision, because it needs the venue's list of instruments |
+
+**What is built.** The venue has a halted state, distinct from refusing orders for want of a matching engine. It is a
+`TechnicalEvent` command in the WAL, which every matching engine applies, and which the leading sequencer writes when
+an engine cannot account for the orders the venue holds, when no engine could be trading within the longest recovery
+the venue does by itself, and when an operator declares one with `scripts/operator_halt.py`. Only an operator lifts
+it, with the same tool, and the sequencer lifts it only once an engine leads and every order and cancel written before
+the halt has been answered. The sequencer keeps the halted state from its WAL, and tells the gateways, which refuse new
+orders saying the venue is halted and pass cancels on, which the engine carries out while halted
+([voided_commands.md](availability/voided_commands.md), section 6).
+
+**What remains**: a halt is always venue-wide; it cannot be applied to one instrument. The rest of this entry is the
+analysis the work was designed from.
+
+**Where it stands, 15 November 2026.** Members are told. Both gateways send every logged-on member a
+`TradingSessionStatus` (FIX 35=h, and its binary counterpart) each time the phase, the trading day or the halt changes,
+and to each member as it logs on, and answer a request for it (35=g) at once; a halt is reported as TradSesStatus 1,
+halted. The table of what each phase allows exists, in [trading_phases.md](venue/trading_phases.md), and both gateways
+and the sequencer refuse by it (step 7 of [trading_day_plan.md](venue/trading_day_plan.md)). Scenario 111 checks a
+member is told at logon and at each phase, and that a request is answered. A member logging on during a halt is now told
+the venue is halted, and is told when it resumes. What is left is a halt for one instrument, which belongs with the
+instrument list ([BUG-0242](#bug_0242)).
+
+**How it works in practice, from a venue Andrew has operated:** the matching engine holds a halted
+state, and a member placing an order is told so in the FIX reply. That is the mechanism that must
+exist here too -- it answers the question the member actually asked, and it reaches the member who
+is trading. A broadcast should exist as well rather than instead: the reply leaves a connected but
+idle member unaware, and leaves a member reconnecting into a halt to find out by trial.
+
+**A halt must be rare.** Also from practice: halts get declared at the drop of a hat, and a venue
+that halts readily trains its members to ignore the signal. That is the reason the escalation
+puts two automatic, self-clearing states beneath it -- everything recoverable is recovered before a
+halt is reached. The error to avoid is not automating too little but automating so completely that
+no halt is possible.
+
+**It is needed for ordinary reasons before it is needed for failures.** A venue halts for a
+scheduled pause, a market-wide event, an instrument suspension, an operator decision. None of those
+can be expressed today.
+
+**And it is the state the escalation needs above the other two.** See
+[design notes 15](availability/design_notes.md#ha_recovery_ends_at_loss). Deferring and refusing are
+both automatic and both self-clearing, which is right while nothing has been lost. Once orders have
+been stranded -- [BUG-0064](#bug_0064) -- resuming automatically conceals the damage, and the venue
+needs a state that does not lift by itself.
+
+**Halting is not refusing, and the two must not be conflated.** Refusing is a statement about
+capacity: this order cannot be processed now, and the venue will accept again on its own. Halting is
+a statement about the venue's condition: trading has stopped, it will not restart by itself, and a
+person is dealing with it. A member reads them differently and should.
+
+What a design has to settle:
+
+- **What declares it.** An operator certainly. Automatically on a condition -- no matching engine
+  service, orders known stranded -- is the harder question, and it is the one that decides whether
+  a halt can ever be entered without a person.
+- **What lifts it.** A person, on the argument in design notes 15. Whether anything may lift it
+  automatically is a separate decision and the answer is probably no.
+- **Scope.** Venue-wide, or per instrument. Real exchanges do both, and per-instrument is what an
+  instrument suspension needs. Settled far enough to matter below: whatever is chosen has to be
+  chosen before the technical event has a shape.
+- **Where the state lives, which is not obvious here.** Holding it in the matching engine is natural
+  when the engine is up and the halt is a trading decision. It cannot be the whole answer for this
+  venue: the condition that prompted the escalation is *there is no matching engine*, so a halt entered
+  for that reason must be held by something outliving the engine -- the sequencer, the gateways, or
+  both -- or it vanishes exactly when it is needed.
+- **What a halted venue does with an order.** Reject with a halt reason is the obvious answer, but
+  a member's cancels are a different case: a member may reasonably want to withdraw orders during a
+  halt, and whether the venue can honour that depends on why it halted. Sharpened by the resting-
+  order rule below -- the long orders a halt deliberately keeps alive are exactly the ones a member
+  might most want to cancel while it lasts.
+- **What members are told on logon during a halt**, so a member connecting into one is not left to
+  discover it by sending an order.
+
+#### What a halt does to resting orders, agreed 2026-08-28
+
+**On halt, cancel everything except the long orders.** A long order is one meant to outlive the day:
+good-till-cancel and good-till-date. Everything else -- day orders above all -- is cancelled, which
+is what the venue Andrew works on does.
+
+The reasoning is the same one already written into cancel-on-disconnect, and **the venue already has
+the predicate**: `open_orders::is_persistent_time_in_force()` in `applications/fix_common/OpenOrderEntry.hpp`
+returns true for `'1'` (good-till-cancel) and `'6'` (good-till-date), with the comment that *"a
+member that asked for good-till-cancel did not ask for 'until my socket drops'"*. A halt is the same
+argument at venue scope: a member that asked for good-till-cancel did not ask for "until the venue
+next stops", while a day order has no meaning across a halt that may outlast the day.
+
+So this needs no new concept, and it should not grow one. Reusing that predicate keeps the two
+behaviours defined in one place -- and if the rule ever changes, cancel-on-disconnect and
+cancel-on-halt change together instead of drifting apart, which is the shape recorded in
+[Two shapes that keep coming back](#bug_list_shapes).
+
+Three things a design has to settle beyond the predicate:
+
+- **Who cancels, and where the cancels come from.** `cancel-on-failover` already cancels a whole
+  book on promotion and emits sequenced cancel execution reports, so the machinery exists. But a
+  halt declared *because there is no matching engine* has no engine to do the cancelling, which is
+  the same difficulty as where the halt state lives.
+- **What the member is told.** A cancel execution report per order is correct and may be a great
+  many of them at once, which is [BUG-0060](#bug_0060)'s microburst territory pointed inward.
+- **What happens to the long orders on resume**, and whether a member can cancel one *during* a
+  halt. Refusing that is defensible -- a cancel needs the engine -- but it leaves a member unable
+  to act on an order the venue is deliberately keeping alive.
+
+#### Publishing it as a technical event, agreed 2026-08-28
+
+A halt should also be published on the topic bus as a **technical event**: an enumerated kind, so
+that other kinds can follow, carried to anything that subscribes. Market data is the first
+consumer, and monitoring, dashboards and external consumers follow.
+
+**Gateways are the exception, and must not learn it this way.** The matching engine publisher
+subscribes to the sequencer's WAL and publishes topics; nothing in the venue depends on it. Making
+a gateway depend on it for halt state inverts that, so a publisher outage would leave every gateway
+believing the market is open while it is not -- a market-data component placed in the trading
+control plane, which is the objection that keeps Prometheus out of it. Gateways should be told down
+the link they already depend on, the way `OrderAcceptance` (127) already travels sequencer to
+gateway.
+
+**Two audiences, two paths, one source of truth.** Whoever owns the halt state publishes both ways.
+
+Four things the event's shape has to get right:
+
+- **Carry the state, not two separate events.** "Halted" and "available" as distinct kinds invites
+  *which arrived last?*, and a missed one leaves a subscriber permanently wrong. One event carrying
+  the current status is idempotent: receiving it twice is harmless and the latest wins. The same
+  reason `OrderAcceptance` carries a flag rather than having separate Refuse and Resume messages.
+- **A late subscriber must learn the current state.** A component that starts *during* a halt must
+  not inherit a default of "open" -- that is [BUG-0009](#bug_0009)'s shape arriving by another road,
+  and it has now caught this project more than once. The cursor model supports replay-from-last, so
+  this is a decision rather than new machinery.
+- **A reason beside the enum.** A scheduled pause, a market-wide event, an instrument suspension
+  and "the matching engine died" are different things to a subscriber and very different to an
+  operator. The enum says what; the reason says why.
+- **Decide instrument scope early.** If a halt can be per instrument, the event needs an instrument
+  field or the topic needs to be per instrument, and that is painful to retrofit.
+
+**Resuming is not automatic even here.** Per [design notes 15](availability/design_notes.md#ha_recovery_ends_at_loss),
+a venue that reopens quietly after losing orders conceals the loss, so the event that lifts a halt
+is published because a person decided it was safe, never because an engine reconnected.
+
+**Built.** An operator's means of declaring and lifting a halt, the sequencer keeping whether trading is halted, and
+the gateways refusing new orders while it is, as [voided_commands.md](availability/voided_commands.md), section 6,
+designs them, because [BUG-0197](#bug_0197) needs them (`ha_test.py` scenarios 94 and 95). Members who are not trading
+are told too: both gateways send every logged-on member a `TradingSessionStatus` when the venue's phase or halt
+changes, and one that logs on during a halt is told at once ([BUG-0137](#bug_0137), R-0174). Each gateway refuses by
+the phase through `refusal_by_phase` (`applications/fix_common/TradingSession.hpp`), which is the table of what each
+phase allows.
+
+**What is left.** Halting one instrument rather than the venue, which needs the list of instruments of
+[BUG-0242](#bug_0242). `ha_test.py` scenario 95 shows a member that sends nothing being told of a halt, told at once
+on logging on during it, and told of its lift; with the FIX gateway made not to tell members unasked, it fails.
+
+Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the third state
+necessary rather than tidy. [BUG-0061](#bug_0061), since a non-HA venue has no arbiter and reaches
+these states differently. [BUG-0060](#bug_0060), for the burst of cancels a halt produces.
+
+---
 
 ### BUG-0286: The sequencer writes its WAL snapshot file, and builds the file's names, on the thread that handles orders {#bug_0286}
 

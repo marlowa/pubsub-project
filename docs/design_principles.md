@@ -366,11 +366,10 @@ engine's book to the follower, and that book was built in the sequencer's order.
 **What checks it.** Nothing directly.
 
 **Today: holds.** The matching engine changes nothing in its book on its own initiative: its one
-recurring timer records only that it is alive. Two kinds of event are to travel through the
-sequencer's log when they are built, and are not built yet: changes of trading phase and halts
-([trading_phases.md](venue/trading_phases.md); the venue cannot declare a halt at all, which is
-[BUG-0065](bug_list.md#bug_0065)), and events driven by the time of day, such as good-till-date
-expiry, which the engine records and nothing acts on.
+recurring timer records only that it is alive. Changes of trading phase and halts travel through the sequencer's
+log as `TechnicalEvent` records, so every engine applies them at the same point
+([trading_phases.md](venue/trading_phases.md)). Events driven by the time of day, such as good-till-date expiry, are
+not built: the engine records the expiry and nothing acts on it.
 
 ### V2. The log is the record
 
@@ -845,8 +844,10 @@ interruption and records `gave up` ([process_death.md](availability/process_deat
 **What checks it.** Not yet checked here.
 
 **Today: partly built.** The supervisor's part is built. When the instance that will not stay up is the
-last one left, the venue is to halt, and that is not built; the venue cannot declare a halt at all
-([BUG-0065](bug_list.md#bug_0065)).
+last one left, the venue is to halt, and that is not built. The halt itself exists: an operator declares one, and the
+sequencer declares one when no matching engine can trade within the limit on automatic recovery
+([voided_commands.md](availability/voided_commands.md)). Nothing yet declares one when the supervisor gives up on
+the last instance.
 
 ---
 

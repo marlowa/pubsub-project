@@ -1284,8 +1284,9 @@ before the bound passes, trading halts. That is the consequence open decision 4 
 
 The matching engine publisher is the component that can measure both parts of R-0053's condition:
 whether OAR is connected to it, and how far behind OAR's acknowledgements are. So it decides when
-the bound has passed. The halt itself is a venue-wide trading halt, which the venue cannot yet
-declare ([BUG-0065](../bug_list.md#bug_0065)). R-0053 therefore cannot be met until that is built.
+the bound has passed. The halt itself is a venue-wide trading halt, which the sequencer writes: an operator can ask for one, and the
+sequencer declares one itself when no matching engine can trade in time. The publisher has no way to ask the sequencer
+for one, so R-0053 cannot be met until that is built.
 
 The decision is made inside the venue from its own measurements. It must not depend on the metrics
 described below, because collecting metrics is optional.
