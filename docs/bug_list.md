@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 286 |
-| Open | 49 (26 defects, 23 tasks) |
-| Closed | 237 |
+| Open | 48 (25 defects, 23 tasks) |
+| Closed | 238 |
 | Next id | BUG-0287 |
 
 ## Open bugs by severity
 
-2 high, 32 medium, 15 low.
+2 high, 31 medium, 15 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -41,7 +41,6 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0258](#bug_0258) | medium | defect | While a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere, so a flood of them is dropped, and the follower cannot discard its copies |
-| [BUG-0262](#bug_0262) | medium | defect | A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
 | [BUG-0279](#bug_0279) | medium | defect | A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent |
 | [BUG-0281](#bug_0281) | medium | task | What happens to members' orders when their gateways are down for longer than the grace period is not decided |
@@ -227,42 +226,6 @@ before it ends, so that the WAL it leaves is complete.
 
 **What is wanted.** The sequencer the check starts writes nothing into the copy, so that every engine run sees the
 same records.
-
-### BUG-0262: A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog {#bug_0262}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-16 |
-| Recorded | 2026-11-19 |
-| How | The overload of 16 November 2026 recorded in [BUG-0251](#bug_0251), step 4 |
-| Impact | A sequencer that is no longer the leader accepts requests and writes records under its old epoch; the majority leases keep the WAL intact, but a follower matching engine was told to follow a WAL that was about to be cut back |
-
-**What happened.** In the overload of 16 November 2026 (Quill logs in `tmp/leader_change_under_load/`), the primary
-sequencer's lease ran out while its thread worked through a backlog, and at 22:55:19.98 the arbiters granted the
-secondary the lead at epoch 2. The primary went on acting as leader until it reached the end of its backlog: at
-22:56:14 it held orders waiting for a voter, at 22:56:15 it accepted the follower matching engine's request to follow
-its WAL from record 174,246, and at 22:56:16 it wrote `SessionEnded` records at seq 331,701 to 331,704 under epoch 1. At
-22:56:17 it stepped down, and at 22:56:18 it discarded records 191,470 to 565,638, which it had never committed.
-
-The gateways' limit on unanswered commands ([BUG-0251](#bug_0251)) keeps a backlog that long from forming, so this has
-not been seen since; but nothing stops a leader acting on what it reads once its own clock says its lease has run out.
-
-**What has changed since.** The sequencer's lease timer is checked by the clock before each message its thread handles,
-not only when the timer's event reaches the front of the thread's queue (`start_recurring_timer_checked_between_messages`,
-commit a915f0fa). A lease that has run out by the sequencer's own clock is therefore noticed, and the sequencer steps
-down, within the handling of one message after the next lease tick, every 100 ms; it no longer waits for the whole
-backlog. In development the sequencer counts its lease as ending 250 ms before the voters do, so it steps down before
-any other instance can be granted the lead, provided no single message takes longer than about 150 ms to handle.
-
-**What is wanted.**
-
-1. A test at the level of the sequencer, not only of the timer: a leading sequencer's lease is made to run out while
-   messages wait in its thread's queue, and the test checks that it accepts no request and writes no record after the
-   lease ran out. It must fail with the check between messages disabled.
-2. The one case left: a single message whose handling takes longer than the margin. The known one is a resend request,
-   which reads the day's WAL on the sequencer's thread ([BUG-0113](#bug_0113)); work that long belongs off that thread,
-   which is what BUG-0113 does, so this remainder is closed by BUG-0113 rather than here.
 
 ### BUG-0264: Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time {#bug_0264}
 
@@ -2300,6 +2263,43 @@ which checks that no report reaches a member before its record is committed, fai
 **Principles.** V2 of [design_principles.md](design_principles.md), the log is the record.
 
 ## Closed
+
+### BUG-0262: A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog {#bug_0262}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-16 |
+| Recorded | 2026-11-19 |
+| How | The overload of 16 November 2026 recorded in [BUG-0251](#bug_0251), step 4 |
+| Impact | A sequencer that is no longer the leader accepts requests and writes records under its old epoch; the majority leases keep the WAL intact, but a follower matching engine was told to follow a WAL that was about to be cut back |
+| Fixed | 2026-11-22 -- the sequencer's lease tick is checked by the clock before each message its thread handles (commit a915f0fa), so a leader whose lease has run out steps down before it acts on any message waiting. `ha_test.py` scenario 128 freezes the leading sequencer while a member sends orders that wait for it, and requires that, let run after its peer has taken the lead, it writes nothing beyond the last record it held when frozen. With the lease tick made an ordinary timer, through the test setting `lease_tick_not_checked_between_messages`, it fails: the old leader, woken with 2,340 orders waiting, wrote records 2005 to 2068 and discarded them on rejoining. Both full suites pass. A single message that takes longer than the margin is a resend from far back, which [BUG-0113](#bug_0113) moves off the thread |
+
+**What happened.** In the overload of 16 November 2026 (Quill logs in `tmp/leader_change_under_load/`), the primary
+sequencer's lease ran out while its thread worked through a backlog, and at 22:55:19.98 the arbiters granted the
+secondary the lead at epoch 2. The primary went on acting as leader until it reached the end of its backlog: at
+22:56:14 it held orders waiting for a voter, at 22:56:15 it accepted the follower matching engine's request to follow
+its WAL from record 174,246, and at 22:56:16 it wrote `SessionEnded` records at seq 331,701 to 331,704 under epoch 1. At
+22:56:17 it stepped down, and at 22:56:18 it discarded records 191,470 to 565,638, which it had never committed.
+
+The gateways' limit on unanswered commands ([BUG-0251](#bug_0251)) keeps a backlog that long from forming, so this has
+not been seen since; but nothing stops a leader acting on what it reads once its own clock says its lease has run out.
+
+**What has changed since.** The sequencer's lease timer is checked by the clock before each message its thread handles,
+not only when the timer's event reaches the front of the thread's queue (`start_recurring_timer_checked_between_messages`,
+commit a915f0fa). A lease that has run out by the sequencer's own clock is therefore noticed, and the sequencer steps
+down, within the handling of one message after the next lease tick, every 100 ms; it no longer waits for the whole
+backlog. In development the sequencer counts its lease as ending 250 ms before the voters do, so it steps down before
+any other instance can be granted the lead, provided no single message takes longer than about 150 ms to handle.
+
+**What is wanted.**
+
+1. A test at the level of the sequencer, not only of the timer: a leading sequencer's lease is made to run out while
+   messages wait in its thread's queue, and the test checks that it accepts no request and writes no record after the
+   lease ran out. It must fail with the check between messages disabled.
+2. The one case left: a single message whose handling takes longer than the margin. The known one is a resend request,
+   which reads the day's WAL on the sequencer's thread ([BUG-0113](#bug_0113)); work that long belongs off that thread,
+   which is what BUG-0113 does, so this remainder is closed by BUG-0113 rather than here.
 
 ### BUG-0065: A trading halt cannot be applied to one instrument {#bug_0065}
 

@@ -304,6 +304,14 @@ TEST(TestEventsConfigurationTest, WhetherTheMatchingEngineHoldsSequencerConnecti
     EXPECT_TRUE(configuration.hold_sequencer_connections_until_role_decided);
 }
 
+TEST(TestEventsConfigurationTest, WhetherTheSequencersLeaseTickIsCheckedBetweenMessagesIsRead) {
+    const auto unset = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"sequencer_primary\"\n");
+    EXPECT_FALSE(unset.lease_tick_not_checked_between_messages) << "the lease tick is checked between messages unless a test says otherwise";
+    const auto set = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"sequencer_primary\"\n"
+                            "lease_tick_not_checked_between_messages = true\n");
+    EXPECT_TRUE(set.lease_tick_not_checked_between_messages);
+}
+
 TEST(TestEventsConfigurationTest, TheOrderAfterWhichTheMatchingEngineLosesAndRegainsItsLeaseIsRead) {
     const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"matching_engine_primary\"\n"
                                       "lose_and_regain_lease_after_cl_ord_id = \"BOUNCE-1\"\n");

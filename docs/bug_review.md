@@ -8,12 +8,12 @@ agreed with Andrew. An entry that is closed is no longer listed here; its record
 
 ## Summary
 
-There are 49 open entries, and each is judged below. The figures:
+There are 48 open entries, and each is judged below. The figures:
 
 | Judgement | Entries |
 |---|---|
 | Breach of a named principle | 8: BUG-0113 (what is left of it), BUG-0285, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
-| Partly done | 6: BUG-0121, BUG-0134, BUG-0262, BUG-0279, BUG-0283, BUG-0069 |
+| Partly done | 5: BUG-0121, BUG-0134, BUG-0279, BUG-0283, BUG-0069 |
 | Decision needed from Andrew | 3: BUG-0258, BUG-0281, BUG-0229; and BUG-0250 needs one choice made between two remedies |
 | Decided, and waiting to be built | 1: BUG-0048, with the recovery service of BUG-0113 |
 | New requirement | 12 |
@@ -44,8 +44,8 @@ There are 49 open entries, and each is judged below. The figures:
 
 1. The small breaches, each with an obvious remedy: BUG-0272, BUG-0249 and BUG-0286 are closed.
 2. The partly done entries with little left: BUG-0278 and BUG-0065 are closed, halting one instrument having moved
-   to BUG-0242; BUG-0279 (its scenario is written and measured as far as the load clients allow; a decision on bounding
-   the FIX gateway is left) and BUG-0262 (one test).
+   to BUG-0242; BUG-0262 is closed; BUG-0279's scenario is written and it is measured as far as the load clients
+   allow, and a decision on bounding the FIX gateway is left.
 3. The four decisions above, each put to Andrew with its background and options.
 4. The breaches that need a short design first: BUG-0127 and BUG-0128 (the framework's two locks), BUG-0119
    (shutdown), BUG-0273 (the matching engine's held reports) and BUG-0131's remainder.
@@ -85,19 +85,17 @@ review recommends working on them.
 
 ## 1. Leadership, leases and the arbiters
 
-Six entries.
+Five entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0262](bug_list.md#bug_0262): a leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog | **Partly done** | The sequencer's lease timer is checked by the clock before each message its thread handles (`start_recurring_timer_checked_between_messages`, `SequencerThread.cpp`), so it steps down within one message of the next lease tick rather than after its whole backlog. No test at the level of the sequencer shows it | A test in which a leading sequencer's lease runs out while messages wait in its queue, and which fails with the check between messages turned off. The one case left, a single message that takes longer than the margin, is a resend from far back, which BUG-0113 moves off the thread |
 | [BUG-0121](bug_list.md#bug_0121): a restarted sequencer takes longer to start than its peer's lease | **Partly done** | The record of command identifiers is built in the background (`LoggedCommandIdentifiersBuilder`). `ReplicatedWal::open` still reads the whole WAL, because the table of epochs needs every record's epoch and the check for a gap needs every record's number. So a supervised restart late in a busy day is not back within the lease, and rule 6's promise that a restarted leader keeps the lead does not hold then | The decided change, not yet designed: keep the table of epochs in a small file written when the epoch changes, and check for gaps only after the last snapshot |
 | [BUG-0134](bug_list.md#bug_0134): a venue running without a standby says so too quietly | **Partly done** | The gauge `sequencer_running_alone` covers both ways of running without a standby; starting to do so is logged at Error, and the Error is repeated once a minute with how long it has lasted and how many records exist only on the leader (`ReplicatedWal.cpp`) | The dashboard's alert |
 | [BUG-0135](bug_list.md#bug_0135): while the leader trades alone, a power failure can lose the last seconds of the record | **New requirement** | Nothing syncs the leader's WAL at an interval while it runs without its follower; there is no such interval in `ReplicatedWal` or `Wal` | Build it as the entry describes, on a thread of its own (principle F4), if Andrew agrees |
 | [BUG-0222](bug_list.md#bug_0222): no operator procedure lets the follower lead after the old leader's machine is lost while it ran alone | **New requirement** (R-0161, R-0162) | Not built; [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md), section 4.4, says so | The operator's tool and the procedure for telling members, designed together |
 | [BUG-0136](bug_list.md#bug_0136): whether a copy of the WAL elsewhere could recover what the leader's machine took with it | **Investigation** | The order activity recorder is not built, and nothing else keeps a copy of the WAL away from the two sequencers' machines | Find out what each follower of the WAL keeps; then decide whether recovering from it is worth designing. Best done with BUG-0222 |
 
-**Recommended order in this area.** BUG-0262's test first: it is small, and it shows that the fix for a leader
-acting on an expired lease works. Then BUG-0121, because without it the rule that a restarted leader keeps the
+**Recommended order in this area.** BUG-0121 first, because without it the rule that a restarted leader keeps the
 lead fails late in a busy day. BUG-0134's alert is small. BUG-0135, and BUG-0222 with BUG-0136, are new
 requirements to be placed in the order with the rest.
 

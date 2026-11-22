@@ -298,7 +298,12 @@ void SequencerThread::on_initial_event() {
         // TEST CONTRACT -- ha_test.py matches this text (scenario 47), because what it checks is that an operator is told why both instances lead.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ha_enabled=false -- starting as leader immediately");
     } else {
-        lease_tick_timer_id_ = start_recurring_timer_checked_between_messages(pubsub_itc_fw::LeaseTiming::tick_interval);
+        // Checked by the clock before each message, so that a lease that has run out is noticed within one message rather
+        // than after every message queued ahead of the timer's event (docs/bug_list.md, BUG-0262). A test can make it an
+        // ordinary timer, to show what happens without the check.
+        lease_tick_timer_id_ = config_.test_events.lease_tick_not_checked_between_messages
+                                   ? start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval)
+                                   : start_recurring_timer_checked_between_messages(pubsub_itc_fw::LeaseTiming::tick_interval);
         acknowledgement_watch_timer_id_ = start_recurring_timer(pubsub_itc_fw::ReplicatedWal::acknowledgement_watch_interval);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: ha_enabled=true -- leading only while the peer or the arbiter grants a lease (period={} ms); nothing is asked for "

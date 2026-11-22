@@ -1668,6 +1668,14 @@ class Scenario(NamedTuple):
     # gateway, whose refusal is LogonOutcome NoRoomForMoreMembers (docs/bug_list.md, BUG-0279;
     # docs/availability/bounding_what_a_gateway_has_read.md). Decided from what each member is sent.
     assert_members_beyond_limit_refused: bool = False
+    # When True, the leading sequencer is frozen with SIGSTOP while orders go on arriving, so that they wait for it; once
+    # its peer leads, the last record in its WAL is read from the files, and it is let run again. Its lease has run out
+    # by its own clock, so it must act on none of the orders waiting: nothing it discards on rejoining may lie beyond
+    # that record (docs/bug_list.md, BUG-0262). Decided from test events and the WAL's files.
+    assert_leader_acts_on_nothing_after_its_lease: bool = False
+    # When True, the sequencers' lease tick is an ordinary timer, not one checked by the clock before each message
+    # ([test_events] lease_tick_not_checked_between_messages); set only to show that a check fails without it.
+    sequencer_lease_tick_not_checked_between_messages: bool = False
     # When True, the binary load client offers 1.8 million orders on four sessions as fast as the sockets accept them,
     # faster than the venue processes them. Each gateway stops reading its members while 16,384 of its commands are
     # unanswered, so no queue in the order path grows without limit. No sequencer or matching engine may lose its lease
@@ -5879,6 +5887,27 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 128 -- a leader whose lease ran out while orders waited for it acts on none of them.
+    #
+    # docs/bug_list.md, BUG-0262. The leading sequencer is frozen with SIGSTOP while a member goes on sending orders,
+    # which the gateway sends to both sequencers, so that they wait for the frozen one. Its peer takes the lead. The last
+    # record in the frozen leader's WAL is read from the files, and it is let run again. By its own clock its lease ran
+    # out while it was frozen, and its lease tick is checked before each message, so it must step down before it acts on
+    # any order waiting: nothing it discards when it rejoins as follower may lie beyond that record.
+    Scenario(
+        number=128,
+        short_name="leader_acts_on_nothing_after_its_lease",
+        description="A leading sequencer frozen past its lease, with orders waiting for it, acts on none of them when let run",
+        expected_outcome=(
+            "the peer takes the lead while the leader is frozen; let run, the old leader steps down and writes no record "
+            "beyond the last it held when frozen"
+        ),
+        assert_leader_acts_on_nothing_after_its_lease=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 119 -- a matching engine that stays connected and stops working, with no other engine to lead, halts the venue.
     #
     # docs/availability/a_matching_engine_that_stops_working.md, sections 3 and 6. The one matching engine stops applying
@@ -7432,6 +7461,8 @@ _STATEMENT_WRITE_DELAY_MS_NOW = 0
 # The number of members each gateway serves at most, in place of its configuration's, for the scenario being run; 0 keeps
 # the configuration's.
 _MEMBERS_MOST_CONNECTED_NOW = 0
+# Whether the sequencers' lease tick is an ordinary timer, for the scenario being run.
+_LEASE_TICK_NOT_CHECKED_NOW = False
 # How long the sequencer in the engines-on-the-WAL check spends on each report, in microseconds: slower than an engine
 # applying a catch-up sends them, so that every run of the check depends on the engine's pacing.
 _ENGINES_ON_THE_WAL_READ_REPORTS_SLOWLY_US = 20
@@ -7445,7 +7476,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
                             die_applying: tuple[str, bool] | None = None, lose_and_regain_lease_after: str | None = None,
                             hold_sequencer_connections: bool = False, read_reports_slowly_us: int = 0, pace_reports: bool = True,
                             delay_statement_writes_ms: int = 0, stop_applying_after: str | None = None,
-                            stop_sending_reports_after: str | None = None, members_most_connected: int = 0) -> Path:
+                            stop_sending_reports_after: str | None = None, members_most_connected: int = 0,
+                            lease_tick_not_checked_between_messages: bool = False) -> Path:
     """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
     knows the component by, which its threads give when they introduce themselves. report_orders_of lists the comp ids
     whose orders a matching engine reports the outcome of. comp_ids_without_session lists the comp ids whose reports a
@@ -7457,6 +7489,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
     while it stays connected and renews its lease. stop_sending_reports_after is the ClOrdID of one after which it holds
     every report while it goes on applying commands. members_most_connected, for a gateway, replaces the number of members
     it serves at most ([members] most_connected), so that a scenario can reach the limit with a few members.
+    lease_tick_not_checked_between_messages, for a sequencer, makes its lease tick an ordinary timer, whose event waits
+    behind the messages queued ahead of it.
     hold_sequencer_connections, for a matching engine, makes it hold each sequencer's order connection until it knows
     whether it leads or follows. read_reports_slowly_us, for a sequencer, is how long it spends on each report from an
     engine, with its connections for reports limited; pace_reports false, for a matching engine, stops it pausing the
@@ -7490,6 +7524,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
         text += "pace_reports = false\n"
     if delay_statement_writes_ms > 0:
         text += f"delay_statement_writes_ms = {delay_statement_writes_ms}\n"
+    if lease_tick_not_checked_between_messages:
+        text += "lease_tick_not_checked_between_messages = true\n"
     if members_most_connected > 0:
         text, replaced = re.subn(r"^most_connected\s*=\s*\d+$", f"most_connected = {members_most_connected}", text, flags=re.M)
         if replaced != 1:
@@ -7532,7 +7568,8 @@ def launch_app(name: str, bin_name: str, config: Path,
                                          _STATEMENT_WRITE_DELAY_MS_NOW if bin_name == "arbiter" else 0,
                                          _STOP_APPLYING_NOW.get(name) if bin_name == "matching_engine" else None,
                                          _STOP_SENDING_NOW.get(name) if bin_name == "matching_engine" else None,
-                                         _MEMBERS_MOST_CONNECTED_NOW if bin_name in ("fix_order_gateway", "binary_order_gateway") else 0)
+                                         _MEMBERS_MOST_CONNECTED_NOW if bin_name in ("fix_order_gateway", "binary_order_gateway") else 0,
+                                         _LEASE_TICK_NOT_CHECKED_NOW if bin_name == "sequencer" else False)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -9282,12 +9319,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Phase 1: start all processes ──────────────────────────────────────
         global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW, _DIE_APPLYING_NOW  # pylint: disable=global-statement
         global _LEASE_LOST_AND_REGAINED_NOW, _STATEMENT_WRITE_DELAY_MS_NOW, _STOP_APPLYING_NOW, _STOP_SENDING_NOW  # pylint: disable=global-statement
-        global _MEMBERS_MOST_CONNECTED_NOW  # pylint: disable=global-statement
+        global _MEMBERS_MOST_CONNECTED_NOW, _LEASE_TICK_NOT_CHECKED_NOW  # pylint: disable=global-statement
         global _READ_REPORTS_SLOWLY_US_NOW  # pylint: disable=global-statement
         _INSTALL_PREFIX = prefix
         _ANNOUNCEMENT_DELAY_MS_NOW = scenario.delay_session_announcements_ms
         _STATEMENT_WRITE_DELAY_MS_NOW = scenario.delay_statement_writes_ms
         _MEMBERS_MOST_CONNECTED_NOW = scenario.gateway_members_most_connected
+        _LEASE_TICK_NOT_CHECKED_NOW = scenario.sequencer_lease_tick_not_checked_between_messages
         # The engine that leads at the start is the one started first, which must lead before the other starts, and
         # otherwise the primary.
         dies_first = engine_first or "matching_engine_primary"
@@ -13386,6 +13424,64 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if not let_in:
                 die(f"members beyond the limit: once the members had left the binary gateway, {comp_ids[limit]} was still refused")
             log("  once members have left, the binary gateway lets the third in -- OK")
+
+        # ── A leader whose lease ran out acts on nothing waiting for it ───────
+        if scenario.assert_leader_acts_on_nothing_after_its_lease:
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+            log("=== A leader whose lease ran out while orders waited for it acts on none of them ===")
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
+                die("leader acts on nothing after its lease: sequencer_primary is not leading")
+            primary_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
+            primary_wal = primary_config.parent / installed_toml_section_value(primary_config, "wal", "directory")
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("leader acts on nothing after its lease: the member could not log on")
+            leader = proc_by_name["sequencer_primary"]
+            frozen_from = _TEST_EVENTS.mark()
+            run_tag = datetime.now().strftime("%H%M%S")
+            sent = 0
+            os.kill(leader.pid, signal.SIGSTOP)
+            log(f"  SIGSTOP -> sequencer_primary (PID {leader.pid}): alive, its connections open, reading nothing")
+            try:
+                # Orders are sent until the peer leads and for two seconds more, so that many wait for the frozen leader.
+                peer_leads_at = None
+                deadline = time.monotonic() + 45.0
+                while time.monotonic() < deadline:
+                    for _ in range(20):
+                        member.new_order_single(f"lease-{run_tag}-{sent}")
+                        sent += 1
+                    _TEST_EVENTS.pump(0.05)
+                    if peer_leads_at is None and _TEST_EVENTS.find(leads(_TEST_EVENTS.messages, "sequencer_secondary"), frozen_from) is not None:
+                        peer_leads_at = time.monotonic()
+                    if peer_leads_at is not None and time.monotonic() - peer_leads_at > 2.0:
+                        break
+                if peer_leads_at is None:
+                    die("leader acts on nothing after its lease: sequencer_secondary never took the lead while sequencer_primary was frozen")
+                records = wal_record_ids(primary_wal)
+                last_held = records[-1][1] if records else 0
+                log(f"  sequencer_secondary leads; {sent} order(s) sent while sequencer_primary was frozen, whose WAL ends at record {last_held}")
+            finally:
+                os.kill(leader.pid, signal.SIGCONT)
+            woke_from = _TEST_EVENTS.mark()
+            log(f"  SIGCONT -> sequencer_primary (PID {leader.pid})")
+            if not await_expectation(expect_lease("sequencer_primary", "RanOut"), 10.0, woke_from)[0]:
+                member.close()
+                die("leader acts on nothing after its lease: let run, sequencer_primary never said its lease ran out")
+            # It rejoins as follower, cutting its WAL back to where it agrees with the new leader's.
+            library_events = _TEST_EVENTS.modules["test_events"]
+            _TEST_EVENTS.wait_for(message_of(library_events.WalsAgree, "sequencer_primary"), timeout=30.0, since=woke_from)
+            beyond = [event.message for event in _TEST_EVENTS.events[woke_from:]
+                      if isinstance(event.message, library_events.RecordsDiscarded) and event.component == "sequencer_primary"
+                      and event.message.last > last_held]
+            member.close()
+            if beyond:
+                die(f"leader acts on nothing after its lease: let run, sequencer_primary wrote records beyond {last_held}, the last it held "
+                    f"when frozen, and discarded them on rejoining ({beyond}): it acted on orders after its lease had run out by its own "
+                    "clock (BUG-0262)")
+            log(f"  let run, sequencer_primary stepped down and wrote nothing beyond record {last_held} -- OK")
 
         # ── Stalled follower ──────────────────────────────────────────────────
         if scenario.assert_stalled_follower_runs_alone:

@@ -114,6 +114,13 @@ struct TestEventsConfiguration {
     /// lets a test take that way every time (docs/bug_list.md BUG-0225 and BUG-0233).
     bool hold_sequencer_connections_until_role_decided{false};
 
+    /// Whether the sequencer's lease tick is an ordinary timer, whose event waits its turn in the thread's queue behind
+    /// every message ahead of it, rather than one checked by the clock before each message; from the optional
+    /// `lease_tick_not_checked_between_messages` key, false when it is absent. Read by the sequencer. A leader whose
+    /// lease runs out while messages wait then acts on them before it notices, which a test uses to show that its check
+    /// fails without the check between messages (docs/bug_list.md, BUG-0262).
+    bool lease_tick_not_checked_between_messages{false};
+
     /// Whether the matching engine pauses the commands arriving when too many of its reports wait on the leading
     /// sequencer's connection, from the optional `pace_reports` key; true when it is absent. Read by the matching engine.
     /// Set false, the engine still counts the reports waiting and says at the end of a catch-up how many there were at
@@ -158,7 +165,8 @@ struct TestEventsConfiguration {
  * `report_orders_of` is optional, and only an application that reports the outcome of orders reads it. So are
  * `comp_ids_without_session` and `read_reports_slowly_us`, read by the sequencer, `delay_statement_writes_ms`, read by the arbiter,
  * `delay_session_announcements_ms`, read by the gateways, and `die_applying_cl_ord_id`, `die_applying_once`, `lose_and_regain_lease_after_cl_ord_id`,
- * `hold_sequencer_connections_until_role_decided` and `pace_reports`, read by the matching engine.
+ * `hold_sequencer_connections_until_role_decided` and `pace_reports`, read by the matching engine, and
+ * `lease_tick_not_checked_between_messages`, read by the sequencer.
  */
 class TestEventsConfigurationLoader {
   public:
@@ -228,6 +236,9 @@ class TestEventsConfigurationLoader {
         }
         if (toml.has_key("test_events.hold_sequencer_connections_until_role_decided")) {
             toml.get_required_except("test_events.hold_sequencer_connections_until_role_decided", configuration.hold_sequencer_connections_until_role_decided);
+        }
+        if (toml.has_key("test_events.lease_tick_not_checked_between_messages")) {
+            toml.get_required_except("test_events.lease_tick_not_checked_between_messages", configuration.lease_tick_not_checked_between_messages);
         }
         if (toml.has_key("test_events.pace_reports")) {
             toml.get_required_except("test_events.pace_reports", configuration.pace_reports);
