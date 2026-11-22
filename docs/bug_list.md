@@ -2098,9 +2098,14 @@ elsewhere. In scenario 116 the binary gateway's command queue now adds no pool, 
 acknowledged at the same rate; the refusals were shown by hand with the limit lowered in a deployed copy
 ([bounding_what_a_gateway_has_read.md](availability/bounding_what_a_gateway_has_read.md), section 7).
 
-**Left before this entry closes:** a scenario in `ha_test.py` that logs on more members than a gateway instance serves
-and decides from test events that the one beyond is refused; and the FIX gateway's command queue measured at its
-deepest under overload, as the binary gateway's was.
+**The scenario, 22 November 2026.** `ha_test.py` scenario 127 starts each gateway serving at most two members. On the
+FIX gateway a third member is refused with a Logout naming the limit, and is let in once one of the first two has
+left; on the binary gateway the same, with `LogonOutcome::NoRoomForMoreMembers`. It decides from what each member is
+sent. With both gateways' limit checks taken out it fails on the FIX gateway; with only the binary gateway's taken out,
+it fails on the binary gateway.
+
+**Left before this entry closes:** the FIX gateway's command queue measured at its deepest under overload, as the
+binary gateway's was.
 
 ### BUG-0280: Huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine {#bug_0280}
 

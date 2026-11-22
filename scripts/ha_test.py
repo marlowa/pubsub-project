@@ -1660,6 +1660,14 @@ class Scenario(NamedTuple):
     # of leader before then could lose the record, and a member would have been told of a halt the venue's record never
     # holds (docs/bug_list.md, BUG-0249). Decided from test events.
     assert_halt_told_once_committed: bool = False
+    # The number of members each gateway serves at most ([members] most_connected), in place of its configuration's; 0
+    # keeps the configuration's.
+    gateway_members_most_connected: int = 0
+    # When True, with each gateway serving at most two members, two members log on to the FIX gateway and a third must be
+    # refused with a Logout naming the limit; once one leaves, the third is let in. The same is then done on the binary
+    # gateway, whose refusal is LogonOutcome NoRoomForMoreMembers (docs/bug_list.md, BUG-0279;
+    # docs/availability/bounding_what_a_gateway_has_read.md). Decided from what each member is sent.
+    assert_members_beyond_limit_refused: bool = False
     # When True, the binary load client offers 1.8 million orders on four sessions as fast as the sockets accept them,
     # faster than the venue processes them. Each gateway stops reading its members while 16,384 of its commands are
     # unanswered, so no queue in the order path grows without limit. No sequencer or matching engine may lose its lease
@@ -5847,6 +5855,30 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 127 -- a gateway refuses a member beyond the number it serves.
+    #
+    # docs/bug_list.md, BUG-0279; docs/availability/bounding_what_a_gateway_has_read.md. Each gateway is started serving at
+    # most two members. Two members log on to the FIX gateway, and a third must be refused with a Logout naming the limit;
+    # once one of the two has left, the third must be let in. The same is then done on the binary gateway, whose refusal
+    # is the LogonOutcome NoRoomForMoreMembers.
+    Scenario(
+        number=127,
+        short_name="members_beyond_limit_refused",
+        description="A gateway serving at most two members refuses a third, saying why, and lets it in once one has left",
+        expected_outcome=(
+            "on the FIX gateway and then the binary gateway, each serving at most two members, a third member is refused with "
+            "the limit named, and is let in once one of the first two has left"
+        ),
+        binary_gateway=True,
+        # No baseline orders: their client would be logged on to the FIX gateway, taking one of its two places.
+        skip_baseline_orders=True,
+        gateway_members_most_connected=2,
+        assert_members_beyond_limit_refused=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 119 -- a matching engine that stays connected and stops working, with no other engine to lead, halts the venue.
     #
     # docs/availability/a_matching_engine_that_stops_working.md, sections 3 and 6. The one matching engine stops applying
@@ -7397,6 +7429,9 @@ _PACE_REPORTS_NOW = True
 # How long each arbiter launched now waits before each write of its leaders' statements, in milliseconds ([test_events]
 # delay_statement_writes_ms); set from the scenario before its processes start.
 _STATEMENT_WRITE_DELAY_MS_NOW = 0
+# The number of members each gateway serves at most, in place of its configuration's, for the scenario being run; 0 keeps
+# the configuration's.
+_MEMBERS_MOST_CONNECTED_NOW = 0
 # How long the sequencer in the engines-on-the-WAL check spends on each report, in microseconds: slower than an engine
 # applying a catch-up sends them, so that every run of the check depends on the engine's pacing.
 _ENGINES_ON_THE_WAL_READ_REPORTS_SLOWLY_US = 20
@@ -7410,7 +7445,7 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
                             die_applying: tuple[str, bool] | None = None, lose_and_regain_lease_after: str | None = None,
                             hold_sequencer_connections: bool = False, read_reports_slowly_us: int = 0, pace_reports: bool = True,
                             delay_statement_writes_ms: int = 0, stop_applying_after: str | None = None,
-                            stop_sending_reports_after: str | None = None) -> Path:
+                            stop_sending_reports_after: str | None = None, members_most_connected: int = 0) -> Path:
     """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
     knows the component by, which its threads give when they introduce themselves. report_orders_of lists the comp ids
     whose orders a matching engine reports the outcome of. comp_ids_without_session lists the comp ids whose reports a
@@ -7420,7 +7455,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
     ClOrdID of a new order after which it acts as if its lease ran out and was at once granted again.
     stop_applying_after, for a matching engine, is the ClOrdID of a new order after which it applies no further command,
     while it stays connected and renews its lease. stop_sending_reports_after is the ClOrdID of one after which it holds
-    every report while it goes on applying commands.
+    every report while it goes on applying commands. members_most_connected, for a gateway, replaces the number of members
+    it serves at most ([members] most_connected), so that a scenario can reach the limit with a few members.
     hold_sequencer_connections, for a matching engine, makes it hold each sequencer's order connection until it knows
     whether it leads or follows. read_reports_slowly_us, for a sequencer, is how long it spends on each report from an
     engine, with its connections for reports limited; pace_reports false, for a matching engine, stops it pausing the
@@ -7454,6 +7490,10 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
         text += "pace_reports = false\n"
     if delay_statement_writes_ms > 0:
         text += f"delay_statement_writes_ms = {delay_statement_writes_ms}\n"
+    if members_most_connected > 0:
+        text, replaced = re.subn(r"^most_connected\s*=\s*\d+$", f"most_connected = {members_most_connected}", text, flags=re.M)
+        if replaced != 1:
+            die(f"config_with_test_events: {config} has {replaced} most_connected settings, not one")
     copy = config.with_name(f"{name}_test_events.toml")
     copy.write_text(text)
     return copy
@@ -7491,7 +7531,8 @@ def launch_app(name: str, bin_name: str, config: Path,
                                          _PACE_REPORTS_NOW if bin_name == "matching_engine" else True,
                                          _STATEMENT_WRITE_DELAY_MS_NOW if bin_name == "arbiter" else 0,
                                          _STOP_APPLYING_NOW.get(name) if bin_name == "matching_engine" else None,
-                                         _STOP_SENDING_NOW.get(name) if bin_name == "matching_engine" else None)
+                                         _STOP_SENDING_NOW.get(name) if bin_name == "matching_engine" else None,
+                                         _MEMBERS_MOST_CONNECTED_NOW if bin_name in ("fix_order_gateway", "binary_order_gateway") else 0)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -9241,10 +9282,12 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Phase 1: start all processes ──────────────────────────────────────
         global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW, _DIE_APPLYING_NOW  # pylint: disable=global-statement
         global _LEASE_LOST_AND_REGAINED_NOW, _STATEMENT_WRITE_DELAY_MS_NOW, _STOP_APPLYING_NOW, _STOP_SENDING_NOW  # pylint: disable=global-statement
+        global _MEMBERS_MOST_CONNECTED_NOW  # pylint: disable=global-statement
         global _READ_REPORTS_SLOWLY_US_NOW  # pylint: disable=global-statement
         _INSTALL_PREFIX = prefix
         _ANNOUNCEMENT_DELAY_MS_NOW = scenario.delay_session_announcements_ms
         _STATEMENT_WRITE_DELAY_MS_NOW = scenario.delay_statement_writes_ms
+        _MEMBERS_MOST_CONNECTED_NOW = scenario.gateway_members_most_connected
         # The engine that leads at the start is the one started first, which must lead before the other starts, and
         # otherwise the primary.
         dies_first = engine_first or "matching_engine_primary"
@@ -13252,6 +13295,97 @@ def run_scenario(scenario: Scenario, args) -> bool:
                                      timeout=args.recovery_timeout, since=lift_from) is None:
                 die("halt told once committed: the gateway was never told the halt was lifted")
             log("  the follower caught up, the halt was lifted, and the gateway was told -- OK")
+
+        # ── A gateway refuses a member beyond the number it serves ────────────
+        if scenario.assert_members_beyond_limit_refused:
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+            log("=== A gateway refuses a member beyond the number it serves ===")
+            limit = scenario.gateway_members_most_connected
+            comp_ids = (FIX8_COMP_ID, FIX8_RECOVERY_COMP_ID, _THROTTLED_COMP_ID)
+            if limit + 1 > len(comp_ids):
+                die(f"members beyond the limit: {len(comp_ids)} members are provisioned, too few for a limit of {limit}")
+            fix_port = gateway_listen_port(prefix, "a")
+            admitted: list = []
+
+            def fix_logon(comp_id: str):
+                client = FixRawClient("127.0.0.1", fix_port, comp_id, "GATEWAY", FIX8_PASSWORD)
+                client.connect()
+                client.logon(reset_seq_num=True)
+                return client
+
+            def close_admitted() -> None:
+                for client in admitted:
+                    client.close()
+                admitted.clear()
+
+            for comp_id in comp_ids[:limit]:
+                client = fix_logon(comp_id)
+                admitted.append(client)
+                if client.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                    close_admitted()
+                    die(f"members beyond the limit: {comp_id} could not log on to the FIX gateway while it had room")
+            beyond = fix_logon(comp_ids[limit])
+            logout = beyond.receive_until("5", timeout=_RAW_LOGON_TIMEOUT)
+            beyond.close()
+            if logout is None or f"serves at most {limit} members" not in (logout.get(58) or ""):
+                close_admitted()
+                die(f"members beyond the limit: {comp_ids[limit]}, logging on to the FIX gateway beyond its {limit} members, was to be "
+                    f"sent a Logout naming the limit; it was sent {logout}")
+            log(f"  the FIX gateway refuses a member beyond its {limit}, with a Logout naming the limit -- OK")
+            admitted.pop(0).close()
+            let_in = False
+            deadline = time.monotonic() + _RAW_LOGON_TIMEOUT
+            while not let_in and time.monotonic() < deadline:
+                client = fix_logon(comp_ids[limit])
+                if client.receive_until("A", timeout=2.0) is not None:
+                    admitted.append(client)
+                    let_in = True
+                else:
+                    client.close()
+                    time.sleep(0.5)
+            close_admitted()
+            if not let_in:
+                die(f"members beyond the limit: once a member had left the FIX gateway, {comp_ids[limit]} was still refused")
+            log("  once a member has left, the FIX gateway lets the third in -- OK")
+
+            binary_port = binary_gateway_listen_port(prefix)
+            holders = [subprocess.Popen([str(bin_dir / "binary_client"), "--host", "127.0.0.1", "--port", str(binary_port), "--comp-id", comp_id,
+                                         "--password", FIX8_PASSWORD, "--stay-seconds", "30"],
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                       for comp_id in comp_ids[:limit]]
+            try:
+                for comp_id, holder in zip(comp_ids[:limit], holders):
+                    # It prints that it connected, then that it logged on or was refused; it ends early only if refused.
+                    said_lines: list[str] = []
+                    while holder.stdout is not None:
+                        line = holder.stdout.readline()
+                        if not line:
+                            break
+                        said_lines.append(line)
+                        if "logged on as" in line or "logon refused" in line:
+                            break
+                    if not said_lines or "logged on as" not in said_lines[-1]:
+                        die(f"members beyond the limit: {comp_id} could not log on to the binary gateway while it had room: "
+                            f"{''.join(said_lines)!r}")
+                _, _, said = run_binary_client(bin_dir, binary_port, "--stay-seconds", "1", comp_id=comp_ids[limit])
+                if "logon refused: NoRoomForMoreMembers" not in said:
+                    die(f"members beyond the limit: {comp_ids[limit]}, logging on to the binary gateway beyond its {limit} members, was "
+                        f"to be refused with NoRoomForMoreMembers; the client said {said.strip()!r}")
+                log(f"  the binary gateway refuses a member beyond its {limit}, with NoRoomForMoreMembers -- OK")
+            finally:
+                for holder in holders:
+                    holder.kill()
+                    holder.wait()
+            let_in = False
+            deadline = time.monotonic() + _RAW_LOGON_TIMEOUT
+            while not let_in and time.monotonic() < deadline:
+                status, _, said = run_binary_client(bin_dir, binary_port, "--stay-seconds", "1", comp_id=comp_ids[limit])
+                let_in = status == 0 and "logged on as" in said
+                if not let_in:
+                    time.sleep(0.5)
+            if not let_in:
+                die(f"members beyond the limit: once the members had left the binary gateway, {comp_ids[limit]} was still refused")
+            log("  once members have left, the binary gateway lets the third in -- OK")
 
         # ── Stalled follower ──────────────────────────────────────────────────
         if scenario.assert_stalled_follower_runs_alone:

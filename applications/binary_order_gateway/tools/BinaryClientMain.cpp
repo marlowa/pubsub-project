@@ -23,9 +23,11 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <fmt/format.h>
@@ -66,6 +68,9 @@ struct Options {
     // the venue cannot answer needs the client to give up and say so.
     int reply_timeout_seconds{0};
     std::string session_status_request_id;
+    // When above 0, stay logged on this many seconds and then leave, sending nothing, rather than placing orders. A test
+    // holds a gateway's places for members this way while another member tries to log on.
+    int stay_seconds{0};
 };
 
 bool parse_options(int argc, char** argv, Options& options) {
@@ -100,12 +105,14 @@ bool parse_options(int argc, char** argv, Options& options) {
             options.session_status_request_id = argv[++index];
         } else if (argument == "--reply-timeout" && has_value) {
             options.reply_timeout_seconds = std::stoi(argv[++index]);
+        } else if (argument == "--stay-seconds" && has_value) {
+            options.stay_seconds = std::stoi(argv[++index]);
         } else {
             fmt::print("usage: {} [--host H] [--port P] [--comp-id ID] [--password P]\n", argv[0]);
             fmt::print("          [--target-comp-id ID] [--symbol SYM] [--orders N]\n");
             fmt::print("          [--cl-ord-id ID] [--cancel ORIG-CL-ORD-ID]\n");
             fmt::print("          [--side C] [--order-qty Q] [--price P] [--reply-timeout S]\n");
-            fmt::print("          [--session-status REQUEST-ID]\n");
+            fmt::print("          [--session-status REQUEST-ID] [--stay-seconds S]\n");
             fmt::print("\n");
             fmt::print("  --cl-ord-id  use this ClOrdID instead of a generated one, so a later\n");
             fmt::print("               run on a new connection can refer to the same order\n");
@@ -122,6 +129,9 @@ bool parse_options(int argc, char** argv, Options& options) {
             fmt::print("  --reply-timeout\n");
             fmt::print("               give up waiting for a reply after this many seconds and\n");
             fmt::print("               exit with status 3 (default: wait for ever)\n");
+            fmt::print("  --stay-seconds\n");
+            fmt::print("               stay logged on this many seconds, sending nothing, and then\n");
+            fmt::print("               leave, rather than placing orders\n");
             return false;
         }
     }
@@ -380,6 +390,16 @@ int main(int argc, char** argv) {
     }
     fmt::print("logged on as '{}'\n", options.comp_id);
     std::string session_status_request_id;
+
+    // Stay mode: hold the logon for a while, sending nothing, and leave. What has been printed is flushed first, so that
+    // a program reading this one's output through a pipe learns at once that it has logged on, not when it leaves.
+    if (options.stay_seconds > 0) {
+        std::fflush(stdout);
+        std::this_thread::sleep_for(std::chrono::seconds(options.stay_seconds));
+        ::close(socket_fd);
+        fmt::print("done\n");
+        return 0;
+    }
 
     // Session status mode: ask what the venue is doing, print every TradingSessionStatus until the answer, and exit.
     if (!options.session_status_request_id.empty()) {

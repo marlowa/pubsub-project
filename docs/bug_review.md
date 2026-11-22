@@ -44,7 +44,7 @@ There are 49 open entries, and each is judged below. The figures:
 
 1. The small breaches, each with an obvious remedy: BUG-0272, BUG-0249 and BUG-0286 are closed.
 2. The partly done entries with little left: BUG-0278 and BUG-0065 are closed, halting one instrument having moved
-   to BUG-0242; BUG-0279 (one scenario and one measurement) and BUG-0262 (one test).
+   to BUG-0242; BUG-0279 (its scenario is written; one measurement left) and BUG-0262 (one test).
 3. The four decisions above, each put to Andrew with its background and options.
 4. The breaches that need a short design first: BUG-0127 and BUG-0128 (the framework's two locks), BUG-0119
    (shutdown), BUG-0273 (the matching engine's held reports) and BUG-0131's remainder.
@@ -147,7 +147,7 @@ Eleven entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0279](bug_list.md#bug_0279): a gateway's limit on unanswered commands does not bound the commands it has waiting to be sent | **Partly done** | The binary gateway limits the messages waiting from each member's connection to 64; both gateways refuse a logon beyond `[members] most_connected`; every environment sizes the binary gateway's command queue from those settings, and in scenario 116 the queue no longer grows | A scenario that logs on more members than a gateway instance serves and decides from test events that the one beyond is refused; and the FIX gateway's command queue measured at its deepest under overload |
+| [BUG-0279](bug_list.md#bug_0279): a gateway's limit on unanswered commands does not bound the commands it has waiting to be sent | **Partly done** | The binary gateway limits the messages waiting from each member's connection to 64; both gateways refuse a logon beyond `[members] most_connected`; every environment sizes the binary gateway's command queue from those settings, and in scenario 116 the queue no longer grows | The FIX gateway's command queue measured at its deepest under overload. Scenario 127 shows a member beyond the limit refused by each gateway |
 | [BUG-0259](bug_list.md#bug_0259): under a steady flood, the warning that a gateway's store of unanswered commands is full is logged once for every command refused | **Defect** | `UnansweredCommands::keep` logs a Warning when the store becomes full and an Info when it has room again; under a steady flood one answer makes room for one command, so the two alternate once for each command | The warning said once when commands begin to be refused, and once when an interval passes with none refused, with how many were refused, as `KeptReports` does |
 | [BUG-0203](bug_list.md#bug_0203): the FIX gateway sometimes refuses a logon as an impostor when two are under way together | **Investigation** | Not reproduced since it was recorded; the cause is unknown | Reproduce with many simultaneous logons, as at the start of the day, and find the shared state |
 | [BUG-0281](bug_list.md#bug_0281): what happens to members' orders when their gateways are down for longer than the grace period is not decided | **Decision needed** | The sequencer starts each session's cancel-on-disconnect grace period when its gateway is lost, whatever the cause, and cancels the session's day orders when it runs out ([gateway_ha.md](availability/gateway_ha.md)) | Andrew's decision (Summary, decision 2); then how the venue detects that no gateway has come back, whether it halts or alerts an operator, and scenarios. It depends on BUG-0046 |
@@ -159,7 +159,7 @@ Eleven entries.
 | [BUG-0242](bug_list.md#bug_0242): the venue has no list of the instruments it trades | **New requirement**, needing its own design | Any Symbol up to `fix_order_limits::max_symbol_length`, 35 characters, is accepted; nothing reads SecurityID (48) or SecurityIDSource (22) | A design, discussed with Andrew first: where the list comes from, what identifies an instrument on an order, how the list changes during a day, what options on futures need, and whether one instrument can be halted |
 | [BUG-0265](bug_list.md#bug_0265): the Java test client's blotter does not show the trading-session status its member is told | **New requirement**, in a tool | The blotter in `java/fix-test-client` does not handle 35=h | Ask for the status at logon, act on every 35=h, and show the state prominently |
 
-**Recommended order in this area.** BUG-0279's scenario and measurement, which are small. BUG-0259 is small and can be done whenever `UnansweredCommands` is next touched. BUG-0281 waits on
+**Recommended order in this area.** BUG-0279's measurement, which is small. BUG-0259 is small and can be done whenever `UnansweredCommands` is next touched. BUG-0281 waits on
 Andrew's decision. BUG-0203 needs a stress test of many simultaneous logons. The new requirements are placed
 with the rest.
 
