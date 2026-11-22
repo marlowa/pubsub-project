@@ -261,10 +261,8 @@ and apply each record as it arrives.
      moment still receives it. The time is a setting of the publisher's configuration, 10 seconds. A
      subscriber that still misses the end keeps its files (decision 6).
 
-   The gateways are told of the end as soon as the leading sequencer has written it, before the follower sequencer
-   holds it ([BUG-0249](../bug_list.md#bug_0249)). A gateway can therefore shut down on an end that a change of
-   leader then loses. That does no harm: the gateway was about to shut down in any case, its files are the same
-   either way, and the new leader writes an end of its own.
+   The gateways are told of the end once its record is committed, as of every change of phase
+   ([BUG-0249](../bug_list.md#bug_0249)), so a gateway never shuts down on an end that a change of leader then loses.
 
 3. **Nothing is archived before the day's record is complete.** Two things have to be true before the leading
    sequencer closes its WAL and archives it.
@@ -354,8 +352,8 @@ and apply each record as it arrives.
       the day ended. Had one event made components shut down, the gateways would already be leaving. With two events
       nothing shuts down on the end-of-day begin, and the end-of-day end is written only once the follower sequencer
       holds every record before it, so a change of leader cannot lose it, except after the limit of time in cases 4
-      and 5. What is left is that members can be told
-      of a phase and then of the phase before it, which happens for every phase, not only this one
+      and 5. Members are told of a phase only once its
+      record is committed, so they are never told of one that a change of leader takes back
       ([BUG-0249](../bug_list.md#bug_0249)).
    2. **The leader writes the end-of-day end and shuts down before the follower sequencer holds it.** The follower
       sequencer would then hold every record but the last, and, never receiving the end-of-day end, would not shut

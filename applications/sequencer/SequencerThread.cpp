@@ -1410,6 +1410,11 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
     update_report_reading();
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
+        // This instance's WAL is the venue's record from now on, and a leader never discards its own records, so the
+        // gateways are told the venue state it holds; they are told below, with whether orders are accepted.
+        venue_state_told_ = venue_state_in_the_wal();
+        tell_venue_state_once_committed_through_.reset();
+
         // Every record this instance wrote while it followed was noted as it was written, so the record
         // of identifiers already holds every command in the log. What the old leader said it forwarded
         // is acted on now, so that the kept reports forwarded below are only those it may not have.
@@ -1540,6 +1545,11 @@ void SequencerThread::SequencerReplicatedWalEvents::committed_through(int64_t se
     owner_.orders_.release_to_leading_engine(seq_no);
     owner_.reports_.deliver_committed_through(seq_no);
     owner_.update_report_reading();
+    // A change of phase or halt whose record is now committed is told to the gateways, after the reports committed with
+    // it, which were produced before it.
+    if (owner_.tell_venue_state_once_committed_through_.has_value() && seq_no >= *owner_.tell_venue_state_once_committed_through_) {
+        owner_.tell_gateways_the_venue_state();
+    }
     // Last, after the order path's own work: the matching engines that follow the WAL are sent the records released, and
     // the publishers the records just committed.
     owner_.serving_.send_released_to_follower_engines(owner_.orders_.released_through());
@@ -1722,9 +1732,32 @@ void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord&
     const VenueStateFromTheWal::Noted noted = venue_state_.note_record(written_as, record_of(envelope), VenueStateFromTheWal::How::written_by_this_leader);
     after_noting(noted, VenueStateFromTheWal::How::written_by_this_leader, written_as);
     if (noted.halt_changed || noted.phase_changed) {
-        if (!presence_.refresh_order_acceptance(std::chrono::steady_clock::now())) {
-            broadcast_order_acceptance();
+        // Told only once the record is committed: acknowledged by the follower, or, while the leader runs without it,
+        // once a voter has confirmed that the follower may not lead. Before then a change of leader could lose the record.
+        if (written_as <= replicated_wal_->committed_through()) {
+            tell_gateways_the_venue_state();
+        } else {
+            tell_venue_state_once_committed_through_ = written_as;
         }
+    }
+}
+
+SequencerThread::VenueStateTold SequencerThread::venue_state_in_the_wal() const {
+    VenueStateTold state{};
+    state.day_started = venue_state_.trading_day_started();
+    state.trading_day = venue_state_.trading_day();
+    state.phase = venue_state_.trading_day_started() ? venue_state_.trading_phase().latest()->phase : pubsub_itc_fw_app::TradingPhase::StartOfDay;
+    state.halted = venue_state_.trading_halt().halted();
+    state.halted_for_a_recovery_too_long =
+        state.halted && venue_state_.trading_halt().latest()->reason == pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong;
+    return state;
+}
+
+void SequencerThread::tell_gateways_the_venue_state() {
+    venue_state_told_ = venue_state_in_the_wal();
+    tell_venue_state_once_committed_through_.reset();
+    if (!presence_.refresh_order_acceptance(std::chrono::steady_clock::now())) {
+        broadcast_order_acceptance();
     }
 }
 
@@ -1839,12 +1872,13 @@ bool SequencerThread::PresenceLinks::wal_holds_records() const {
     return owner_.replicated_wal_->wal().last_seq_no() > 0;
 }
 
+// Whether orders are accepted is told only to the gateways, so it follows the halt as they are told it.
 bool SequencerThread::PresenceLinks::trading_halted() const {
-    return owner_.venue_state_.trading_halt().halted();
+    return owner_.venue_state_told_.halted;
 }
 
 bool SequencerThread::PresenceLinks::halted_for_a_recovery_too_long() const {
-    return owner_.venue_state_.trading_halt().latest()->reason == pubsub_itc_fw_app::TechnicalEventReason::RecoveryTooLong;
+    return owner_.venue_state_told_.halted_for_a_recovery_too_long;
 }
 
 void SequencerThread::PresenceLinks::tell_every_gateway() {
@@ -3013,10 +3047,10 @@ void SequencerThread::send_order_acceptance(const pubsub_itc_fw::ConnectionID& c
     state.reason = presence_.acceptance();
     state.has_leader_epoch = true;
     state.leader_epoch = current_epoch();
-    state.day_started = venue_state_.trading_day_started();
-    state.trading_day = venue_state_.trading_day();
-    state.phase = venue_state_.trading_day_started() ? venue_state_.trading_phase().latest()->phase : pubsub_itc_fw_app::TradingPhase::StartOfDay;
-    state.halted = venue_state_.trading_halt().halted();
+    state.day_started = venue_state_told_.day_started;
+    state.trading_day = venue_state_told_.trading_day;
+    state.phase = venue_state_told_.phase;
+    state.halted = venue_state_told_.halted;
     send_pdu(conn_id, pubsub_itc_fw_app::OrderAcceptance::message_pdu_id, 0, state);
 }
 

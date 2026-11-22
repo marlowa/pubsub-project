@@ -8,11 +8,11 @@ agreed with Andrew. An entry that is closed is no longer listed here; its record
 
 ## Summary
 
-There are 54 open entries, and each is judged below. The figures:
+There are 52 open entries, and each is judged below. The figures:
 
 | Judgement | Entries |
 |---|---|
-| Breach of a named principle | 11: BUG-0113 (what is left of it), BUG-0249, BUG-0285, BUG-0286, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0272, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
+| Breach of a named principle | 9: BUG-0113 (what is left of it), BUG-0285, BUG-0286, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
 | Partly done | 8: BUG-0121, BUG-0134, BUG-0262, BUG-0065, BUG-0279, BUG-0278, BUG-0283, BUG-0069 |
 | Decision needed from Andrew | 3: BUG-0258, BUG-0281, BUG-0229; and BUG-0250 needs one choice made between two remedies |
 | Decided, and waiting to be built | 1: BUG-0048, with the recovery service of BUG-0113 |
@@ -42,8 +42,8 @@ There are 54 open entries, and each is judged below. The figures:
 
 **The order of work**, agreed with Andrew on 22 November 2026:
 
-1. The small breaches, each with an obvious remedy: BUG-0272 (the lease requests in storage of a fixed size) and
-   BUG-0249 (a change of phase told to the gateways only once the follower sequencer holds it).
+1. The small breaches, each with an obvious remedy: BUG-0272 and BUG-0249 are closed; BUG-0286, the WAL snapshot
+   written off the thread that handles orders, is the same kind and comes next.
 2. The partly done entries with little left: BUG-0278 (one check by hand), BUG-0279 (one scenario and one
    measurement), BUG-0262 (one test), and BUG-0065's scenario.
 3. The four decisions above, each put to Andrew with its background and options.
@@ -103,19 +103,17 @@ requirements to be placed in the order with the rest.
 
 ## 2. The write-ahead log, its retention, the disk, and the trading day
 
-Six entries.
+Five entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0249](bug_list.md#bug_0249): the leading sequencer tells the gateways of a change of phase before the follower sequencer holds it | **Breach** of V2: a member can be told of a phase the WAL of the next leader never holds | When the leader writes a `TechnicalEvent` that changes the phase or the halt, it sends every gateway `OrderAcceptance` at once (`SequencerThread.cpp`, after each record it writes), whereas it holds an execution report until the follower sequencer has confirmed the record the report depends on | The change of phase or halt told to the gateways only once the follower has confirmed the record, or after the limit of time the leader waits when the follower is absent, as for reports; a scenario that stops the leader inside that window and fails before the change |
 | [BUG-0286](bug_list.md#bug_0286): the sequencer writes its WAL snapshot file, and builds the file's names, on the thread that handles orders | **Breach** of F4 and F5 | `Wal::take_snapshot`, called from the sequencer's snapshot timer on `SequencerThread`, builds two strings and creates, writes and renames a file every 30 seconds; `heap_allocation_count.py` finds its 6 heap calls a minute on each sequencer | The names worked out once when the WAL is opened, and the snapshot written by a background thread |
 | [BUG-0113](bug_list.md#bug_0113): a resend or a request for undelivered reports can read far back in the WAL on the thread that sequences orders | **Breach** of F4, accepted for now and permitted by name in `scripts/check_standards.py` | Two reads remain on the sequencer's thread: `handle_session_replay_request`, a member's resend, and `handle_undelivered_reports_request`, the reports produced while a member had no connection. Each reads segments from the newest backwards and stops when it has what it needs, so a resend after a reconnect reads a few segments; one reaching far back, or a member away most of the day, reads much of the day's WAL. A matching engine's catch-up is read on the thread that follows the WAL and is not part of this entry | The recovery service, with the 100,000 messages for each comp id decided under R-0008; and first the decision about undelivered reports beyond that count (Summary, decision 1) |
 | [BUG-0048](bug_list.md#bug_0048): the WAL keeps the whole day | **Decided**, and waiting to be built | `Wal::truncate_below` is called by nothing, and nothing reclaims the WAL during the day. Of the positions retention depends on, the matching engine's position is not reported to the sequencer, and members' resends are to be served by the recovery service's own store | The recovery service built; the engine's position reported; and retention anchored to the lower of the follower's acknowledgement and the engine's checkpoint |
 | [BUG-0175](bug_list.md#bug_0175): while the disk is slow, the leading sequencer's own thread waits in the file system's journal | **Investigation**; a **Breach** of F4 if confirmed | Not reproduced since the WALs moved to a disk of their own mounted with `lazytime`. Finding the call needs the scheduler's events with kernel stacks, which `perf` records without root when attached to one thread (the method recorded under [BUG-0228](bug_list.md#bug_0228)) | Reproduce under a slow disk with that method, then take the call off the thread or show that F4 permits it |
 | [BUG-0264](bug_list.md#bug_0264): under overload the follower sequencer still falls behind its leader | **Investigation** | In an overload of 68,626 orders a second the leader judged its follower too far behind nine times, because its storage for orders waiting on the follower was full, and ran without it for 3,963 ms of a 26.2-second run. The leader's reactor is idle about half the time, so what holds the follower back is not known | Profile the follower in the same overload to find the stage that limits it; then keep it in step at the rate the leader sustains, or state that rate as the venue's ceiling |
 
-**Recommended order in this area.** BUG-0249 first: the remedy is the one already used for execution reports. BUG-0286
-next, small and shown done by the heap count.
+**Recommended order in this area.** BUG-0286 first, small and shown done by the heap count.
 BUG-0113 and BUG-0048 wait on the decision about undelivered reports and then on the recovery service.
 BUG-0175 and BUG-0264 are investigations to schedule.
 
@@ -143,7 +141,7 @@ Four entries.
 | [BUG-0258](bug_list.md#bug_0258): while a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere | **Decision needed** | `ReportForwarding` holds such reports in room for 32,768 (`held_report_capacity_reports`), drops the oldest when it is full, and holds back the position it says it has forwarded through, so the follower sequencer discards none of its kept copies. A venue runs this way whenever a standby gateway instance is stopped | Andrew's decision on how long such a report is held, and whether a session known to have ended needs holding at all (Summary, decision 3) |
 | [BUG-0131](bug_list.md#bug_0131): the leading sequencer allocates from the heap for every order, and copies waiting reports | **Breach** of F5 and F6 | The waiting reports are in a ring allocated once, each report in the slab chunk it arrived in, and reports are routed by the session they carry, so no map of orders grows through the day | Lock the record of command identifiers into memory at start ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)), and compare a latency run with the last |
 
-**Recommended order in this area.** BUG-0285 first, after BUG-0249, whose rule and scenario it reuses. The
+**Recommended order in this area.** BUG-0285 first, reusing the rule and the scenario that closed BUG-0249. The
 decisions for BUG-0250 and BUG-0258, then their changes. BUG-0131's remainder through its agreed design.
 
 ## 5. The gateways and what a member sees
@@ -172,11 +170,10 @@ with the rest; BUG-0065's halting of one instrument waits on BUG-0242.
 
 ## 6. The framework: reactor, timers, allocators and threads
 
-Nine entries.
+Eight entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0272](bug_list.md#bug_0272): each lease request allocates from the heap on the requesting instance's own thread | **Breach** of F5 | `LeaseHolder` keeps outstanding requests in a `std::map<int64_t, Outstanding>` and their expiries in a second `std::map`, adding a node for each request on the thread that renews, which in the sequencer and the matching engine is the thread that handles orders. `scripts/heap_allocation_count.py` finds about one heap call a second there | The outstanding requests in storage of a fixed size, since an instance asks only its few voters and forgets a request older than a lease period; then the count finds no call from `LeaseHolder` |
 | [BUG-0278](bug_list.md#bug_0278): an exception that ends an application thread stops the process with exit status 0 | **Partly done** | A thread that dies of an exception stops the reactor with `shutdown_for_a_failure`, and `Reactor::run` returns `stopped_for_a_failure_status`, 1; three `ReactorTest` tests require it | A check by hand that a sequencer refusing another day's WAL exits with status 1 |
 | [BUG-0283](bug_list.md#bug_0283): parts of the framework library that the venue runs every day are not reached by any test | **Partly done** | Groups 1 to 3 have tests, each made to fail by breaking the code it tests; the coverage baseline records 11,292 of 12,811 lines run | Group 1's reading of `/sys`, which needs a made-up `/sys` tree; then groups 4 and 5, the failures that change what the venue does |
 | [BUG-0127](bug_list.md#bug_0127): a pool that runs out takes a mutex and maps a new pool while holding it | **Breach** of F2 and F5 | `ExpandablePoolAllocator` takes `expansion_mutex_` on its slow path | No lock on the allocation path, as the entry describes, and pools sized so that the slow path is not reached in a normal day |
@@ -186,8 +183,7 @@ Nine entries.
 | [BUG-0104](bug_list.md#bug_0104): a connection whose reads were paused can stay stalled after they resume | **Investigation** | The kernel's rule for this case is not established | As the entry describes; best done with BUG-0184 |
 | [BUG-0280](bug_list.md#bug_0280): huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine | **Investigation** | The development machine has no huge pages reserved, so `FixedSizeMemoryPool`'s `MAP_HUGETLB` path always falls back to ordinary pages there; no measurement shows misses in the cache of address translations to be a real share of the order path's time | Measure those misses under `perf stat` through a load run first; only if they matter, huge pages for the large tables; and the huge-page path exercised by a test on a machine with huge pages reserved |
 
-**Recommended order in this area.** BUG-0272 first: it is small and the counting tool shows when it is done.
-BUG-0278's check by hand is smaller still. Then BUG-0127 and BUG-0128, the two locks on paths an order can
+**Recommended order in this area.** BUG-0278's check by hand first, being the smallest. Then BUG-0127 and BUG-0128, the two locks on paths an order can
 take, each needing a design agreed before code, BUG-0128 the larger. BUG-0119 with the shutdown sequence.
 BUG-0184 and BUG-0104 together. BUG-0283's remaining groups by its own rule, testing the failures that change
 what the venue does rather than every log line. BUG-0280 is a measurement.

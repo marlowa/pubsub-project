@@ -1653,6 +1653,13 @@ class Scenario(NamedTuple):
     # is resumed the sequencer must say it applies commands again (FollowingEngineWorking)
     # (docs/availability/a_matching_engine_that_stops_working.md, section 6, decision 7).
     assert_following_engine_stop_signalled: bool = False
+    # When True, the follower sequencer is frozen with SIGSTOP while the arbiters' statement writes are slowed, so that the
+    # leader runs without its follower and commits nothing for seconds, until a voter has confirmed that the follower may
+    # not lead. An operator halts trading in that time. The gateway must be told of the halt only once its record is
+    # committed, seconds after the leader began running without its follower, not as soon as the leader wrote it: a change
+    # of leader before then could lose the record, and a member would have been told of a halt the venue's record never
+    # holds (docs/bug_list.md, BUG-0249). Decided from test events.
+    assert_halt_told_once_committed: bool = False
     # When True, the binary load client offers 1.8 million orders on four sessions as fast as the sockets accept them,
     # faster than the venue processes them. Each gateway stops reading its members while 16,384 of its commands are
     # unanswered, so no queue in the order path grows without limit. No sequencer or matching engine may lose its lease
@@ -5813,6 +5820,30 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 126 -- a halt is told to the gateways only once its record is committed.
+    #
+    # docs/bug_list.md, BUG-0249. The arbiters' statement writes take 4 seconds. The follower sequencer is frozen with
+    # SIGSTOP, and an operator halts trading straight away. The halt's record is the first the follower does not
+    # acknowledge, so 100 ms later the leader runs without it, says it may not lead, and commits nothing until an arbiter
+    # has written that statement. The gateway must not be told of the halt until its record is committed, at least a
+    # second after the leader began running without its follower; a leader that told the gateways as soon as it wrote the halt would tell them within a second. The
+    # follower is then let run, and the halt lifted.
+    Scenario(
+        number=126,
+        short_name="halt_told_once_committed",
+        description="A halt is told to the gateways only once its record is committed, not as soon as the leader writes it",
+        expected_outcome=(
+            "with the follower sequencer frozen and the arbiters' statement writes taking 4 seconds, an operator's halt is written "
+            "at once and the gateway is told of it only once the record is committed, a second or more after the leader began "
+            "running without its follower; the follower catches up and the halt is lifted"
+        ),
+        delay_statement_writes_ms=4000,
+        assert_halt_told_once_committed=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 119 -- a matching engine that stays connected and stops working, with no other engine to lead, halts the venue.
     #
     # docs/availability/a_matching_engine_that_stops_working.md, sections 3 and 6. The one matching engine stops applying
@@ -7338,6 +7369,12 @@ _LEASE_LOST_AND_REGAINED_NOW: dict[str, str] = {}
 # The longest orders are held while no matching engine leads, as every environment file sets it ([recovery]
 # orders_held_at_most_seconds): a change of engine leader must finish within it.
 _ORDERS_HELD_AT_MOST_SECONDS = 5.0
+# How long after the leader begins running without its follower a halt may first be told to the gateways in scenario
+# 126. With the arbiters taking 4 seconds to write the statement that lets the leader commit, a leader that tells the
+# gateways once the record is committed tells them 5.56 seconds after, by the leader's own Quill log (22 November
+# 2026); one that tells them as soon as it writes the halt tells them about 0.1 seconds before, since the halt's record is
+# what sets the leader running without its follower 100 ms later. A second lies well clear of both.
+_HALT_TOLD_NOT_BEFORE_SECONDS = 1.0
 _STOP_APPLYING_CL_ORD_ID = "stop-applying-1"
 _STOP_APPLYING_NOW: dict[str, str] = {}
 # The same for the engine that is to stop sending its reports ([test_events] stop_sending_reports_after_cl_ord_id).
@@ -7533,6 +7570,24 @@ def ensure_fix8_credentials(creds_file: Path, comp_id: str, password: str) -> No
     result = header + "".join(f"[[credential]]{b}" for b in kept) + new_block
     creds_file.write_text(result)
     log(f"  SCRAM credential for '{comp_id}' (empty password) written to {creds_file.name}")
+
+
+def run_operator_halt_reading_events(prefix: Path, action: str) -> tuple[int, str]:
+    """As run_operator_halt, but reads the test events that arrive while operator_halt.py runs, so that each is timed when
+    it arrives rather than when operator_halt.py finishes. operator_halt.py asks each sequencer in turn, and one that is
+    frozen keeps it waiting for seconds; an event read only afterwards would seem to arrive then."""
+    command = [sys.executable, str(Path(__file__).resolve().parent / "operator_halt.py"), action, "--operator", "ha_test", "--install-dir", str(prefix)]
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
+        deadline = time.monotonic() + 60.0
+        while process.poll() is None and time.monotonic() < deadline:
+            _TEST_EVENTS.pump(0.05)
+        if process.poll() is None:
+            process.kill()
+        said = (process.communicate()[0] or "").strip()
+    log(f"  operator_halt.py {action} -> exit {process.returncode}")
+    for line in said.splitlines():
+        log(f"    {line}")
+    return process.returncode, said
 
 
 def run_operator_halt(prefix: Path, action: str) -> tuple[int, str]:
@@ -13092,6 +13147,58 @@ def run_scenario(scenario: Scenario, args) -> bool:
             for which in ("primary", "secondary"):
                 check_publisher_holds_the_record(f"matching_engine_publisher_{which} after the change of leader", publisher_dirs[which],
                                                  wal_dirs["secondary"])
+
+        # ── A halt is told only once its record is committed ──────────────────
+        if scenario.assert_halt_told_once_committed:
+            log("=== A halt is told to the gateways only once its record is committed ===")
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
+                die("halt told once committed: sequencer_primary is not leading, so freezing sequencer_secondary would not freeze a "
+                    "follower.")
+            gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+            follower = proc_by_name["sequencer_secondary"]
+            alone_from = _TEST_EVENTS.mark()
+            os.kill(follower.pid, signal.SIGSTOP)
+            log(f"  SIGSTOP -> sequencer_secondary (PID {follower.pid}): alive, its connection open, acknowledging nothing")
+            try:
+                # The halt's own record is the first the frozen follower does not acknowledge: once it has waited 100 ms, the
+                # leader runs without its follower, and commits nothing until an arbiter has written its statement.
+                status, said = run_operator_halt_reading_events(prefix, "halt")
+                if status != 0 or "Halted" not in said:
+                    die(f"halt told once committed: the halt was answered with exit {status} and '{said}'; the leading sequencer "
+                        "was to write it")
+                found, _ = await_expectation(expect_message("sequencer_primary", "running as if alone", "RunningAloneChanged",
+                                                            fields=lambda m: {"running_alone": True}), _RAW_REPLY_TIMEOUT, alone_from)
+                if not found:
+                    die("halt told once committed: the leader never reported running without its follower, so the time in which "
+                        "it commits nothing never began.")
+                alone = _TEST_EVENTS.find(message_of(_TEST_EVENTS.modules["test_events"].RunningAloneChanged, "sequencer_primary",
+                                                     running_alone=True), alone_from)
+                told = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", halted=True),
+                                             timeout=args.recovery_timeout, since=alone_from)
+                if told is None:
+                    die("halt told once committed: the gateway was never told of the halt")
+                after_alone = told.arrived - alone.arrived
+                if after_alone < _HALT_TOLD_NOT_BEFORE_SECONDS:
+                    die(f"halt told once committed: the gateway was told of the halt {after_alone:.2f}s after the leader began "
+                        f"running without its follower (a negative time is before it), before the record could be committed (the arbiters take 4 seconds to "
+                        f"write the statement that lets it commit): a change of leader then could have lost the halt the members "
+                        f"were told of (BUG-0249)")
+                log(f"  the gateway was told of the halt {after_alone:.2f}s after the leader began running without its follower, "
+                    "once the record was committed -- OK")
+            finally:
+                os.kill(follower.pid, signal.SIGCONT)
+            log(f"  SIGCONT -> sequencer_secondary (PID {follower.pid})")
+            if not await_expectation(expect_message("sequencer_primary", "waiting for the follower again", "RunningAloneChanged",
+                                                    fields=lambda m: {"running_alone": False}), _RAW_REPLY_TIMEOUT, alone_from)[0]:
+                die("halt told once committed: the follower ran again but the leader never went back to waiting for it")
+            lift_from = _TEST_EVENTS.mark()
+            status, said = run_operator_halt(prefix, "lift")
+            if status != 0 or "Lifted" not in said:
+                die(f"halt told once committed: the lift was answered with exit {status} and '{said}'")
+            if _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", halted=False),
+                                     timeout=args.recovery_timeout, since=lift_from) is None:
+                die("halt told once committed: the gateway was never told the halt was lifted")
+            log("  the follower caught up, the halt was lifted, and the gateway was told -- OK")
 
         # ── Stalled follower ──────────────────────────────────────────────────
         if scenario.assert_stalled_follower_runs_alone:

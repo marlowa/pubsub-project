@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 286 |
-| Open | 54 (30 defects, 24 tasks) |
-| Closed | 232 |
+| Open | 52 (28 defects, 24 tasks) |
+| Closed | 234 |
 | Next id | BUG-0287 |
 
 ## Open bugs by severity
 
-3 high, 33 medium, 18 low.
+3 high, 33 medium, 16 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -55,7 +55,6 @@
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
 | [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
-| [BUG-0249](#bug_0249) | low | defect | The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it |
 | [BUG-0250](#bug_0250) | low | defect | A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member |
 | [BUG-0253](#bug_0253) | low | defect | `binary_load_client --help` prints its help and then tries to connect to the venue |
 | [BUG-0259](#bug_0259) | low | defect | Under a steady flood of commands, the warning that a gateway's store of unanswered commands is full is logged once for every command refused |
@@ -63,7 +62,6 @@
 | [BUG-0265](#bug_0265) | low | task | The Java test client's blotter does not show the trading-session status its member is told |
 | [BUG-0266](#bug_0266) | low | task | The administration service's desktop does not show the venue's trading phase |
 | [BUG-0267](#bug_0267) | low | task | `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines |
-| [BUG-0272](#bug_0272) | low | defect | Each lease request allocates from the heap on the requesting instance's own thread, which is the thread that handles orders |
 | [BUG-0273](#bug_0273) | low | defect | A matching engine holding reports for want of a connection, or until it knows whether it serves, allocates from the heap for each |
 | [BUG-0280](#bug_0280) | low | task | Huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine |
 | [BUG-0286](#bug_0286) | low | defect | The sequencer writes its WAL snapshot file, and builds the file's names, on the thread that handles orders |
@@ -412,37 +410,6 @@ after more than 50,000 reports and fails before the change:
 
 **Principles.** V2 of [design_principles.md](design_principles.md), the log is the record: the record of the day
 should say what happened once, not as many times as an engine restarted.
-
-### BUG-0249: The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it {#bug_0249}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-11-15 |
-| Recorded | 2026-11-15 |
-| How | Reading `SequencerThread.cpp` while designing how the day ends ([start_and_end_of_day.md](venue/start_and_end_of_day.md), section 4.2, decision 4) |
-| Impact | After a change of leader, a member can be told the venue is in a phase and then that it is in the phase before it |
-
-**What happens.** The leading sequencer holds each execution report until the follower sequencer has confirmed it
-holds the record the report depends on, so a member never sees a report that a change of leader could lose. A change
-of phase is not held in this way. When the leader writes a `TechnicalEvent` that changes the phase or the halt, it
-tells every gateway at once in an `OrderAcceptance` (`SequencerThread.cpp`, just after each record is written), and
-the gateways tell their members. If the leader stops before the follower sequencer holds that record, the follower
-sequencer is promoted with its WAL still in the phase before, and tells the gateways so. A member is then told, for
-example, that the venue is open, and a moment later that it is in pre-open. The same holds for a halt.
-
-The window is the time the follower sequencer takes to confirm one record, and it matters only when the leader stops
-inside it, so it is rare. The end of day is not exposed to it in a way that loses anything, because no component
-shuts down on the end-of-day begin (section 4.2, decision 3, of the same document).
-
-**What is wanted.** The leader tells the gateways of a change of phase or of halt only once the follower sequencer
-has confirmed the record, as it does for execution reports, or after the limit of time it waits when the follower
-sequencer is absent. A scenario in `ha_test.py` that stops the leader between writing a phase change and receiving
-the confirmation would show it, and would have to fail before the change.
-
-**Principles.** V2 of [design_principles.md](design_principles.md), the log is the record: members are told of a
-phase that the log a new leader holds may never contain. No principle states directly that what a member is told is
-never taken back by a change of leader, which is the rule the execution reports follow.
 
 ### BUG-0245: In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it {#bug_0245}
 
@@ -2238,25 +2205,6 @@ logs on many sessions together, repeated, which fails now some of the time.
 
 **Principles.** None of the venue's guarantees about orders; members' access.
 
-### BUG-0272: Each lease request allocates from the heap on the requesting instance's own thread, which is the thread that handles orders {#bug_0272}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-11-20 |
-| Recorded | 2026-11-20 |
-| How | The second run of `scripts/heap_allocation_count.py`, after [BUG-0270](#bug_0270) was fixed |
-| Impact | About one heap call a second on the leading matching engine's thread and on the leading sequencer's, 114 and 118 in 60 seconds: few, and not one for each order, but on the threads that handle every order (principle F5) |
-
-**Where.** `LeaseHolder` (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeaseHolder.hpp`) keeps the lease requests it
-has sent and not yet had answered in a `std::map<int64_t, Outstanding>`, `outstanding_`, adding a node for each request
-(`record_request`) and removing it when the grant arrives or the request is too old. `expiries_` is a second
-`std::map` of the same kind. Each instance renews its lease on its own thread, so each renewal allocates there.
-
-**What is wanted.** The outstanding requests in storage of a fixed size: a request older than a lease period is
-forgotten, and an instance asks only its few voters, so a small ring or array sized at start holds every request that
-can be outstanding. Then `heap_allocation_count.py` finds no call from `LeaseHolder`.
-
 ### BUG-0273: A matching engine holding reports for want of a connection, or until it knows whether it serves, allocates from the heap for each {#bug_0273}
 
 | | |
@@ -2554,6 +2502,58 @@ count finds no call on `SequencerThread`.
 and nothing on the order path allocates from the heap.
 
 ## Closed
+
+### BUG-0272: Each lease request allocates from the heap on the requesting instance's own thread, which is the thread that handles orders {#bug_0272}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| How | The second run of `scripts/heap_allocation_count.py`, after [BUG-0270](#bug_0270) was fixed |
+| Impact | About one heap call a second on the leading matching engine's thread and on the leading sequencer's, 114 and 118 in 60 seconds: few, and not one for each order, but on the threads that handle every order (principle F5) |
+| Fixed | 2026-11-22 -- `LeaseHolder` keeps its waiting requests in an array of 64 and its held leases in an array of 4, made with it; neither can overflow unsafely, since forgetting a request or a lease can only shorten what the holder counts on. `heap_allocation_count.py` finds no call from `LeaseHolder`, where it found about one a second on the leading engine's and the leading sequencer's threads; the 6 calls a minute it still finds on each sequencer's thread are [BUG-0286](#bug_0286), the WAL snapshot. Both full suites pass |
+
+**Where.** `LeaseHolder` (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeaseHolder.hpp`) keeps the lease requests it
+has sent and not yet had answered in a `std::map<int64_t, Outstanding>`, `outstanding_`, adding a node for each request
+(`record_request`) and removing it when the grant arrives or the request is too old. `expiries_` is a second
+`std::map` of the same kind. Each instance renews its lease on its own thread, so each renewal allocates there.
+
+**What is wanted.** The outstanding requests in storage of a fixed size: a request older than a lease period is
+forgotten, and an instance asks only its few voters, so a small ring or array sized at start holds every request that
+can be outstanding. Then `heap_allocation_count.py` finds no call from `LeaseHolder`.
+
+### BUG-0249: The leading sequencer tells the gateways of a change of phase before the follower sequencer holds it {#bug_0249}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-15 |
+| Recorded | 2026-11-15 |
+| How | Reading `SequencerThread.cpp` while designing how the day ends ([start_and_end_of_day.md](venue/start_and_end_of_day.md), section 4.2, decision 4) |
+| Impact | After a change of leader, a member can be told the venue is in a phase and then that it is in the phase before it |
+| Fixed | 2026-11-22 -- the leading sequencer tells the gateways of a change of phase or halt only once its record is committed, and every OrderAcceptance it sends carries the phase and halt as last told, not as the WAL has them before they are committed (`SequencerThread::tell_gateways_the_venue_state`). `ha_test.py` scenario 126 freezes the follower and slows the arbiters' statement writes to 4 seconds: the gateway is told of a halt 5.5 seconds after the leader begins running without its follower, and with the old rule put back it was told 0.11 seconds before; both full suites pass. Found while fixing it: [BUG-0285](#bug_0285), execution reports released in the same window |
+
+**What happens.** The leading sequencer holds each execution report until the follower sequencer has confirmed it
+holds the record the report depends on, so a member never sees a report that a change of leader could lose. A change
+of phase is not held in this way. When the leader writes a `TechnicalEvent` that changes the phase or the halt, it
+tells every gateway at once in an `OrderAcceptance` (`SequencerThread.cpp`, just after each record is written), and
+the gateways tell their members. If the leader stops before the follower sequencer holds that record, the follower
+sequencer is promoted with its WAL still in the phase before, and tells the gateways so. A member is then told, for
+example, that the venue is open, and a moment later that it is in pre-open. The same holds for a halt.
+
+The window is the time the follower sequencer takes to confirm one record, and it matters only when the leader stops
+inside it, so it is rare. The end of day is not exposed to it in a way that loses anything, because no component
+shuts down on the end-of-day begin (section 4.2, decision 3, of the same document).
+
+**What is wanted.** The leader tells the gateways of a change of phase or of halt only once the follower sequencer
+has confirmed the record, as it does for execution reports, or after the limit of time it waits when the follower
+sequencer is absent. A scenario in `ha_test.py` that stops the leader between writing a phase change and receiving
+the confirmation would show it, and would have to fail before the change.
+
+**Principles.** V2 of [design_principles.md](design_principles.md), the log is the record: members are told of a
+phase that the log a new leader holds may never contain. No principle states directly that what a member is told is
+never taken back by a change of leader, which is the rule the execution reports follow.
 
 ### BUG-0284: A matching engine restarted moments before the engine leading dies took ten seconds to lead, as long as the limit on automatic recovery {#bug_0284}
 

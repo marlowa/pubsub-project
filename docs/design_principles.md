@@ -237,12 +237,9 @@ library that counts every call to the heap allocator into each venue program, dr
 venue, counts for a window opened once the load has settled, and names the call stack of each call. It compares each
 order-path thread with `scripts/heap_allocation_expectations.toml`, which allows each of them none.
 
-**Today: broken, in two places.** Measured on 20 November 2026, under about 1,000 orders a second with half of them
-cancelled, in 60 seconds: the following matching engine allocates for every report it keeps to compare with the
-leader's, 117,970 calls ([BUG-0271](bug_list.md#bug_0271)); and each lease request allocates on the requesting
-instance's own thread, about one a second on the leading engine's and the leading sequencer's
-([BUG-0272](bug_list.md#bug_0272)). The gateways' threads made none. Every message sent allocated twice until
-[BUG-0270](bug_list.md#bug_0270) was fixed the same day.
+**Today: broken, in one place.** Measured on 22 November 2026, under about 1,000 orders a second with half of them
+cancelled, in 60 seconds: each sequencer's thread makes 6 heap calls, building the names of its WAL snapshot file
+([BUG-0286](bug_list.md#bug_0286)). The matching engines' threads and the gateways' threads made none.
 
 ### F6. Messages are not copied
 

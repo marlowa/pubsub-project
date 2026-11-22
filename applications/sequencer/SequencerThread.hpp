@@ -505,6 +505,27 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // whether trading is halted, the voided commands, and the highest command a report answers (section 6.10 of
     // docs/venue/dividing_the_sequencer_and_matching_engine.md).
     VenueStateFromTheWal venue_state_{get_logger()};
+
+    // The trading day, phase and halt as the gateways are told them. A leader tells them of a change only once the
+    // record that made it is committed, so that a change of leader never takes back what a member has been told
+    // (docs/bug_list.md, BUG-0249). venue_state_ follows the WAL at once, and is what the sequencer itself acts on.
+    struct VenueStateTold {
+        bool day_started{false};
+        int32_t trading_day{0};
+        pubsub_itc_fw_app::TradingPhase phase{pubsub_itc_fw_app::TradingPhase::StartOfDay};
+        bool halted{false};
+        bool halted_for_a_recovery_too_long{false};
+    };
+    VenueStateTold venue_state_told_{};
+    // The record whose commitment lets the gateways be told the venue state as the WAL now has it; none while the
+    // gateways have been told everything written.
+    std::optional<int64_t> tell_venue_state_once_committed_through_;
+
+    // The trading day, phase and halt as the WAL this instance holds has them.
+    [[nodiscard]] VenueStateTold venue_state_in_the_wal() const;
+    // Takes the venue state in the WAL as what the gateways are told, and tells every gateway if that changes whether
+    // orders are accepted or what the gateways are told.
+    void tell_gateways_the_venue_state();
     // The trading date to write on a record: the trading day of the start of day in the WAL; or, for the start of day
     // itself, which is written before the WAL holds one, the day this sequencer was started for. The matching engine
     // makes its identifiers with keys derived from it (docs/availability/deterministic_matching_engine.md, section 3.3).
