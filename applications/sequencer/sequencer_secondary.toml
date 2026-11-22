@@ -159,7 +159,8 @@ segment_size              = 4194304
 # the writing thread makes one itself only if the disk stalls for as long as filling this many takes
 # (docs/durability/keeping_segments_ready.md).
 segments_kept_ready       = 4
-snapshot_interval_seconds = 30
+# How often the sequencer publishes the WAL's gauge and warns if the WAL has grown large, in seconds.
+check_interval_seconds    = 30
 
 # How many records, and how many bytes of records, the leader keeps in memory from when it writes each one
 # until it has sent it to the matching engine publishers, so that it sends the copy instead of reading the

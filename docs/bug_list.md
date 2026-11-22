@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 286 |
-| Open | 51 (27 defects, 24 tasks) |
-| Closed | 235 |
+| Open | 50 (26 defects, 24 tasks) |
+| Closed | 236 |
 | Next id | BUG-0287 |
 
 ## Open bugs by severity
 
-3 high, 32 medium, 16 low.
+3 high, 32 medium, 15 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -63,7 +63,6 @@
 | [BUG-0267](#bug_0267) | low | task | `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines |
 | [BUG-0273](#bug_0273) | low | defect | A matching engine holding reports for want of a connection, or until it knows whether it serves, allocates from the heap for each |
 | [BUG-0280](#bug_0280) | low | task | Huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine |
-| [BUG-0286](#bug_0286) | low | defect | The sequencer writes its WAL snapshot file, and builds the file's names, on the thread that handles orders |
 
 ---
 
@@ -2451,6 +2450,8 @@ which checks that no report reaches a member before its record is committed, fai
 
 **Principles.** V2 of [design_principles.md](design_principles.md), the log is the record.
 
+## Closed
+
 ### BUG-0286: The sequencer writes its WAL snapshot file, and builds the file's names, on the thread that handles orders {#bug_0286}
 
 | | |
@@ -2460,6 +2461,7 @@ which checks that no report reaches a member before its record is committed, fai
 | Recorded | 2026-11-22 |
 | How | `scripts/heap_allocation_count.py`, run to check [BUG-0272](#bug_0272): with the lease requests in fixed storage, it found 6 heap calls in a minute on each sequencer's `SequencerThread`, all from `Wal::take_snapshot` |
 | Impact | Every 30 seconds by default (`snapshot_interval_seconds`), each sequencer's order-handling thread allocates two strings and creates, writes and renames a file, any of which can wait for the disk while orders wait behind it |
+| Fixed | 2026-11-22 -- the sequencer takes no WAL snapshot: it opens its WAL with `IgnoreSnapshot`, so nothing read the file. Its timer now only publishes the WAL's gauge and warns when the WAL has grown large, and its setting is `[wal] check_interval_seconds`; `ReplicatedWal::take_snapshot` is removed. The matching engine publisher, which does read its own snapshot, still takes it. Chosen by Andrew over writing the snapshot on the WAL's helper thread; [BUG-0121](#bug_0121)'s design decides how a snapshot is written if the sequencer reads one again. `heap_allocation_count.py` now passes, with no heap call on any order-handling thread, and both full suites pass |
 
 **What happens.** The sequencer's snapshot timer calls `ReplicatedWal::take_snapshot` on its own thread
 (`SequencerThread::on_timer_event`), and `Wal::take_snapshot` builds the names of the file and its temporary copy
@@ -2473,8 +2475,6 @@ count finds no call on `SequencerThread`.
 
 **Principles.** F4 and F5 of [design_principles.md](design_principles.md): no order-handling thread waits for the disk,
 and nothing on the order path allocates from the heap.
-
-## Closed
 
 ### BUG-0278: An exception that ends an application thread stops the process with exit status 0, as if it had stopped normally {#bug_0278}
 

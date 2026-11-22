@@ -237,9 +237,10 @@ library that counts every call to the heap allocator into each venue program, dr
 venue, counts for a window opened once the load has settled, and names the call stack of each call. It compares each
 order-path thread with `scripts/heap_allocation_expectations.toml`, which allows each of them none.
 
-**Today: broken, in one place.** Measured on 22 November 2026, under about 1,000 orders a second with half of them
-cancelled, in 60 seconds: each sequencer's thread makes 6 heap calls, building the names of its WAL snapshot file
-([BUG-0286](bug_list.md#bug_0286)). The matching engines' threads and the gateways' threads made none.
+**Today: holds, as measured.** On 22 November 2026, under about 1,000 orders a second with half of them cancelled,
+`heap_allocation_count.py` found no heap call in 60 seconds on any order-path thread: the sequencers', the matching
+engines' and both gateways'. The count covers the load it applies; a path that load does not reach, such as a resend
+from far back ([BUG-0113](bug_list.md#bug_0113)), is not measured by it.
 
 ### F6. Messages are not copied
 

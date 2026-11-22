@@ -374,7 +374,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // Timer ids (default-constructed = not scheduled); on_timer_event compares
     // a fired timer's id against these to identify it.
-    pubsub_itc_fw::TimerID wal_snapshot_timer_id_{};
+    pubsub_itc_fw::TimerID wal_check_timer_id_{};
     pubsub_itc_fw::TimerID lease_tick_timer_id_{};
     pubsub_itc_fw::TimerID acknowledgement_watch_timer_id_{};
     pubsub_itc_fw::TimerID engine_absence_timer_id_{};

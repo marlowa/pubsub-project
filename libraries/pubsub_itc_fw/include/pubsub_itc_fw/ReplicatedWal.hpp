@@ -459,10 +459,6 @@ class ReplicatedWal {
     [[nodiscard]] const Wal& wal() const {
         return wal_;
     }
-    /// Records where the WAL has reached, so that a restart need not read all of it. Deletes nothing.
-    void take_snapshot() {
-        wal_.take_snapshot();
-    }
     /// Whether this instance runs alone, with high availability off.
     [[nodiscard]] bool alone() const {
         return !configuration_.ha_enabled;

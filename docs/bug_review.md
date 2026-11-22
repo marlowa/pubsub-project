@@ -8,11 +8,11 @@ agreed with Andrew. An entry that is closed is no longer listed here; its record
 
 ## Summary
 
-There are 51 open entries, and each is judged below. The figures:
+There are 50 open entries, and each is judged below. The figures:
 
 | Judgement | Entries |
 |---|---|
-| Breach of a named principle | 9: BUG-0113 (what is left of it), BUG-0285, BUG-0286, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
+| Breach of a named principle | 8: BUG-0113 (what is left of it), BUG-0285, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
 | Partly done | 7: BUG-0121, BUG-0134, BUG-0262, BUG-0065, BUG-0279, BUG-0283, BUG-0069 |
 | Decision needed from Andrew | 3: BUG-0258, BUG-0281, BUG-0229; and BUG-0250 needs one choice made between two remedies |
 | Decided, and waiting to be built | 1: BUG-0048, with the recovery service of BUG-0113 |
@@ -42,8 +42,7 @@ There are 51 open entries, and each is judged below. The figures:
 
 **The order of work**, agreed with Andrew on 22 November 2026:
 
-1. The small breaches, each with an obvious remedy: BUG-0272 and BUG-0249 are closed; BUG-0286, the WAL snapshot
-   written off the thread that handles orders, is the same kind and comes next.
+1. The small breaches, each with an obvious remedy: BUG-0272, BUG-0249 and BUG-0286 are closed.
 2. The partly done entries with little left: BUG-0278 is closed; BUG-0279 (one scenario and one measurement),
    BUG-0262 (one test), and BUG-0065's scenario.
 3. The four decisions above, each put to Andrew with its background and options.
@@ -103,18 +102,16 @@ requirements to be placed in the order with the rest.
 
 ## 2. The write-ahead log, its retention, the disk, and the trading day
 
-Five entries.
+Four entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0286](bug_list.md#bug_0286): the sequencer writes its WAL snapshot file, and builds the file's names, on the thread that handles orders | **Breach** of F4 and F5 | `Wal::take_snapshot`, called from the sequencer's snapshot timer on `SequencerThread`, builds two strings and creates, writes and renames a file every 30 seconds; `heap_allocation_count.py` finds its 6 heap calls a minute on each sequencer | The names worked out once when the WAL is opened, and the snapshot written by a background thread |
 | [BUG-0113](bug_list.md#bug_0113): a resend or a request for undelivered reports can read far back in the WAL on the thread that sequences orders | **Breach** of F4, accepted for now and permitted by name in `scripts/check_standards.py` | Two reads remain on the sequencer's thread: `handle_session_replay_request`, a member's resend, and `handle_undelivered_reports_request`, the reports produced while a member had no connection. Each reads segments from the newest backwards and stops when it has what it needs, so a resend after a reconnect reads a few segments; one reaching far back, or a member away most of the day, reads much of the day's WAL. A matching engine's catch-up is read on the thread that follows the WAL and is not part of this entry | The recovery service, with the 100,000 messages for each comp id decided under R-0008; and first the decision about undelivered reports beyond that count (Summary, decision 1) |
 | [BUG-0048](bug_list.md#bug_0048): the WAL keeps the whole day | **Decided**, and waiting to be built | `Wal::truncate_below` is called by nothing, and nothing reclaims the WAL during the day. Of the positions retention depends on, the matching engine's position is not reported to the sequencer, and members' resends are to be served by the recovery service's own store | The recovery service built; the engine's position reported; and retention anchored to the lower of the follower's acknowledgement and the engine's checkpoint |
 | [BUG-0175](bug_list.md#bug_0175): while the disk is slow, the leading sequencer's own thread waits in the file system's journal | **Investigation**; a **Breach** of F4 if confirmed | Not reproduced since the WALs moved to a disk of their own mounted with `lazytime`. Finding the call needs the scheduler's events with kernel stacks, which `perf` records without root when attached to one thread (the method recorded under [BUG-0228](bug_list.md#bug_0228)) | Reproduce under a slow disk with that method, then take the call off the thread or show that F4 permits it |
 | [BUG-0264](bug_list.md#bug_0264): under overload the follower sequencer still falls behind its leader | **Investigation** | In an overload of 68,626 orders a second the leader judged its follower too far behind nine times, because its storage for orders waiting on the follower was full, and ran without it for 3,963 ms of a 26.2-second run. The leader's reactor is idle about half the time, so what holds the follower back is not known | Profile the follower in the same overload to find the stage that limits it; then keep it in step at the rate the leader sustains, or state that rate as the venue's ceiling |
 
-**Recommended order in this area.** BUG-0286 first, small and shown done by the heap count.
-BUG-0113 and BUG-0048 wait on the decision about undelivered reports and then on the recovery service.
+**Recommended order in this area.** BUG-0113 and BUG-0048 wait on the decision about undelivered reports and then on the recovery service.
 BUG-0175 and BUG-0264 are investigations to schedule.
 
 ## 3. The matching engine

@@ -243,8 +243,8 @@ struct SequencerConfiguration {
     size_t records_kept_for_publishers{32'768};
     size_t bytes_kept_for_publishers{16 * 1024 * 1024};
 
-    /** @brief How often the WAL snapshot is taken, in seconds. */
-    int32_t snapshot_interval_seconds{30};
+    /** @brief How often the WAL's gauge is published and its size checked, in seconds. */
+    int32_t check_interval_seconds{30};
 
     /**
      * @brief Whether a matching engine catching up is told to send every report again, rather than only those of the

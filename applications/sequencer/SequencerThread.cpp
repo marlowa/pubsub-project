@@ -291,8 +291,8 @@ void SequencerThread::on_initial_event() {
     // as this thread took to reach it (docs/availability/a_matching_engine_that_stops_working.md, section 3.1).
     engine_judgement_timer_id_ = start_recurring_timer_checked_between_messages(StalledEngineRule::query_interval);
 
-    wal_snapshot_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.snapshot_interval_seconds));
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL snapshot timer started (interval={}s)", config_.snapshot_interval_seconds);
+    wal_check_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.check_interval_seconds));
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL check timer started (interval={}s)", config_.check_interval_seconds);
 
     if (!config_.ha_enabled) {
         // TEST CONTRACT -- ha_test.py matches this text (scenario 47), because what it checks is that an operator is told why both instances lead.
@@ -1209,42 +1209,25 @@ void SequencerThread::KeptReportLinks::kept_reports_forwarded(int64_t discarded_
 }
 
 void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
-    if (id == wal_snapshot_timer_id_) {
-        // Published on the snapshot timer rather than per append: both change at most once per
-        // segment, which is seconds apart, so there is nothing to gain from the order path.
+    if (id == wal_check_timer_id_) {
+        // Published on a timer rather than per append: it changes at most once per segment, which is seconds apart, so
+        // there is nothing to gain from the order path.
         if (!replicated_wal_.has_value()) {
             return;
         }
         const pubsub_itc_fw::Wal& wal = replicated_wal_->wal();
         wal_segments_filled_inline_gauge_.set(static_cast<double>(wal.segments_filled_inline()));
 
-        try {
-            replicated_wal_->take_snapshot();
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: WAL snapshot taken: last_seq_no={}, record_count={}, committed through {}", wal.last_seq_no(), wal.record_count(),
-                       replicated_wal_->committed_through());
-
-            // Nothing is reclaimed here, and that is deliberate.
-            //
-            // Taking a snapshot used to delete every segment before the current one, which left
-            // the log holding about thirty seconds of history -- less the busier the venue was.
-            // A component recovering from a checkpoint asks for everything after the position it
-            // holds, and that deletion is what made the answer unavailable.
-            //
-            // Reclaiming safely needs the lowest position anything may still ask from, and the
-            // venue cannot yet establish it: the follower's is known (above), but the matching
-            // engine publishes no position, and a member's resend can reach back as far as its
-            // session goes. Deleting on a timer instead of on those positions is what the
-            // original defect was. So the log grows until they exist, which is a bounded and
-            // visible problem where silent loss was neither. See docs/bug_list.md BUG-0048.
-            if (wal.record_count() > wal_growth_warning_records) {
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                           "SequencerThread: the WAL holds {} records and nothing is reclaiming it -- retention cannot be anchored until "
-                           "every component publishes the position it may ask from (docs/bug_list.md BUG-0048)",
-                           wal.record_count());
-            }
-        } catch (const std::exception& ex) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: WAL snapshot failed: {}", ex.what());
+        // Nothing reclaims the WAL during the day. Reclaiming safely needs the lowest position anything may still ask
+        // from: the follower's is known, but the matching engine publishes no position, and a member's resend can reach
+        // back as far as its session goes. Deleting on a timer would lose what a component recovering from a checkpoint
+        // asks for. So the WAL grows until those positions exist, which is a bounded and visible problem, and this says
+        // so once it is large (docs/bug_list.md, BUG-0048).
+        if (wal.record_count() > wal_growth_warning_records) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: the WAL holds {} records and nothing is reclaiming it -- retention cannot be anchored until "
+                       "every component publishes the position it may ask from (docs/bug_list.md BUG-0048)",
+                       wal.record_count());
         }
         return;
     }

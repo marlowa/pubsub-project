@@ -387,9 +387,9 @@ always that of `WalRecord`, and the PDU payload is the encoded envelope. The CRC
 survives the death of the process but not of the machine. The copy in the follower's log is what
 survives the loss of a machine.
 
-A snapshot of the position the log has reached is written every 30 seconds
-(`[wal] snapshot_interval_seconds`), so a restart does not have to read the whole log to find where
-it ends. The log keeps all of its history: nothing is removed from it during the day
+The sequencer writes no snapshot of its log: a restarted sequencer reads the whole log, because the
+table of epochs needs every record's epoch and the check for a gap needs every record's number
+([BUG-0121](../bug_list.md#bug_0121)). The log keeps all of its history: nothing is removed from it during the day
 ([BUG-0048](../bug_list.md#bug_0048)). See
 [The write-ahead log](../durability/wal.md) and [WAL and High Availability](../availability/wal_and_ha.md).
 

@@ -73,7 +73,7 @@ tls_ca_path          = "operator_ca.crt"
 [wal]
 directory                 = "var/sequencer_wal"
 segment_size              = 4194304
-snapshot_interval_seconds = 30
+check_interval_seconds = 30
 records_kept_for_publishers = 100
 bytes_kept_for_publishers   = 40000
 

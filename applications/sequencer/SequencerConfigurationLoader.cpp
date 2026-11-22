@@ -257,12 +257,12 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
         config.records_kept_for_publishers = static_cast<size_t>(records_kept_for_publishers);
         config.bytes_kept_for_publishers = static_cast<size_t>(bytes_kept_for_publishers);
 
-        int32_t snapshot_interval_seconds = 0;
-        toml.get_required_except("wal.snapshot_interval_seconds", snapshot_interval_seconds);
-        if (snapshot_interval_seconds <= 0) {
-            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: wal.snapshot_interval_seconds must be positive");
+        int32_t check_interval_seconds = 0;
+        toml.get_required_except("wal.check_interval_seconds", check_interval_seconds);
+        if (check_interval_seconds <= 0) {
+            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: wal.check_interval_seconds must be positive");
         }
-        config.snapshot_interval_seconds = snapshot_interval_seconds;
+        config.check_interval_seconds = check_interval_seconds;
 
         toml.get_required_except("catch_up.send_every_report", config.send_every_report);
         toml.get_required_except("recovery.automatic_recovery_limit_seconds", config.automatic_recovery_limit_seconds);
