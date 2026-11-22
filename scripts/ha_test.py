@@ -5613,6 +5613,29 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 120 -- a matching engine that stays connected and stops working is replaced by the other engine.
+    #
+    # docs/availability/a_matching_engine_that_stops_working.md, section 4. The leading engine stops applying commands just
+    # after a named order, while it stays connected, answers the sequencer's questions and keeps renewing its lease. The
+    # leading sequencer must judge it stopped and say it may not lead, to both arbiters and the other engine, which then
+    # refuse its renewals: its lease runs out, the other engine leads, catches up, and answers the two orders the stalled
+    # engine passed over; a new order is accepted, and trading does not halt.
+    Scenario(
+        number=120,
+        short_name="engine_stops_working_replaced",
+        description="A matching engine that stays connected and stops working is replaced by the other engine",
+        expected_outcome=(
+            "the leading sequencer judges the engine stopped and says it may not lead; the other engine leads and answers the orders "
+            "the stalled one passed over; a new order is accepted; trading does not halt"
+        ),
+        me_ha=True,
+        assert_engine_stops_working=True,
+        expect_engine_judged_stopped=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 119 -- a matching engine that stays connected and stops working, with no other engine to lead, halts the venue.
     #
     # docs/availability/a_matching_engine_that_stops_working.md, sections 3 and 6. The one matching engine stops applying
@@ -9614,7 +9637,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
                 and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained
-                and not scenario.end_of_day_leader_stops):
+                and not scenario.assert_engine_stops_working and not scenario.end_of_day_leader_stops):
             # The promotion has already been observed by the time this runs, so this confirms an absence: the engine is
             # asked for a checkpoint first, and a cancel it sent cannot still be on its way.
             promoted_engine = resolved(ENGINE_FOLLOWING_AT_START)
@@ -12056,22 +12079,65 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "commands, stayed connected and kept its lease")
             log(f"  {judged.component} judged it stopped after {judged.message.without_progress_milliseconds} ms without progress -- OK")
 
-            gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
-            refusing = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False),
-                                             timeout=15.0, since=stop_mark)
-            if refusing is None:
+            if scenario.me_ha:
+                # The other engine must lead, catch up, and answer the orders the stalled engine passed over, and trading must
+                # go on (docs/availability/a_matching_engine_that_stops_working.md, section 4).
+                other = "matching_engine_secondary" if engine == "matching_engine_primary" else "matching_engine_primary"
+                library_events = _TEST_EVENTS.modules["test_events"]
+                if _TEST_EVENTS.wait_for(leads(library_events, other), timeout=15.0, since=stop_mark) is None:
+                    member.close()
+                    die(f"{what}: {other} never said it leads, although the sequencer said {engine} may not lead")
+                log(f"  {other} leads -- OK")
+                # Every order is answered once (V6): each report for these orders is counted, a rejection fails, and so does
+                # a second answer to the same order, looked for a while longer once both have been answered.
+                answers: dict[str, list[str]] = {cl_ord_id: [] for cl_ord_id in after_stop}
+                answer_deadline = time.monotonic() + 30.0
+                settle_until: float | None = None
+                while time.monotonic() < (settle_until if settle_until is not None else answer_deadline):
+                    reply = member.receive_until("8", timeout=0.5)
+                    if reply is not None and reply.get(11) in answers:
+                        answers[reply.get(11)].append(reply.get(39))
+                    if settle_until is None and all(answers.values()):
+                        settle_until = time.monotonic() + 2.0
+                for cl_ord_id, statuses in answers.items():
+                    if statuses != ["0"]:
+                        member.close()
+                        die(f"{what}: {cl_ord_id}, which {engine} passed over, was answered {len(statuses)} time(s) with OrdStatus {statuses}, "
+                            f"where it must be answered once, as accepted, by {other}")
+                log(f"  {other} answered each order {engine} passed over once, as accepted -- OK")
+                member.new_order_single("after-takeover-1")
+                deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
+                accepted = False
+                while time.monotonic() < deadline and not accepted:
+                    reply = member.receive_until("8", timeout=1.0)
+                    accepted = reply is not None and reply.get(11) == "after-takeover-1" and reply.get(39) == "0"
+                if not accepted:
+                    member.close()
+                    die(f"{what}: after-takeover-1, placed once {other} led, was not accepted")
+                log("  a new order is accepted -- OK")
+                gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+                if _TEST_EVENTS.find(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False, halted_for_recovery=True),
+                                     since=stop_mark) is not None:
+                    member.close()
+                    die(f"{what}: trading halted, although {other} took the lead")
                 member.close()
-                die(f"{what}: the gateway was never told to refuse orders, although no engine that works has taken them since the judgement")
-            log("  the gateway was told to refuse new orders -- OK")
-            halted = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False,
-                                                      halted_for_recovery=True),
-                                           timeout=scenario.automatic_recovery_limit_seconds + 15.0, since=stop_mark)
-            if halted is None:
+            else:
+                gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+                refusing = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False),
+                                                 timeout=15.0, since=stop_mark)
+                if refusing is None:
+                    member.close()
+                    die(f"{what}: the gateway was never told to refuse orders, although no engine that works has taken them since the judgement")
+                log("  the gateway was told to refuse new orders -- OK")
+                halted = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False,
+                                                          halted_for_recovery=True),
+                                               timeout=scenario.automatic_recovery_limit_seconds + 15.0, since=stop_mark)
+                if halted is None:
+                    member.close()
+                    die(f"{what}: trading never halted, although no engine that works has been able to trade for longer than the "
+                        f"{scenario.automatic_recovery_limit_seconds}s limit on automatic recovery")
+                log(f"  trading halted by the {scenario.automatic_recovery_limit_seconds}s limit on automatic recovery -- OK")
                 member.close()
-                die(f"{what}: trading never halted, although no engine that works has been able to trade for longer than the "
-                    f"{scenario.automatic_recovery_limit_seconds}s limit on automatic recovery")
-            log(f"  trading halted by the {scenario.automatic_recovery_limit_seconds}s limit on automatic recovery -- OK")
-            member.close()
 
         # ── A command that kills the matching engines (docs/availability/voided_commands.md, section 4) ──
         if scenario.assert_crashing_command_voided or scenario.assert_engine_death_not_voided:

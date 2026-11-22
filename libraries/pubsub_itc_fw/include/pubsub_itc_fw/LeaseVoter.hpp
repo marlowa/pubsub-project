@@ -33,6 +33,11 @@ namespace pubsub_itc_fw {
  *   - It keeps the newest statement a leader has made about its peer, and grants nothing to an instance
  *     that statement says may not lead (LeaderStatement). Its owner records the statement durably
  *     before sending the grant that carries it, as it does a promise.
+ *   - It grants nothing, neither a request to begin leading nor a renewal, to an instance another
+ *     component has said may not lead: in the matching engine pair, the leading sequencer, about an
+ *     engine it has judged to have stopped working
+ *     (docs/availability/a_matching_engine_that_stops_working.md). That is held in memory only: its
+ *     maker repeats it, and losing it only lets the instance lead for longer, as it did before.
  *
  * Time is passed in rather than read, so that the rules can be tested without waiting.
  */
@@ -186,9 +191,25 @@ class LeaseVoter {
         return recorded_statement_.same_as(statement);
     }
 
-    /// Whether this voter would let @p instance_id lead: it holds no statement saying that instance may not.
+    /// Whether this voter would let @p instance_id lead: no statement it holds says that instance may not.
     [[nodiscard]] bool may_lead(int64_t instance_id) const {
-        return recorded_statement_.instance_that_may_not_lead() != instance_id;
+        return recorded_statement_.instance_that_may_not_lead() != instance_id && instance_said_may_not_lead_ != instance_id;
+    }
+
+    /**
+     * @brief Another component says @p instance_id may not lead, or, with zero, that no instance is barred.
+     *
+     * Refused from then on, renewals included, so that an instance leading when it is barred loses its lease
+     * within a lease period. The model check that shows renewals must be refused is in
+     * docs/availability/tla/findings.md, section 5.
+     */
+    void set_instance_said_may_not_lead(int64_t instance_id) {
+        instance_said_may_not_lead_ = instance_id;
+    }
+
+    /// The instance another component says may not lead, or zero.
+    [[nodiscard]] int64_t instance_said_may_not_lead() const {
+        return instance_said_may_not_lead_;
     }
 
     /// The newest statement this voter holds, which its owner keeps durably. Its leader_id is zero if it holds none.
@@ -229,6 +250,8 @@ class LeaseVoter {
     bool held_for_self_{false};
     int32_t highest_epoch_{0};
     LeaderStatement recorded_statement_{};
+    // The instance another component says may not lead, or zero; in memory only (set_instance_said_may_not_lead).
+    int64_t instance_said_may_not_lead_{0};
 };
 
 } // namespaces

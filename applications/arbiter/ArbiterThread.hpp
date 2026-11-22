@@ -31,6 +31,7 @@
 #include "ArbiterConfiguration.hpp"
 #include <pubsub_itc_fw/ComponentLeaseVoters.hpp>
 #include <pubsub_itc_fw/ComponentStatementStore.hpp>
+#include <pubsub_itc_fw/HeldStatementFromAnotherPair.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/VoterPeerContact.hpp>
 
@@ -211,6 +212,22 @@ class ArbiterThread : public pubsub_itc_fw::TopicSubscriberThread {
 
     /// A component instance asks the arbiter pool for a lease.
     void handle_component_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+
+    // The leader of another pair says an instance of a pair this arbiter votes in may not lead, or may again: in the venue,
+    // the leading sequencer about a matching engine it has judged to have stopped working. The arbiter judges nothing; it
+    // records the statement and refuses that instance, active or passive alike, so that whichever arbiter is active holds
+    // it (docs/availability/a_matching_engine_that_stops_working.md, section 4.2).
+    void handle_statement_from_another_pair(const pubsub_itc_fw::EventMessage& message);
+    // Drops each statement whose maker's pair has since granted a higher epoch: that leadership is over.
+    void drop_statements_of_ended_leaderships();
+    // Applies what the statement held for @p pair_id says to the voters, and logs a change.
+    void apply_statement_from_another_pair(int32_t pair_id);
+    struct StatementFromAnotherPairHeld {
+        int32_t maker_pair_id{0};
+        pubsub_itc_fw::HeldStatementFromAnotherPair statement;
+    };
+    // By the pair the statement is about.
+    std::map<int32_t, StatementFromAnotherPairHeld> statements_from_another_pair_;
 
     /// Tells the peer arbiter the highest epoch granted in @p pair_id, and the newest statement held from its leader, so that
     /// neither is forgotten if the peer becomes active.

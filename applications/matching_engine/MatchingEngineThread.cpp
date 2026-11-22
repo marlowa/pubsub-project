@@ -529,6 +529,11 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         release_pdu_payload(message);
         return;
     }
+    if (pdu_id == pubsub_itc_fw::StatementFromAnotherPair::message_pdu_id) {
+        handle_statement_from_sequencer(message);
+        release_pdu_payload(message);
+        return;
+    }
     if (pdu_id == pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id) {
         // A sequencer announces its role on this engine's connection for reports to it, so that the engine paces its
         // reports by the one that leads. One arriving from the peer engine is ignored: which instance leads is decided by
@@ -1047,6 +1052,35 @@ void MatchingEngineThread::pace_on_leading_sequencer() {
     }
 }
 
+void MatchingEngineThread::handle_statement_from_sequencer(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw::StatementFromAnotherPairView view{};
+    if (!pubsub_itc_fw::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode a StatementFromAnotherPair -- dropping");
+        return;
+    }
+    if (view.pair_id != fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::matching_engine) ||
+        view.maker_pair_id != fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::sequencer)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineThread: a statement by pair {} about pair {}, not the sequencers' about the matching engines -- dropping", view.maker_pair_id,
+                   view.pair_id);
+        return;
+    }
+    if (statement_from_sequencer_.offer(
+            pubsub_itc_fw::HeldStatementFromAnotherPair::Statement{view.maker_epoch, view.number, view.instance_id, view.may_lead})) {
+        apply_statement_from_sequencer();
+    }
+}
+
+void MatchingEngineThread::apply_statement_from_sequencer() {
+    if (lease_agent_.has_value()) {
+        lease_agent_->set_instance_said_may_not_lead(statement_from_sequencer_.barred_instance());
+    }
+}
+
 void MatchingEngineThread::handle_sequencer_role_announcement(const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
@@ -1071,6 +1105,10 @@ void MatchingEngineThread::handle_sequencer_role_announcement(const pubsub_itc_f
     }
     announced->role = announcement.current_role;
     announced->epoch = announcement.epoch;
+    // A sequencer leading at a later epoch has made no statement yet: one an earlier leadership made no longer stands.
+    if (statement_from_sequencer_.maker_epoch_known(announcement.epoch)) {
+        apply_statement_from_sequencer();
+    }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: the {} sequencer (instance {}) says on connection {} that it is {} at epoch {}", which, announcement.instance_id,
                connection.get_value(), pubsub_itc_fw_app::to_string(announcement.current_role), announcement.epoch);

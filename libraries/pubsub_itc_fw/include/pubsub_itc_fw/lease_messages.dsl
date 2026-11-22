@@ -185,3 +185,29 @@ message ArbiterHeartbeat (id=402, version=1)
     i64 sent_at_nanoseconds # when this heartbeat was sent, on the sender's steady clock
     i64 echoed_nanoseconds  # the newest sent_at_nanoseconds received from the other arbiter, or zero for none
 end
+
+# ------------------------------------------------------------
+#  403 -- StatementFromAnotherPair
+#  Sent by the leader of one pair to the voters of another, to say
+#  that an instance of that pair may not lead, or that it may again.
+#  In the venue the leading sequencer sends it to both arbiters and to
+#  the matching engine that does not lead, about a matching engine it
+#  has judged to have stopped working: they refuse that engine every
+#  lease request, renewals included, so that its lease runs out and
+#  the other engine leads
+#  (docs/availability/a_matching_engine_that_stops_working.md,
+#  section 4.2). A receiver keeps the newest statement from the
+#  leadership at the highest epoch of the maker's pair it knows, and
+#  drops it on learning of a higher one
+#  (pubsub_itc_fw/HeldStatementFromAnotherPair.hpp). Held in memory only,
+#  and sent again every second while it stands.
+# ------------------------------------------------------------
+message StatementFromAnotherPair (id=403, version=1)
+    i32 maker_pair_id       # the pair whose leader makes the statement
+    i64 maker_instance_id   # the instance that leads that pair
+    i32 maker_epoch         # the epoch it leads in
+    i64 number              # goes up by one each time that leadership changes what it says
+    i32 pair_id             # the pair the statement is about
+    i64 instance_id         # the instance of that pair it names
+    bool may_lead           # false: that instance may not lead; true: it may again
+end

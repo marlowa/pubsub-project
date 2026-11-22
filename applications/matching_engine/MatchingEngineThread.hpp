@@ -51,6 +51,7 @@
 #include "PeerSettingsCheck.hpp"
 #include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
 #include <pubsub_itc_fw/EpochRecording.hpp>
+#include <pubsub_itc_fw/HeldStatementFromAnotherPair.hpp>
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
@@ -291,6 +292,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Paces on the connection for reports to the sequencer that leads now, if one is known to.
     void pace_on_leading_sequencer();
     // A sequencer's RoleAnnouncement, sent on this engine's connection for reports to it.
+    // The leading sequencer says an engine it has judged to have stopped working may not lead, or may again. This engine,
+    // as a voter, refuses that engine every lease request while the statement stands, and drops it when a sequencer
+    // announces a later leadership (docs/availability/a_matching_engine_that_stops_working.md, section 4.2).
+    void handle_statement_from_sequencer(const pubsub_itc_fw::EventMessage& message);
+    void apply_statement_from_sequencer();
+    pubsub_itc_fw::HeldStatementFromAnotherPair statement_from_sequencer_;
+
     void handle_sequencer_role_announcement(const pubsub_itc_fw::EventMessage& message);
 
     // How FollowerReportComparison acts on what it finds.

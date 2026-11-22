@@ -372,6 +372,24 @@ class PairLeaseAgent {
     }
 
     /**
+     * @brief Another component says @p instance_id may not lead, or, with zero, that no instance is barred.
+     *
+     * In the matching engine pair the leading sequencer says it about an engine it has judged to have stopped working:
+     * this instance, as a voter, then refuses that engine every request, renewals included, and does not give way to it
+     * when both ask to lead (docs/availability/a_matching_engine_that_stops_working.md, section 4.2). Held in memory
+     * only; its maker repeats it.
+     */
+    void set_instance_said_may_not_lead(int64_t instance_id) {
+        if (instance_id != participant_said_may_not_lead_) {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: {}", owner_name_,
+                       instance_id != 0 ? fmt::format("told that instance {} may not lead -- refusing it every request, renewals included", instance_id)
+                                        : std::string("told that no instance is barred from leading"));
+        }
+        participant_said_may_not_lead_ = instance_id;
+        participant_.set_instance_said_may_not_lead(instance_id);
+    }
+
+    /**
      * @brief One of the two arbiters says it holds a statement of this instance's and has written it to disk.
      *
      * Either arbiter sends this, active or passive, because each records the statement from the lease
@@ -801,6 +819,8 @@ class PairLeaseAgent {
     std::string third_voter_name_;
     LeaseTiming timing_;
     LeaseParticipant participant_;
+    // The instance another component last said may not lead, or zero, so that only a change of it is logged.
+    int64_t participant_said_may_not_lead_{0};
     std::mt19937 random_;
     Clock::time_point last_renewal_{};
     Clock::time_point asked_at_{};

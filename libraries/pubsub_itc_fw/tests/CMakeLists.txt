@@ -89,6 +89,7 @@ add_executable(pubsub_itc_fw_tests
     LeaseSimulationTest.cpp
     PairLeaseAgentTest.cpp
     ComponentLeaseVotersTest.cpp
+    HeldStatementFromAnotherPairTest.cpp
     ComponentStatementStoreTest.cpp
 )
 

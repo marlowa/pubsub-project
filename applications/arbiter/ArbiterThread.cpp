@@ -9,11 +9,14 @@
 #include <string>
 #include <thread>
 
+#include <fmt/format.h>
+
 #include <lease_messages.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/HeldStatementFromAnotherPair.hpp>
 #include <pubsub_itc_fw/LeaderEpoch.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
@@ -245,6 +248,8 @@ void ArbiterThread::on_other_framework_pdu_message(const pubsub_itc_fw::EventMes
         }
     } else if (pdu_id == pubsub_itc_fw::LeaseRequest::message_pdu_id) {
         handle_component_lease_request(conn_id, message);
+    } else if (pdu_id == pubsub_itc_fw::StatementFromAnotherPair::message_pdu_id) {
+        handle_statement_from_another_pair(message);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: unexpected PDU pdu_id={} from component on connection {} -- dropping",
                    pdu_id, conn_id.get_value());
@@ -258,7 +263,50 @@ void ArbiterThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         act_on(pool_lease_->on_tick(now));
         send_heartbeats_to_peer(now);
         check_statement_writing();
+        drop_statements_of_ended_leaderships();
     }
+}
+
+void ArbiterThread::handle_statement_from_another_pair(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw::StatementFromAnotherPairView view{};
+    if (!pubsub_itc_fw::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: failed to decode a StatementFromAnotherPair -- dropping");
+        return;
+    }
+    if (!votes_in(view.pair_id) || !votes_in(view.maker_pair_id)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "ArbiterThread: a statement by pair {} about pair {}, which this arbiter does not vote in both of -- dropping", view.maker_pair_id,
+                   view.pair_id);
+        return;
+    }
+    StatementFromAnotherPairHeld& held = statements_from_another_pair_[view.pair_id];
+    held.maker_pair_id = view.maker_pair_id;
+    // Only the leadership at the highest epoch this arbiter knows the maker's pair to have been granted may speak.
+    static_cast<void>(held.statement.maker_epoch_known(component_voters_.highest_epoch(view.maker_pair_id)));
+    if (held.statement.offer(pubsub_itc_fw::HeldStatementFromAnotherPair::Statement{view.maker_epoch, view.number, view.instance_id, view.may_lead})) {
+        apply_statement_from_another_pair(view.pair_id);
+    }
+}
+
+void ArbiterThread::drop_statements_of_ended_leaderships() {
+    for (auto& [pair_id, held] : statements_from_another_pair_) {
+        if (held.statement.maker_epoch_known(component_voters_.highest_epoch(held.maker_pair_id))) {
+            apply_statement_from_another_pair(pair_id);
+        }
+    }
+}
+
+void ArbiterThread::apply_statement_from_another_pair(int32_t pair_id) {
+    const int64_t barred = statements_from_another_pair_[pair_id].statement.barred_instance();
+    component_voters_.set_instance_said_may_not_lead(pair_id, barred);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: {}",
+               barred != 0 ? fmt::format("told that instance {} of group={} may not lead -- refusing it every lease request", barred, pair_name(pair_id))
+                           : fmt::format("no instance of group={} is barred from leading any longer", pair_name(pair_id)));
 }
 
 void ArbiterThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}

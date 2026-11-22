@@ -227,6 +227,34 @@ TEST(LeaseRulesTest, VoterRefusesAnInstanceAStatementSaysMayNotLead) {
     EXPECT_EQ(voter.consider(1, 9, now).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
 }
 
+TEST(LeaseRulesTest, VoterToldAnInstanceMayNotLeadRefusesItsRenewalsUntilToldOtherwise) {
+    pubsub_itc_fw::LeaseVoter voter(lease_period, start, 0);
+    const Clock::time_point granted_at = start + lease_period;
+    EXPECT_EQ(voter.consider(1, 1, granted_at).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
+    // The leading sequencer says instance 1, which this voter has promised to, may not lead: its renewal is refused, so
+    // that its lease runs out.
+    voter.set_instance_said_may_not_lead(1);
+    EXPECT_EQ(voter.consider(1, 1, granted_at + milliseconds{1000}).verdict, pubsub_itc_fw::LeaseVoter::Verdict::RefusedMayNotLead);
+    // Once its promise to instance 1 runs out, the other instance may have the vote.
+    EXPECT_EQ(voter.consider(2, 2, granted_at + lease_period).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
+    voter.set_instance_said_may_not_lead(0);
+    EXPECT_EQ(voter.instance_said_may_not_lead(), 0);
+    EXPECT_EQ(voter.consider(1, 5, granted_at + 2 * lease_period).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
+}
+
+TEST(LeaseRulesTest, ParticipantAskingToLeadDoesNotGiveWayToAPeerItMayNotLetLead) {
+    pubsub_itc_fw::LeaseParticipant participant(2, lease_period, drift_allowance, start, 0, no_statements);
+    const Clock::time_point now = start + lease_period;
+    EXPECT_EQ(participant.begin_asking_to_lead(), 2);
+    participant.set_instance_said_may_not_lead(1);
+    // The barred peer asks at a higher epoch. Giving way would only abandon this instance's own request, since the vote
+    // would then be refused anyway.
+    const auto outcome = participant.on_peer_request(1, 5, now);
+    EXPECT_FALSE(outcome.gave_up_asking_to_lead);
+    EXPECT_NE(outcome.answer.verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
+    EXPECT_EQ(participant.state(), pubsub_itc_fw::LeaseHolder::State::Candidate);
+}
+
 TEST(LeaseRulesTest, VoterKeepsOnlyTheNewestStatement) {
     pubsub_itc_fw::LeaseVoter voter(lease_period, start, 0);
     const Clock::time_point now = start + lease_period;

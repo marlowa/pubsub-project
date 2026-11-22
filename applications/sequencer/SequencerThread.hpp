@@ -847,6 +847,18 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     /// Judges the engine orders are routed to from its last answer, and asks it its position again. Once a second.
     void judge_leading_engine();
+
+    // The statement this instance, leading, makes that an engine it judged to have stopped working may not lead: sent to
+    // both arbiters and the engines, and again every second while it stands, so that the engine's lease runs out and the
+    // other engine leads. It lasts only for the leadership that made it
+    // (docs/availability/a_matching_engine_that_stops_working.md, section 4.2).
+    int64_t engine_said_may_not_lead_{0};
+    int32_t statement_about_engine_epoch_{0};
+    int64_t statement_about_engine_number_{0};
+    /// Makes the statement that @p engine_instance may not lead, and sends it.
+    void say_engine_may_not_lead(int64_t engine_instance);
+    /// Sends the statement standing, if this instance still leads in the leadership that made it.
+    void send_statement_about_engine();
     /// Sends the test event that describes the round just judged.
     void report_round_without_progress(int64_t now_ns);
     /// Whether this thread has, now, messages from a matching engine's connection for reports that it has not yet taken.

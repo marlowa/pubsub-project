@@ -98,7 +98,10 @@ class LeaseParticipant {
      */
     [[nodiscard]] PeerRequestOutcome on_peer_request(int64_t candidate_id, int32_t epoch, Clock::time_point now) {
         PeerRequestOutcome outcome;
-        if (holder_.state() == LeaseHolder::State::Candidate && epoch > holder_.epoch() && !voter_.restarting(now)) {
+        // A candidate gives way to a peer it would not let lead only to refuse it afterwards, and gives up its own request
+        // for nothing; so it gives way only to a peer no statement it holds bars
+        // (docs/availability/a_matching_engine_that_stops_working.md, section 4.2).
+        if (holder_.state() == LeaseHolder::State::Candidate && epoch > holder_.epoch() && !voter_.restarting(now) && voter_.may_lead(candidate_id)) {
             holder_.stop();
             voter_.release_self();
             outcome.gave_up_asking_to_lead = true;
@@ -269,6 +272,11 @@ class LeaseParticipant {
         const bool held_elsewhere = echoed_by_peer_ >= statement_.number ||
                                     (held_by_arbiter_[0] >= statement_.number && held_by_arbiter_[1] >= statement_.number) || held_alone_ >= statement_.number;
         return holder_.state() == LeaseHolder::State::Leading && !statement_.peer_may_lead && held_elsewhere && voter_.holds_statement(statement_);
+    }
+
+    /// Another component says @p instance_id may not lead, or, with zero, that no instance is barred (LeaseVoter).
+    void set_instance_said_may_not_lead(int64_t instance_id) {
+        voter_.set_instance_said_may_not_lead(instance_id);
     }
 
     /**
