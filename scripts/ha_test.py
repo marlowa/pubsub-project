@@ -178,7 +178,7 @@ Options:
                           must pass from that start too.  Applies only to the
                           scenarios that run both matching engines; with
                           'all', only those are run, except the load
-                          scenarios 115 and 116.
+                          scenarios 115, 116 and 124.
 
 When a scenario fails, its Quill logs and the test clients' output are copied to
 tmp/ha_test_failures/<time>-scenario-<number>-<short name> under the project before the next
@@ -706,6 +706,38 @@ def check_engines_judged_working(scenario: "Scenario") -> None:
         log(f"  {line}")
     if judged and not scenario.expect_engine_judged_stopped:
         die("a leading sequencer judged a working matching engine to have stopped working")
+
+
+def check_engine_held_up_behind_the_sequencer() -> None:
+    """
+    Fail unless the round events show the leading engine held up behind the sequencer: a round, with messages from an engine
+    unread by the sequencer, in which the engine did not answer, or answered without having moved, while commands sent to it
+    were beyond the last position it gave. An engine paused for its reports to be read stops reading the connection its
+    questions arrive on, so such a round is usually one without an answer. Without one the scenario did not test that the
+    sequencer's own delay is not blamed on the engine (docs/availability/a_matching_engine_that_stops_working.md, section
+    3.1).
+    """
+    round_event = message_of(_TEST_EVENTS.modules["sequencer_test_events"].EngineRoundWithoutProgress)
+    last_applied: dict[str, int] = {}
+    rounds = unread = unanswered = held_up = 0
+    for event in _TEST_EVENTS.events:
+        if not round_event(event):
+            continue
+        rounds += 1
+        m = event.message
+        known = last_applied.get(event.component)
+        unread += 1 if m.unread_from_engine else 0
+        unanswered += 0 if m.answered else 1
+        not_moved = not m.answered or (known is not None and m.highest_applied == known)
+        if m.unread_from_engine and not_moved and known is not None and m.highest_command_sent > known:
+            held_up += 1
+        if m.answered:
+            last_applied[event.component] = m.highest_applied
+    log(f"  rounds of judging the engine: {rounds}, {unread} with messages from an engine unread, {unanswered} unanswered")
+    if held_up == 0:
+        die("the leading engine was never seen held up behind the sequencer, so the scenario did not test that the sequencer's own "
+            "delay is not blamed on it")
+    log(f"  the leading engine was held up behind the sequencer in {held_up} round(s), and was not judged stopped -- OK")
 
 
 def log_last_rounds(modules, count: int) -> None:
@@ -1602,6 +1634,15 @@ class Scenario(NamedTuple):
     # must say it may lead again once it follows and has caught up, and, with the engine that took over killed, it must lead
     # (docs/availability/a_matching_engine_that_stops_working.md, section 5).
     assert_barred_engine_may_lead_again: bool = False
+    # How long the sequencers spend on each report from an engine, in microseconds, with their connections for reports
+    # limited ([test_events] read_reports_slowly_us); 0 for no delay. With it, the leading engine is held up behind the
+    # leading sequencer's own delay.
+    sequencer_reads_reports_slowly_us: int = 0
+    # When True, require the round events to show the leading engine held up behind the sequencer -- its applied position
+    # not moving across two rounds, with commands outstanding and messages from it unread -- so that the scenario tested
+    # that the sequencer's own delay is not blamed on the engine; that no engine is judged stopped is required of every
+    # scenario (docs/availability/a_matching_engine_that_stops_working.md, section 3.1, decision 4).
+    assert_sequencer_delay_not_blamed: bool = False
     # When True, the binary load client offers 1.8 million orders on four sessions as fast as the sockets accept them,
     # faster than the venue processes them. Each gateway stops reading its members while 16,384 of its commands are
     # unanswered, so no queue in the order path grows without limit. No sequencer or matching engine may lose its lease
@@ -5717,6 +5758,31 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 124 -- a sequencer slow to read its reports does not get a working engine judged stopped.
+    #
+    # docs/availability/a_matching_engine_that_stops_working.md, section 3.1, decision 4. As scenario 116, orders are
+    # offered faster than the venue answers them, and the sequencers also spend 50 microseconds on each report, so the
+    # leading engine's reports back up and it pauses reading commands: an engine held up by the sequencer's own delay. It
+    # must not be judged stopped, and the round events must show it was held up, so that the scenario tested something.
+    Scenario(
+        number=124,
+        short_name="sequencer_delay_not_blamed",
+        description="A sequencer slow to read its reports does not get a working matching engine judged to have stopped",
+        expected_outcome=(
+            "as scenario 116, every order is acknowledged and no leader is lost; the leading engine is held up behind the sequencer "
+            "and is not judged stopped"
+        ),
+        me_ha=True,
+        binary_gateway=True,
+        skip_baseline_orders=True,
+        assert_overload_keeps_leaders_and_standbys=True,
+        sequencer_reads_reports_slowly_us=50,
+        assert_sequencer_delay_not_blamed=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 119 -- a matching engine that stays connected and stops working, with no other engine to lead, halts the venue.
     #
     # docs/availability/a_matching_engine_that_stops_working.md, sections 3 and 6. The one matching engine stops applying
@@ -9081,6 +9147,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Phase 1: start all processes ──────────────────────────────────────
         global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW, _DIE_APPLYING_NOW  # pylint: disable=global-statement
         global _LEASE_LOST_AND_REGAINED_NOW, _STATEMENT_WRITE_DELAY_MS_NOW, _STOP_APPLYING_NOW, _STOP_SENDING_NOW  # pylint: disable=global-statement
+        global _READ_REPORTS_SLOWLY_US_NOW  # pylint: disable=global-statement
         _INSTALL_PREFIX = prefix
         _ANNOUNCEMENT_DELAY_MS_NOW = scenario.delay_session_announcements_ms
         _STATEMENT_WRITE_DELAY_MS_NOW = scenario.delay_statement_writes_ms
@@ -9100,6 +9167,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         stops_working = dies_first if scenario.me_ha else "matching_engine"
         _STOP_APPLYING_NOW = {}
         _STOP_SENDING_NOW = {}
+        _READ_REPORTS_SLOWLY_US_NOW = scenario.sequencer_reads_reports_slowly_us
         if scenario.assert_engine_stops_working and scenario.engine_stops_by == "sending":
             _STOP_SENDING_NOW = {stops_working: "stop-sending-1"}
         elif scenario.assert_engine_stops_working:
@@ -11486,8 +11554,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
             sequencer_events = _TEST_EVENTS.modules["sequencer_test_events"]
             cancel_written = message_of(sequencer_events.SessionCancelWritten, "sequencer_primary")
             engine_finished = message_of(engine_events.SessionOrdersCancelled, "matching_engine_primary")
-            for what, predicate, timeout in [("written", cancel_written, _LOAD_CANCELS_TIMEOUT),
-                                             ("carried out", engine_finished, _LOAD_CANCELS_TIMEOUT + _LOAD_CANCELS_SETTLE)]:
+            # A scenario whose sequencers read reports slowly on purpose takes longer over the reports of the cancels: twice as
+            # long, at the 50 microseconds a report scenario 124 uses, about 20,000 reports a second against the engine's 34,000.
+            slowed = 2.0 if scenario.sequencer_reads_reports_slowly_us > 0 else 1.0
+            for what, predicate, timeout in [("written", cancel_written, _LOAD_CANCELS_TIMEOUT * slowed),
+                                             ("carried out", engine_finished, (_LOAD_CANCELS_TIMEOUT + _LOAD_CANCELS_SETTLE) * slowed)]:
                 deadline = time.monotonic() + timeout
                 while len([event for event in _TEST_EVENTS.events[events_from:] if predicate(event)]) < _LOAD_SESSIONS:
                     if time.monotonic() > deadline:
@@ -15515,6 +15586,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         log_orders_held_without_an_engine()
         check_engines_judged_working(scenario)
+        if scenario.assert_sequencer_delay_not_blamed:
+            check_engine_held_up_behind_the_sequencer()
 
         result_pass = True
         log("")
@@ -15543,6 +15616,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
     _LEASE_LOST_AND_REGAINED_NOW = {}
     _STOP_APPLYING_NOW = {}
     _STOP_SENDING_NOW = {}
+    _READ_REPORTS_SLOWLY_US_NOW = 0
     if result_pass:
         try:
             replayed = run_wal_replay_check(prefix, launched_configs)
@@ -15602,7 +15676,7 @@ def _scenario_type(value: str):
 # costs the leaders, which does not depend on which matching engine started first, so "--scenario all" with
 # --secondary-engine-first leaves them out, and they run in the primary-first suite only. Either can still be run
 # secondary-first on its own, by number.
-_LOAD_SCENARIOS_RUN_PRIMARY_FIRST_ONLY = frozenset({115, 116})
+_LOAD_SCENARIOS_RUN_PRIMARY_FIRST_ONLY = frozenset({115, 116, 124})
 
 def main() -> None:
     valid_scenario_numbers = sorted(_SCENARIO_MAP.keys())
@@ -15657,7 +15731,7 @@ def main() -> None:
         help=(
             "Start matching_engine_secondary before matching_engine_primary, and start the primary only once the "
             "secondary leads. Applies only to the scenarios that run both matching engines; with 'all', only those "
-            "scenarios are run, except the load scenarios 115 and 116"
+            "scenarios are run, except the load scenarios 115, 116 and 124"
         ),
     )
     args = parser.parse_args()
