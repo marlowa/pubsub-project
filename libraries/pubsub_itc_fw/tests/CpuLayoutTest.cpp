@@ -18,10 +18,11 @@
  * easy to test because it touches no hardware: std::filesystem plus TOML parsing, and
  * nine distinct ways to fail, every one reachable by writing a temporary file.
  *
- * verify_cores_present() and apply_background_affinity() are deliberately NOT tested here.
- * They call sched_setaffinity and interrogate the running machine, so what they do depends
- * on the host the suite happens to run on -- the kind of test that passes everywhere until
- * it matters. They remain honestly uncovered.
+ * verify_cores_present() and apply_background_affinity() are tested in the ways that do not
+ * depend on the machine the suite runs on: core 0, which Linux does not take offline, is always
+ * present, and core 4000 is beyond any machine this runs on. The failures of
+ * apply_background_affinity() are reached before it changes anything, and the tests check that
+ * the process's mask is left as it was.
  */
 
 #include <filesystem>
@@ -29,9 +30,12 @@
 #include <string>
 #include <vector>
 
+#include <sched.h>
+
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/CpuLayout.hpp>
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 
 using namespace pubsub_itc_fw;
 
@@ -43,13 +47,11 @@ class CpuLayoutTest : public ::testing::Test {
   protected:
     void SetUp() override {
         const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
-        directory_ = std::filesystem::temp_directory_path() / (std::string("cpu_layout_test_") + info->name());
-        std::filesystem::remove_all(directory_);
-        std::filesystem::create_directories(directory_);
+        directory_ = tests_common::make_scratch_directory(std::string("cpu_layout_test_") + info->name());
     }
 
     void TearDown() override {
-        std::filesystem::remove_all(directory_);
+        tests_common::remove_scratch_directory(directory_.string());
     }
 
     // Write ``content`` as the layout file and return its path.
@@ -245,4 +247,61 @@ admitted = false
     EXPECT_TRUE(layout.machine_name().empty());
     EXPECT_FALSE(layout.quill_backend_core().has_value());
     EXPECT_FALSE(layout.is_admitted());
+}
+
+namespace {
+
+// A layout giving the named component the given cores, all of them in the background pool too.
+std::string layout_with_cores(const std::string& cores) {
+    return "[machine]\nbackground_cores = \"" + cores + "\"\n\n[components.sequencer_primary]\nadmitted = true\nhot_path_cores = \"" + cores + "\"\n";
+}
+
+bool masks_equal(const cpu_set_t& first, const cpu_set_t& second) {
+    return CPU_EQUAL(&first, &second) != 0;
+}
+
+} // namespaces
+
+TEST_F(CpuLayoutTest, CoresThatAreOnlineArePresent) {
+    CpuLayout layout;
+    const auto [loaded, error] = layout.load(write_layout(layout_with_cores("0")), "sequencer_primary");
+    ASSERT_TRUE(loaded) << error;
+    const auto [present, missing] = layout.verify_cores_present();
+    EXPECT_TRUE(present) << missing;
+}
+
+TEST_F(CpuLayoutTest, ACoreThatIsNotOnlineIsNamed) {
+    CpuLayout layout;
+    const auto [loaded, error] = layout.load(write_layout(layout_with_cores("0,4000")), "sequencer_primary");
+    ASSERT_TRUE(loaded) << error;
+    const auto [present, missing] = layout.verify_cores_present();
+    EXPECT_FALSE(present);
+    EXPECT_NE(missing.find("4000"), std::string::npos) << missing;
+    EXPECT_NE(missing.find("re-run deploy.py"), std::string::npos) << missing;
+}
+
+TEST_F(CpuLayoutTest, ApplyingTheBackgroundMaskFromAMissingLayoutFailsAndChangesNothing) {
+    cpu_set_t before;
+    CPU_ZERO(&before);
+    ASSERT_EQ(::sched_getaffinity(0, sizeof(before), &before), 0);
+    const auto [applied, error] = apply_background_affinity(absent_path(), "sequencer_primary");
+    EXPECT_FALSE(applied);
+    EXPECT_FALSE(error.empty());
+    cpu_set_t after;
+    CPU_ZERO(&after);
+    ASSERT_EQ(::sched_getaffinity(0, sizeof(after), &after), 0);
+    EXPECT_TRUE(masks_equal(before, after));
+}
+
+TEST_F(CpuLayoutTest, ApplyingTheBackgroundMaskWithACoreThatIsNotOnlineFailsAndChangesNothing) {
+    cpu_set_t before;
+    CPU_ZERO(&before);
+    ASSERT_EQ(::sched_getaffinity(0, sizeof(before), &before), 0);
+    const auto [applied, error] = apply_background_affinity(write_layout(layout_with_cores("0,4000")), "sequencer_primary");
+    EXPECT_FALSE(applied);
+    EXPECT_NE(error.find("4000"), std::string::npos) << error;
+    cpu_set_t after;
+    CPU_ZERO(&after);
+    ASSERT_EQ(::sched_getaffinity(0, sizeof(after), &after), 0);
+    EXPECT_TRUE(masks_equal(before, after));
 }

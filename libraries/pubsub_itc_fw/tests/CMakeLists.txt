@@ -90,6 +90,7 @@ add_executable(pubsub_itc_fw_tests
     PairLeaseAgentTest.cpp
     ComponentLeaseVotersTest.cpp
     HeldStatementFromAnotherPairTest.cpp
+    HotPathThreadCountTest.cpp
     ComponentStatementStoreTest.cpp
 )
 

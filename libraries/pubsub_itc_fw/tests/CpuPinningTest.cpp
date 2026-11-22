@@ -155,3 +155,37 @@ TEST(CpuPinningTest, PinToDisallowedCoreFails) {
     // affinity unchanged.
     EXPECT_FALSE(pin_thread_to_core(::pthread_self(), CpuId{disallowed}));
 }
+
+TEST(CpuPinningTest, ACoreListIsWrittenInOrderWithRunsAsRanges) {
+    EXPECT_EQ(format_cpu_list({}), "(none)");
+    EXPECT_EQ(format_cpu_list({CpuId{4}}), "4");
+    EXPECT_EQ(format_cpu_list({CpuId{9}, CpuId{0}, CpuId{1}, CpuId{2}, CpuId{5}, CpuId{7}, CpuId{8}}), "0-2,5,7-9");
+}
+
+TEST(CpuPinningTest, AnEmptyCoreListIsRefusedByEveryWayOfApplyingAMask) {
+    EXPECT_FALSE(apply_affinity_mask(::pthread_self(), {}));
+    EXPECT_FALSE(apply_thread_affinity_mask(static_cast<pid_t>(::syscall(SYS_gettid)), {}));
+    EXPECT_FALSE(apply_process_affinity_mask({}));
+}
+
+TEST(CpuPinningTest, EachWayOfApplyingAMaskSucceedsOnACoreTheThreadMayUse) {
+    cpu_set_t original;
+    CPU_ZERO(&original);
+    ASSERT_EQ(::sched_getaffinity(0, sizeof(original), &original), 0);
+    const int chosen = first_allowed_cpu();
+    ASSERT_GE(chosen, 0);
+
+    EXPECT_TRUE(apply_affinity_mask(::pthread_self(), {CpuId{chosen}}));
+    cpu_set_t applied;
+    CPU_ZERO(&applied);
+    ASSERT_EQ(::sched_getaffinity(0, sizeof(applied), &applied), 0);
+    EXPECT_EQ(CPU_COUNT(&applied), 1);
+    EXPECT_TRUE(CPU_ISSET(chosen, &applied));
+    ASSERT_EQ(::sched_setaffinity(0, sizeof(original), &original), 0); // restore
+
+    EXPECT_TRUE(apply_thread_affinity_mask(static_cast<pid_t>(::syscall(SYS_gettid)), {CpuId{chosen}}));
+    ASSERT_EQ(::sched_setaffinity(0, sizeof(original), &original), 0); // restore
+
+    EXPECT_TRUE(apply_process_affinity_mask({CpuId{chosen}}));
+    ASSERT_EQ(::sched_setaffinity(0, sizeof(original), &original), 0); // restore
+}
