@@ -2428,13 +2428,18 @@ no test runs.
 the secondary, which led, was killed in the same second. The primary said it led at 01:12:48, ten seconds later. The
 scenario passed, because it allows 20 seconds and the scenario's limit on automatic recovery is 600 seconds.
 
-**The probable cause, from the timing, not yet confirmed.** An instance writes each promise it makes to disk with an
-expiry ten seconds later than the true one, so that granting its leader a renewal every second rewrites the file only
-now and then; a restarted instance honours the expiry it reads back, which "only makes the restarted instance
-stricter" ([majority_leases.md](availability/majority_leases.md), rule 6). The restarted primary, following, granted
-the secondary's renewals, so when the secondary died it may have had to wait out a promise recorded up to about ten
-seconds ahead before it could ask to lead. If so, any standby restarted within about ten seconds of its leader's death
-takes over that much later, and the cost is not that of BUG-0194, which only made it visible.
+**The cause, confirmed on 22 November 2026.** Scenario 123 was run five times with the lease test events printed after
+the kill. In three runs the restarted engine asked to lead 2.6 to 3.0 seconds after the kill and was granted at once; in
+two it asked only after 10.38 seconds, and was again granted at once. So the voters never refused it: it held back from
+asking. An instance writes each promise it makes to disk with an expiry ten seconds later than the true one
+(`PairLeaseAgent::promise_record_margin`), so that granting its leader a renewal every second rewrites the file only
+now and then ([majority_leases.md](availability/majority_leases.md), rule 6). On restarting, an instance takes that
+recorded expiry back as its promise (`LeaseVoter::resume_with_kept_promise`), and the first renewal it grants afterwards
+sets the expiry to the true one again (`LeaseVoter::consider`). When the leader dies before that renewal arrives, the
+restarted instance waits out the recorded expiry, up to the margin beyond the true one, before it may ask to lead. Which
+of the two happens depends only on whether a renewal came between the restart and the death. The same applies to every
+pair that keeps its promises on disk, the sequencers' as well as the engines'. The cost is not that of BUG-0194, which
+only made it visible.
 
 **What is wanted.**
 
