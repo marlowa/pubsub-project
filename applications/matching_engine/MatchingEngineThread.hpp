@@ -296,6 +296,9 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // as a voter, refuses that engine every lease request while the statement stands, and drops it when a sequencer
     // announces a later leadership (docs/availability/a_matching_engine_that_stops_working.md, section 4.2).
     void handle_statement_from_sequencer(const pubsub_itc_fw::EventMessage& message);
+    // Of the reports held, those not yet sent to the sequencer that leads, while its connection for reports is up; 0 when
+    // none leads or that connection is down (EnginePosition::reports_held_for_leading_sequencer).
+    [[nodiscard]] int64_t reports_held_for_leading_sequencer() const;
     void apply_statement_from_sequencer();
     pubsub_itc_fw::HeldStatementFromAnotherPair statement_from_sequencer_;
 

@@ -188,8 +188,10 @@ assertion-free test the coverage figure cannot see.
   runs the scenarios with both matching engines again, with the secondary leading at the start, which is how the
   venue stands after any failover of the matching engine; it found a defect the first run could not
   ([BUG-0195](../bug_list.md#bug_0195)). The second run is needed only for a change to the matching engines, the
-  sequencers or the high availability code, and it leaves out the two load scenarios, 115 and 116, whose subject
-  does not depend on which engine started first. The other `scripts/*_test.py`
+  sequencers or the high availability code, and it leaves out the three load scenarios, 115, 116 and 124, whose
+  subject does not depend on which engine started first. Every scenario fails if the leading sequencer judges a
+  working matching engine to have stopped, and logs the longest any engine went without progress while it had work
+  ([a_matching_engine_that_stops_working.md](../availability/a_matching_engine_that_stops_working.md), section 8). The other `scripts/*_test.py`
   files test the authentication service, FIX capture and the FIX client, and `scripts/tests/` and
   `python/` hold the Python tests.
 - The framework's tests are excluded from the coverage report: they are the instrument, not the

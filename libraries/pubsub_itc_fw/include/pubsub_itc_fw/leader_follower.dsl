@@ -337,6 +337,7 @@ message EnginePosition (id=119, version=1)
     i64 reports_held         # how many reports it holds, not yet sent to every sequencer, for want of a connection or until it knows it leads
     bool leads               # true: the engine acts on orders; false: it follows, answering a query that asked it to
     i32 engine_epoch         # the epoch of the engines' leadership the engine knows
+    i64 reports_held_for_leading_sequencer # of reports_held, those not yet sent to the sequencer that leads, while its connection for reports is up; 0 when none leads or that connection is down
 end
 
 # ------------------------------------------------------------

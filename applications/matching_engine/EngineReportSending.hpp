@@ -146,6 +146,19 @@ class EngineReportSending {
         return held_.size();
     }
 
+    /// How many held reports have not yet been sent to @p sequencer. A report sent to the leading sequencer and held only
+    /// for the other one is not owed to the leader: the leading sequencer judges whether this engine sends its reports by
+    /// this count, not by held() (docs/availability/a_matching_engine_that_stops_working.md, section 3).
+    [[nodiscard]] size_t held_not_sent_to(Sequencer sequencer) const {
+        size_t count = 0;
+        for (const HeldEngineReport& report : held_) {
+            if (!(sequencer == Sequencer::primary ? report.sent_to_primary : report.sent_to_secondary)) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
     /// The epoch under which the last report sent was numbered; 0 when none has been sent.
     [[nodiscard]] int32_t last_numbered_epoch() const {
         return report_number_epoch_;

@@ -162,6 +162,19 @@ TEST_F(EngineReportSendingTest, ReportsAreHeldUntilTheEngineServesAndThenSentNum
     EXPECT_EQ(sending_->held(), 0U);
 }
 
+TEST_F(EngineReportSendingTest, ReportsSentToOneSequencerAndHeldForTheOtherAreNotHeldBackFromTheFirst) {
+    // Produced while no connection for reports is up, so held; then the primary's connection comes back and they are sent
+    // on it, and kept for the secondary, which is expected and still not connected.
+    EXPECT_FALSE(send("report-1", 1));
+    EXPECT_FALSE(send("report-2", 2));
+    sending_->connection_established(Sequencer::primary, primary_);
+    sending_->release_for_connection(7, false);
+    EXPECT_EQ(links_.sent_on(11), (std::vector<std::string>{"report-1", "report-2"}));
+    EXPECT_EQ(sending_->held(), 2U) << "kept for the secondary";
+    EXPECT_EQ(sending_->held_not_sent_to(Sequencer::primary), 0U);
+    EXPECT_EQ(sending_->held_not_sent_to(Sequencer::secondary), 2U);
+}
+
 TEST_F(EngineReportSendingTest, ReportsHeldUntilTheEngineServesAreDiscardedWhenItFollows) {
     connect_both();
     EXPECT_FALSE(send("report-1", 1, 7, true));

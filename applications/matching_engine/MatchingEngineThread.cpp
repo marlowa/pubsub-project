@@ -1052,6 +1052,22 @@ void MatchingEngineThread::on_connection_writable(pubsub_itc_fw::ConnectionID id
     report_pacing_.connection_written(id);
 }
 
+int64_t MatchingEngineThread::reports_held_for_leading_sequencer() const {
+    // Reports held only for the sequencer that does not lead, or for one whose connection is down, wait for a connection,
+    // not for this engine: the leading sequencer must not take them as reports this engine has stopped sending.
+    const pubsub_itc_fw::ConnectionID& primary = report_sending_.connection(EngineReportSending::Sequencer::primary);
+    const pubsub_itc_fw::ConnectionID& secondary = report_sending_.connection(EngineReportSending::Sequencer::secondary);
+    const bool primary_leads = primary.is_valid() && primary_sequencer_role_.role == pubsub_itc_fw_app::Role::leader;
+    const bool secondary_leads = secondary.is_valid() && secondary_sequencer_role_.role == pubsub_itc_fw_app::Role::leader;
+    if (primary_leads && (!secondary_leads || primary_sequencer_role_.epoch >= secondary_sequencer_role_.epoch)) {
+        return static_cast<int64_t>(report_sending_.held_not_sent_to(EngineReportSending::Sequencer::primary));
+    }
+    if (secondary_leads) {
+        return static_cast<int64_t>(report_sending_.held_not_sent_to(EngineReportSending::Sequencer::secondary));
+    }
+    return 0;
+}
+
 void MatchingEngineThread::pace_on_leading_sequencer() {
     const pubsub_itc_fw::ConnectionID& primary = report_sending_.connection(EngineReportSending::Sequencer::primary);
     const pubsub_itc_fw::ConnectionID& secondary = report_sending_.connection(EngineReportSending::Sequencer::secondary);
@@ -1936,6 +1952,7 @@ void MatchingEngineThread::handle_engine_position_query(const pubsub_itc_fw::Eve
     answer.reports_held = static_cast<int64_t>(report_sending_.held());
     answer.leads = acting_on_orders;
     answer.engine_epoch = epoch_;
+    answer.reports_held_for_leading_sequencer = reports_held_for_leading_sequencer();
     send_pdu(message.connection_id(), pubsub_itc_fw_app::EnginePosition::message_pdu_id, 0, answer);
     // Debug: the leading sequencer asks once a second, to judge whether this engine works
     // (docs/availability/a_matching_engine_that_stops_working.md).

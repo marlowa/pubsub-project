@@ -2671,9 +2671,10 @@ void SequencerThread::handle_engine_position(const pubsub_itc_fw::ConnectionID& 
         if (conn_id == judged_engine_) {
             leading_engine_applied_ = view.highest_applied;
             const int64_t arrived_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            stalled_engine_.answer(view.request_id - stall_request_ids_from,
-                                   StalledEngineRule::Position{view.highest_applied, view.reports_sent_epoch, view.reports_sent_through, view.reports_held},
-                                   arrived_ns);
+            stalled_engine_.answer(
+                view.request_id - stall_request_ids_from,
+                StalledEngineRule::Position{view.highest_applied, view.reports_sent_epoch, view.reports_sent_through, view.reports_held_for_leading_sequencer},
+                arrived_ns);
         }
         return;
     }
