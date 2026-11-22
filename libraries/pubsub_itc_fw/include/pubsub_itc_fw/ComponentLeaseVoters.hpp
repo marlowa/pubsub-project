@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <map>
 
+#include <pubsub_itc_fw/InstancesBarredFromLeading.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LeaseVoter.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -134,24 +135,24 @@ class ComponentLeaseVoters {
     }
 
     /**
-     * @brief Another component says @p instance_id of @p pair_id may not lead, or, with zero, that none is barred.
+     * @brief Another component says which instances of @p pair_id may not lead: neither, one, or both.
      *
-     * Kept beside the voters, so that a voter made later, when this arbiter becomes active, refuses the instance too.
-     * The arbiter judges nothing: it records what the leading sequencer says about a matching engine
+     * Kept beside the voters, so that a voter made later, when this arbiter becomes active, refuses them too. The
+     * arbiter judges nothing: it records what the leading sequencer says about the matching engines
      * (docs/availability/a_matching_engine_that_stops_working.md, section 4.2).
      */
-    void set_instance_said_may_not_lead(int32_t pair_id, int64_t instance_id) {
-        said_may_not_lead_[pair_id] = instance_id;
+    void set_instances_said_may_not_lead(int32_t pair_id, const pubsub_itc_fw::InstancesBarredFromLeading& barred) {
+        said_may_not_lead_[pair_id] = barred;
         const auto voter = voters_.find(pair_id);
         if (voter != voters_.end()) {
-            voter->second.set_instance_said_may_not_lead(instance_id);
+            voter->second.set_instances_said_may_not_lead(barred);
         }
     }
 
-    /// The instance of @p pair_id another component says may not lead, or zero.
-    [[nodiscard]] int64_t instance_said_may_not_lead(int32_t pair_id) const {
+    /// The instances of @p pair_id another component says may not lead.
+    [[nodiscard]] pubsub_itc_fw::InstancesBarredFromLeading instances_said_may_not_lead(int32_t pair_id) const {
         const auto found = said_may_not_lead_.find(pair_id);
-        return found == said_may_not_lead_.end() ? 0 : found->second;
+        return found == said_may_not_lead_.end() ? pubsub_itc_fw::InstancesBarredFromLeading{} : found->second;
     }
 
     /// The newest statement held for @p pair_id; its leader_id is zero if none is held.
@@ -171,7 +172,7 @@ class ComponentLeaseVoters {
         auto voter = voters_.find(pair_id);
         if (voter == voters_.end()) {
             voter = voters_.emplace(pair_id, pubsub_itc_fw::LeaseVoter(lease_period_, active_since_, highest_epochs_[pair_id])).first;
-            voter->second.set_instance_said_may_not_lead(instance_said_may_not_lead(pair_id));
+            voter->second.set_instances_said_may_not_lead(instances_said_may_not_lead(pair_id));
             const auto statement = statements_.find(pair_id);
             if (statement != statements_.end()) {
                 voter->second.restore_recorded_statement(statement->second);
@@ -186,7 +187,7 @@ class ComponentLeaseVoters {
     std::map<int32_t, pubsub_itc_fw::LeaseVoter> voters_;
     std::map<int32_t, int32_t> highest_epochs_;
     std::map<int32_t, pubsub_itc_fw::LeaderStatement> statements_;
-    std::map<int32_t, int64_t> said_may_not_lead_;
+    std::map<int32_t, pubsub_itc_fw::InstancesBarredFromLeading> said_may_not_lead_;
 };
 
 } // namespaces

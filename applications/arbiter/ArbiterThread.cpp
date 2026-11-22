@@ -17,6 +17,7 @@
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/HeldStatementFromAnotherPair.hpp>
+#include <pubsub_itc_fw/InstancesBarredFromLeading.hpp>
 #include <pubsub_itc_fw/LeaderEpoch.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
@@ -288,7 +289,8 @@ void ArbiterThread::handle_statement_from_another_pair(const pubsub_itc_fw::Even
     held.maker_pair_id = view.maker_pair_id;
     // Only the leadership at the highest epoch this arbiter knows the maker's pair to have been granted may speak.
     static_cast<void>(held.statement.maker_epoch_known(component_voters_.highest_epoch(view.maker_pair_id)));
-    if (held.statement.offer(pubsub_itc_fw::HeldStatementFromAnotherPair::Statement{view.maker_epoch, view.number, view.instance_id, view.may_lead})) {
+    if (held.statement.offer(pubsub_itc_fw::HeldStatementFromAnotherPair::Statement{
+            view.maker_epoch, view.number, pubsub_itc_fw::InstancesBarredFromLeading{view.first_may_not_lead, view.second_may_not_lead}})) {
         apply_statement_from_another_pair(view.pair_id);
     }
 }
@@ -302,11 +304,19 @@ void ArbiterThread::drop_statements_of_ended_leaderships() {
 }
 
 void ArbiterThread::apply_statement_from_another_pair(int32_t pair_id) {
-    const int64_t barred = statements_from_another_pair_[pair_id].statement.barred_instance();
-    component_voters_.set_instance_said_may_not_lead(pair_id, barred);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: {}",
-               barred != 0 ? fmt::format("told that instance {} of group={} may not lead -- refusing it every lease request", barred, pair_name(pair_id))
-                           : fmt::format("no instance of group={} is barred from leading any longer", pair_name(pair_id)));
+    const pubsub_itc_fw::InstancesBarredFromLeading barred = statements_from_another_pair_[pair_id].statement.barred_instances();
+    component_voters_.set_instances_said_may_not_lead(pair_id, barred);
+    if (barred.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: no instance of group={} is barred from leading any longer",
+                   pair_name(pair_id));
+    } else if (barred.first && barred.second) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "ArbiterThread: told that neither instance of group={} may lead -- refusing both every lease request", pair_name(pair_id));
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "ArbiterThread: told that instance {} of group={} may not lead -- refusing it every lease request", barred.first ? 1 : 2,
+                   pair_name(pair_id));
+    }
 }
 
 void ArbiterThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}

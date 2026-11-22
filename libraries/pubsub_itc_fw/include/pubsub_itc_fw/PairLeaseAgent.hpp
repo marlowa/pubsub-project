@@ -14,6 +14,7 @@
 #include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
+#include <pubsub_itc_fw/InstancesBarredFromLeading.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
@@ -372,21 +373,27 @@ class PairLeaseAgent {
     }
 
     /**
-     * @brief Another component says @p instance_id may not lead, or, with zero, that no instance is barred.
+     * @brief Another component says which instances may not lead: neither, one, or both.
      *
-     * In the matching engine pair the leading sequencer says it about an engine it has judged to have stopped working:
-     * this instance, as a voter, then refuses that engine every request, renewals included, and does not give way to it
-     * when both ask to lead (docs/availability/a_matching_engine_that_stops_working.md, section 4.2). Held in memory
-     * only; its maker repeats it.
+     * In the matching engine pair the leading sequencer says it about each engine it has judged to have stopped working:
+     * this instance, as a voter, then refuses each barred engine every request, renewals included, and does not give way
+     * to one when both ask to lead (docs/availability/a_matching_engine_that_stops_working.md, section 4.2). Held in
+     * memory only; its maker repeats it.
      */
-    void set_instance_said_may_not_lead(int64_t instance_id) {
-        if (instance_id != participant_said_may_not_lead_) {
-            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: {}", owner_name_,
-                       instance_id != 0 ? fmt::format("told that instance {} may not lead -- refusing it every request, renewals included", instance_id)
-                                        : std::string("told that no instance is barred from leading"));
+    void set_instances_said_may_not_lead(const InstancesBarredFromLeading& barred) {
+        if (barred != participant_said_may_not_lead_) {
+            if (barred.empty()) {
+                PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: no instance is barred from leading any longer", owner_name_);
+            } else if (barred.first && barred.second) {
+                PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
+                           "{}: told that neither instance may lead -- refusing both every request, renewals included", owner_name_);
+            } else {
+                PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: told that instance {} may not lead -- refusing it every request, renewals included",
+                           owner_name_, barred.first ? 1 : 2);
+            }
         }
-        participant_said_may_not_lead_ = instance_id;
-        participant_.set_instance_said_may_not_lead(instance_id);
+        participant_said_may_not_lead_ = barred;
+        participant_.set_instances_said_may_not_lead(barred);
     }
 
     /**
@@ -819,8 +826,8 @@ class PairLeaseAgent {
     std::string third_voter_name_;
     LeaseTiming timing_;
     LeaseParticipant participant_;
-    // The instance another component last said may not lead, or zero, so that only a change of it is logged.
-    int64_t participant_said_may_not_lead_{0};
+    // The instances another component last said may not lead, so that only a change is logged.
+    InstancesBarredFromLeading participant_said_may_not_lead_{};
     std::mt19937 random_;
     Clock::time_point last_renewal_{};
     Clock::time_point asked_at_{};

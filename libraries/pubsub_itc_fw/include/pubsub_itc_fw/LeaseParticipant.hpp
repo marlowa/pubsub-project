@@ -9,6 +9,7 @@
 
 #include <fmt/format.h>
 
+#include <pubsub_itc_fw/InstancesBarredFromLeading.hpp>
 #include <pubsub_itc_fw/LeaderEpoch.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LeaseHolder.hpp>
@@ -274,9 +275,9 @@ class LeaseParticipant {
         return holder_.state() == LeaseHolder::State::Leading && !statement_.peer_may_lead && held_elsewhere && voter_.holds_statement(statement_);
     }
 
-    /// Another component says @p instance_id may not lead, or, with zero, that no instance is barred (LeaseVoter).
-    void set_instance_said_may_not_lead(int64_t instance_id) {
-        voter_.set_instance_said_may_not_lead(instance_id);
+    /// Another component says which instances may not lead (LeaseVoter).
+    void set_instances_said_may_not_lead(const InstancesBarredFromLeading& barred) {
+        voter_.set_instances_said_may_not_lead(barred);
     }
 
     /**

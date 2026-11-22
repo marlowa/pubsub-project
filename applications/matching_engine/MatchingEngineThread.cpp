@@ -754,6 +754,7 @@ void MatchingEngineThread::apply_command(const pubsub_itc_fw::EventMessage& mess
                                            session_identity_from(envelope), source);
             lose_and_regain_lease_if_named(view);
             stop_applying_if_named(view);
+            stop_sending_reports_if_named(view);
         }
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
@@ -881,6 +882,18 @@ void MatchingEngineThread::die_if_named(const pubsub_itc_fw_app::NewOrderSingleV
     std::abort();
 }
 
+void MatchingEngineThread::stop_sending_reports_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view) {
+    const std::string& named = config_.test_events.stop_sending_reports_after_cl_ord_id;
+    if (named.empty() || view.cl_ord_id != named || stopped_sending_reports_by_test_ || (ha_enabled_ && role_.role() != MeRole::Leader)) {
+        return;
+    }
+    stopped_sending_reports_by_test_ = true;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "MatchingEngineThread: applied the new order {}, which [test_events] stop_sending_reports_after_cl_ord_id names -- holding every report from "
+               "now on, while applying commands, staying connected and renewing the lease",
+               named);
+}
+
 void MatchingEngineThread::stop_applying_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view) {
     const std::string& named = config_.test_events.stop_applying_after_cl_ord_id;
     if (named.empty() || view.cl_ord_id != named || stopped_applying_by_test_ || (ha_enabled_ && role_.role() != MeRole::Leader)) {
@@ -967,7 +980,8 @@ bool MatchingEngineThread::holding_reports_until_entitled() const {
     // Only a catch-up done at startup. A promotion's catch-up is a different case: that instance
     // has been told it will lead, and its reports go out as they are produced. With high
     // availability off there is no peer to defer to and nothing to wait for.
-    return role_.holding_reports_until_entitled();
+    // A test's setting, [test_events] stop_sending_reports_after_cl_ord_id, holds every report as well.
+    return role_.holding_reports_until_entitled() || stopped_sending_reports_by_test_;
 }
 
 void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t produced_by, int64_t answers,
@@ -1069,15 +1083,15 @@ void MatchingEngineThread::handle_statement_from_sequencer(const pubsub_itc_fw::
                    view.pair_id);
         return;
     }
-    if (statement_from_sequencer_.offer(
-            pubsub_itc_fw::HeldStatementFromAnotherPair::Statement{view.maker_epoch, view.number, view.instance_id, view.may_lead})) {
+    if (statement_from_sequencer_.offer(pubsub_itc_fw::HeldStatementFromAnotherPair::Statement{
+            view.maker_epoch, view.number, pubsub_itc_fw::InstancesBarredFromLeading{view.first_may_not_lead, view.second_may_not_lead}})) {
         apply_statement_from_sequencer();
     }
 }
 
 void MatchingEngineThread::apply_statement_from_sequencer() {
     if (lease_agent_.has_value()) {
-        lease_agent_->set_instance_said_may_not_lead(statement_from_sequencer_.barred_instance());
+        lease_agent_->set_instances_said_may_not_lead(statement_from_sequencer_.barred_instances());
     }
 }
 
@@ -1251,7 +1265,9 @@ void MatchingEngineThread::adopt_leader_role() {
 
     // This instance is going to serve, so anything it caught up on and held back is owed to the
     // members who placed those orders.
-    report_sending_.release_now_serving(epoch_);
+    if (!stopped_sending_reports_by_test_) {
+        report_sending_.release_now_serving(epoch_);
+    }
 }
 
 void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) {
@@ -1555,7 +1571,9 @@ void MatchingEngineThread::keep_report(const pubsub_itc_fw_app::ExecutionReport&
 
 void MatchingEngineThread::send_kept_reports_after(int64_t reported_through) {
     static_cast<void>(report_comparison_.take_reports_after(reported_through, [this](HeldEngineReport&& kept) { report_sending_.hold(std::move(kept)); }));
-    report_sending_.send_held_on_the_connections_up(epoch_);
+    if (!stopped_sending_reports_by_test_) {
+        report_sending_.send_held_on_the_connections_up(epoch_);
+    }
 }
 
 void MatchingEngineThread::ReportComparisonLinks::stop_leading_for_good(int64_t command, pubsub_itc_fw_app::FollowerCannotLeadReason reason) {

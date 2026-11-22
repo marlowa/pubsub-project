@@ -189,7 +189,7 @@ end
 # ------------------------------------------------------------
 #  403 -- StatementFromAnotherPair
 #  Sent by the leader of one pair to the voters of another, to say
-#  that an instance of that pair may not lead, or that it may again.
+#  which instances of that pair may not lead: neither, one, or both.
 #  In the venue the leading sequencer sends it to both arbiters and to
 #  the matching engine that does not lead, about a matching engine it
 #  has judged to have stopped working: they refuse that engine every
@@ -208,6 +208,6 @@ message StatementFromAnotherPair (id=403, version=1)
     i32 maker_epoch         # the epoch it leads in
     i64 number              # goes up by one each time that leadership changes what it says
     i32 pair_id             # the pair the statement is about
-    i64 instance_id         # the instance of that pair it names
-    bool may_lead           # false: that instance may not lead; true: it may again
+    bool first_may_not_lead  # true: instance 1 of that pair may not lead
+    bool second_may_not_lead # true: instance 2 of that pair may not lead
 end

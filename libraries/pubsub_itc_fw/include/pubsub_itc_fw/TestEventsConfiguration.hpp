@@ -96,6 +96,14 @@ struct TestEventsConfiguration {
     /// sequencer must notice (docs/availability/a_matching_engine_that_stops_working.md, section 8).
     std::string stop_applying_after_cl_ord_id;
 
+    /// The ClOrdID of a new order after which the matching engine sends no more reports, from the optional
+    /// `stop_sending_reports_after_cl_ord_id` key; empty, for none, when it is absent. Read by the matching engine, which,
+    /// once it has applied a new order with this ClOrdID while it leads, goes on applying every command it is sent and holds
+    /// every report it produces, while it stays connected, answers the sequencer's questions about its position and renews
+    /// its lease. It lets a test give the venue an engine that applies commands and has stopped sending their reports, which
+    /// the leading sequencer must notice (docs/availability/a_matching_engine_that_stops_working.md, section 8).
+    std::string stop_sending_reports_after_cl_ord_id;
+
     /// Whether the matching engine holds back each sequencer's order connection until it knows whether it leads or
     /// follows, from the optional `hold_sequencer_connections_until_role_decided` key; false when it is absent. Read by
     /// the matching engine, with high availability on. While the engine is starting, it stops reading from each order
@@ -214,6 +222,9 @@ class TestEventsConfigurationLoader {
         }
         if (toml.has_key("test_events.stop_applying_after_cl_ord_id")) {
             toml.get_required_except("test_events.stop_applying_after_cl_ord_id", configuration.stop_applying_after_cl_ord_id);
+        }
+        if (toml.has_key("test_events.stop_sending_reports_after_cl_ord_id")) {
+            toml.get_required_except("test_events.stop_sending_reports_after_cl_ord_id", configuration.stop_sending_reports_after_cl_ord_id);
         }
         if (toml.has_key("test_events.hold_sequencer_connections_until_role_decided")) {
             toml.get_required_except("test_events.hold_sequencer_connections_until_role_decided", configuration.hold_sequencer_connections_until_role_decided);

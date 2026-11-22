@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <optional>
 
+#include <pubsub_itc_fw/InstancesBarredFromLeading.hpp>
+
 namespace pubsub_itc_fw {
 
 /**
@@ -35,16 +37,14 @@ class HeldStatementFromAnotherPair {
         int32_t maker_epoch{0};
         // Goes up by one each time that leadership changes what it says.
         int64_t number{0};
-        // The instance of this pair the statement is about.
-        int64_t instance_id{0};
-        // false: that instance may not lead; true: it may again.
-        bool may_lead{true};
+        // The instances of this pair that may not lead: neither, one, or both.
+        InstancesBarredFromLeading barred{};
     };
 
     /**
      * @brief A statement has arrived. Kept if it is newer than the one held and its maker leads at the highest epoch known.
      * @param[in] statement The statement.
-     * @return Whether the instance barred from leading changed.
+     * @return Whether the instances barred from leading changed.
      */
     bool offer(const Statement& statement) {
         if (statement.maker_epoch < highest_maker_epoch_known_) {
@@ -54,16 +54,16 @@ class HeldStatementFromAnotherPair {
             (statement.maker_epoch < held_->maker_epoch || (statement.maker_epoch == held_->maker_epoch && statement.number <= held_->number))) {
             return false;
         }
-        const int64_t barred_before = barred_instance();
+        const InstancesBarredFromLeading barred_before = barred_instances();
         held_ = statement;
         highest_maker_epoch_known_ = statement.maker_epoch;
-        return barred_instance() != barred_before;
+        return barred_instances() != barred_before;
     }
 
     /**
      * @brief An epoch of the maker's pair has become known, from wherever this component learns of them.
      * @param[in] epoch The epoch.
-     * @return Whether the instance barred from leading changed, because the statement held was dropped.
+     * @return Whether the instances barred from leading changed, because the statement held was dropped.
      */
     bool maker_epoch_known(int32_t epoch) {
         if (epoch <= highest_maker_epoch_known_) {
@@ -73,14 +73,14 @@ class HeldStatementFromAnotherPair {
         if (!held_.has_value() || held_->maker_epoch >= epoch) {
             return false;
         }
-        const int64_t barred_before = barred_instance();
+        const InstancesBarredFromLeading barred_before = barred_instances();
         held_.reset();
-        return barred_instance() != barred_before;
+        return barred_instances() != barred_before;
     }
 
-    /// The instance the statement held says may not lead, or zero when none is barred.
-    [[nodiscard]] int64_t barred_instance() const {
-        return held_.has_value() && !held_->may_lead ? held_->instance_id : 0;
+    /// The instances the statement held says may not lead; none when no statement is held.
+    [[nodiscard]] InstancesBarredFromLeading barred_instances() const {
+        return held_.has_value() ? held_->barred : InstancesBarredFromLeading{};
     }
 
     /// The statement held, if any.

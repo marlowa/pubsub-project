@@ -2748,31 +2748,35 @@ void SequencerThread::report_round_without_progress(int64_t now_ns) {
 }
 
 void SequencerThread::say_engine_may_not_lead(int64_t engine_instance) {
-    if (engine_instance == 0) {
+    if (engine_instance != 1 && engine_instance != 2) {
         return;
     }
     // Numbered within this leadership, so that a late copy of an earlier statement cannot undo a later one.
     if (statement_about_engine_epoch_ != current_epoch()) {
         statement_about_engine_epoch_ = current_epoch();
         statement_about_engine_number_ = 0;
+        engines_said_may_not_lead_ = pubsub_itc_fw::InstancesBarredFromLeading{};
     }
+    // Added to whatever this leadership has already said: an engine judged stopped before stays barred, so that when both
+    // have stopped, neither leads and trading halts by the limit on automatic recovery.
+    (engine_instance == 1 ? engines_said_may_not_lead_.first : engines_said_may_not_lead_.second) = true;
     ++statement_about_engine_number_;
-    engine_said_may_not_lead_ = engine_instance;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-               "SequencerThread: saying that matching engine instance {} may not lead (statement {} at epoch {}), to both arbiters and the engines, so "
-               "that its lease runs out and the other engine leads",
-               engine_instance, statement_about_engine_number_, statement_about_engine_epoch_);
+               "SequencerThread: saying that matching engine instance {} may not lead{} (statement {} at epoch {}), to both arbiters and the engines, so "
+               "that its lease runs out",
+               engine_instance, engines_said_may_not_lead_.first && engines_said_may_not_lead_.second ? ", and so that neither engine may" : "",
+               statement_about_engine_number_, statement_about_engine_epoch_);
     send_statement_about_engine();
 }
 
 void SequencerThread::send_statement_about_engine() {
-    if (engine_said_may_not_lead_ == 0) {
+    if (engines_said_may_not_lead_.empty()) {
         return;
     }
     // A statement lasts only for the leadership that made it: once this instance no longer leads in it, a new leadership
     // starts with none, and judges afresh.
     if (role_ != pubsub_itc_fw_app::Role::leader || statement_about_engine_epoch_ != current_epoch()) {
-        engine_said_may_not_lead_ = 0;
+        engines_said_may_not_lead_ = pubsub_itc_fw::InstancesBarredFromLeading{};
         return;
     }
     pubsub_itc_fw::StatementFromAnotherPair statement{};
@@ -2781,8 +2785,8 @@ void SequencerThread::send_statement_about_engine() {
     statement.maker_epoch = statement_about_engine_epoch_;
     statement.number = statement_about_engine_number_;
     statement.pair_id = fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::matching_engine);
-    statement.instance_id = engine_said_may_not_lead_;
-    statement.may_lead = false;
+    statement.first_may_not_lead = engines_said_may_not_lead_.first;
+    statement.second_may_not_lead = engines_said_may_not_lead_.second;
     for (const pubsub_itc_fw::ConnectionID& connection :
          {arbiter_primary_conn_id_, arbiter_secondary_conn_id_, engine_routing_.active(), engine_routing_.standby()}) {
         if (connection.is_valid()) {

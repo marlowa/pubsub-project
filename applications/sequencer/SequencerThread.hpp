@@ -22,6 +22,7 @@
 #include <pubsub_itc_fw/FixedCapacityRingBuffer.hpp>
 #include <pubsub_itc_fw/GaugeHandle.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
+#include <pubsub_itc_fw/InstancesBarredFromLeading.hpp>
 #include <pubsub_itc_fw/LastStateFile.hpp>
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -852,7 +853,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // both arbiters and the engines, and again every second while it stands, so that the engine's lease runs out and the
     // other engine leads. It lasts only for the leadership that made it
     // (docs/availability/a_matching_engine_that_stops_working.md, section 4.2).
-    int64_t engine_said_may_not_lead_{0};
+    pubsub_itc_fw::InstancesBarredFromLeading engines_said_may_not_lead_{};
     int32_t statement_about_engine_epoch_{0};
     int64_t statement_about_engine_number_{0};
     /// Makes the statement that @p engine_instance may not lead, and sends it.

@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/ComponentLeaseVoters.hpp>
+#include <pubsub_itc_fw/InstancesBarredFromLeading.hpp>
 
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LeaseVoter.hpp>
@@ -60,14 +61,14 @@ TEST(ComponentLeaseVotersTest, PromisesAreForgottenOnBecomingPassiveAndWaitedOut
 TEST(ComponentLeaseVotersTest, AnInstanceSaidMayNotLeadIsRefusedByAVoterMadeAfterTheArbiterBecomesActive) {
     pubsub_itc_fw::ComponentLeaseVoters voters(lease_period);
     // Said while this arbiter is passive and holds no voter for the pair.
-    voters.set_instance_said_may_not_lead(first_pair, 1);
+    voters.set_instances_said_may_not_lead(first_pair, pubsub_itc_fw::InstancesBarredFromLeading{true, false});
     voters.became_active(start);
     const Clock::time_point now = start + lease_period;
     EXPECT_EQ(voters.consider(first_pair, 1, 1, now).verdict, pubsub_itc_fw::LeaseVoter::Verdict::RefusedMayNotLead);
     EXPECT_EQ(voters.consider(first_pair, 2, 2, now).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
     EXPECT_EQ(voters.consider(second_pair, 1, 1, now).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted) << "only the pair named is affected";
-    voters.set_instance_said_may_not_lead(first_pair, 0);
-    EXPECT_EQ(voters.instance_said_may_not_lead(first_pair), 0);
+    voters.set_instances_said_may_not_lead(first_pair, pubsub_itc_fw::InstancesBarredFromLeading{});
+    EXPECT_TRUE(voters.instances_said_may_not_lead(first_pair).empty());
 }
 
 TEST(ComponentLeaseVotersTest, TheHighestEpochCarriesAcrossAChangeOfActiveArbiter) {

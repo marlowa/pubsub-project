@@ -698,6 +698,12 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // lease (docs/availability/a_matching_engine_that_stops_working.md, section 8).
     void stop_applying_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view);
     bool stopped_applying_by_test_{false};
+
+    // If a test named this order's ClOrdID in [test_events] stop_sending_reports_after_cl_ord_id, and this instance leads,
+    // it holds every report it produces from then on, while it goes on applying commands
+    // (docs/availability/a_matching_engine_that_stops_working.md, section 8).
+    void stop_sending_reports_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view);
+    bool stopped_sending_reports_by_test_{false};
     pubsub_itc_fw::TimerID lose_and_regain_lease_timer_id_{};
 
     // ---- A command the process before this one died applying (docs/availability/voided_commands.md, section 4) ----

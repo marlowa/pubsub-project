@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <pubsub_itc_fw/InstancesBarredFromLeading.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LeaseHolder.hpp>
 #include <pubsub_itc_fw/LeaseParticipant.hpp>
@@ -233,20 +234,28 @@ TEST(LeaseRulesTest, VoterToldAnInstanceMayNotLeadRefusesItsRenewalsUntilToldOth
     EXPECT_EQ(voter.consider(1, 1, granted_at).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
     // The leading sequencer says instance 1, which this voter has promised to, may not lead: its renewal is refused, so
     // that its lease runs out.
-    voter.set_instance_said_may_not_lead(1);
+    voter.set_instances_said_may_not_lead(pubsub_itc_fw::InstancesBarredFromLeading{true, false});
     EXPECT_EQ(voter.consider(1, 1, granted_at + milliseconds{1000}).verdict, pubsub_itc_fw::LeaseVoter::Verdict::RefusedMayNotLead);
     // Once its promise to instance 1 runs out, the other instance may have the vote.
     EXPECT_EQ(voter.consider(2, 2, granted_at + lease_period).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
-    voter.set_instance_said_may_not_lead(0);
-    EXPECT_EQ(voter.instance_said_may_not_lead(), 0);
+    voter.set_instances_said_may_not_lead(pubsub_itc_fw::InstancesBarredFromLeading{});
+    EXPECT_TRUE(voter.instances_said_may_not_lead().empty());
     EXPECT_EQ(voter.consider(1, 5, granted_at + 2 * lease_period).verdict, pubsub_itc_fw::LeaseVoter::Verdict::Granted);
+}
+
+TEST(LeaseRulesTest, VoterToldNeitherInstanceMayLeadRefusesBoth) {
+    pubsub_itc_fw::LeaseVoter voter(lease_period, start, 0);
+    voter.set_instances_said_may_not_lead(pubsub_itc_fw::InstancesBarredFromLeading{true, true});
+    const Clock::time_point now = start + lease_period;
+    EXPECT_EQ(voter.consider(1, 1, now).verdict, pubsub_itc_fw::LeaseVoter::Verdict::RefusedMayNotLead);
+    EXPECT_EQ(voter.consider(2, 2, now).verdict, pubsub_itc_fw::LeaseVoter::Verdict::RefusedMayNotLead);
 }
 
 TEST(LeaseRulesTest, ParticipantAskingToLeadDoesNotGiveWayToAPeerItMayNotLetLead) {
     pubsub_itc_fw::LeaseParticipant participant(2, lease_period, drift_allowance, start, 0, no_statements);
     const Clock::time_point now = start + lease_period;
     EXPECT_EQ(participant.begin_asking_to_lead(), 2);
-    participant.set_instance_said_may_not_lead(1);
+    participant.set_instances_said_may_not_lead(pubsub_itc_fw::InstancesBarredFromLeading{true, false});
     // The barred peer asks at a higher epoch. Giving way would only abandon this instance's own request, since the vote
     // would then be refused anyway.
     const auto outcome = participant.on_peer_request(1, 5, now);
