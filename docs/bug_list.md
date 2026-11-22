@@ -1087,15 +1087,20 @@ and it is the practice of the London Stock Exchange and Turquoise. The reasoning
 behind the count, and the alternative not followed are under [BUG-0048](#bug_0048). **The count is
 100,000 messages for each comp id (decided 2026-11-08).**
 
-**Open: what the count means for undelivered reports.** The count settles resends: a resend asks for
+**Decided (22 November 2026): undelivered reports are all kept.** The count settles resends: a resend asks for
 messages the member has already been sent, under FIX sequence numbers, and for numbers beyond what is kept
 a gap fill is a correct answer, telling the member those numbers carry nothing it can have again.
 Undelivered reports are different: they were never sent, and have no numbers yet; the gateway numbers them
 as new reports. A gap fill cannot stand in for them, because the member would then never learn what became
 of its orders. So a member away long enough for more than 100,000 reports to be produced for it needs a
-decision of its own. The choices seen so far are to keep every report not yet delivered to a session,
-however many, or to send, beyond the count, the present state of each of the member's orders in place of
-their history. Neither is decided.
+decision of its own. Andrew chose that the recovery service keeps every report not yet delivered to a session,
+however many, apart from the 100,000-message resend window, so that every report reaches its member (V8). Because the
+matching engine does no matching, a member that is away is sent reports only for what is done to its resting orders:
+the cancels when its grace period runs out, a halt's, the close's; so its undelivered reports are bounded by its
+resting orders, and the service's room for them is sized from the open-order capacity, not from the resend count. The
+alternatives not chosen were to send, beyond the count, the present state of each order in place of its history,
+which needs order status answered from the book ([BUG-0089](#bug_0089)), or to tell the member that reports beyond
+the count are lost.
 
 **What the design of the recovery service must settle**, besides that question:
 
@@ -2074,10 +2079,14 @@ reached its limit of 16,384 unanswered commands, because each fix8 session waits
 before sending the next, and the Python FIX load client is slower still. So it shows how deep the queue gets under the
 most these clients can offer, not how deep it can get.
 
-**Left before this entry closes:** a decision on how to bound the FIX gateway, put to Andrew: a load generator that
-sends FIX orders without waiting (the compiled load client given a FIX mode), to measure a true overload; or the FIX
-gateway bounded as the binary one is, by a limit on the messages waiting from each member's connection and a command
-queue sized from settings, then measured.
+**Decided (22 November 2026): the FIX gateway is bounded as the binary gateway is.** Andrew, on the grounds that if
+the binary gateway is bounded the FIX gateway should be too. The FIX gateway's member connections carry raw bytes, and
+the framework already stops reading such a connection while its buffer is full, so what each member can have read but
+not handled is already bounded; what the FIX gateway lacks is its command queue sized from its settings, as the binary
+gateway's is, in place of a fixed 1,000,000.
+
+**Left before this entry closes:** the FIX gateway's command queue sized from its settings, with the arithmetic
+written beside it, and measured under a load that reaches its limit on unanswered commands.
 
 ### BUG-0280: Huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine {#bug_0280}
 
