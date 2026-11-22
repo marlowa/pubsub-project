@@ -1428,4 +1428,119 @@ TEST(ReplicatedWalTest, ARequestFromANewPositionIsAnsweredOnlyAfterTheRunningCat
     EXPECT_EQ(read_wal(pair.directories_[0]), read_wal(pair.directories_[1]));
 }
 
+// The application can judge its follower too far behind before any timeout does, as the sequencer does when its
+// storage for orders waiting on the follower is full. The leader then stops waiting for the follower, says it may
+// not lead, and waits for it again once it holds every record. Said while the follower is not waited for, it
+// changes nothing.
+TEST(ReplicatedWalTest, AFollowerTheApplicationJudgesTooFarBehindIsNotWaitedForUntilItHoldsEveryRecord) {
+    RecordingTestEventLinks links;
+    TestEventChannel channel(links, "test_component", 1, "TestThread");
+    channel.on_connection_established(ConnectionID{3, std::string(TestEventChannel::service_name)});
+    Pair pair("replicated_wal_judged_too_far_behind");
+    pair.test_events_[0] = &channel;
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    ASSERT_TRUE(pair.step_until_follower_may_lead(0));
+    links.running_alone.clear();
+    links.peer_may_lead.clear();
+
+    pair.held_[1] = true;
+    const int64_t seq_no = pair.append(0, 80);
+    ASSERT_TRUE(pair.wals_[0]->waits_for_follower());
+    pair.wals_[0]->follower_too_far_behind("its storage for orders waiting on the follower is full", pair.now_);
+    EXPECT_FALSE(pair.wals_[0]->waits_for_follower());
+    EXPECT_EQ(pair.running_alone_gauge(0), 1.0);
+    EXPECT_EQ(links.running_alone, std::vector<bool>{true});
+    EXPECT_EQ(links.peer_may_lead, std::vector<bool>{false});
+    for (int n = 0; n < 20 && pair.wals_[0]->committed_through() < seq_no; ++n) {
+        pair.step();
+    }
+    EXPECT_GE(pair.wals_[0]->committed_through(), seq_no) << "the record waited for a follower judged too far behind";
+
+    pair.wals_[0]->follower_too_far_behind("its storage for orders waiting on the follower is full", pair.now_);
+    EXPECT_EQ(links.running_alone, std::vector<bool>{true}) << "said again while the follower is not waited for, it must change nothing";
+
+    pair.held_[1] = false;
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    for (int n = 0; n < 20 && links.peer_may_lead.size() < 2; ++n) {
+        pair.step();
+    }
+    EXPECT_EQ(links.running_alone, (std::vector<bool>{true, false}));
+    EXPECT_EQ(links.peer_may_lead, (std::vector<bool>{false, true}));
+    EXPECT_EQ(pair.running_alone_gauge(0), 0.0);
+}
+
+// A follower whose connection goes while it is being sent the records it lacks: the reading for it stops, and when
+// it connects again it is caught up afresh.
+TEST(ReplicatedWalTest, AFollowerLostWhileItIsBeingCaughtUpStopsTheCatchUp) {
+    Pair pair("replicated_wal_lost_during_catch_up", true);
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    pair.crash(1);
+    for (int n = 0; n < 5; ++n) {
+        pair.step();
+    }
+    for (uint8_t marker = 0; marker < 10; ++marker) {
+        static_cast<void>(pair.append(0, marker));
+    }
+    const int started_before = pair.catch_ups_[0].started;
+    pair.start(1);
+    pair.connect();
+    pair.deliver(); // the follower's request reaches the leader, which starts the catch-up
+    ASSERT_EQ(pair.catch_ups_[0].started, started_before + 1);
+    ASSERT_TRUE(pair.catch_ups_[0].pending);
+
+    pair.disconnect();
+    EXPECT_FALSE(pair.catch_ups_[0].pending);
+    EXPECT_TRUE(pair.catch_ups_[0].stopping) << "the catch-up went on reading for a follower that had gone";
+
+    pair.step(); // the reading confirms that it has stopped
+    pair.connect();
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    EXPECT_GT(pair.catch_ups_[0].started, started_before + 1) << "the follower was not caught up afresh";
+    EXPECT_EQ(read_wal(pair.directories_[0]), read_wal(pair.directories_[1]));
+}
+
+// A former leader can still be reading its WAL for its own follower when, following now, it learns that it must
+// discard records the new leader does not hold. Cutting the WAL back under that reading would let it send records
+// that are no longer there, so the discard waits until the reading has stopped, and then happens.
+TEST(ReplicatedWalTest, RecordsToBeDiscardedAreKeptUntilTheWalIsNoLongerBeingReadForAFollower) {
+    Pair pair("replicated_wal_discard_waits_for_reading", true);
+    // As in ARejoiningFollowerDiscardsTheRecordsOfAnOlderLeadershipAndTakesItsLeaders: instance 2 holds records 4
+    // and 5 from epoch 1, which the leader, instance 1, never had.
+    {
+        Wal first;
+        Wal second;
+        first.open(pair.directories_[0], segment_size);
+        second.open(pair.directories_[1], segment_size);
+        const uint8_t old_bytes[] = {1};
+        const uint8_t new_bytes[] = {2};
+        for (int64_t seq_no = 1; seq_no <= 3; ++seq_no) {
+            first.append(seq_no, test_pdu_id, old_bytes, 1, 0, 1);
+            second.append(seq_no, test_pdu_id, old_bytes, 1, 0, 1);
+        }
+        for (int64_t seq_no = 4; seq_no <= 5; ++seq_no) {
+            second.append(seq_no, test_pdu_id, old_bytes, 1, 0, 1);
+        }
+        for (int64_t seq_no = 4; seq_no <= 6; ++seq_no) {
+            first.append(seq_no, test_pdu_id, new_bytes, 1, 0, 2);
+        }
+    }
+    pair.start_both();
+    // Instance 2's reading for a follower is still going for as long as this test says so.
+    for (int n = 0; n < 40; ++n) {
+        pair.catch_ups_[1].stopping = true;
+        pair.step();
+    }
+    ASSERT_EQ(pair.wals_[0]->role(), ReplicaRole::leader);
+    EXPECT_TRUE(pair.events_[1].discarded_after_seq_nos.empty()) << "records were discarded while the WAL was being read for a follower";
+    EXPECT_EQ(pair.wals_[1]->last_seq_no(), 5);
+
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    EXPECT_EQ(pair.events_[1].discarded_after_seq_nos, std::vector<int64_t>{3});
+    EXPECT_EQ(read_wal(pair.directories_[1]), read_wal(pair.directories_[0]));
+}
+
 } // namespaces
