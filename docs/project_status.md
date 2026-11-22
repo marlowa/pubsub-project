@@ -27,7 +27,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
   of the matching engine and a change of engine leader, a command that crashes both engines being
   voided, orders held while no engine leads, reports held for a gateway surviving the death of
   the sequencer holding them, a follower sequencer that has lost the first file of its WAL being
-  sent every record again, a trading day run by its schedule through a change of the schedule and of leader, and each component refusing the files of another trading day. All 114 pass, and the 39 that also run with the secondary matching engine leading first pass that
+  sent every record again, a trading day run by its schedule through a change of the schedule and of leader, and each component refusing the files of another trading day. All 125 pass, and the 52 that also run with the secondary matching engine leading first pass that
   way too. After each scenario both matching engines are run on its WAL and must give the reports the
   WAL holds, with a sequencer that reads their reports more slowly than they send them, so that each
   run depends on the engine pacing its reports ([BUG-0234](bug_list.md#bug_0234)).
@@ -37,7 +37,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 53 open entries, 3 of them high severity. Each one is judged,
+The [bug list](bug_list.md) holds 52 open entries, 3 of them high severity. Each one is judged,
 with its evidence, in [the review of the bug list](bug_review.md), which also sets the order in which
 they are being fixed. The ones most likely to matter first, by design area:
 
@@ -54,8 +54,7 @@ they are being fixed. The ones most likely to matter first, by design area:
   [ha_library_boundary.md](availability/ha_library_boundary.md). A matching engine that stays connected and
   stops working is judged by the leading sequencer and replaced by the other engine
   ([a_matching_engine_that_stops_working.md](availability/a_matching_engine_that_stops_working.md)). Open
-  defects include a matching engine restarted moments before the leading engine dies taking ten seconds to
-  lead ([BUG-0284](bug_list.md#bug_0284)), a restarted sequencer or matching engine taking longer to start than its peer's lease
+  defects include a restarted sequencer or matching engine taking longer to start than its peer's lease
   ([BUG-0121](bug_list.md#bug_0121)), and a venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).
 - **The trading day is built, and only lightly tried.** Every phase is entered on request or at the time in
   the day's schedule, the close cancels every open order, every member is told of each change, each

@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 284 |
-| Open | 53 (29 defects, 24 tasks) |
-| Closed | 231 |
+| Open | 52 (28 defects, 24 tasks) |
+| Closed | 232 |
 | Next id | BUG-0285 |
 
 ## Open bugs by severity
 
-3 high, 33 medium, 17 low.
+3 high, 32 medium, 17 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,7 +48,6 @@
 | [BUG-0279](#bug_0279) | medium | defect | A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent |
 | [BUG-0281](#bug_0281) | medium | task | What happens to members' orders when their gateways are down for longer than the grace period is not decided |
 | [BUG-0283](#bug_0283) | medium | task | Parts of the framework library that the venue runs every day are not reached by any test |
-| [BUG-0284](#bug_0284) | medium | defect | A matching engine restarted moments before the engine leading dies took ten seconds to lead, as long as the limit on automatic recovery |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -2414,6 +2413,8 @@ no test runs.
 3. Each new test made to fail on purpose before it is trusted, and `coverage_baseline.txt` regenerated in the same
    commit.
 
+## Closed
+
 ### BUG-0284: A matching engine restarted moments before the engine leading dies took ten seconds to lead, as long as the limit on automatic recovery {#bug_0284}
 
 | | |
@@ -2423,6 +2424,7 @@ no test runs.
 | Recorded | 2026-11-22 |
 | How | `ha_test.py` scenario 123, written for [BUG-0194](#bug_0194): the matching engine that had stopped working was started again and, a moment later, the engine that had taken over was killed |
 | Impact | A change of engine leader normally takes about 2.4 seconds. Here it took 10, which is the limit on automatic recovery in every environment, so in production the venue could halt trading for a change of leader it would otherwise have made by itself |
+| Fixed | 2026-11-22 -- a promise is recorded on disk two seconds beyond its true expiry instead of ten, so a restarted instance waits at most about five seconds before it may ask to lead; scenario 123 now requires the change of leader within the 5 seconds orders are held for, and took 2.7 to 3.4 seconds in five runs; both full suites pass |
 
 **What was seen.** In scenario 123 on 22 November 2026, the primary matching engine was started again at 01:12:38, and
 the secondary, which led, was killed in the same second. The primary said it led at 01:12:48, ten seconds later. The
@@ -2441,15 +2443,21 @@ of the two happens depends only on whether a renewal came between the restart an
 pair that keeps its promises on disk, the sequencers' as well as the engines'. The cost is not that of BUG-0194, which
 only made it visible.
 
-**What is wanted.**
+**The fix, 22 November 2026.** `PairLeaseAgent::promise_record_margin` is 2 seconds instead of 10, chosen by Andrew
+over keeping 10 or going to 1: a following instance rewrites its record about once a second, on the background
+recorder's thread, and a restarted instance waits at most about the lease period plus two seconds. The record is still
+always written before the promise it covers is granted, so a restart stays safe at any margin. Scenario 123 now
+requires the engine to lead within the 5 seconds orders are held for, and prints when it asked and was granted. Run
+five times after the change, the takeover took 2.7 to 3.4 seconds every time, where before it took 10.4 seconds in two
+runs of five: the arbiter's own promise to the dead engine, 3 seconds, now decides it.
+
+**What was wanted.**
 
 1. Confirm the cause from test events: when the restarted engine first asked to lead, and why it did not ask sooner.
 2. If it is the recorded expiry, a way to keep a restarted instance safe without making it wait out more than the true
    promise, or a smaller margin, with the model check of rule 6 rerun
    ([tla/findings.md](availability/tla/findings.md), section 4.2).
 3. A scenario that requires the takeover within the limit on holding orders.
-
-## Closed
 
 ### BUG-0194: A matching engine that is connected but has stopped working looks healthy to everything that watches it {#bug_0194}
 

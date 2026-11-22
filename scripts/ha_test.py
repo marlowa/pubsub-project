@@ -7335,6 +7335,9 @@ _LEASE_LOST_AND_REGAINED_CL_ORD_ID = "lease-bounce-1"
 _LEASE_LOST_AND_REGAINED_NOW: dict[str, str] = {}
 # The new order after which the matching engine of the scenario being run that is to stop working stops applying
 # commands, while it stays connected and renews its lease ([test_events] stop_applying_after_cl_ord_id).
+# The longest orders are held while no matching engine leads, as every environment file sets it ([recovery]
+# orders_held_at_most_seconds): a change of engine leader must finish within it.
+_ORDERS_HELD_AT_MOST_SECONDS = 5.0
 _STOP_APPLYING_CL_ORD_ID = "stop-applying-1"
 _STOP_APPLYING_NOW: dict[str, str] = {}
 # The same for the engine that is to stop sending its reports ([test_events] stop_sending_reports_after_cl_ord_id).
@@ -12382,6 +12385,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                             f"at least the {withdrawn.message.required} required -- OK")
                         kill_mark = _TEST_EVENTS.mark()
                         killed = proc_by_name[other]
+                        killed_at = time.monotonic()
                         killed.kill()
                         killed.wait()
                         if Path(f"/proc/{killed.pid}").exists():
@@ -12389,7 +12393,20 @@ def run_scenario(scenario: Scenario, args) -> bool:
                         log(f"  {other} killed")
                         if _TEST_EVENTS.wait_for(leads(library_events, engine), timeout=20.0, since=kill_mark) is None:
                             fail(f"{engine}, said to be able to lead again, never led once {other} was killed")
-                        log(f"  {engine} leads again -- OK")
+                        took = time.monotonic() - killed_at
+                        # The restarted engine may have granted no renewal before the kill, and then waits out the margin
+                        # on the promise it recorded; that must not make the change of leader longer than the venue
+                        # holds orders for (docs/bug_list.md, BUG-0284).
+                        if took > _ORDERS_HELD_AT_MOST_SECONDS:
+                            fail(f"{engine} led {took:.1f}s after {other} was killed, longer than the {_ORDERS_HELD_AT_MOST_SECONDS}s orders are "
+                                 "held for")
+                        log(f"  {engine} leads again, {took:.1f}s after {other} was killed, within the {_ORDERS_HELD_AT_MOST_SECONDS}s orders are "
+                            "held for -- OK")
+                        # When it asked to lead, and when a voter granted it, after the kill: whether a slow takeover is the
+                        # restarted engine holding back, or the voters refusing it (docs/bug_list.md, BUG-0284).
+                        for event in _TEST_EVENTS.events[kill_mark:]:
+                            if isinstance(event.message, (library_events.LeaseChanged, library_events.LeaseGrantedTo)):
+                                log(f"    +{event.arrived - killed_at:5.2f}s {event.component}: {type(event.message).__name__} {event.message}")
                         if not answered_as_accepted("after-return-1"):
                             fail(f"after-return-1, placed once {engine} led again, was not accepted")
                         log("  a new order is accepted -- OK")

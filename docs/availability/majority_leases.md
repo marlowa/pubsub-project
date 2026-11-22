@@ -84,18 +84,22 @@ vote of just one other voter: either its peer or the third voter.
    machine booted and is the same for every process on it, so a time recorded by one process means the same moment to
    the next. After a reboot the time means nothing, so the record also holds the kernel's boot id
    (`/proc/sys/kernel/random/boot_id`), and a record from a different boot is ignored: the instance has then
-   forgotten, and waits. A missing or damaged record is treated the same way. The expiry written is ten seconds later
-   than the true one, so that a follower granting a renewal every second rewrites the file only now and then. A later
-   expiry only makes the restarted instance stricter. If a promise cannot be written, it is not made: the instance
+   forgotten, and waits. A missing or damaged record is treated the same way. The expiry written is two seconds later
+   than the true one, so that a follower granting a renewal every second rewrites the file about once a second rather
+   than with every renewal. A later expiry only makes the restarted instance stricter, and that has a cost: an instance
+   restarted before it has granted a renewal waits out the recorded expiry, the true promise plus the margin, before it
+   may ask to lead. With a margin of ten seconds that wait was measured at 10.4 seconds, as long as the limit on
+   automatic recovery ([BUG-0284](../bug_list.md#bug_0284)); with two it is at most about five, as long as an ordinary
+   change of leader. If a promise cannot be written, it is not made: the instance
    refuses the request.
 
    The file is written and synced on a thread of its own (`BackgroundPromiseRecorder`), never on the thread that
    handles leases, which in the sequencer and the matching engine is the thread that handles orders. That thread
    starts a write, and learns at a later lease tick that it has finished, without a lock and without waiting. When
-   fewer than five seconds remain between the promise's expiry and the record's, a fresh record is written in the
-   background, so in normal operation it is on disk seconds before it is needed. When the record on disk does not
+   fewer than one second remains between the promise's expiry and the record's, a fresh record is written in the
+   background, so in normal operation it is on disk about a second before it is needed. When the record on disk does not
    cover a promise the instance is about to make -- when it first promises its vote to an instance, or when a write
-   has not finished in those five seconds -- it refuses the request with the reason `recording_promise` and starts
+   has not finished in that second -- it refuses the request with the reason `recording_promise` and starts
    the write that covers it. The candidate asks again at its next renewal interval, as it does after any refusal
    (rule 10), and is granted once the write has finished. A sync that takes seconds
    therefore never stops an instance answering lease requests ([BUG-0107](../bug_list.md#bug_0107)), and costs only

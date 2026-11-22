@@ -833,11 +833,39 @@ class PairLeaseAgent {
     Clock::time_point asked_at_{};
 
     // How far beyond the true expiry a recorded promise is written. See promise_recorded().
-    static constexpr std::chrono::seconds promise_record_margin{10};
+    //
+    // Why there is a margin at all. Every promise this instance grants is written to disk before the
+    // grant is sent, so that after a restart it still knows whom its vote is promised to and does not
+    // vote twice (majority_leases.md, rule 6). A follower grants its leader a renewal every second, and
+    // each renewal moves the promise's expiry on by a second. Writing and syncing the record for every
+    // renewal would mean a sync every second; writing it with an expiry this far beyond the true one
+    // means a fresh record is needed only when the true expiry has caught up to within refresh_ahead of
+    // the recorded one, every margin / 2.
+    //
+    // What the margin costs. A restarted instance cannot know the true expiry of the promise it made
+    // before it stopped, only that it is no later than the recorded one, so it takes the recorded expiry
+    // back (LeaseVoter::resume_with_kept_promise) and may not ask to lead until it has run out. The first
+    // renewal it grants after restarting sets the expiry to the true one again; but if the instance it
+    // promised to dies before that renewal arrives, it waits out the whole recorded expiry: up to the
+    // margin beyond the true promise, which is itself up to a lease period, 3 seconds.
+    //
+    // Why it is 2 seconds. With 10, the wait was measured at 10.4 seconds in two of five runs of
+    // ha_test.py scenario 123, where a matching engine was restarted moments before the engine leading
+    // was killed (docs/bug_list.md, BUG-0284): as long as the limit on automatic recovery, so that the
+    // venue could halt for a change of leader it would otherwise make by itself. With 2, the wait is at
+    // most about 5 seconds, as long as an ordinary change of leader, and a fresh record is written about
+    // once a second, on the background recorder's thread, never this thread. A shorter margin would
+    // write more often for little gain; a longer one lengthens the wait one for one. The cost on a slow
+    // disk: a write that takes longer than refresh_ahead makes this instance refuse a renewal with the
+    // reason recording_promise until it finishes, which a leader survives on the third voter's grant.
+    //
+    // Any margin keeps a restart safe, because the record is always written before the promise it
+    // covers is granted, so it is never earlier than the true expiry.
+    static constexpr std::chrono::seconds promise_record_margin{2};
 
-    // How close the promise's expiry may come to the record's before a fresh record is written in
-    // the background: half the margin, five seconds, which leaves a write that long to finish before
-    // a promise would have to be refused for want of it.
+    // How close the promise's expiry may come to the record's before a fresh record is written in the
+    // background: half the margin, one second, which leaves a write that long to finish before a
+    // promise would have to be refused for want of it.
     static constexpr std::chrono::seconds refresh_ahead{promise_record_margin / 2};
 
     // A background write slower than this, from being started to its outcome being read, is logged. A

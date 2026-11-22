@@ -690,19 +690,19 @@ TEST_F(PairLeaseAgentTest, AFormerLeaderThatGrantsItsPeerRecordsThePeer) {
     ASSERT_TRUE(agents_[1]->acting(now_));
     outboxes_[0].connected_to_peer = true;
     outboxes_[0].connected_to_third_voter = true;
-    // Step only until this instance first grants its peer a renewal, while the old record still names
-    // this instance until a time beyond the new promise. It grants nothing for a while: it asked to
-    // lead while cut off, and a candidate votes for itself until its request lapses.
-    const Clock::time_point recorded_self_until = kept_[0].until;
+    // Step only until this instance first grants its peer a renewal. It grants nothing for a while: it
+    // asked to lead while cut off, and a candidate votes for itself until its request lapses. With the
+    // record's margin of two seconds the old record naming this instance has usually run out by then;
+    // what matters is that the record left on disk names the peer, since that is what a restart reads.
+    ASSERT_EQ(kept_[0].promised_to, 1) << "the record named this instance while it led";
     changes_[0].clear();
     for (int i = 0; i < 150 && changes_[0].empty(); ++i) {
         step();
     }
     ASSERT_FALSE(changes_[0].empty()) << "this instance granted its peer nothing";
     ASSERT_EQ(changes_[0].front(), pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads);
-    ASSERT_LT(now_ + timing_.period, recorded_self_until) << "the old record no longer covers the new promise, so this test proves nothing";
-    // The record said this instance's vote was its own, until well after the peer began asking for it.
-    // Granting the peer must replace that, or a restart would read the old record and ask to lead.
+    // Granting the peer must replace the record naming this instance, or a restart would read the old record
+    // and take its vote to be its own.
     EXPECT_EQ(kept_[0].promised_to, 2);
     EXPECT_GT(kept_[0].until, now_);
 }
