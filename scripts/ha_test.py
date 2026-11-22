@@ -7375,6 +7375,9 @@ _ORDERS_HELD_AT_MOST_SECONDS = 5.0
 # 2026); one that tells them as soon as it writes the halt tells them about 0.1 seconds before, since the halt's record is
 # what sets the leader running without its follower 100 ms later. A second lies well clear of both.
 _HALT_TOLD_NOT_BEFORE_SECONDS = 1.0
+# The exit status of a component that refuses to start (Reactor::stopped_for_a_failure_status, and the 1 a component's
+# main returns for a refusal before its reactor runs).
+_REFUSED_TO_START_STATUS = 1
 _STOP_APPLYING_CL_ORD_ID = "stop-applying-1"
 _STOP_APPLYING_NOW: dict[str, str] = {}
 # The same for the engine that is to stop sending its reports ([test_events] stop_sending_reports_after_cl_ord_id).
@@ -11470,7 +11473,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
                         or f"belongs to trading day {TRADING_DAY}, not {next_day}" not in said:
                     die(f"files of another day: {name}, started for trading day {next_day}, exited {completed.returncode} without refusing "
                         f"{wanted} as a file of trading day {TRADING_DAY}. What it said: {said.strip()[-600:]!r}")
-                log(f"  {name}, started for trading day {next_day}, refused {wanted}, of trading day {TRADING_DAY} -- OK")
+                # A refusal to start is a failure, and says so to whatever started the process: exit status 1, never the 0 of a
+                # requested stop, whether the refusal comes before the reactor runs or from a thread once it does
+                # (docs/bug_list.md, BUG-0278).
+                if completed.returncode != _REFUSED_TO_START_STATUS:
+                    die(f"files of another day: {name} refused {wanted}, but exited {completed.returncode}, not "
+                        f"{_REFUSED_TO_START_STATUS}: whatever started it cannot tell the refusal from another way of stopping")
+                log(f"  {name}, started for trading day {next_day}, refused {wanted}, of trading day {TRADING_DAY}, exit status "
+                    f"{completed.returncode} -- OK")
 
             refused_for_next_day("sequencer_primary", "sequencer", sequencer_config, str(sequencer_wal / "epoch.state"))
             refused_for_next_day("matching_engine_primary", "matching_engine", engine_config, str(engine_epoch))

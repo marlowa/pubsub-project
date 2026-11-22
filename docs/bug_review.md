@@ -8,12 +8,12 @@ agreed with Andrew. An entry that is closed is no longer listed here; its record
 
 ## Summary
 
-There are 52 open entries, and each is judged below. The figures:
+There are 51 open entries, and each is judged below. The figures:
 
 | Judgement | Entries |
 |---|---|
 | Breach of a named principle | 9: BUG-0113 (what is left of it), BUG-0285, BUG-0286, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
-| Partly done | 8: BUG-0121, BUG-0134, BUG-0262, BUG-0065, BUG-0279, BUG-0278, BUG-0283, BUG-0069 |
+| Partly done | 7: BUG-0121, BUG-0134, BUG-0262, BUG-0065, BUG-0279, BUG-0283, BUG-0069 |
 | Decision needed from Andrew | 3: BUG-0258, BUG-0281, BUG-0229; and BUG-0250 needs one choice made between two remedies |
 | Decided, and waiting to be built | 1: BUG-0048, with the recovery service of BUG-0113 |
 | New requirement | 12 |
@@ -44,8 +44,8 @@ There are 52 open entries, and each is judged below. The figures:
 
 1. The small breaches, each with an obvious remedy: BUG-0272 and BUG-0249 are closed; BUG-0286, the WAL snapshot
    written off the thread that handles orders, is the same kind and comes next.
-2. The partly done entries with little left: BUG-0278 (one check by hand), BUG-0279 (one scenario and one
-   measurement), BUG-0262 (one test), and BUG-0065's scenario.
+2. The partly done entries with little left: BUG-0278 is closed; BUG-0279 (one scenario and one measurement),
+   BUG-0262 (one test), and BUG-0065's scenario.
 3. The four decisions above, each put to Andrew with its background and options.
 4. The breaches that need a short design first: BUG-0127 and BUG-0128 (the framework's two locks), BUG-0119
    (shutdown), BUG-0273 (the matching engine's held reports) and BUG-0131's remainder.
@@ -170,11 +170,10 @@ with the rest; BUG-0065's halting of one instrument waits on BUG-0242.
 
 ## 6. The framework: reactor, timers, allocators and threads
 
-Eight entries.
+Seven entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0278](bug_list.md#bug_0278): an exception that ends an application thread stops the process with exit status 0 | **Partly done** | A thread that dies of an exception stops the reactor with `shutdown_for_a_failure`, and `Reactor::run` returns `stopped_for_a_failure_status`, 1; three `ReactorTest` tests require it | A check by hand that a sequencer refusing another day's WAL exits with status 1 |
 | [BUG-0283](bug_list.md#bug_0283): parts of the framework library that the venue runs every day are not reached by any test | **Partly done** | Groups 1 to 3 have tests, each made to fail by breaking the code it tests; the coverage baseline records 11,292 of 12,811 lines run | Group 1's reading of `/sys`, which needs a made-up `/sys` tree; then groups 4 and 5, the failures that change what the venue does |
 | [BUG-0127](bug_list.md#bug_0127): a pool that runs out takes a mutex and maps a new pool while holding it | **Breach** of F2 and F5 | `ExpandablePoolAllocator` takes `expansion_mutex_` on its slow path | No lock on the allocation path, as the entry describes, and pools sized so that the slow path is not reached in a normal day |
 | [BUG-0128](bug_list.md#bug_0128): every timer start creates a timer and every cancel destroys one, with a lock and system calls on the reactor thread | **Breach** of F2 and F3 | `Reactor` takes `timer_registry_mutex_`, and there is no way to create a timer apart from starting it | Timers created once and armed and disarmed afterwards; the design the entry asks for |
@@ -183,7 +182,7 @@ Eight entries.
 | [BUG-0104](bug_list.md#bug_0104): a connection whose reads were paused can stay stalled after they resume | **Investigation** | The kernel's rule for this case is not established | As the entry describes; best done with BUG-0184 |
 | [BUG-0280](bug_list.md#bug_0280): huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine | **Investigation** | The development machine has no huge pages reserved, so `FixedSizeMemoryPool`'s `MAP_HUGETLB` path always falls back to ordinary pages there; no measurement shows misses in the cache of address translations to be a real share of the order path's time | Measure those misses under `perf stat` through a load run first; only if they matter, huge pages for the large tables; and the huge-page path exercised by a test on a machine with huge pages reserved |
 
-**Recommended order in this area.** BUG-0278's check by hand first, being the smallest. Then BUG-0127 and BUG-0128, the two locks on paths an order can
+**Recommended order in this area.** BUG-0127 and BUG-0128 first, the two locks on paths an order can
 take, each needing a design agreed before code, BUG-0128 the larger. BUG-0119 with the shutdown sequence.
 BUG-0184 and BUG-0104 together. BUG-0283's remaining groups by its own rule, testing the failures that change
 what the venue does rather than every log line. BUG-0280 is a measurement.

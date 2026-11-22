@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 286 |
-| Open | 52 (28 defects, 24 tasks) |
-| Closed | 234 |
+| Open | 51 (27 defects, 24 tasks) |
+| Closed | 235 |
 | Next id | BUG-0287 |
 
 ## Open bugs by severity
 
-3 high, 33 medium, 16 low.
+3 high, 32 medium, 16 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -44,7 +44,6 @@
 | [BUG-0258](#bug_0258) | medium | defect | While a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere, so a flood of them is dropped, and the follower cannot discard its copies |
 | [BUG-0262](#bug_0262) | medium | defect | A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
-| [BUG-0278](#bug_0278) | medium | defect | An exception that ends an application thread stops the process with exit status 0, as if it had stopped normally |
 | [BUG-0279](#bug_0279) | medium | defect | A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent |
 | [BUG-0281](#bug_0281) | medium | task | What happens to members' orders when their gateways are down for longer than the grace period is not decided |
 | [BUG-0283](#bug_0283) | medium | task | Parts of the framework library that the venue runs every day are not reached by any test |
@@ -2225,32 +2224,6 @@ ring of entries, allocated at start, with the limit stated in bytes as well as i
 always released oldest first, because a report is kept until it has been sent on every connection there is, so the
 design must say what happens to a report sent on one connection and waiting for the other.
 
-### BUG-0278: An exception that ends an application thread stops the process with exit status 0, as if it had stopped normally {#bug_0278}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-20 |
-| Recorded | 2026-11-20 |
-| How | Reading how the sequencer would stop with status 1 when its record of command identifiers cannot be locked into memory ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)) |
-| Impact | A component whose thread dies of an exception exits with status 0, the status of a normal stop. `scripts/launch.py` and anything else that starts the component cannot tell a failure from a requested stop, so the failure is noticed only from the Quill log |
-
-**Where.** `ApplicationThread::run` (`libraries/pubsub_itc_fw/src/ApplicationThread.cpp`) catches an exception that
-escapes the thread, logs it at Error and calls `Reactor::shutdown`, an ordinary shutdown. `Reactor::run` then returns 0,
-and the component's `main` returns what it returns. Only an exception that escapes the reactor's own event loop makes
-`run` return a failure, -1, which the process reports as status 255.
-
-**What is wanted.** A thread that dies of an exception stops the reactor with `Reactor::shutdown_for_a_failure`, so that
-`run` returns `stopped_for_a_failure_status`, 1, as a refusal to start does. Whether anything relies on today's 0, such
-as a scenario of `ha_test.py` that expects a clean exit from a component that has failed, is to be checked first.
-
-
-**Built, 21 November 2026.** A thread that dies of an exception now stops the reactor with
-`shutdown_for_a_failure`, and `Reactor::run` returns `stopped_for_a_failure_status`, 1, where it returned 0 for that
-case and -1 for threads that did not start and for an exception that escaped the event loop. The three `ReactorTest`
-tests of a thread that throws, while starting, while becoming ready and while running, now require status 1; they
-failed before the change with 0, -1 and -1. `ha_test.py` passes 118 of 118 and 49 of 49. Left before closing: a check
-by hand that a sequencer refusing another day's WAL exits with status 1.
 ### BUG-0279: A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent {#bug_0279}
 
 | | |
@@ -2502,6 +2475,34 @@ count finds no call on `SequencerThread`.
 and nothing on the order path allocates from the heap.
 
 ## Closed
+
+### BUG-0278: An exception that ends an application thread stops the process with exit status 0, as if it had stopped normally {#bug_0278}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| How | Reading how the sequencer would stop with status 1 when its record of command identifiers cannot be locked into memory ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)) |
+| Impact | A component whose thread dies of an exception exits with status 0, the status of a normal stop. `scripts/launch.py` and anything else that starts the component cannot tell a failure from a requested stop, so the failure is noticed only from the Quill log |
+| Fixed | 2026-11-21 and 2026-11-22 -- a thread that dies of an exception stops the reactor with `shutdown_for_a_failure`, and `Reactor::run` returns `stopped_for_a_failure_status`, 1. `ha_test.py` scenario 114 now requires exit status 1 of every component it starts on another day's files, the sequencer refusing another day's WAL from its thread among them, and it passes |
+
+**Where.** `ApplicationThread::run` (`libraries/pubsub_itc_fw/src/ApplicationThread.cpp`) catches an exception that
+escapes the thread, logs it at Error and calls `Reactor::shutdown`, an ordinary shutdown. `Reactor::run` then returns 0,
+and the component's `main` returns what it returns. Only an exception that escapes the reactor's own event loop makes
+`run` return a failure, -1, which the process reports as status 255.
+
+**What is wanted.** A thread that dies of an exception stops the reactor with `Reactor::shutdown_for_a_failure`, so that
+`run` returns `stopped_for_a_failure_status`, 1, as a refusal to start does. Whether anything relies on today's 0, such
+as a scenario of `ha_test.py` that expects a clean exit from a component that has failed, is to be checked first.
+
+
+**Built, 21 November 2026.** A thread that dies of an exception now stops the reactor with
+`shutdown_for_a_failure`, and `Reactor::run` returns `stopped_for_a_failure_status`, 1, where it returned 0 for that
+case and -1 for threads that did not start and for an exception that escaped the event loop. The three `ReactorTest`
+tests of a thread that throws, while starting, while becoming ready and while running, now require status 1; they
+failed before the change with 0, -1 and -1. `ha_test.py` passes 118 of 118 and 49 of 49. Left before closing: a check
+by hand that a sequencer refusing another day's WAL exits with status 1.
 
 ### BUG-0272: Each lease request allocates from the heap on the requesting instance's own thread, which is the thread that handles orders {#bug_0272}
 
