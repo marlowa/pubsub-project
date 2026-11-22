@@ -2184,6 +2184,13 @@ the member.
 
 **The design** is in [a_matching_engine_that_stops_working.md](availability/a_matching_engine_that_stops_working.md). Six of its
 seven decisions are made; the stall limit is chosen once the engine's longest pause while healthy has been measured.
+
+**Built, 22 November 2026, apart from decision 2.** The leading sequencer judges the engine orders are routed to once a
+second, says one it judges stopped may not lead, so that the other engine takes over, withdraws that once the engine
+has caught up, and reports a following engine that stops. `ha_test.py` scenarios 119 to 125 check each case (section 8
+of the design). Left open until the stall limit, 3 seconds for now, is chosen from measurement and the full suites
+pass. While building it, scenario 123 found [BUG-0284](#bug_0284).
+
 The points it was written to settle:
 
 - **A connection, a lease and a heartbeat prove that an engine can communicate, not that it is applying commands.** The

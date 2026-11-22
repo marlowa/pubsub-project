@@ -1,8 +1,8 @@
 # A matching engine that stops working while it stays connected {#a_matching_engine_that_stops_working}
 
-> **Designed, not built.** This is the design for [BUG-0194](../bug_list.md#bug_0194). Six of its seven decisions are
-> made (section 9). The stall limit is chosen once the engine's longest pause while healthy has been measured, as
-> section 4.4 describes.
+> **Built, apart from decision 2.** This is the design for [BUG-0194](../bug_list.md#bug_0194). Six of its seven
+> decisions are made and built (section 9), and section 8 lists the tests and scenarios that check them. The stall
+> limit stays at 3 seconds until it is chosen from the measurements of section 4.4.
 
 ## 1. The failure
 
@@ -166,9 +166,14 @@ a matching engine.
 
 When the sequencer judges that the leading engine has stopped working, it:
 
-1. **Sends the statement to both arbiters and to the other engine, and sends it again every second** for as long as it
-   stands. The statement names the engine, the sequencer's own epoch, and a number that goes up by one each time the
-   sequencer changes what it says, so that a late message cannot undo a newer one, as every statement is numbered now.
+1. **Sends the statement to both arbiters and to the engines, and sends it again every second** for as long as this
+   leadership has made one. The statement says which engines may not lead -- neither, one or both, since a second
+   engine judged stopped is added to the first rather than replacing it -- with the sequencer's own epoch, and a number
+   that goes up by one each time the sequencer changes what it says, so that a late message cannot undo a newer one, as
+   every statement is numbered now. It is the library's message `StatementFromAnotherPair` (PDU 403), which names the
+   pair, so the library knows nothing of sequencers or engines. The stalled engine receiving it changes nothing, since an
+   instance's vote for itself does not pass through the refusal. The statement is made only when a second engine is
+   connected: with one there is nothing to promote and no voter to tell.
 2. **Stops counting the engine as taking orders**, so that it holds the orders that arrive from then on, exactly as it
    does when an engine disconnects. The orders already sent to the stalled engine are in the WAL.
 3. **Logs at Error** which engine, which time ran out, and the last positions it was told.
@@ -301,7 +306,12 @@ withdraws the statement only on an answer that
 - carries the `request_id` of the latest query it sent that engine, so a late answer to an earlier query is ignored;
 - was asked after the statement was made, so it cannot describe the engine as it was before;
 - says the engine follows, under an engine epoch at least as high as the one the stalled engine led in; and
-- gives a `highest_applied` at or above the sequencer's committed position at the moment it sent the query.
+- gives a `highest_applied` at or above the highest command the sequencer had sent the engine orders are routed to,
+  both when it made the statement, which includes the commands the stalled engine never applied, and when it sent this
+  query.
+
+The question is the ordinary `EnginePositionQuery` with a new flag, `answer_while_following`, set: only those questions
+are answered by a following engine, so every other use of the query is unchanged.
 
 The withdrawal is a new statement with a higher number, so a delayed copy of the statement it replaces cannot undo it. A following engine applies every committed command from the WAL
 ([both_engines_apply_the_wal.md](both_engines_apply_the_wal.md)), so a working one keeps up, and the usual way for a
@@ -319,10 +329,12 @@ decide. Nothing new is needed. This is decision 6.
 
 **The following engine stops applying.** That is a loss of resilience, not of service, and principle V11 asks that it
 be reported loudly for as long as it lasts. The sequencer measures the following engine's time without progress in the
-same way, from its answers. Once that passes the stall limit it logs at Error that the venue has no working standby
+same way, from its answers to a question asked once a second with `answer_while_following` set, against how far the
+leading engine has applied: both engines apply every command in the WAL, so a working follower keeps moving towards
+it. Once that passes the stall limit it logs at Error that the venue has no working standby
 engine, and repeats the Error every 60 seconds until the engine is applying again, when it logs at Info that the
-standby is back. It also sets a gauge, the seconds the following engine has gone without progress, which is zero
-while the engine keeps up. It makes no statement about the engine, and the leading engine goes on serving. If that
+standby is back. It also sets a gauge, `sequencer_following_engine_without_progress_seconds`, which is zero
+while the engine keeps up, and sends the test events `FollowingEngineStopped` and `FollowingEngineWorking`. It makes no statement about the engine, and the leading engine goes on serving. If that
 engine is later promoted while still stalled, it is judged as the leading engine like any other. This is decision 7.
 
 **With high availability turned off** there is one engine and nothing to promote. The sequencer still judges it,
@@ -352,27 +364,36 @@ detected by this design.
 
 ## 8. How it is known to be right
 
-1. **The rule that judges the engine** is a class of its own in the sequencer, as `RecoveryLimitRule` is, tested by
-   unit tests that give it positions and times: a healthy engine under a large gap is never judged stalled; an engine
-   whose applied position stops while it has commands is judged stalled at the limit and not before; one that sends no
-   reports while holding them likewise; a report number that starts again under a new epoch counts as movement;
-   neither time runs while the sequencer has unread messages from the engine; a missing answer, or one to an earlier
-   query, counts as no movement; a withdrawal needs an answer asked after the statement.
-2. **The sequencer's own delay.** A scenario slows the leading sequencer's writes to its WAL, through a setting that
-   only a test build accepts, until the engine pauses for its reports to be read, for longer than the stall limit, and
-   requires that no statement is made and that the engine goes on leading.
-3. **Each voter's refusal** is tested where the existing statements are tested: an arbiter and an engine holding the
-   sequencer's statement refuse the named engine's renewals, accept a later withdrawal, ignore a statement from a
-   sequencer that does not lead, ignore a late statement with a lower number or from an older sequencer leadership,
-   and drop a leadership's statements when a sequencer leads at a higher epoch.
-4. **An `ha_test.py` scenario** stops the leading engine applying while it goes on renewing its lease, through a
-   setting that only a test build accepts, and requires that every order the members sent is answered, that the other
-   engine leads, and that no order is answered twice. Its result is decided from test events and members' messages,
-   never from a Quill log.
-5. **A second scenario** stops both engines and requires the halt and the gateways' refusals.
-6. **Scenarios 115 and 116**, the load scenarios, must still pass, showing that overload is not mistaken for a stall.
-7. **The model check** of section 4.3, with each new rule removed in turn to show it fails.
-8. Each test is made to fail on purpose before it is trusted.
+Each test below was made to fail on purpose, by removing the rule it checks, before it was trusted.
+
+1. **The rule that judges the engine**, `StalledEngineRule`, has unit tests that give it positions and times: an engine
+   far behind that keeps applying is never judged stopped; one that stops applying while it has commands is judged at
+   the limit and not before; one that holds reports and sends none likewise; one applying a single long command while
+   sending its reports is not; a report number that starts again under a new epoch counts as movement; reports the
+   sequencer receives count as progress; neither time runs while the sequencer has unread messages from the engine; a
+   round that starts late says nothing; a missing answer, or one to an earlier query, counts as no movement.
+2. **The voters' refusal** has unit tests in the library: a voter told an instance may not lead refuses its renewals
+   until told otherwise, and refuses both when told neither may lead; a candidate does not give way under rule 9 to a
+   peer it may not let lead; an arbiter's voter made after it becomes active refuses the barred instance; the held
+   statement accepts only the leadership at the highest epoch known, keeps the highest number, and is dropped when a
+   later leadership is known.
+3. **The configuration check** has unit tests: a stall limit below two queries, or one that with its query outlasts
+   the longest orders are held, is refused.
+4. **`ha_test.py` scenarios**, decided from test events and members' messages, never from a Quill log:
+
+   | Scenario | What happens | What is required |
+   |---|---|---|
+   | 119 | The one engine stops applying | Judged stopped; orders refused; trading halts by the recovery limit |
+   | 120 | The leading engine stops applying | Judged stopped; the other engine leads; each order the stalled one left is answered once, as accepted; trading goes on |
+   | 121 | Both engines stop applying, one after the other | Each is judged stopped; neither leads again; trading halts |
+   | 122 | The leading engine applies and holds every report | Judged for sending none; the other engine leads and answers each unreported order once |
+   | 123 | A replaced engine is started again, and the engine that took over is killed | The statement about it is withdrawn once it has caught up; it leads |
+   | 124 | As scenario 116, with the sequencers reading reports slowly | The engine is seen held up behind the sequencer and is not judged stopped |
+   | 125 | The following engine is frozen with SIGSTOP | The venue says it has no working standby, goes on trading, and says so again when it resumes |
+
+   Every scenario fails if a leading sequencer judges a working engine stopped, and logs the longest any engine went
+   without progress while it had work.
+5. **The model check** of section 4.3, with each new rule removed in turn to show it fails.
 
 ## 9. Decisions
 

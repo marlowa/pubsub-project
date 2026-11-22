@@ -168,6 +168,10 @@ void SequencerThread::on_initial_event() {
         "sequencer_thread", "sequencer_running_alone",
         "1 while this sequencer leads and commits orders without waiting for its follower: no follower is connected, the follower is being brought "
         "up to date, or it is too far behind. A loss of resilience. Expected to be 0, apart from a few seconds after a start or a change of leader");
+    following_engine_without_progress_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "sequencer_following_engine_without_progress_seconds",
+        "How long the matching engine that follows has gone without applying a command while the leading engine moved on. Above the stall limit "
+        "the venue has no working standby engine: a loss of resilience, not of service");
     engine_longest_without_progress_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "sequencer_engine_longest_without_progress_seconds",
         "The longest this sequencer, leading, has seen the matching engine orders are routed to go without applying a command it had, or without "
@@ -1254,6 +1258,7 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         send_statement_about_engine();
         ask_barred_engines();
         judge_leading_engine();
+        judge_following_engine();
         return;
     }
 
@@ -2650,6 +2655,13 @@ void SequencerThread::handle_engine_position(const pubsub_itc_fw::ConnectionID& 
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode EnginePosition -- dropping");
         return;
     }
+    if (view.request_id >= follower_request_ids_from) {
+        if (conn_id == judged_follower_) {
+            const int64_t arrived_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            stalled_follower_.answer(view.request_id - follower_request_ids_from, StalledEngineRule::Position{view.highest_applied, 0, 0, 0}, arrived_ns);
+        }
+        return;
+    }
     if (view.request_id >= withdrawal_request_ids_from) {
         consider_withdrawal(view);
         return;
@@ -2657,6 +2669,7 @@ void SequencerThread::handle_engine_position(const pubsub_itc_fw::ConnectionID& 
     if (view.request_id >= stall_request_ids_from) {
         // Asked to judge whether the engine works: only an answer from the engine being judged counts.
         if (conn_id == judged_engine_) {
+            leading_engine_applied_ = view.highest_applied;
             const int64_t arrived_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
             stalled_engine_.answer(view.request_id - stall_request_ids_from,
                                    StalledEngineRule::Position{view.highest_applied, view.reports_sent_epoch, view.reports_sent_through, view.reports_held},
@@ -2853,6 +2866,62 @@ void SequencerThread::consider_withdrawal(const pubsub_itc_fw_app::EnginePositio
         send_statement_about_engine();
         return;
     }
+}
+
+int64_t SequencerThread::following_engine_instance() const {
+    const int64_t leader = engine_routing_.announced_leader();
+    return leader == 1 ? 2 : (leader == 2 ? 1 : 0);
+}
+
+void SequencerThread::judge_following_engine() {
+    const pubsub_itc_fw::ConnectionID follower = engine_routing_.standby();
+    if (!replicated_wal_.has_value() || role_ != pubsub_itc_fw_app::Role::leader || !an_engine_takes_orders_unjudged() || !follower.is_valid()) {
+        if (judged_follower_.is_valid()) {
+            stalled_follower_.restart();
+            judged_follower_ = pubsub_itc_fw::ConnectionID{};
+            follower_judged_stopped_ = false;
+            following_engine_without_progress_gauge_.set(0.0);
+        }
+        return;
+    }
+    if (follower != judged_follower_) {
+        stalled_follower_.restart();
+        judged_follower_ = follower;
+        follower_judged_stopped_ = false;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    // Its work is what the leading engine has applied: both apply every command in the WAL, so a working follower keeps
+    // moving towards it. Its reports are not judged: a following engine sends none.
+    const StalledEngineRule::Verdict verdict =
+        stalled_follower_.start_round(now_ns, leading_engine_applied_, unread_from_engines(), StalledEngineRule::ReportReceived{});
+    following_engine_without_progress_gauge_.set(static_cast<double>(stalled_follower_.without_progress_ns(now_ns)) / 1e9);
+    if (verdict != StalledEngineRule::Verdict::working) {
+        if (!follower_judged_stopped_ || now - follower_stopped_said_at_ >= follower_stopped_repeat_interval) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "SequencerThread: the matching engine that follows (instance {}, connection {}) has applied nothing for {} s while the leading "
+                       "engine applied through seq={} -- the venue has no working standby engine. The leading engine goes on serving; this is said again "
+                       "every {} s while it lasts",
+                       following_engine_instance(), follower.get_value(), stalled_follower_.without_progress_ns(now_ns) / 1'000'000'000,
+                       leading_engine_applied_, follower_stopped_repeat_interval.count());
+            if (!follower_judged_stopped_) {
+                report(pubsub_itc_fw_app::FollowingEngineStopped{following_engine_instance(), stalled_follower_.without_progress_ns(now_ns) / 1'000'000,
+                                                                 leading_engine_applied_});
+            }
+            follower_judged_stopped_ = true;
+            follower_stopped_said_at_ = now;
+        }
+    } else if (follower_judged_stopped_) {
+        follower_judged_stopped_ = false;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: the matching engine that follows (instance {}) applies commands again -- the venue has a working standby engine",
+                   following_engine_instance());
+        report(pubsub_itc_fw_app::FollowingEngineWorking{following_engine_instance()});
+    }
+    pubsub_itc_fw_app::EnginePositionQuery query{};
+    query.request_id = follower_request_ids_from + stalled_follower_.request_id();
+    query.answer_while_following = true;
+    send_pdu(follower, pubsub_itc_fw_app::EnginePositionQuery::message_pdu_id, 0, query);
 }
 
 void SequencerThread::judge_leading_engine() {

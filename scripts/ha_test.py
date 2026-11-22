@@ -701,6 +701,11 @@ def check_engines_judged_working(scenario: "Scenario") -> None:
                           f"{what} for {event.message.without_progress_milliseconds} ms, with commands sent up to "
                           f"seq={event.message.highest_command_sent}")
     log(f"  longest a matching engine went without progress while it had work: {longest_ms} ms")
+    following_stopped = message_of(modules.FollowingEngineStopped)
+    for event in _TEST_EVENTS.events:
+        if following_stopped(event):
+            log(f"  {event.component} said the engine that follows (instance {event.message.engine_instance}) applied nothing for "
+                f"{event.message.without_progress_milliseconds} ms: no working standby")
     log_rounds_without_progress(modules)
     for line in judged:
         log(f"  {line}")
@@ -1643,6 +1648,11 @@ class Scenario(NamedTuple):
     # that the sequencer's own delay is not blamed on the engine; that no engine is judged stopped is required of every
     # scenario (docs/availability/a_matching_engine_that_stops_working.md, section 3.1, decision 4).
     assert_sequencer_delay_not_blamed: bool = False
+    # When True, the matching engine that follows is frozen with SIGSTOP while orders go on: the leading sequencer must say
+    # the venue has no working standby (FollowingEngineStopped), the leading engine must go on serving, and once the engine
+    # is resumed the sequencer must say it applies commands again (FollowingEngineWorking)
+    # (docs/availability/a_matching_engine_that_stops_working.md, section 6, decision 7).
+    assert_following_engine_stop_signalled: bool = False
     # When True, the binary load client offers 1.8 million orders on four sessions as fast as the sockets accept them,
     # faster than the venue processes them. Each gateway stops reading its members while 16,384 of its commands are
     # unanswered, so no queue in the order path grows without limit. No sequencer or matching engine may lose its lease
@@ -5783,6 +5793,26 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 125 -- the matching engine that follows stops: a loss of resilience, reported, and no more.
+    #
+    # docs/availability/a_matching_engine_that_stops_working.md, section 6, decision 7. The following engine is frozen with
+    # SIGSTOP while orders go on. The leading sequencer must say the venue has no working standby, make no statement, and
+    # the leading engine must go on serving; once the engine is resumed the sequencer must say it applies commands again.
+    Scenario(
+        number=125,
+        short_name="following_engine_stops",
+        description="The matching engine that follows stops: the venue says it has no working standby, and goes on trading",
+        expected_outcome=(
+            "the leading sequencer says the venue has no working standby; orders are accepted throughout; once the engine resumes, "
+            "the sequencer says it applies commands again"
+        ),
+        me_ha=True,
+        assert_following_engine_stop_signalled=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 119 -- a matching engine that stays connected and stops working, with no other engine to lead, halts the venue.
     #
     # docs/availability/a_matching_engine_that_stops_working.md, sections 3 and 6. The one matching engine stops applying
@@ -9807,7 +9837,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 and not scenario.assert_book_survives_peer_link_break and not scenario.assert_kept_reports_sent_on_promotion
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
                 and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained
-                and not scenario.assert_engine_stops_working and not scenario.end_of_day_leader_stops):
+                and not scenario.assert_engine_stops_working and not scenario.assert_following_engine_stop_signalled
+                and not scenario.end_of_day_leader_stops):
             # The promotion has already been observed by the time this runs, so this confirms an absence: the engine is
             # asked for a checkpoint first, and a cancel it sent cannot still be on its way.
             promoted_engine = resolved(ENGINE_FOLLOWING_AT_START)
@@ -12362,6 +12393,63 @@ def run_scenario(scenario: Scenario, args) -> bool:
                         if not answered_as_accepted("after-return-1"):
                             fail(f"after-return-1, placed once {engine} led again, was not accepted")
                         log("  a new order is accepted -- OK")
+            member.close()
+
+        # ── The engine that follows stops (docs/availability/a_matching_engine_that_stops_working.md, section 6) ──
+        if scenario.assert_following_engine_stop_signalled:
+            what = "the matching engine that follows stops"
+            log(f"=== {what.capitalize()} ===")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die(f"{what}: the raw client could not log on")
+            sequencer_events = _TEST_EVENTS.modules["sequencer_test_events"]
+
+            def placed_and_accepted(cl_ord_id: str) -> bool:
+                member.new_order_single(cl_ord_id)
+                deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
+                while time.monotonic() < deadline:
+                    reply = member.receive_until("8", timeout=1.0)
+                    if reply is not None and reply.get(11) == cl_ord_id:
+                        return reply.get(39) == "0"
+                return False
+
+            follower = dies_second
+            frozen = proc_by_name[follower]
+            freeze_mark = _TEST_EVENTS.mark()
+            os.kill(frozen.pid, signal.SIGSTOP)
+            log(f"  {follower} frozen with SIGSTOP")
+            # The leading engine goes on serving, and moves on, which is what the frozen one falls behind.
+            for number in range(1, 4):
+                if not placed_and_accepted(f"follower-frozen-{number}"):
+                    os.kill(frozen.pid, signal.SIGCONT)
+                    member.close()
+                    die(f"{what}: follower-frozen-{number}, placed while {follower} was frozen, was not accepted by the leading engine")
+            log("  orders placed while it is frozen are accepted by the leading engine -- OK")
+            stopped = _TEST_EVENTS.wait_for(message_of(sequencer_events.FollowingEngineStopped), timeout=15.0, since=freeze_mark)
+            if stopped is None:
+                os.kill(frozen.pid, signal.SIGCONT)
+                member.close()
+                die(f"{what}: the leading sequencer never said the venue has no working standby, with {follower} frozen for 15 s")
+            log(f"  {stopped.component} said the engine that follows has applied nothing for {stopped.message.without_progress_milliseconds} ms -- OK")
+            resume_mark = _TEST_EVENTS.mark()
+            os.kill(frozen.pid, signal.SIGCONT)
+            log(f"  {follower} resumed with SIGCONT")
+            if not placed_and_accepted("follower-resumed-1"):
+                member.close()
+                die(f"{what}: follower-resumed-1, placed once {follower} was resumed, was not accepted")
+            if _TEST_EVENTS.wait_for(message_of(sequencer_events.FollowingEngineWorking), timeout=20.0, since=resume_mark) is None:
+                member.close()
+                die(f"{what}: the leading sequencer never said the engine that follows applies commands again, 20 s after {follower} resumed")
+            log("  the leading sequencer said the engine that follows applies commands again -- OK")
             member.close()
 
         # ── A command that kills the matching engines (docs/availability/voided_commands.md, section 4) ──

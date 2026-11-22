@@ -667,6 +667,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     static constexpr int64_t stall_request_ids_from = int64_t{1} << 41;
     // And those asked of an engine barred from leading, to tell whether it applies commands again.
     static constexpr int64_t withdrawal_request_ids_from = int64_t{1} << 42;
+    // And those asked of the following engine, to tell whether the venue has a working standby.
+    static constexpr int64_t follower_request_ids_from = int64_t{1} << 43;
     PhaseLinks phase_links_{*this};
     // Requests to move the venue from one phase of the trading day to the next, the day's schedule, and the check that
     // follows it (docs/venue/trading_day_plan.md).
@@ -850,6 +852,21 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     /// Judges the engine orders are routed to from its last answer, and asks it its position again. Once a second.
     void judge_leading_engine();
+
+    // Whether the engine that follows applies commands, judged as the leading one is, against how far the leading engine has
+    // applied. One that stops is a loss of resilience, reported loudly for as long as it lasts, and nothing more: no
+    // statement is made, and the leading engine goes on serving (section 6 of the design, decision 7).
+    StalledEngineRule stalled_follower_{std::chrono::seconds{config_.engine_stall_limit_seconds}};
+    pubsub_itc_fw::ConnectionID judged_follower_{};
+    bool follower_judged_stopped_{false};
+    std::chrono::steady_clock::time_point follower_stopped_said_at_{};
+    int64_t leading_engine_applied_{0};
+    pubsub_itc_fw::GaugeHandle following_engine_without_progress_gauge_;
+    static constexpr std::chrono::seconds follower_stopped_repeat_interval{60};
+    /// Judges the engine that follows from its last answer, and asks it its position again. Once a second.
+    void judge_following_engine();
+    /// The instance of the engine that follows, as far as the announcements tell, or 0.
+    [[nodiscard]] int64_t following_engine_instance() const;
 
     // The statement this instance, leading, makes that an engine it judged to have stopped working may not lead: sent to
     // both arbiters and the engines, and again every second while it stands, so that the engine's lease runs out and the

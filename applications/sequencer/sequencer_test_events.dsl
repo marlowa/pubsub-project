@@ -12,7 +12,7 @@
 #  None is sent for each order: each says that the sequencer's way of
 #  handling orders changed.
 #
-#  Message ids 180 to 189, 210 to 215, 219 to 222, and 224 to 227 are the
+#  Message ids 180 to 189, 210 to 215, 219 to 222, and 224 to 229 are the
 #  sequencer's, within the range 170 to 229 set aside for applications'
 #  test events; 216 to 218 are the matching engine's. No two files may use the same id: the
 #  listener refuses to start if they do.
@@ -339,4 +339,28 @@ message EngineMayLeadAgain (id=227, version=1)
     i64 engine_instance                  # the engine that may lead again
     i64 highest_applied                  # the highest command it said it has applied
     i64 required                         # the highest command it had to have applied
+end
+
+# ------------------------------------------------------------
+#  228 -- FollowingEngineStopped
+#  The matching engine that follows has applied nothing for as long as
+#  the stall limit while the engine that leads moved on: the venue has
+#  no working standby engine. A loss of resilience, not of service: the
+#  leading engine goes on serving, and no statement is made
+#  (docs/availability/a_matching_engine_that_stops_working.md,
+#  section 6, decision 7).
+# ------------------------------------------------------------
+message FollowingEngineStopped (id=228, version=1)
+    i64 engine_instance                  # the engine that follows, as far as the sequencer knows; 0 if it does not know
+    i64 without_progress_milliseconds    # how long it made no progress
+    i64 leading_engine_applied           # the highest command the leading engine has applied
+end
+
+# ------------------------------------------------------------
+#  229 -- FollowingEngineWorking
+#  The matching engine that follows, judged to have stopped, applies
+#  commands again: the venue has a working standby engine again.
+# ------------------------------------------------------------
+message FollowingEngineWorking (id=229, version=1)
+    i64 engine_instance                  # the engine that follows, as far as the sequencer knows; 0 if it does not know
 end
