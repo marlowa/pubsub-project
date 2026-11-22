@@ -393,6 +393,10 @@ Each test below was made to fail on purpose, by removing the rule it checks, bef
 
    Every scenario fails if a leading sequencer judges a working engine stopped, and logs the longest any engine went
    without progress while it had work.
+
+   Scenarios 120, 122 and 123 count every answer to each order the stalled engine left, and fail on a rejection or a
+   second answer. They watch for a second answer for two seconds after every order has been answered once: that covers
+   the change of engine leader in which a duplicate would arise, and does not prove that none could ever arrive later.
 5. **The model check** of section 4.3, with each new rule removed in turn to show it fails.
 
 ## 9. Decisions

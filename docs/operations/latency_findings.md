@@ -440,7 +440,9 @@ limit has to be longer than the longest a working engine goes without progress, 
 | Secondary engine leading first | 48 | 0 in every one |
 | Primary engine leading first, on the final code | 120 | 999 ms, in scenario 97; 0 in every other |
 
-The stall limit is 3 seconds, three times the longest of these. The five scenarios that stop an engine on purpose, 119
+The stall limit is 3 seconds, three times the longest of these. The measurement is at the granularity of one round, a
+second, and covers the workloads the scenarios apply, so the margin is supported by those workloads; it is not a bound
+on every pause a working engine could make. The five scenarios that stop an engine on purpose, 119
 to 123, are left out. So is scenario 77 in the first run, where a
 working engine was judged stopped for 31 seconds without sending reports: those were reports it held only for the
 sequencer that did not lead, which the judgement now leaves out, and the scenario now measures 0. The load scenarios,

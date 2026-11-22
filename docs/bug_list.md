@@ -2474,8 +2474,8 @@ a loss of resilience is not a loss of service (V11).
 **Principles.** V6: every command a gateway accepted is answered; V8: every report the matching engine produces reaches
 the member.
 
-**The design** is in [a_matching_engine_that_stops_working.md](availability/a_matching_engine_that_stops_working.md). Six of its
-seven decisions are made; the stall limit is chosen once the engine's longest pause while healthy has been measured.
+**The design** is in [a_matching_engine_that_stops_working.md](availability/a_matching_engine_that_stops_working.md), with its
+seven decisions made.
 
 **Built, 22 November 2026.** The leading sequencer judges the engine orders are routed to once a
 second, says one it judges stopped may not lead, so that the other engine takes over, withdraws that once the engine
