@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 283 |
-| Open | 53 (29 defects, 24 tasks) |
+| Bugs recorded | 284 |
+| Open | 54 (30 defects, 24 tasks) |
 | Closed | 230 |
-| Next id | BUG-0284 |
+| Next id | BUG-0285 |
 
 ## Open bugs by severity
 
-4 high, 32 medium, 17 low.
+4 high, 33 medium, 17 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -49,6 +49,7 @@
 | [BUG-0279](#bug_0279) | medium | defect | A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent |
 | [BUG-0281](#bug_0281) | medium | task | What happens to members' orders when their gateways are down for longer than the grace period is not decided |
 | [BUG-0283](#bug_0283) | medium | task | Parts of the framework library that the venue runs every day are not reached by any test |
+| [BUG-0284](#bug_0284) | medium | defect | A matching engine restarted moments before the engine leading dies took ten seconds to lead, as long as the limit on automatic recovery |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -2485,6 +2486,36 @@ no test runs.
    call that only logs and returns does not need a test of its own.
 3. Each new test made to fail on purpose before it is trusted, and `coverage_baseline.txt` regenerated in the same
    commit.
+
+### BUG-0284: A matching engine restarted moments before the engine leading dies took ten seconds to lead, as long as the limit on automatic recovery {#bug_0284}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-22 |
+| Recorded | 2026-11-22 |
+| How | `ha_test.py` scenario 123, written for [BUG-0194](#bug_0194): the matching engine that had stopped working was started again and, a moment later, the engine that had taken over was killed |
+| Impact | A change of engine leader normally takes about 2.4 seconds. Here it took 10, which is the limit on automatic recovery in every environment, so in production the venue could halt trading for a change of leader it would otherwise have made by itself |
+
+**What was seen.** In scenario 123 on 22 November 2026, the primary matching engine was started again at 01:12:38, and
+the secondary, which led, was killed in the same second. The primary said it led at 01:12:48, ten seconds later. The
+scenario passed, because it allows 20 seconds and the scenario's limit on automatic recovery is 600 seconds.
+
+**The probable cause, from the timing, not yet confirmed.** An instance writes each promise it makes to disk with an
+expiry ten seconds later than the true one, so that granting its leader a renewal every second rewrites the file only
+now and then; a restarted instance honours the expiry it reads back, which "only makes the restarted instance
+stricter" ([majority_leases.md](availability/majority_leases.md), rule 6). The restarted primary, following, granted
+the secondary's renewals, so when the secondary died it may have had to wait out a promise recorded up to about ten
+seconds ahead before it could ask to lead. If so, any standby restarted within about ten seconds of its leader's death
+takes over that much later, and the cost is not that of BUG-0194, which only made it visible.
+
+**What is wanted.**
+
+1. Confirm the cause from test events: when the restarted engine first asked to lead, and why it did not ask sooner.
+2. If it is the recorded expiry, a way to keep a restarted instance safe without making it wait out more than the true
+   promise, or a smaller margin, with the model check of rule 6 rerun
+   ([tla/findings.md](availability/tla/findings.md), section 4.2).
+3. A scenario that requires the takeover within the limit on holding orders.
 
 ## Closed
 
