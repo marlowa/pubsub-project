@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 284 |
-| Open | 52 (28 defects, 24 tasks) |
+| Bugs recorded | 286 |
+| Open | 54 (30 defects, 24 tasks) |
 | Closed | 232 |
-| Next id | BUG-0285 |
+| Next id | BUG-0287 |
 
 ## Open bugs by severity
 
-3 high, 32 medium, 17 low.
+3 high, 33 medium, 18 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,6 +48,7 @@
 | [BUG-0279](#bug_0279) | medium | defect | A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent |
 | [BUG-0281](#bug_0281) | medium | task | What happens to members' orders when their gateways are down for longer than the grace period is not decided |
 | [BUG-0283](#bug_0283) | medium | task | Parts of the framework library that the venue runs every day are not reached by any test |
+| [BUG-0285](#bug_0285) | medium | defect | While the leader stops waiting for its follower, it sends execution reports whose records are not yet committed |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -65,6 +66,7 @@
 | [BUG-0272](#bug_0272) | low | defect | Each lease request allocates from the heap on the requesting instance's own thread, which is the thread that handles orders |
 | [BUG-0273](#bug_0273) | low | defect | A matching engine holding reports for want of a connection, or until it knows whether it serves, allocates from the heap for each |
 | [BUG-0280](#bug_0280) | low | task | Huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine |
+| [BUG-0286](#bug_0286) | low | defect | The sequencer writes its WAL snapshot file, and builds the file's names, on the thread that handles orders |
 
 ---
 
@@ -2490,6 +2492,66 @@ do. Every count is of lines no test runs, including log lines as above.
    call that only logs and returns does not need a test of its own.
 3. Each new test made to fail on purpose before it is trusted, and `coverage_baseline.txt` regenerated in the same
    commit.
+
+### BUG-0285: While the leader stops waiting for its follower, it sends execution reports whose records are not yet committed {#bug_0285}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-22 |
+| Recorded | 2026-11-22 |
+| How | Reading the rule that releases execution reports, while making the leader tell the gateways of a change of phase only once its record is committed ([BUG-0249](#bug_0249)) |
+| Impact | In the time between the follower falling behind and a voter confirming that the follower may not lead, up to about a second, a member can be sent a report whose record a change of leader could lose |
+
+**What happens.** The leading sequencer sends an execution report to its gateway once the record the report depends on
+is committed, so that a member is never told something a change of leader could take back. The condition in
+`SequencerThread::forward_report_from_engine` is
+
+    !replicated_wal_->waits_for_follower() || gate_seq_no <= replicated_wal_->committed_through()
+
+so a report is sent at once whenever the leader is not waiting for its follower, committed or not.
+
+A leader stops waiting for its follower as soon as the follower falls behind or its connection goes
+(`ReplicatedWal::waits_for_follower`). From then, `ReplicatedWal::advance_commit` commits nothing more until
+`may_commit_without_follower()` is true, which is once a voter has confirmed the leader's statement that the follower may
+not lead. Until a voter holds that statement, the follower may still be elected if the leader dies, and it lacks the
+records the leader wrote after it fell behind. A report sent in that time can therefore be for a record the next leader
+does not hold. The time is about one lease renewal, a second by default, and longer while a voter's disk is slow to
+write the statement (`ha_test.py` scenario 103).
+
+The leader must also die inside that time for a member to be told something the venue then does not hold, so it is
+rare; but it is the case the rule exists for.
+
+**What is wanted.** A report released only once its record is committed, with no exception for a leader not waiting for
+its follower, as a change of phase or halt is ([BUG-0249](#bug_0249)). Reports would then wait up to about a second each
+time the follower is lost, which is a cost to members' latency at those moments and should be stated and agreed. A
+scenario in which the follower is stopped and a voter's statement write is slowed, so that the time is seconds long, and
+which checks that no report reaches a member before its record is committed, failing before the change.
+
+**Principles.** V2 of [design_principles.md](design_principles.md), the log is the record.
+
+### BUG-0286: The sequencer writes its WAL snapshot file, and builds the file's names, on the thread that handles orders {#bug_0286}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-22 |
+| Recorded | 2026-11-22 |
+| How | `scripts/heap_allocation_count.py`, run to check [BUG-0272](#bug_0272): with the lease requests in fixed storage, it found 6 heap calls in a minute on each sequencer's `SequencerThread`, all from `Wal::take_snapshot` |
+| Impact | Every 30 seconds by default (`snapshot_interval_seconds`), each sequencer's order-handling thread allocates two strings and creates, writes and renames a file, any of which can wait for the disk while orders wait behind it |
+
+**What happens.** The sequencer's snapshot timer calls `ReplicatedWal::take_snapshot` on its own thread
+(`SequencerThread::on_timer_event`), and `Wal::take_snapshot` builds the names of the file and its temporary copy
+(`snapshot_path() + ".tmp"` and `snapshot_path()`), then opens the temporary file, writes the snapshot header, closes it
+and renames it over the old one. Nothing syncs the file, but creating, writing and renaming a file can each wait for the
+file system's journal, which on a slow disk is the wait [BUG-0175](#bug_0175) looks for.
+
+**What is wanted.** The two names worked out once, when the WAL is opened; and the snapshot written by a thread that does
+not handle orders, as the promise records and the arbiters' statements are written in the background. Then the heap
+count finds no call on `SequencerThread`.
+
+**Principles.** F4 and F5 of [design_principles.md](design_principles.md): no order-handling thread waits for the disk,
+and nothing on the order path allocates from the heap.
 
 ## Closed
 

@@ -8,11 +8,11 @@ agreed with Andrew. An entry that is closed is no longer listed here; its record
 
 ## Summary
 
-There are 52 open entries, and each is judged below. The figures:
+There are 54 open entries, and each is judged below. The figures:
 
 | Judgement | Entries |
 |---|---|
-| Breach of a named principle | 9: BUG-0113 (what is left of it), BUG-0249, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0272, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
+| Breach of a named principle | 11: BUG-0113 (what is left of it), BUG-0249, BUG-0285, BUG-0286, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0272, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
 | Partly done | 8: BUG-0121, BUG-0134, BUG-0262, BUG-0065, BUG-0279, BUG-0278, BUG-0283, BUG-0069 |
 | Decision needed from Andrew | 3: BUG-0258, BUG-0281, BUG-0229; and BUG-0250 needs one choice made between two remedies |
 | Decided, and waiting to be built | 1: BUG-0048, with the recovery service of BUG-0113 |
@@ -103,17 +103,19 @@ requirements to be placed in the order with the rest.
 
 ## 2. The write-ahead log, its retention, the disk, and the trading day
 
-Five entries.
+Six entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
 | [BUG-0249](bug_list.md#bug_0249): the leading sequencer tells the gateways of a change of phase before the follower sequencer holds it | **Breach** of V2: a member can be told of a phase the WAL of the next leader never holds | When the leader writes a `TechnicalEvent` that changes the phase or the halt, it sends every gateway `OrderAcceptance` at once (`SequencerThread.cpp`, after each record it writes), whereas it holds an execution report until the follower sequencer has confirmed the record the report depends on | The change of phase or halt told to the gateways only once the follower has confirmed the record, or after the limit of time the leader waits when the follower is absent, as for reports; a scenario that stops the leader inside that window and fails before the change |
+| [BUG-0286](bug_list.md#bug_0286): the sequencer writes its WAL snapshot file, and builds the file's names, on the thread that handles orders | **Breach** of F4 and F5 | `Wal::take_snapshot`, called from the sequencer's snapshot timer on `SequencerThread`, builds two strings and creates, writes and renames a file every 30 seconds; `heap_allocation_count.py` finds its 6 heap calls a minute on each sequencer | The names worked out once when the WAL is opened, and the snapshot written by a background thread |
 | [BUG-0113](bug_list.md#bug_0113): a resend or a request for undelivered reports can read far back in the WAL on the thread that sequences orders | **Breach** of F4, accepted for now and permitted by name in `scripts/check_standards.py` | Two reads remain on the sequencer's thread: `handle_session_replay_request`, a member's resend, and `handle_undelivered_reports_request`, the reports produced while a member had no connection. Each reads segments from the newest backwards and stops when it has what it needs, so a resend after a reconnect reads a few segments; one reaching far back, or a member away most of the day, reads much of the day's WAL. A matching engine's catch-up is read on the thread that follows the WAL and is not part of this entry | The recovery service, with the 100,000 messages for each comp id decided under R-0008; and first the decision about undelivered reports beyond that count (Summary, decision 1) |
 | [BUG-0048](bug_list.md#bug_0048): the WAL keeps the whole day | **Decided**, and waiting to be built | `Wal::truncate_below` is called by nothing, and nothing reclaims the WAL during the day. Of the positions retention depends on, the matching engine's position is not reported to the sequencer, and members' resends are to be served by the recovery service's own store | The recovery service built; the engine's position reported; and retention anchored to the lower of the follower's acknowledgement and the engine's checkpoint |
 | [BUG-0175](bug_list.md#bug_0175): while the disk is slow, the leading sequencer's own thread waits in the file system's journal | **Investigation**; a **Breach** of F4 if confirmed | Not reproduced since the WALs moved to a disk of their own mounted with `lazytime`. Finding the call needs the scheduler's events with kernel stacks, which `perf` records without root when attached to one thread (the method recorded under [BUG-0228](bug_list.md#bug_0228)) | Reproduce under a slow disk with that method, then take the call off the thread or show that F4 permits it |
 | [BUG-0264](bug_list.md#bug_0264): under overload the follower sequencer still falls behind its leader | **Investigation** | In an overload of 68,626 orders a second the leader judged its follower too far behind nine times, because its storage for orders waiting on the follower was full, and ran without it for 3,963 ms of a 26.2-second run. The leader's reactor is idle about half the time, so what holds the follower back is not known | Profile the follower in the same overload to find the stage that limits it; then keep it in step at the rate the leader sustains, or state that rate as the venue's ceiling |
 
-**Recommended order in this area.** BUG-0249 first: the remedy is the one already used for execution reports.
+**Recommended order in this area.** BUG-0249 first: the remedy is the one already used for execution reports. BUG-0286
+next, small and shown done by the heap count.
 BUG-0113 and BUG-0048 wait on the decision about undelivered reports and then on the recovery service.
 BUG-0175 and BUG-0264 are investigations to schedule.
 
@@ -132,16 +134,17 @@ waits on BUG-0048. BUG-0216 is a measurement.
 
 ## 4. The sequencer's handling of reports
 
-Three entries.
+Four entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
+| [BUG-0285](bug_list.md#bug_0285): while the leader stops waiting for its follower, it sends execution reports whose records are not yet committed | **Breach** of V2 | `forward_report_from_engine` sends a report at once whenever `waits_for_follower()` is false, but `ReplicatedWal::advance_commit` commits nothing while the leader runs without its follower until a voter confirms that the follower may not lead; in that time, about a second, the follower could still be elected without the record | A report released only once its record is committed, as a change of phase is (BUG-0249), with the delay to members' reports at those moments stated and agreed; a scenario that slows a voter's statement write so the time is seconds long |
 | [BUG-0250](bug_list.md#bug_0250): a restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member | **Breach** of V2, and a choice between two remedies | A restarting engine holds at most 50,000 reports (`max_held_reports`, `EngineReportSending.hpp`) and sends the rest as possible repeats. `SequencerThread::forward_report_from_engine` reads each report's engine epoch and number but does not check whether the WAL already holds it, so every repeat is written, replicated, published and sent | Andrew's choice of remedy (Summary, decision 4), then a scenario that restarts an engine after more than 50,000 reports and fails before the change |
 | [BUG-0258](bug_list.md#bug_0258): while a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere | **Decision needed** | `ReportForwarding` holds such reports in room for 32,768 (`held_report_capacity_reports`), drops the oldest when it is full, and holds back the position it says it has forwarded through, so the follower sequencer discards none of its kept copies. A venue runs this way whenever a standby gateway instance is stopped | Andrew's decision on how long such a report is held, and whether a session known to have ended needs holding at all (Summary, decision 3) |
 | [BUG-0131](bug_list.md#bug_0131): the leading sequencer allocates from the heap for every order, and copies waiting reports | **Breach** of F5 and F6 | The waiting reports are in a ring allocated once, each report in the slab chunk it arrived in, and reports are routed by the session they carry, so no map of orders grows through the day | Lock the record of command identifiers into memory at start ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)), and compare a latency run with the last |
 
-**Recommended order in this area.** The decisions for BUG-0250 and BUG-0258, then their changes. BUG-0131's
-remainder through its agreed design.
+**Recommended order in this area.** BUG-0285 first, after BUG-0249, whose rule and scenario it reuses. The
+decisions for BUG-0250 and BUG-0258, then their changes. BUG-0131's remainder through its agreed design.
 
 ## 5. The gateways and what a member sees
 
