@@ -316,6 +316,7 @@ end
 # ------------------------------------------------------------
 message EnginePositionQuery (id=118, version=1)
     i64 request_id         # echoed on the answer, so a late answer to an earlier query is recognised
+    bool answer_while_following  # true: answered by an engine that follows too, for the leading sequencer to tell whether an engine it barred from leading applies commands again (docs/availability/a_matching_engine_that_stops_working.md, section 5)
 end
 
 # ------------------------------------------------------------
@@ -334,6 +335,8 @@ message EnginePosition (id=119, version=1)
     i32 reports_sent_epoch   # the epoch under which the engine numbered the last report it sent; 0 when it has sent none
     i64 reports_sent_through # the number of the last report it sent under that epoch; 0 when it has sent none
     i64 reports_held         # how many reports it holds, not yet sent to every sequencer, for want of a connection or until it knows it leads
+    bool leads               # true: the engine acts on orders; false: it follows, answering a query that asked it to
+    i32 engine_epoch         # the epoch of the engines' leadership the engine knows
 end
 
 # ------------------------------------------------------------

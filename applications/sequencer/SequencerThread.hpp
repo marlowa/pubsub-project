@@ -665,6 +665,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // Where the numbers of the engine position questions asked to judge whether the engine works start, above those of
     // the phase requests, so that each answer goes back to whichever asked.
     static constexpr int64_t stall_request_ids_from = int64_t{1} << 41;
+    // And those asked of an engine barred from leading, to tell whether it applies commands again.
+    static constexpr int64_t withdrawal_request_ids_from = int64_t{1} << 42;
     PhaseLinks phase_links_{*this};
     // Requests to move the venue from one phase of the trading day to the next, the day's schedule, and the check that
     // follows it (docs/venue/trading_day_plan.md).
@@ -856,6 +858,22 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::InstancesBarredFromLeading engines_said_may_not_lead_{};
     int32_t statement_about_engine_epoch_{0};
     int64_t statement_about_engine_number_{0};
+    // What withdrawing the statement about each engine needs, by instance less one: the engine epoch it led in when it was
+    // barred, the highest command sent to the engine orders were routed to when it was barred, and the latest question
+    // asked of it, while it follows, and the highest command it must have applied for the answer to withdraw the statement
+    // (section 5 of the design).
+    struct BarredEngine {
+        int32_t epoch_led_in{0};
+        int64_t command_when_barred{0};
+        int64_t request_id{0};
+        int64_t required{0};
+    };
+    std::array<BarredEngine, 2> barred_engines_{};
+    int64_t next_withdrawal_request_id_{0};
+    /// Asks each barred engine, while it follows, how far it has applied.
+    void ask_barred_engines();
+    /// An answer to ask_barred_engines: withdraws the statement about that engine if it follows and has applied enough.
+    void consider_withdrawal(const pubsub_itc_fw_app::EnginePositionView& answer);
     /// Makes the statement that @p engine_instance may not lead, and sends it.
     void say_engine_may_not_lead(int64_t engine_instance);
     /// Sends the statement standing, if this instance still leads in the leadership that made it.

@@ -1252,6 +1252,7 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
 
     if (id == engine_judgement_timer_id_) {
         send_statement_about_engine();
+        ask_barred_engines();
         judge_leading_engine();
         return;
     }
@@ -2649,6 +2650,10 @@ void SequencerThread::handle_engine_position(const pubsub_itc_fw::ConnectionID& 
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode EnginePosition -- dropping");
         return;
     }
+    if (view.request_id >= withdrawal_request_ids_from) {
+        consider_withdrawal(view);
+        return;
+    }
     if (view.request_id >= stall_request_ids_from) {
         // Asked to judge whether the engine works: only an answer from the engine being judged counts.
         if (conn_id == judged_engine_) {
@@ -2760,6 +2765,8 @@ void SequencerThread::say_engine_may_not_lead(int64_t engine_instance) {
     // Added to whatever this leadership has already said: an engine judged stopped before stays barred, so that when both
     // have stopped, neither leads and trading halts by the limit on automatic recovery.
     (engine_instance == 1 ? engines_said_may_not_lead_.first : engines_said_may_not_lead_.second) = true;
+    barred_engines_[static_cast<size_t>(engine_instance - 1)] =
+        BarredEngine{engine_routing_.announced_epoch(), highest_command_sent_to_ == engine_routing_.active() ? highest_command_sent_ : 0, 0, 0};
     ++statement_about_engine_number_;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                "SequencerThread: saying that matching engine instance {} may not lead{} (statement {} at epoch {}), to both arbiters and the engines, so "
@@ -2770,13 +2777,15 @@ void SequencerThread::say_engine_may_not_lead(int64_t engine_instance) {
 }
 
 void SequencerThread::send_statement_about_engine() {
-    if (engines_said_may_not_lead_.empty()) {
+    // Sent while this leadership has made a statement, even once it bars nothing, so that a withdrawal reaches every holder.
+    if (statement_about_engine_number_ == 0) {
         return;
     }
     // A statement lasts only for the leadership that made it: once this instance no longer leads in it, a new leadership
     // starts with none, and judges afresh.
     if (role_ != pubsub_itc_fw_app::Role::leader || statement_about_engine_epoch_ != current_epoch()) {
         engines_said_may_not_lead_ = pubsub_itc_fw::InstancesBarredFromLeading{};
+        statement_about_engine_number_ = 0;
         return;
     }
     pubsub_itc_fw::StatementFromAnotherPair statement{};
@@ -2792,6 +2801,57 @@ void SequencerThread::send_statement_about_engine() {
         if (connection.is_valid()) {
             send_pdu(connection, pubsub_itc_fw::StatementFromAnotherPair::message_pdu_id, 0, statement);
         }
+    }
+}
+
+void SequencerThread::ask_barred_engines() {
+    if (statement_about_engine_number_ == 0 || role_ != pubsub_itc_fw_app::Role::leader) {
+        return;
+    }
+    const int64_t sent_now = highest_command_sent_to_ == engine_routing_.active() ? highest_command_sent_ : 0;
+    for (int64_t instance = 1; instance <= 2; ++instance) {
+        if (!engines_said_may_not_lead_.contains(instance)) {
+            continue;
+        }
+        const pubsub_itc_fw::ConnectionID connection = engine_routing_.connection_of(instance);
+        if (!connection.is_valid()) {
+            continue;
+        }
+        BarredEngine& barred = barred_engines_[static_cast<size_t>(instance - 1)];
+        // It must have applied every command sent when it was barred, which includes those it did not apply then, and every
+        // command sent since, up to this question.
+        barred.required = barred.command_when_barred > sent_now ? barred.command_when_barred : sent_now;
+        barred.request_id = withdrawal_request_ids_from + ++next_withdrawal_request_id_;
+        pubsub_itc_fw_app::EnginePositionQuery query{};
+        query.request_id = barred.request_id;
+        query.answer_while_following = true;
+        send_pdu(connection, pubsub_itc_fw_app::EnginePositionQuery::message_pdu_id, 0, query);
+    }
+}
+
+void SequencerThread::consider_withdrawal(const pubsub_itc_fw_app::EnginePositionView& answer) {
+    if (role_ != pubsub_itc_fw_app::Role::leader) {
+        return;
+    }
+    for (int64_t instance = 1; instance <= 2; ++instance) {
+        BarredEngine& barred = barred_engines_[static_cast<size_t>(instance - 1)];
+        // Only the answer to the latest question asked of that engine counts, so that a late answer cannot withdraw a
+        // statement made since.
+        if (!engines_said_may_not_lead_.contains(instance) || answer.request_id != barred.request_id) {
+            continue;
+        }
+        if (answer.leads || answer.engine_epoch < barred.epoch_led_in || answer.highest_applied < barred.required) {
+            return;
+        }
+        (instance == 1 ? engines_said_may_not_lead_.first : engines_said_may_not_lead_.second) = false;
+        ++statement_about_engine_number_;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: matching engine instance {} follows and has applied every command through seq={}, at least the {} it had to -- "
+                   "saying it may lead again (statement {} at epoch {})",
+                   instance, answer.highest_applied, barred.required, statement_about_engine_number_, statement_about_engine_epoch_);
+        report(pubsub_itc_fw_app::EngineMayLeadAgain{instance, answer.highest_applied, barred.required});
+        send_statement_about_engine();
+        return;
     }
 }
 

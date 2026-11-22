@@ -1916,7 +1916,9 @@ void MatchingEngineThread::handle_engine_position_query(const pubsub_itc_fw::Eve
     // sequencer that asks, so its answer would be out of date by the time it finished; the
     // sequencer asks again until it gets one.
     const bool acting_on_orders = !ha_enabled_ || role_.role() == MeRole::Leader;
-    if (!acting_on_orders) {
+    // A query that asks for it is answered while following too: the leading sequencer asks an engine it has barred from
+    // leading whether it applies commands again (docs/availability/a_matching_engine_that_stops_working.md, section 5).
+    if (!acting_on_orders && !query.answer_while_following) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: EnginePositionQuery {} on connection {} -- not acting on orders (state={}), not answering", query.request_id,
                    message.connection_id().get_value(), static_cast<int>(role_.role()));
@@ -1932,6 +1934,8 @@ void MatchingEngineThread::handle_engine_position_query(const pubsub_itc_fw::Eve
     answer.reports_sent_epoch = report_sending_.last_numbered_epoch();
     answer.reports_sent_through = report_sending_.last_numbered();
     answer.reports_held = static_cast<int64_t>(report_sending_.held());
+    answer.leads = acting_on_orders;
+    answer.engine_epoch = epoch_;
     send_pdu(message.connection_id(), pubsub_itc_fw_app::EnginePosition::message_pdu_id, 0, answer);
     // Debug: the leading sequencer asks once a second, to judge whether this engine works
     // (docs/availability/a_matching_engine_that_stops_working.md).

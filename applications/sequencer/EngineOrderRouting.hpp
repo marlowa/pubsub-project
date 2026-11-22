@@ -230,6 +230,12 @@ class EngineOrderRouting {
         return announced_epoch_;
     }
 
+    /** @brief The open order connection to engine instance @p instance, or an invalid one if there is none. */
+    [[nodiscard]] pubsub_itc_fw::ConnectionID connection_of(int64_t instance) const {
+        const auto found = connection_by_instance_.find(instance);
+        return found == connection_by_instance_.end() ? pubsub_itc_fw::ConnectionID{} : found->second;
+    }
+
     /** @brief The instance that last announced it leads, or 0 if none is known to. */
     [[nodiscard]] int64_t announced_leader() const {
         return announced_leader_;

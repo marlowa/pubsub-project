@@ -1598,6 +1598,10 @@ class Scenario(NamedTuple):
     # When True, with two engines, the engine that takes over stops as well, just after its own named order, and the
     # sequencer must bar both, so that neither leads and trading halts by the limit on automatic recovery (section 6).
     assert_both_engines_stop: bool = False
+    # When True, with two engines, once the other engine has taken over, the stopped engine is started again; the sequencer
+    # must say it may lead again once it follows and has caught up, and, with the engine that took over killed, it must lead
+    # (docs/availability/a_matching_engine_that_stops_working.md, section 5).
+    assert_barred_engine_may_lead_again: bool = False
     # When True, the binary load client offers 1.8 million orders on four sessions as fast as the sockets accept them,
     # faster than the venue processes them. Each gateway stops reading its members while 16,384 of its commands are
     # unanswered, so no queue in the order path grows without limit. No sequencer or matching engine may lose its lease
@@ -5683,6 +5687,30 @@ _SCENARIOS: list[Scenario] = [
         me_ha=True,
         assert_engine_stops_working=True,
         engine_stops_by="sending",
+        expect_engine_judged_stopped=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 123 -- an engine barred from leading, started again, may lead again once it has caught up.
+    #
+    # docs/availability/a_matching_engine_that_stops_working.md, section 5. As scenario 120, the leading engine stops and is
+    # replaced. Then it is started again: it follows, and catches up from the WAL. The sequencer, asking it while it follows,
+    # must withdraw its statement once it has applied every command sent when it was barred and since; and when the engine
+    # that took over is killed, the restarted engine must lead, so the venue is not left without a standby for the rest of
+    # the day.
+    Scenario(
+        number=123,
+        short_name="barred_engine_may_lead_again",
+        description="A matching engine barred from leading, started again, may lead again once it has caught up",
+        expected_outcome=(
+            "the engine is judged stopped and replaced; started again, it is said to be able to lead again once caught up; when the "
+            "engine that took over is killed, it leads, and a new order is accepted"
+        ),
+        me_ha=True,
+        assert_engine_stops_working=True,
+        assert_barred_engine_may_lead_again=True,
         expect_engine_judged_stopped=True,
         orders_during_override=0,
         orders_after_override=0,
@@ -12234,6 +12262,35 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     if _TEST_EVENTS.find(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False,
                                                     halted_for_recovery=True), since=first_mark) is not None:
                         fail(f"trading halted, although {other} took the lead")
+                    if scenario.assert_barred_engine_may_lead_again:
+                        # The stopped engine is started again, follows and catches up, so the sequencer must withdraw its statement;
+                        # then, with the engine that took over killed, the restarted one must lead (section 5 of the design).
+                        restart_mark = _TEST_EVENTS.mark()
+                        do_restart_step(RestartStep(proc_name=engine, ready_log_name=f"{engine}.log", ready=expect_started(engine),
+                                                    ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
+                                        proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
+                        log(f"  {engine} started again")
+                        withdrawn = _TEST_EVENTS.wait_for(message_of(sequencer_events.EngineMayLeadAgain), timeout=30.0, since=restart_mark)
+                        if withdrawn is None:
+                            fail(f"the sequencer never said {engine} may lead again, although it was started again, follows and catches up")
+                        if withdrawn.message.engine_instance != first_judgement.message.engine_instance:
+                            fail(f"the sequencer said engine instance {withdrawn.message.engine_instance} may lead again, not "
+                                 f"{first_judgement.message.engine_instance}, the one it barred")
+                        log(f"  {withdrawn.component} said {engine} may lead again: it has applied through seq={withdrawn.message.highest_applied}, "
+                            f"at least the {withdrawn.message.required} required -- OK")
+                        kill_mark = _TEST_EVENTS.mark()
+                        killed = proc_by_name[other]
+                        killed.kill()
+                        killed.wait()
+                        if Path(f"/proc/{killed.pid}").exists():
+                            fail(f"{other} (PID {killed.pid}) is still running after SIGKILL")
+                        log(f"  {other} killed")
+                        if _TEST_EVENTS.wait_for(leads(library_events, engine), timeout=20.0, since=kill_mark) is None:
+                            fail(f"{engine}, said to be able to lead again, never led once {other} was killed")
+                        log(f"  {engine} leads again -- OK")
+                        if not answered_as_accepted("after-return-1"):
+                            fail(f"after-return-1, placed once {engine} led again, was not accepted")
+                        log("  a new order is accepted -- OK")
             member.close()
 
         # ── A command that kills the matching engines (docs/availability/voided_commands.md, section 4) ──

@@ -12,7 +12,7 @@
 #  None is sent for each order: each says that the sequencer's way of
 #  handling orders changed.
 #
-#  Message ids 180 to 189, 210 to 215, 219 to 222, and 224 to 226 are the
+#  Message ids 180 to 189, 210 to 215, 219 to 222, and 224 to 227 are the
 #  sequencer's, within the range 170 to 229 set aside for applications'
 #  test events; 216 to 218 are the matching engine's. No two files may use the same id: the
 #  listener refuses to start if they do.
@@ -324,4 +324,19 @@ message EngineRoundWithoutProgress (id=226, version=1)
     i64 highest_command_sent                     # the highest command the sequencer had sent the engine when the round started
     bool unread_from_engine                      # whether the sequencer had unread messages from an engine when it judged the round
     i64 ended_after_milliseconds                 # how long a time had run when this round stopped it, 0 if it stopped none
+end
+
+# ------------------------------------------------------------
+#  227 -- EngineMayLeadAgain
+#  The leading sequencer withdrew its statement that a matching engine
+#  may not lead: the engine, following, has applied every command the
+#  sequencer had sent when it asked, which is at least every command it
+#  had sent when it made the statement
+#  (docs/availability/a_matching_engine_that_stops_working.md,
+#  section 5).
+# ------------------------------------------------------------
+message EngineMayLeadAgain (id=227, version=1)
+    i64 engine_instance                  # the engine that may lead again
+    i64 highest_applied                  # the highest command it said it has applied
+    i64 required                         # the highest command it had to have applied
 end
