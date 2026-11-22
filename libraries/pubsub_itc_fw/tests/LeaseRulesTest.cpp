@@ -116,6 +116,63 @@ TEST(LeaseRulesTest, HolderLearnsOfANewerEpochFromARefusal) {
     EXPECT_EQ(holder.on_refusal(second, 5), pubsub_itc_fw::LeaseHolder::Event::Nothing);
 }
 
+// Every request that can be waiting for an answer is kept: a grant for the first of as many as there is room for is
+// still matched to its request.
+TEST(LeaseRulesTest, HolderMatchesAGrantToAnyRequestItHasRoomToKeep) {
+    pubsub_itc_fw::LeaseHolder holder(lease_period, drift_allowance);
+    holder.begin_candidacy(1);
+    const int64_t first = holder.record_request(3, start);
+    for (size_t n = 1; n < pubsub_itc_fw::LeaseHolder::max_outstanding_requests; ++n) {
+        static_cast<void>(holder.record_request(3, start + milliseconds{static_cast<int64_t>(n)}));
+    }
+    EXPECT_EQ(holder.on_grant(3, first, 1, start + milliseconds{100}), pubsub_itc_fw::LeaseHolder::Event::BecameLeader);
+    EXPECT_EQ(holder.lease_expires_at(), start + lease_period - drift_allowance);
+}
+
+// With more requests waiting than there is room for, the oldest gives way: a grant for it changes nothing, which can
+// only cost a renewal, and a grant for the newest is matched.
+TEST(LeaseRulesTest, HolderWithNoRoomForAnotherRequestForgetsTheOldest) {
+    pubsub_itc_fw::LeaseHolder holder(lease_period, drift_allowance);
+    holder.begin_candidacy(1);
+    const int64_t first = holder.record_request(3, start);
+    int64_t newest = first;
+    for (size_t n = 1; n <= pubsub_itc_fw::LeaseHolder::max_outstanding_requests; ++n) {
+        newest = holder.record_request(3, start + milliseconds{static_cast<int64_t>(n)});
+    }
+    EXPECT_EQ(holder.on_grant(3, first, 1, start + milliseconds{100}), pubsub_itc_fw::LeaseHolder::Event::Nothing);
+    EXPECT_EQ(holder.state(), pubsub_itc_fw::LeaseHolder::State::Candidate);
+    EXPECT_EQ(holder.on_grant(3, newest, 1, start + milliseconds{100}), pubsub_itc_fw::LeaseHolder::Event::BecameLeader);
+}
+
+// A request answered, by a grant or a refusal, is forgotten, so its room is used again and a second answer to it
+// changes nothing.
+TEST(LeaseRulesTest, HolderForgetsARequestOnceItIsAnswered) {
+    pubsub_itc_fw::LeaseHolder holder(lease_period, drift_allowance);
+    holder.begin_candidacy(1);
+    const int64_t refused = holder.record_request(3, start);
+    EXPECT_EQ(holder.on_refusal(refused, 1), pubsub_itc_fw::LeaseHolder::Event::Nothing);
+    EXPECT_EQ(holder.on_grant(3, refused, 1, start), pubsub_itc_fw::LeaseHolder::Event::Nothing) << "a refused request was granted afterwards";
+    const int64_t granted = holder.record_request(3, start);
+    EXPECT_EQ(holder.on_grant(3, granted, 1, start), pubsub_itc_fw::LeaseHolder::Event::BecameLeader);
+    EXPECT_EQ(holder.on_grant(3, granted, 1, start), pubsub_itc_fw::LeaseHolder::Event::Nothing) << "one request was granted twice";
+}
+
+// Leases from more voters than there is room for: the lease that runs out first gives way, so the holder never counts
+// on a lease later than any it was granted, and acts on the latest.
+TEST(LeaseRulesTest, HolderWithNoRoomForAnotherVotersLeaseForgetsTheOneThatRunsOutFirst) {
+    pubsub_itc_fw::LeaseHolder holder(lease_period, drift_allowance);
+    holder.begin_candidacy(1);
+    const int64_t voters = static_cast<int64_t>(pubsub_itc_fw::LeaseHolder::max_voters_holding_leases) + 1;
+    for (int64_t voter = 1; voter <= voters; ++voter) {
+        const Clock::time_point sent = start + milliseconds{100 * voter};
+        const int64_t request = holder.record_request(voter, sent);
+        static_cast<void>(holder.on_grant(voter, request, 1, sent));
+    }
+    EXPECT_EQ(holder.lease_expires_at(), start + milliseconds{100 * voters} + lease_period - drift_allowance);
+    EXPECT_TRUE(holder.acting(start + milliseconds{100 * voters} + lease_period - drift_allowance - milliseconds{1}));
+    EXPECT_FALSE(holder.acting(start + milliseconds{100 * voters} + lease_period - drift_allowance));
+}
+
 TEST(LeaseRulesTest, HolderRejectsADriftAllowanceAsLongAsTheLease) {
     EXPECT_THROW(pubsub_itc_fw::LeaseHolder(lease_period, lease_period), pubsub_itc_fw::PreconditionAssertion);
 }

@@ -3,8 +3,8 @@
 This is the working record of phase 12 of the [recovery plan](recovery_plan.md). Every entry in the
 [bug list](bug_list.md) that is open is judged here against the design principles in
 [design_principles.md](design_principles.md) and against the code as it is now. The review fixes nothing
-itself: what it gives is a judgement for each open entry, with the evidence for it, and an order of work for
-Andrew to agree. An entry that is closed is no longer listed here; its record is in the bug list.
+itself: what it gives is a judgement for each open entry, with the evidence for it, and an order of work
+agreed with Andrew. An entry that is closed is no longer listed here; its record is in the bug list.
 
 ## Summary
 
@@ -40,7 +40,7 @@ There are 52 open entries, and each is judged below. The figures:
    discards a report whose engine epoch and number the WAL already holds, or the engine is told whether it leads
    before its replay produces any reports.
 
-**The recommended order of work**, for Andrew to agree or change:
+**The order of work**, agreed with Andrew on 22 November 2026:
 
 1. The small breaches, each with an obvious remedy: BUG-0272 (the lease requests in storage of a fixed size) and
    BUG-0249 (a change of phase told to the gateways only once the follower sequencer holds it).
