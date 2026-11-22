@@ -56,6 +56,7 @@
 #include "SequencerConfiguration.hpp"
 #include "ServingWalFollowers.hpp"
 #include "SessionIdentity.hpp"
+#include "StalledEngineRule.hpp"
 #include "TradingHaltState.hpp"
 #include "TradingPhaseRequests.hpp"
 #include "VenueStateFromTheWal.hpp"
@@ -660,6 +661,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     };
     // Where the numbers of the engine position questions asked for a phase request start.
     static constexpr int64_t phase_request_ids_from = int64_t{1} << 40;
+    // Where the numbers of the engine position questions asked to judge whether the engine works start, above those of
+    // the phase requests, so that each answer goes back to whichever asked.
+    static constexpr int64_t stall_request_ids_from = int64_t{1} << 41;
     PhaseLinks phase_links_{*this};
     // Requests to move the venue from one phase of the trading day to the next, the day's schedule, and the check that
     // follows it (docs/venue/trading_day_plan.md).
@@ -825,6 +829,34 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // docs/venue/dividing_the_sequencer_and_matching_engine.md).
     EnginePresence presence_{std::chrono::seconds{config_.orders_held_at_most_seconds}, std::chrono::seconds{config_.automatic_recovery_limit_seconds},
                              presence_links_, get_logger()};
+
+    // Whether the engine orders are routed to works: asked for its position once a second while this instance leads and
+    // the engine takes orders, and judged by StalledEngineRule
+    // (docs/availability/a_matching_engine_that_stops_working.md). An engine judged stopped is counted neither as taking
+    // orders nor as routed to, so orders are held, then refused, and trading halts by the limit on automatic recovery,
+    // as when no engine is connected, until the engine orders are routed to changes.
+    StalledEngineRule stalled_engine_{std::chrono::seconds{config_.engine_stall_limit_seconds}};
+    pubsub_itc_fw::TimerID engine_judgement_timer_id_{};
+    pubsub_itc_fw::ConnectionID judged_engine_{};
+    bool engine_judged_stopped_{false};
+    // The highest sequence number of a command sent live to the engine on highest_command_sent_to_.
+    pubsub_itc_fw::ConnectionID highest_command_sent_to_{};
+    int64_t highest_command_sent_{0};
+    int64_t longest_without_progress_reported_ms_{0};
+    pubsub_itc_fw::GaugeHandle engine_longest_without_progress_gauge_;
+
+    /// Judges the engine orders are routed to from its last answer, and asks it its position again. Once a second.
+    void judge_leading_engine();
+    /// Sends the test event that describes the round just judged.
+    void report_round_without_progress(int64_t now_ns);
+    /// Whether this thread has, now, messages from a matching engine's connection for reports that it has not yet taken.
+    [[nodiscard]] bool unread_from_engines() const;
+    /// Notes a command sent live to the engine on @p connection, if it is one an engine applies.
+    void note_command_sent_to_engine(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::WalRecord& envelope);
+    /// Whether the engine orders are routed to has been judged to have stopped working.
+    [[nodiscard]] bool routed_engine_judged_stopped() const;
+    /// Whether an engine takes orders, as an_engine_takes_orders says, but without the judgement of whether it works.
+    [[nodiscard]] bool an_engine_takes_orders_unjudged() const;
 
     /// Sends the current acceptance state to one gateway connection.
     void send_order_acceptance(const pubsub_itc_fw::ConnectionID& conn_id);

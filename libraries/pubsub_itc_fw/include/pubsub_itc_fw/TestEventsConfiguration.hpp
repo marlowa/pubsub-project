@@ -88,6 +88,14 @@ struct TestEventsConfiguration {
     /// (BUG-0218).
     std::string lose_and_regain_lease_after_cl_ord_id;
 
+    /// The ClOrdID of a new order after which the matching engine stops applying commands, from the optional
+    /// `stop_applying_after_cl_ord_id` key; empty, for none, when it is absent. Read by the matching engine, which, once
+    /// it has applied a new order with this ClOrdID while it leads, passes over every later command from the sequencers
+    /// without applying it, while it stays connected, answers the sequencer's questions about its position and renews its
+    /// lease. It lets a test give the venue an engine that stays connected and has stopped working, which the leading
+    /// sequencer must notice (docs/availability/a_matching_engine_that_stops_working.md, section 8).
+    std::string stop_applying_after_cl_ord_id;
+
     /// Whether the matching engine holds back each sequencer's order connection until it knows whether it leads or
     /// follows, from the optional `hold_sequencer_connections_until_role_decided` key; false when it is absent. Read by
     /// the matching engine, with high availability on. While the engine is starting, it stops reading from each order
@@ -203,6 +211,9 @@ class TestEventsConfigurationLoader {
         }
         if (toml.has_key("test_events.lose_and_regain_lease_after_cl_ord_id")) {
             toml.get_required_except("test_events.lose_and_regain_lease_after_cl_ord_id", configuration.lose_and_regain_lease_after_cl_ord_id);
+        }
+        if (toml.has_key("test_events.stop_applying_after_cl_ord_id")) {
+            toml.get_required_except("test_events.stop_applying_after_cl_ord_id", configuration.stop_applying_after_cl_ord_id);
         }
         if (toml.has_key("test_events.hold_sequencer_connections_until_role_decided")) {
             toml.get_required_except("test_events.hold_sequencer_connections_until_role_decided", configuration.hold_sequencer_connections_until_role_decided);

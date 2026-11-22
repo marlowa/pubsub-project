@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "SequencerConfigurationLoader.hpp"
+#include "StalledEngineRule.hpp"
 
+#include <string>
 #include <tuple>
 
 #include <OrderPathMetrics.hpp>
@@ -12,6 +14,29 @@
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
 namespace sequencer {
+
+namespace {
+
+// The stall limit must cover two queries, so that one late answer cannot make an engine look stopped, and with the query
+// that finds it must not outlast the longest orders are held, so that a member waits no longer for the venue to act on a
+// stopped engine than it may wait for any change of engine leader
+// (docs/availability/a_matching_engine_that_stops_working.md, section 4.4).
+void check_engine_stall_limit(const SequencerConfiguration& config) {
+    const int64_t query_interval_seconds = StalledEngineRule::query_interval.count();
+    if (config.engine_stall_limit_seconds < 2 * query_interval_seconds) {
+        throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: recovery.engine_stall_limit_seconds must be at least " +
+                                                    std::to_string(2 * query_interval_seconds) + ", two intervals between queries, got " +
+                                                    std::to_string(config.engine_stall_limit_seconds));
+    }
+    if (config.engine_stall_limit_seconds + query_interval_seconds > config.orders_held_at_most_seconds) {
+        throw pubsub_itc_fw::ConfigurationException(
+            "SequencerConfigurationLoader: recovery.engine_stall_limit_seconds plus the " + std::to_string(query_interval_seconds) +
+            " second interval between queries must be no more than recovery.orders_held_at_most_seconds, " +
+            std::to_string(config.orders_held_at_most_seconds) + ", got " + std::to_string(config.engine_stall_limit_seconds));
+    }
+}
+
+} // un-named namespace
 
 SequencerConfiguration SequencerConfigurationLoader::load(const std::string& file_path) {
     pubsub_itc_fw::TomlConfiguration toml;
@@ -250,6 +275,8 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
             throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: recovery.orders_held_at_most_seconds must be >= 1, got " +
                                                         std::to_string(config.orders_held_at_most_seconds));
         }
+        toml.get_required_except("recovery.engine_stall_limit_seconds", config.engine_stall_limit_seconds);
+        check_engine_stall_limit(config);
         toml.get_required_except("end_of_day.publishers", config.end_of_day_publishers);
         if (config.end_of_day_publishers < 0) {
             throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: end_of_day.publishers must not be negative, got " +

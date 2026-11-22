@@ -83,6 +83,7 @@ send_every_report = true
 [recovery]
 automatic_recovery_limit_seconds = 12
 orders_held_at_most_seconds = 4
+engine_stall_limit_seconds = 3
 
 [end_of_day]
 publishers = 2
@@ -382,6 +383,31 @@ TEST(SequencerConfigurationLoaderTest, RejectsARecoveryLimitBelowOneSecond) {
     std::string sections(required_sections);
     const std::string limit = "automatic_recovery_limit_seconds = 12";
     sections.replace(sections.find(limit), limit.size(), "automatic_recovery_limit_seconds = 0");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
+}
+
+TEST(SequencerConfigurationLoaderTest, ReadsHowLongAnEngineMayGoWithoutProgress) {
+    const auto config = load_with_gateways(one_gateway);
+    EXPECT_EQ(config.engine_stall_limit_seconds, 3) << "the largest that fits orders held for 4 seconds, with a query a second";
+}
+
+TEST(SequencerConfigurationLoaderTest, RejectsAStallLimitShorterThanTwoQueries) {
+    std::string sections(required_sections);
+    const std::string limit = "engine_stall_limit_seconds = 3";
+    sections.replace(sections.find(limit), limit.size(), "engine_stall_limit_seconds = 1");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
+}
+
+TEST(SequencerConfigurationLoaderTest, RejectsAStallLimitThatWithItsQueryOutlastsTheLongestOrdersAreHeld) {
+    std::string sections(required_sections);
+    const std::string limit = "engine_stall_limit_seconds = 3";
+    sections.replace(sections.find(limit), limit.size(), "engine_stall_limit_seconds = 4");
     pubsub_itc_fw::TomlConfiguration toml;
     const auto [ok, err] = toml.load_string(sections + one_gateway);
     ASSERT_TRUE(ok) << err;

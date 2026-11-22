@@ -473,6 +473,17 @@ automatic_recovery_limit_seconds = 10
 # (docs/availability/voided_commands.md, section 5.2).
 orders_held_at_most_seconds = 5
 
+# How long the leading matching engine may go without progress, while it has commands it has not
+# applied or reports it has not sent, before the leading sequencer judges that it has stopped
+# working, stops sending it orders and says it may not lead, so that the other engine leads. The
+# sequencer asks the engine its position once a second. At least 2, and no more than
+# orders_held_at_most_seconds less one, so that a member waits no longer for the venue to act on a
+# stopped engine than it may wait for any change of engine leader. Declared once here: both
+# sequencers of the pair must use the same figure. Three seconds until the longest a healthy
+# engine goes without progress has been measured
+# (docs/availability/a_matching_engine_that_stops_working.md, section 4.4).
+engine_stall_limit_seconds = 3
+
 # The longest the leading sequencer waits, after the end-of-day begin, for the follower sequencer
 # and the matching engine publishers to hold every record up to it, before it writes the
 # end-of-day end with a copy still incomplete (docs/venue/start_and_end_of_day.md, section 4.2,

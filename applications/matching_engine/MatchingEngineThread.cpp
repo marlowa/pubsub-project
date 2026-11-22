@@ -672,6 +672,14 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         return;
     }
 
+    if (is_order_pdu && stopped_applying_by_test_) {
+        // A test's setting, [test_events] stop_applying_after_cl_ord_id: the command is passed over, as an engine with a
+        // fault that drops commands without failing would.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: passing over the command at seq={} -- stopped applying by a test",
+                   message.seq_no());
+        release_pdu_payload(message);
+        return;
+    }
     if (is_order_pdu) {
         apply_command(message, envelope, arena);
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
@@ -740,6 +748,7 @@ void MatchingEngineThread::apply_command(const pubsub_itc_fw::EventMessage& mess
             state_machine_.apply_new_order(view, message.seq_no(), envelope.wall_time_ns, envelope.has_trading_date ? envelope.trading_date : 0,
                                            session_identity_from(envelope), source);
             lose_and_regain_lease_if_named(view);
+            stop_applying_if_named(view);
         }
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
@@ -865,6 +874,18 @@ void MatchingEngineThread::die_if_named(const pubsub_itc_fw_app::NewOrderSingleV
                sequence_number);
     std::fflush(stderr);
     std::abort();
+}
+
+void MatchingEngineThread::stop_applying_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view) {
+    const std::string& named = config_.test_events.stop_applying_after_cl_ord_id;
+    if (named.empty() || view.cl_ord_id != named || stopped_applying_by_test_ || (ha_enabled_ && role_.role() != MeRole::Leader)) {
+        return;
+    }
+    stopped_applying_by_test_ = true;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "MatchingEngineThread: applied the new order {}, which [test_events] stop_applying_after_cl_ord_id names -- applying no further command, "
+               "while staying connected and renewing the lease",
+               named);
 }
 
 void MatchingEngineThread::lose_and_regain_lease_if_named(const pubsub_itc_fw_app::NewOrderSingleView& view) {
@@ -1856,7 +1877,9 @@ void MatchingEngineThread::handle_engine_position_query(const pubsub_itc_fw::Eve
     answer.reports_sent_through = report_sending_.last_numbered();
     answer.reports_held = static_cast<int64_t>(report_sending_.held());
     send_pdu(message.connection_id(), pubsub_itc_fw_app::EnginePosition::message_pdu_id, 0, answer);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+    // Debug: the leading sequencer asks once a second, to judge whether this engine works
+    // (docs/availability/a_matching_engine_that_stops_working.md).
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "MatchingEngineThread: EnginePositionQuery {} on connection {} -- the highest command acted on is seq_no={}; reports sent through number {} "
                "under epoch {}, {} held",
                query.request_id, message.connection_id().get_value(), state_machine_.highest_applied(), answer.reports_sent_through, answer.reports_sent_epoch,

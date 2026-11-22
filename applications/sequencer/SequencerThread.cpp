@@ -4,6 +4,7 @@
 #include "SequencerThread.hpp"
 
 #include "PublisherRecordFromWal.hpp"
+#include "StalledEngineRule.hpp"
 
 #include <cstring>
 
@@ -167,6 +168,10 @@ void SequencerThread::on_initial_event() {
         "sequencer_thread", "sequencer_running_alone",
         "1 while this sequencer leads and commits orders without waiting for its follower: no follower is connected, the follower is being brought "
         "up to date, or it is too far behind. A loss of resilience. Expected to be 0, apart from a few seconds after a start or a change of leader");
+    engine_longest_without_progress_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "sequencer_engine_longest_without_progress_seconds",
+        "The longest this sequencer, leading, has seen the matching engine orders are routed to go without applying a command it had, or without "
+        "sending a report it held. A healthy engine stays well below the stall limit; at the limit the engine is judged to have stopped working");
     // How changes of leader go when the disk is slow (BUG-0228). Each is recorded on this thread, its one writer.
     const std::vector<double> lease_milliseconds_buckets{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000};
     epoch_record_histogram_ = get_reactor().metrics().register_histogram(
@@ -277,6 +282,10 @@ void SequencerThread::on_initial_event() {
     // recover (EngineAbsenceRule).
     presence_.started(config_.wal_directory, config_.trading_day, replicated_wal_->wal().first_wall_time_ns().value_or(0), config_.wall_clock->now_ns());
     engine_absence_timer_id_ = start_recurring_timer(engine_absence_check_interval);
+    // Checked between messages, as the lease tick is, so that a backlog in this thread's queue does not hold up the rounds
+    // in which the engine is judged: a round that waited behind the backlog would make the engine look still for as long
+    // as this thread took to reach it (docs/availability/a_matching_engine_that_stops_working.md, section 3.1).
+    engine_judgement_timer_id_ = start_recurring_timer_checked_between_messages(StalledEngineRule::query_interval);
 
     wal_snapshot_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.snapshot_interval_seconds));
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL snapshot timer started (interval={}s)", config_.snapshot_interval_seconds);
@@ -1241,6 +1250,11 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         return;
     }
 
+    if (id == engine_judgement_timer_id_) {
+        judge_leading_engine();
+        return;
+    }
+
     if (id == engine_absence_timer_id_) {
         check_engine_absence();
         carry_out_due_session_cancels();
@@ -1720,10 +1734,12 @@ void SequencerThread::send_held_order_to_matching_engine(const HeldOrder& held) 
         envelope.payload = pubsub_itc_fw_app::BytesView{held.own_payload.data(), held.own_payload_size};
         send_pdu(engine_routing_.active(), pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope.seq_no, envelope,
                  pubsub_itc_fw::SendLatencyClass{pubsub_itc_fw::SendLatencyClass::Waited});
+        note_command_sent_to_engine(engine_routing_.active(), held.envelope);
         return;
     }
     send_pdu(engine_routing_.active(), pubsub_itc_fw_app::WalRecord::message_pdu_id, held.envelope.seq_no, held.envelope,
              pubsub_itc_fw::SendLatencyClass{pubsub_itc_fw::SendLatencyClass::Waited});
+    note_command_sent_to_engine(engine_routing_.active(), held.envelope);
     if (held.envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
         order_path_metrics::observe_checkpoint(order_out_elapsed_histogram_, held.envelope.has_gateway_ingress_ns, held.envelope.gateway_ingress_ns,
                                                config_.wall_clock->now_ns());
@@ -1807,7 +1823,9 @@ bool SequencerThread::PresenceLinks::an_engine_takes_orders() const {
 }
 
 bool SequencerThread::PresenceLinks::an_engine_is_routed_to() const {
-    return owner_.engine_routing_.active().is_valid();
+    // An engine judged to have stopped working is not counted, so that the limit on automatic recovery halts trading if
+    // no other engine takes its place, as it would if the engine were gone.
+    return owner_.engine_routing_.active().is_valid() && !owner_.routed_engine_judged_stopped();
 }
 
 bool SequencerThread::PresenceLinks::wal_holds_records() const {
@@ -2630,6 +2648,16 @@ void SequencerThread::handle_engine_position(const pubsub_itc_fw::ConnectionID& 
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode EnginePosition -- dropping");
         return;
     }
+    if (view.request_id >= stall_request_ids_from) {
+        // Asked to judge whether the engine works: only an answer from the engine being judged counts.
+        if (conn_id == judged_engine_) {
+            const int64_t arrived_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            stalled_engine_.answer(view.request_id - stall_request_ids_from,
+                                   StalledEngineRule::Position{view.highest_applied, view.reports_sent_epoch, view.reports_sent_through, view.reports_held},
+                                   arrived_ns);
+        }
+        return;
+    }
     if (view.request_id >= phase_request_ids_from) {
         // Asked for a phase request: only the engine orders are routed to answers for the venue.
         if (conn_id == engine_routing_.active()) {
@@ -2655,12 +2683,120 @@ void SequencerThread::publish_released_position() {
 }
 
 bool SequencerThread::an_engine_takes_orders() const {
+    return an_engine_takes_orders_unjudged() && !routed_engine_judged_stopped();
+}
+
+bool SequencerThread::an_engine_takes_orders_unjudged() const {
     if (!engine_routing_.active_is_known_to_lead() || serving_.follows_the_wal(engine_routing_.active())) {
         return false;
     }
     // An engine being caught up to lead is sent the held orders live once it has been handed over, so that its reports
     // of them are first reports and not possible repeats. One being sent orders that waited in the log already leads.
     return !serving_.caught_up_on_its_request(engine_routing_.active());
+}
+
+bool SequencerThread::routed_engine_judged_stopped() const {
+    return engine_judged_stopped_ && judged_engine_.is_valid() && judged_engine_ == engine_routing_.active();
+}
+
+void SequencerThread::note_command_sent_to_engine(const pubsub_itc_fw::ConnectionID& connection, const pubsub_itc_fw_app::WalRecord& envelope) {
+    // Only the commands an engine applies, which are the ones that move the position it answers with: a record it passes
+    // over would leave it looking as though it had work it never does.
+    const int16_t pdu_id = envelope.pdu_id;
+    const bool applied_by_an_engine = pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) ||
+                                      pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest) ||
+                                      pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelBook::message_pdu_id) ||
+                                      pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::TechnicalEvent::message_pdu_id) ||
+                                      pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::VoidCommands::message_pdu_id) ||
+                                      pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::CancelSessionOrders::message_pdu_id);
+    if (!applied_by_an_engine) {
+        return;
+    }
+    if (connection != highest_command_sent_to_) {
+        highest_command_sent_to_ = connection;
+        highest_command_sent_ = 0;
+    }
+    if (envelope.seq_no > highest_command_sent_) {
+        highest_command_sent_ = envelope.seq_no;
+    }
+}
+
+bool SequencerThread::unread_from_engines() const {
+    if (report_reading_paused_) {
+        return true;
+    }
+    // Every engine's connection for reports, not only the judged engine's: which is which is not recorded, and counting
+    // the other one too can only put a judgement off, never bring one about.
+    for (const pubsub_itc_fw::ConnectionID& connection : report_connections_) {
+        if (messages_waiting(connection) > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void SequencerThread::report_round_without_progress(int64_t now_ns) {
+    const StalledEngineRule::RoundJudged& round = stalled_engine_.last_round_judged();
+    constexpr int64_t nanoseconds_per_millisecond = 1'000'000;
+    report(pubsub_itc_fw_app::EngineRoundWithoutProgress{stalled_engine_.applying_without_progress_ns(now_ns) / nanoseconds_per_millisecond,
+                                                         stalled_engine_.sending_without_progress_ns(now_ns) / nanoseconds_per_millisecond,
+                                                         round.gap_since_previous_ns / nanoseconds_per_millisecond, round.answered,
+                                                         round.answer_delay_ns / nanoseconds_per_millisecond, round.answer.highest_applied,
+                                                         round.answer.reports_sent_epoch, round.answer.reports_sent_through, round.answer.reports_held,
+                                                         round.highest_sent, round.unread_from_engine, round.ended_after_ns / nanoseconds_per_millisecond});
+}
+
+void SequencerThread::judge_leading_engine() {
+    if (!replicated_wal_.has_value() || role_ != pubsub_itc_fw_app::Role::leader || !an_engine_takes_orders_unjudged()) {
+        if (judged_engine_.is_valid()) {
+            stalled_engine_.restart();
+            judged_engine_ = pubsub_itc_fw::ConnectionID{};
+            engine_judged_stopped_ = false;
+        }
+        return;
+    }
+    const pubsub_itc_fw::ConnectionID engine = engine_routing_.active();
+    if (engine != judged_engine_) {
+        stalled_engine_.restart();
+        judged_engine_ = engine;
+        engine_judged_stopped_ = false;
+    }
+    const int64_t highest_sent = highest_command_sent_to_ == engine ? highest_command_sent_ : 0;
+    const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const std::optional<EngineReportPosition>& latest_report = venue_state_.latest_engine_report();
+    const StalledEngineRule::ReportReceived report_received =
+        latest_report.has_value() ? StalledEngineRule::ReportReceived{latest_report->epoch, latest_report->number} : StalledEngineRule::ReportReceived{};
+    const StalledEngineRule::Verdict verdict = stalled_engine_.start_round(now_ns, highest_sent, unread_from_engines(), report_received);
+
+    // Every round is described to a test that listens: once a second, and nothing is sent when no test does.
+    report_round_without_progress(now_ns);
+
+    const int64_t longest_ms = stalled_engine_.longest_without_progress_ns() / 1'000'000;
+    if (longest_ms > longest_without_progress_reported_ms_) {
+        longest_without_progress_reported_ms_ = longest_ms;
+        engine_longest_without_progress_gauge_.set(static_cast<double>(longest_ms) / 1000.0);
+        report(pubsub_itc_fw_app::EngineLongestWithoutProgress{longest_ms});
+    }
+
+    if (verdict != StalledEngineRule::Verdict::working && !engine_judged_stopped_) {
+        engine_judged_stopped_ = true;
+        const bool stopped_applying = verdict == StalledEngineRule::Verdict::stopped_applying;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "SequencerThread: the matching engine orders are routed to (instance {}, epoch {}, connection {}) has {} for {} s while connected -- "
+                   "judging it to have stopped working. It is no longer sent orders: they are held in the WAL for whichever engine leads next, and the "
+                   "venue counts this one as absent (docs/availability/a_matching_engine_that_stops_working.md)",
+                   engine_routing_.announced_leader(), engine_routing_.announced_epoch(), engine.get_value(),
+                   stopped_applying ? fmt::format("applied none of the commands it was sent, up to seq={}", highest_sent)
+                                    : std::string("sent none of the reports it holds"),
+                   stalled_engine_.without_progress_ns(now_ns) / 1'000'000'000);
+        report(pubsub_itc_fw_app::EngineJudgedStopped{engine_routing_.announced_leader(), engine_routing_.announced_epoch(), stopped_applying,
+                                                      stalled_engine_.without_progress_ns(now_ns) / 1'000'000, highest_sent});
+        note_whether_an_engine_takes_orders();
+    }
+
+    pubsub_itc_fw_app::EnginePositionQuery query{};
+    query.request_id = stall_request_ids_from + stalled_engine_.request_id();
+    send_pdu(engine, pubsub_itc_fw_app::EnginePositionQuery::message_pdu_id, 0, query);
 }
 
 void SequencerThread::note_whether_an_engine_takes_orders() {

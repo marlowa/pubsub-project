@@ -76,6 +76,10 @@ automatic_recovery_limit_seconds = ${shared_automatic_recovery_limit_seconds}
 # The longest orders are held while no matching engine leads; after that the gateways are told to
 # refuse new orders until one leads. See docs/availability/voided_commands.md, section 5.2.
 orders_held_at_most_seconds = ${shared_orders_held_at_most_seconds}
+# How long the leading matching engine may go without progress, while it has work, before this
+# sequencer, leading, judges that it has stopped working. See
+# docs/availability/a_matching_engine_that_stops_working.md, section 4.4.
+engine_stall_limit_seconds = ${shared_engine_stall_limit_seconds}
 
 [end_of_day]
 # How many matching engine publishers the leading sequencer waits for after the end-of-day begin: it

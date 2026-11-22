@@ -83,10 +83,15 @@ the leading engine once a second for as long as the engine leads.
 
 From the answers and what it knows itself, the sequencer keeps two times:
 
-1. **The time since the engine last applied a command, while it had commands it had not applied.** The sequencer knows
-   the highest command it has sent the engine. While that is above `highest_applied`, and `highest_applied` has not
-   moved since the previous answer, the time runs. It stops, and starts again from zero, whenever `highest_applied`
-   moves or the engine has applied everything sent to it.
+1. **The time since the engine last made progress, while it had commands it had not applied.** The sequencer knows
+   the highest command it has sent the engine. While that is above `highest_applied`, and neither `highest_applied` nor
+   the last report sent has moved since the previous answer, the time runs. It stops, and starts again from zero,
+   whenever either moves or the engine has applied everything sent to it. A report sent counts as progress here
+   because one command can take seconds to apply while it sends report after report: when a member's session ends
+   with about 450,000 resting orders, as in `ha_test.py` scenario 115, cancelling them is one command, applied in
+   pieces of 2,000, and `highest_applied` does not move until the last piece. Counting only `highest_applied`, a
+   working engine in that scenario was measured going 2,989 milliseconds without progress, 11 milliseconds short of a
+   3-second limit.
 2. **The time since the engine last sent a report, while it held reports.** While `reports_held` is above zero and the
    last report sent has not changed since the previous answer, the time runs. The last report sent is the pair
    `reports_sent_epoch` and `reports_sent_through`, compared as a pair: the number of a report starts again under each
@@ -96,6 +101,15 @@ From the answers and what it knows itself, the sequencer keeps two times:
 A missing answer counts as no movement: an engine that does not answer the question has not shown that it moved. An
 answer counts only if it carries the `request_id` of the latest query sent to that engine, so a late answer to an
 earlier query can neither show progress nor hide its absence.
+
+**The reports the sequencer receives count as progress too.** The sequencer itself sees the engine's reports arrive:
+it holds the epoch and number of the last one it wrote into the WAL. When that has moved since the previous round, the
+engine has made progress, for both times, whatever its answer says or however late the answer is. This matters
+because an answer can be late from a working engine. The query reaches the engine on the same connection as commands,
+behind them, and while 4,096 of its reports wait to be written the engine pauses reading that connection
+([pacing_the_engines_reports.md](pacing_the_engines_reports.md)). In `ha_test.py` scenario 115, an engine cancelling
+about 450,000 orders of an ended session answered a query more than a second late in this way, while its reports kept
+arriving.
 
 **The engine is judged by time without progress, not by the size of the gap.** Under overload the gap between commands
 sent and commands applied is large while the engine is healthy: about 60,000 commands in `ha_test.py` scenario 116.
@@ -111,12 +125,24 @@ for example while its disk is slow ([BUG-0175](../bug_list.md#bug_0175)), it sto
 engine then pauses reading commands, and its `highest_applied` stops moving. The engine is working correctly; it is the
 sequencer that is slow.
 
-So neither time runs while the sequencer has messages from that engine that it has not yet taken: while it has paused
-reading either of the engine's connections, or while messages from them wait in its own thread's queue
+So neither time runs while the sequencer has messages from an engine that it has not yet taken: while it has paused
+reading the engines' connections for reports, or while messages from one of them wait in its own thread's queue
 ([bounding_messages_waiting.md](../framework/bounding_messages_waiting.md)). Both are facts the sequencer's own
-framework already holds. Both of the engine's connections count: the one on which the sequencer sends commands and
-receives answers to its queries, and the one on which the engine sends reports. This is decision 4, and section 8 says
-how it is tested against a slow disk.
+framework already holds. Every engine's connection for reports counts, not only the judged engine's, because the
+sequencer does not record which is which; counting the other one too can only put a judgement off, never bring one
+about. This is decision 4, and section 8 says how it is tested against a slow disk.
+
+**The rounds run on a timer checked between messages.** The sequencer's ordinary timers are events in its thread's
+queue, behind every message already there, so under load a round can start seconds late. In `ha_test.py` scenario
+116, rounds meant to be a second apart started 2, 6 and 18 seconds apart while the sequencer worked through a backlog
+of reports, and a late round made the engine look still for as long as the sequencer took to reach it. So the rounds
+run on a timer the framework checks between one message and the next, as the sequencer's lease renewals do: a round
+starts on time however much is queued, and a backlog is then seen as unread messages when the round runs. As a
+guard for whatever still holds a round up, a round that starts more than two query intervals after the one before
+says nothing about the engine, and both times start again from that moment.
+
+With both corrections, the longest a working engine was seen to go without progress while it had work was 0
+milliseconds in scenarios 115 and 116, where before them it was 2,989 to 6,958 milliseconds.
 
 ### 3.2 Which engine is judged
 

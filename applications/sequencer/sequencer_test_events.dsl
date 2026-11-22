@@ -12,9 +12,9 @@
 #  None is sent for each order: each says that the sequencer's way of
 #  handling orders changed.
 #
-#  Message ids 180 to 189, 210 to 215 and 219 are the sequencer's, within
-#  the range 170 to 229 set aside for applications' test events; 216 to
-#  218 are the matching engine's. No two files may use the same id: the
+#  Message ids 180 to 189, 210 to 215, 219 to 222, and 224 to 226 are the
+#  sequencer's, within the range 170 to 229 set aside for applications'
+#  test events; 216 to 218 are the matching engine's. No two files may use the same id: the
 #  listener refuses to start if they do.
 # ============================================================
 
@@ -265,4 +265,63 @@ message SessionCancelWritten (id=222, version=1)
     string comp_id          # the member's comp id
     i16 gateway_protocol    # 1 for FIX, 2 for binary
     i64 seq_no              # the record in the WAL that holds the command
+end
+
+# ------------------------------------------------------------
+#  224 -- EngineJudgedStopped
+#  The leading sequencer judged that the matching engine orders are
+#  routed to has stopped working: for as long as the stall limit it
+#  applied none of the commands it had been sent, or sent none of the
+#  reports it held, while staying connected. The sequencer stops
+#  counting it as taking orders
+#  (docs/availability/a_matching_engine_that_stops_working.md,
+#  section 4.2).
+# ------------------------------------------------------------
+message EngineJudgedStopped (id=224, version=1)
+    i64 engine_instance                  # the instance the sequencer last heard announce that it leads, 0 if none
+    i32 engine_epoch                     # the epoch it announced it leads in
+    bool stopped_applying                # true: it applied no command; false: it sent no report it held
+    i64 without_progress_milliseconds    # how long it made no progress
+    i64 highest_command_sent             # the highest sequence number of a command sent to it
+end
+
+# ------------------------------------------------------------
+#  225 -- EngineLongestWithoutProgress
+#  The longest the leading sequencer has seen the engine orders are
+#  routed to go without progress while it had work has grown. Sent
+#  only when that grows, so seldom, and read by the scenarios that
+#  measure how long a healthy engine pauses, from which the stall
+#  limit is chosen
+#  (docs/availability/a_matching_engine_that_stops_working.md,
+#  section 4.4).
+# ------------------------------------------------------------
+message EngineLongestWithoutProgress (id=225, version=1)
+    i64 longest_milliseconds             # the longest time without progress seen since the sequencer started
+end
+
+# ------------------------------------------------------------
+#  226 -- EngineRoundWithoutProgress
+#  One round of the leading sequencer's judgement of the engine orders
+#  are routed to: once a second, while it leads and an engine takes
+#  orders. It says what
+#  the round showed, so that a long time without progress in a working
+#  venue can be explained: whether the sequencer's own rounds started
+#  late, whether the engine's answer was late or missing, or whether
+#  the engine's positions did not move
+#  (docs/availability/a_matching_engine_that_stops_working.md,
+#  section 4.4).
+# ------------------------------------------------------------
+message EngineRoundWithoutProgress (id=226, version=1)
+    i64 applying_without_progress_milliseconds   # how long the time without applying a command has run, 0 if it is not running
+    i64 sending_without_progress_milliseconds    # how long the time without sending a report has run, 0 if it is not running
+    i64 gap_since_previous_round_milliseconds    # from the start of the round before to the start of the round judged
+    bool answered                                # whether the answer to the round's query arrived before the next round started
+    i64 answer_delay_milliseconds                # from the query to this thread taking the answer, if it arrived
+    i64 highest_applied                          # the answer: the highest command the engine has applied
+    i32 reports_sent_epoch                       # the answer: the epoch of the last report sent
+    i64 reports_sent_through                     # the answer: the number of the last report sent
+    i64 reports_held                             # the answer: the reports the engine holds
+    i64 highest_command_sent                     # the highest command the sequencer had sent the engine when the round started
+    bool unread_from_engine                      # whether the sequencer had unread messages from an engine when it judged the round
+    i64 ended_after_milliseconds                 # how long a time had run when this round stopped it, 0 if it stopped none
 end

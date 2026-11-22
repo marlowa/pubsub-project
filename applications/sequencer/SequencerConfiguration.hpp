@@ -279,6 +279,18 @@ struct SequencerConfiguration {
     int32_t orders_held_at_most_seconds{5};
 
     /**
+     * @brief How long the leading matching engine may go without progress, while it has work, before this instance,
+     *        leading, judges that it has stopped working. `[recovery] engine_stall_limit_seconds`.
+     *
+     * The leading sequencer asks the engine orders are routed to for its position once a second, and judges it with
+     * StalledEngineRule. The loader requires at least two query intervals, so that one late answer cannot make an engine
+     * look stopped, and no more than orders_held_at_most_seconds less one query interval, so that a member waits no longer
+     * for the venue to act on a stopped engine than it may wait for any change of engine leader. Both instances of the
+     * pair must have the same figure (docs/availability/a_matching_engine_that_stops_working.md, section 4.4).
+     */
+    int32_t engine_stall_limit_seconds{3};
+
+    /**
      * @brief How many matching engine publishers the leading sequencer waits for at the end of day.
      *        `[end_of_day] publishers`.
      *

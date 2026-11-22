@@ -680,6 +680,90 @@ def log_orders_held_without_an_engine() -> list[int]:
     return times
 
 
+def check_engines_judged_working(scenario: "Scenario") -> None:
+    """
+    Fail the scenario if a leading sequencer judged a matching engine to have stopped working, unless the scenario expects
+    it to; and log the longest the sequencers saw an engine go without progress while it had work, from which the stall
+    limit, [recovery] engine_stall_limit_seconds, is chosen (docs/availability/a_matching_engine_that_stops_working.md,
+    section 4.4). The events have already been settled by log_orders_held_without_an_engine.
+    """
+    modules = _TEST_EVENTS.modules["sequencer_test_events"]
+    stopped = message_of(modules.EngineJudgedStopped)
+    longest = message_of(modules.EngineLongestWithoutProgress)
+    longest_ms = 0
+    judged: list[str] = []
+    for event in _TEST_EVENTS.events:
+        if longest(event):
+            longest_ms = max(longest_ms, event.message.longest_milliseconds)
+        if stopped(event):
+            what = "applied none of its commands" if event.message.stopped_applying else "sent none of its reports"
+            judged.append(f"{event.component} judged engine instance {event.message.engine_instance} (epoch {event.message.engine_epoch}) stopped: it "
+                          f"{what} for {event.message.without_progress_milliseconds} ms, with commands sent up to "
+                          f"seq={event.message.highest_command_sent}")
+    log(f"  longest a matching engine went without progress while it had work: {longest_ms} ms")
+    log_rounds_without_progress(modules)
+    for line in judged:
+        log(f"  {line}")
+    if judged and not scenario.expect_engine_judged_stopped:
+        die("a leading sequencer judged a working matching engine to have stopped working")
+
+
+def log_last_rounds(modules, count: int) -> None:
+    """Log the last count rounds of a leading sequencer's judgement of the engine, whatever they showed, to explain a
+    judgement that did not come."""
+    round_event = message_of(modules.EngineRoundWithoutProgress)
+    rounds = [event for event in _TEST_EVENTS.events if round_event(event)]
+    log(f"  the last {min(count, len(rounds))} of {len(rounds)} round(s) of judging the engine:")
+    for event in rounds[-count:]:
+        m = event.message
+        answer = (f"answered after {m.answer_delay_milliseconds} ms: applied {m.highest_applied}, reports sent through {m.reports_sent_through} "
+                  f"under epoch {m.reports_sent_epoch}, {m.reports_held} held") if m.answered else "no answer"
+        log(f"    {event.component}: applying {m.applying_without_progress_milliseconds} ms, sending {m.sending_without_progress_milliseconds} ms; "
+            f"gap {m.gap_since_previous_round_milliseconds} ms; {answer}; commands sent up to {m.highest_command_sent}; "
+            f"{'unread' if m.unread_from_engine else 'nothing unread'}")
+
+
+def log_rounds_without_progress(modules) -> None:
+    """
+    Log each stretch in which a leading sequencer saw the engine go a second or more without progress: every round of it
+    (EngineRoundWithoutProgress), and every other test event the same sequencer sent between the stretch's first and last
+    round, which says what the venue was doing meanwhile. Measured, not checked: it explains a long time without progress
+    in a venue whose engines were working.
+    """
+    round_event = message_of(modules.EngineRoundWithoutProgress)
+    stretches: list[list[int]] = []
+    for index, event in enumerate(_TEST_EVENTS.events):
+        if not round_event(event):
+            continue
+        # A round is sent every second; only those in a stretch without progress, or that began late, are of interest.
+        if (event.message.applying_without_progress_milliseconds < 1000 and event.message.sending_without_progress_milliseconds < 1000
+                and event.message.ended_after_milliseconds < 1000 and event.message.gap_since_previous_round_milliseconds <= 1500):
+            continue
+        running = max(event.message.applying_without_progress_milliseconds, event.message.sending_without_progress_milliseconds)
+        if stretches:
+            previous = _TEST_EVENTS.events[stretches[-1][-1]]
+            previous_running = max(previous.message.applying_without_progress_milliseconds, previous.message.sending_without_progress_milliseconds)
+            if previous.component == event.component and (running > previous_running or event.message.ended_after_milliseconds > 0):
+                stretches[-1].append(index)
+                continue
+        stretches.append([index])
+    for stretch in stretches:
+        first = _TEST_EVENTS.events[stretch[0]]
+        log(f"  a stretch without progress seen by {first.component}, {len(stretch)} round(s):")
+        for index in stretch:
+            m = _TEST_EVENTS.events[index].message
+            answer = (f"answered after {m.answer_delay_milliseconds} ms: applied {m.highest_applied}, reports sent through {m.reports_sent_through} "
+                      f"under epoch {m.reports_sent_epoch}, {m.reports_held} held") if m.answered else "no answer before the next round"
+            ended = f"; it stopped a time that had run {m.ended_after_milliseconds} ms" if m.ended_after_milliseconds > 0 else ""
+            log(f"    applying {m.applying_without_progress_milliseconds} ms, sending {m.sending_without_progress_milliseconds} ms{ended}; round began "
+                f"{m.gap_since_previous_round_milliseconds} ms after the one before; {answer}; commands sent up to {m.highest_command_sent}; "
+                f"{'unread messages from an engine' if m.unread_from_engine else 'nothing unread'}")
+        for index in range(stretch[0] + 1, stretch[-1]):
+            event = _TEST_EVENTS.events[index]
+            if event.component == first.component and not round_event(event):
+                log(f"    meanwhile: {type(event.message).__name__} {event.message}")
+
+
 def _condition_met(condition: Condition, since: int) -> bool:
     return _TEST_EVENTS.find(condition.matches(_TEST_EVENTS.messages), since=since) is not None
 
@@ -1498,6 +1582,16 @@ class Scenario(NamedTuple):
     # and none may stop leading (BUG-0252, BUG-0255). Decided from test events. See run_scenario's "a session ending with
     # many resting orders" block.
     assert_session_cancel_keeps_leases: bool = False
+    # When True, the leading sequencer is expected to judge a matching engine to have stopped working
+    # (EngineJudgedStopped). Every other scenario fails if it does, because the engines in it are working
+    # (docs/availability/a_matching_engine_that_stops_working.md).
+    expect_engine_judged_stopped: bool = False
+    # When True, the matching engine leading at the start stops applying commands just after it applies a named order
+    # ([test_events] stop_applying_after_cl_ord_id), while it stays connected and renews its lease. With one engine,
+    # require the leading sequencer to judge it stopped, the gateways to be told to refuse orders, and trading to halt by
+    # the limit on automatic recovery (docs/availability/a_matching_engine_that_stops_working.md, section 6). See
+    # run_scenario's "an engine that stops working" block.
+    assert_engine_stops_working: bool = False
     # When True, the binary load client offers 1.8 million orders on four sessions as fast as the sockets accept them,
     # faster than the venue processes them. Each gateway stops reading its members while 16,384 of its commands are
     # unanswered, so no queue in the order path grows without limit. No sequencer or matching engine may lose its lease
@@ -5519,6 +5613,29 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 119 -- a matching engine that stays connected and stops working, with no other engine to lead, halts the venue.
+    #
+    # docs/availability/a_matching_engine_that_stops_working.md, sections 3 and 6. The one matching engine stops applying
+    # commands just after a named order, while it stays connected, answers the sequencer's questions about its position
+    # and keeps its lease. Two more orders are sent to it and not applied. The leading sequencer must judge it stopped
+    # within the stall limit, stop counting it as taking orders, so that the gateways are told to refuse new orders, and
+    # halt trading once the limit on automatic recovery, shortened to eight seconds, has passed with no engine that works.
+    Scenario(
+        number=119,
+        short_name="engine_stops_working_alone",
+        description="A matching engine that stays connected and stops working, with no other engine, halts the venue",
+        expected_outcome=(
+            "the leading sequencer judges the engine stopped within the stall limit; the gateway is told to refuse orders, and "
+            "then that trading is halted by the limit on automatic recovery"
+        ),
+        assert_engine_stops_working=True,
+        expect_engine_judged_stopped=True,
+        automatic_recovery_limit_seconds=8,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 92 -- orders are held while no engine leads, for as long as a change of engine leader takes, and refused after that.
     #
     # docs/availability/voided_commands.md, sections 5.1 and 5.2. Both engines are taken away. Several orders are placed
@@ -6419,7 +6536,11 @@ def replay_check_applies() -> tuple[bool, str, list[str]]:
     with no command there to replay, and is looked for so that one cannot pass unnoticed. Worked out from what the
     engines said, not from the scenario's description, so that it cannot disagree with what happened."""
     engine_module = _TEST_EVENTS.modules["matching_engine_test_events"]
+    judged_stopped = message_of(_TEST_EVENTS.modules["sequencer_test_events"].EngineJudgedStopped)
     for event in _TEST_EVENTS.events:
+        if judged_stopped(event):
+            return False, (f"{event.component} judged matching engine instance {event.message.engine_instance} to have stopped working; it "
+                           "passed over commands, so the WAL lacks the reports the replay gives for them"), []
         if (event.component in _ENGINE_COMPONENTS and isinstance(event.message, engine_module.BookCancelled) and not event.message.by_command
                 and event.message.cancel_reports_sent > 0):
             return False, (f"{event.component} cancelled every order by its own decision, which is not a command in the WAL, "
@@ -7006,6 +7127,10 @@ _DIE_APPLYING_NOW: dict[str, tuple[str, bool]] = {}
 # again, and the engines of the scenario being run that are to do so ([test_events] lose_and_regain_lease_after_cl_ord_id).
 _LEASE_LOST_AND_REGAINED_CL_ORD_ID = "lease-bounce-1"
 _LEASE_LOST_AND_REGAINED_NOW: dict[str, str] = {}
+# The new order after which the matching engine of the scenario being run that is to stop working stops applying
+# commands, while it stays connected and renews its lease ([test_events] stop_applying_after_cl_ord_id).
+_STOP_APPLYING_CL_ORD_ID = "stop-applying-1"
+_STOP_APPLYING_NOW: dict[str, str] = {}
 # The matching engines being restarted with [test_events] hold_sequencer_connections_until_role_decided, by a restart step
 # that asks for it; the name is added just before the engine is launched and removed just after.
 _HOLD_SEQUENCER_CONNECTIONS_NOW: set[str] = set()
@@ -7030,7 +7155,7 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
                             comp_ids_without_session: tuple = (), delay_session_announcements_ms: int = 0,
                             die_applying: tuple[str, bool] | None = None, lose_and_regain_lease_after: str | None = None,
                             hold_sequencer_connections: bool = False, read_reports_slowly_us: int = 0, pace_reports: bool = True,
-                            delay_statement_writes_ms: int = 0) -> Path:
+                            delay_statement_writes_ms: int = 0, stop_applying_after: str | None = None) -> Path:
     """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
     knows the component by, which its threads give when they introduce themselves. report_orders_of lists the comp ids
     whose orders a matching engine reports the outcome of. comp_ids_without_session lists the comp ids whose reports a
@@ -7038,6 +7163,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
     announces its sessions on a sequencer link that has come up. die_applying, for a matching engine, is the ClOrdID of a
     new order it dies applying, and whether it dies only once. lose_and_regain_lease_after, for a matching engine, is the
     ClOrdID of a new order after which it acts as if its lease ran out and was at once granted again.
+    stop_applying_after, for a matching engine, is the ClOrdID of a new order after which it applies no further command,
+    while it stays connected and renews its lease.
     hold_sequencer_connections, for a matching engine, makes it hold each sequencer's order connection until it knows
     whether it leads or follows. read_reports_slowly_us, for a sequencer, is how long it spends on each report from an
     engine, with its connections for reports limited; pace_reports false, for a matching engine, stops it pausing the
@@ -7059,6 +7186,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
         text += f"die_applying_cl_ord_id = \"{die_applying[0]}\"\ndie_applying_once = {'true' if die_applying[1] else 'false'}\n"
     if lose_and_regain_lease_after is not None:
         text += f"lose_and_regain_lease_after_cl_ord_id = \"{lose_and_regain_lease_after}\"\n"
+    if stop_applying_after is not None:
+        text += f"stop_applying_after_cl_ord_id = \"{stop_applying_after}\"\n"
     if hold_sequencer_connections:
         text += "hold_sequencer_connections_until_role_decided = true\n"
     if read_reports_slowly_us > 0:
@@ -7102,7 +7231,8 @@ def launch_app(name: str, bin_name: str, config: Path,
                                          bin_name == "matching_engine" and name in _HOLD_SEQUENCER_CONNECTIONS_NOW,
                                          _READ_REPORTS_SLOWLY_US_NOW if bin_name == "sequencer" else 0,
                                          _PACE_REPORTS_NOW if bin_name == "matching_engine" else True,
-                                         _STATEMENT_WRITE_DELAY_MS_NOW if bin_name == "arbiter" else 0)
+                                         _STATEMENT_WRITE_DELAY_MS_NOW if bin_name == "arbiter" else 0,
+                                         _STOP_APPLYING_NOW.get(name) if bin_name == "matching_engine" else None)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -8833,7 +8963,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         # ── Phase 1: start all processes ──────────────────────────────────────
         global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW, _DIE_APPLYING_NOW  # pylint: disable=global-statement
-        global _LEASE_LOST_AND_REGAINED_NOW, _STATEMENT_WRITE_DELAY_MS_NOW  # pylint: disable=global-statement
+        global _LEASE_LOST_AND_REGAINED_NOW, _STATEMENT_WRITE_DELAY_MS_NOW, _STOP_APPLYING_NOW  # pylint: disable=global-statement
         _INSTALL_PREFIX = prefix
         _ANNOUNCEMENT_DELAY_MS_NOW = scenario.delay_session_announcements_ms
         _STATEMENT_WRITE_DELAY_MS_NOW = scenario.delay_statement_writes_ms
@@ -8848,6 +8978,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
         else:
             _DIE_APPLYING_NOW = {}
         _LEASE_LOST_AND_REGAINED_NOW = {dies_first: _LEASE_LOST_AND_REGAINED_CL_ORD_ID} if scenario.assert_lease_lost_and_regained else {}
+        # With high availability off the one engine runs as matching_engine; with it on, the engine leading at the start.
+        stops_working = dies_first if scenario.me_ha else "matching_engine"
+        _STOP_APPLYING_NOW = {stops_working: _STOP_APPLYING_CL_ORD_ID} if scenario.assert_engine_stops_working else {}
         # Until phase 2 has seen which matching engine leads, the primary is taken to.
         _ENGINES_AT_START.update({ENGINE_LEADING_AT_START: "matching_engine_primary", ENGINE_FOLLOWING_AT_START: "matching_engine_secondary"})
         # The member's orders are reported by the engine only in the scenarios whose checks no member can make: that an
@@ -11867,6 +12000,77 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     member.close()
                     die(f"{what}: {cl_ord_id}, placed after the engine leads again, was not accepted")
             log("  every order placed afterwards is accepted -- OK")
+            member.close()
+
+        # ── An engine that stops working (docs/availability/a_matching_engine_that_stops_working.md, section 6) ──
+        if scenario.assert_engine_stops_working:
+            what = "a matching engine that stops working"
+            log(f"=== {what.capitalize()} ===")
+            engine = next(iter(_STOP_APPLYING_NOW))
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die(f"{what}: the raw client could not log on")
+
+            stop_mark = _TEST_EVENTS.mark()
+            member.new_order_single(_STOP_APPLYING_CL_ORD_ID)
+            deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
+            accepted = False
+            while time.monotonic() < deadline and not accepted:
+                reply = member.receive_until("8", timeout=1.0)
+                accepted = reply is not None and reply.get(11) == _STOP_APPLYING_CL_ORD_ID and reply.get(39) == "0"
+            if not accepted:
+                member.close()
+                die(f"{what}: {_STOP_APPLYING_CL_ORD_ID}, after which {engine} stops applying commands, was not accepted")
+            # Commands the engine is sent and does not apply: without them it has no work, and nothing to be judged on. Any
+            # answer to them means the venue refused them before they reached the engine, which leaves it nothing to apply.
+            after_stop = ("after-stop-1", "after-stop-2")
+            for cl_ord_id in after_stop:
+                member.new_order_single(cl_ord_id)
+                time.sleep(0.25)
+            answers_deadline = time.monotonic() + 2.0
+            while time.monotonic() < answers_deadline:
+                reply = member.receive_until("8", timeout=0.25)
+                if reply is not None and reply.get(11) in after_stop:
+                    member.close()
+                    die(f"{what}: {reply.get(11)} was answered (OrdStatus {reply.get(39)}, text {reply.get(58)!r}) before it could reach "
+                        f"{engine}, so the engine was given no work to stop on")
+            log(f"  {engine} applied {_STOP_APPLYING_CL_ORD_ID} and stops applying; two more orders sent to it, and neither answered")
+
+            sequencer_events = _TEST_EVENTS.modules["sequencer_test_events"]
+            judged = _TEST_EVENTS.wait_for(message_of(sequencer_events.EngineJudgedStopped), timeout=15.0, since=stop_mark)
+            if judged is None:
+                member.close()
+                log_last_rounds(sequencer_events, 10)
+                die(f"{what}: no leading sequencer judged {engine} to have stopped working, although it applied nothing for 15 s while it had "
+                    "commands, stayed connected and kept its lease")
+            log(f"  {judged.component} judged it stopped after {judged.message.without_progress_milliseconds} ms without progress -- OK")
+
+            gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+            refusing = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False),
+                                             timeout=15.0, since=stop_mark)
+            if refusing is None:
+                member.close()
+                die(f"{what}: the gateway was never told to refuse orders, although no engine that works has taken them since the judgement")
+            log("  the gateway was told to refuse new orders -- OK")
+            halted = _TEST_EVENTS.wait_for(message_of(gateway_events.OrderAcceptanceChanged, "fix_order_gateway_a", accepting=False,
+                                                      halted_for_recovery=True),
+                                           timeout=scenario.automatic_recovery_limit_seconds + 15.0, since=stop_mark)
+            if halted is None:
+                member.close()
+                die(f"{what}: trading never halted, although no engine that works has been able to trade for longer than the "
+                    f"{scenario.automatic_recovery_limit_seconds}s limit on automatic recovery")
+            log(f"  trading halted by the {scenario.automatic_recovery_limit_seconds}s limit on automatic recovery -- OK")
             member.close()
 
         # ── A command that kills the matching engines (docs/availability/voided_commands.md, section 4) ──
@@ -15090,6 +15294,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         check_write_ahead_logs_in_order(prefix)
 
         log_orders_held_without_an_engine()
+        check_engines_judged_working(scenario)
 
         result_pass = True
         log("")
@@ -15116,6 +15321,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # are not to die applying any order.
     _DIE_APPLYING_NOW = {}
     _LEASE_LOST_AND_REGAINED_NOW = {}
+    _STOP_APPLYING_NOW = {}
     if result_pass:
         try:
             replayed = run_wal_replay_check(prefix, launched_configs)
