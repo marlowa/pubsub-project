@@ -454,6 +454,36 @@ TEST_F(PairLeaseAgentTest, ALeaseThatRunsOutBecauseItsThreadWasHeldUpSaysSo) {
     EXPECT_EQ(std::count_if(log_.begin(), log_.end(), [](const std::string& line) { return line.find("it was held up") != std::string::npos; }), 1);
 }
 
+// Another component can say an instance may not lead, as the leading sequencer says of a matching engine it judges to
+// have stopped working. Told so by both of its voters, the leader is refused its renewals, stops leading, and its peer
+// takes over; the change is logged once, however often it is repeated, and so is its lifting.
+TEST_F(PairLeaseAgentTest, AnInstanceSaidToBeBarredFromLeadingIsRefusedItsRenewalsAndItsPeerTakesOver) {
+    for (int i = 0; i < 40; ++i) {
+        step();
+    }
+    ASSERT_TRUE(agents_[0]->acting(now_));
+    const pubsub_itc_fw::InstancesBarredFromLeading first_barred{true, false};
+    const auto count_logged = [this](const std::string& text) {
+        logger_.flush();
+        return std::count_if(log_.begin(), log_.end(), [&text](const std::string& line) { return line.find(text) != std::string::npos; });
+    };
+    for (int repeat = 0; repeat < 3; ++repeat) {
+        agents_[1]->set_instances_said_may_not_lead(first_barred);
+    }
+    arbiter_.set_instances_said_may_not_lead(first_barred);
+    EXPECT_EQ(count_logged("told that instance 1 may not lead"), 1) << "only a change is logged";
+    for (int i = 0; i < 80 && !agents_[1]->acting(now_); ++i) {
+        step();
+    }
+    EXPECT_FALSE(agents_[0]->acting(now_)) << "the barred instance kept leading";
+    EXPECT_TRUE(agents_[1]->acting(now_)) << "its peer did not take over";
+
+    agents_[1]->set_instances_said_may_not_lead(pubsub_itc_fw::InstancesBarredFromLeading{true, true});
+    EXPECT_EQ(count_logged("told that neither instance may lead"), 1);
+    agents_[1]->set_instances_said_may_not_lead(pubsub_itc_fw::InstancesBarredFromLeading{});
+    EXPECT_EQ(count_logged("no instance is barred from leading any longer"), 1);
+}
+
 TEST_F(PairLeaseAgentTest, ALeaderCutOffFromBothVotersStopsLeading) {
     prometheus::Counter leases_run_out;
     pubsub_itc_fw::LeaseMetrics metrics{};
