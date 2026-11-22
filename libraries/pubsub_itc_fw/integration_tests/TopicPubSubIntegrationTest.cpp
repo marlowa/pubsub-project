@@ -172,6 +172,9 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
               },
               std::move(wal_dir), max_lag_records, max_records_per_page) {}
 
+    // How many TopicAck messages this publisher has received from its subscribers.
+    std::atomic<int> acks_received{0};
+
     // Makes this publisher a follower, which answers every subscription with TopicNotLeader. Called before its reactor
     // runs, so no other thread is using the publisher yet.
     void start_as_follower() {
@@ -281,6 +284,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
                 return;
             }
             publisher_.on_ack(connection_id, view);
+            acks_received.fetch_add(1, std::memory_order_acq_rel);
         }
     }
 
@@ -588,10 +592,16 @@ class CapturingSubscriberThread : public TopicSubscriberThread {
     std::vector<ReceivedRecord> received_records;
 
     CapturingSubscriberThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_record_count, std::string subscriber_id = "capturing",
-                              int64_t from_seq_no = 0)
+                              int64_t from_seq_no = 0, std::vector<std::string> publisher_services = {"publisher"},
+                              int ack_interval = TopicSubscriberChannel::default_ack_interval)
         : TopicSubscriberThread(token, logger, reactor, "CapturingSubscriberThread", ThreadID{1}, make_queue_config(), make_allocator_config("CapSubPool"),
-                                ApplicationThreadConfiguration{}, {"publisher"}, std::move(subscriber_id), "orders", from_seq_no)
+                                ApplicationThreadConfiguration{}, std::move(publisher_services), std::move(subscriber_id), "orders", from_seq_no, ack_interval)
         , expected_record_count_(expected_record_count) {}
+
+    // The sequence number of the last record delivered, read once the thread has stopped or every record has arrived.
+    [[nodiscard]] int64_t applied_through() const {
+        return last_applied_seq_no();
+    }
 
   protected:
     void on_pubsub_message(const EventMessage& message) override {
@@ -604,6 +614,43 @@ class CapturingSubscriberThread : public TopicSubscriberThread {
 
   private:
     int expected_record_count_;
+};
+
+// A subscriber that also connects to a service that is not one of its topic's publishers, "other", and asks it for the
+// same topic itself. What arrives on that connection is the derived thread's, through the on_other_ functions, and is
+// never delivered as the topic's records.
+class SubscriberWithAnotherConnection : public CapturingSubscriberThread {
+  public:
+    std::atomic<int> other_connections_established{0};
+    std::atomic<int> other_messages{0};
+    std::atomic<int> other_connections_lost{0};
+
+    SubscriberWithAnotherConnection(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int expected_record_count)
+        : CapturingSubscriberThread(token, logger, reactor, expected_record_count) {}
+
+  protected:
+    void on_started() override {
+        connect_to_service("other");
+    }
+
+    void on_other_connection_established(ConnectionID id) override {
+        other_connections_established.fetch_add(1, std::memory_order_acq_rel);
+        pubsub_itc_fw::TopicSubscribeRequest request{};
+        request.subscriber_id = "other_subscriber";
+        request.topic_name = "orders";
+        request.from_seq_no = 0;
+        request.role = pubsub_itc_fw::TopicChannelRole::Data;
+        send_pdu(id, pubsub_itc_fw::TopicSubscribeRequest::message_pdu_id, 0, request);
+    }
+
+    void on_other_framework_pdu_message(const EventMessage& message) override {
+        other_messages.fetch_add(1, std::memory_order_acq_rel);
+        release_pdu_payload(message);
+    }
+
+    void on_other_connection_lost([[maybe_unused]] const ConnectionID& id, [[maybe_unused]] const std::string& reason) override {
+        other_connections_lost.fetch_add(1, std::memory_order_acq_rel);
+    }
 };
 
 // Test fixture
@@ -672,8 +719,63 @@ class TopicPubSubTest : public ::testing::Test {
         }
     }
 
+    // A test publisher on its own reactor and thread, listening on a port the system chooses.
+    struct RunningPublisher {
+        std::unique_ptr<Reactor> reactor;
+        std::shared_ptr<TopicPublisherThread> thread;
+        std::unique_ptr<ThreadWithJoinTimeout> runner;
+
+        [[nodiscard]] uint16_t port() const {
+            return reactor->get_inbound_listener_port(0);
+        }
+
+        void stop() {
+            if (runner == nullptr) {
+                return;
+            }
+            reactor->shutdown("test complete");
+            if (runner->joinable()) {
+                runner->join();
+            }
+            runner.reset();
+            // A stopped reactor closes its connections only when it is destroyed, so the peers learn of the loss then.
+            reactor.reset();
+        }
+    };
+
+    // Starts a publisher of the WAL in @p wal_directory. A follower answers subscriptions with TopicNotLeader, and, given
+    // @p leads_after, becomes the leader that long after it starts.
+    RunningPublisher start_publisher(const std::string& wal_directory, bool follower = false, std::chrono::milliseconds leads_after = {}) {
+        RunningPublisher publisher;
+        publisher.reactor = std::make_unique<Reactor>(make_reactor_config(), publisher_registry_, logger_->logger);
+        publisher.reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+        publisher.thread = ApplicationThread::create<TopicPublisherThread>(logger_->logger, *publisher.reactor, wal_directory);
+        if (follower) {
+            publisher.thread->start_as_follower();
+        }
+        if (leads_after.count() > 0) {
+            publisher.thread->become_leader_after(leads_after);
+        }
+        publisher.reactor->register_thread(publisher.thread);
+        Reactor& reactor = *publisher.reactor;
+        publisher.runner = std::make_unique<ThreadWithJoinTimeout>([&reactor]() { reactor.run(); });
+        EXPECT_TRUE(wait_for([&reactor]() { return reactor.is_initialized(); })) << "a publisher's reactor did not initialize";
+        return publisher;
+    }
+
+    // Writes records 1 to @p count for the "orders" topic into the WAL in @p directory.
+    static void write_records_into(const std::string& directory, int count) {
+        WalWriter writer;
+        writer.open(directory, wal_segment_size, {0, 0});
+        for (int i = 1; i <= count; ++i) {
+            const std::vector<uint8_t> buffer = encode_wal_record(i);
+            writer.append(static_cast<int64_t>(i), buffer.data(), buffer.size());
+        }
+    }
+
     std::unique_ptr<LoggerWithSink> logger_;
     std::string wal_dir_;
+    const ServiceRegistry publisher_registry_;
 };
 
 // Test 1: one publisher, one subscriber, three replayed records
@@ -1397,6 +1499,110 @@ TEST_F(TopicPubSubTest, FrameworkSubscriberThreadDeliversRecordsViaOnPubsubMessa
     if (publisher_reactor_thread.joinable()) {
         publisher_reactor_thread.join();
     }
+}
+
+// A TopicSubscriberThread whose publisher does not lead is told so, waits on the same connection, and is served when the
+// publisher becomes the leader. With an acknowledgement after every record, the publisher hears from it.
+TEST_F(TopicPubSubTest, ASubscriberThreadIsToldItsPublisherDoesNotLeadAndIsServedWhenItDoes) {
+    write_topic_wal_records(3);
+    RunningPublisher publisher = start_publisher(wal_dir_, true, std::chrono::milliseconds(500));
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", publisher.port()}, NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    const int ack_every_record = 1;
+    auto subscriber_thread = ApplicationThread::create<CapturingSubscriberThread>(logger_->logger, *subscriber_reactor, 3, "capturing", 0,
+                                                                                  std::vector<std::string>{"publisher"}, ack_every_record);
+    subscriber_reactor->register_thread(subscriber_thread);
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return logger_->contains_message("'publisher' does not lead, for topic 'orders'"); }))
+        << "the subscriber thread did not take the publisher's TopicNotLeader";
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); }))
+        << "the subscriber thread was not served when its publisher became the leader";
+    EXPECT_TRUE(wait_for([&]() { return publisher.thread->acks_received.load(std::memory_order_acquire) > 0; }))
+        << "the subscriber thread acknowledged nothing";
+
+    subscriber_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    publisher.stop();
+}
+
+// A TopicSubscriberThread connected to two publishers: losing the one that does not lead is routine, and losing the one
+// that was sending it records is said at Info. Neither costs it its place in the topic.
+TEST_F(TopicPubSubTest, ASubscriberThreadLosingEachPublisherKeepsItsPlaceAndSaysWhenItLosesTheOneServingIt) {
+    write_topic_wal_records(3);
+    RunningPublisher leader = start_publisher(wal_dir_);
+    const std::string follower_directory = pubsub_itc_fw::tests_common::make_scratch_directory("topic_pubsub_test_follower");
+    write_records_into(follower_directory, 3);
+    RunningPublisher follower = start_publisher(follower_directory, true);
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", leader.port()}, NetworkEndpointConfiguration{});
+    subscriber_registry.add("publisher_follower", NetworkEndpointConfiguration{"127.0.0.1", follower.port()}, NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto subscriber_thread = ApplicationThread::create<CapturingSubscriberThread>(logger_->logger, *subscriber_reactor, 3, "capturing", 0,
+                                                                                  std::vector<std::string>{"publisher", "publisher_follower"});
+    subscriber_reactor->register_thread(subscriber_thread);
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    ASSERT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); }));
+    ASSERT_TRUE(wait_for([&]() { return logger_->contains_message("'publisher_follower' does not lead, for topic 'orders'"); }));
+
+    follower.stop();
+    EXPECT_TRUE(wait_for([&]() { return logger_->contains_message("connection to 'publisher_follower' for topic 'orders' closed"); }))
+        << "the loss of the publisher that does not lead was not taken as routine";
+    EXPECT_FALSE(logger_->contains_message("lost the connection to 'publisher_follower'"));
+
+    leader.stop();
+    EXPECT_TRUE(wait_for([&]() { return logger_->contains_message("lost the connection to 'publisher', which was sending topic 'orders'"); }))
+        << "the loss of the publisher serving the subscriber was not said";
+
+    subscriber_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    EXPECT_EQ(subscriber_thread->records_received.load(std::memory_order_acquire), 3);
+    EXPECT_EQ(subscriber_thread->applied_through(), 3) << "losing the publishers cost the subscriber its place";
+    std::filesystem::remove_all(follower_directory);
+}
+
+// A TopicSubscriberThread's derived thread can have connections of its own. What happens on them reaches the derived
+// thread through the on_other_ functions, even when it is the same topic's messages, and is never delivered as the topic.
+TEST_F(TopicPubSubTest, ASubscriberThreadPassesAConnectionThatIsNotToAPublisherToTheDerivedThread) {
+    write_topic_wal_records(3);
+    RunningPublisher publisher = start_publisher(wal_dir_);
+    const std::string other_directory = pubsub_itc_fw::tests_common::make_scratch_directory("topic_pubsub_test_other");
+    write_records_into(other_directory, 2);
+    RunningPublisher other = start_publisher(other_directory);
+
+    ServiceRegistry subscriber_registry;
+    subscriber_registry.add("publisher", NetworkEndpointConfiguration{"127.0.0.1", publisher.port()}, NetworkEndpointConfiguration{});
+    subscriber_registry.add("other", NetworkEndpointConfiguration{"127.0.0.1", other.port()}, NetworkEndpointConfiguration{});
+    auto subscriber_reactor = std::make_unique<Reactor>(make_reactor_config(), subscriber_registry, logger_->logger);
+    auto subscriber_thread = ApplicationThread::create<SubscriberWithAnotherConnection>(logger_->logger, *subscriber_reactor, 3);
+    subscriber_reactor->register_thread(subscriber_thread);
+    ThreadWithJoinTimeout subscriber_reactor_thread([&]() { subscriber_reactor->run(); });
+
+    ASSERT_TRUE(wait_for([&]() { return subscriber_thread->all_records_received.load(std::memory_order_acquire); }));
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->other_connections_established.load(std::memory_order_acquire) == 1; }));
+    // The other publisher answers the subscription the derived thread sent it: an acknowledgement, then a page.
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->other_messages.load(std::memory_order_acquire) >= 2; }))
+        << "the other connection's messages did not reach the derived thread";
+
+    other.stop();
+    EXPECT_TRUE(wait_for([&]() { return subscriber_thread->other_connections_lost.load(std::memory_order_acquire) == 1; }))
+        << "the loss of the other connection did not reach the derived thread";
+
+    subscriber_reactor->shutdown("test complete");
+    if (subscriber_reactor_thread.joinable()) {
+        subscriber_reactor_thread.join();
+    }
+    publisher.stop();
+    EXPECT_EQ(subscriber_thread->records_received.load(std::memory_order_acquire), 3) << "records from the other connection were delivered as the topic's";
+    std::filesystem::remove_all(other_directory);
 }
 
 } // namespaces

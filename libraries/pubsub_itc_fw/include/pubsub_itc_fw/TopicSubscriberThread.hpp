@@ -117,17 +117,20 @@ class TopicSubscriberThread : public ApplicationThread, public TopicSubscriberCh
             on_other_connection_lost(id, reason);
             return;
         }
+        // The connection a loss is reported on carries its number but not its service's name, so the name is taken from the
+        // connection as it was made, before it is forgotten.
+        const std::string service_name = service_name_of(id);
         publisher_connections_.erase(std::remove(publisher_connections_.begin(), publisher_connections_.end(), id), publisher_connections_.end());
-        // The publisher that does not lead closes each subscription it is asked for, so most losses are routine; only
-        // the loss of the publisher that was sending pages is worth a line at Info.
+        // Losing a publisher that was not sending pages costs this thread nothing; only the loss of the one that was is
+        // worth a line at Info.
         if (id == serving_connection_) {
             serving_connection_ = ConnectionID{};
             PUBSUB_LOG(get_logger(), FwLogLevel::Info,
                        "TopicSubscriberThread: lost the connection to '{}', which was sending topic '{}' ({}), after seq={} -- following whichever publisher "
                        "leads",
-                       id.service_name(), topic_name_, reason, channel_.last_applied_seq_no());
+                       service_name, topic_name_, reason, channel_.last_applied_seq_no());
         } else {
-            PUBSUB_LOG(get_logger(), FwLogLevel::Debug, "TopicSubscriberThread: connection to '{}' for topic '{}' closed: {}", id.service_name(), topic_name_,
+            PUBSUB_LOG(get_logger(), FwLogLevel::Debug, "TopicSubscriberThread: connection to '{}' for topic '{}' closed: {}", service_name, topic_name_,
                        reason);
         }
     }
