@@ -2090,8 +2090,19 @@ the framework already stops reading such a connection while its buffer is full, 
 not handled is already bounded; what the FIX gateway lacks is its command queue sized from its settings, as the binary
 gateway's is, in place of a fixed 1,000,000.
 
-**Left before this entry closes:** the FIX gateway's command queue sized from its settings, with the arithmetic
-written beside it, and measured under a load that reaches its limit on unanswered commands.
+**How, decided 22 November 2026.** Each read from a member's socket reaches the gateway's thread as one message holding
+every byte the read took, and the thread parses and forwards every order in it; pausing at the limit on unanswered
+commands stops further reads but not that. With buffers of 16 MiB for each member, the gateway's settings bound what it
+can have read at about 5.2 million orders, ten times its command queue. So the thread stops taking orders out of a
+member's bytes while the limit is reached, commits only what it has handled, and leaves the rest in the member's
+buffer, which then fills and slows the member through TCP; once answers bring the count down to half, it carries on
+from where it stopped. The command queue's bound is then about twice the limit plus the reports, whatever the number
+of members. The framework already lets the thread commit part of what it was given; it does not yet hand back bytes
+left unconsumed when no new bytes arrive, which this needs. Chosen by Andrew over making each member's buffer small.
+
+**Left before this entry closes:** that change, with a way for the thread to be handed a member's unconsumed bytes
+again; the FIX gateway's command queue sized from its settings with the arithmetic beside it; and a scenario, made to
+fail on purpose, that overloads it.
 
 ### BUG-0280: Huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine {#bug_0280}
 
@@ -2139,17 +2150,16 @@ session's day orders when it runs out. Whether that is right for an outage the v
 should stop, is not decided. Set out in full in [gateway_ha.md](availability/gateway_ha.md), section "When the gateways
 are down and the rest of the venue is not".
 
-**The recommendation**, not yet decided: the grace period goes on running whatever the cause, which is what the
-sequencer does now. The member asked not to have live orders it cannot manage; the venue cannot reliably tell its own
+**Decided (22 November 2026): the grace period goes on running whatever the cause,** which is what the sequencer does
+now; Andrew chose the recommendation. The member asked not to have live orders it cannot manage; the venue cannot reliably tell its own
 gateways' failure from a network fault; and the halt for a total loss of the gateways can then be the ordinary halt,
 which leaves the book as it is.
 
 **What is wanted.**
 
-1. Andrew's decision on whether the grace period runs or stops.
-2. How the venue detects that no gateway has come back for a member, or for every member, and after how long.
-3. Whether the venue then halts by itself or alerts an operator who decides; the recommendation is to alert an operator.
-4. Scenarios for whatever is decided.
+1. How the venue detects that no gateway has come back for a member, or for every member, and after how long.
+2. Whether the venue then halts by itself or alerts an operator who decides; the recommendation is to alert an operator.
+3. Scenarios for both.
 
 It depends on [BUG-0046](#bug_0046): a binary member cannot learn, after reconnecting, which of its orders were
 cancelled while it was away. To be done after the bugs agreed before it ([bug_review.md](bug_review.md)).

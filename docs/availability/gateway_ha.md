@@ -427,7 +427,7 @@ GoodTillCancel and GoodTillDate orders. The sequencer does this whatever the rea
 grace period go on running, so that the member's day orders are cancelled if the gateways take longer than the grace
 period to come back, or should it stop, so that the orders stay live although the member cannot see or change them?
 
-**The recommendation: the grace period goes on running, whatever the cause.** Not yet decided.
+**Decided (22 November 2026): the grace period goes on running, whatever the cause.**
 
 1. A member asks for cancel-on-disconnect so that it never has live orders it cannot manage. That risk is the same
    whether the member's network failed or the venue's gateways did. Stopping the grace period leaves the member's

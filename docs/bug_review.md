@@ -14,9 +14,9 @@ There are 48 open entries, and each is judged below. The figures:
 |---|---|
 | Breach of a named principle | 8: BUG-0113 (what is left of it), BUG-0285, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
 | Partly done | 5: BUG-0121, BUG-0134, BUG-0279, BUG-0283, BUG-0069 |
-| Decision needed from Andrew | 3: BUG-0258, BUG-0281, BUG-0229; and BUG-0250 needs one choice made between two remedies |
+| Decision needed from Andrew | 2: BUG-0258, BUG-0229; and BUG-0250 needs one choice made between two remedies |
 | Decided, and waiting to be built | 1: BUG-0048, with the recovery service of BUG-0113 |
-| New requirement | 12 |
+| New requirement | 13 |
 | Investigation | 10 |
 | Test or tool | 8 |
 | Defect that breaks no principle | 1: BUG-0259 |
@@ -31,8 +31,8 @@ There are 48 open entries, and each is judged below. The figures:
    November 2026: the recovery service keeps every report not yet delivered to a session, however many**, its room
    sized from the open-order capacity. This decides the recovery service's design, and through it BUG-0048 (reclaiming the WAL during the day), BUG-0121's
    start-up time, BUG-0209's scenario and BUG-0006's measurement.
-2. **What happens to members' orders when the venue's own gateways are down** (BUG-0281): whether the
-   cancel-on-disconnect grace period runs on, as it does now, or stops.
+2. **What happens to members' orders when the venue's own gateways are down** (BUG-0281). **Decided on 22 November
+   2026: the cancel-on-disconnect grace period runs on whatever the cause,** as it does now.
 3. **How long the leading sequencer holds a report for a session connected nowhere** while a configured gateway
    instance has not announced its sessions (BUG-0258).
 4. **Which of two remedies for repeated reports from a restarting engine** (BUG-0250): the leading sequencer
@@ -44,7 +44,8 @@ There are 48 open entries, and each is judged below. The figures:
 1. The small breaches, each with an obvious remedy: BUG-0272, BUG-0249 and BUG-0286 are closed.
 2. The partly done entries with little left: BUG-0278 and BUG-0065 are closed, halting one instrument having moved
    to BUG-0242; BUG-0262 is closed; BUG-0279's scenario is written, and Andrew decided on 22 November 2026 that the
-   FIX gateway is bounded as the binary one is: its command queue sized from its settings, then measured.
+   FIX gateway is bounded as the binary one is, by its thread stopping taking orders from a member's bytes while the
+   limit on unanswered commands is reached.
 3. The four decisions above, each put to Andrew with its background and options.
 4. The breaches that need a short design first: BUG-0127 and BUG-0128 (the framework's two locks), BUG-0119
    (shutdown), BUG-0273 (the matching engine's held reports) and BUG-0131's remainder.
@@ -145,10 +146,10 @@ Eleven entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0279](bug_list.md#bug_0279): a gateway's limit on unanswered commands does not bound the commands it has waiting to be sent | **Partly done** | The binary gateway limits the messages waiting from each member's connection to 64; both gateways refuse a logon beyond `[members] most_connected`; every environment sizes the binary gateway's command queue from those settings, and in scenario 116 the queue no longer grows | The FIX gateway's command queue sized from its settings, as decided on 22 November 2026, and measured under a load that reaches its limit on unanswered commands. Scenario 127 shows a member beyond the limit refused by each gateway; under the most the fix8 clients can offer, short of an overload, the FIX gateway's command queue held at most 10,529 commands |
+| [BUG-0279](bug_list.md#bug_0279): a gateway's limit on unanswered commands does not bound the commands it has waiting to be sent | **Partly done** | The binary gateway limits the messages waiting from each member's connection to 64; both gateways refuse a logon beyond `[members] most_connected`; every environment sizes the binary gateway's command queue from those settings, and in scenario 116 the queue no longer grows | The FIX gateway's thread stops taking orders from a member's bytes while the limit on unanswered commands is reached, as decided on 22 November 2026; its command queue sized from settings; a scenario that overloads it. Scenario 127 shows a member beyond the limit refused by each gateway; under the most the fix8 clients can offer, short of an overload, the FIX gateway's command queue held at most 10,529 commands |
 | [BUG-0259](bug_list.md#bug_0259): under a steady flood, the warning that a gateway's store of unanswered commands is full is logged once for every command refused | **Defect** | `UnansweredCommands::keep` logs a Warning when the store becomes full and an Info when it has room again; under a steady flood one answer makes room for one command, so the two alternate once for each command | The warning said once when commands begin to be refused, and once when an interval passes with none refused, with how many were refused, as `KeptReports` does |
 | [BUG-0203](bug_list.md#bug_0203): the FIX gateway sometimes refuses a logon as an impostor when two are under way together | **Investigation** | Not reproduced since it was recorded; the cause is unknown | Reproduce with many simultaneous logons, as at the start of the day, and find the shared state |
-| [BUG-0281](bug_list.md#bug_0281): what happens to members' orders when their gateways are down for longer than the grace period is not decided | **Decision needed** | The sequencer starts each session's cancel-on-disconnect grace period when its gateway is lost, whatever the cause, and cancels the session's day orders when it runs out ([gateway_ha.md](availability/gateway_ha.md)) | Andrew's decision (Summary, decision 2); then how the venue detects that no gateway has come back, whether it halts or alerts an operator, and scenarios. It depends on BUG-0046 |
+| [BUG-0281](bug_list.md#bug_0281): what happens to members' orders when their gateways are down for longer than the grace period is not decided | **New requirement**, the main decision made | The sequencer starts each session's cancel-on-disconnect grace period when its gateway is lost, whatever the cause, and cancels the session's day orders when it runs out ([gateway_ha.md](availability/gateway_ha.md)) | The grace period runs whatever the cause (decided 22 November 2026). Left: how the venue detects that no gateway has come back, whether it halts or alerts an operator, and scenarios. It depends on BUG-0046 |
 | [BUG-0089](bug_list.md#bug_0089): a member cannot ask the venue what it is holding | **New requirement** (R-0002) | There are no order status or mass status messages in the dictionary or the code | Order status and mass status requests, answered from the book |
 | [BUG-0046](bug_list.md#bug_0046): the binary gateway has no recovery of reports in flight | **New requirement** | The binary protocol has no resend | A recovery for the binary protocol, designed with the recovery service of BUG-0113 |
 | [BUG-0045](bug_list.md#bug_0045): a member has no defined way to discover that its primary gateway is down | **New requirement**, an open design question | Nothing in the member documentation says what a member should do | A statement of what a member should do, in the member documentation |
@@ -157,7 +158,7 @@ Eleven entries.
 | [BUG-0242](bug_list.md#bug_0242): the venue has no list of the instruments it trades | **New requirement**, needing its own design | Any Symbol up to `fix_order_limits::max_symbol_length`, 35 characters, is accepted; nothing reads SecurityID (48) or SecurityIDSource (22) | A design, discussed with Andrew first: where the list comes from, what identifies an instrument on an order, how the list changes during a day, what options on futures need, and whether one instrument can be halted |
 | [BUG-0265](bug_list.md#bug_0265): the Java test client's blotter does not show the trading-session status its member is told | **New requirement**, in a tool | The blotter in `java/fix-test-client` does not handle 35=h | Ask for the status at logon, act on every 35=h, and show the state prominently |
 
-**Recommended order in this area.** BUG-0279's command queue sized from settings and measured. BUG-0259 is small and can be done whenever `UnansweredCommands` is next touched. BUG-0281 waits on
+**Recommended order in this area.** BUG-0279's change to the FIX gateway, as decided. BUG-0259 is small and can be done whenever `UnansweredCommands` is next touched. BUG-0281 waits on
 Andrew's decision. BUG-0203 needs a stress test of many simultaneous logons. The new requirements are placed
 with the rest.
 
