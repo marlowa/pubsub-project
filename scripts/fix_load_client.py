@@ -185,6 +185,10 @@ class FixSession:
         wire = encode(fields)
         if getattr(self.options, "trace", False):
             print(f"  OUT {wire.decode('ascii').replace(SOH, '|')}")
+        # Blocking for the send: the polling read leaves the socket non-blocking, and then a send to a gateway that has
+        # stopped reading this member, because the venue is answering more slowly than orders are offered, fails with
+        # EAGAIN instead of waiting for the gateway to read again (docs/bug_list.md, BUG-0279).
+        self.socket.settimeout(None)
         self.socket.sendall(wire)
         self.last_sent = time.monotonic()
 

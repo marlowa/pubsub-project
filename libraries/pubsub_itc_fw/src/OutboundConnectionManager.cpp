@@ -906,6 +906,17 @@ bool OutboundConnectionManager::pause_reading(ConnectionID id) {
     return true;
 }
 
+bool OutboundConnectionManager::deliver_raw_bytes_again(ConnectionID id) {
+    const auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
+    if (it->second->protocol_handler() != nullptr) {
+        it->second->protocol_handler()->deliver_uncommitted_bytes_again();
+    }
+    return true;
+}
+
 bool OutboundConnectionManager::resume_reading(ConnectionID id) {
     const auto it = connections_.find(id);
     if (it == connections_.end()) {

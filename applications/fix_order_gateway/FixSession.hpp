@@ -101,7 +101,9 @@ struct FixSession {
      *
      * Cancel-on-disconnect reads this: a member that logs out has said what it wants, so
      * its resting orders are cancelled at once with no grace period. A socket that
-     * vanished has said nothing, and gets the full window to reconnect.
+     * vanished has said nothing, and gets the full window to reconnect. Set only for a
+     * session that was established when the Logout came, so it also says that the
+     * session must still be unannounced to the sequencers.
      */
     bool clean_logout{false};
 

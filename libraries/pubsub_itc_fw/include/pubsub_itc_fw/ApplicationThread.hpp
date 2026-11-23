@@ -487,6 +487,19 @@ class ApplicationThread {
     void commit_raw_bytes(const ConnectionID& conn_id, int64_t bytes_consumed);
 
     /**
+     * @brief Asks for a raw-bytes connection's bytes not yet committed to be delivered again, as one
+     *        RawSocketCommunication event like any other.
+     *
+     * For a thread that stopped handling a connection's bytes part-way and committed only what it
+     * handled: when it is ready to carry on, this hands it the rest, whether or not the peer has sent
+     * anything since. The event starts at the buffer's tail, so the thread must tell bytes it has seen
+     * before from new ones as it does for any event. Nothing is delivered if every byte was committed.
+     *
+     * @param[in] conn_id A raw-bytes connection belonging to this thread.
+     */
+    void deliver_raw_bytes_again(const ConnectionID& conn_id);
+
+    /**
      * @brief Stops the reactor reading from a connection until resume_reading() is called.
      *
      * For a thread that must stop taking work from a peer for a while: the reactor stops watching

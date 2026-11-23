@@ -238,6 +238,22 @@ TEST_F(UnansweredCommandsTest, ReadingStopsAtTheLimitAndStartsAgainAtHalfOfIt) {
     EXPECT_EQ(commands_->times_reading_stopped(), 1);
 }
 
+// The most commands unanswered at once is kept, and is above the limit by the commands kept after reading was told to
+// stop (docs/bug_list.md, BUG-0279).
+TEST_F(UnansweredCommandsTest, TheMostUnansweredAtOnceIsKept) {
+    make_with_limit(4);
+    EXPECT_EQ(commands_->most_unanswered(), 0U);
+    for (int index = 1; index <= 6; ++index) {
+        ASSERT_EQ(keep("order-" + std::to_string(index)), UnansweredCommands::Kept::kept);
+    }
+    EXPECT_EQ(commands_->most_unanswered(), 6U) << "two kept after reading was told to stop at four";
+    for (int index = 1; index <= 5; ++index) {
+        commands_->answered("MEMBER", "order-" + std::to_string(index));
+    }
+    EXPECT_EQ(commands_->unanswered(), 1U);
+    EXPECT_EQ(commands_->most_unanswered(), 6U) << "answers do not lower the most";
+}
+
 TEST_F(UnansweredCommandsTest, ASessionDroppedCountsAtOnce) {
     make_with_limit(4);
     ASSERT_EQ(keep("order-1", "OTHER"), UnansweredCommands::Kept::kept);

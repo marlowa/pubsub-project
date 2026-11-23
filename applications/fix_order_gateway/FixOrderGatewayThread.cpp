@@ -583,6 +583,10 @@ void FixOrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMess
                    conn_id.get_value(), config_.logon_timeout.count(), sessions_.size());
 
         it = sessions_.find(conn_id);
+        // No message is taken from a member's bytes while as many commands are unanswered as the limit allows, not
+        // only no further bytes read: what a read brought in at once would otherwise all be forwarded, so the commands
+        // waiting to be sent would have no bound (docs/bug_list.md, BUG-0279).
+        it->second.parser.stop_while(&members_paused_);
     }
 
     FixSession& session = it->second;
@@ -1485,11 +1489,12 @@ void FixOrderGatewayThread::handle_logout(FixSession& session, const ParsedFixMe
     FixMessage reply;
     reply.set(Tag::MsgType, MsgType::Logout);
     send_fix_to_session(session, reply);
+    // Read by note_session_ended and announce_session_unbound on the connection-lost path that follows: a member that
+    // logs out of an established session has said what it wants, so the sequencers are told the session ended and its
+    // orders are cancelled at once rather than waiting out a reconnect window it is not going to use. A Logout before
+    // the session was established leaves nothing to tell them of (docs/bug_list.md, BUG-0289).
+    session.clean_logout = session.session_established;
     session.session_established = false;
-    // Read by note_session_ended on the connection-lost path that follows: a member
-    // that logs out has said what it wants, so its orders are cancelled at once rather than
-    // waiting out a reconnect window it is not going to use.
-    session.clean_logout = true;
     disconnect_session(session, "client sent Logout");
 }
 
@@ -2922,9 +2927,13 @@ void FixOrderGatewayThread::set_member_reading(MemberReading reading) {
             pause_reading(connection);
         } else {
             resume_reading(connection);
+            // The bytes read and not yet taken while paused are handed back now, whether or not the member has sent
+            // anything since: a member waiting for answers to what it sent may send nothing more.
+            deliver_raw_bytes_again(connection);
         }
     }
-    report(pubsub_itc_fw::CommandReadingChanged{paused, static_cast<int64_t>(unanswered_commands_->unanswered())});
+    report(pubsub_itc_fw::CommandReadingChanged{paused, static_cast<int64_t>(unanswered_commands_->unanswered()),
+                                                static_cast<int64_t>(unanswered_commands_->most_unanswered())});
 }
 
 void FixOrderGatewayThread::on_connection_writable(pubsub_itc_fw::ConnectionID id) {
@@ -3296,8 +3305,9 @@ std::vector<pubsub_itc_fw_app::SeqNumRange> FixOrderGatewayThread::unreported_re
 void FixOrderGatewayThread::announce_session_unbound(const FixSession& session) {
     // Only a session that was announced needs unannouncing. An unauthenticated connection
     // that dies during logon never had an identity, so there is nothing to unbind and
-    // sending one would name an empty comp id.
-    if (!session.session_established || session.client_comp_id.empty()) {
+    // sending one would name an empty comp id. A session that logged out is no longer
+    // established, but was, and must be unannounced like any other (docs/bug_list.md, BUG-0289).
+    if ((!session.session_established && !session.clean_logout) || session.client_comp_id.empty()) {
         return;
     }
     pubsub_itc_fw_app::SessionUnbound unbound{};

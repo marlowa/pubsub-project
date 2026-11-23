@@ -646,6 +646,17 @@ bool InboundConnectionManager::pause_reading(ConnectionID id) {
     return true;
 }
 
+bool InboundConnectionManager::deliver_raw_bytes_again(ConnectionID id) {
+    const auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
+    if (it->second->handler() != nullptr) {
+        it->second->handler()->deliver_uncommitted_bytes_again();
+    }
+    return true;
+}
+
 bool InboundConnectionManager::resume_reading(ConnectionID id) {
     const auto it = connections_.find(id);
     if (it == connections_.end()) {

@@ -359,6 +359,16 @@ void ApplicationThread::commit_raw_bytes(const ConnectionID& conn_id, int64_t by
     reactor_.enqueue_control_command(command);
 }
 
+void ApplicationThread::deliver_raw_bytes_again(const ConnectionID& conn_id) {
+    if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
+        throw PreconditionAssertion(
+            fmt::format("ApplicationThread::deliver_raw_bytes_again: ConnectionID {} does not belong to this thread", conn_id.get_value()), __FILE__, __LINE__);
+    }
+    ReactorControlCommand command(ReactorControlCommand::CommandTag::DeliverRawBytesAgain);
+    command.connection_id_ = conn_id;
+    reactor_.enqueue_control_command(command);
+}
+
 void ApplicationThread::pause_reading(const ConnectionID& conn_id) {
     if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
         throw PreconditionAssertion(fmt::format("ApplicationThread::pause_reading: ConnectionID {} does not belong to this thread", conn_id.get_value()),

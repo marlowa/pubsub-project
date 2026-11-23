@@ -289,6 +289,14 @@ std::tuple<bool, std::string> TlsRawBytesProtocolHandler::start_outbound_handsha
     return drive_handshake();
 }
 
+void TlsRawBytesProtocolHandler::deliver_uncommitted_bytes_again() {
+    if (plaintext_buffer_->bytes_available() == 0) {
+        return;
+    }
+    target_thread_.enqueue(EventMessage::create_raw_socket_message(
+        connection_id_, plaintext_buffer_->read_ptr(), static_cast<int>(plaintext_buffer_->bytes_available()), plaintext_buffer_->tail(), plaintext_buffer_));
+}
+
 bool TlsRawBytesProtocolHandler::commit_bytes(int64_t bytes) {
     plaintext_buffer_->advance_tail(bytes);
 

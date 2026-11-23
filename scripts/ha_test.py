@@ -399,6 +399,16 @@ _LOAD_CANCELS_TIMEOUT = 120.0
 # How long the matching engine and the sequencer are then given to work through the cancels and the reports they
 # cause, before the Quill logs and the epochs are read. Each took under ten seconds when the leases were lost.
 _LOAD_CANCELS_SETTLE = 20.0
+# Scenario 130: the orders one member offers the FIX gateway as fast as its socket accepts them, in bursts of
+# _FIX_OVERLOAD_BURST, against a limit on unanswered commands of _FIX_OVERLOAD_LIMIT, so that each read brings in many
+# more orders than the limit allows.
+_FIX_OVERLOAD_ORDERS = 20_000
+_FIX_OVERLOAD_BURST = 2_000
+_FIX_OVERLOAD_LIMIT = 256
+# The time each sequencer spends on each report from the engine in scenario 130, so that the venue answers at most 5,000
+# orders a second, fewer than the load client sends: otherwise the venue answers as fast as the client sends, and the
+# gateway never reaches its limit.
+_FIX_OVERLOAD_REPORT_US = 200
 # How long the binary client waits for each reply before giving up and saying so.
 _BINARY_REPLY_TIMEOUT = 10
 # How long the binary gateway may take to connect to the leading sequencer after the venue starts.
@@ -1663,6 +1673,15 @@ class Scenario(NamedTuple):
     # The number of members each gateway serves at most ([members] most_connected), in place of its configuration's; 0
     # keeps the configuration's.
     gateway_members_most_connected: int = 0
+    # The FIX gateway's limit on unanswered commands ([unanswered_commands] limit), in place of its configuration's; 0
+    # keeps the configuration's. Lowered so that one member can reach it.
+    fix_gateway_unanswered_limit: int = 0
+    # When True, one member offers the FIX gateway _FIX_OVERLOAD_ORDERS orders as fast as its socket accepts them, with the
+    # gateway's limit on unanswered commands lowered to fix_gateway_unanswered_limit. Every order must be acknowledged,
+    # the gateway must stop reading at its limit, and the most commands unanswered at once must never exceed the limit:
+    # the gateway takes no further message from the bytes it has already read while it is at the limit, and takes them up
+    # again when reading resumes (docs/bug_list.md, BUG-0279). Decided from test events and the load client's own count.
+    assert_fix_gateway_bounded: bool = False
     # When True, with each gateway serving at most two members, two members log on to the FIX gateway and a third must be
     # refused with a Logout naming the limit; once one leaves, the third is let in. The same is then done on the binary
     # gateway, whose refusal is LogonOutcome NoRoomForMoreMembers (docs/bug_list.md, BUG-0279;
@@ -5944,6 +5963,36 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 130 -- the FIX gateway takes no more orders from what it has read while it is at its limit on unanswered commands.
+    #
+    # docs/bug_list.md, BUG-0279. Each read from a member's socket can bring in many orders at once. Stopping reading at
+    # the limit does not stop the gateway forwarding the orders already read, so what it has waiting to send would have no
+    # bound. With the limit lowered to 256, one member offers 20,000 orders in bursts of 2,000 as fast as its socket
+    # accepts them, while the sequencers spend 200 microseconds on each report, so that the venue answers more slowly than
+    # the member sends; its orders build up in its socket while reading is stopped, and each read brings in far more than
+    # the limit allows. The gateway must take no further message
+    # once the limit is reached, and take the rest up again when answers bring the number down to half, though the member
+    # may have sent nothing since. Every order must be acknowledged; the gateway must stop reading at its limit, so that
+    # the scenario tests it; and the most commands unanswered at once, which it reports in CommandReadingChanged, must not
+    # exceed the limit. The member then logs out, and the cancel of its resting orders must be written at once: before
+    # BUG-0289 a clean FIX Logout never reached the sequencers. Decided from test events and the load client's own count.
+    Scenario(
+        number=130,
+        short_name="fix_gateway_bounded_at_its_limit",
+        description="The FIX gateway takes no more orders from what it has read while it is at its limit on unanswered commands",
+        expected_outcome=(
+            "every order is acknowledged; the FIX gateway stops reading at its limit, and never has more commands unanswered "
+            "at once than the limit"
+        ),
+        skip_baseline_orders=True,
+        fix_gateway_unanswered_limit=_FIX_OVERLOAD_LIMIT,
+        sequencer_reads_reports_slowly_us=_FIX_OVERLOAD_REPORT_US,
+        assert_fix_gateway_bounded=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 119 -- a matching engine that stays connected and stops working, with no other engine to lead, halts the venue.
     #
     # docs/availability/a_matching_engine_that_stops_working.md, sections 3 and 6. The one matching engine stops applying
@@ -7507,6 +7556,9 @@ _STATEMENT_WRITE_DELAY_MS_NOW = 0
 # The number of members each gateway serves at most, in place of its configuration's, for the scenario being run; 0 keeps
 # the configuration's.
 _MEMBERS_MOST_CONNECTED_NOW = 0
+# The FIX gateway's limit on unanswered commands, in place of its configuration's, for the scenario being run; 0 keeps the
+# configuration's.
+_FIX_UNANSWERED_LIMIT_NOW = 0
 # Whether the sequencers' lease tick is an ordinary timer, for the scenario being run.
 _LEASE_TICK_NOT_CHECKED_NOW = False
 # Whether the sequencers send an engine they catch up every report, for the scenario being run.
@@ -7525,7 +7577,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
                             hold_sequencer_connections: bool = False, read_reports_slowly_us: int = 0, pace_reports: bool = True,
                             delay_statement_writes_ms: int = 0, stop_applying_after: str | None = None,
                             stop_sending_reports_after: str | None = None, members_most_connected: int = 0,
-                            lease_tick_not_checked_between_messages: bool = False, send_every_report: bool = False) -> Path:
+                            lease_tick_not_checked_between_messages: bool = False, send_every_report: bool = False,
+                            unanswered_limit: int = 0) -> Path:
     """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
     knows the component by, which its threads give when they introduce themselves. report_orders_of lists the comp ids
     whose orders a matching engine reports the outcome of. comp_ids_without_session lists the comp ids whose reports a
@@ -7539,7 +7592,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
     it serves at most ([members] most_connected), so that a scenario can reach the limit with a few members.
     lease_tick_not_checked_between_messages, for a sequencer, makes its lease tick an ordinary timer, whose event waits
     behind the messages queued ahead of it. send_every_report, for a sequencer, sets [catch_up] send_every_report, so that
-    it does not tell an engine it catches up the last command the WAL holds every report of.
+    it does not tell an engine it catches up the last command the WAL holds every report of. unanswered_limit, for a
+    gateway, replaces its limit on unanswered commands ([unanswered_commands] limit), so that one member can reach it.
     hold_sequencer_connections, for a matching engine, makes it hold each sequencer's order connection until it knows
     whether it leads or follows. read_reports_slowly_us, for a sequencer, is how long it spends on each report from an
     engine, with its connections for reports limited; pace_reports false, for a matching engine, stops it pausing the
@@ -7583,6 +7637,10 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
         text, replaced = re.subn(r"^most_connected\s*=\s*\d+$", f"most_connected = {members_most_connected}", text, flags=re.M)
         if replaced != 1:
             die(f"config_with_test_events: {config} has {replaced} most_connected settings, not one")
+    if unanswered_limit > 0:
+        text, replaced = re.subn(r"^limit\s*=\s*\d+$", f"limit = {unanswered_limit}", text, flags=re.M)
+        if replaced != 1:
+            die(f"config_with_test_events: {config} has {replaced} limit settings, not one")
     copy = config.with_name(f"{name}_test_events.toml")
     copy.write_text(text)
     return copy
@@ -7623,7 +7681,8 @@ def launch_app(name: str, bin_name: str, config: Path,
                                          _STOP_SENDING_NOW.get(name) if bin_name == "matching_engine" else None,
                                          _MEMBERS_MOST_CONNECTED_NOW if bin_name in ("fix_order_gateway", "binary_order_gateway") else 0,
                                          _LEASE_TICK_NOT_CHECKED_NOW if bin_name == "sequencer" else False,
-                                         _SEND_EVERY_REPORT_NOW if bin_name == "sequencer" else False)
+                                         _SEND_EVERY_REPORT_NOW if bin_name == "sequencer" else False,
+                                         _FIX_UNANSWERED_LIMIT_NOW if bin_name == "fix_order_gateway" else 0)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -9387,11 +9446,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
         global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW, _DIE_APPLYING_NOW  # pylint: disable=global-statement
         global _LEASE_LOST_AND_REGAINED_NOW, _STATEMENT_WRITE_DELAY_MS_NOW, _STOP_APPLYING_NOW, _STOP_SENDING_NOW  # pylint: disable=global-statement
         global _MEMBERS_MOST_CONNECTED_NOW, _LEASE_TICK_NOT_CHECKED_NOW, _SEND_EVERY_REPORT_NOW  # pylint: disable=global-statement
+        global _FIX_UNANSWERED_LIMIT_NOW  # pylint: disable=global-statement
         global _READ_REPORTS_SLOWLY_US_NOW  # pylint: disable=global-statement
         _INSTALL_PREFIX = prefix
         _ANNOUNCEMENT_DELAY_MS_NOW = scenario.delay_session_announcements_ms
         _STATEMENT_WRITE_DELAY_MS_NOW = scenario.delay_statement_writes_ms
         _MEMBERS_MOST_CONNECTED_NOW = scenario.gateway_members_most_connected
+        _FIX_UNANSWERED_LIMIT_NOW = scenario.fix_gateway_unanswered_limit
         _LEASE_TICK_NOT_CHECKED_NOW = scenario.sequencer_lease_tick_not_checked_between_messages
         _SEND_EVERY_REPORT_NOW = scenario.sequencer_sends_every_report
         # The engine that leads at the start is the one started first, which must lead before the other starts, and
@@ -11838,6 +11899,48 @@ def run_scenario(scenario: Scenario, args) -> bool:
                         die(f"overload: the cancels of the {_LOAD_SESSIONS} sessions' resting orders were not all {what} within {timeout:.0f}s")
                     _TEST_EVENTS.wait_for(predicate, timeout=0.5, since=len(_TEST_EVENTS.events))
             log(f"  the {_LOAD_SESSIONS} sessions' resting orders have been cancelled, so the WAL is complete -- OK")
+
+        if scenario.assert_fix_gateway_bounded:
+            sequencer_events = _TEST_EVENTS.modules["sequencer_test_events"]
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            events_from = _TEST_EVENTS.mark()
+            port = installed_toml_section_value(prefix / "etc" / "fix_order_gateway" / "fix_order_gateway_a.toml", "network", "listen_port")
+            bursts = _FIX_OVERLOAD_ORDERS // _FIX_OVERLOAD_BURST
+            log(f"  one member offers the FIX gateway {_FIX_OVERLOAD_ORDERS:,} orders in bursts of {_FIX_OVERLOAD_BURST:,}, as fast as its "
+                f"socket accepts them, against a limit of {_FIX_OVERLOAD_LIMIT} unanswered commands")
+            load = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parent / "fix_load_client.py"), "--host", "127.0.0.1", "--port", str(port),
+                 "--comp-id", FIX8_COMP_ID, "--orders-per-burst", str(_FIX_OVERLOAD_BURST), "--bursts", str(bursts),
+                 "--first-cl-ord-id", "4000000", "--drain", "30"],
+                capture_output=True, text=True, check=False, timeout=600)
+            if "RESULT         PASS" not in load.stdout:
+                die(f"FIX overload: the FIX load client did not have every order answered (exit {load.returncode}); taking up the "
+                    f"bytes left when reading stopped is what lets the rest be answered:\n{load.stdout[-3000:]}\n{load.stderr[-2000:]}")
+            throughput = next((line.strip() for line in load.stdout.splitlines() if line.strip().startswith("throughput")), "throughput not given")
+            log(f"  every one of the {_FIX_OVERLOAD_ORDERS:,} orders was answered -- OK ({throughput})")
+
+            if not _TEST_EVENTS.settle("fix_order_gateway_a"):
+                die(f"FIX overload: fix_order_gateway_a did not answer a checkpoint ({_TEST_EVENTS.failures[-1]})")
+            changes = [event.message for event in _TEST_EVENTS.events[events_from:]
+                       if message_of(_TEST_EVENTS.messages.CommandReadingChanged, "fix_order_gateway_a")(event)]
+            stops = [change for change in changes if change.stopped]
+            if not stops:
+                die("FIX overload: fix_order_gateway_a never stopped reading at its limit, so the scenario tested nothing")
+            most = max(change.most_unanswered for change in changes)
+            if most > _FIX_OVERLOAD_LIMIT:
+                die(f"FIX overload: fix_order_gateway_a had {most:,} commands unanswered at once, above its limit of {_FIX_OVERLOAD_LIMIT}: it "
+                    "went on taking orders from what it had read after reading stopped (BUG-0279)")
+            log(f"  fix_order_gateway_a stopped reading {len(stops)} time(s), and never had more than {most} commands unanswered at once, "
+                f"against its limit of {_FIX_OVERLOAD_LIMIT} -- OK")
+
+            # The member logged out at the end, so its resting orders are cancelled at once (docs/bug_list.md, BUG-0289). The
+            # scenario waits for that, which also makes the WAL the engines are run on afterwards complete.
+            for what, predicate in [("written", message_of(sequencer_events.SessionCancelWritten, "sequencer_primary")),
+                                    # Without engine high availability the one engine is named matching_engine.
+                                    ("carried out", message_of(engine_events.SessionOrdersCancelled, "matching_engine"))]:
+                if _TEST_EVENTS.wait_for(predicate, timeout=_LOAD_CANCELS_TIMEOUT, since=events_from) is None:
+                    die(f"FIX overload: the cancel of the member's resting orders was not {what} within {_LOAD_CANCELS_TIMEOUT:.0f}s")
+            log("  the member's resting orders have been cancelled, so the WAL is complete -- OK")
 
         # ── The venue follows the day's schedule (R-0167, R-0168) ──
         if scenario.end_of_day_leader_stops:

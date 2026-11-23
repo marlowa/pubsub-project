@@ -881,8 +881,14 @@ fix_capture_file                      = "fix_capture.bin"
 fix_capture_ring_bytes                = 67108864
 fix_limits_max_symbol_length          = 35
 fix_limits_max_order_qty_length       = 24
+# The command queue holds a send for each order to each of the two sequencers, and the execution reports and
+# session messages going back to the members. The gateway takes no further message from any member's bytes once
+# its unanswered commands reach their limit, 16,384, so the orders it can have taken and not yet sent are at most
+# that limit, however many members are connected: 32,768 sends; plus 8,192 for the execution reports and session
+# messages, as for the binary gateway, which no setting bounds (docs/bug_list.md, BUG-0279). Growing beyond 40,960
+# is logged at Error and counted (reactor_command_queue_pools_added).
 command_queue_pool_initial_slabs            = 1
-command_queue_pool_objects_per_slab         = 1000000
+command_queue_pool_objects_per_slab         = 40960
 event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 80000
 
@@ -918,8 +924,14 @@ fix_capture_file                      = "fix_capture.bin"
 fix_capture_ring_bytes                = 67108864
 fix_limits_max_symbol_length          = 35
 fix_limits_max_order_qty_length       = 24
+# The command queue holds a send for each order to each of the two sequencers, and the execution reports and
+# session messages going back to the members. The gateway takes no further message from any member's bytes once
+# its unanswered commands reach their limit, 16,384, so the orders it can have taken and not yet sent are at most
+# that limit, however many members are connected: 32,768 sends; plus 8,192 for the execution reports and session
+# messages, as for the binary gateway, which no setting bounds (docs/bug_list.md, BUG-0279). Growing beyond 40,960
+# is logged at Error and counted (reactor_command_queue_pools_added).
 command_queue_pool_initial_slabs            = 1
-command_queue_pool_objects_per_slab         = 1000000
+command_queue_pool_objects_per_slab         = 40960
 event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 80000
 

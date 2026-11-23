@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 288 |
-| Open | 47 (24 defects, 23 tasks) |
-| Closed | 241 |
-| Next id | BUG-0289 |
+| Bugs recorded | 289 |
+| Open | 46 (23 defects, 23 tasks) |
+| Closed | 243 |
+| Next id | BUG-0290 |
 
 ## Open bugs by severity
 
-2 high, 31 medium, 14 low.
+2 high, 30 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -41,7 +41,6 @@
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
-| [BUG-0279](#bug_0279) | medium | defect | A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent |
 | [BUG-0281](#bug_0281) | medium | task | What happens to members' orders when their gateways are down for longer than the grace period is not decided |
 | [BUG-0283](#bug_0283) | medium | task | Parts of the framework library that the venue runs every day are not reached by any test |
 | [BUG-0285](#bug_0285) | medium | defect | While the leader stops waiting for its follower, it sends execution reports whose records are not yet committed |
@@ -1959,79 +1958,6 @@ ring of entries, allocated at start, with the limit stated in bytes as well as i
 always released oldest first, because a report is kept until it has been sent on every connection there is, so the
 design must say what happens to a report sent on one connection and waiting for the other.
 
-### BUG-0279: A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent {#bug_0279}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-20 |
-| Recorded | 2026-11-20 |
-| How | Measuring, for [BUG-0127](#bug_0127), what the binary order gateway's command queue held at its deepest in `ha_test.py` scenario 116 |
-| Impact | The commands a gateway has waiting for its reactor to send have no bound that any setting states, so no size of its command queue can be shown sufficient; the queue grows during the day, which [BUG-0010](#bug_0010) rules out, and while it grows it takes a lock ([BUG-0127](#bug_0127)) |
-
-**What was measured.** With temporary counting in the reactor, on 20 November 2026, scenario 116, a load client
-offering 1,800,000 orders on four sessions as fast as the sockets accept them: at its deepest the binary order gateway's
-command queue held 64,920 commands, 29,992 orders for each sequencer and 4,936 execution reports for the four members.
-The queue is sized for 4,096, and grew by 15 pools.
-
-**Why.** Each order is two sends with high availability on, one to each sequencer. The gateway stops reading its
-members' connections once 16,384 commands are unanswered (`[unanswered_commands] limit`), and its configuration says
-that this bounds every queue between the gateway and the matching engine. It does not: the orders the reactor has
-already read from the members' connections when reading stops are still processed and forwarded, 13,608 of them here,
-about 3,400 for each member. Nothing limits how many those can be for the binary gateway's member connections, so the
-excess grows with the number of members connected.
-
-**What is wanted.** A bound on the orders a gateway can have read but not yet answered that holds whatever the number of
-members, so that its command queue can be sized from settings: for example a limit on the messages waiting from each
-member's connection ([bounding_messages_waiting.md](framework/bounding_messages_waiting.md)), or the limit applied to
-each order as the gateway's thread takes it rather than only to reading. The FIX order gateway forwards each order
-to both sequencers in the same way and is to be checked too.
-
-**Design.** Agreed in [bounding_what_a_gateway_has_read.md](availability/bounding_what_a_gateway_has_read.md): a limit on
-the messages waiting from each member's connection to the binary gateway, and a limit on the members each gateway
-instance serves, so that the gateway's command queue can be sized from settings.
-
-**Built, 21 November 2026.** The binary gateway limits the messages waiting from each member's connection to 64, and
-both gateways refuse a logon beyond `[members] most_connected` with a reason naming the limit (binary:
-`LogonOutcome::NoRoomForMoreMembers`; FIX: a Logout). Every environment sets the limit, 64 in development and 500
-elsewhere, and sizes the binary gateway's command queue from the settings: 49,152 nodes in development, 106,496
-elsewhere. In scenario 116 the binary gateway's command queue now adds no pool, where it added 15, and every order is
-acknowledged at the same rate; the refusals were shown by hand with the limit lowered in a deployed copy
-([bounding_what_a_gateway_has_read.md](availability/bounding_what_a_gateway_has_read.md), section 7).
-
-**The scenario, 22 November 2026.** `ha_test.py` scenario 127 starts each gateway serving at most two members. On the
-FIX gateway a third member is refused with a Logout naming the limit, and is let in once one of the first two has
-left; on the binary gateway the same, with `LogonOutcome::NoRoomForMoreMembers`. It decides from what each member is
-sent. With both gateways' limit checks taken out it fails on the FIX gateway; with only the binary gateway's taken out,
-it fails on the binary gateway.
-
-**The FIX gateway's command queue, measured 22 November 2026** with counting added to the reactor for the run and taken
-out after: `perf_run.py --gateway fix` with 8 fix8 sessions sending 400,000 orders as fast as they go filled it to at
-most 10,529 commands, of a pool of 1,000,000, and added no pool. That load is not an overload: the gateway never
-reached its limit of 16,384 unanswered commands, because each fix8 session waits for the answers to one burst of 1,000
-before sending the next, and the Python FIX load client is slower still. So it shows how deep the queue gets under the
-most these clients can offer, not how deep it can get.
-
-**Decided (22 November 2026): the FIX gateway is bounded as the binary gateway is.** Andrew, on the grounds that if
-the binary gateway is bounded the FIX gateway should be too. The FIX gateway's member connections carry raw bytes, and
-the framework already stops reading such a connection while its buffer is full, so what each member can have read but
-not handled is already bounded; what the FIX gateway lacks is its command queue sized from its settings, as the binary
-gateway's is, in place of a fixed 1,000,000.
-
-**How, decided 22 November 2026.** Each read from a member's socket reaches the gateway's thread as one message holding
-every byte the read took, and the thread parses and forwards every order in it; pausing at the limit on unanswered
-commands stops further reads but not that. With buffers of 16 MiB for each member, the gateway's settings bound what it
-can have read at about 5.2 million orders, ten times its command queue. So the thread stops taking orders out of a
-member's bytes while the limit is reached, commits only what it has handled, and leaves the rest in the member's
-buffer, which then fills and slows the member through TCP; once answers bring the count down to half, it carries on
-from where it stopped. The command queue's bound is then about twice the limit plus the reports, whatever the number
-of members. The framework already lets the thread commit part of what it was given; it does not yet hand back bytes
-left unconsumed when no new bytes arrive, which this needs. Chosen by Andrew over making each member's buffer small.
-
-**Left before this entry closes:** that change, with a way for the thread to be handed a member's unconsumed bytes
-again; the FIX gateway's command queue sized from its settings with the arithmetic beside it; and a scenario, made to
-fail on purpose, that overloads it.
-
 ### BUG-0280: Huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine {#bug_0280}
 
 | | |
@@ -2241,6 +2167,111 @@ catching up. A scenario that makes it ask during its catch-up every time, and fa
 and must be reported, not silent.
 
 ## Closed
+
+### BUG-0289: A FIX member's clean Logout never reached the sequencers, so its resting orders were not cancelled {#bug_0289}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-23 |
+| Recorded | 2026-11-23 |
+| How | `ha_test.py` scenario 130, written for [BUG-0279](#bug_0279): its member logs out at the end, and no cancel of its resting orders was written |
+| Impact | A FIX member that logged out cleanly kept its resting orders on the book for the rest of the day, though a clean Logout is to cancel them at once (`[cancel_on_disconnect]` in the FIX gateway's configuration); and the sequencers went on thinking the session bound to a connection that no longer existed |
+| Fixed | 2026-11-23 -- `handle_logout` records the clean Logout only for a session that was established, before clearing the flag, and `announce_session_unbound` unannounces a session that logged out cleanly though it is no longer established |
+
+**What happened.** `FixOrderGatewayThread::handle_logout` set `session_established` to false before the connection was
+closed. On the connection-lost path that followed, `announce_session_unbound` returned without sending `SessionUnbound`
+for any session not established, so the sequencers were never told the session ended, and wrote no `SessionEnded` and
+no cancel. A member whose connection simply dropped was not affected.
+
+**Shown, 23 November 2026.** Scenario 130 waits for the cancel of the member's orders after its Logout. Without the fix
+no cancel was written within 120 seconds; with it the cancel was written and the engine cancelled all 20,000 orders one
+second after the Logout.
+
+
+### BUG-0279: A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent {#bug_0279}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-20 |
+| Recorded | 2026-11-20 |
+| How | Measuring, for [BUG-0127](#bug_0127), what the binary order gateway's command queue held at its deepest in `ha_test.py` scenario 116 |
+| Impact | The commands a gateway has waiting for its reactor to send have no bound that any setting states, so no size of its command queue can be shown sufficient; the queue grows during the day, which [BUG-0010](#bug_0010) rules out, and while it grows it takes a lock ([BUG-0127](#bug_0127)) |
+| Fixed | 2026-11-23 -- the FIX gateway's parser takes no further message while the gateway's unanswered commands are at their limit (`FixParser::stop_while`), so the gateway commits only what it handled; when reading resumes it asks the framework for the rest (`ApplicationThread::deliver_raw_bytes_again`, new), whether or not the member has sent anything since. Its command queue is sized from its settings, 40,960 in every environment, with the arithmetic beside it. `ha_test.py` scenario 130 checks it |
+
+**What was measured.** With temporary counting in the reactor, on 20 November 2026, scenario 116, a load client
+offering 1,800,000 orders on four sessions as fast as the sockets accept them: at its deepest the binary order gateway's
+command queue held 64,920 commands, 29,992 orders for each sequencer and 4,936 execution reports for the four members.
+The queue is sized for 4,096, and grew by 15 pools.
+
+**Why.** Each order is two sends with high availability on, one to each sequencer. The gateway stops reading its
+members' connections once 16,384 commands are unanswered (`[unanswered_commands] limit`), and its configuration says
+that this bounds every queue between the gateway and the matching engine. It does not: the orders the reactor has
+already read from the members' connections when reading stops are still processed and forwarded, 13,608 of them here,
+about 3,400 for each member. Nothing limits how many those can be for the binary gateway's member connections, so the
+excess grows with the number of members connected.
+
+**What is wanted.** A bound on the orders a gateway can have read but not yet answered that holds whatever the number of
+members, so that its command queue can be sized from settings: for example a limit on the messages waiting from each
+member's connection ([bounding_messages_waiting.md](framework/bounding_messages_waiting.md)), or the limit applied to
+each order as the gateway's thread takes it rather than only to reading. The FIX order gateway forwards each order
+to both sequencers in the same way and is to be checked too.
+
+**Design.** Agreed in [bounding_what_a_gateway_has_read.md](availability/bounding_what_a_gateway_has_read.md): a limit on
+the messages waiting from each member's connection to the binary gateway, and a limit on the members each gateway
+instance serves, so that the gateway's command queue can be sized from settings.
+
+**Built, 21 November 2026.** The binary gateway limits the messages waiting from each member's connection to 64, and
+both gateways refuse a logon beyond `[members] most_connected` with a reason naming the limit (binary:
+`LogonOutcome::NoRoomForMoreMembers`; FIX: a Logout). Every environment sets the limit, 64 in development and 500
+elsewhere, and sizes the binary gateway's command queue from the settings: 49,152 nodes in development, 106,496
+elsewhere. In scenario 116 the binary gateway's command queue now adds no pool, where it added 15, and every order is
+acknowledged at the same rate; the refusals were shown by hand with the limit lowered in a deployed copy
+([bounding_what_a_gateway_has_read.md](availability/bounding_what_a_gateway_has_read.md), section 7).
+
+**The scenario, 22 November 2026.** `ha_test.py` scenario 127 starts each gateway serving at most two members. On the
+FIX gateway a third member is refused with a Logout naming the limit, and is let in once one of the first two has
+left; on the binary gateway the same, with `LogonOutcome::NoRoomForMoreMembers`. It decides from what each member is
+sent. With both gateways' limit checks taken out it fails on the FIX gateway; with only the binary gateway's taken out,
+it fails on the binary gateway.
+
+**The FIX gateway's command queue, measured 22 November 2026** with counting added to the reactor for the run and taken
+out after: `perf_run.py --gateway fix` with 8 fix8 sessions sending 400,000 orders as fast as they go filled it to at
+most 10,529 commands, of a pool of 1,000,000, and added no pool. That load is not an overload: the gateway never
+reached its limit of 16,384 unanswered commands, because each fix8 session waits for the answers to one burst of 1,000
+before sending the next, and the Python FIX load client is slower still. So it shows how deep the queue gets under the
+most these clients can offer, not how deep it can get.
+
+**Decided (22 November 2026): the FIX gateway is bounded as the binary gateway is.** Andrew, on the grounds that if
+the binary gateway is bounded the FIX gateway should be too. The FIX gateway's member connections carry raw bytes, and
+the framework already stops reading such a connection while its buffer is full, so what each member can have read but
+not handled is already bounded; what the FIX gateway lacks is its command queue sized from its settings, as the binary
+gateway's is, in place of a fixed 1,000,000.
+
+**How, decided 22 November 2026.** Each read from a member's socket reaches the gateway's thread as one message holding
+every byte the read took, and the thread parses and forwards every order in it; pausing at the limit on unanswered
+commands stops further reads but not that. With buffers of 16 MiB for each member, the gateway's settings bound what it
+can have read at about 5.2 million orders, ten times its command queue. So the thread stops taking orders out of a
+member's bytes while the limit is reached, commits only what it has handled, and leaves the rest in the member's
+buffer, which then fills and slows the member through TCP; once answers bring the count down to half, it carries on
+from where it stopped. The command queue's bound is then about twice the limit plus the reports, whatever the number
+of members. The framework already lets the thread commit part of what it was given; it does not yet hand back bytes
+left unconsumed when no new bytes arrive, which this needs. Chosen by Andrew over making each member's buffer small.
+
+**Done, 23 November 2026.** All three: the change, with the framework able to hand a thread a connection's
+uncommitted bytes again; the FIX gateway's command queue sized from its settings; and the scenario below.
+
+**Shown, 23 November 2026.** `ha_test.py` scenario 130 lowers the FIX gateway's limit to 256 unanswered commands, makes
+the sequencers spend 200 microseconds on each report so that the venue answers more slowly than the member sends, and
+has one member offer 20,000 orders as fast as its socket accepts them. With the gateway not giving its parsers the flag,
+it had 15,545 commands unanswered at once. With the change it stopped reading 155 times and never had more than 256, and
+every order was answered, which needs the bytes left in the member's buffer to be handed back each time reading
+resumed. The most unanswered at once is reported by both gateways in `CommandReadingChanged` (`most_unanswered`, new),
+from `UnansweredCommands::most_unanswered`. The framework's redelivery, the parser's stop and the highest count each have
+a unit test, made to fail on purpose. Running scenario 130 also found [BUG-0289](#bug_0289), and that the FIX load
+client's send failed instead of waiting when the gateway stopped reading it; both are fixed. The load client uses the
+gateway's plain listener, so the TLS handler's redelivery is covered by its sameness to the plain one, not by a test.
 
 ### BUG-0288: The leading sequencer sends every report for a session connected nowhere to the FIX gateway's first instance, though most answer no gateway's command {#bug_0288}
 

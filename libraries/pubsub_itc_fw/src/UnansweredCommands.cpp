@@ -3,6 +3,7 @@
 
 #include <pubsub_itc_fw/UnansweredCommands.hpp>
 
+#include <algorithm>
 #include <utility>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
@@ -71,6 +72,7 @@ size_t UnansweredCommands::drop_session(std::string_view comp_id) {
 
 void UnansweredCommands::stop_or_read_again() {
     const size_t unanswered = store_.unanswered();
+    most_unanswered_ = std::max(most_unanswered_, unanswered);
     if (!reading_stopped_ && unanswered >= limit_) {
         reading_stopped_ = true;
         ++times_reading_stopped_;

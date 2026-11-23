@@ -1722,7 +1722,8 @@ void BinaryOrderGatewayThread::set_member_reading(MemberReading reading) {
     }
     if (test_events_.has_value()) {
         test_events_->send_event(pubsub_itc_fw::CommandReadingChanged::message_pdu_id,
-                                 pubsub_itc_fw::CommandReadingChanged{paused, static_cast<int64_t>(unanswered_commands_->unanswered())});
+                                 pubsub_itc_fw::CommandReadingChanged{paused, static_cast<int64_t>(unanswered_commands_->unanswered()),
+                                                                      static_cast<int64_t>(unanswered_commands_->most_unanswered())});
     }
 }
 

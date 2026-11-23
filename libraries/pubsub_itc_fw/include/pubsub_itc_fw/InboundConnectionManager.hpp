@@ -261,6 +261,15 @@ class InboundConnectionManager {
     [[nodiscard]] bool resume_reading(ConnectionID id);
 
     /**
+     * @brief Posts again a raw-bytes connection's bytes not yet committed, as one event
+     *        (ProtocolHandlerInterface::deliver_uncommitted_bytes_again).
+     *
+     * @param[in] id The connection.
+     * @return false if this manager holds no such connection.
+     */
+    [[nodiscard]] bool deliver_raw_bytes_again(ConnectionID id);
+
+    /**
      * @brief Limits how many of a connection's messages may wait in its thread's queue
      *        (docs/framework/bounding_messages_waiting.md).
      * @param[in] id    The connection.

@@ -230,4 +230,6 @@ end
 message CommandReadingChanged (id=153, version=1)
     bool stopped      # true when reading stopped, false when it started again
     i64  unanswered   # how many commands were unanswered at that moment
+    i64  most_unanswered  # the most commands unanswered at once since the client started: above the limit only by
+                          # commands taken after reading stopped (docs/bug_list.md, BUG-0279)
 end

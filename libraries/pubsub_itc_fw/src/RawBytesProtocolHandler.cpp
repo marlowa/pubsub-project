@@ -73,6 +73,14 @@ std::tuple<bool, std::string, bool> RawBytesProtocolHandler::on_data_ready() {
     return {true, "", emit_pause};
 }
 
+void RawBytesProtocolHandler::deliver_uncommitted_bytes_again() {
+    if (buffer_->bytes_available() == 0) {
+        return;
+    }
+    target_thread_.enqueue(
+        EventMessage::create_raw_socket_message(connection_id_, buffer_->read_ptr(), static_cast<int>(buffer_->bytes_available()), buffer_->tail(), buffer_));
+}
+
 bool RawBytesProtocolHandler::commit_bytes(int64_t bytes) {
     buffer_->advance_tail(bytes);
 

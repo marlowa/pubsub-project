@@ -112,6 +112,37 @@ TEST_F(FixParserTest, DispatchesTwoBackToBackMessagesInOneWindow) {
     EXPECT_EQ(captured_[1].cl_ord_id, "ORDER-2");
 }
 
+// A parser told to stop while a flag is true takes no message after the one that set it, and returns only the bytes it
+// took; fed the rest once the flag is false, it takes the next (docs/bug_list.md, BUG-0279).
+TEST_F(FixParserTest, StopsAfterTheMessageThatSetsItsFlagAndCarriesOnOnceItIsCleared) {
+    bool stop = false;
+    FixParser parser(
+        logger_.logger,
+        [this, &stop](const ParsedFixMessage& message, const fix_codec::FixMessageReader&) {
+            captured_.push_back(Captured{std::string(message.msg_type()), std::string(message.get(tag::ClOrdID)), message.size()});
+            stop = true; // as the gateway's limit on unanswered commands does when this order reaches it
+        },
+        [this](const ParsedFixMessage&, const fix_codec::FixReject& reject) {
+            rejected_.push_back(Rejected{static_cast<int>(reject.reason), reject.ref_tag});
+        });
+    parser.stop_while(&stop);
+    const std::string first = build_message("ORDER-1");
+    const std::string wire = first + build_message("ORDER-2");
+
+    const size_t consumed = feed(parser, wire);
+    EXPECT_EQ(consumed, first.size()) << "only the first message's bytes are taken";
+    ASSERT_EQ(captured_.size(), 1U);
+    EXPECT_EQ(captured_[0].cl_ord_id, "ORDER-1");
+
+    EXPECT_EQ(feed(parser, wire.substr(consumed)), 0U) << "nothing is taken while the flag is still true";
+    EXPECT_EQ(captured_.size(), 1U);
+
+    stop = false;
+    EXPECT_EQ(feed(parser, wire.substr(consumed)), wire.size() - first.size());
+    ASSERT_EQ(captured_.size(), 2U);
+    EXPECT_EQ(captured_[1].cl_ord_id, "ORDER-2");
+}
+
 TEST_F(FixParserTest, LeavesAnIncompleteTrailingMessageUnconsumed) {
     FixParser parser = make_parser();
     const std::string wire = build_message("ORDER-1");

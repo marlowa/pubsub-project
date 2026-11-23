@@ -38,6 +38,9 @@ size_t FixParser::feed(const uint8_t* data, size_t available) {
     size_t cursor = 0;
 
     while (true) {
+        if (stop_ != nullptr && *stop_) {
+            break; // told to take no more for now; what is left stays in the ring
+        }
         const size_t start = window.find(begin_string_tag, cursor);
         if (start == std::string_view::npos) {
             break; // no further message start; retain any unconsumed bytes

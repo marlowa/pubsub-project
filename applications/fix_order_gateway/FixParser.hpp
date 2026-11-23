@@ -107,6 +107,20 @@ class FixParser {
     [[nodiscard]] size_t feed(const uint8_t* data, size_t available);
 
     /**
+     * @brief From now on, feed() takes no further message while @p stop is true.
+     *
+     * Checked before each message, including the first, so that a message which makes it true, by bringing the
+     * gateway's unanswered commands to their limit, is the last one taken: feed() returns the bytes of the messages
+     * taken so far, and the rest stay in the member's buffer, to be fed again once @p stop is false
+     * (docs/bug_list.md, BUG-0279). @p stop must outlive this parser; nullptr, the default, never stops it.
+     *
+     * @param[in] stop The flag to check.
+     */
+    void stop_while(const bool* stop) {
+        stop_ = stop;
+    }
+
+    /**
      * @brief No-op: the parser holds no internal state between calls.
      *
      * Provided for API symmetry with connection lifecycle callers that may
@@ -120,6 +134,8 @@ class FixParser {
     MessageCallback on_message_;
     RejectCallback on_reject_;
     pubsub_itc_fw::QuillLogger& logger_;
+    // While it points at true, no further message is taken (stop_while).
+    const bool* stop_{nullptr};
 };
 
 } // namespaces

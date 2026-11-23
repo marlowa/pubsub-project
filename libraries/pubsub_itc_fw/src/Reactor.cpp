@@ -1527,6 +1527,15 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                 break;
             }
 
+            case ReactorControlCommand::DeliverRawBytesAgain: {
+                const ConnectionID cid = command.connection_id_;
+                if (!inbound_manager_.deliver_raw_bytes_again(cid) && !outbound_manager_.deliver_raw_bytes_again(cid)) {
+                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: unknown connection id {} for DeliverRawBytesAgain",
+                               cid.get_value());
+                }
+                break;
+            }
+
             case ReactorControlCommand::PauseReading: {
                 const ConnectionID cid = command.connection_id_;
                 if (!inbound_manager_.pause_reading(cid) && !outbound_manager_.pause_reading(cid)) {

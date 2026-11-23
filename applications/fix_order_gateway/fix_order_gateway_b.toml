@@ -151,10 +151,10 @@ objects_per_slab = ${fix_order_gateway_b_event_queue_pool_objects_per_slab}
 initial_slabs    = ${fix_order_gateway_b_event_queue_pool_initial_slabs}
 
 [command_queue_pool]
-# One pool allocated at start, its size set in the environment file (1,000,000 in development). Unlike the binary
-# gateway's, it is not worked out from the gateway's limits, because the FIX gateway does not limit the messages
-# waiting from each member's connection (docs/bug_list.md, BUG-0279). Measured on 22 November 2026: 400,000 orders from
-# 8 fix8 sessions as fast as they send, which never reached the limit on unanswered commands, filled it to at most 10,529.
+# One pool allocated at start, its size worked out in the environment file from the gateway's limits (40,960). The
+# gateway takes no further message from any member's bytes while its unanswered commands are at their limit, below,
+# so what it can have waiting to send is bounded by that limit whatever the number of members (docs/bug_list.md,
+# BUG-0279).
 objects_per_slab = ${fix_order_gateway_b_command_queue_pool_objects_per_slab}
 initial_slabs    = ${fix_order_gateway_b_command_queue_pool_initial_slabs}
 
@@ -193,8 +193,9 @@ bytes    = 67108864
 # While this many are unanswered, the gateway stops reading its members' connections, so that orders
 # offered faster than the venue answers them wait in the members' own sockets, and reads them again
 # once answers bring the number down to half (docs/availability/a_gateway_limits_its_unanswered_commands.md).
-# The orders already read when reading stops are still sent, so this alone does not bound what the gateway
-# has waiting; with [members] below, and each member's raw buffer above, it does. Provisional: to be measured.
+# The gateway also takes no further message from the bytes already read, and takes them up again from where
+# it stopped once reading resumes, so this bounds what it can have waiting to send (docs/bug_list.md,
+# BUG-0279). Provisional: to be measured.
 limit    = 16384
 
 # The most member connections this instance serves at once, set by each environment: a logon beyond it is

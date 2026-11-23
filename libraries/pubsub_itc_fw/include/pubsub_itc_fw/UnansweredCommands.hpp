@@ -182,6 +182,12 @@ class UnansweredCommands {
         return reading_stopped_;
     }
 
+    /// The most commands unanswered at once since this object was created. It is above the limit only by commands the
+    /// client took after it was told to stop reading.
+    [[nodiscard]] size_t most_unanswered() const {
+        return most_unanswered_;
+    }
+
     /// How many times the client has been told to stop reading new commands, since this object was created.
     [[nodiscard]] int64_t times_reading_stopped() const {
         return times_reading_stopped_;
@@ -222,6 +228,7 @@ class UnansweredCommands {
     const size_t limit_;
     bool reading_stopped_{false};
     int64_t times_reading_stopped_{0};
+    size_t most_unanswered_{0};
 };
 
 } // namespaces

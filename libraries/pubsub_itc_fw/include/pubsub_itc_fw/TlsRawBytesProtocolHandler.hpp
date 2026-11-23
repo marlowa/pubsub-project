@@ -133,6 +133,9 @@ class TlsRawBytesProtocolHandler : public ProtocolHandlerInterface {
      */
     bool commit_bytes(int64_t bytes) override;
 
+    /// Posts a RawSocketCommunication event holding every byte not yet committed, if there are any.
+    void deliver_uncommitted_bytes_again() override;
+
     /**
      * @brief Returns true if reads are currently paused for backpressure.
      */

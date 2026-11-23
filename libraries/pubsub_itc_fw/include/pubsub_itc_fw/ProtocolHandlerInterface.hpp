@@ -170,6 +170,19 @@ class ProtocolHandlerInterface {
     }
 
     /**
+     * @brief Delivers again, as a RawSocketCommunication event, every byte received and not yet committed.
+     *
+     * A raw-bytes event is otherwise posted only when a read brings new bytes. An application thread that
+     * stops handling a connection's bytes part-way, and commits only what it handled, needs the rest again
+     * when it is ready to carry on, whether or not the peer has sent anything since. The event is the same
+     * as one a read posts: it starts at the buffer's tail and holds every byte not yet committed. Nothing is
+     * posted if there is none.
+     *
+     * Default implementation does nothing: a PDU connection keeps no uncommitted bytes.
+     */
+    virtual void deliver_uncommitted_bytes_again() {}
+
+    /**
      * @brief Returns true if the handler is currently asking the manager to
      *        keep EPOLLIN deregistered for backpressure.
      *

@@ -72,6 +72,8 @@ class ReactorControlCommand {
         SendRaw,                     ///< Request the reactor to send raw bytes on a raw-bytes connection.
         CommitRawBytes,              ///< Notify the reactor that the application has consumed N bytes from
                                      ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
+        DeliverRawBytesAgain,        ///< Post again, as one event, a raw-bytes connection's bytes not yet
+                                     ///< committed (connection_id_).
         RequestWritableNotification, ///< Request a one-shot ConnectionWritable event when the connection
                                      ///< can accept another outbound frame (connection_id_).
         PauseReading,                ///< Stop watching a connection for incoming data (connection_id_).
@@ -141,6 +143,9 @@ class ReactorControlCommand {
         }
         if (tag_ == CommitRawBytes) {
             return "CommitRawBytes";
+        }
+        if (tag_ == DeliverRawBytesAgain) {
+            return "DeliverRawBytesAgain";
         }
         if (tag_ == RequestWritableNotification) {
             return "RequestWritableNotification";

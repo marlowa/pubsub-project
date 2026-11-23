@@ -89,6 +89,13 @@
  *     peer-closed, calls teardown_connection while has_pending_send() is true,
  *     which calls RawBytesProtocolHandler::deallocate_pending_send() to free
  *     the in-flight slab chunk. Covers deallocate_pending_send().
+ *
+ *   BytesNotCommittedAreDeliveredAgainWhenAsked
+ *     The raw socket sends two framed messages in one write and then nothing
+ *     more. The listener handles only the first, commits it, and asks for its
+ *     bytes again with deliver_raw_bytes_again(). The second message must then
+ *     arrive, alone, in an event of its own, though no byte was read after the
+ *     first event. Covers RawBytesProtocolHandler::deliver_uncommitted_bytes_again().
  */
 
 #include <arpa/inet.h>
@@ -350,6 +357,61 @@ class RawListenerThread : public ApplicationThread {
   private:
     int bytes_decoded_{0};
     int last_available_{0};
+};
+
+// Listener thread: handles only the first message of what it is given, commits it, and asks for the rest again
+// (deliver_raw_bytes_again). Used by BytesNotCommittedAreDeliveredAgainWhenAsked.
+class StopsAfterOneMessageThread : public ApplicationThread {
+  public:
+    StopsAfterOneMessageThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "StopsAfterOneMessageThread", ThreadID{2}, make_queue_config(), make_allocator_config("StopsAfterOnePool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    std::atomic<bool> connection_established{false};
+    std::atomic<bool> second_event_seen{false};
+    std::atomic<bool> first_event_held_both{false};
+    std::string first_message;
+    std::string second_event_message;
+    int64_t second_event_size{0};
+    ConnectionID conn_id{};
+
+  protected:
+    void on_connection_established(ConnectionID id) override {
+        conn_id = id;
+        connection_established.store(true, std::memory_order_release);
+    }
+
+    void on_raw_socket_message(const EventMessage& message) override {
+        const uint8_t* data = message.payload();
+        const int available = message.payload_size();
+        if (data == nullptr || available <= 0) {
+            return;
+        }
+        ++events_;
+        if (events_ == 1) {
+            int64_t first_size = 0;
+            first_message = try_decode_framed(data, available, first_size);
+            if (first_size == 0) {
+                return;
+            }
+            int64_t second_size = 0;
+            static_cast<void>(try_decode_framed(data + first_size, available - static_cast<int>(first_size), second_size));
+            first_event_held_both.store(second_size > 0, std::memory_order_release);
+            commit_raw_bytes(conn_id, first_size);
+            deliver_raw_bytes_again(conn_id);
+            return;
+        }
+        int64_t consumed = 0;
+        second_event_message = try_decode_framed(data, available, consumed);
+        second_event_size = available;
+        commit_raw_bytes(conn_id, consumed);
+        second_event_seen.store(true, std::memory_order_release);
+    }
+
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
+
+  private:
+    int events_{0};
 };
 
 // Listener thread: decodes multiple messages from a burst.
@@ -1032,6 +1094,43 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, EverySendOfABurstToAFullSocketIsD
         ASSERT_EQ(number, static_cast<int64_t>(index / NumberedBurstListenerThread::message_size))
             << "message " << index / NumberedBurstListenerThread::message_size << " carries number " << number << ": the ones between are missing";
     }
+}
+
+// Test: a thread that stops part-way is handed the rest when it asks, with nothing new read.
+TEST_F(RawBytesProtocolHandlerIntegrationTest, BytesNotCommittedAreDeliveredAgainWhenAsked) {
+    const ServiceRegistry listener_registry;
+    auto listener_reactor = std::make_unique<Reactor>(make_reactor_config(), listener_registry, logger_->logger);
+    set_current_reactor(*listener_reactor);
+
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
+                                                raw_buffer_capacity);
+
+    auto listener_thread = ApplicationThread::create<StopsAfterOneMessageThread>(logger_->logger, *listener_reactor);
+    listener_reactor->register_thread(listener_thread);
+
+    std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
+    const uint16_t listen_port = start_listener_reactor(*listener_reactor);
+
+    const int sock_fd = connect_raw_socket(listen_port);
+    ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
+
+    const std::string first = make_framed(request_payload);
+    const std::string second = make_framed(response_payload);
+    const std::string both = first + second;
+    ASSERT_TRUE(send_all(sock_fd, both.data(), both.size())) << "Failed to send the two framed messages";
+
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->second_event_seen.load(std::memory_order_acquire); }))
+        << "Listener: the bytes it did not commit were not delivered again: " << last_wait_failure_description();
+    ASSERT_TRUE(listener_thread->first_event_held_both.load(std::memory_order_acquire))
+        << "The two messages arrived in separate reads, so a second event could have come from a read: the test proves nothing";
+    EXPECT_EQ(listener_thread->first_message, request_payload);
+    EXPECT_EQ(listener_thread->second_event_message, response_payload);
+    EXPECT_EQ(listener_thread->second_event_size, static_cast<int64_t>(second.size())) << "the event delivered again starts after what was committed";
+
+    ::close(sock_fd);
+    shutdown_and_join(*listener_reactor, listener_reactor_thread);
 }
 
 } // namespaces
