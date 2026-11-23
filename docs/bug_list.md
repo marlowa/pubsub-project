@@ -367,7 +367,17 @@ Nothing is lost because of this, and the end of day is not harmed by it: the ori
 and a repeat written after the end-of-day begin is still written before the end-of-day end, which the follower
 sequencer has to confirm before the leading sequencer shuts down.
 
-**What is wanted.** A decision on which of these to do, and then a scenario in `ha_test.py` that restarts an engine
+**Decided (22 November 2026): the leading sequencer discards a report the WAL already holds,** if a flood is still
+found. The identity cannot be the report's engine epoch and number: the engine numbers each report as it sends it,
+under its current leadership epoch, from 1, so a restarted engine's repeats carry new numbers. It is the command that
+produced the report, compared with the last command up to which the WAL holds every report, which the sequencer
+already works out (`FullyReportedThrough`). That same point is what the sequencer tells an engine whose catch-up it
+starts serving, and the engine sends no report up to it ([far_back_catch_up.md](availability/far_back_catch_up.md),
+section 2), which was built after this entry was written and may already prevent the flood. So the first step is the
+scenario below, run as the code is now: if a restarted engine writes no repeats beyond those the rule allows, the
+entry closes with the scenario as its proof.
+
+**What was asked before the decision.** A decision on which of these to do, and then a scenario in `ha_test.py` that restarts an engine
 after more than 50,000 reports and fails before the change:
 
 - the leading sequencer discards a report from an engine whose epoch and number the WAL already holds, so that the

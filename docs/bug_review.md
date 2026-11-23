@@ -14,7 +14,7 @@ There are 48 open entries, and each is judged below. The figures:
 |---|---|
 | Breach of a named principle | 8: BUG-0113 (what is left of it), BUG-0285, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
 | Partly done | 5: BUG-0121, BUG-0134, BUG-0279, BUG-0283, BUG-0069 |
-| Decision needed from Andrew | 1: BUG-0229; and BUG-0250 needs one choice made between two remedies |
+| Decision needed from Andrew | 1: BUG-0229 |
 | Decided, and waiting to be built | 1: BUG-0048, with the recovery service of BUG-0113 |
 | New requirement | 13 |
 | Investigation | 10 |
@@ -36,9 +36,9 @@ There are 48 open entries, and each is judged below. The figures:
 3. **How long the leading sequencer holds a report for a session connected nowhere** while a configured gateway
    instance has not announced its sessions (BUG-0258). **Decided on 22 November 2026: only a session still open is
    held;** an ended session's reports go to the WAL and reach the member when it logs on again.
-4. **Which of two remedies for repeated reports from a restarting engine** (BUG-0250): the leading sequencer
-   discards a report whose engine epoch and number the WAL already holds, or the engine is told whether it leads
-   before its replay produces any reports.
+4. **Which of two remedies for repeated reports from a restarting engine** (BUG-0250). **Decided on 22 November 2026:
+   the leading sequencer discards a report the WAL already holds,** identified by the command that produced it; first
+   a scenario measures whether a flood remains.
 
 **The order of work**, agreed with Andrew on 22 November 2026:
 
@@ -47,7 +47,7 @@ There are 48 open entries, and each is judged below. The figures:
    to BUG-0242; BUG-0262 is closed; BUG-0279's scenario is written, and Andrew decided on 22 November 2026 that the
    FIX gateway is bounded as the binary one is, by its thread stopping taking orders from a member's bytes while the
    limit on unanswered commands is reached.
-3. The four decisions above, each put to Andrew with its background and options.
+3. The four decisions above, each put to Andrew with its background and options. All four decided on 22 November 2026.
 4. The breaches that need a short design first: BUG-0127 and BUG-0128 (the framework's two locks), BUG-0119
    (shutdown), BUG-0273 (the matching engine's held reports) and BUG-0131's remainder.
 5. BUG-0121 (start-up time), then the recovery service with BUG-0048 and BUG-0113, the largest piece of work.
@@ -134,12 +134,12 @@ Four entries.
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
 | [BUG-0285](bug_list.md#bug_0285): while the leader stops waiting for its follower, it sends execution reports whose records are not yet committed | **Breach** of V2 | `forward_report_from_engine` sends a report at once whenever `waits_for_follower()` is false, but `ReplicatedWal::advance_commit` commits nothing while the leader runs without its follower until a voter confirms that the follower may not lead; in that time, about a second, the follower could still be elected without the record | A report released only once its record is committed, as a change of phase is (BUG-0249), with the delay to members' reports at those moments stated and agreed; a scenario that slows a voter's statement write so the time is seconds long |
-| [BUG-0250](bug_list.md#bug_0250): a restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member | **Breach** of V2, and a choice between two remedies | A restarting engine holds at most 50,000 reports (`max_held_reports`, `EngineReportSending.hpp`) and sends the rest as possible repeats. `SequencerThread::forward_report_from_engine` reads each report's engine epoch and number but does not check whether the WAL already holds it, so every repeat is written, replicated, published and sent | Andrew's choice of remedy (Summary, decision 4), then a scenario that restarts an engine after more than 50,000 reports and fails before the change |
+| [BUG-0250](bug_list.md#bug_0250): a restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member | **Breach** of V2, and a choice between two remedies | A restarting engine holds at most 50,000 reports (`max_held_reports`, `EngineReportSending.hpp`) and sends the rest as possible repeats. `SequencerThread::forward_report_from_engine` reads each report's engine epoch and number but does not check whether the WAL already holds it, so every repeat is written, replicated, published and sent | Decided 22 November 2026: the sequencer discards a report the WAL already holds, identified by the command that produced it, if a flood remains. First, the scenario that restarts an engine after more than 50,000 reports, run as the code is now: the catch-up rule of far_back_catch_up.md may already prevent it |
 | [BUG-0258](bug_list.md#bug_0258): while a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere | **Defect**, decided | `ReportForwarding` holds such reports in room for 32,768 (`held_report_capacity_reports`), drops the oldest when it is full, and holds back the position it says it has forwarded through, so the follower sequencer discards none of its kept copies. A venue runs this way whenever a standby gateway instance is stopped | Decided 22 November 2026: only a session still open is held; an ended session's reports go to the WAL and reach the member as undelivered reports. Left: that change, and scenario 115 run with it |
 | [BUG-0131](bug_list.md#bug_0131): the leading sequencer allocates from the heap for every order, and copies waiting reports | **Breach** of F5 and F6 | The waiting reports are in a ring allocated once, each report in the slab chunk it arrived in, and reports are routed by the session they carry, so no map of orders grows through the day | Lock the record of command identifiers into memory at start ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)), and compare a latency run with the last |
 
 **Recommended order in this area.** BUG-0285 first, reusing the rule and the scenario that closed BUG-0249. Then
-BUG-0258's change, as decided, and BUG-0250's decision and change. BUG-0131's remainder through its agreed design.
+BUG-0258's change, as decided, and BUG-0250's scenario, then its change if one is still needed. BUG-0131's remainder through its agreed design.
 
 ## 5. The gateways and what a member sees
 
