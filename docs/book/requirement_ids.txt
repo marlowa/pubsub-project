@@ -180,3 +180,10 @@ R-0174     active    2026-11-14  Every logged-on member is told of each change
 R-0175     active    2026-11-14  Components that only need to know take the changes from a topic
 R-0176     active    2026-11-15  Only a client with the operator's certificate can make an operator's request
 R-0177     active    2026-11-15  A component refuses to start on a file from another trading day
+R-0178     active    2026-11-22  The complete instrument snapshot is applied before pre-open
+R-0179     active    2026-11-22  An order names a tradable instrument by its identifier
+R-0180     active    2026-11-22  An instrument update changes exactly one valid record
+R-0181     active    2026-11-22  Accepted updates take effect in WAL order
+R-0182     active    2026-11-22  Removing an instrument cancels only its resting orders
+R-0183     active    2026-11-22  An instrument expires after trading on its expiry date
+R-0184     active    2026-11-22  The rate of instrument updates is configurable and bounded

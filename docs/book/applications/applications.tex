@@ -14,7 +14,9 @@ them from defects.
 
 This chapter currently describes the matching engine publisher and specifies
 the order gateways' cancellation requirements and limits on how quickly a
-member may send orders. Requirements for the other applications have not yet
+member may send orders. It also states the required behavior for instrument
+reference data and the Instrument Reference-data Editor (IRE). That behavior
+is not yet implemented. Requirements for the other applications have not yet
 been added.
 
 \section{The order gateways}
@@ -195,6 +197,158 @@ session separately. The design is in \texttt{docs/venue/gateway\_throttles.md}.
   would cancel the member's resting orders under cancel-on-disconnect, which is a far
   heavier consequence than sending too fast.}
   \covers{ha_test:56}
+\end{requirement}
+
+\section{Instrument reference data and intraday changes}
+\label{sec:instrument_reference_data}
+
+The venue has a list of the instruments for which it accepts orders. Each
+trading day starts from a complete snapshot of that list for the day's
+\texttt{business\_date}. An instrument record has an \texttt{instrument\_id},
+a \texttt{symbol} for reference, and an \texttt{expiry\_date}. Prices are not
+part of the current reference data; they may be added when the venue uses
+price bands.
+
+The IRE maintains the reference data and sends changes to the sequencer. It
+does not send them directly to a matching engine. The sequencer places
+accepted changes in the WAL, which establishes their order relative to orders.
+The matching engines apply the same changes from that log. The IRE identifies
+each request with an \texttt{externalSystemRequestId}, which the answer echoes.
+Its \texttt{event\_created\_ts} is the time the IRE created the request; the
+position in the WAL, not this timestamp, determines when an accepted change
+takes effect.
+
+\subsection{The day's instrument list}
+
+The snapshot for a trading day is the complete set of instruments tradable
+that day. It replaces the preceding day's set: an instrument absent from the
+new snapshot is no longer tradable. The snapshot's business date is the date
+of the run. Every instrument has one venue-assigned identifier; members name
+the instrument in an order by that \texttt{instrument\_id}, not by its symbol.
+
+\begin{requirement}{R-0178}{The complete instrument snapshot is applied before pre-open}
+  For each trading day, the venue shall apply the complete instrument snapshot
+  for that day's business date before entering \texttt{pre\_open}. Every
+  matching engine shall apply the same snapshot in WAL order. The venue shall
+  validate the whole snapshot before applying it, and shall not enter
+  \texttt{pre\_open} on a partial, invalid, or wrong-date snapshot. An
+  instrument whose expiry date is before the business date shall not be in the
+  tradable list.
+  \rationale{A member must not be able to place an order against a list that
+  is only partly loaded, and a promoted matching engine must make the same
+  decision as the one it replaces. The business date is part of the day's
+  input, rather than a value each process derives from its own clock.}
+  \uncovered{no scenario loads, rejects, or interrupts an instrument snapshot}
+\end{requirement}
+
+\begin{requirement}{R-0179}{An order names a tradable instrument by its identifier}
+  A member's order shall name its instrument by \texttt{instrument\_id}.
+  The venue shall refuse an order whose identifier is not in the current
+  trading day's tradable list, and shall tell the member why it was refused.
+  The venue shall accept an instrument through its \texttt{expiry\_date},
+  inclusive, and shall not accept it on a later trading day.
+  \rationale{A venue-assigned identifier names one instrument without relying
+  on a free-text symbol. The snapshot defines which instruments are available
+  today; expiry bounds the last day on which the instrument may be traded.}
+  \uncovered{no scenario places an order by instrument identifier, names an
+  unknown instrument, or crosses an instrument's expiry date}
+\end{requirement}
+
+\subsection{Changes made during the trading day}
+
+The IRE can add an instrument, replace an instrument's attributes, or remove
+an instrument. A replacement is a whole record: it carries the existing
+\texttt{instrument\_id}, \texttt{symbol}, and \texttt{expiry\_date}. The
+identifier selects the record and cannot itself be changed by replacement.
+Prices are not included. A replacement whose expiry date is before the
+current trading day is refused.
+
+\begin{requirement}{R-0180}{An instrument update changes exactly one valid record}
+  The venue shall reject an attempt to add an \texttt{instrument\_id} already
+  in the tradable list, or to replace or remove an identifier that is not in
+  that list. It shall reject an add or replacement that omits the symbol or
+  expiry date, or gives an expiry date before the current trading day. A
+  replacement shall not change the identifier and shall replace the whole
+  record for that identifier. A rejected update shall leave the list unchanged.
+  \rationale{A failed edit must not leave the IRE and venue showing different
+  data. Requiring a complete replacement record gives every omitted field one
+  meaning: the request is invalid, not an instruction to retain an old value.
+  A removed identifier may be added again, so an operator can recover from a
+  mistaken removal.}
+  \uncovered{no scenario checks invalid add, replace, or remove requests, or
+  verifies that a removed identifier can be added again}
+\end{requirement}
+
+\begin{requirement}{R-0181}{Accepted updates take effect in WAL order}
+  The IRE shall send instrument updates to the sequencer. The sequencer shall
+  place each accepted update in the WAL, in the same order as member orders.
+  The update shall affect orders sequenced after it, and shall not change
+  the instrument state used for orders sequenced before it. Matching engines
+  shall apply the updates from the WAL. Each request shall carry an
+  \texttt{externalSystemRequestId} and an \texttt{event\_created\_ts} set when
+  the IRE creates it; every answer shall echo the request identifier. The
+  timestamp shall not determine the update's order or effective time. The IRE
+  shall receive a successful answer only
+  after the leading matching engine has applied the update; for a removal,
+  this is after the resulting cancellation reports have been recorded for
+  normal delivery. The IRE shall not communicate directly with a matching
+  engine.
+  \rationale{The WAL gives every order and reference-data change one shared
+  order. An answer after application tells the IRE when the change is active.
+  Waiting for member connections to receive reports would make completion
+  depend on whether every member is connected; the reports instead use the
+  venue's normal delivery and recovery behavior. The follower catches up from
+  the WAL before it may lead.}
+  \uncovered{no scenario orders around an update or checks the IRE's answer
+  against WAL commitment, engine application, and report delivery}
+\end{requirement}
+
+\begin{requirement}{R-0182}{Removing an instrument cancels only its resting orders}
+  When a removal takes effect, the venue shall refuse new orders for that
+  instrument, cancel every order still resting in it, and record a cancellation
+  report for each order for delivery to its member. It shall then remove the
+  instrument from the tradable list. It shall not halt the instrument or the
+  market, and shall continue accepting orders in every other tradable
+  instrument.
+  \rationale{Removing one instrument from the available set is not a response
+  to a market fault. Orders resting in the removed instrument must not remain
+  live, while unrelated instruments and their members must not be affected.}
+  \uncovered{no scenario removes one instrument with resting orders while
+  checking its cancellations and continued trading in another instrument}
+\end{requirement}
+
+\begin{requirement}{R-0183}{An instrument expires after trading on its expiry date}
+  An instrument shall remain tradable throughout its expiry date. At the
+  close of that trading day it shall no longer be tradable, and shall not be
+  present in the next trading day's tradable list. The venue's ordinary close
+  shall cancel its resting orders under \reqref{R-0172}; expiry shall not cause
+  a separate market halt.
+  \rationale{The expiry date is inclusive. The venue already cancels every
+  resting order at the daily close, so expiry changes the instrument set for
+  the next day rather than creating a second close procedure.}
+  \uncovered{no scenario trades an instrument on its expiry date and verifies
+  it is unavailable on the following trading day}
+\end{requirement}
+
+\subsection{Rate limiting IRE updates}
+
+The IRE's update rate is limited to protect the sequencer and matching
+engines. The limit is configurable. Updates above it are refused rather than
+held for later or combined with another update.
+
+\begin{requirement}{R-0184}{The rate of instrument updates is configurable and bounded}
+  The venue shall limit the number of instrument update requests it accepts
+  from the IRE in any one-second period, using a configurable limit. An update
+  over the limit shall be refused immediately, shall not change the instrument
+  list, and shall receive a rate-limit answer correlated by
+  \texttt{externalSystemRequestId}. The venue shall not queue the refused
+  update or combine it with another update.
+  \rationale{An update stream must not consume an unbounded share of the
+  sequencer's capacity or leave the IRE unable to tell when a delayed update
+  will take effect. Refusing an update explicitly lets an operator decide
+  whether and when to retry it.}
+  \uncovered{no scenario exceeds a configured IRE update limit and checks the
+  refusal, unchanged state, and continued order processing}
 \end{requirement}
 
 \section{The matching engine publisher}
