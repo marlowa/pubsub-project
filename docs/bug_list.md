@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 286 |
+| Bugs recorded | 287 |
 | Open | 48 (25 defects, 23 tasks) |
-| Closed | 238 |
-| Next id | BUG-0287 |
+| Closed | 239 |
+| Next id | BUG-0288 |
 
 ## Open bugs by severity
 
-2 high, 31 medium, 15 low.
+2 high, 32 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -46,13 +46,13 @@
 | [BUG-0281](#bug_0281) | medium | task | What happens to members' orders when their gateways are down for longer than the grace period is not decided |
 | [BUG-0283](#bug_0283) | medium | task | Parts of the framework library that the venue runs every day are not reached by any test |
 | [BUG-0285](#bug_0285) | medium | defect | While the leader stops waiting for its follower, it sends execution reports whose records are not yet committed |
+| [BUG-0287](#bug_0287) | medium | defect | A matching engine that asks to lead while it is still catching up has been seen never to finish catching up or to follow |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
 | [BUG-0216](#bug_0216) | low | task | Sending every committed record to the follower matching engine adds about 2 microseconds at the median, and 11 to 16 at the 99th percentile, to the order path |
 | [BUG-0223](#bug_0223) | low | defect | The fix8 test client sometimes logs on and exits without sending its orders, failing a scenario |
 | [BUG-0245](#bug_0245) | low | defect | In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it |
-| [BUG-0250](#bug_0250) | low | defect | A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member |
 | [BUG-0253](#bug_0253) | low | defect | `binary_load_client --help` prints its help and then tries to connect to the venue |
 | [BUG-0259](#bug_0259) | low | defect | Under a steady flood of commands, the warning that a gateway's store of unanswered commands is full is logged once for every command refused |
 | [BUG-0261](#bug_0261) | low | defect | The check that runs the matching engines on a copy of the WAL starts a sequencer that can write new commands into that copy while the engines are run on it |
@@ -335,57 +335,6 @@ run. Run with `--help` and no venue, the program prints the usage text and then 
 **What is wanted.** `--help` prints the usage text and exits with status 0, doing nothing else, and an unrecognised
 option prints it and exits with a non-zero status, as today. The rule for Python scripts in
 `coding-rules-for-ai-chatbots.txt` does not cover C++ programs, so nothing checks this.
-
-### BUG-0250: A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member {#bug_0250}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-11-16 |
-| Recorded | 2026-11-16 |
-| How | Reading the matching engine and the sequencer while confirming that no execution report can reach the sequencer after the end-of-day begin ([start_and_end_of_day.md](venue/start_and_end_of_day.md), section 4.2, decision 3) |
-| Impact | A matching engine restarted late in a busy day can write millions of repeat reports into the WAL and send them to members |
-
-**What happens.** A matching engine that restarts replays the day's WAL to rebuild its book, and the replay produces
-again every report the engine produced the first time. Until the engine is told whether it leads, it holds those
-reports, so that it can send them if it takes the lead and discard them if it follows. It holds at most 50,000
-(`max_held_reports` in `applications/matching_engine/EngineReportSending.hpp`). Beyond that it sends each report to
-the sequencers as it is produced, marked as a possible repeat, and says so once at Warning. The comment there gives
-the reason: a member that already holds a report can discard a repeat, and a member that never receives one cannot
-recover it.
-
-The leading sequencer writes every report it receives from either engine into the WAL, and sends it to the member's
-gateway (`SequencerThread::forward_report_from_engine`). It does not check whether the WAL already holds the report,
-although each report carries the engine's epoch and its number among the engine's reports, which is enough to tell.
-
-The venue is planned for 50 million orders a day, and every order produces at least one report. An engine restarted
-late in such a day could therefore send the sequencer tens of millions of repeats beyond the first 50,000. Each would
-be written into the WAL, copied to the follower sequencer and to both publishers, published on the
-`execution_reports` topic, and sent to a member, all while the venue is trading.
-
-Nothing is lost because of this, and the end of day is not harmed by it: the original of every report is in the WAL,
-and a repeat written after the end-of-day begin is still written before the end-of-day end, which the follower
-sequencer has to confirm before the leading sequencer shuts down.
-
-**Decided (22 November 2026): the leading sequencer discards a report the WAL already holds,** if a flood is still
-found. The identity cannot be the report's engine epoch and number: the engine numbers each report as it sends it,
-under its current leadership epoch, from 1, so a restarted engine's repeats carry new numbers. It is the command that
-produced the report, compared with the last command up to which the WAL holds every report, which the sequencer
-already works out (`FullyReportedThrough`). That same point is what the sequencer tells an engine whose catch-up it
-starts serving, and the engine sends no report up to it ([far_back_catch_up.md](availability/far_back_catch_up.md),
-section 2), which was built after this entry was written and may already prevent the flood. So the first step is the
-scenario below, run as the code is now: if a restarted engine writes no repeats beyond those the rule allows, the
-entry closes with the scenario as its proof.
-
-**What was asked before the decision.** A decision on which of these to do, and then a scenario in `ha_test.py` that restarts an engine
-after more than 50,000 reports and fails before the change:
-
-- the leading sequencer discards a report from an engine whose epoch and number the WAL already holds, so that the
-  limit in the engine stops mattering for the WAL and for members;
-- or the engine is told whether it leads before its replay produces any reports, so that it never needs to hold them.
-
-**Principles.** V2 of [design_principles.md](design_principles.md), the log is the record: the record of the day
-should say what happened once, not as many times as an engine restarted.
 
 ### BUG-0245: In one trading-day run the 99th percentile of the first two phases was higher than in the runs before it {#bug_0245}
 
@@ -2302,7 +2251,95 @@ which checks that no report reaches a member before its record is committed, fai
 
 **Principles.** V2 of [design_principles.md](design_principles.md), the log is the record.
 
+### BUG-0287: A matching engine that asks to lead while it is still catching up has been seen never to finish catching up or to follow {#bug_0287}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-23 |
+| Recorded | 2026-11-23 |
+| How | Writing `ha_test.py` scenario 129 for [BUG-0250](#bug_0250): the following engine restarted with its open-order region damaged and its record of lease promises deleted, after 120,000 reports |
+| Impact | A standby matching engine that does not finish catching up and does not follow cannot take over, and nothing says so (principle V11); not yet known whether it recovers after longer |
+
+**What was seen.** In two runs of scenario 129 on 23 November 2026, with 120,000 reports in the WAL, the following
+engine was killed, its open-order region damaged so that it must replay the day, and its record of lease promises
+deleted so that it waits one lease period before voting or asking to lead. Each time it began catching up at once
+(`EngineCatchUp: ... has started to answer catch-up request 1`), applied the load session's cancel of 60,000 orders,
+and after its lease period asked to lead at epoch 2. It found that its peer held its own vote and the arbiter's, and
+gave up asking for a lease period. It then logged nothing more about its catch-up and never followed, until the
+scenario stopped it 11 seconds later. In two earlier runs with the same restart it finished catching up in about 2.5
+seconds, before its lease period ended, and followed.
+
+**What is wanted.** Reproduced with a longer wait, to learn whether the engine ever finishes; then the cause found from
+its catch-up and its lease state together, since what differs between the runs is whether it asked to lead while still
+catching up. A scenario that makes it ask during its catch-up every time, and fails before the fix.
+
+**Principles.** V11 of [design_principles.md](design_principles.md): a fault in the standby is a loss of resilience,
+and must be reported, not silent.
+
 ## Closed
+
+### BUG-0250: A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member {#bug_0250}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-16 |
+| Recorded | 2026-11-16 |
+| How | Reading the matching engine and the sequencer while confirming that no execution report can reach the sequencer after the end-of-day begin ([start_and_end_of_day.md](venue/start_and_end_of_day.md), section 4.2, decision 3) |
+| Impact | A matching engine restarted late in a busy day can write millions of repeat reports into the WAL and send them to members |
+| Fixed | 2026-11-23 -- no change needed: the flood the entry describes does not happen. Measured with `ha_test.py` scenario 129, which restarts the following engine after more reports than it holds, its open-order region damaged so that it replays the day, and its lease promises forgotten so that it does so before it knows its role. Repeats a restarting engine sends do not enter the WAL: with 120,000 reports in the day and every one sent again, the leading sequencer's WAL held exactly the 120,000 originals, none marked as a possible repeat. And the leading sequencer tells an engine it catches up the last command the WAL holds every report of, and the engine sends no report up to it: replaying the day, it sent none again, where with that switched off (`[catch_up] send_every_report`) it sent all 120,000. The most it can send again is the reports of the one command it was applying when it stopped. Closed by Andrew's decision |
+
+**What happens.** A matching engine that restarts replays the day's WAL to rebuild its book, and the replay produces
+again every report the engine produced the first time. Until the engine is told whether it leads, it holds those
+reports, so that it can send them if it takes the lead and discard them if it follows. It holds at most 50,000
+(`max_held_reports` in `applications/matching_engine/EngineReportSending.hpp`). Beyond that it sends each report to
+the sequencers as it is produced, marked as a possible repeat, and says so once at Warning. The comment there gives
+the reason: a member that already holds a report can discard a repeat, and a member that never receives one cannot
+recover it.
+
+The leading sequencer writes every report it receives from either engine into the WAL, and sends it to the member's
+gateway (`SequencerThread::forward_report_from_engine`). It does not check whether the WAL already holds the report,
+although each report carries the engine's epoch and its number among the engine's reports, which is enough to tell.
+
+The venue is planned for 50 million orders a day, and every order produces at least one report. An engine restarted
+late in such a day could therefore send the sequencer tens of millions of repeats beyond the first 50,000. Each would
+be written into the WAL, copied to the follower sequencer and to both publishers, published on the
+`execution_reports` topic, and sent to a member, all while the venue is trading.
+
+Nothing is lost because of this, and the end of day is not harmed by it: the original of every report is in the WAL,
+and a repeat written after the end-of-day begin is still written before the end-of-day end, which the follower
+sequencer has to confirm before the leading sequencer shuts down.
+
+**Decided (22 November 2026), and found unnecessary on 23 November: the leading sequencer was to discard a report the
+WAL already holds,** if a flood was still found. The identity cannot be the report's engine epoch and number: the engine numbers each report as it sends it,
+under its current leadership epoch, from 1, so a restarted engine's repeats carry new numbers. It is the command that
+produced the report, compared with the last command up to which the WAL holds every report, which the sequencer
+already works out (`FullyReportedThrough`). That same point is what the sequencer tells an engine whose catch-up it
+starts serving, and the engine sends no report up to it ([far_back_catch_up.md](availability/far_back_catch_up.md),
+section 2), which was built after this entry was written and may already prevent the flood. So the first step is the
+scenario below, run as the code is now: if a restarted engine writes no repeats beyond those the rule allows, the
+entry closes with the scenario as its proof.
+
+**What was asked before the decision.** A decision on which of these to do, and then a scenario in `ha_test.py` that restarts an engine
+after more than 50,000 reports and fails before the change:
+
+- the leading sequencer discards a report from an engine whose epoch and number the WAL already holds, so that the
+  limit in the engine stops mattering for the WAL and for members;
+- or the engine is told whether it leads before its replay produces any reports, so that it never needs to hold them.
+
+**Principles.** V2 of [design_principles.md](design_principles.md), the log is the record: the record of the day
+should say what happened once, not as many times as an engine restarted.
+
+**What was found, 23 November 2026.** The entry's account is wrong in two respects. The leading sequencer does not write
+the reports a catching-up engine sends again into the WAL; they go towards the members' gateways, marked as possible
+repeats. And an engine catching up is told the last command up to which the WAL holds every report, and sends none of
+those reports again ([far_back_catch_up.md](availability/far_back_catch_up.md), section 2), which was built after this
+entry was written. Scenario 129 checks, as the code is now, that a restarted engine replaying the day sends almost none
+of its reports again. Whether its deliberate failure, with every report sent, is reached depends on whether the engine
+has learnt it follows before its replay produces reports: once it knows, it keeps its reports for comparison and sends
+none, with the rule or without it. The run in which it had not learnt it is the one quoted above; making that
+deterministic belongs with [BUG-0287](#bug_0287), which concerns the same start-up.
 
 ### BUG-0262: A leading sequencer whose lease has run out by its own clock goes on acting as leader until it has worked through its backlog {#bug_0262}
 

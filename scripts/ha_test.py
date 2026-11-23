@@ -1676,6 +1676,15 @@ class Scenario(NamedTuple):
     # When True, the sequencers' lease tick is an ordinary timer, not one checked by the clock before each message
     # ([test_events] lease_tick_not_checked_between_messages); set only to show that a check fails without it.
     sequencer_lease_tick_not_checked_between_messages: bool = False
+    # When True, after more reports than a matching engine holds while it learns its role, the following engine is
+    # restarted and replays the day, and must send almost none of its reports again: the leading sequencer tells it the
+    # last command the WAL holds every report of, and it sends no report up to that command
+    # (docs/bug_list.md, BUG-0250; docs/availability/far_back_catch_up.md, section 2). Decided from the engine's test
+    # events, and from the WAL's files for how many reports it holds.
+    assert_restarted_engine_repeats_few_reports: bool = False
+    # When True, the sequencers set [catch_up] send_every_report, and so tell an engine they catch up nothing of what the
+    # WAL holds; set only to show that a check fails without that.
+    sequencer_sends_every_report: bool = False
     # When True, the binary load client offers 1.8 million orders on four sessions as fast as the sockets accept them,
     # faster than the venue processes them. Each gateway stops reading its members while 16,384 of its commands are
     # unanswered, so no queue in the order path grows without limit. No sequencer or matching engine may lose its lease
@@ -5908,6 +5917,32 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 129 -- a restarted matching engine sends almost none of the day's reports again.
+    #
+    # docs/bug_list.md, BUG-0250. The binary load client sends 30,000 orders on one session and leaves; its orders are
+    # cancelled when its grace period runs out, so the WAL holds about 60,000 reports, more than the 50,000 a matching
+    # engine holds while it learns its role. The following engine is then restarted with its open-order region damaged,
+    # so that it replays the day, and knowing nothing of its lease promises, so that it does so before it knows its role. The leading sequencer tells it the
+    # last command the WAL holds every report of, and it sends no report up to that command, so it must send almost
+    # none of its reports again; it says how many in its CatchUp test event. With the sequencers sending every report,
+    # it fails.
+    Scenario(
+        number=129,
+        short_name="restarted_engine_repeats_few_reports",
+        description="A matching engine restarted after 60,000 reports, replaying the day, sends almost none of them again",
+        expected_outcome=(
+            "after the load and its cancels, the following matching engine is restarted and replays the day, and sends fewer "
+            "than 1,000 of its reports again"
+        ),
+        me_ha=True,
+        binary_gateway=True,
+        skip_baseline_orders=True,
+        assert_restarted_engine_repeats_few_reports=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 119 -- a matching engine that stays connected and stops working, with no other engine to lead, halts the venue.
     #
     # docs/availability/a_matching_engine_that_stops_working.md, sections 3 and 6. The one matching engine stops applying
@@ -7442,6 +7477,16 @@ _HALT_TOLD_NOT_BEFORE_SECONDS = 1.0
 # The exit status of a component that refuses to start (Reactor::stopped_for_a_failure_status, and the 1 a component's
 # main returns for a refusal before its reactor runs).
 _REFUSED_TO_START_STATUS = 1
+# Scenario 129: bursts of _LOAD_ORDERS_PER_BURST orders the load client sends on its one session, so that with their
+# cancels the WAL holds about twice as many reports, more than an engine holds, and few enough that the restarted engine
+# replays them within the one lease period it waits before asking to lead (docs/bug_list.md, BUG-0287); the most reports a matching engine holds while it learns its role
+# (max_held_reports in applications/matching_engine/EngineReportSending.hpp), which the WAL must hold more than; and the
+# most of them the leading sequencer may write again once the engine is restarted. The engine sends again only reports of
+# commands after the last one the WAL holds every report of, which once the load has been answered is none, or the few of
+# a command under way.
+_REPEATS_LOAD_BURSTS = 30
+_ENGINE_HELD_REPORTS_AT_MOST = 50_000
+_RESTART_REPEATS_AT_MOST = 1_000
 _STOP_APPLYING_CL_ORD_ID = "stop-applying-1"
 _STOP_APPLYING_NOW: dict[str, str] = {}
 # The same for the engine that is to stop sending its reports ([test_events] stop_sending_reports_after_cl_ord_id).
@@ -7463,6 +7508,8 @@ _STATEMENT_WRITE_DELAY_MS_NOW = 0
 _MEMBERS_MOST_CONNECTED_NOW = 0
 # Whether the sequencers' lease tick is an ordinary timer, for the scenario being run.
 _LEASE_TICK_NOT_CHECKED_NOW = False
+# Whether the sequencers send an engine they catch up every report, for the scenario being run.
+_SEND_EVERY_REPORT_NOW = False
 # How long the sequencer in the engines-on-the-WAL check spends on each report, in microseconds: slower than an engine
 # applying a catch-up sends them, so that every run of the check depends on the engine's pacing.
 _ENGINES_ON_THE_WAL_READ_REPORTS_SLOWLY_US = 20
@@ -7477,7 +7524,7 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
                             hold_sequencer_connections: bool = False, read_reports_slowly_us: int = 0, pace_reports: bool = True,
                             delay_statement_writes_ms: int = 0, stop_applying_after: str | None = None,
                             stop_sending_reports_after: str | None = None, members_most_connected: int = 0,
-                            lease_tick_not_checked_between_messages: bool = False) -> Path:
+                            lease_tick_not_checked_between_messages: bool = False, send_every_report: bool = False) -> Path:
     """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
     knows the component by, which its threads give when they introduce themselves. report_orders_of lists the comp ids
     whose orders a matching engine reports the outcome of. comp_ids_without_session lists the comp ids whose reports a
@@ -7490,7 +7537,8 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
     every report while it goes on applying commands. members_most_connected, for a gateway, replaces the number of members
     it serves at most ([members] most_connected), so that a scenario can reach the limit with a few members.
     lease_tick_not_checked_between_messages, for a sequencer, makes its lease tick an ordinary timer, whose event waits
-    behind the messages queued ahead of it.
+    behind the messages queued ahead of it. send_every_report, for a sequencer, sets [catch_up] send_every_report, so that
+    it does not tell an engine it catches up the last command the WAL holds every report of.
     hold_sequencer_connections, for a matching engine, makes it hold each sequencer's order connection until it knows
     whether it leads or follows. read_reports_slowly_us, for a sequencer, is how long it spends on each report from an
     engine, with its connections for reports limited; pace_reports false, for a matching engine, stops it pausing the
@@ -7526,6 +7574,10 @@ def config_with_test_events(config: Path, listener: TestEventListener, name: str
         text += f"delay_statement_writes_ms = {delay_statement_writes_ms}\n"
     if lease_tick_not_checked_between_messages:
         text += "lease_tick_not_checked_between_messages = true\n"
+    if send_every_report:
+        text, replaced = re.subn(r"^send_every_report\s*=\s*(false|true)$", "send_every_report = true", text, flags=re.M)
+        if replaced != 1:
+            die(f"config_with_test_events: {config} has {replaced} send_every_report settings, not one")
     if members_most_connected > 0:
         text, replaced = re.subn(r"^most_connected\s*=\s*\d+$", f"most_connected = {members_most_connected}", text, flags=re.M)
         if replaced != 1:
@@ -7569,7 +7621,8 @@ def launch_app(name: str, bin_name: str, config: Path,
                                          _STOP_APPLYING_NOW.get(name) if bin_name == "matching_engine" else None,
                                          _STOP_SENDING_NOW.get(name) if bin_name == "matching_engine" else None,
                                          _MEMBERS_MOST_CONNECTED_NOW if bin_name in ("fix_order_gateway", "binary_order_gateway") else 0,
-                                         _LEASE_TICK_NOT_CHECKED_NOW if bin_name == "sequencer" else False)
+                                         _LEASE_TICK_NOT_CHECKED_NOW if bin_name == "sequencer" else False,
+                                         _SEND_EVERY_REPORT_NOW if bin_name == "sequencer" else False)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -9319,13 +9372,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Phase 1: start all processes ──────────────────────────────────────
         global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX, _ANNOUNCEMENT_DELAY_MS_NOW, _DIE_APPLYING_NOW  # pylint: disable=global-statement
         global _LEASE_LOST_AND_REGAINED_NOW, _STATEMENT_WRITE_DELAY_MS_NOW, _STOP_APPLYING_NOW, _STOP_SENDING_NOW  # pylint: disable=global-statement
-        global _MEMBERS_MOST_CONNECTED_NOW, _LEASE_TICK_NOT_CHECKED_NOW  # pylint: disable=global-statement
+        global _MEMBERS_MOST_CONNECTED_NOW, _LEASE_TICK_NOT_CHECKED_NOW, _SEND_EVERY_REPORT_NOW  # pylint: disable=global-statement
         global _READ_REPORTS_SLOWLY_US_NOW  # pylint: disable=global-statement
         _INSTALL_PREFIX = prefix
         _ANNOUNCEMENT_DELAY_MS_NOW = scenario.delay_session_announcements_ms
         _STATEMENT_WRITE_DELAY_MS_NOW = scenario.delay_statement_writes_ms
         _MEMBERS_MOST_CONNECTED_NOW = scenario.gateway_members_most_connected
         _LEASE_TICK_NOT_CHECKED_NOW = scenario.sequencer_lease_tick_not_checked_between_messages
+        _SEND_EVERY_REPORT_NOW = scenario.sequencer_sends_every_report
         # The engine that leads at the start is the one started first, which must lead before the other starts, and
         # otherwise the primary.
         dies_first = engine_first or "matching_engine_primary"
@@ -9983,6 +10037,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 and not scenario.assert_follower_finds_reports_differ and not scenario.assert_crashing_command_voided
                 and not scenario.assert_engine_death_not_voided and not scenario.assert_lease_lost_and_regained
                 and not scenario.assert_engine_stops_working and not scenario.assert_following_engine_stop_signalled
+                and not scenario.assert_restarted_engine_repeats_few_reports
                 and not scenario.end_of_day_leader_stops):
             # The promotion has already been observed by the time this runs, so this confirms an absence: the engine is
             # asked for a checkpoint first, and a cancel it sent cannot still be on its way.
@@ -13482,6 +13537,85 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     f"when frozen, and discarded them on rejoining ({beyond}): it acted on orders after its lease had run out by its own "
                     "clock (BUG-0262)")
             log(f"  let run, sequencer_primary stepped down and wrote nothing beyond record {last_held} -- OK")
+
+        # ── A restarted matching engine sends almost none of the day's reports again ──
+        if scenario.assert_restarted_engine_repeats_few_reports:
+            log("=== A matching engine restarted after more reports than it holds sends almost none of them again ===")
+            leader_follower, _ = operator_requests.load_messages(prefix)
+            port = binary_gateway_listen_port(prefix)
+            orders = _REPEATS_LOAD_BURSTS * _LOAD_ORDERS_PER_BURST
+            log(f"  the binary load client sends {orders:,} orders on one session, then leaves")
+            load = subprocess.run(
+                [str(bin_dir / "binary_load_client"), "--host", "127.0.0.1", "--port", str(port), "--comp-id-prefix", _LOAD_COMP_ID_PREFIX,
+                 "--password", _LOAD_PASSWORD, "--sessions", "1", "--orders-per-burst", str(_LOAD_ORDERS_PER_BURST),
+                 "--bursts", str(_REPEATS_LOAD_BURSTS), "--rate", str(_LOAD_RATE_PER_SESSION), "--first-cl-ord-id", "3000000"],
+                capture_output=True, text=True, check=False, timeout=900)
+            if load.returncode != 0 or "RESULT         PASS" not in load.stdout:
+                die(f"repeats after a restart: the binary load client did not have every order acknowledged (exit {load.returncode}):\n"
+                    f"{load.stdout[-3000:]}\n{load.stderr[-2000:]}")
+            sequencer_events = _TEST_EVENTS.modules["sequencer_test_events"]
+            cancel_from = _TEST_EVENTS.mark()
+            if _TEST_EVENTS.wait_for(message_of(sequencer_events.SessionCancelWritten, "sequencer_primary"), timeout=_LOAD_CANCELS_TIMEOUT,
+                                     since=cancel_from) is None:
+                die("repeats after a restart: the leading sequencer never wrote the cancel of the load session's orders")
+            primary_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
+            leader_wal = primary_config.parent / installed_toml_section_value(primary_config, "wal", "directory")
+
+            def reports_in_wal() -> tuple[int, int]:
+                total = repeats = 0
+                for _, _, contents in wal_entries(leader_wal):
+                    record = leader_follower.WalRecord.decode(contents)[0]
+                    if record.pdu_id == _EXECUTION_REPORT_PDU_ID:
+                        total += 1
+                        repeats += 1 if record.poss_resend else 0
+                return total, repeats
+
+            # The cancels' reports go on being written for a while; the count is taken once it has stopped growing.
+            settled = (-1, -1)
+            deadline = time.monotonic() + _LOAD_CANCELS_TIMEOUT
+            while time.monotonic() < deadline:
+                now = reports_in_wal()
+                if now == settled:
+                    break
+                settled = now
+                time.sleep(3.0)
+            reports_before, repeats_before = settled
+            if reports_before <= _ENGINE_HELD_REPORTS_AT_MOST:
+                die(f"repeats after a restart: the WAL holds {reports_before:,} reports, no more than the {_ENGINE_HELD_REPORTS_AT_MOST:,} an engine "
+                    "holds while it learns its role, so the scenario would test nothing")
+            log(f"  the leading sequencer's WAL holds {reports_before:,} reports, {repeats_before:,} of them marked as possible repeats")
+            follower = resolved(ENGINE_FOLLOWING_AT_START)
+            restarted_from = _TEST_EVENTS.mark()
+            # Restarted with its open-order region damaged, so that it rebuilds its book by replaying the day from the WAL;
+            # with a region it can read it would catch up only the records after the region's position, which here are
+            # none, and produce no reports. And restarted knowing nothing of its lease promises, as after a reboot, so that
+            # for one lease period it agrees nobody leads and does not know its role, and must hold or send the reports its
+            # replay produces. That is the case BUG-0250 describes. Its replay must finish within that lease period: an engine
+            # that asks to lead while still catching up has been seen not to finish (docs/bug_list.md, BUG-0287).
+            do_restart_step(
+                RestartStep(proc_name=follower, ready_log_name=f"{follower}.log", ready=expect_engine_reachable(follower), ready_timeout=_ME_READY_TIMEOUT,
+                            resets_me_counter=False, settle_secs=_ME_SETTLE, forget_lease_promises=True,
+                            damage_region=f"{follower}_open_orders.region"),
+                proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix),
+            )
+            if not await_expectation(expect_follows(follower), _ME_READY_TIMEOUT, restarted_from)[0]:
+                die(f"repeats after a restart: {follower}, restarted, never followed")
+            # The engine says, when its catch-up has completed, how many reports it sent members again, each marked as a
+            # possible repeat, and how many it left out because the WAL already holds them. A report sent again during a
+            # catch-up goes towards the member's gateway, not into the WAL.
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            completed = _TEST_EVENTS.wait_for(message_of(engine_events.CatchUp, follower, stage=engine_events.CatchUpStage.Completed),
+                                              timeout=_ME_READY_TIMEOUT, since=restarted_from)
+            if completed is None:
+                die(f"repeats after a restart: {follower} never said its catch-up had completed")
+            sent_again = completed.message.reports_sent
+            left_out = completed.message.reports_left_out
+            if sent_again >= _RESTART_REPEATS_AT_MOST:
+                die(f"repeats after a restart: {follower}, restarted and replaying the day, sent {sent_again:,} of its reports again, of the "
+                    f"{reports_before:,} the WAL held, and left out {left_out:,}; fewer than {_RESTART_REPEATS_AT_MOST:,} were allowed, since the "
+                    "engine is told the last command the WAL holds every report of and sends no report up to it (BUG-0250)")
+            log(f"  {follower} restarted, replayed the day and followed; it sent {sent_again:,} of its reports again and left out {left_out:,} "
+                "that the WAL already holds -- OK")
 
         # ── Stalled follower ──────────────────────────────────────────────────
         if scenario.assert_stalled_follower_runs_alone:

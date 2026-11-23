@@ -12,12 +12,12 @@ There are 48 open entries, and each is judged below. The figures:
 
 | Judgement | Entries |
 |---|---|
-| Breach of a named principle | 8: BUG-0113 (what is left of it), BUG-0285, BUG-0250, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
+| Breach of a named principle | 7: BUG-0113 (what is left of it), BUG-0285, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
 | Partly done | 5: BUG-0121, BUG-0134, BUG-0279, BUG-0283, BUG-0069 |
 | Decision needed from Andrew | 1: BUG-0229 |
 | Decided, and waiting to be built | 1: BUG-0048, with the recovery service of BUG-0113 |
 | New requirement | 13 |
-| Investigation | 10 |
+| Investigation | 11 |
 | Test or tool | 8 |
 | Defect that breaks no principle | 2: BUG-0259, BUG-0258 |
 
@@ -36,9 +36,8 @@ There are 48 open entries, and each is judged below. The figures:
 3. **How long the leading sequencer holds a report for a session connected nowhere** while a configured gateway
    instance has not announced its sessions (BUG-0258). **Decided on 22 November 2026: only a session still open is
    held;** an ended session's reports go to the WAL and reach the member when it logs on again.
-4. **Which of two remedies for repeated reports from a restarting engine** (BUG-0250). **Decided on 22 November 2026:
-   the leading sequencer discards a report the WAL already holds,** identified by the command that produced it; first
-   a scenario measures whether a flood remains.
+4. **Which of two remedies for repeated reports from a restarting engine** (BUG-0250). Decided on 22 November 2026,
+   and found unnecessary on 23 November: the flood does not happen, and BUG-0250 is closed.
 
 **The order of work**, agreed with Andrew on 22 November 2026:
 
@@ -116,30 +115,31 @@ BUG-0175 and BUG-0264 are investigations to schedule.
 
 ## 3. The matching engine
 
-Three entries.
-
-| Entry | Judgement | Evidence | What is left |
-|---|---|---|---|
-| [BUG-0273](bug_list.md#bug_0273): a matching engine holding reports allocates from the heap for each | **Breach** of F5 | `EngineReportSending` keeps held reports in a `std::vector<HeldEngineReport>`, and each `HeldEngineReport` holds its bytes in a `std::vector<uint8_t>`; `discard` gives the memory back with `shrink_to_fit`. Reports are held only outside ordinary running: with no connection to either sequencer, or while the engine catches up before it knows whether it serves | Storage of a fixed size allocated at start, as for the reports kept while following ([BUG-0271](bug_list.md#bug_0271)); the design must say what happens to a report sent on one connection and waiting for the other, since held reports are not always released oldest first |
-| [BUG-0209](bug_list.md#bug_0209): no scenario reaches the halt when an engine cannot account for the venue's orders | **Test or tool** | The case cannot be reached while the WAL keeps the whole day: a follower that loses its first segment file is sent every record again, and an instance running alone refuses a WAL with a gap | A scenario, possible once BUG-0048 is done |
-| [BUG-0216](bug_list.md#bug_0216): sending every record to the follower engine adds about 2 microseconds at the median | **Investigation** | One run of each build was compared; the spread between runs of one build is not measured | Measure that spread first; only then decide whether to reduce it |
-
-**Recommended order in this area.** BUG-0273's design, with the framework's breaches in section 6. BUG-0209
-waits on BUG-0048. BUG-0216 is a measurement.
-
-## 4. The sequencer's handling of reports
-
 Four entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
+| [BUG-0287](bug_list.md#bug_0287): a matching engine that asks to lead while it is still catching up has been seen never to finish catching up or to follow | **Investigation**; a **Breach** of V11 if confirmed | In two runs of scenario 129 the following engine, restarted with its region damaged and its lease promises forgotten, began replaying the day, asked to lead after its lease period, gave up when its peer held the votes, and then logged nothing more about its catch-up and never followed in the 11 seconds left; in two other runs it finished within its lease period and followed | Reproduce with a longer wait, find the cause from its catch-up and lease state together, and a scenario that makes it ask to lead during its catch-up every time |
+| [BUG-0273](bug_list.md#bug_0273): a matching engine holding reports allocates from the heap for each | **Breach** of F5 | `EngineReportSending` keeps held reports in a `std::vector<HeldEngineReport>`, and each `HeldEngineReport` holds its bytes in a `std::vector<uint8_t>`; `discard` gives the memory back with `shrink_to_fit`. Reports are held only outside ordinary running: with no connection to either sequencer, or while the engine catches up before it knows whether it serves | Storage of a fixed size allocated at start, as for the reports kept while following ([BUG-0271](bug_list.md#bug_0271)); the design must say what happens to a report sent on one connection and waiting for the other, since held reports are not always released oldest first |
+| [BUG-0209](bug_list.md#bug_0209): no scenario reaches the halt when an engine cannot account for the venue's orders | **Test or tool** | The case cannot be reached while the WAL keeps the whole day: a follower that loses its first segment file is sent every record again, and an instance running alone refuses a WAL with a gap | A scenario, possible once BUG-0048 is done |
+| [BUG-0216](bug_list.md#bug_0216): sending every record to the follower engine adds about 2 microseconds at the median | **Investigation** | One run of each build was compared; the spread between runs of one build is not measured | Measure that spread first; only then decide whether to reduce it |
+
+**Recommended order in this area.** BUG-0287 first: a standby that may never become able to take over matters more than
+the rest. Then BUG-0273's design, with the framework's breaches in section 6. BUG-0209
+waits on BUG-0048. BUG-0216 is a measurement.
+
+## 4. The sequencer's handling of reports
+
+Three entries.
+
+| Entry | Judgement | Evidence | What is left |
+|---|---|---|---|
 | [BUG-0285](bug_list.md#bug_0285): while the leader stops waiting for its follower, it sends execution reports whose records are not yet committed | **Breach** of V2 | `forward_report_from_engine` sends a report at once whenever `waits_for_follower()` is false, but `ReplicatedWal::advance_commit` commits nothing while the leader runs without its follower until a voter confirms that the follower may not lead; in that time, about a second, the follower could still be elected without the record | A report released only once its record is committed, as a change of phase is (BUG-0249), with the delay to members' reports at those moments stated and agreed; a scenario that slows a voter's statement write so the time is seconds long |
-| [BUG-0250](bug_list.md#bug_0250): a restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member | **Breach** of V2, and a choice between two remedies | A restarting engine holds at most 50,000 reports (`max_held_reports`, `EngineReportSending.hpp`) and sends the rest as possible repeats. `SequencerThread::forward_report_from_engine` reads each report's engine epoch and number but does not check whether the WAL already holds it, so every repeat is written, replicated, published and sent | Decided 22 November 2026: the sequencer discards a report the WAL already holds, identified by the command that produced it, if a flood remains. First, the scenario that restarts an engine after more than 50,000 reports, run as the code is now: the catch-up rule of far_back_catch_up.md may already prevent it |
 | [BUG-0258](bug_list.md#bug_0258): while a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere | **Defect**, decided | `ReportForwarding` holds such reports in room for 32,768 (`held_report_capacity_reports`), drops the oldest when it is full, and holds back the position it says it has forwarded through, so the follower sequencer discards none of its kept copies. A venue runs this way whenever a standby gateway instance is stopped | Decided 22 November 2026: only a session still open is held; an ended session's reports go to the WAL and reach the member as undelivered reports. Left: that change, and scenario 115 run with it |
 | [BUG-0131](bug_list.md#bug_0131): the leading sequencer allocates from the heap for every order, and copies waiting reports | **Breach** of F5 and F6 | The waiting reports are in a ring allocated once, each report in the slab chunk it arrived in, and reports are routed by the session they carry, so no map of orders grows through the day | Lock the record of command identifiers into memory at start ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)), and compare a latency run with the last |
 
 **Recommended order in this area.** BUG-0285 first, reusing the rule and the scenario that closed BUG-0249. Then
-BUG-0258's change, as decided, and BUG-0250's scenario, then its change if one is still needed. BUG-0131's remainder through its agreed design.
+BUG-0258's change, as decided. BUG-0131's remainder through its agreed design.
 
 ## 5. The gateways and what a member sees
 
