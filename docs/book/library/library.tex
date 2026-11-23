@@ -883,6 +883,47 @@ faults in the venue's software or configuration. A correctly handled member
 error is an Info event, not a warning about the member. Debug is for expected
 conditions that may generate frequent records.
 
+\subsection{Syslog carries the records that need a person}
+\label{sec:syslog-for-alarms}
+
+Every component's configuration sets its syslog threshold to Critical and its
+application log threshold to Info. The application log file therefore holds
+the full record of what the component did, for diagnosis. Syslog receives only
+the Critical and Alert records. A component logs at Critical when a person must
+act now. A sequencer or matching engine that cannot lock the memory it needs,
+for example, logs at Critical that it refuses to start, and names the remedy. A
+component logs each such condition once, not repeatedly, so syslog carries a
+handful of records in a day.
+
+Production monitoring watches syslog and raises its alarms from it. Syslog
+suits that purpose for four reasons.
+
+\begin{itemize}
+  \item Syslog stores each record's severity as a field of the record. A
+    monitoring tool selects Critical records by that field. A tool that read the
+    application log would have to find the severity in the text of each line, so
+    a change to the line's layout could stop an alarm or raise a false one.
+  \item Syslog is one stream for every process on the machine. About fifteen
+    processes run the venue, and each writes its own application log file, which
+    rotates when it reaches its size limit and starts afresh each trading day. A
+    tool watching syslog needs to know none of those file names.
+  \item Syslog carries only the records that need a person. The application log
+    files carry thousands of Info records, and a tool reading them spends its
+    time on records it then ignores. A tool that falls behind raises its alarms
+    late.
+  \item The machine's own logging service manages syslog. That service can
+    forward records to a central collector, and production monitoring already
+    knows how to watch it.
+\end{itemize}
+
+Each component identifies itself to syslog as \texttt{pubsub\_app} and adds
+its process identifier to each record. The text of each Critical record names
+the component and the condition, so an operator can act on the record alone.
+
+The metrics a component publishes are a second view of the same conditions,
+for dashboards and alert rules. Prometheus is optional in this venue, so an
+operator is always told of a Critical condition through syslog as well.
+
 \section{Pub/sub}
 \label{sec:pubsub}
 
