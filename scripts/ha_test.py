@@ -8536,6 +8536,19 @@ def venue_state_dir(prefix: Path) -> Path:
     return prefix / "var"
 
 
+def region_file_name(prefix: Path, engine: str) -> str:
+    """The file name of @p engine's open-order region, read from its deployed configuration.
+
+    It cannot be made from the process name: the primary engine runs as matching_engine_primary, but its region is
+    matching_engine_open_orders.region.
+    """
+    config = prefix / "etc" / "matching_engine" / f"{engine}.toml"
+    match = re.search(r'^region_path\s*=\s*"([^"]+)"', config.read_text(), re.MULTILINE) if config.is_file() else None
+    if match is None:
+        die(f"{config} names no region_path, so the region of {engine} cannot be found")
+    return Path(match.group(1)).name
+
+
 def small_state_dir(prefix: Path) -> Path:
     """The directory holding the matching engines' epoch files and the arbiters' lease promise records.
 
@@ -13595,7 +13608,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             do_restart_step(
                 RestartStep(proc_name=follower, ready_log_name=f"{follower}.log", ready=expect_engine_reachable(follower), ready_timeout=_ME_READY_TIMEOUT,
                             resets_me_counter=False, settle_secs=_ME_SETTLE, forget_lease_promises=True,
-                            damage_region=f"{follower}_open_orders.region"),
+                            damage_region=region_file_name(prefix, follower)),
                 proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix),
             )
             if not await_expectation(expect_follows(follower), _ME_READY_TIMEOUT, restarted_from)[0]:

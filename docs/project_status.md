@@ -22,12 +22,12 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 - **A trading day under load.** `perf_run.py --profile profiles/trading_day.toml` runs a shaped day
   of several million orders with cancels.
-- **Failover and restart of each pair.** `ha_test.py` has 128 scenarios: killing each component,
+- **Failover and restart of each pair.** `ha_test.py` has 129 scenarios: killing each component,
   restarting each in each role, stopping a whole machine, a member's open orders surviving a restart
   of the matching engine and a change of engine leader, a command that crashes both engines being
   voided, orders held while no engine leads, reports held for a gateway surviving the death of
   the sequencer holding them, a follower sequencer that has lost the first file of its WAL being
-  sent every record again, a trading day run by its schedule through a change of the schedule and of leader, and each component refusing the files of another trading day. All 128 pass, and the 52 that also run with the secondary matching engine leading first pass that
+  sent every record again, a trading day run by its schedule through a change of the schedule and of leader, a restarted matching engine replaying the day without sending its reports again, and each component refusing the files of another trading day. All 129 pass, and the 53 that also run with the secondary matching engine leading first pass that
   way too. After each scenario both matching engines are run on its WAL and must give the reports the
   WAL holds, with a sequencer that reads their reports more slowly than they send them, so that each
   run depends on the engine pacing its reports ([BUG-0234](bug_list.md#bug_0234)).
