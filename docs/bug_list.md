@@ -1016,8 +1016,8 @@ behind the count, and the alternative not followed are under [BUG-0048](#bug_004
 
 **First step, chosen 22 November 2026: both reads move onto the sequencer's reading thread** before the recovery
 service is built, which removes the danger this entry records. The design is
-[member_reports_read_off_the_order_thread.md](availability/member_reports_read_off_the_order_thread.md), proposed for
-Andrew to agree.
+[member_reports_read_off_the_order_thread.md](availability/member_reports_read_off_the_order_thread.md), agreed by
+Andrew on 23 November 2026 with each of its four decisions answered yes.
 
 **Decided (22 November 2026): undelivered reports are all kept.** The count settles resends: a resend asks for
 messages the member has already been sent, under FIX sequence numbers, and for numbers beyond what is kept

@@ -1,6 +1,7 @@
 # A member's reports read off the thread that sequences orders {#member_reports_read_off_the_order_thread}
 
-**Status: proposed, for Andrew to agree.** The design for the first step of [BUG-0113](../bug_list.md#bug_0113),
+**Status: agreed by Andrew on 23 November 2026, each decision in section 6 answered yes; to be built.** The design for
+the first step of [BUG-0113](../bug_list.md#bug_0113),
 chosen on 22 November 2026: move the two reads of the WAL that answer a member onto the sequencer's existing reading
 thread, before the recovery service is built. The recovery service remains the design for the 100,000 messages kept
 for each comp id and for reclaiming the WAL ([BUG-0048](../bug_list.md#bug_0048)); this step removes the danger
@@ -91,15 +92,15 @@ A resend needs no such holding: the gateway itself holds the session's live traf
 
 ## 6. Decisions
 
-Each is a separate yes-or-no question.
+Each was a separate yes-or-no question, and each was answered yes on 23 November 2026.
 
-1. **Both reads move to the existing reading thread, not a new thread.** Recommended yes: it already reads the WAL
+1. **Both reads move to the existing reading thread, not a new thread.** Decided yes: it already reads the WAL
    off the order path, under the rules this needs, and adds no thread.
 2. **The reading thread sends the answer on the gateway's connection itself**, as it sends records to followers,
-   rather than handing each report back for the sequencer's thread to send. Recommended yes: handing them back would
+   rather than handing each report back for the sequencer's thread to send. Decided yes: handing them back would
    put a copy of every report through the thread that sequences orders, which is what this step removes.
-3. **A session's live reports are held while its undelivered reports are sent (section 3).** Recommended yes:
+3. **A session's live reports are held while its undelivered reports are sent (section 3).** Decided yes:
    without it a member can see its reports out of order.
 4. **The window held in memory for a resend from far back stays as it is until the recovery service,** on the
-   reading thread. Recommended yes: bounding it is part of the recovery service's design, and on the reading thread
+   reading thread. Decided yes: bounding it is part of the recovery service's design, and on the reading thread
    it costs memory, not orders.
