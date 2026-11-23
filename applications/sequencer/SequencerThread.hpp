@@ -148,6 +148,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         void acknowledgement_sent(const pubsub_itc_fw_app::WalRecord& envelope) override;
         [[nodiscard]] bool leading() const override;
         [[nodiscard]] bool expects_no_session_for(std::string_view comp_id) const override;
+        [[nodiscard]] bool session_has_ended(const fix_common::SessionIdentity& identity) const override;
         [[nodiscard]] const fix_common::SessionDestination* destination(const fix_common::SessionIdentity& identity) const override;
         void report_forwarded(const fix_common::SessionIdentity& identity) override;
         void report_dropped_unbound(const fix_common::SessionIdentity& identity, int64_t er_seq_no) override;

@@ -102,7 +102,7 @@ void VenueStateFromTheWal::note_session_cancel(int64_t seq_no, const Record& rec
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error, "VenueStateFromTheWal: the CancelSessionOrders at seq={} did not decode", seq_no);
             return;
         }
-        session_cancels_.carried_out(fix_common::SessionIdentity::make(cancel.comp_id, cancel.gateway_protocol_id));
+        session_cancels_.carried_out(fix_common::SessionIdentity::make(cancel.comp_id, cancel.gateway_protocol_id), seq_no);
     }
 }
 

@@ -1133,13 +1133,19 @@ bool SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
         pending.log_seq_no = er_wal_seq;
         return pending;
     };
-    // Sent now, unless its session is not known: then it is held until the session is announced, or dropped.
+    // Sent now, unless its session is connected nowhere: then it is held until the session is announced, or else sent to
+    // no gateway. It is in the WAL, from which a member that logs on again is sent it. No gateway needs it to count the
+    // member's command answered: a gateway forgets a member's unanswered commands itself when the session ends for good,
+    // and a command sent again to a new leader is not sequenced twice (principle V7). The same is done when the report
+    // waited for its record to be committed (ReportForwarding::deliver), so both paths, and both gateways, are alike
+    // (docs/bug_list.md, BUG-0288).
     auto send_now = [&]() {
         if (!has_routing_conn && !routing_identity.empty()) {
             if (reports_.hold_for_unannounced_session(as_pending(false))) {
                 return;
             }
             sessions_.report_dropped_unbound(routing_identity, er_seq_no);
+            return;
         }
         reports_.send_to_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack, position);
         sessions_.report_forwarded(routing_identity);
@@ -3084,6 +3090,7 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
         identity, MemberSessions::CancelOnDisconnectApplied{view.default_cancel_on_disconnect_enabled, view.default_cancel_on_disconnect_grace_period_seconds});
     const MemberSessions::Bound bound = sessions_.bind(identity, destination, view.still_connected);
     session_bound_again(identity);
+    venue_state_.session_bound_again(identity);
     if (bound.still_connected) {
         reports_.send_held_for_session(identity);
         return;
@@ -3305,6 +3312,10 @@ bool SequencerThread::ReportLinks::leading() const {
 
 bool SequencerThread::ReportLinks::expects_no_session_for(std::string_view comp_id) const {
     return owner_.config_.test_events.expects_no_session_for(comp_id);
+}
+
+bool SequencerThread::ReportLinks::session_has_ended(const fix_common::SessionIdentity& identity) const {
+    return owner_.venue_state_.session_cancels().has_ended(identity);
 }
 
 const fix_common::SessionDestination* SequencerThread::ReportLinks::destination(const fix_common::SessionIdentity& identity) const {

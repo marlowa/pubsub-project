@@ -58,8 +58,27 @@ class SessionCancelsPending {
     /// The session bound again before its grace period ran out; its orders are not to be cancelled.
     void withdrawn(const fix_common::SessionIdentity& identity);
 
-    /// The cancel of the session's orders was written; nothing is waiting for it any longer.
-    void carried_out(const fix_common::SessionIdentity& identity);
+    /**
+     * @brief The cancel of the session's orders was written, at @p seq_no; nothing is waiting for it any longer.
+     *
+     * From then on the session counts as ended until it binds again (bound_again): the member logged out, or its
+     * grace period ran out, and no gateway serves it.
+     */
+    void carried_out(const fix_common::SessionIdentity& identity, int64_t seq_no);
+
+    /// The session bound again, so it no longer counts as ended.
+    void bound_again(const fix_common::SessionIdentity& identity);
+
+    /**
+     * @brief Whether the session has ended: its orders were cancelled because its member logged out or its grace period
+     *        ran out, and it has not bound since.
+     *
+     * A report for an ended session is not held while it is connected nowhere: no gateway will announce it, so the
+     * report goes to the WAL, from which a member that logs on again is sent it (docs/bug_list.md, BUG-0258). A
+     * session whose member did not ask for its orders to be cancelled has no cancel written, and never counts as
+     * ended here.
+     */
+    [[nodiscard]] bool has_ended(const fix_common::SessionIdentity& identity) const;
 
     /// Whether the session's orders are waiting to be cancelled.
     [[nodiscard]] bool pending(const fix_common::SessionIdentity& identity) const;
@@ -74,7 +93,8 @@ class SessionCancelsPending {
     }
 
     /**
-     * @brief Records after @p seq_no have been discarded from the WAL: a wait that one of them started is forgotten.
+     * @brief Records after @p seq_no have been discarded from the WAL: a wait that one of them started is forgotten, and
+     *        so is a session's end that one of them recorded.
      *
      * A wait that one of them ended, by a SessionEndWithdrawn or a CancelSessionOrders that has been discarded, is not
      * started again, because what started it is no longer known here. The leader whose records are kept writes its own
@@ -94,6 +114,8 @@ class SessionCancelsPending {
     };
 
     std::unordered_map<fix_common::SessionIdentity, Wait, fix_common::SessionIdentityHash> waiting_;
+    // Each ended session, with the position of the cancel that ended it.
+    std::unordered_map<fix_common::SessionIdentity, int64_t, fix_common::SessionIdentityHash> ended_;
 };
 
 } // namespaces

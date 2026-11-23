@@ -49,6 +49,9 @@ class ReportForwardingLinksInterface {
     [[nodiscard]] virtual bool leading() const = 0;
     /// Whether a test sends commands under @p comp_id with no gateway holding a session for it.
     [[nodiscard]] virtual bool expects_no_session_for(std::string_view comp_id) const = 0;
+    /// Whether the session has ended, by its member logging out or its grace period running out, and not bound since
+    /// (SessionCancelsPending::has_ended). Its reports are not held.
+    [[nodiscard]] virtual bool session_has_ended(const fix_common::SessionIdentity& identity) const = 0;
 
     /// Where the session's reports go now, or nullptr when it is connected nowhere (MemberSessions).
     [[nodiscard]] virtual const fix_common::SessionDestination* destination(const fix_common::SessionIdentity& identity) const = 0;

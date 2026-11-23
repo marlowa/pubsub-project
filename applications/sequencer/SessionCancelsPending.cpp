@@ -21,8 +21,17 @@ void SessionCancelsPending::withdrawn(const fix_common::SessionIdentity& identit
     waiting_.erase(identity);
 }
 
-void SessionCancelsPending::carried_out(const fix_common::SessionIdentity& identity) {
+void SessionCancelsPending::carried_out(const fix_common::SessionIdentity& identity, int64_t seq_no) {
     waiting_.erase(identity);
+    ended_[identity] = seq_no;
+}
+
+void SessionCancelsPending::bound_again(const fix_common::SessionIdentity& identity) {
+    ended_.erase(identity);
+}
+
+bool SessionCancelsPending::has_ended(const fix_common::SessionIdentity& identity) const {
+    return ended_.count(identity) != 0;
 }
 
 bool SessionCancelsPending::pending(const fix_common::SessionIdentity& identity) const {
@@ -33,6 +42,13 @@ void SessionCancelsPending::discard_after(int64_t seq_no) {
     for (auto it = waiting_.begin(); it != waiting_.end();) {
         if (it->second.seq_no > seq_no) {
             it = waiting_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = ended_.begin(); it != ended_.end();) {
+        if (it->second > seq_no) {
+            it = ended_.erase(it);
         } else {
             ++it;
         }

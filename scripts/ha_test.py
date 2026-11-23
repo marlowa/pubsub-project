@@ -5611,8 +5611,9 @@ _SCENARIOS: list[Scenario] = [
     # The matching engine cancels about 450,000 orders for each session, in pieces, so that its lease and the pacing of
     # its reports run between them (BUG-0255).
     #
-    # No sequencer or matching engine may report its lease running out (LeaseChanged) or stop leading (RoleChanged), and
-    # the check that runs engines on a copy of the WAL afterwards, which reads their reports slowly on purpose, must
+    # The leading sequencer must hold none of the ended sessions' reports, since no gateway will announce them
+    # (ReportsHeld; BUG-0258), nor send them to a gateway (ReportDroppedNoSession; BUG-0288). No sequencer or matching engine may report its lease running out (LeaseChanged) or stop
+    # leading (RoleChanged), and the check that runs engines on a copy of the WAL afterwards, which reads their reports slowly on purpose, must
     # receive every report. Decided from test events and the WAL; no Quill log is read.
     Scenario(
         number=115,
@@ -11729,6 +11730,27 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if ran_out:
                 die(f"many resting orders: a lease ran out while the orders were cancelled (BUG-0252, BUG-0255): {', '.join(ran_out)}")
             log("  no sequencer or matching engine reported its lease running out -- OK")
+            # The four sessions have ended: each one's grace period ran out and its cancel was written. No gateway will
+            # announce an ended session, so the leading sequencer must not hold its reports while the secondary gateways,
+            # which this scenario does not start, have not announced; it says when it begins holding with ReportsHeld
+            # (docs/bug_list.md, BUG-0258). Holding them would fill its room for held reports and drop the oldest.
+            held = [event for event in _TEST_EVENTS.events[events_from:]
+                    if message_of(sequencer_events.ReportsHeld, "sequencer_primary")(event) and event.message.comp_id.startswith(_LOAD_COMP_ID_PREFIX)]
+            if held:
+                die(f"many resting orders: sequencer_primary held reports for an ended session, {held[0].message.comp_id}, while "
+                    f"{held[0].message.gateways_not_announced} gateway instance(s) had not announced; an ended session's reports go to the WAL "
+                    "and are not held (BUG-0258)")
+            log("  sequencer_primary held none of the ended sessions' reports -- OK")
+            # Nor may it send them to a gateway: a report for a session connected nowhere goes to no gateway, and the FIX
+            # gateway says of each one it is sent without a session, ReportDroppedNoSession (docs/bug_list.md, BUG-0288).
+            if not _TEST_EVENTS.settle("fix_order_gateway_a"):
+                die(f"many resting orders: fix_order_gateway_a did not answer a checkpoint ({_TEST_EVENTS.failures[-1]})")
+            fix_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+            sent_nowhere = len(events_since(events_from, message_of(fix_events.ReportDroppedNoSession, "fix_order_gateway_a")))
+            if sent_nowhere:
+                die(f"many resting orders: fix_order_gateway_a was sent {sent_nowhere:,} reports for sessions connected nowhere; such a report goes "
+                    "to no gateway (BUG-0288)")
+            log("  no gateway was sent a report for the ended sessions -- OK")
             # A leader that stopped leading for any reason says so with a RoleChanged from Leader.
             leader = _TEST_EVENTS.messages.LeadershipRole.Leader
             stopped = [f"{event.component} at epoch {event.message.epoch}" for event in _TEST_EVENTS.events[events_from:]

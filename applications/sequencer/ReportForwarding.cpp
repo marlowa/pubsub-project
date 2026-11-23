@@ -140,6 +140,11 @@ bool ReportForwarding::hold_for_unannounced_session(const Pending& pending) {
     if (!links_.leading() || links_.expects_no_session_for(pending.identity.comp_id_view())) {
         return false;
     }
+    // An ended session is served by no gateway, so no announcement will claim it; holding its reports would fill the
+    // room for them and stop the position this instance has forwarded through, for nothing (docs/bug_list.md, BUG-0258).
+    if (links_.session_has_ended(pending.identity)) {
+        return false;
+    }
     const int32_t not_announced = gateways_not_announced();
     if (not_announced == 0) {
         return false;

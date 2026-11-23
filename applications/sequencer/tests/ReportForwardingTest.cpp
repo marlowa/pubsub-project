@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -51,6 +52,9 @@ struct RecordingLinks : public ReportForwardingLinksInterface {
     [[nodiscard]] bool expects_no_session_for(std::string_view comp_id) const override {
         return comp_id == "NOSESSION";
     }
+    [[nodiscard]] bool session_has_ended(const fix_common::SessionIdentity& identity) const override {
+        return ended_sessions.count(std::string(identity.comp_id_view())) != 0;
+    }
     [[nodiscard]] const fix_common::SessionDestination* destination(const fix_common::SessionIdentity& identity) const override {
         const auto it = destinations.find(std::string(identity.comp_id_view()));
         return it == destinations.end() ? nullptr : &it->second;
@@ -83,6 +87,7 @@ struct RecordingLinks : public ReportForwardingLinksInterface {
     std::vector<std::pair<pubsub_itc_fw::SlabHandle, const uint8_t*>> released_chunks;
 
     bool is_leading{true};
+    std::set<std::string> ended_sessions; // the comp ids of sessions that have ended
     std::map<std::string, fix_common::SessionDestination> destinations;
     std::vector<Sent> sent;
     int acknowledgements{0};
@@ -190,6 +195,16 @@ TEST_F(ReportForwardingTest, AReportIsHeldForAnUnannouncedSessionOnlyByALeaderWh
     EXPECT_FALSE(forwarding_->hold_for_unannounced_session(pending("NOSESSION", 5, "r5"))) << "a test expects no session for it";
     both_gateways_announce();
     EXPECT_FALSE(forwarding_->hold_for_unannounced_session(pending("AWAY", 5, "r5")));
+}
+
+// A session that has ended is served by no gateway, so its reports are not held while a gateway has not announced
+// (docs/bug_list.md, BUG-0258): they go to the WAL, as for a session connected nowhere once every gateway has announced.
+TEST_F(ReportForwardingTest, AReportForAnEndedSessionIsNotHeldWhileAGatewayHasNotAnnounced) {
+    links_.ended_sessions.insert("GONE");
+    EXPECT_FALSE(forwarding_->hold_for_unannounced_session(pending("GONE", 5, "r5")));
+    EXPECT_EQ(forwarding_->held_for_sessions(), 0U);
+    EXPECT_EQ(links_.held_events, 0);
+    EXPECT_TRUE(forwarding_->hold_for_unannounced_session(pending("AWAY", 6, "r6"))) << "a session still open is held as before";
 }
 
 TEST_F(ReportForwardingTest, ReportsHeldForASessionAreSentWhenItBinds) {

@@ -110,6 +110,10 @@ class VenueStateFromTheWal {
     [[nodiscard]] const SessionCancelsPending& session_cancels() const {
         return session_cancels_;
     }
+    /// The session bound again, so it no longer counts as ended (SessionCancelsPending::bound_again).
+    void session_bound_again(const fix_common::SessionIdentity& identity) {
+        session_cancels_.bound_again(identity);
+    }
 
     /// The highest command any report in the WAL answers.
     [[nodiscard]] int64_t highest_command_answered() const {

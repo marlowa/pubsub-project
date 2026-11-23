@@ -8,7 +8,7 @@ agreed with Andrew. An entry that is closed is no longer listed here; its record
 
 ## Summary
 
-There are 48 open entries, and each is judged below. The figures:
+There are 47 open entries, and each is judged below. The figures:
 
 | Judgement | Entries |
 |---|---|
@@ -19,7 +19,7 @@ There are 48 open entries, and each is judged below. The figures:
 | New requirement | 13 |
 | Investigation | 11 |
 | Test or tool | 8 |
-| Defect that breaks no principle | 2: BUG-0259, BUG-0258 |
+| Defect that breaks no principle | 1: BUG-0259 |
 
 **The decisions that would unblock the most.**
 
@@ -35,7 +35,8 @@ There are 48 open entries, and each is judged below. The figures:
    2026: the cancel-on-disconnect grace period runs on whatever the cause,** as it does now.
 3. **How long the leading sequencer holds a report for a session connected nowhere** while a configured gateway
    instance has not announced its sessions (BUG-0258). **Decided on 22 November 2026: only a session still open is
-   held;** an ended session's reports go to the WAL and reach the member when it logs on again.
+   held;** an ended session's reports go to the WAL and reach the member when it logs on again. Built on 23 November,
+   and BUG-0258 is closed.
 4. **Which of two remedies for repeated reports from a restarting engine** (BUG-0250). Decided on 22 November 2026,
    and found unnecessary on 23 November: the flood does not happen, and BUG-0250 is closed.
 
@@ -130,16 +131,15 @@ waits on BUG-0048. BUG-0216 is a measurement.
 
 ## 4. The sequencer's handling of reports
 
-Three entries.
+Two entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
 | [BUG-0285](bug_list.md#bug_0285): while the leader stops waiting for its follower, it sends execution reports whose records are not yet committed | **Breach** of V2 | `forward_report_from_engine` sends a report at once whenever `waits_for_follower()` is false, but `ReplicatedWal::advance_commit` commits nothing while the leader runs without its follower until a voter confirms that the follower may not lead; in that time, about a second, the follower could still be elected without the record | A report released only once its record is committed, as a change of phase is (BUG-0249), with the delay to members' reports at those moments stated and agreed; a scenario that slows a voter's statement write so the time is seconds long |
-| [BUG-0258](bug_list.md#bug_0258): while a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere | **Defect**, decided | `ReportForwarding` holds such reports in room for 32,768 (`held_report_capacity_reports`), drops the oldest when it is full, and holds back the position it says it has forwarded through, so the follower sequencer discards none of its kept copies. A venue runs this way whenever a standby gateway instance is stopped | Decided 22 November 2026: only a session still open is held; an ended session's reports go to the WAL and reach the member as undelivered reports. Left: that change, and scenario 115 run with it |
 | [BUG-0131](bug_list.md#bug_0131): the leading sequencer allocates from the heap for every order, and copies waiting reports | **Breach** of F5 and F6 | The waiting reports are in a ring allocated once, each report in the slab chunk it arrived in, and reports are routed by the session they carry, so no map of orders grows through the day | Lock the record of command identifiers into memory at start ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)), and compare a latency run with the last |
 
 **Recommended order in this area.** BUG-0285 first, reusing the rule and the scenario that closed BUG-0249. Then
-BUG-0258's change, as decided. BUG-0131's remainder through its agreed design.
+BUG-0131's remainder through its agreed design.
 
 ## 5. The gateways and what a member sees
 

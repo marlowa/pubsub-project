@@ -57,10 +57,35 @@ TEST(SessionCancelsPendingTest, AWaitEndsWhenWithdrawnOrCarriedOut) {
     pending.ended(member, 10, ended_at, 8);
     pending.ended(other, 11, ended_at, 8);
     pending.withdrawn(member);
-    pending.carried_out(other);
+    pending.carried_out(other, 12);
     EXPECT_FALSE(pending.pending(member));
     EXPECT_FALSE(pending.pending(other));
     EXPECT_TRUE(due_at(pending, ended_at + 60 * second).empty());
+}
+
+// A session whose cancel was written has ended until it binds again; one bound again in its grace period never ended
+// (docs/bug_list.md, BUG-0258).
+TEST(SessionCancelsPendingTest, ASessionHasEndedFromItsCancelUntilItBindsAgain) {
+    SessionCancelsPending pending;
+    pending.ended(member, 10, ended_at, 8);
+    EXPECT_FALSE(pending.has_ended(member)) << "still in its grace period";
+    pending.carried_out(member, 12);
+    EXPECT_TRUE(pending.has_ended(member));
+    pending.ended(other, 11, ended_at, 8);
+    pending.withdrawn(other);
+    EXPECT_FALSE(pending.has_ended(other));
+    pending.bound_again(member);
+    EXPECT_FALSE(pending.has_ended(member));
+}
+
+// A session's end recorded by a cancel later discarded from the WAL is forgotten; one recorded before it is kept.
+TEST(SessionCancelsPendingTest, DiscardingTheCancelForgetsTheSessionsEnd) {
+    SessionCancelsPending pending;
+    pending.carried_out(member, 12);
+    pending.carried_out(other, 20);
+    pending.discard_after(15);
+    EXPECT_TRUE(pending.has_ended(member));
+    EXPECT_FALSE(pending.has_ended(other));
 }
 
 // A second end recorded for a session already waiting does not move its deadline: the member's grace period runs from

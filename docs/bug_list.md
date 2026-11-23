@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 288 |
-| Open | 49 (26 defects, 23 tasks) |
-| Closed | 239 |
+| Open | 47 (24 defects, 23 tasks) |
+| Closed | 241 |
 | Next id | BUG-0289 |
 
 ## Open bugs by severity
 
-2 high, 33 medium, 14 low.
+2 high, 31 medium, 14 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -40,14 +40,12 @@
 | [BUG-0222](#bug_0222) | medium | task | No operator procedure lets the follower sequencer lead after the old leader's machine is lost while the leader was running alone, and nothing tells members which orders were lost with it |
 | [BUG-0229](#bug_0229) | medium | task | The functional specification has not been checked against the code, and specifies recovery far more than normal operation |
 | [BUG-0242](#bug_0242) | medium | task | The venue has no list of the instruments it trades, and identifies an instrument on an order only by free-text Symbol |
-| [BUG-0258](#bug_0258) | medium | defect | While a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere, so a flood of them is dropped, and the follower cannot discard its copies |
 | [BUG-0264](#bug_0264) | medium | task | Under overload the follower sequencer still falls behind its leader, so the leader runs alone for part of the time |
 | [BUG-0279](#bug_0279) | medium | defect | A gateway's limit on unanswered commands does not bound the commands it has waiting to be sent |
 | [BUG-0281](#bug_0281) | medium | task | What happens to members' orders when their gateways are down for longer than the grace period is not decided |
 | [BUG-0283](#bug_0283) | medium | task | Parts of the framework library that the venue runs every day are not reached by any test |
 | [BUG-0285](#bug_0285) | medium | defect | While the leader stops waiting for its follower, it sends execution reports whose records are not yet committed |
 | [BUG-0287](#bug_0287) | medium | defect | A matching engine that asks to lead while it is still catching up has been seen never to finish catching up or to follow |
-| [BUG-0288](#bug_0288) | medium | defect | The leading sequencer sends every report for a session connected nowhere to the FIX gateway's first instance, though most answer no gateway's command |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
@@ -157,47 +155,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0258: While a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere, so a flood of them is dropped, and the follower cannot discard its copies {#bug_0258}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-11-19 |
-| Recorded | 2026-11-19 |
-| How | Measuring, for [BUG-0256](#bug_0256), whether a follower sequencer in step loses kept reports during the cancel of 1.8 million orders |
-| Impact | Reports for a member's ended session are dropped once more than 32,768 are held; and the follower sequencer, unable to discard any of them, overwrites its kept reports, so neither instance holds them |
-
-**What happens.** `ReportForwarding` holds a report for a session connected to no gateway while any configured gateway
-instance has not announced its sessions on its present link, because the session may be connected there; it sends the
-report if the session is announced, and drops it once every gateway instance has announced. The position the leader
-writes on every record, saying how far it has forwarded the engine's reports, stays just before the oldest report so
-held. In scenario 115 of `ha_test.py`, which starts only the primary FIX and binary gateways, the four load-client
-sessions end with 1.8 million resting orders and the matching engine cancels them. Every cancel report is for a session
-connected nowhere, and the two secondary gateway instances never announce, so:
-
-- the leader's room for held reports, 32,768 reports, fills within a quarter of a second, and it drops the oldest,
-  logging "the room for reports held until their sessions are announced is full, and the oldest held reports are being
-  dropped to make room; their members are not told of them";
-- the position it says it has forwarded through does not move for the whole flood, so the follower sequencer discards
-  none of its kept copies, and overwrites 1,537,856 of them.
-
-With all four gateway instances running, neither happens. A venue runs this way whenever a configured gateway instance
-is stopped, which is the usual state of a standby gateway that has failed or not yet been started.
-
-**Decided (22 November 2026): only a session the venue still counts as open is held.** A session that has ended, by
-Logout or by its cancel-on-disconnect grace period running out, is served by no gateway, so its reports are written to
-the WAL and not held; the member is sent them as undelivered reports when it next logs on. Reports for a session that
-is open but connected nowhere are held as now. Chosen by Andrew over holding everything for a limited time, or leaving
-it as it is.
-
-**Confirmed (23 November 2026), for binary members too.** The binary order gateway does not ask for a returning
-member's undelivered reports ([BUG-0046](#bug_0046)), so a binary member is not sent an ended session's reports from the
-WAL. With every gateway instance running, its reports were already not held, so this changes only the case where an
-instance is stopped. Andrew agreed that the change stands, and that binary recovery belongs to BUG-0046.
-
-**What is wanted.** That change, and scenario 115 run with it: the close's cancels for the ended load sessions must not
-fill the room, nothing may be dropped, and the follower must discard its kept copies as the leader forwards past them.
 
 ### BUG-0259: Under a steady flood of commands, the warning that a gateway's store of unanswered commands is full is logged once for every command refused {#bug_0259}
 
@@ -2283,6 +2240,8 @@ catching up. A scenario that makes it ask during its catch-up every time, and fa
 **Principles.** V11 of [design_principles.md](design_principles.md): a fault in the standby is a loss of resilience,
 and must be reported, not silent.
 
+## Closed
+
 ### BUG-0288: The leading sequencer sends every report for a session connected nowhere to the FIX gateway's first instance, though most answer no gateway's command {#bug_0288}
 
 | | |
@@ -2292,6 +2251,7 @@ and must be reported, not silent.
 | Recorded | 2026-11-23 |
 | How | `ha_test.py` scenario 115 run with the change for [BUG-0258](#bug_0258) |
 | Impact | A member that ends its session with many resting orders causes as many useless reports to be sent to one gateway, which may serve none of that member's sessions; in scenario 115, 1,800,000 within five seconds |
+| Fixed | 2026-11-23 -- a report for a session connected nowhere, and not held, goes to no gateway on either path: `send_now` in `SequencerThread::forward_report_from_engine` now does what `ReportForwarding::deliver` already did. Decided by Andrew (option B). `ha_test.py` scenario 115 checks that the FIX gateway is sent no report for the ended sessions (`ReportDroppedNoSession`) |
 
 **What happens.** In `SequencerThread::forward_report_from_engine`, a report whose session is connected to no gateway,
 and which is not held, is counted as dropped and then sent to a gateway regardless (`send_now`). With no session to
@@ -2314,7 +2274,65 @@ code.
 
 **What is wanted.** A decision on which reports for a session connected nowhere are sent to a gateway, and to which.
 
-## Closed
+**Decided (23 November 2026): none.** A report for a session connected nowhere is written to the WAL and sent to no
+gateway, on both paths, so that the two gateways are treated alike. No gateway needs such a report to count the member's
+command answered: each gateway forgets a member's unanswered commands itself when the session ends for good
+(`UnansweredCommands::drop_session`, at the end of the grace period), and a command sent again to a new leader is not
+sequenced twice (principle V7). The member is sent the report from the WAL when it logs on again: a FIX member now, a
+binary member once [BUG-0046](#bug_0046) is done. Chosen by Andrew over sending only reports that answer a gateway's
+command to that gateway, and over keeping the sending and silencing the gateway's test event.
+
+**Shown.** Scenario 115 with the change: the FIX gateway was sent none of the four ended binary sessions' 1,800,000
+cancel reports, where before it was sent all of them within five seconds, and the scenario passed.
+
+### BUG-0258: While a configured gateway instance has not announced its sessions, the leading sequencer holds every report for a session connected nowhere, so a flood of them is dropped, and the follower cannot discard its copies {#bug_0258}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-19 |
+| Recorded | 2026-11-19 |
+| How | Measuring, for [BUG-0256](#bug_0256), whether a follower sequencer in step loses kept reports during the cancel of 1.8 million orders |
+| Impact | Reports for a member's ended session are dropped once more than 32,768 are held; and the follower sequencer, unable to discard any of them, overwrites its kept reports, so neither instance holds them |
+| Fixed | 2026-11-23 -- a session counts as ended from the cancel of its orders, written when its member logged out or its grace period ran out, until it binds again (`SessionCancelsPending::has_ended`), and the leading sequencer holds no report for an ended session (`ReportForwarding::hold_for_unannounced_session`). Unit tests in `SessionCancelsPendingTest` and `ReportForwardingTest`; `ha_test.py` scenario 115 checks that no ended session's reports are held, and failed that check on the build before the change |
+
+**What happens.** `ReportForwarding` holds a report for a session connected to no gateway while any configured gateway
+instance has not announced its sessions on its present link, because the session may be connected there; it sends the
+report if the session is announced, and drops it once every gateway instance has announced. The position the leader
+writes on every record, saying how far it has forwarded the engine's reports, stays just before the oldest report so
+held. In scenario 115 of `ha_test.py`, which starts only the primary FIX and binary gateways, the four load-client
+sessions end with 1.8 million resting orders and the matching engine cancels them. Every cancel report is for a session
+connected nowhere, and the two secondary gateway instances never announce, so:
+
+- the leader's room for held reports, 32,768 reports, fills within a quarter of a second, and it drops the oldest,
+  logging "the room for reports held until their sessions are announced is full, and the oldest held reports are being
+  dropped to make room; their members are not told of them";
+- the position it says it has forwarded through does not move for the whole flood, so the follower sequencer discards
+  none of its kept copies, and overwrites 1,537,856 of them.
+
+With all four gateway instances running, neither happens. A venue runs this way whenever a configured gateway instance
+is stopped, which is the usual state of a standby gateway that has failed or not yet been started.
+
+**Decided (22 November 2026): only a session the venue still counts as open is held.** A session that has ended, by
+Logout or by its cancel-on-disconnect grace period running out, is served by no gateway, so its reports are written to
+the WAL and not held; the member is sent them as undelivered reports when it next logs on. Reports for a session that
+is open but connected nowhere are held as now. Chosen by Andrew over holding everything for a limited time, or leaving
+it as it is.
+
+**Confirmed (23 November 2026), for binary members too.** The binary order gateway does not ask for a returning
+member's undelivered reports ([BUG-0046](#bug_0046)), so a binary member is not sent an ended session's reports from the
+WAL. With every gateway instance running, its reports were already not held, so this changes only the case where an
+instance is stopped. Andrew agreed that the change stands, and that binary recovery belongs to BUG-0046.
+
+**What is wanted.** That change, and scenario 115 run with it: the close's cancels for the ended load sessions must not
+fill the room, nothing may be dropped, and the follower must discard its kept copies as the leader forwards past them.
+
+**Shown, 23 November 2026.** Scenario 115 on the build before the change failed its new check: the leading sequencer
+held reports for the ended session LOADCLIENT-4 while two gateway instances had not announced. With the change it held
+none, no lease ran out, and the scenario passed, once [BUG-0288](#bug_0288) was fixed as well: reports no longer held
+reached the path that sent them to the FIX gateway. The follower half of what was wanted, that the follower discards its
+kept copies, is not visible in scenario 115, which stops the follower sequencer; with no report held, the position the
+leader writes moves on as each report is handled.
 
 ### BUG-0250: A restarting matching engine can send far more repeat reports than it holds, and the leading sequencer writes each into the WAL and sends it to its member {#bug_0250}
 
