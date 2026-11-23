@@ -8,16 +8,16 @@ agreed with Andrew. An entry that is closed is no longer listed here; its record
 
 ## Summary
 
-There are 46 open entries, and each is judged below. The figures:
+There are 48 open entries, and each is judged below. The figures:
 
 | Judgement | Entries |
 |---|---|
-| Breach of a named principle | 7: BUG-0113 (what is left of it), BUG-0285, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
+| Breach of a named principle | 6: BUG-0285, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
 | Partly done | 4: BUG-0121, BUG-0134, BUG-0283, BUG-0069 |
-| Decision needed from Andrew | 1: BUG-0229 |
-| Decided, and waiting to be built | 1: BUG-0048, with the recovery service of BUG-0113 |
+| Decision needed from Andrew | 2: BUG-0229, BUG-0292 |
+| Decided, and waiting to be built | 2: BUG-0048 and BUG-0113, the recovery service |
 | New requirement | 13 |
-| Investigation | 11 |
+| Investigation | 12 |
 | Test or tool | 8 |
 | Defect that breaks no principle | 1: BUG-0259 |
 
@@ -106,12 +106,12 @@ Four entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
-| [BUG-0113](bug_list.md#bug_0113): a resend or a request for undelivered reports can read far back in the WAL on the thread that sequences orders | **Breach** of F4, accepted for now and permitted by name in `scripts/check_standards.py` | Two reads remain on the sequencer's thread: `handle_session_replay_request`, a member's resend, and `handle_undelivered_reports_request`, the reports produced while a member had no connection. Each reads segments from the newest backwards and stops when it has what it needs, so a resend after a reconnect reads a few segments; one reaching far back, or a member away most of the day, reads much of the day's WAL. A matching engine's catch-up is read on the thread that follows the WAL and is not part of this entry | The recovery service, with the 100,000 messages for each comp id decided under R-0008, and every undelivered report kept, as decided on 22 November 2026 |
+| [BUG-0113](bug_list.md#bug_0113): a resend or a request for undelivered reports read far back in the WAL on the thread that sequences orders | **Decided**, its first step built | Since 23 November 2026 both reads are made by the sequencer's reading thread (`ha_test.py` scenarios 131 and 132), and `scripts/check_standards.py` permits neither on the sequencer's thread | The recovery service, with BUG-0048 |
 | [BUG-0048](bug_list.md#bug_0048): the WAL keeps the whole day | **Decided**, and waiting to be built | `Wal::truncate_below` is called by nothing, and nothing reclaims the WAL during the day. Of the positions retention depends on, the matching engine's position is not reported to the sequencer, and members' resends are to be served by the recovery service's own store | The recovery service built; the engine's position reported; and retention anchored to the lower of the follower's acknowledgement and the engine's checkpoint |
 | [BUG-0175](bug_list.md#bug_0175): while the disk is slow, the leading sequencer's own thread waits in the file system's journal | **Investigation**; a **Breach** of F4 if confirmed | Not reproduced since the WALs moved to a disk of their own mounted with `lazytime`. Finding the call needs the scheduler's events with kernel stacks, which `perf` records without root when attached to one thread (the method recorded under [BUG-0228](bug_list.md#bug_0228)) | Reproduce under a slow disk with that method, then take the call off the thread or show that F4 permits it |
 | [BUG-0264](bug_list.md#bug_0264): under overload the follower sequencer still falls behind its leader | **Investigation** | In an overload of 68,626 orders a second the leader judged its follower too far behind nine times, because its storage for orders waiting on the follower was full, and ran without it for 3,963 ms of a 26.2-second run. The leader's reactor is idle about half the time, so what holds the follower back is not known | Profile the follower in the same overload to find the stage that limits it; then keep it in step at the rate the leader sustains, or state that rate as the venue's ceiling |
 
-**Recommended order in this area.** BUG-0113 and BUG-0048 wait on the decision about undelivered reports and then on the recovery service.
+**Recommended order in this area.** BUG-0113 and BUG-0048 are the recovery service, decided and to be built.
 BUG-0175 and BUG-0264 are investigations to schedule.
 
 ## 3. The matching engine
@@ -131,11 +131,13 @@ waits on BUG-0048. BUG-0216 is a measurement.
 
 ## 4. The sequencer's handling of reports
 
-Two entries.
+Four entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
 | [BUG-0285](bug_list.md#bug_0285): while the leader stops waiting for its follower, it sends execution reports whose records are not yet committed | **Breach** of V2 | `forward_report_from_engine` sends a report at once whenever `waits_for_follower()` is false, but `ReplicatedWal::advance_commit` commits nothing while the leader runs without its follower until a voter confirms that the follower may not lead; in that time, about a second, the follower could still be elected without the record | A report released only once its record is committed, as a change of phase is (BUG-0249), with the delay to members' reports at those moments stated and agreed; a scenario that slows a voter's statement write so the time is seconds long |
+| [BUG-0292](bug_list.md#bug_0292): a member can be sent a report for one order ahead of earlier reports for its other orders | **Decision needed from Andrew** | Scenario 131, 23 November 2026: an acknowledgement whose record was already committed went ahead of 84 cancel reports still waiting for their own records | Whether reports must reach a member in WAL order across its orders; if so, nothing is sent at once while an earlier report waits |
+| [BUG-0291](bug_list.md#bug_0291): while the reading thread sends a member 100,000 reports, about one order in a thousand from another member waits about 100 ms | **Investigation** | Scenario 132, 23 November 2026: median 95 microseconds, 99.9th percentile 93 to 96 ms, while 100,000 reports were sent in about 400 ms | The delay attributed by measurement, stage by stage |
 | [BUG-0131](bug_list.md#bug_0131): the leading sequencer allocates from the heap for every order, and copies waiting reports | **Breach** of F5 and F6 | The waiting reports are in a ring allocated once, each report in the slab chunk it arrived in, and reports are routed by the session they carry, so no map of orders grows through the day | Lock the record of command identifiers into memory at start ([the_sequencer_holds_its_memory_from_the_start.md](venue/the_sequencer_holds_its_memory_from_the_start.md)), and compare a latency run with the last |
 
 **Recommended order in this area.** BUG-0285 first, reusing the rule and the scenario that closed BUG-0249. Then

@@ -409,6 +409,20 @@ _FIX_OVERLOAD_LIMIT = 256
 # orders a second, fewer than the load client sends: otherwise the venue answers as fast as the client sends, and the
 # gateway never reaches its limit.
 _FIX_OVERLOAD_REPORT_US = 200
+# Scenario 131: the orders a member places and has cancelled by logging out, so that it is owed this many undelivered
+# reports when it logs on again; enough that sending them takes several batches.
+_UNDELIVERED_ORDERS = 2000
+# Scenario 132: as many, at a scale where reading them back from the WAL takes long enough to matter; a binary member
+# trading at _LONG_READ_RATE orders a second for _LONG_READ_SECONDS seconds meanwhile; and the most its 99th percentile
+# wait for an acknowledgement may be, as a share of how long the read took. A read on the thread that sequences orders
+# holds up every order that arrives during it, which is more than one in a hundred of them here: measured on 23 November
+# 2026, a 122 ms read gave a 99th percentile of 66 ms, 54% of the read. Read off that thread, the 99th percentile was
+# 7.4 ms against a 408 ms read, 2%. The longest single wait does not tell the two apart: a few orders wait about 100 ms
+# either way, while the same processes forward the 100,000 reports (docs/bug_list.md, BUG-0291).
+_LONG_READ_ORDERS = 100_000
+_LONG_READ_RATE = 2000
+_LONG_READ_SECONDS = 10
+_LONG_READ_LATENCY_SHARE = 0.25
 # How long the binary client waits for each reply before giving up and saying so.
 _BINARY_REPLY_TIMEOUT = 10
 # How long the binary gateway may take to connect to the leading sequencer after the venue starts.
@@ -1682,6 +1696,19 @@ class Scenario(NamedTuple):
     # the gateway takes no further message from the bytes it has already read while it is at the limit, and takes them up
     # again when reading resumes (docs/bug_list.md, BUG-0279). Decided from test events and the load client's own count.
     assert_fix_gateway_bounded: bool = False
+    # When True, a member places _UNDELIVERED_ORDERS orders and logs out cleanly, so that they are cancelled while it is
+    # away; it logs on again and sends a new order at once. Every cancel report must reach it before the new order's
+    # acknowledgement: the sequencer holds the session's live reports while the reading thread sends its undelivered
+    # ones (docs/availability/member_reports_read_off_the_order_thread.md, section 3). Decided from the member's own
+    # messages and test events.
+    assert_undelivered_not_overtaken: bool = False
+    # When True, a member places _LONG_READ_ORDERS orders and logs out cleanly, and logs on again while a binary member
+    # trades at a steady rate; reading the returning member's undelivered reports back from the WAL takes long enough to
+    # matter, and the trading member's 99th percentile wait for an acknowledgement must stay well below it, because the read is
+    # made by the sequencer's reading thread, not the thread that sequences orders
+    # (docs/availability/member_reports_read_off_the_order_thread.md, section 5). Decided from test events and the load
+    # client's own measurement.
+    assert_long_read_holds_up_no_orders: bool = False
     # When True, with each gateway serving at most two members, two members log on to the FIX gateway and a third must be
     # refused with a Logout naming the limit; once one leaves, the third is let in. The same is then done on the binary
     # gateway, whose refusal is LogonOutcome NoRoomForMoreMembers (docs/bug_list.md, BUG-0279;
@@ -5993,6 +6020,52 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 131 -- a returning member's undelivered reports are not overtaken by a live one.
+    #
+    # docs/bug_list.md, BUG-0113; docs/availability/member_reports_read_off_the_order_thread.md, section 3. The reading
+    # thread sends a returning member the reports produced while it had no connection, while the sequencer's thread goes
+    # on with the session's live reports. A member places 2,000 orders and logs out cleanly, which cancels them at once,
+    # so that it is owed 2,000 cancel reports, all written to the WAL before it returns; it logs on again, continuing its
+    # numbering, and sends a new order at once.
+    # The new order's acknowledgement must reach it after every cancel report, which the sequencer ensures by holding the
+    # session's live reports until the undelivered ones have been sent. Decided from the member's own messages.
+    Scenario(
+        number=131,
+        short_name="undelivered_reports_not_overtaken",
+        description="A returning member's undelivered reports reach it before a live report produced meanwhile",
+        expected_outcome="every cancel report produced while the member was away reaches it before its new order's acknowledgement",
+        skip_baseline_orders=True,
+        assert_undelivered_not_overtaken=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
+    # 132 -- reading a returning member's reports back from far in the WAL holds up no other member's orders.
+    #
+    # docs/bug_list.md, BUG-0113; docs/availability/member_reports_read_off_the_order_thread.md, section 5. A member places
+    # 100,000 orders and logs out cleanly, which cancels them, so that it is owed 100,000 reports, reaching far back in
+    # the WAL. A binary member trades at 2,000 orders a second; meanwhile the first member logs on again and is sent its
+    # undelivered reports, which are read from the WAL by the sequencer's reading thread. The read must take long enough
+    # to matter, and the trading member's 99th percentile wait for an acknowledgement must stay well below it. The design names a
+    # resend reaching far back; a returning member's undelivered reports are read by the same path, and can be produced at
+    # this scale without fix8's interactive client. Decided from test events and the load client's own measurement.
+    Scenario(
+        number=132,
+        short_name="long_read_holds_up_no_orders",
+        description="Reading a returning member's reports back from far in the WAL holds up no other member's orders",
+        expected_outcome=(
+            "the returning member is sent all 100,000 of its undelivered reports, and a member trading meanwhile waits far less "
+            "for any acknowledgement than the read takes"
+        ),
+        binary_gateway=True,
+        skip_baseline_orders=True,
+        assert_long_read_holds_up_no_orders=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+    ),
+
     # 119 -- a matching engine that stays connected and stops working, with no other engine to lead, halts the venue.
     #
     # docs/availability/a_matching_engine_that_stops_working.md, sections 3 and 6. The one matching engine stops applying
@@ -9101,6 +9174,42 @@ def keep_logs_of_failed_scenario(scenario: Scenario, args) -> Path | None:
     return destination
 
 
+def place_orders_then_log_out(prefix: Path, count: int, tag: str, timeout: float) -> int:
+    """A member logs on afresh through FIX gateway instance a, places @p count orders, waits for every acceptance, and
+    logs out cleanly, which cancels them at once (docs/bug_list.md, BUG-0289). Returns the number the member sends next,
+    so that it can log on again continuing its numbering."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+    member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+    member.connect()
+    member.logon(reset_seq_num=True)
+    if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+        member.close()
+        die(f"{tag}: the member could not log on.")
+    # Its acknowledgements are read as it goes: left unread, they would wait at the gateway until it closed the member's
+    # connection as one that does not read what it is sent.
+    accepted: set[str] = set()
+    for index in range(count):
+        member.new_order_single(f"{tag}-{index}")
+        if index % 500 == 499:
+            for message in member.receive(timeout=0.001):
+                if message.get(35) == "8" and message.get(39) == "0":
+                    accepted.add(message.get(11, ""))
+    deadline = time.monotonic() + timeout
+    while len(accepted) < count and time.monotonic() < deadline:
+        for message in member.receive(timeout=1.0):
+            if message.get(35) == "8" and message.get(39) == "0":
+                accepted.add(message.get(11, ""))
+    if len(accepted) < count:
+        member.close()
+        die(f"{tag}: only {len(accepted):,} of the member's {count:,} orders were accepted within {timeout:.0f}s.")
+    member.send("5")
+    member.receive_until("5", timeout=_RAW_REPLY_TIMEOUT)
+    next_send = member.next_send_seq_num
+    member.close()
+    return next_send
+
+
 def run_scenario(scenario: Scenario, args) -> bool:
     """
     Run one scenario end-to-end.  Returns True on PASS, False on FAIL.
@@ -11941,6 +12050,124 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 if _TEST_EVENTS.wait_for(predicate, timeout=_LOAD_CANCELS_TIMEOUT, since=events_from) is None:
                     die(f"FIX overload: the cancel of the member's resting orders was not {what} within {_LOAD_CANCELS_TIMEOUT:.0f}s")
             log("  the member's resting orders have been cancelled, so the WAL is complete -- OK")
+
+        if scenario.assert_undelivered_not_overtaken or scenario.assert_long_read_holds_up_no_orders:
+            sequencer_events = _TEST_EVENTS.modules["sequencer_test_events"]
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+                time.sleep(_RAW_CLIENT_SETTLE)
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+            long_read = scenario.assert_long_read_holds_up_no_orders
+            tag = "long-read" if long_read else "overtaken"
+            what = "long read" if long_read else "undelivered order"
+            orders = _LONG_READ_ORDERS if long_read else _UNDELIVERED_ORDERS
+            log(f"  a member places {orders:,} orders and logs out cleanly, so that they are cancelled while it is away")
+            placed_from = _TEST_EVENTS.mark()
+            next_send = place_orders_then_log_out(prefix, orders, f"{tag}-{datetime.now().strftime('%H%M%S')}", _LOAD_CANCELS_TIMEOUT)
+            cancelled = message_of(engine_events.SessionOrdersCancelled, me_log.stem)
+            if _TEST_EVENTS.wait_for(cancelled, timeout=_LOAD_CANCELS_TIMEOUT, since=placed_from) is None:
+                die(f"{what}: the matching engine did not cancel the member's orders when it logged out, so it is owed nothing.")
+            log(f"  the member's {orders:,} orders were cancelled while it was away -- OK")
+            if not long_read:
+                # The engine has sent every cancel report, and the sequencer writes each as it arrives; a moment more, so
+                # that all of them are in the WAL before the member returns and every one is an undelivered report. A
+                # cancel report written after the session binds again is a live report, which section 3 of the design
+                # does not order against the others.
+                time.sleep(_RAW_CLIENT_SETTLE)
+
+            load = None
+            if long_read:
+                # The binary member trades for the whole of the read, at a rate the venue sustains, so that its latencies
+                # measure the venue's service, not a queue.
+                port = binary_gateway_listen_port(prefix)
+                log(f"  a binary member trades at {_LONG_READ_RATE:,} orders a second for {_LONG_READ_SECONDS} s")
+                load = subprocess.Popen(
+                    [str(bin_dir / "binary_load_client"), "--host", "127.0.0.1", "--port", str(port), "--comp-id-prefix", _LOAD_COMP_ID_PREFIX,
+                     "--password", _LOAD_PASSWORD, "--sessions", "1", "--orders-per-burst", str(_LONG_READ_RATE), "--bursts",
+                     str(_LONG_READ_SECONDS), "--rate", str(_LONG_READ_RATE), "--first-cl-ord-id", "5000000"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                time.sleep(2.0)
+
+            log("  the member logs on again, continuing its numbering")
+            returned_from = _TEST_EVENTS.mark()
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.next_send_seq_num = next_send
+            member.connect()
+            started = time.monotonic()
+            member.logon(reset_seq_num=False)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die(f"{what}: the member could not log on again.")
+            new_order = f"{tag}-after-{datetime.now().strftime('%H%M%S')}"
+            if not long_read:
+                # At once, so that its acknowledgement is produced while the undelivered reports are being sent.
+                member.new_order_single(new_order)
+            received: list[dict[int, str]] = list(member.pending)
+            member.pending = []
+            sent = message_of(sequencer_events.UndeliveredReportsSent, "sequencer_primary")
+            read_seconds = None
+            deadline = time.monotonic() + _LOAD_CANCELS_TIMEOUT
+            cancels_seen = 0
+            acknowledged = long_read
+            while time.monotonic() < deadline and (cancels_seen < orders or not acknowledged):
+                for message in member.receive(timeout=0.5):
+                    received.append(message)
+                    if message.get(35) == "8" and message.get(39) == "4":
+                        cancels_seen += 1
+                    if message.get(35) == "8" and message.get(11) == new_order and message.get(39) == "0":
+                        acknowledged = True
+                if read_seconds is None and any(sent(event) for event in _TEST_EVENTS.events[returned_from:]):
+                    read_seconds = time.monotonic() - started
+                _TEST_EVENTS.pump()
+            member.close()
+
+            def all_cancels_sent() -> None:
+                if cancels_seen < orders:
+                    die(f"{what}: the member was sent {cancels_seen:,} of the {orders:,} cancel reports produced while it was away.")
+                log(f"  the member was sent all {orders:,} cancel reports produced while it was away -- OK")
+
+            if not long_read:
+                all_cancels_sent()
+                undelivered = _TEST_EVENTS.find(sent, since=returned_from)
+                if undelivered is None or undelivered.message.count != orders:
+                    die(f"undelivered order: the sequencer sent the member {undelivered.message.count if undelivered else 'none'} of its "
+                        f"{orders:,} cancel reports as undelivered reports, so the scenario's set-up did not make every one undelivered "
+                        "before the member returned; the check below would then not test what it is for")
+                if not acknowledged:
+                    die("undelivered order: the member's new order, sent at once on logging on again, was never acknowledged.")
+                ack_at = next(i for i, m in enumerate(received) if m.get(35) == "8" and m.get(11) == new_order and m.get(39) == "0")
+                later_cancels = sum(1 for m in received[ack_at + 1:] if m.get(35) == "8" and m.get(39) == "4")
+                if later_cancels:
+                    die(f"undelivered order: the new order's acknowledgement reached the member before {later_cancels:,} of the cancel reports "
+                        "produced while it was away; a live report must not overtake the undelivered ones (BUG-0113, section 3 of the design)")
+                log("  the new order's acknowledgement reached the member after every cancel report produced while it was away -- OK")
+            else:
+                if read_seconds is None:
+                    die("long read: the leading sequencer never said it had sent the returning member its undelivered reports.")
+                output, errors = load.communicate(timeout=120)
+                if "RESULT         PASS" not in output:
+                    die(f"long read: the trading member's orders were not all acknowledged:\n{output[-3000:]}\n{errors[-2000:]}")
+                latency = next((line for line in output.splitlines() if line.strip().startswith("latency us")), "")
+                match = re.search(r"\bp99 ([0-9.]+)", latency)
+                if match is None:
+                    die(f"long read: the load client gave no 99th percentile wait for an acknowledgement:\n{output[-2000:]}")
+                p99_ms = float(match.group(1)) / 1000.0
+                log(f"  the trading member's waits for an acknowledgement, in microseconds: {latency.strip()}")
+                log(f"  reading and sending the undelivered reports took about {read_seconds * 1000:.0f} ms; the trading member's 99th percentile "
+                    f"wait for an acknowledgement was {p99_ms:.1f} ms")
+                if read_seconds < 0.1:
+                    die(f"long read: the read took only {read_seconds * 1000:.0f} ms, too short to show whether it holds up other orders")
+                if p99_ms > _LONG_READ_LATENCY_SHARE * read_seconds * 1000:
+                    die(f"long read: one in a hundred of the trading member's orders waited {p99_ms:.1f} ms or more for an acknowledgement, more "
+                        f"than {_LONG_READ_LATENCY_SHARE:.0%} of the {read_seconds * 1000:.0f} ms the read took: the read held up the orders "
+                        "(BUG-0113)")
+                log("  the trading member's orders were not held up by the read -- OK")
+                # Checked after the waits, which are what this scenario is for, so that a venue failing both is shown
+                # failing that.
+                all_cancels_sent()
 
         # ── The venue follows the day's schedule (R-0167, R-0168) ──
         if scenario.end_of_day_leader_stops:

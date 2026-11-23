@@ -213,6 +213,9 @@ class FixRawClient:
         fields.extend(body or [])
 
         wire = build_message(fields, bad_body_length=bad_body_length, bad_check_sum=bad_check_sum)
+        # Blocking for the send: receive() leaves a timeout on the socket, and then a send to a gateway that has stopped
+        # reading this member fails instead of waiting for it to read again (docs/bug_list.md, BUG-0279).
+        self.sock.settimeout(None)
         self.sock.sendall(wire)
 
         # An explicit seq_num is a ONE-OFF override and leaves the running counter alone. Injecting

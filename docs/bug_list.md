@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 290 |
-| Open | 46 (23 defects, 23 tasks) |
+| Bugs recorded | 292 |
+| Open | 48 (25 defects, 23 tasks) |
 | Closed | 244 |
-| Next id | BUG-0291 |
+| Next id | BUG-0293 |
 
 ## Open bugs by severity
 
-2 high, 30 medium, 14 low.
+2 high, 30 medium, 16 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -59,6 +59,8 @@
 | [BUG-0267](#bug_0267) | low | task | `ha_test.py` is one script of 15,000 lines, its checks in one function of 6,500 lines |
 | [BUG-0273](#bug_0273) | low | defect | A matching engine holding reports for want of a connection, or until it knows whether it serves, allocates from the heap for each |
 | [BUG-0280](#bug_0280) | low | task | Huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine |
+| [BUG-0291](#bug_0291) | low | defect | While the reading thread sends a member 100,000 reports, about one order in a thousand from another member waits about 100 milliseconds |
+| [BUG-0292](#bug_0292) | low | defect | A member can be sent a report for one order ahead of earlier reports for its other orders, out of the order the WAL holds them |
 
 ---
 
@@ -1027,7 +1029,17 @@ time as the connection takes them, then the closing message. It answers one requ
 reads every written record, as the sequencer did. While a returning member is sent its undelivered reports, the
 sequencer holds its live reports (`ReportForwarding::hold_while_undelivered_reports_sent`) and sends them after.
 `scripts/check_standards.py` no longer permits either read on the sequencer's thread. Scenarios 22, 23, 40, 69 and 70
-pass; running them found [BUG-0290](#bug_0290). The two scenarios of the design's section 5 are still to be written.
+pass; running them found [BUG-0290](#bug_0290). **Its two scenarios, 23 November 2026.** `ha_test.py` scenario 131: a member owed 2,000 undelivered reports logs on and
+sends an order at once, and the order's acknowledgement must reach it after every one of them; with the holding taken
+out, it reached the member ahead of all 2,000. Scenario 132: a member owed 100,000 undelivered reports logs on while a
+binary member trades at 2,000 orders a second, and the trading member's 99th percentile wait must stay below a quarter of
+the read. With the reads on the sequencer's thread (the code before the change), a 113 ms read gave a 99th percentile of
+59 ms, 52% of it, and the returning member was sent only 33,971 of its 100,000 reports; with the change, 406 to 443 ms
+reads gave 4 to 13 ms, at most 3%, and every report. The 99th percentile was chosen as the measure after the longest
+single wait was found not to tell the two apart, a few orders waiting about 100 ms either way ([BUG-0291](#bug_0291)).
+Running scenario 131 also found [BUG-0292](#bug_0292).
+
+**Left before this entry closes:** the recovery service, with [BUG-0048](#bug_0048).
 
 **Decided (22 November 2026): undelivered reports are all kept.** The count settles resends: a resend asks for
 messages the member has already been sent, under FIX sequence numbers, and for numbers beyond what is kept
@@ -2179,6 +2191,54 @@ catching up. A scenario that makes it ask during its catch-up every time, and fa
 
 **Principles.** V11 of [design_principles.md](design_principles.md): a fault in the standby is a loss of resilience,
 and must be reported, not silent.
+
+### BUG-0291: While the reading thread sends a member 100,000 reports, about one order in a thousand from another member waits about 100 milliseconds {#bug_0291}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-23 |
+| Recorded | 2026-11-23 |
+| How | `ha_test.py` scenario 132, written for [BUG-0113](#bug_0113) |
+| Impact | A member trading while another is sent a large answer sees a few acknowledgements delayed by about 100 milliseconds; the thread that sequences orders is not blocked, so most of its orders are answered as quickly as ever |
+
+**What was measured, 23 November 2026.** Scenario 132: a member owed 100,000 undelivered reports logs on again while a
+binary member trades at 2,000 orders a second. The reading thread reads and sends the 100,000 reports in about 408
+milliseconds. The trading member's waits for an acknowledgement, over its 20,000 orders: median 95 microseconds, 99th
+percentile 7.4 milliseconds, 99.9th percentile 96 milliseconds, longest 106 milliseconds.
+
+**Not yet known: why.** The thread that sequences orders no longer reads the WAL for the answer. One candidate is the
+sequencer process's reactor, which carries every send of the process: the reading thread gives it 100,000 report
+messages in about 400 milliseconds, and the order path's own sends wait behind them in its queue. Another is the FIX
+gateway relaying the same 100,000 reports. Neither has been measured.
+
+**What is wanted.** The delay attributed by measurement, stage by stage along the order path, as
+[latency_findings.md](operations/latency_findings.md) does for the order path; then, if it is the reactor's queue, the
+reading thread sending an answer at a pace the order path's sends are not held up by.
+
+### BUG-0292: A member can be sent a report for one order ahead of earlier reports for its other orders, out of the order the WAL holds them {#bug_0292}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-11-23 |
+| Recorded | 2026-11-23 |
+| How | `ha_test.py` scenario 131, written for [BUG-0113](#bug_0113), in a run where some of the member's cancel reports were written after its session had bound again |
+| Impact | A member is not sent its reports in the order the venue recorded them when they concern different orders; each order's own reports stay in order. Whether any member depends on the order across orders is not known |
+
+**What was seen, 23 November 2026.** A member logged out with 2,000 resting orders, which were cancelled, and logged on
+again while the last 262 of the cancel reports were still reaching the leading sequencer. Its new order's
+acknowledgement reached it ahead of 84 of those 262.
+
+**Why, from the code.** The leading sequencer sends a report once the record it depends on is committed. A cancel
+written by the venue itself, such as those of a session that logged out, depends on its own record, which is committed
+a little after it is written; an acknowledgement depends on the order's record, committed before the engine even
+answers. So in `SequencerThread::forward_report_from_engine`, an acknowledgement whose record is already committed is
+sent at once (`send_now`), while earlier reports still waiting for their own records stay in the queue of reports
+waiting (`ReportForwarding::wait_for_commit`), and are sent after it.
+
+**What is wanted.** A decision on whether reports must reach a member in the order the WAL holds them across its
+orders, as well as within each. If they must, a report is sent at once only while no earlier report waits.
 
 ## Closed
 
