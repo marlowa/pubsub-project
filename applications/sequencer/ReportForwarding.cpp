@@ -3,6 +3,7 @@
 
 #include "ReportForwarding.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <utility>
 
@@ -149,6 +150,23 @@ bool ReportForwarding::hold_for_unannounced_session(const Pending& pending) {
     if (not_announced == 0) {
         return false;
     }
+    store_held(pending);
+    if (!reports_held_since_sessions_known_) {
+        reports_held_since_sessions_known_ = true;
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                   "ReportForwarding: ER seq_no={} for session comp_id='{}' protocol={} held -- {} gateway instance(s) have not yet announced their sessions, "
+                   "so it may be connected after all. Held reports are sent when their session is announced, and dropped once every gateway instance has "
+                   "announced",
+                   pending.seq_no, pending.identity.comp_id_view(), pending.identity.protocol, not_announced);
+        links_.reports_held(pending.identity, not_announced);
+    } else {
+        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "ReportForwarding: ER seq_no={} for session comp_id='{}' protocol={} held", pending.seq_no,
+                   pending.identity.comp_id_view(), pending.identity.protocol);
+    }
+    return true;
+}
+
+void ReportForwarding::store_held(const Pending& pending) {
     HeldReportHeader header{};
     header.seq_no = pending.seq_no;
     header.log_seq_no = pending.log_seq_no;
@@ -170,27 +188,60 @@ bool ReportForwarding::hold_for_unannounced_session(const Pending& pending) {
     if (pending.position.has_value() && (!held_reports_oldest_position_.has_value() || held_reports_oldest_position_->is_after(*pending.position))) {
         held_reports_oldest_position_ = pending.position;
     }
-    if (!reports_held_since_sessions_known_) {
-        reports_held_since_sessions_known_ = true;
-        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                   "ReportForwarding: ER seq_no={} for session comp_id='{}' protocol={} held -- {} gateway instance(s) have not yet announced their sessions, "
-                   "so it may be connected after all. Held reports are sent when their session is announced, and dropped once every gateway instance has "
-                   "announced",
-                   pending.seq_no, pending.identity.comp_id_view(), pending.identity.protocol, not_announced);
-        links_.reports_held(pending.identity, not_announced);
-    } else {
-        PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "ReportForwarding: ER seq_no={} for session comp_id='{}' protocol={} held", pending.seq_no,
-                   pending.identity.comp_id_view(), pending.identity.protocol);
-    }
     if (held_reports_.dropped_for_room() != held_reports_dropped_reported_ && !held_reports_dropping_) {
         held_reports_dropping_ = true;
         // Said once, when the dropping starts; the total is said when reports next leave the room.
         PUBSUB_LOG_STR(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                       "ReportForwarding: the room for reports held until their sessions are announced is full, and the oldest held reports are being "
-                       "dropped to make room; their members are not told of them");
+                       "ReportForwarding: the room for held reports, those held until their sessions are announced or until a session has been sent its "
+                       "undelivered reports, is full, and the oldest held reports are being dropped to make room; their members are not told of them");
     }
     links_.held_reports_dropped(held_reports_.dropped_for_room());
+}
+
+std::optional<pubsub_itc_fw::ConnectionID> ReportForwarding::gateway_connection(int16_t protocol, int16_t instance) const {
+    const auto connection = gateway_connections_.find(gateway_key(protocol, instance));
+    if (connection == gateway_connections_.end() || !connection->second.is_valid()) {
+        return std::nullopt;
+    }
+    return connection->second;
+}
+
+void ReportForwarding::hold_while_undelivered_reports_sent(const fix_common::SessionIdentity& identity) {
+    if (!sending_undelivered_reports(identity)) {
+        sessions_sent_undelivered_.push_back(identity);
+    }
+}
+
+bool ReportForwarding::sending_undelivered_reports(const fix_common::SessionIdentity& identity) const {
+    return std::find(sessions_sent_undelivered_.begin(), sessions_sent_undelivered_.end(), identity) != sessions_sent_undelivered_.end();
+}
+
+bool ReportForwarding::hold_while_answered(const Pending& pending) {
+    if (pending.identity.empty() || !sending_undelivered_reports(pending.identity)) {
+        return false;
+    }
+    store_held(pending);
+    PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug,
+               "ReportForwarding: ER seq_no={} for session comp_id='{}' protocol={} held until its undelivered reports have been sent", pending.seq_no,
+               pending.identity.comp_id_view(), pending.identity.protocol);
     return true;
+}
+
+size_t ReportForwarding::undelivered_reports_sent(const fix_common::SessionIdentity& identity) {
+    // Taken out first, so that delivering the held reports sends them rather than holding them again.
+    sessions_sent_undelivered_.erase(std::remove(sessions_sent_undelivered_.begin(), sessions_sent_undelivered_.end(), identity),
+                                     sessions_sent_undelivered_.end());
+    std::vector<Pending> to_send;
+    held_reports_.release(identity, [&to_send](const uint8_t* bytes, size_t size) { to_send.push_back(decode_held_report(bytes, size)); });
+    if (to_send.empty()) {
+        return 0;
+    }
+    held_reports_left_the_room();
+    for (Pending& pending : to_send) {
+        pending.identity = identity;
+        deliver(pending);
+    }
+    return to_send.size();
 }
 
 void ReportForwarding::wait_for_commit(int64_t gate, Pending&& pending) {
@@ -235,6 +286,9 @@ void ReportForwarding::deliver_committed_through(int64_t committed_through) {
 }
 
 void ReportForwarding::deliver(const Pending& pending) {
+    if (hold_while_answered(pending)) {
+        return;
+    }
     const fix_common::SessionDestination* destination = pending.identity.empty() ? nullptr : links_.destination(pending.identity);
     if (destination == nullptr && !pending.identity.empty()) {
         if (hold_for_unannounced_session(pending)) {
@@ -501,8 +555,10 @@ void ReportForwarding::send_held_for_gateway(int16_t protocol, int16_t instance,
 }
 
 void ReportForwarding::stopped_leading() {
-    // Reports held for sessions not yet announced are the new leader's to send: it forwards what it kept while following.
+    // Reports held for sessions not yet announced, or while a session was sent its undelivered reports, are the new
+    // leader's to send: it forwards what it kept while following, and a session asks it for its undelivered reports again.
     held_reports_.discard_all();
+    sessions_sent_undelivered_.clear();
     held_reports_left_the_room();
     reports_held_since_sessions_known_ = false;
     // Likewise the reports held for a gateway with no connection: they are in the WAL, and the new leader sends them.

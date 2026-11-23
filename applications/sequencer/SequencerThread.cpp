@@ -75,6 +75,53 @@ template <typename Envelope> VenueStateFromTheWal::Record record_of(const Envelo
     return record;
 }
 
+// Whether select_session_report keeps, before a report's payload, one byte saying whether it was marked as a possible repeat.
+enum class KeepRepeatMark : int8_t { No, Yes };
+
+// Whether @p entry, a record of the WAL, is an execution report for the session @p identity; if it is, keeps its payload
+// in @p kept, after one byte saying whether it was marked as a possible repeat when @p repeat_mark says to. Runs on the
+// reading thread, for an answer to a member's request, so it reads only the record and its own working memory.
+bool select_session_report(const pubsub_itc_fw::WalEntryContents& entry, const fix_common::SessionIdentity& identity, std::vector<uint8_t>& kept,
+                           KeepRepeatMark repeat_mark) {
+    if (entry.size == 0) {
+        return false;
+    }
+    // One buffer for the reading thread's whole life, reused for every record it looks at: making and zeroing a fresh
+    // one for each would cost more than reading the record, when an answer reads far back.
+    thread_local std::vector<uint8_t> arena_buffer(64 * 1024);
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    size_t consumed = 0;
+    size_t needed = 0;
+    pubsub_itc_fw_app::WalRecordView stored{};
+    if (!pubsub_itc_fw_app::decode(stored, entry.bytes, entry.size, consumed, arena, needed)) {
+        return false;
+    }
+    // Orders are not sent back to a member: it already knows what it sent.
+    if (stored.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport) || !stored.has_sender_comp_id ||
+        fix_common::SessionIdentity::make(stored.sender_comp_id, stored.has_origin_gateway_id ? stored.origin_gateway_id : gateway_ids::default_when_absent) !=
+            identity) {
+        return false;
+    }
+    kept.clear();
+    if (repeat_mark == KeepRepeatMark::Yes) {
+        kept.push_back(stored.poss_resend ? 1 : 0);
+    }
+    kept.insert(kept.end(), stored.payload.data, stored.payload.data + stored.payload.size);
+    return true;
+}
+
+// Encodes @p message into @p out, for the reading thread to send; leaves @p out empty if it cannot be encoded.
+template <typename Message> void encode_for_answer(const Message& message, std::vector<uint8_t>& out) {
+    size_t written = 0;
+    size_t needed = 0;
+    static_cast<void>(pubsub_itc_fw_app::encode(message, nullptr, 0, written, needed));
+    out.resize(needed);
+    if (!pubsub_itc_fw_app::encode(message, out.data(), out.size(), written, needed)) {
+        out.clear();
+        return;
+    }
+    out.resize(written);
+}
 } // un-named namespace
 
 namespace {
@@ -1145,6 +1192,11 @@ bool SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
                 return;
             }
             sessions_.report_dropped_unbound(routing_identity, er_seq_no);
+            return;
+        }
+        // Held while the session is being sent its undelivered reports, so that none of those is overtaken by a newer one.
+        // Asked first without making the copy a held report needs, which allocates: this runs for every report.
+        if (reports_.sending_undelivered_reports(routing_identity) && reports_.hold_while_answered(as_pending(false))) {
             return;
         }
         reports_.send_to_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack, position);
@@ -3214,82 +3266,54 @@ void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::Ev
     if (!undelivered.has_value()) {
         return;
     }
-    const int64_t after = undelivered->after;
-    const int64_t through = undelivered->through;
-    const bool possible_repeat = undelivered->possible_repeat;
-    const fix_common::SessionDestination* destination = &undelivered->destination;
-
-    // The member's reports logged after the last it was delivered and up to when it bound again,
-    // read from the newest segment backwards, stopping at the first segment that begins at or before
-    // the last delivered, and sent oldest first. A member away for a long time on a busy day reaches
-    // further back, and so is read further back.
-    struct Undelivered {
-        int64_t log_seq_no{};
-        bool poss_resend{false};
-        std::vector<uint8_t> payload;
-    };
-    std::vector<Undelivered> found;
-    std::vector<Undelivered> in_segment;
-    const std::vector<uint64_t> segments = replicated_wal_->wal().segments_on_disk();
-    for (auto segment = segments.rbegin(); segment != segments.rend(); ++segment) {
-        in_segment.clear();
-        int64_t first_in_segment = 0;
-        static_cast<void>(pubsub_itc_fw::WalReader::replay_segment(
-            replicated_wal_->wal().segment_path(*segment), 0,
-            [&identity, after, through, &in_segment, &first_in_segment](int64_t record_id, const void* payload, size_t size) {
-                if (first_in_segment == 0) {
-                    first_in_segment = record_id;
-                }
-                const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
-                if (record_id <= after || record_id > through || !contents.has_value() || contents->size == 0) {
-                    return;
-                }
-                std::array<uint8_t, 64 * 1024> record_arena_buffer{};
-                pubsub_itc_fw::BumpAllocator record_arena(record_arena_buffer.data(), record_arena_buffer.size());
-                size_t record_consumed = 0;
-                size_t record_needed = 0;
-                pubsub_itc_fw_app::WalRecordView stored{};
-                if (!pubsub_itc_fw_app::decode(stored, contents->bytes, contents->size, record_consumed, record_arena, record_needed)) {
-                    return;
-                }
-                if (stored.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport) || !stored.has_sender_comp_id ||
-                    fix_common::SessionIdentity::make(stored.sender_comp_id,
-                                                      stored.has_origin_gateway_id ? stored.origin_gateway_id : gateway_ids::default_when_absent) != identity) {
-                    return;
-                }
-                in_segment.push_back(
-                    Undelivered{record_id, stored.poss_resend, std::vector<uint8_t>(stored.payload.data, stored.payload.data + stored.payload.size)});
-            }));
-        found.insert(found.begin(), std::make_move_iterator(in_segment.begin()), std::make_move_iterator(in_segment.end()));
-        if (first_in_segment != 0 && first_in_segment <= after + 1) {
-            break;
-        }
+    const fix_common::SessionDestination destination = undelivered->destination;
+    const std::optional<pubsub_itc_fw::ConnectionID> connection = reports_.gateway_connection(identity.protocol, destination.instance);
+    if (!connection.has_value()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: session comp_id='{}' protocol={} asked for its undelivered reports through instance {}, which has no connection for "
+                   "reports now -- it asks again when it next binds",
+                   identity.comp_id_view(), identity.protocol, destination.instance);
+        return;
     }
+    RequestBeingAnswered request;
+    request.kind = RequestBeingAnswered::Kind::Undelivered;
+    request.identity = identity;
+    request.after = undelivered->after;
+    request.through = undelivered->through;
+    request.possible_repeat = undelivered->possible_repeat;
+    request.started_ns = config_.wall_clock->now_ns();
 
-    for (const Undelivered& report : found) {
+    // The member's reports logged after the last it was delivered and up to when it bound again, read by the reading
+    // thread and sent oldest first, each as the report the gateway would have been sent live.
+    auto answerer = std::make_shared<pubsub_itc_fw::WalAnswerer>();
+    answerer->select = [identity](int64_t /*seq_no*/, const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& kept) {
+        return select_session_report(entry, identity, kept, KeepRepeatMark::Yes);
+    };
+    const bool possible_repeat = undelivered->possible_repeat;
+    answerer->encode_record = [identity, destination, possible_repeat](const pubsub_itc_fw::WalAnswerRecord& record, std::vector<uint8_t>& out) {
         pubsub_itc_fw_app::WalRecord envelope{};
-        envelope.seq_no = report.log_seq_no;
+        envelope.seq_no = record.seq_no;
         envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
-        envelope.payload = pubsub_itc_fw_app::BytesView{report.payload.data(), report.payload.size()};
+        // The first byte kept says whether the report was already marked as a possible repeat; the payload follows.
+        envelope.payload = pubsub_itc_fw_app::BytesView{record.kept.data() + 1, record.kept.size() - 1};
         envelope.has_gateway_session_conn_id = true;
-        envelope.gateway_session_conn_id = destination->conn_id;
+        envelope.gateway_session_conn_id = destination.conn_id;
         envelope.has_origin_gateway_id = true;
         envelope.origin_gateway_id = identity.protocol;
         envelope.has_gateway_instance_id = true;
-        envelope.gateway_instance_id = destination->instance;
+        envelope.gateway_instance_id = destination.instance;
         envelope.has_sender_comp_id = true;
         envelope.sender_comp_id = identity.comp_id_view();
         // Repeats only if the gateway that last served the member died without saying how far.
-        envelope.poss_resend = report.poss_resend || possible_repeat;
-        // Not timed: a report waiting while its member was away says nothing about how long the path takes.
-        const bool is_new_order_ack = false;
-        reports_.send_to_gateway(identity.protocol, destination->instance, 0, envelope, is_new_order_ack, std::nullopt);
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: session comp_id='{}' protocol={} bound again -- sent it {} report(s) produced while it had no connection (log records {} to "
-               "{}){}",
-               identity.comp_id_view(), identity.protocol, found.size(), after + 1, through, possible_repeat ? ", marked as possible repeats" : "");
-    report(pubsub_itc_fw_app::UndeliveredReportsSent{identity.comp_id_view(), identity.protocol, static_cast<int64_t>(found.size())});
+        envelope.poss_resend = record.kept[0] != 0 || possible_repeat;
+        encode_for_answer(envelope, out);
+        return static_cast<int16_t>(pubsub_itc_fw_app::WalRecord::message_pdu_id);
+    };
+    answerer->encode_close = [](const pubsub_itc_fw::WalAnswerSummary& /*summary*/, std::vector<uint8_t>& /*out*/) { return int16_t{0}; };
+
+    // The session's live reports wait until these have been sent, so that no newer report reaches the member first.
+    reports_.hold_while_undelivered_reports_sent(identity);
+    ask_reading_thread_to_answer(*connection, request, 0, 0, std::move(answerer));
 }
 
 void SequencerThread::ReportLinks::send_report(const pubsub_itc_fw::ConnectionID& connection, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope) {
@@ -3489,122 +3513,93 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
     // of them are dropped at the end -- so what is returned is the max_records reports sitting
     // immediately behind the ones skipped. "Most recent" becomes "most recent below a point the
     // caller names", and the tail case is the same code with the point at zero.
-    const size_t window_capacity = static_cast<size_t>(max_records) + static_cast<size_t>(skip_most_recent);
+    RequestBeingAnswered request;
+    request.kind = RequestBeingAnswered::Kind::Resend;
+    request.identity = identity;
+    request.request_id = view.request_id;
+    request.max_records = max_records;
+    request.after = from_seq_no;
+    request.started_ns = config_.wall_clock->now_ns();
 
-    struct ReplayMatch {
-        int64_t record_id{};
-        int64_t wall_time_ns{};
-        std::vector<uint8_t> payload;
+    // The session's execution reports after from_seq_no, the newest max_records + skip_most_recent of them less the
+    // newest skip_most_recent, read by the reading thread and sent oldest first, then SessionReplayComplete.
+    auto answerer = std::make_shared<pubsub_itc_fw::WalAnswerer>();
+    answerer->select = [identity](int64_t /*seq_no*/, const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& kept) {
+        return select_session_report(entry, identity, kept, KeepRepeatMark::No);
     };
-    std::deque<ReplayMatch> window;
-    int64_t total_matched = 0;
-    int32_t record_count = 0;
-    int64_t last_seq_no = from_seq_no;
-    bool truncated = false;
-    const int64_t started_ns = config_.wall_clock->now_ns();
-
-    // The matches in one segment, in the order they were written; added to the front of the window,
-    // newest first, once the segment has been read.
-    std::vector<ReplayMatch> in_segment;
-    size_t segments_read = 0;
-    const std::vector<uint64_t> segments = replicated_wal_->wal().segments_on_disk();
-    for (auto segment = segments.rbegin(); segment != segments.rend() && window.size() < window_capacity; ++segment) {
-        in_segment.clear();
-        int64_t first_in_segment = 0;
-        static_cast<void>(pubsub_itc_fw::WalReader::replay_segment(
-            replicated_wal_->wal().segment_path(*segment), 0,
-            [&identity, from_seq_no, &in_segment, &total_matched, &first_in_segment](int64_t record_id, const void* payload, size_t size) {
-                if (first_in_segment == 0) {
-                    first_in_segment = record_id;
-                }
-                if (record_id <= from_seq_no) {
-                    return;
-                }
-                const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
-                if (!contents.has_value()) {
-                    return;
-                }
-                const int64_t wall_time_ns = contents->wall_time_ns;
-                const uint8_t* record_payload = contents->bytes;
-                const size_t record_size = contents->size;
-
-                // Every stored record is a WalRecord envelope; decode it to read who it belonged
-                // to and what it was. A separate arena from the caller's: this runs inside the
-                // decode of the request itself, whose view is still in use above.
-                std::array<uint8_t, 64 * 1024> replay_arena_buffer{};
-                pubsub_itc_fw::BumpAllocator replay_arena(replay_arena_buffer.data(), replay_arena_buffer.size());
-                size_t replay_consumed = 0;
-                size_t replay_needed = 0;
-                pubsub_itc_fw_app::WalRecordView stored{};
-                if (!pubsub_itc_fw_app::decode(stored, record_payload, record_size, replay_consumed, replay_arena, replay_needed)) {
-                    return;
-                }
-                if (stored.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
-                    return; // orders are not replayed to a member; it already knows what it sent
-                }
-                if (!stored.has_sender_comp_id ||
-                    fix_common::SessionIdentity::make(stored.sender_comp_id,
-                                                      stored.has_origin_gateway_id ? stored.origin_gateway_id : gateway_ids::default_when_absent) != identity) {
-                    return;
-                }
-
-                ++total_matched;
-                ReplayMatch match;
-                match.record_id = record_id;
-                match.wall_time_ns = wall_time_ns;
-                match.payload.assign(stored.payload.data, stored.payload.data + stored.payload.size);
-                in_segment.push_back(std::move(match));
-            }));
-        ++segments_read;
-        for (auto match = in_segment.rbegin(); match != in_segment.rend() && window.size() < window_capacity; ++match) {
-            window.push_front(std::move(*match));
-        }
-        // Every older segment holds only records at or before from_seq_no.
-        if (first_in_segment != 0 && first_in_segment <= from_seq_no + 1) {
-            break;
-        }
-    }
-
-    // Drop the newest skip_most_recent, leaving the ones the caller actually named. The window
-    // held them only so that the ones behind them could be found: a scan that discarded them as
-    // it went could not know, at the time it saw them, how many more were still coming.
-    for (int32_t skipped = 0; skipped < skip_most_recent && !window.empty(); ++skipped) {
-        window.pop_back();
-    }
-
-    for (const ReplayMatch& match : window) {
+    const uint32_t request_id = view.request_id;
+    answerer->encode_record = [request_id](const pubsub_itc_fw::WalAnswerRecord& record, std::vector<uint8_t>& out) {
         pubsub_itc_fw_app::SessionReplayRecord replay_record{};
-        replay_record.request_id = view.request_id;
-        replay_record.seq_no = match.record_id;
-        replay_record.wall_time_ns = match.wall_time_ns;
-        replay_record.payload = pubsub_itc_fw_app::BytesView{match.payload.data(), match.payload.size()};
-        send_pdu(conn_id, pubsub_itc_fw_app::SessionReplayRecord::message_pdu_id, match.record_id, replay_record);
-        ++record_count;
-        last_seq_no = match.record_id;
+        replay_record.request_id = request_id;
+        replay_record.seq_no = record.seq_no;
+        replay_record.wall_time_ns = record.wall_time_ns;
+        replay_record.payload = pubsub_itc_fw_app::BytesView{record.kept.data(), record.kept.size()};
+        encode_for_answer(replay_record, out);
+        return static_cast<int16_t>(pubsub_itc_fw_app::SessionReplayRecord::message_pdu_id);
+    };
+    answerer->encode_close = [request_id](const pubsub_itc_fw::WalAnswerSummary& summary, std::vector<uint8_t>& out) {
+        pubsub_itc_fw_app::SessionReplayComplete complete{};
+        complete.request_id = request_id;
+        complete.record_count = static_cast<int32_t>(summary.records_sent);
+        complete.last_seq_no = summary.last_seq_no;
+        // Fewer than were asked for: the session holds no more in the range.
+        complete.truncated = summary.records_sent < summary.asked_for;
+        encode_for_answer(complete, out);
+        return static_cast<int16_t>(pubsub_itc_fw_app::SessionReplayComplete::message_pdu_id);
+    };
+    ask_reading_thread_to_answer(conn_id, request, static_cast<int64_t>(max_records) + skip_most_recent, skip_most_recent, std::move(answerer));
+}
+
+void SequencerThread::ask_reading_thread_to_answer(const pubsub_itc_fw::ConnectionID& connection, const RequestBeingAnswered& request, int64_t keep_newest,
+                                                   int64_t skip_newest, std::shared_ptr<pubsub_itc_fw::WalAnswerer> answerer) {
+    const uint64_t answer_id = next_answer_id_++;
+    requests_being_answered_[answer_id] = request;
+    auto command = std::make_unique<pubsub_itc_fw::WalReadingCommand>();
+    command->kind = pubsub_itc_fw::WalReadingCommand::Kind::Answer;
+    command->connection = connection;
+    command->after_seq_no = request.after;
+    command->through_seq_no = request.through;
+    command->keep_newest = keep_newest;
+    command->skip_newest = skip_newest;
+    command->answer_id = answer_id;
+    command->answerer = std::move(answerer);
+    // Every record written, as this thread read when it answered these requests itself
+    // (docs/availability/member_reports_read_off_the_order_thread.md, section 2): a resend asking for a member's newest
+    // report is answered with the newest there is.
+    command->limit = pubsub_itc_fw::FollowerLimit::LastWritten;
+    post_message(wal_reading_thread_id, pubsub_itc_fw::carry(get_thread_id(), std::move(command)));
+}
+
+void SequencerThread::ServingLinks::request_answered(const pubsub_itc_fw::ConnectionID& /*connection*/, uint64_t answer_id, int64_t records_sent,
+                                                     int64_t last_seq_no) {
+    owner_.on_request_answered(answer_id, records_sent, last_seq_no);
+}
+
+void SequencerThread::on_request_answered(uint64_t answer_id, int64_t records_sent, int64_t last_seq_no) {
+    const auto found = requests_being_answered_.find(answer_id);
+    if (found == requests_being_answered_.end()) {
+        return;
     }
-
-    // Truncated means the caller was given less than it asked for, so what it wanted reaches
-    // further back than the WAL still holds and part of its range cannot be served.
-    //
-    // It used to mean "the session has history older than this reply", which is true of every
-    // resend a session with any history makes -- the reply holds the range asked for and the WAL
-    // holds everything the session has ever done. So a warning saying the member had been short
-    // changed fired on every healthy resend, and said it right after reporting the resend
-    // complete with no gap left. That was BUG-0052.
-    truncated = record_count < max_records;
-
-    pubsub_itc_fw_app::SessionReplayComplete complete{};
-    complete.request_id = view.request_id;
-    complete.record_count = record_count;
-    complete.last_seq_no = last_seq_no;
-    complete.truncated = truncated;
-    send_pdu(conn_id, pubsub_itc_fw_app::SessionReplayComplete::message_pdu_id, 0, complete);
-
-    const int64_t elapsed_ns = config_.wall_clock->now_ns() - started_ns;
+    const RequestBeingAnswered request = found->second;
+    requests_being_answered_.erase(found);
+    const int64_t elapsed_ms = (config_.wall_clock->now_ns() - request.started_ns) / 1'000'000;
+    if (request.kind == RequestBeingAnswered::Kind::Resend) {
+        const bool truncated = records_sent < request.max_records;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: SessionReplayComplete id={} comp_id='{}' records={} last_seq_no={} truncated={} answered_in_ms={}, read by the "
+                   "reading thread",
+                   request.request_id, request.identity.comp_id_view(), records_sent, last_seq_no, truncated, elapsed_ms);
+        report(pubsub_itc_fw_app::ReplayAnswered{static_cast<int64_t>(request.request_id), request.identity.comp_id_view(), records_sent, truncated});
+        return;
+    }
+    // The session's live reports held meanwhile follow the undelivered ones.
+    const size_t held = reports_.undelivered_reports_sent(request.identity);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: SessionReplayComplete id={} comp_id='{}' records={} last_seq_no={} truncated={} scanned_in_ms={} segments_read={} of {}",
-               view.request_id, identity.comp_id_view(), record_count, last_seq_no, truncated, elapsed_ns / 1'000'000, segments_read, segments.size());
-    report(pubsub_itc_fw_app::ReplayAnswered{static_cast<int64_t>(view.request_id), identity.comp_id_view(), static_cast<int64_t>(record_count), truncated});
+               "SequencerThread: session comp_id='{}' protocol={} bound again -- sent it {} report(s) produced while it had no connection (log records {} to "
+               "{}){}, read by the reading thread in {} ms, then {} report(s) held meanwhile",
+               request.identity.comp_id_view(), request.identity.protocol, records_sent, request.after + 1, request.through,
+               request.possible_repeat ? ", marked as possible repeats" : "", elapsed_ms, held);
+    report(pubsub_itc_fw_app::UndeliveredReportsSent{request.identity.comp_id_view(), request.identity.protocol, records_sent});
 }
 
 // Matching engine publishers (docs/availability/following_the_wal.md, section 4.3)

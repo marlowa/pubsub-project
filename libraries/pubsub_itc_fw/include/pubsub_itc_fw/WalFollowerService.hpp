@@ -80,6 +80,15 @@ class WalFollowerEventsInterface {
 
     /// Every stop asked for, by stop_all() or stop_serving(), has been confirmed by the reading thread.
     virtual void reading_stopped() = 0;
+
+    /**
+     * @brief The reading thread has answered the application's request @p answer_id on @p connection
+     *        (WalReadingCommand::Kind::Answer): it sent @p records_sent records, the last @p last_seq_no, and closed it.
+     *
+     * Does nothing unless the application overrides it: only an application that asks the reading thread to answer
+     * requests is told of answers.
+     */
+    virtual void request_answered(const ConnectionID& /*connection*/, uint64_t /*answer_id*/, int64_t /*records_sent*/, int64_t /*last_seq_no*/) {}
 };
 
 /**

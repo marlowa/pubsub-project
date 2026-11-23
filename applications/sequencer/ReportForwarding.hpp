@@ -224,6 +224,30 @@ class ReportForwarding {
     /// is not one a test expects to have none. @return Whether it was held.
     bool hold_for_unannounced_session(const Pending& pending);
 
+    /// The connection for reports to the gateway @p protocol, @p instance, if it has one now.
+    [[nodiscard]] std::optional<pubsub_itc_fw::ConnectionID> gateway_connection(int16_t protocol, int16_t instance) const;
+
+    // ---- A session sent its undelivered reports -----------------------------------------------------------------------
+
+    /**
+     * @brief The session @p identity is being sent the reports produced while it had no connection, by the reading thread:
+     *        its live reports are held until that is done (undelivered_reports_sent), so that no newer report reaches the
+     *        member before an older one (docs/availability/member_reports_read_off_the_order_thread.md, section 3).
+     *
+     * They are held in the same room as reports held for sessions not yet announced, under the same rule when it is full.
+     */
+    void hold_while_undelivered_reports_sent(const fix_common::SessionIdentity& identity);
+
+    /// Holds @p pending if its session is being sent its undelivered reports. @return Whether it was held.
+    bool hold_while_answered(const Pending& pending);
+
+    /// The session @p identity has been sent its undelivered reports: its live reports held meanwhile are sent, oldest
+    /// first. @return How many.
+    size_t undelivered_reports_sent(const fix_common::SessionIdentity& identity);
+
+    /// Whether @p identity is being sent its undelivered reports.
+    [[nodiscard]] bool sending_undelivered_reports(const fix_common::SessionIdentity& identity) const;
+
     /// How many reports may wait for their record to be committed, in storage allocated once.
     static constexpr size_t waiting_capacity = 32'768;
 
@@ -256,7 +280,8 @@ class ReportForwarding {
     /// delivered: the reports held for it are discarded, since they are among those. @return How many.
     size_t release_held_for_session(const fix_common::SessionIdentity& identity);
 
-    /// This instance has stopped leading: every report held, of either kind, is discarded.
+    /// This instance has stopped leading: every report held, of either kind, is discarded, and no session is any longer
+    /// being sent its undelivered reports.
     void stopped_leading();
 
     [[nodiscard]] size_t waiting() const {
@@ -275,6 +300,10 @@ class ReportForwarding {
     };
 
     [[nodiscard]] int32_t gateways_not_announced() const;
+    // Stores @p pending in the room for held reports, under the room's rule when it is full, and keeps the oldest position.
+    void store_held(const Pending& pending);
+    // The sessions being sent their undelivered reports, whose live reports are held meanwhile. A few at once at most.
+    std::vector<fix_common::SessionIdentity> sessions_sent_undelivered_;
     // Every gateway has announced: every report still held is for a session connected nowhere, and is dropped.
     void drop_held_reports_for_sessions_connected_nowhere();
     // Works out the oldest held position afresh, and says how many were dropped while the room was full, if any were.

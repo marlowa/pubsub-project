@@ -57,6 +57,9 @@ class ServingWalFollowersLinksInterface : public pubsub_itc_fw::WalFollowerLinks
     virtual void engine_caught_up_to_lead(const pubsub_itc_fw::ConnectionID& connection) = 0;
     /// Sets the gauge of the damaged record that stops a follower being caught up, 0 when there is none.
     virtual void set_damaged_record_gauge(int64_t seq_no) = 0;
+    /// The reading thread has answered request @p answer_id on @p connection with @p records_sent records, the last
+    /// @p last_seq_no (a member's resend, or its undelivered reports).
+    virtual void request_answered(const pubsub_itc_fw::ConnectionID& connection, uint64_t answer_id, int64_t records_sent, int64_t last_seq_no) = 0;
 };
 
 /**
@@ -176,6 +179,7 @@ class ServingWalFollowers : public pubsub_itc_fw::PeerCatchUpInterface, public p
     void follower_cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no) override;
     void declined_while_not_leading(const pubsub_itc_fw::ConnectionID& follower) override;
     void reading_stopped() override;
+    void request_answered(const pubsub_itc_fw::ConnectionID& connection, uint64_t answer_id, int64_t records_sent, int64_t last_seq_no) override;
 
   private:
     void engine_handed_over(const pubsub_itc_fw::ConnectionID& engine, int64_t through, int64_t records_sent, pubsub_itc_fw::WalPosition resume_at,

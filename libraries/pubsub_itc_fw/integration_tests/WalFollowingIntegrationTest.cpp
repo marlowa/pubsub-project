@@ -817,4 +817,228 @@ TEST(WalFollowingIntegrationTest, TheApplicationValueIsReadFromAnOlderSegmentWhe
     the_reading_thread_reads_the_application_value(1000, 994);
 }
 
+namespace {
+
+// Writes answer_records records, each carrying one byte, its number modulo 5, and commits all but the last
+// answer_commit_lag. When a requester connects, asks the reading thread to answer it with the records an answerer
+// chooses: those whose byte is 0, every fifth.
+constexpr int64_t answer_records = 60'000; // more than one segment
+constexpr int64_t answer_commit_lag = 25;
+
+class AnsweringOwnerThread : public ApplicationThread {
+  public:
+    std::atomic<bool> ready{false};
+    std::atomic<int64_t> answered_records{-1};
+
+    // A second answer, asked for at once after the first, for the records after second_after up to second_through; none
+    // when second_after is negative.
+    AnsweringOwnerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string directory, WalFollowingPositions& positions, int64_t after,
+                         int64_t through, int64_t keep_newest, int64_t skip_newest, int64_t second_after = -1, int64_t second_through = 0)
+        : ApplicationThread(token, logger, reactor, "OwnerThread", owner_thread_id, make_queue_config(), make_allocator_config("OwnerPool"),
+                            ApplicationThreadConfiguration{})
+        , directory_(std::move(directory))
+        , positions_(positions)
+        , after_(after)
+        , through_(through)
+        , keep_newest_(keep_newest)
+        , skip_newest_(skip_newest)
+        , second_after_(second_after)
+        , second_through_(second_through) {}
+
+  protected:
+    void on_initial_event() override {
+        wal_.open(directory_, segment_size);
+        for (int64_t seq_no = 1; seq_no <= answer_records; ++seq_no) {
+            const auto byte = static_cast<uint8_t>(seq_no % 5);
+            wal_.append(seq_no, 1, &byte, 1, 0, 1);
+        }
+        positions_.publish_written(answer_records, wal_.write_position());
+        positions_.publish_committed(answer_records - answer_commit_lag);
+        ready.store(true, std::memory_order_release);
+    }
+
+    void on_connection_established(ConnectionID id) override {
+        ask(id, 7, after_, through_, keep_newest_, skip_newest_);
+        if (second_after_ >= 0) {
+            ask(id, 8, second_after_, second_through_, 0, 0);
+        }
+    }
+
+    void on_itc_message(const EventMessage& message) override {
+        const std::unique_ptr<WalReadingReport> report = take_carried<WalReadingReport>(message);
+        if (report != nullptr && report->kind == WalReadingReport::Kind::Answered && report->answer_id == 7) {
+            answered_records.store(report->records_sent, std::memory_order_release);
+        }
+    }
+
+  private:
+    void ask(ConnectionID id, uint64_t answer_id, int64_t after, int64_t through, int64_t keep_newest, int64_t skip_newest) {
+        auto answerer = std::make_shared<WalAnswerer>();
+        answerer->select = [](int64_t /*seq_no*/, const WalEntryContents& entry, std::vector<uint8_t>& kept) {
+            kept.clear();
+            return entry.size == 1 && entry.bytes[0] == 0;
+        };
+        answerer->encode_record = [](const WalAnswerRecord& record, std::vector<uint8_t>& out) {
+            encode_record(record.seq_no, out);
+            return WalAck::message_pdu_id;
+        };
+        // The close carries the number of records sent, and is sent as record 0.
+        answerer->encode_close = [](const WalAnswerSummary& summary, std::vector<uint8_t>& out) {
+            encode_record(summary.records_sent, out);
+            return WalAck::message_pdu_id;
+        };
+        auto command = std::make_unique<WalReadingCommand>();
+        command->kind = WalReadingCommand::Kind::Answer;
+        command->connection = id;
+        command->after_seq_no = after;
+        command->through_seq_no = through;
+        command->keep_newest = keep_newest;
+        command->skip_newest = skip_newest;
+        command->answer_id = answer_id;
+        command->answerer = std::move(answerer);
+        command->limit = FollowerLimit::LastCommitted;
+        post_message(reading_thread_id, carry(get_thread_id(), std::move(command)));
+    }
+    std::string directory_;
+    WalFollowingPositions& positions_;
+    int64_t after_;
+    int64_t through_;
+    int64_t keep_newest_;
+    int64_t skip_newest_;
+    int64_t second_after_;
+    int64_t second_through_;
+    Wal wal_;
+};
+
+// Connects to the owner and keeps the number of every record it is sent, and the count the closing message gives.
+class RequesterThread : public ApplicationThread {
+  public:
+    std::atomic<bool> closed{false};
+    std::atomic<int64_t> close_count{-1};
+    std::vector<int64_t> received; // read only once closed is true
+
+    // closed becomes true once @p answers closing messages have arrived; close_count is the first one's count.
+    RequesterThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int answers = 1)
+        : ApplicationThread(token, logger, reactor, "RequesterThread", ThreadID{1}, make_queue_config(), make_allocator_config("RequesterPool"),
+                            ApplicationThreadConfiguration{})
+        , answers_(answers) {}
+
+  protected:
+    void on_initial_event() override {
+        connect_to_service("owner");
+    }
+
+    void on_framework_pdu_message(const EventMessage& message) override {
+        if (message.pdu_id() != WalAck::message_pdu_id) {
+            return;
+        }
+        if (message.seq_no() != 0) {
+            received.push_back(message.seq_no());
+            return;
+        }
+        BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
+        size_t consumed = 0;
+        size_t arena_needed = 0;
+        WalAckView close{};
+        if (++closes_ == 1 && decode(close, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+            close_count.store(close.seq_no, std::memory_order_release);
+        }
+        if (closes_ == answers_) {
+            closed.store(true, std::memory_order_release);
+        }
+    }
+
+    void on_itc_message(const EventMessage& /*message*/) override {}
+
+  private:
+    int answers_;
+    int closes_{0};
+};
+
+// Runs one answer, and checks that the requester is sent exactly @p expected, oldest first, then a close giving its count.
+void the_reading_thread_answers(int64_t after, int64_t through, int64_t keep_newest, int64_t skip_newest, const std::vector<int64_t>& expected,
+                                int64_t second_after = -1, int64_t second_through = 0, const std::vector<int64_t>& second_expected = {}) {
+    const std::chrono::milliseconds timeout{30'000};
+    LoggerWithSink logger(FwLogLevel::Info);
+    const std::string directory = tests_common::make_scratch_directory("wal_following_answer");
+    WalFollowingPositions positions;
+
+    const ServiceRegistry owner_registry;
+    auto owner_reactor = std::make_unique<Reactor>(reactor_configuration(), owner_registry, logger.logger);
+    owner_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, owner_thread_id);
+    auto owner = ApplicationThread::create<AnsweringOwnerThread>(logger.logger, *owner_reactor, directory, positions, after, through, keep_newest, skip_newest,
+                                                                 second_after, second_through);
+    auto reading = ApplicationThread::create<WalReadingThread>(logger.logger, *owner_reactor, "WalReadingThread", reading_thread_id, make_queue_config(),
+                                                               make_allocator_config("ReadingPool"), owner_thread_id, directory, positions,
+                                                               std::vector<WalRecordConverter>{record_converter()}, WalApplicationValueReader{});
+    owner_reactor->register_thread(owner);
+    owner_reactor->register_thread(reading);
+    ThreadWithJoinTimeout owner_reactor_thread([&]() { owner_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return owner_reactor->is_initialized(); }, timeout));
+    ASSERT_TRUE(wait_for([&]() { return owner->ready.load(std::memory_order_acquire); }, timeout));
+    const uint16_t port = owner_reactor->get_inbound_listener_port(0);
+
+    ServiceRegistry requester_registry;
+    requester_registry.add("owner", NetworkEndpointConfiguration{"127.0.0.1", port}, NetworkEndpointConfiguration{});
+    auto requester_reactor = std::make_unique<Reactor>(reactor_configuration(), requester_registry, logger.logger);
+    auto requester = ApplicationThread::create<RequesterThread>(logger.logger, *requester_reactor, second_after >= 0 ? 2 : 1);
+    requester_reactor->register_thread(requester);
+    ThreadWithJoinTimeout requester_reactor_thread([&]() { requester_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return requester->closed.load(std::memory_order_acquire); }, timeout)) << "the answer was never closed";
+    EXPECT_TRUE(wait_for([&]() { return owner->answered_records.load(std::memory_order_acquire) >= 0; }, timeout)) << "the answer was never reported";
+    if (requester->closed.load(std::memory_order_acquire)) {
+        // A second answer's records follow every record of the first: the answers are not mixed.
+        std::vector<int64_t> all = expected;
+        all.insert(all.end(), second_expected.begin(), second_expected.end());
+        EXPECT_EQ(requester->received.size(), all.size());
+        EXPECT_TRUE(requester->received == all) << "the records sent are not exactly those expected, oldest first, each answer whole and in turn";
+        EXPECT_EQ(requester->close_count.load(), static_cast<int64_t>(expected.size()));
+    }
+    EXPECT_EQ(owner->answered_records.load(), static_cast<int64_t>(expected.size()));
+
+    requester_reactor->shutdown("test complete");
+    owner_reactor->shutdown("test complete");
+    if (requester_reactor_thread.joinable()) {
+        requester_reactor_thread.join();
+    }
+    if (owner_reactor_thread.joinable()) {
+        owner_reactor_thread.join();
+    }
+    tests_common::remove_scratch_directory(directory);
+}
+
+// Every fifth record from @p first to @p last.
+std::vector<int64_t> fifths(int64_t first, int64_t last) {
+    std::vector<int64_t> numbers;
+    for (int64_t seq_no = first; seq_no <= last; seq_no += 5) {
+        numbers.push_back(seq_no);
+    }
+    return numbers;
+}
+
+} // un-named namespace
+
+// The whole day: every fifth record committed, read back across every segment and sent in many batches, oldest first.
+// 59,980 and later are written but not committed, and must not be sent.
+TEST(WalFollowingIntegrationTest, AnAnswerReachingBackToTheStartSendsEveryChosenCommittedRecordOldestFirst) {
+    the_reading_thread_answers(0, 0, 0, 0, fifths(5, 59'975));
+}
+
+// As a member's resend asks: the newest 3,000 chosen, of which the newest 10 are left out.
+TEST(WalFollowingIntegrationTest, AnAnswerKeepsTheNewestAskedForAndLeavesOutTheNewestToSkip) {
+    the_reading_thread_answers(1000, 0, 3000, 10, fifths(59'975 - (5 * 2999), 59'975 - (5 * 10)));
+}
+
+// Two answers asked for one after the other are sent one after the other: a large one, read across every segment and sent
+// in many batches, then a small one from the newest segment, which, if the two were answered together, would arrive first.
+TEST(WalFollowingIntegrationTest, TwoAnswersAreSentOneAfterTheOtherInTheOrderAskedNeverMixed) {
+    the_reading_thread_answers(0, 0, 0, 0, fifths(5, 59'975), 59'000, 59'500, fifths(59'005, 59'500));
+}
+
+// As a returning member's undelivered reports are: a fixed range in the middle of the day, with no limit on how many.
+TEST(WalFollowingIntegrationTest, AnAnswerForAFixedRangeSendsOnlyTheChosenRecordsInIt) {
+    the_reading_thread_answers(30'000, 31'000, 0, 0, fifths(30'005, 31'000));
+}
+
 } // namespaces

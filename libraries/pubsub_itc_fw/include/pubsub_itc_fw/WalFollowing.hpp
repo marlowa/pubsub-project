@@ -153,6 +153,42 @@ using WalRecordConverter = std::function<ConvertedRecord(int64_t seq_no, const W
  */
 using WalApplicationValueReader = std::function<std::optional<int64_t>(int64_t seq_no, const WalEntryContents& entry)>;
 
+/// One record chosen for the answer to a request (WalAnswerer), as the reading thread keeps it until it is sent.
+struct WalAnswerRecord {
+    int64_t seq_no{0};
+    int64_t wall_time_ns{0};
+    /// What WalAnswerer::select kept from the record, for WalAnswerer::encode_record.
+    std::vector<uint8_t> kept;
+};
+
+/// How an answer to a request ended, for WalAnswerer::encode_close.
+struct WalAnswerSummary {
+    /// The records sent, oldest first.
+    int64_t records_sent{0};
+    /// The last record sent, or the request's after_seq_no if none was.
+    int64_t last_seq_no{0};
+    /// The records the request asked for at most, keep_newest less skip_newest; 0 when it set no limit.
+    int64_t asked_for{0};
+};
+
+/**
+ * @brief How the reading thread answers one request from the application: which records belong in the answer, how
+ *        each is sent, and how the answer is closed.
+ *
+ * Supplied with each WalReadingCommand of kind Answer and made for that one request, so that each function can hold
+ * what it needs to know about the request, such as whose records to choose and where they are to go. Each runs on the
+ * reading thread: it may read only the record or summary it is given and what it holds itself, and write only its
+ * output, and it must touch nothing that belongs to the application's thread.
+ */
+struct WalAnswerer {
+    /// Whether the record belongs in the answer; if it does, writes into @p kept what encode_record will need of it.
+    std::function<bool(int64_t seq_no, const WalEntryContents& entry, std::vector<uint8_t>& kept)> select;
+    /// Encodes one chosen record into @p out, and returns the message type to send it as.
+    std::function<int16_t(const WalAnswerRecord& record, std::vector<uint8_t>& out)> encode_record;
+    /// Encodes the message that closes the answer into @p out and returns its message type, or returns 0 for none.
+    std::function<int16_t(const WalAnswerSummary& summary, std::vector<uint8_t>& out)> encode_close;
+};
+
 /// The start of the answer to a follower's request, which the reading thread sends before the first record.
 struct WalFollowStart {
     WalFollowStarted message;
@@ -175,8 +211,14 @@ struct WalReadingCommand {
         Serve,    ///< Start sending a follower the records after after_seq_no.
         Continue, ///< Carry on sending to a follower that reported reaching a position short of the limit.
         Stop,     ///< Stop sending to a follower, whose connection has gone.
-        StopAll,  ///< Stop sending to every follower; answered with a StoppedAll report.
+        StopAll,  ///< Stop sending to every follower, and every answer; answered with a StoppedAll report.
         Confirm,  ///< Answered with a Confirmed report, once every earlier command has been acted on.
+        /// Answer a request: send on connection the records after after_seq_no, up to through_seq_no, that the answerer
+        /// chooses, the newest keep_newest of them less the newest skip_newest, oldest first; then close the answer.
+        /// Answered with an Answered report.
+        Answer,
+        /// From the reading thread to itself: read the next segment for the answer answer_id.
+        GatherMore,
     };
 
     uint32_t identity{marker};
@@ -191,6 +233,18 @@ struct WalReadingCommand {
     uint64_t serving{0};
     /// Serve: sent to the follower before the first record, when it holds a value: the answer to a follower's request.
     std::optional<WalFollowStart> started;
+
+    /// Answer: the last record to consider; 0 for the last record the answer may read when it starts, which limit gives:
+    /// the last written, or the last committed.
+    int64_t through_seq_no{0};
+    /// Answer: the most records kept, the newest of those chosen; 0 for no limit.
+    int64_t keep_newest{0};
+    /// Answer: how many of the newest records kept are then left out.
+    int64_t skip_newest{0};
+    /// Answer and GatherMore: the application's number for the answer, echoed on its Answered report.
+    uint64_t answer_id{0};
+    /// Answer: how to choose, send and close it.
+    std::shared_ptr<const WalAnswerer> answerer;
 };
 
 /**
@@ -205,6 +259,7 @@ struct WalReadingReport {
         Confirmed,  ///< Has acted on every command before a Confirm, in answer to it.
         Damaged,    ///< Found record reached_seq_no damaged, and has stopped sending to this follower.
         Progress,   ///< Has sent the follower every record up to reached_seq_no so far, and goes on; sent about every 100 ms.
+        Answered,   ///< Has sent the answer answer_id, records_sent records, the last reached_seq_no, and closed it.
     };
 
     uint32_t identity{marker};
@@ -217,6 +272,8 @@ struct WalReadingReport {
     /// the reading thread read for it, so that whoever sends it the records after the hand-over can read on
     /// from there without searching the WAL for the record after reached_seq_no.
     WalPosition resume_at{};
+    /// Answered: the application's number for the answer, from the Answer command.
+    uint64_t answer_id{0};
 };
 
 /**

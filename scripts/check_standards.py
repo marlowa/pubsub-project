@@ -1313,7 +1313,6 @@ _WAL_READERS = [
 ]
 _WAL_READER_RES = [re.compile(pattern) for pattern, _what in _WAL_READERS]
 
-_RESENDS = 'a resend or a request for undelivered reports: BUG-0113, which moves them to a recovery service'
 _ANSWER_FROM_WAL = ('the answer to a command sent again whose original the WAL holds: one record, read where the WAL noted the '
                     'first report answering it, for a recent command; for one older than the WAL remembers, a read forward from '
                     'the original, through committed records only and at most 4,096 of them '
@@ -1339,8 +1338,6 @@ _PERMITTED_WAL_READS = [
     ('applications/sequencer/ServingWalFollowers.cpp', 'ServingWalFollowers::send_committed_to_publishers', _PUBLISHERS),
     ('applications/sequencer/ServingWalFollowers.cpp', 'ServingWalFollowers::send_released_to_follower_engines', _FOLLOWER_ENGINES),
     ('applications/sequencer/ServingWalFollowers.hpp', 'handed_over_engines_', _DEFINITION),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_undelivered_reports_request', _RESENDS),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_session_replay_request', _RESENDS),
     ('applications/sequencer/CommandChecks.cpp', 'CommandChecks::find', _DUPLICATE_CHECK),
     ('applications/sequencer/CommandChecks.hpp', 'find_command', _DEFINITION),
     ('applications/sequencer/SequencerThread.cpp', 'CommandLinks::find_command', _DUPLICATE_CHECK),

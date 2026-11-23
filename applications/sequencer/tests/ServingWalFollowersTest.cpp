@@ -81,6 +81,8 @@ struct RecordingLinks : public ServingWalFollowersLinksInterface {
     void engine_caught_up_to_lead(const ConnectionID& connection) override {
         routed_to.push_back(connection.get_value());
     }
+    void request_answered(const pubsub_itc_fw::ConnectionID& /*connection*/, uint64_t /*answer_id*/, int64_t /*records_sent*/,
+                          int64_t /*last_seq_no*/) override {}
     void set_damaged_record_gauge(int64_t seq_no) override {
         gauge = seq_no;
     }

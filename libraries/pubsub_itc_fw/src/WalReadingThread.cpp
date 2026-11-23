@@ -3,6 +3,7 @@
 
 #include <pubsub_itc_fw/WalReadingThread.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -70,9 +71,26 @@ void WalReadingThread::on_itc_message(const EventMessage& message) {
         }
         case WalReadingCommand::Kind::Stop:
             followers_.erase(command->connection.get_value());
+            if (!answer_order_.empty()) {
+                const uint64_t under_way = answer_order_.front();
+                for (auto it = answer_order_.begin(); it != answer_order_.end();) {
+                    const auto answer = answers_.find(*it);
+                    if (answer != answers_.end() && answer->second->connection == command->connection) {
+                        answers_.erase(answer);
+                        it = answer_order_.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                if (!answer_order_.empty() && answer_order_.front() != under_way) {
+                    start_next_answer();
+                }
+            }
             return;
         case WalReadingCommand::Kind::StopAll: {
             followers_.clear();
+            answers_.clear();
+            answer_order_.clear();
             auto stopped = std::make_unique<WalReadingReport>();
             stopped->kind = WalReadingReport::Kind::StoppedAll;
             report(std::move(stopped));
@@ -85,15 +103,38 @@ void WalReadingThread::on_itc_message(const EventMessage& message) {
             report(std::move(confirmed));
             return;
         }
+        case WalReadingCommand::Kind::Answer:
+            answer(*command);
+            return;
+        case WalReadingCommand::Kind::GatherMore: {
+            const auto found = answers_.find(command->answer_id);
+            if (found != answers_.end()) {
+                gather_segment(*found->second); // otherwise stopped meanwhile
+            }
+            return;
+        }
     }
 }
 
 void WalReadingThread::on_connection_writable(ConnectionID id) {
     const auto found = followers_.find(id.get_value());
-    if (found == followers_.end() || !found->second->sending) {
-        return; // stopped, or reported and waiting to be told to carry on
+    if (found != followers_.end() && found->second->sending) {
+        send_batch(*found->second);
     }
-    send_batch(*found->second);
+    // Every answer waiting to send on this connection carries on. Their numbers are taken first, because sending a
+    // batch can close an answer and erase it.
+    std::vector<uint64_t> waiting;
+    for (const auto& [answer_id, answer] : answers_) {
+        if (answer->sending && answer->connection == id) {
+            waiting.push_back(answer_id);
+        }
+    }
+    for (const uint64_t answer_id : waiting) {
+        const auto answer = answers_.find(answer_id);
+        if (answer != answers_.end()) {
+            send_answer_batch(*answer->second);
+        }
+    }
 }
 
 void WalReadingThread::serve(const WalReadingCommand& command) {
@@ -247,6 +288,157 @@ void WalReadingThread::report_damaged(Follower& follower) {
     damaged->serving = follower.serving;
     report(std::move(damaged));
     followers_.erase(follower.connection.get_value());
+}
+
+void WalReadingThread::answer(const WalReadingCommand& command) {
+    if (command.answerer == nullptr || !command.answerer->select || !command.answerer->encode_record || !command.answerer->encode_close) {
+        throw PreconditionAssertion("WalReadingThread: an answer needs an answerer with all three of its functions", __FILE__, __LINE__);
+    }
+    auto answer = std::make_unique<Answer>();
+    answer->id = command.answer_id;
+    answer->connection = command.connection;
+    answer->answerer = command.answerer;
+    answer->after_seq_no = command.after_seq_no;
+    // What it reads up to is fixed when it starts (start_next_answer).
+    answer->through_seq_no = command.through_seq_no;
+    answer->limit = command.limit;
+    answer->keep_newest = command.keep_newest;
+    answer->skip_newest = command.skip_newest;
+    answer->last_seq_no = command.after_seq_no;
+    answers_[command.answer_id] = std::move(answer);
+    answer_order_.push_back(command.answer_id);
+    // One at a time, in the order asked: a later answer waits until every earlier one is closed.
+    if (answer_order_.size() == 1) {
+        start_next_answer();
+    }
+}
+
+void WalReadingThread::start_next_answer() {
+    if (answer_order_.empty()) {
+        return;
+    }
+    const auto found = answers_.find(answer_order_.front());
+    if (found == answers_.end()) {
+        return;
+    }
+    Answer& answer = *found->second;
+    // Records up to the request's limit, and only bytes completely written: the limit is published after the position of
+    // the record, so it is never ahead of the write position read after it. Both are read when the answer starts, not
+    // when it was asked for, so that it reads everything there is by then, as answering the requests one after the other
+    // on the owning thread would.
+    const int64_t limit = positions_.limit(answer.limit);
+    answer.through_seq_no = answer.through_seq_no > 0 ? std::min(answer.through_seq_no, limit) : limit;
+    answer.written = positions_.write_position();
+    answer.next_segment = answer.written.segment;
+    PUBSUB_LOG(get_logger(), FwLogLevel::Info, "WalReadingThread: answering request {} on connection {}, from the records after {} up to {}", answer.id,
+               answer.connection.get_value(), answer.after_seq_no, answer.through_seq_no);
+    gather_segment(answer);
+}
+
+void WalReadingThread::gather_segment(Answer& answer) {
+    const uint64_t segment = answer.next_segment;
+    std::vector<WalAnswerRecord> in_segment;
+    int64_t first_in_segment = 0;
+    bool segment_found = false;
+    WalCursor cursor;
+    cursor.open(wal_directory_, WalPosition{segment, 0});
+    while (before(cursor.position(), answer.written)) {
+        int64_t record_id = 0;
+        const uint8_t* bytes = nullptr;
+        size_t size = 0;
+        // A record from a later segment means this one is finished, or that it does not exist and the cursor has moved
+        // on to the next that does.
+        if (!cursor.read_next(record_id, bytes, size) || cursor.position().segment != segment) {
+            break;
+        }
+        segment_found = true;
+        if (first_in_segment == 0) {
+            first_in_segment = record_id;
+        }
+        if (record_id <= answer.after_seq_no || record_id > answer.through_seq_no) {
+            continue;
+        }
+        const std::optional<WalEntryContents> contents = read_wal_entry_contents(bytes, size);
+        if (!contents.has_value()) {
+            continue;
+        }
+        WalAnswerRecord chosen;
+        if (answer.answerer->select(record_id, *contents, chosen.kept)) {
+            chosen.seq_no = record_id;
+            chosen.wall_time_ns = contents->wall_time_ns;
+            in_segment.push_back(std::move(chosen));
+        }
+    }
+    // The newest are kept: a segment's records go in front of those from later segments, newest first, until there
+    // are as many as asked for.
+    for (auto record = in_segment.rbegin(); record != in_segment.rend(); ++record) {
+        if (answer.keep_newest > 0 && static_cast<int64_t>(answer.chosen.size()) >= answer.keep_newest) {
+            break;
+        }
+        answer.chosen.push_front(std::move(*record));
+    }
+    const bool enough = answer.keep_newest > 0 && static_cast<int64_t>(answer.chosen.size()) >= answer.keep_newest;
+    // A segment beginning at or before the first record wanted holds the oldest the answer can need, and a segment that
+    // does not exist means every older one is gone too.
+    const bool reached_the_start = (first_in_segment != 0 && first_in_segment <= answer.after_seq_no + 1) || !segment_found || segment == 0;
+    if (!enough && !reached_the_start) {
+        answer.next_segment = segment - 1;
+        auto more = std::make_unique<WalReadingCommand>();
+        more->kind = WalReadingCommand::Kind::GatherMore;
+        more->answer_id = answer.id;
+        post_message(get_thread_id(), carry(get_thread_id(), std::move(more)));
+        return;
+    }
+    for (int64_t skipped = 0; skipped < answer.skip_newest && !answer.chosen.empty(); ++skipped) {
+        answer.chosen.pop_back();
+    }
+    answer.sending = true;
+    send_answer_batch(answer);
+}
+
+void WalReadingThread::send_answer_batch(Answer& answer) {
+    int sent_in_batch = 0;
+    while (answer.next_to_send < answer.chosen.size() && sent_in_batch < records_per_batch) {
+        const WalAnswerRecord& record = answer.chosen[answer.next_to_send];
+        encoded_.clear();
+        const int16_t pdu_id = answer.answerer->encode_record(record, encoded_);
+        if (!encoded_.empty()) {
+            send_pdu_payload(answer.connection, pdu_id, record.seq_no, encoded_.data(), encoded_.size());
+            ++answer.records_sent;
+            ++sent_in_batch;
+        }
+        answer.last_seq_no = record.seq_no;
+        ++answer.next_to_send;
+    }
+    if (answer.next_to_send < answer.chosen.size()) {
+        // The rest once the connection has taken this batch.
+        request_writable_notification_for_connection_owned_elsewhere(answer.connection);
+        return;
+    }
+    WalAnswerSummary summary;
+    summary.records_sent = answer.records_sent;
+    summary.last_seq_no = answer.last_seq_no;
+    summary.asked_for = answer.keep_newest > 0 ? answer.keep_newest - answer.skip_newest : 0;
+    encoded_.clear();
+    const int16_t close_pdu_id = answer.answerer->encode_close(summary, encoded_);
+    if (close_pdu_id != 0 && !encoded_.empty()) {
+        send_pdu_payload(answer.connection, close_pdu_id, 0, encoded_.data(), encoded_.size());
+    }
+    auto answered = std::make_unique<WalReadingReport>();
+    answered->kind = WalReadingReport::Kind::Answered;
+    answered->connection = answer.connection;
+    answered->answer_id = answer.id;
+    answered->records_sent = answer.records_sent;
+    answered->reached_seq_no = answer.last_seq_no;
+    report(std::move(answered));
+    PUBSUB_LOG(get_logger(), FwLogLevel::Info, "WalReadingThread: answered request {} on connection {} with {} record(s), the last {}", answer.id,
+               answer.connection.get_value(), answer.records_sent, answer.last_seq_no);
+    const uint64_t closed = answer.id;
+    answers_.erase(closed);
+    if (!answer_order_.empty() && answer_order_.front() == closed) {
+        answer_order_.pop_front();
+        start_next_answer();
+    }
 }
 
 int64_t WalReadingThread::read_application_value() {

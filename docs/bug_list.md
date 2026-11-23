@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 289 |
+| Bugs recorded | 290 |
 | Open | 46 (23 defects, 23 tasks) |
-| Closed | 243 |
-| Next id | BUG-0290 |
+| Closed | 244 |
+| Next id | BUG-0291 |
 
 ## Open bugs by severity
 
@@ -1018,6 +1018,16 @@ behind the count, and the alternative not followed are under [BUG-0048](#bug_004
 service is built, which removes the danger this entry records. The design is
 [member_reports_read_off_the_order_thread.md](availability/member_reports_read_off_the_order_thread.md), agreed by
 Andrew on 23 November 2026 with each of its four decisions answered yes.
+
+**The first step, built 23 November 2026.** Both reads of the WAL that answer a member are made by the sequencer's
+reading thread (`WalReadingThread`, `WalReadingCommand::Kind::Answer`): the sequencer's thread checks it leads, fixes
+what is to be read and hands over a `WalAnswerer` made for the request, and the reading thread reads the WAL's segments
+from the newest back, one segment at a time, keeps the session's reports, and sends them oldest first, a batch at a
+time as the connection takes them, then the closing message. It answers one request at a time, in the order asked, and
+reads every written record, as the sequencer did. While a returning member is sent its undelivered reports, the
+sequencer holds its live reports (`ReportForwarding::hold_while_undelivered_reports_sent`) and sends them after.
+`scripts/check_standards.py` no longer permits either read on the sequencer's thread. Scenarios 22, 23, 40, 69 and 70
+pass; running them found [BUG-0290](#bug_0290). The two scenarios of the design's section 5 are still to be written.
 
 **Decided (22 November 2026): undelivered reports are all kept.** The count settles resends: a resend asks for
 messages the member has already been sent, under FIX sequence numbers, and for numbers beyond what is kept
@@ -2171,6 +2181,30 @@ catching up. A scenario that makes it ask during its catch-up every time, and fa
 and must be reported, not silent.
 
 ## Closed
+
+### BUG-0290: During a resend the FIX gateway sent a member the sequencer's refusals of its commands at once, taking numbers the resend still needed {#bug_0290}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-11-23 |
+| Recorded | 2026-11-23 |
+| How | `ha_test.py` scenario 23, run with the first step of [BUG-0113](#bug_0113) built |
+| Impact | A member that sends orders again while its resend is answered can be sent a refusal numbered inside the range being resent; fix8's client then drops the session, and the resend is never completed for it |
+| Fixed | 2026-11-23 -- a refusal (CommandRefused) that arrives while a resend is in progress for the session is held with the execution reports held then (`FixSession::DeferredReport::is_refusal`), and sent in its turn once the resend is complete (`tell_member_of_refusal`) |
+
+**What happened.** While a resend is in progress, `FixOrderGatewayThread` holds every execution report for the session
+and sends them once the resend is complete, because a message sent in the middle of a resend takes a number the resend
+still needs. It did not hold the sequencer's refusals of the member's commands, which it turns into rejections itself.
+In scenario 23 the member returns on the other gateway instance and sends its orders again, which the sequencer refuses
+as already used, while its resend is being answered.
+
+**Why it did not show before.** The leading sequencer read the WAL for the resend on the thread that sequences orders,
+which took about 25 milliseconds, so the member's orders were refused only after the resend had been answered. With
+the read moved to the reading thread (BUG-0113) the orders are refused at once, during the resend.
+
+**Shown.** Scenario 23 failed with the reads moved and passed with this fix as well; the committed code before either
+passed it, with the refusals following the resend (19:42:39.952 complete, refusals from .960).
 
 ### BUG-0289: A FIX member's clean Logout never reached the sequencers, so its resting orders were not cancelled {#bug_0289}
 

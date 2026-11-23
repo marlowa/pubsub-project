@@ -87,6 +87,11 @@ bool WalFollowerService::on_inter_thread_message(const EventMessage& message) {
     if (report == nullptr) {
         return false;
     }
+    if (report->kind == WalReadingReport::Kind::Answered) {
+        // Not about a follower: the answer to one of the application's requests.
+        events_.request_answered(report->connection, report->answer_id, report->records_sent, report->reached_seq_no);
+        return true;
+    }
     if (report->kind == WalReadingReport::Kind::StoppedAll || report->kind == WalReadingReport::Kind::Confirmed) {
         if (confirmations_awaited_ > 0) {
             --confirmations_awaited_;

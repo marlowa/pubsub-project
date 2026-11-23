@@ -1662,7 +1662,19 @@ void FixOrderGatewayThread::handle_command_refused(const pubsub_itc_fw::EventMes
                    view.sender_comp_id, view.cl_ord_id, view.first_seq_no, view.gateway_session_conn_id);
         return;
     }
+    // A resend is running for this session: the refusal waits, as a report does, until it is complete, and then goes in
+    // the order it came. Sent now, it would take a number the resend still needs (docs/bug_list.md, BUG-0290).
+    if (session->replay_in_progress) {
+        session->deferred_execution_reports.push_back(
+            FixSession::DeferredReport{std::vector<uint8_t>(message.payload(), message.payload() + message.payload_size()), view.first_seq_no, false, true});
+        return;
+    }
+    tell_member_of_refusal(*session, view, arena);
+}
 
+void FixOrderGatewayThread::tell_member_of_refusal(FixSession& session_ref, const pubsub_itc_fw_app::CommandRefusedView& view,
+                                                   pubsub_itc_fw::BumpAllocator& arena) {
+    FixSession* session = &session_ref;
     const auto [command, why_not] = fix_common::decode_refused_command(view, arena);
     const fix_common::SequencerRefusalAnswer refusal = fix_common::answer_to_sequencer_refusal(view.reason);
     if (!command.has_value()) {
@@ -2037,6 +2049,11 @@ void FixOrderGatewayThread::handle_session_replay_complete(const pubsub_itc_fw::
 
     FixSession* session_ptr = find_session_by_replay_request(view.request_id);
     if (session_ptr == nullptr) {
+        // Once for each answer, so that a resend that never finishes can be traced to an answer that arrived and matched
+        // no resend in progress.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: SessionReplayComplete request_id={} records={} on sequencer connection {} matches no resend in progress -- ignored",
+                   view.request_id, view.record_count, message.connection_id().get_value());
         return;
     }
     FixSession& session = *session_ptr;
@@ -2106,6 +2123,13 @@ void FixOrderGatewayThread::finish_replay(FixSession& session, int32_t record_co
         deferred_arena.reset();
         size_t deferred_consumed = 0;
         size_t deferred_needed = 0;
+        if (held.is_refusal) {
+            pubsub_itc_fw_app::CommandRefusedView refused{};
+            if (pubsub_itc_fw_app::decode(refused, held.payload.data(), held.payload.size(), deferred_consumed, deferred_arena, deferred_needed)) {
+                tell_member_of_refusal(session, refused, deferred_arena);
+            }
+            continue;
+        }
         pubsub_itc_fw_app::ExecutionReportView report{};
         if (!pubsub_itc_fw_app::decode(report, held.payload.data(), held.payload.size(), deferred_consumed, deferred_arena, deferred_needed)) {
             continue;

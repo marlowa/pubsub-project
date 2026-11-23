@@ -358,6 +358,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         void engine_handed_over(const pubsub_itc_fw::ConnectionID& connection, int64_t through, int64_t records_sent, bool answers_catch_up_request) override;
         void engine_caught_up_to_lead(const pubsub_itc_fw::ConnectionID& connection) override;
         void set_damaged_record_gauge(int64_t seq_no) override;
+        void request_answered(const pubsub_itc_fw::ConnectionID& connection, uint64_t answer_id, int64_t records_sent, int64_t last_seq_no) override;
 
       private:
         SequencerThread& owner_;
@@ -944,6 +945,34 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     /// Records a single replay may return before it truncates, when the caller names no cap.
     static constexpr int32_t default_replay_max_records = 10'000;
+
+    // ---- Requests the reading thread answers ------------------------------------------------------------------------
+    //
+    // A member's resend and a returning member's undelivered reports are read from the WAL by the reading thread, never
+    // by this one, which sequences orders (docs/availability/member_reports_read_off_the_order_thread.md). This thread
+    // decides what is to be read and keeps each request here until the reading thread says it has been answered.
+
+    struct RequestBeingAnswered {
+        enum class Kind : int8_t { Resend, Undelivered };
+        Kind kind{Kind::Resend};
+        fix_common::SessionIdentity identity;
+        uint32_t request_id{0};      ///< Resend: the gateway's number for the request.
+        int32_t max_records{0};      ///< Resend: the most records asked for.
+        int64_t after{0};            ///< The last record not wanted.
+        int64_t through{0};          ///< Undelivered: the last record wanted.
+        bool possible_repeat{false}; ///< Undelivered: whether the reports are marked as possible repeats.
+        int64_t started_ns{0};
+    };
+
+    // Keeps @p request and asks the reading thread to answer it on @p connection with what @p answerer chooses, the newest
+    // @p keep_newest of them (0 for all) less the newest @p skip_newest.
+    void ask_reading_thread_to_answer(const pubsub_itc_fw::ConnectionID& connection, const RequestBeingAnswered& request, int64_t keep_newest,
+                                      int64_t skip_newest, std::shared_ptr<pubsub_itc_fw::WalAnswerer> answerer);
+    // The reading thread has answered a request.
+    void on_request_answered(uint64_t answer_id, int64_t records_sent, int64_t last_seq_no);
+
+    std::unordered_map<uint64_t, RequestBeingAnswered> requests_being_answered_;
+    uint64_t next_answer_id_{1};
 };
 
 } // namespaces

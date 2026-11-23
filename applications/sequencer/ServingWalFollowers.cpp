@@ -304,6 +304,10 @@ void ServingWalFollowers::reading_stopped() {
     links_.peer_catch_up_stopped();
 }
 
+void ServingWalFollowers::request_answered(const pubsub_itc_fw::ConnectionID& connection, uint64_t answer_id, int64_t records_sent, int64_t last_seq_no) {
+    links_.request_answered(connection, answer_id, records_sent, last_seq_no);
+}
+
 // ---- Damaged records -----------------------------------------------------------------------------------------------
 
 void ServingWalFollowers::cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no, const std::string& which_follower) {

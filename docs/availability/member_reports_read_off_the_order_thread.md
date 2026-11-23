@@ -1,6 +1,6 @@
 # A member's reports read off the thread that sequences orders {#member_reports_read_off_the_order_thread}
 
-**Status: agreed by Andrew on 23 November 2026, each decision in section 6 answered yes; to be built.** The design for
+**Status: agreed by Andrew on 23 November 2026, each decision in section 6 answered yes; built, except the two new scenarios of section 5.** The reading thread answers one request at a time, in the order asked, so that two answers for one member never reach its gateway mixed. The design for
 the first step of [BUG-0113](../bug_list.md#bug_0113),
 chosen on 22 November 2026: move the two reads of the WAL that answer a member onto the sequencer's existing reading
 thread, before the recovery service is built. The recovery service remains the design for the 100,000 messages kept

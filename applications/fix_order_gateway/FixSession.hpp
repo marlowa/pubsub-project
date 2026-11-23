@@ -323,9 +323,12 @@ struct FixSession {
     int report_seq_nums_shipped_to{0};
     /// An ExecutionReport that arrived live while a resend was running, delivered once it ends.
     struct DeferredReport {
-        std::vector<uint8_t> payload; ///< The encoded report.
+        std::vector<uint8_t> payload; ///< The encoded report, or the encoded CommandRefused when is_refusal is true.
         int64_t log_seq_no{0};        ///< Its sequence number in the sequencer's log.
         bool possible_repeat{false};  ///< Written as PossResend.
+        /// The sequencer's refusal of one of the member's commands, held as a report is: whatever is sent to the member
+        /// during a resend takes a number the resend still needs (docs/bug_list.md, BUG-0290).
+        bool is_refusal{false};
     };
     std::vector<DeferredReport> deferred_execution_reports;
 

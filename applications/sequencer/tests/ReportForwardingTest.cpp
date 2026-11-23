@@ -207,6 +207,37 @@ TEST_F(ReportForwardingTest, AReportForAnEndedSessionIsNotHeldWhileAGatewayHasNo
     EXPECT_TRUE(forwarding_->hold_for_unannounced_session(pending("AWAY", 6, "r6"))) << "a session still open is held as before";
 }
 
+// While a session is being sent its undelivered reports, its live reports are held, and once those have been sent they
+// follow, oldest first, so that no newer report reaches the member before an older one
+// (docs/availability/member_reports_read_off_the_order_thread.md, section 3).
+TEST_F(ReportForwardingTest, ASessionsLiveReportsAreHeldWhileItsUndeliveredReportsAreSentAndFollowThem) {
+    member_connected();
+    const fix_common::SessionIdentity member = fix_common::SessionIdentity::make("MEMBER", fix);
+    forwarding_->hold_while_undelivered_reports_sent(member);
+    EXPECT_TRUE(forwarding_->sending_undelivered_reports(member));
+    forwarding_->deliver(pending("MEMBER", 5, "r5"));
+    forwarding_->deliver(pending("MEMBER", 6, "r6"));
+    EXPECT_TRUE(links_.sent.empty()) << "held while the undelivered reports are sent";
+    EXPECT_FALSE(forwarding_->hold_while_answered(pending("OTHER", 7, "r7"))) << "another session is not held";
+
+    EXPECT_EQ(forwarding_->undelivered_reports_sent(member), 2U);
+    EXPECT_FALSE(forwarding_->sending_undelivered_reports(member));
+    ASSERT_EQ(links_.sent.size(), 2U);
+    EXPECT_EQ(links_.sent[0].payload, "r5");
+    EXPECT_EQ(links_.sent[1].payload, "r6");
+
+    forwarding_->deliver(pending("MEMBER", 8, "r8"));
+    EXPECT_EQ(links_.sent.size(), 3U) << "sent at once once the undelivered reports have been sent";
+}
+
+// Ceasing to lead ends the holding: the new leader is asked for the undelivered reports again.
+TEST_F(ReportForwardingTest, StoppingLeadingEndsTheHoldingForASessionBeingSentItsUndeliveredReports) {
+    const fix_common::SessionIdentity member = fix_common::SessionIdentity::make("MEMBER", fix);
+    forwarding_->hold_while_undelivered_reports_sent(member);
+    forwarding_->stopped_leading();
+    EXPECT_FALSE(forwarding_->sending_undelivered_reports(member));
+}
+
 TEST_F(ReportForwardingTest, ReportsHeldForASessionAreSentWhenItBinds) {
     EXPECT_TRUE(forwarding_->hold_for_unannounced_session(pending("MEMBER", 5, "r5")));
     member_connected();

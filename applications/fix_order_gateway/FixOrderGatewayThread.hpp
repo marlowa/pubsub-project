@@ -623,6 +623,8 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // The leading sequencer refused a member's command without writing it into the WAL (CommandRefused): the member
     // is answered with a rejection, and the gateway's copy of the command is marked answered.
     void handle_command_refused(const pubsub_itc_fw::EventMessage& message);
+    // Tells the member on @p session of the sequencer's refusal @p view, decoding the refused command into @p arena.
+    void tell_member_of_refusal(FixSession& session, const pubsub_itc_fw_app::CommandRefusedView& view, pubsub_itc_fw::BumpAllocator& arena);
 
     /**
      * @brief Whether the venue last said it could process orders.

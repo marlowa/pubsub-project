@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -47,6 +48,19 @@ namespace pubsub_itc_fw {
  * It reads the follower's limit once at the start of each round, when it is told to serve the follower
  * or to carry on, and when it has sent every record up to that limit it reports the position to the
  * owning thread and sends nothing more to that follower until told to carry on.
+ *
+ * **It also answers requests** (WalReadingCommand::Kind::Answer), so that the owning thread never reads
+ * the WAL to answer one either (docs/availability/member_reports_read_off_the_order_thread.md). It reads the
+ * WAL's segments from the newest back, one segment at a time, keeping the records the request's
+ * WalAnswerer chooses, until it has as many as asked for or has reached a segment that begins at or before
+ * the first record wanted. Then it sends them oldest first, a batch at a time, as the connection takes
+ * them, closes the answer and reports it. Between segments and between batches it turns to its other work,
+ * so that a long answer does not stop a follower being caught up, nor the reverse. It reads records up to the
+ * limit the request names, the last written or the last committed, and only bytes completely written.
+ *
+ * It answers one request at a time, in the order it was asked, and starts the next only once the one before
+ * is closed. Two answers for one member therefore reach its gateway one after the other, never mixed: a
+ * gateway sent a member's undelivered reports in the middle of its resend would number them wrongly.
  *
  * It owns no connection and takes no lock. It stays on the component's background cores, so it needs
  * no core of its own, and between catch-ups it is blocked on its queue.
@@ -119,7 +133,36 @@ class WalReadingThread : public ApplicationThread {
         WalPosition resume_at{};
     };
 
+    // A request being answered (WalReadingCommand::Kind::Answer).
+    struct Answer {
+        uint64_t id{0};
+        ConnectionID connection;
+        std::shared_ptr<const WalAnswerer> answerer;
+        int64_t after_seq_no{0};
+        int64_t through_seq_no{0};
+        int64_t keep_newest{0};
+        int64_t skip_newest{0};
+        /// The last record the request may be answered with, as a kind of position: written, or committed.
+        FollowerLimit limit{FollowerLimit::LastCommitted};
+        /// The bytes completely written when the answer started: nothing at or after this is read for it.
+        WalPosition written{};
+        /// The segment to read next, going back from the newest.
+        uint64_t next_segment{0};
+        /// The records chosen so far, oldest first.
+        std::deque<WalAnswerRecord> chosen;
+        /// While sending: the next of chosen to send.
+        size_t next_to_send{0};
+        bool sending{false};
+        int64_t records_sent{0};
+        int64_t last_seq_no{0};
+    };
+
     void serve(const WalReadingCommand& command);
+    void answer(const WalReadingCommand& command);
+    // Reads one segment for the answer, then either asks itself to read the next or starts sending.
+    void gather_segment(Answer& answer);
+    // Sends the next batch of the answer, or closes it and reports it once all are sent; erases a closed answer.
+    void send_answer_batch(Answer& answer);
     void send_batch(Follower& follower);
     [[nodiscard]] bool read_next_record(Follower& follower, WalPosition written);
     void report(std::unique_ptr<WalReadingReport> report_to_send);
@@ -134,6 +177,12 @@ class WalReadingThread : public ApplicationThread {
     std::vector<WalRecordConverter> converters_;
     WalApplicationValueReader application_value_reader_;
     std::unordered_map<int, std::unique_ptr<Follower>> followers_;
+    // The answers asked for and not yet closed, by their application's number.
+    std::unordered_map<uint64_t, std::unique_ptr<Answer>> answers_;
+    // Their numbers, in the order they were asked for: only the first is being answered.
+    std::deque<uint64_t> answer_order_;
+    // Starts answering the first in answer_order_, if there is one.
+    void start_next_answer();
     std::vector<uint8_t> encoded_;
 };
 
