@@ -44,10 +44,16 @@ The session-layer messages are Logon, Logout, Heartbeat, TestRequest, ResendRequ
 SequenceReset, and that is all. A polite shutdown is a *Logout*; a process being killed is just a
 TCP connection closing, carrying nothing.
 
-So when a gateway is killed, no message is produced and nothing appears in a message blotter. That
-is not a fault: there is nothing to show. It is also why nothing in the venue relies on a dying
-process to tell anyone anything. A gateway reports the state the venue needs from it continuously,
-not only when it shuts down.
+So when a gateway is killed, no message is produced, and the venue has nothing it could send one on. The
+member is not left knowing nothing, though: its end of the connection closes, or the gateway's Heartbeats stop
+and its TestRequest goes unanswered, so within a heartbeat interval or two its own software knows the session has
+gone, and should show it. It also knows its grace period, so it knows that its day orders will be cancelled at the
+end of it unless it is back first; and when it logs on again, at the other instance if need be, it is sent the
+execution reports of whatever was cancelled while it was away. The London Stock Exchange (MIT202, section 2.8) and
+Euronext (Optiq OEG client specifications, section 3.2) publish the same arrangement.
+
+That is also why nothing in the venue relies on a dying process to tell anyone anything. A gateway reports the state
+the venue needs from it continuously, not only when it shuts down.
 
 ### What each failure looks like from the member's seat
 
@@ -454,8 +460,25 @@ members' day orders. If that proves too harsh, the remedy is a longer default gr
 was away. A FIX member can, by a ResendRequest. A binary member cannot until the binary gateway can send the reports a
 member missed ([BUG-0046](../bug_list.md#bug_0046)).
 
-**Still to decide, separately:**
+**When no instance of a gateway is up, an operator is told (decided 23 November 2026; to be built).** The members on
+it are told by their own sessions dropping, as above. The venue as a whole must also be told, because a whole class of
+members cannot trade, and that needs a person to decide what to do. The venue does not halt by itself: it cannot tell
+an outage of its own gateways from a fault in the network outside them, and a halt would stop the members who can
+still trade as well.
 
-- how the venue detects that no gateway has come back for a member, or for every member, and after how long;
-- whether the venue then halts trading by itself, or alerts an operator who decides. The recommendation is to alert an
-  operator, because the venue cannot tell an outage of its own gateways from a fault in the network outside it.
+1. **The leading sequencer notices.** Every configured gateway instance (`[[gateway]]` in its configuration) keeps a
+   connection to it, so it knows at any moment which are up, and it is the one place that sees every gateway at once.
+2. **The outage is every instance of one protocol down at once,** both FIX gateway instances, for example. One instance
+   down is a loss of resilience, reported as it is now: its members can log on at the other.
+3. **After a short wait, set in the sequencer's configuration,** a few seconds, so that an instance restarted at once,
+   or a sequencer that has just taken the lead and is waiting for the gateways to connect, does not raise it.
+4. **How the operator is told.** One line at Critical, which reaches syslog, where production monitoring raises its
+   alarms: it names the protocol, how long every instance has been down, and how many members' sessions were bound to
+   it. It is logged once when the outage begins, not repeatedly, and a second line at Critical says when the first
+   instance is back and how long the outage lasted. Beside it, a gauge of the protocols with no instance up, for
+   dashboards and alert rules where Prometheus is used, and a test event, so that a scenario can check it. Metrics are
+   never the only way an operator hears of it, because Prometheus is optional.
+5. **The venue does nothing else.** It trades on for every member still connected; members' grace periods run on, as
+   decided above; an operator who decides to halt uses the venue-wide halt that exists.
+6. **Scenarios.** Every FIX gateway instance stopped: the alarm after the wait, and the second line when one is started
+   again. One instance stopped: no alarm.

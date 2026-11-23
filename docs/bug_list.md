@@ -2009,11 +2009,15 @@ now; Andrew chose the recommendation. The member asked not to have live orders i
 gateways' failure from a network fault; and the halt for a total loss of the gateways can then be the ordinary halt,
 which leaves the book as it is.
 
-**What is wanted.**
+**What is wanted, decided 23 November 2026: an operator is told; the venue does not halt by itself.** The leading
+sequencer notices when every configured instance of one protocol's gateway has been disconnected for longer than a
+short wait set in its configuration, logs one line at Critical, which reaches syslog, when that begins and another when
+the first instance is back, and keeps a gauge and sends a test event beside it. The design is in
+[gateway_ha.md](availability/gateway_ha.md), under "When no instance of a gateway is up, an operator is told". Chosen by
+Andrew over the venue halting by itself.
 
-1. How the venue detects that no gateway has come back for a member, or for every member, and after how long.
-2. Whether the venue then halts by itself or alerts an operator who decides; the recommendation is to alert an operator.
-3. Scenarios for both.
+**Left before this entry closes:** that alarm, built, and its two scenarios: every FIX gateway instance stopped, and
+one instance stopped, which must raise nothing.
 
 It depends on [BUG-0046](#bug_0046): a binary member cannot learn, after reconnecting, which of its orders were
 cancelled while it was away. To be done after the bugs agreed before it ([bug_review.md](bug_review.md)).
