@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 292 |
-| Open | 48 (25 defects, 23 tasks) |
-| Closed | 244 |
+| Open | 47 (24 defects, 23 tasks) |
+| Closed | 245 |
 | Next id | BUG-0293 |
 
 ## Open bugs by severity
 
-2 high, 30 medium, 16 low.
+2 high, 29 medium, 16 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -26,7 +26,6 @@
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
 | [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
 | [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
-| [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
 | [BUG-0128](#bug_0128) | medium | defect | Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread |
 | [BUG-0131](#bug_0131) | medium | defect | The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower |
 | [BUG-0134](#bug_0134) | medium | defect | A venue running without a standby says so once, and not at all when no follower is connected |
@@ -794,60 +793,6 @@ With timer numbers handed out only during initialisation, and the tables changed
 thread afterwards, `timer_registry_mutex_` has nothing to protect during the day and is removed.
 
 **Principle.** F2 in `docs/design_principles.md`: this lock is not accepted as an exception.
-
-### BUG-0127: A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it {#bug_0127}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-07 |
-| Recorded | 2026-10-07 |
-| How | Searching the code for every mutex and lock, to check the rule that the hot paths take none during the trading day |
-| Impact | When a pool runs out during the trading day, the thread that needed an entry takes a mutex and waits while a new pool is mapped from the operating system. Every queue between the reactor and an application thread allocates its nodes this way, so the wait falls on whatever message is being queued at the time, an order included |
-
-**Where.** `ExpandablePoolAllocator::allocate()`
-(`libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp`) allocates from the
-current pool without a lock. When the current pool has no free slot, it takes `expansion_mutex_`,
-walks the chain of pools looking for one with a free slot, and, if none has one, maps a new pool and
-adds it to the chain, still holding the mutex.
-
-**Who uses it.** Every `LockFreeMessageQueue` allocates its nodes from one, so every event the
-reactor queues for an application thread and every command an application thread queues for the
-reactor go through it. It has no other user.
-
-**Seen.** In the run of `ha_test.py` on 20 November 2026, scenario 116 made the binary order gateway's command queue
-run out 15 times in 118 milliseconds, adding a pool of 4,096 nodes each time, with the mutex held.
-
-**Why it ran out.** The binary gateway's command queue has 4,096 nodes, and the gateway allows 16,384 unanswered
-commands before it stops reading its members; each order is two sends with high availability on, one to each
-sequencer, and each answered order a third, its execution report.
-
-**Design.** Agreed in [pools_that_grow_without_a_lock.md](framework/pools_that_grow_without_a_lock.md): the pools sized
-so that they do not grow during the day, growth logged at Error and counted, and the lock removed from growing only if a
-TLA+ model checked with TLC proves it safe.
-
-**Built, 21 November 2026: growing without the lock, and growth reported.** `expansion_mutex_` is removed: a pool is
-linked by a compare-and-swap of the last pool's link from null (`FixedSizeMemoryPool::link_next_pool`), and a node is
-taken from a new pool only once it is linked, following `docs/framework/tla/PoolChain.tla` step for step with
-sequentially consistent atomic operations. TLC finds every property of the model holding, including a bound on the pools
-added when threads find the chain full at once, over 25,489,848 and 16,538,971 distinct states, and finds each of two
-faults put in on purpose ([tla/findings.md](framework/tla/findings.md), section 5). Every component's handler for an
-exhausted pool logs at Error, and the reactor publishes the pools each queue has added
-(`reactor_command_queue_pools_added`, `itc_queue_pools_added`). A unit test of many threads growing the chain at once
-fails when the compare-and-swap is replaced by a plain store. `ha_test.py` passes 118 of 118 with the primary engine
-started first and 49 of 49 with the secondary.
-
-**Left before this entry closes:** sizing each component's queues so that they do not grow during the day, which needs
-[BUG-0279](#bug_0279) built first, so that the orders a gateway can have read and not answered are bounded by settings.
-
-**How often.** With one pool that never fills, never. But pools have run out during load runs, which
-is why the queue pools in `fix_order_gateway_a.toml` have been enlarged more than once. And once a
-pool has been added, the slow path can be taken again each time the current pool fills while an
-earlier one has free slots, because a freed slot returns to the pool it came from.
-
-**What is wanted.** No lock on the allocation path. Either the pools are sized so that running out
-during a trading day does not happen and is treated as an incident when it does, or expansion is made
-lock-free, with the next pool mapped in advance by another thread. See `lock-audit-report.txt`.
 
 ### BUG-0121: A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader {#bug_0121}
 
@@ -2241,6 +2186,67 @@ waiting (`ReportForwarding::wait_for_commit`), and are sent after it.
 orders, as well as within each. If they must, a report is sent at once only while no earlier report waits.
 
 ## Closed
+
+### BUG-0127: A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it {#bug_0127}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-07 |
+| Recorded | 2026-10-07 |
+| How | Searching the code for every mutex and lock, to check the rule that the hot paths take none during the trading day |
+| Impact | When a pool runs out during the trading day, the thread that needed an entry takes a mutex and waits while a new pool is mapped from the operating system. Every queue between the reactor and an application thread allocates its nodes this way, so the wait falls on whatever message is being queued at the time, an order included |
+| Fixed | 2026-11-24 -- the lock was removed from growing a pool on 21 November; the last part, every component's queues sized so that none grows during the day, holds as measured: in `ha_test.py` scenarios 115, 116, 130 and 132, the venue's heaviest loads, no component added a pool |
+
+**Where.** `ExpandablePoolAllocator::allocate()`
+(`libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp`) allocates from the
+current pool without a lock. When the current pool has no free slot, it takes `expansion_mutex_`,
+walks the chain of pools looking for one with a free slot, and, if none has one, maps a new pool and
+adds it to the chain, still holding the mutex.
+
+**Who uses it.** Every `LockFreeMessageQueue` allocates its nodes from one, so every event the
+reactor queues for an application thread and every command an application thread queues for the
+reactor go through it. It has no other user.
+
+**Seen.** In the run of `ha_test.py` on 20 November 2026, scenario 116 made the binary order gateway's command queue
+run out 15 times in 118 milliseconds, adding a pool of 4,096 nodes each time, with the mutex held.
+
+**Why it ran out.** The binary gateway's command queue has 4,096 nodes, and the gateway allows 16,384 unanswered
+commands before it stops reading its members; each order is two sends with high availability on, one to each
+sequencer, and each answered order a third, its execution report.
+
+**Design.** Agreed in [pools_that_grow_without_a_lock.md](framework/pools_that_grow_without_a_lock.md): the pools sized
+so that they do not grow during the day, growth logged at Error and counted, and the lock removed from growing only if a
+TLA+ model checked with TLC proves it safe.
+
+**Built, 21 November 2026: growing without the lock, and growth reported.** `expansion_mutex_` is removed: a pool is
+linked by a compare-and-swap of the last pool's link from null (`FixedSizeMemoryPool::link_next_pool`), and a node is
+taken from a new pool only once it is linked, following `docs/framework/tla/PoolChain.tla` step for step with
+sequentially consistent atomic operations. TLC finds every property of the model holding, including a bound on the pools
+added when threads find the chain full at once, over 25,489,848 and 16,538,971 distinct states, and finds each of two
+faults put in on purpose ([tla/findings.md](framework/tla/findings.md), section 5). Every component's handler for an
+exhausted pool logs at Error, and the reactor publishes the pools each queue has added
+(`reactor_command_queue_pools_added`, `itc_queue_pools_added`). A unit test of many threads growing the chain at once
+fails when the compare-and-swap is replaced by a plain store. `ha_test.py` passes 118 of 118 with the primary engine
+started first and 49 of 49 with the secondary.
+
+**Done, 24 November 2026: no queue grows during the day.** With [BUG-0279](#bug_0279) built, what each gateway can have
+read and not answered is bounded by its settings, and its command queue is sized from them.
+
+**How often.** With one pool that never fills, never. But pools have run out during load runs, which
+is why the queue pools in `fix_order_gateway_a.toml` have been enlarged more than once. And once a
+pool has been added, the slow path can be taken again each time the current pool fills while an
+earlier one has free slots, because a freed slot returns to the pool it came from.
+
+**What is wanted.** No lock on the allocation path. Either the pools are sized so that running out
+during a trading day does not happen and is treated as an incident when it does, or expansion is made
+lock-free, with the next pool mapped in advance by another thread. See `lock-audit-report.txt`.
+
+**Shown, 24 November 2026.** Every pool a component adds is logged at Error ("exhausted: chaining new pool slab"). After
+each of `ha_test.py` scenarios 115 (1.8 million resting orders cancelled), 116 (the binary gateway overloaded), 130 (the
+FIX gateway overloaded) and 132 (100,000 reports sent to one member while another trades), every component's log held no
+such line written during the scenario. The search was checked by shrinking the binary gateway's command queue to 4,096
+nodes in a deployed copy of its configuration: scenario 116 then logged four pools added, and the search found all four.
 
 ### BUG-0290: During a resend the FIX gateway sent a member the sequencer's refusals of its commands at once, taking numbers the resend still needed {#bug_0290}
 

@@ -8,11 +8,11 @@ agreed with Andrew. An entry that is closed is no longer listed here; its record
 
 ## Summary
 
-There are 48 open entries, and each is judged below. The figures:
+There are 47 open entries, and each is judged below. The figures:
 
 | Judgement | Entries |
 |---|---|
-| Breach of a named principle | 6: BUG-0285, BUG-0131, BUG-0273, BUG-0127, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
+| Breach of a named principle | 5: BUG-0285, BUG-0131, BUG-0273, BUG-0128, BUG-0119; and 2 more if their causes prove to be in the venue: BUG-0175 and BUG-0184 |
 | Partly done | 4: BUG-0121, BUG-0134, BUG-0283, BUG-0069 |
 | Decision needed from Andrew | 2: BUG-0229, BUG-0292 |
 | Decided, and waiting to be built | 2: BUG-0048 and BUG-0113, the recovery service |
@@ -48,7 +48,7 @@ There are 48 open entries, and each is judged below. The figures:
    FIX gateway is bounded as the binary one is, by its thread stopping taking orders from a member's bytes while the
    limit on unanswered commands is reached. Built on 23 November, and BUG-0279 is closed.
 3. The four decisions above, each put to Andrew with its background and options. All four decided on 22 November 2026.
-4. The breaches that need a short design first: BUG-0127 and BUG-0128 (the framework's two locks), BUG-0119
+4. The breaches that need a short design first: BUG-0127 (closed 24 November) and BUG-0128 (the framework's two locks), BUG-0119
    (shutdown), BUG-0273 (the matching engine's held reports) and BUG-0131's remainder.
 5. BUG-0121 (start-up time), then the recovery service with BUG-0048 and BUG-0113, the largest piece of work.
 6. Then the new requirements, the investigations and the tests and tools, in the order Andrew chooses.
@@ -166,20 +166,19 @@ with the rest.
 
 ## 6. The framework: reactor, timers, allocators and threads
 
-Seven entries.
+Six entries.
 
 | Entry | Judgement | Evidence | What is left |
 |---|---|---|---|
 | [BUG-0283](bug_list.md#bug_0283): parts of the framework library that the venue runs every day are not reached by any test | **Partly done** | Groups 1 to 3 have tests, each made to fail by breaking the code it tests; the coverage baseline records 11,292 of 12,811 lines run | Group 1's reading of `/sys`, which needs a made-up `/sys` tree; then groups 4 and 5, the failures that change what the venue does |
-| [BUG-0127](bug_list.md#bug_0127): a pool that runs out takes a mutex and maps a new pool while holding it | **Breach** of F2 and F5 | `ExpandablePoolAllocator` takes `expansion_mutex_` on its slow path | No lock on the allocation path, as the entry describes, and pools sized so that the slow path is not reached in a normal day |
 | [BUG-0128](bug_list.md#bug_0128): every timer start creates a timer and every cancel destroys one, with a lock and system calls on the reactor thread | **Breach** of F2 and F3 | `Reactor` takes `timer_registry_mutex_`, and there is no way to create a timer apart from starting it | Timers created once and armed and disarmed afterwards; the design the entry asks for |
 | [BUG-0119](bug_list.md#bug_0119): a thread still in a handler when its reactor shuts down uses the destroyed reactor | **Breach** of F8, shutdown is deterministic | Shutdown does not wait for a thread still in a handler, nor refuse to destroy the reactor while one may still run | Decide whether a reactor may ever be destroyed while one of its threads may still run, and make shutdown wait or refuse accordingly |
 | [BUG-0184](bug_list.md#bug_0184): a paused connection sometimes went on delivering | **Investigation**, a **Breach** if the fault is in the reactor | The test fails about one run in four of the coverage build, as the entry records | Find whether pausing fails or the test's timing does, under load |
 | [BUG-0104](bug_list.md#bug_0104): a connection whose reads were paused can stay stalled after they resume | **Investigation** | The kernel's rule for this case is not established | As the entry describes; best done with BUG-0184 |
 | [BUG-0280](bug_list.md#bug_0280): huge pages are not used for the large tables the order path reads at random, and the allocators' huge-page path has never run on the development machine | **Investigation** | The development machine has no huge pages reserved, so `FixedSizeMemoryPool`'s `MAP_HUGETLB` path always falls back to ordinary pages there; no measurement shows misses in the cache of address translations to be a real share of the order path's time | Measure those misses under `perf stat` through a load run first; only if they matter, huge pages for the large tables; and the huge-page path exercised by a test on a machine with huge pages reserved |
 
-**Recommended order in this area.** BUG-0127 and BUG-0128 first, the two locks on paths an order can
-take, each needing a design agreed before code, BUG-0128 the larger. BUG-0119 with the shutdown sequence.
+**Recommended order in this area.** BUG-0128 first, the remaining lock on a path an order can take,
+needing a design agreed before code. BUG-0119 with the shutdown sequence.
 BUG-0184 and BUG-0104 together. BUG-0283's remaining groups by its own rule, testing the failures that change
 what the venue does rather than every log line. BUG-0280 is a measurement.
 
